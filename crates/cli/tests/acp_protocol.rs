@@ -8,6 +8,10 @@ use serde_json::{Value, json};
 mod scratch;
 use scratch::Scratch;
 
+#[path = "support/acp_schema.rs"]
+mod acp_schema;
+use acp_schema::Schema;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
@@ -20,6 +24,8 @@ struct AcpClient {
     child: Child,
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
+    asked: std::collections::HashMap<String, String>,
+    log: Vec<Value>,
 }
 
 impl AcpClient {
@@ -53,10 +59,15 @@ impl AcpClient {
             child,
             stdin,
             lines: BufReader::new(stdout).lines(),
+            asked: std::collections::HashMap::new(),
+            log: Vec::new(),
         })
     }
 
     fn send(&mut self, frame: &Value) -> Result<(), Box<dyn Error>> {
+        if let (Some(id), Some(method)) = (frame["id"].as_str(), frame["method"].as_str()) {
+            self.asked.insert(id.to_owned(), method.to_owned());
+        }
         serde_json::to_writer(&mut self.stdin, frame)?;
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
@@ -80,6 +91,7 @@ impl AcpClient {
         for line in self.lines.by_ref() {
             let frame: Value = serde_json::from_str(&line?)?;
             let done = stop(&frame);
+            self.log.push(frame.clone());
             seen.push(frame);
             if done {
                 return Ok(seen);
@@ -169,7 +181,7 @@ fn v2_client_drives_a_session_end_to_end() -> TestResult {
         .find(|entry| entry["sessionId"] == session_id.as_str())
         .ok_or("the new session must appear in session/list")?;
     assert!(
-        own["createdAt"].is_u64(),
+        own["_meta"]["yi"]["createdAt"].is_u64(),
         "a listed session carries its birth for the sidebar's ages: {own}"
     );
 
@@ -298,7 +310,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     let mode_of = |options: &Value| -> Option<String> {
         options.as_array()?.iter().find_map(|option| {
             (option["configId"] == "mode")
-                .then(|| option["kind"]["value"].as_str().map(str::to_owned))?
+                .then(|| option["currentValue"].as_str().map(str::to_owned))?
         })
     };
     assert_eq!(
@@ -310,7 +322,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     let set = client.request(
         "3",
         "session/set_config_option",
-        json!({"sessionId": session_id, "configId": "mode", "value": "ask"}),
+        json!({"sessionId": session_id, "configId": "mode", "type": "id", "value": "ask"}),
     )?;
     let set = set.last().ok_or("no set_config_option response")?;
     assert_eq!(
@@ -322,7 +334,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     let rejected = client.request(
         "4",
         "session/set_config_option",
-        json!({"sessionId": session_id, "configId": "mode", "value": "reckless"}),
+        json!({"sessionId": session_id, "configId": "mode", "type": "id", "value": "reckless"}),
     )?;
     let rejected = rejected.last().ok_or("no response")?;
     assert!(
@@ -818,10 +830,13 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     );
     let response = frames.last().ok_or("no resume response")?;
     assert_eq!(
-        response["result"]["name"], "fan this out",
+        response["result"]["_meta"]["yi"]["name"], "fan this out",
         "the result names the session"
     );
-    assert_eq!(response["result"]["replayedTo"], entries.len());
+    assert_eq!(
+        response["result"]["_meta"]["yi"]["replayedTo"],
+        entries.len()
+    );
     let response_at = frames.len().saturating_sub(1);
     let replay_at = frames
         .iter()
@@ -890,7 +905,7 @@ fn resume_can_opt_out_of_the_standard_replay_updates() -> TestResult {
     let lean = client.request(
         "4",
         "session/resume",
-        json!({"sessionId": session_id, "replayFrom": 0, "replayUpdates": false}),
+        json!({"sessionId": session_id, "replayFrom": 0, "_meta": {"yi": {"replayUpdates": false}}}),
     )?;
     let standard = ["user_message", "agent_message"];
     assert!(
@@ -906,7 +921,7 @@ fn resume_can_opt_out_of_the_standard_replay_updates() -> TestResult {
         .map_or(0, Vec::len);
     assert!(entries > 0, "the replay carries the branch");
     let response = lean.last().ok_or("no resume response")?;
-    assert_eq!(response["result"]["replayedTo"], entries);
+    assert_eq!(response["result"]["_meta"]["yi"]["replayedTo"], entries);
 
     let full = client.request(
         "5",
@@ -1066,4 +1081,508 @@ fn a_tape_request_reaches_the_worker_and_marks_the_typed_turn() -> TestResult {
         "{response}"
     );
     client.finish()
+}
+
+/// Every frame the client read, judged by the pinned upstream schema: responses by the method
+/// they answer, updates and asks by their own def, `_yi/*` methods left to Yi.
+fn strict_breaks(client: &AcpClient) -> Result<Vec<String>, Box<dyn Error>> {
+    let schema = Schema::pinned()?;
+    let mut broken = Vec::new();
+    for frame in &client.log {
+        let verdict = match frame["method"].as_str() {
+            Some("session/update") => schema.check("UpdateSessionNotification", &frame["params"]),
+            Some("session/request_permission") => {
+                schema.check("RequestPermissionRequest", &frame["params"])
+            }
+            Some(_) => Ok(()),
+            None => {
+                let method = frame["id"]
+                    .as_str()
+                    .and_then(|id| client.asked.get(id))
+                    .map_or("", String::as_str);
+                if method.starts_with('_') {
+                    Ok(())
+                } else if let Some(error) = frame.get("error") {
+                    schema.check("Error", error)
+                } else {
+                    let def = schema
+                        .def_for(method, "Response")
+                        .ok_or_else(|| format!("no response def for {method:?}"))?;
+                    schema.check(def, &frame["result"])
+                }
+            }
+        };
+        if let Err(error) = verdict {
+            broken.push(format!("{error}\n    in {frame}"));
+        }
+    }
+    Ok(broken)
+}
+
+fn faux_script(dir: &std::path::Path, turns: &[Value]) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let lines = turns
+        .iter()
+        .map(|turn| {
+            let message = match turn["tool"].as_str() {
+                Some(tool) => faux_assistant_message(
+                    vec![faux_tool_call(
+                        turn["id"].as_str().unwrap_or("c1"),
+                        tool,
+                        turn["args"].as_object().cloned().unwrap_or_default(),
+                    )],
+                    StopReason::ToolUse,
+                ),
+                None => faux_assistant_message(
+                    vec![faux_text(turn["text"].as_str().unwrap_or("done"))],
+                    StopReason::Stop,
+                ),
+            };
+            serde_json::to_string(&message)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let path = dir.join("script.jsonl");
+    std::fs::write(&path, lines.join("\n"))?;
+    Ok(path.display().to_string())
+}
+
+/// Reads until `stop`, answering every permission ask with `allow_once` on the way.
+fn read_allowing(
+    client: &mut AcpClient,
+    stop: impl Fn(&Value) -> bool,
+) -> Result<Vec<Value>, Box<dyn Error>> {
+    let mut seen = Vec::new();
+    loop {
+        let frames = client
+            .read_until(|frame| stop(frame) || frame["method"] == "session/request_permission")?;
+        let last = frames.last().cloned().unwrap_or(Value::Null);
+        seen.extend(frames);
+        if stop(&last) {
+            return Ok(seen);
+        }
+        client.send(&json!({
+            "jsonrpc": "2.0", "id": last["id"],
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}},
+        }))?;
+    }
+}
+
+fn is_idle(frame: &Value) -> bool {
+    frame["params"]["update"]["sessionUpdate"] == "state_update"
+        && frame["params"]["update"]["state"] == "idle"
+}
+
+fn prompt(client: &mut AcpClient, id: &str, session_id: &str, blocks: Value) -> TestResult {
+    client.send(&json!({
+        "jsonrpc": "2.0", "id": id, "method": "session/prompt",
+        "params": {"sessionId": session_id, "prompt": blocks},
+    }))?;
+    Ok(())
+}
+
+fn strict_session(client: &mut AcpClient, dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    client.request(
+        "init",
+        "initialize",
+        json!({"protocolVersion": 2, "info": {"name": "strict-client", "version": "0"}}),
+    )?;
+    let new = client.request(
+        "new",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    new.last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "missing sessionId".into())
+}
+
+/// Without `capabilities.session` a strict client reads the agent as sessionless and never
+/// calls `session/new`; `session.delete` is what lets it offer the delete Yi serves.
+#[test]
+fn a_strict_client_finds_sessions_advertised_at_initialize() -> TestResult {
+    let dir = temp_dir("strict-init")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let init = client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let capabilities = &init.last().ok_or("no initialize response")?["result"]["capabilities"];
+    assert!(
+        capabilities["session"].is_object(),
+        "a strict client calls no session/* method: {capabilities}"
+    );
+    assert!(
+        capabilities["session"]["delete"].is_object(),
+        "a strict client hides delete: {capabilities}"
+    );
+    client.finish()
+}
+
+/// The whole surface a strict client touches, once, with an edit approved on the way and a
+/// turn the provider fails, judged frame by frame against the pinned schema.
+#[test]
+fn a_strict_client_accepts_every_frame_of_a_faux_session() -> TestResult {
+    let dir = temp_dir("strict-all")?;
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "write", "args": {"path": "note.txt", "content": "tidy\n"}}),
+            json!({"text": "wrote the note"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    client.request(
+        "mode",
+        "session/set_config_option",
+        json!({"sessionId": session_id, "configId": "mode", "type": "id", "value": "ask"}),
+    )?;
+    prompt(
+        &mut client,
+        "p1",
+        &session_id,
+        json!([{"type": "text", "text": "tidy the note"}]),
+    )?;
+    read_allowing(&mut client, is_idle)?;
+    prompt(
+        &mut client,
+        "p2",
+        &session_id,
+        json!([{"type": "text", "text": "and again"}]),
+    )?;
+    read_allowing(&mut client, is_idle)?;
+    client.request("list", "session/list", json!({}))?;
+    client.request("close", "session/close", json!({"sessionId": session_id}))?;
+    client.request(
+        "resume",
+        "session/resume",
+        json!({"sessionId": session_id, "cwd": dir.display().to_string(), "replayFrom": {"type": "start"}}),
+    )?;
+    client.request("delete", "session/delete", json!({"sessionId": session_id}))?;
+    let broken = strict_breaks(&client)?;
+    client.finish()?;
+    assert!(
+        broken.is_empty(),
+        "a strict alpha.5 client rejects {} frame(s):\n{}",
+        broken.len(),
+        broken.join("\n")
+    );
+    Ok(())
+}
+
+/// A busy session queues the second prompt; each response must name the `user_message` that
+/// its own text was inserted as, and arrive only once that message exists.
+#[test]
+fn the_prompt_response_names_the_user_message_it_inserted() -> TestResult {
+    let dir = temp_dir("strict-ids")?;
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "bash", "args": {"command": "sleep 1"}}),
+            json!({"text": "slept"}),
+            json!({"text": "second answer"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "first",
+        &session_id,
+        json!([{"type": "text", "text": "sleep a bit"}]),
+    )?;
+    prompt(
+        &mut client,
+        "second",
+        &session_id,
+        json!([{"type": "text", "text": "then this"}]),
+    )?;
+    let mut frames = read_allowing(&mut client, |frame| {
+        frame["id"] == "second" && frame.get("method").is_none()
+    })?;
+    frames.extend(read_allowing(&mut client, is_idle)?);
+    for (request, text) in [("first", "sleep a bit"), ("second", "then this")] {
+        let answer = frames
+            .iter()
+            .position(|frame| frame["id"] == request && frame.get("method").is_none())
+            .ok_or(format!("no response to {request}"))?;
+        let message_id = frames[answer]["result"]["messageId"]
+            .as_str()
+            .ok_or(format!("{request}: no messageId in {}", frames[answer]))?;
+        let inserted = frames[..answer].iter().find(|frame| {
+            frame["params"]["update"]["sessionUpdate"] == "user_message"
+                && frame["params"]["update"]["content"][0]["text"] == text
+        });
+        assert_eq!(
+            inserted.map(|frame| &frame["params"]["update"]["messageId"]),
+            Some(&json!(message_id)),
+            "{request}: the response must follow the user_message it names"
+        );
+    }
+    client.finish()
+}
+
+/// A prompt still queued when its session closes was never inserted, so it must not be
+/// answered with an id that no message will ever carry.
+#[test]
+fn a_prompt_dropped_before_insertion_is_answered_cancelled() -> TestResult {
+    let dir = temp_dir("strict-drop")?;
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "bash", "args": {"command": "sleep 2"}}),
+            json!({"text": "slept"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "first",
+        &session_id,
+        json!([{"type": "text", "text": "sleep a bit"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["id"] == "first" && frame.get("method").is_none()
+    })?;
+    prompt(
+        &mut client,
+        "queued",
+        &session_id,
+        json!([{"type": "text", "text": "never runs"}]),
+    )?;
+    client.send(&json!({"jsonrpc": "2.0", "id": "close", "method": "session/close", "params": {"sessionId": session_id}}))?;
+    let frames = read_allowing(&mut client, |frame| {
+        frame["id"] == "queued" && frame.get("method").is_none()
+    })?;
+    let answer = frames.last().ok_or("no answer to the queued prompt")?;
+    assert_eq!(
+        answer["error"]["code"], -32800,
+        "a dropped prompt is a cancelled request, never a messageId: {answer}"
+    );
+    client.finish()
+}
+
+#[test]
+fn an_edit_approval_shows_its_diff_to_a_strict_client() -> TestResult {
+    let dir = temp_dir("strict-diff")?;
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "write", "args": {"path": "note.txt", "content": "tidy\n"}}),
+            json!({"text": "wrote the note"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    client.request(
+        "mode",
+        "session/set_config_option",
+        json!({"sessionId": session_id, "configId": "mode", "type": "id", "value": "ask"}),
+    )?;
+    prompt(
+        &mut client,
+        "p",
+        &session_id,
+        json!([{"type": "text", "text": "tidy the note"}]),
+    )?;
+    let frames = client.read_until(|frame| frame["method"] == "session/request_permission")?;
+    let ask = &frames.last().ok_or("no ask")?["params"];
+    let subject = &ask["subject"];
+    assert_eq!(
+        subject["type"], "tool_call",
+        "the diff has no subject: {ask}"
+    );
+    let diff = &subject["toolCall"]["content"][0];
+    assert_eq!(diff["type"], "diff", "{ask}");
+    assert_eq!(diff["patch"]["format"], "git_patch", "{ask}");
+    assert!(
+        diff["patch"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("+tidy")),
+        "{ask}"
+    );
+    let change = &diff["changes"][0];
+    assert_eq!(change["operation"], "add", "note.txt did not exist: {ask}");
+    assert!(
+        change["path"]
+            .as_str()
+            .is_some_and(|path| path.starts_with('/') && path.ends_with("note.txt")),
+        "a change path is absolute: {ask}"
+    );
+    assert!(ask.get("content").is_none(), "no custom root field: {ask}");
+    let decoded: yi_types::acp::AcpPermissionParams = serde_json::from_value(ask.clone())?;
+    assert!(
+        matches!(
+            decoded.subject,
+            Some(yi_types::acp::AcpPermissionSubject::ToolCall { .. })
+        ),
+        "the console's own decoder must read the worker's ask: {decoded:?}"
+    );
+    client.send(&json!({
+        "jsonrpc": "2.0", "id": frames.last().ok_or("no ask")?["id"],
+        "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}},
+    }))?;
+    read_allowing(&mut client, is_idle)?;
+    client.finish()
+}
+
+#[test]
+fn a_resource_link_in_a_prompt_reaches_the_model() -> TestResult {
+    let dir = temp_dir("strict-link")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = strict_session(&mut client, &dir)?;
+    let link = "file:///repo/src/notes.md";
+    prompt(
+        &mut client,
+        "p",
+        &session_id,
+        json!([
+            {"type": "text", "text": "read"},
+            {"type": "resource_link", "uri": link, "name": "notes.md"},
+        ]),
+    )?;
+    let frames = read_allowing(&mut client, is_idle)?;
+    let inserted = updates_of(&frames, "user_message");
+    let text = inserted
+        .first()
+        .and_then(|frame| frame["params"]["update"]["content"][0]["text"].as_str())
+        .ok_or("no user_message")?;
+    assert_eq!(
+        text,
+        format!("read {link}"),
+        "the linked file must reach the prompt as its own word"
+    );
+    client.finish()
+}
+
+fn tool_end(name: &str, details: Value, is_error: bool) -> yi_types::event::AgentEvent {
+    yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: "t1".to_owned(),
+        tool_name: name.to_owned(),
+        result: yi_types::event::ToolResult {
+            content: vec![yi_types::message::Content::Text {
+                text: "Operation aborted".to_owned(),
+                text_signature: None,
+            }],
+            details,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error,
+    }
+}
+
+/// Every update one event maps to, as the wire carries it, judged against the pinned schema.
+fn mapped(event: &yi_types::event::AgentEvent) -> Result<Vec<Value>, Box<dyn Error>> {
+    let schema = Schema::pinned()?;
+    let mut ids = yi_acp::update::IdMap::new(1000);
+    let mut out = Vec::new();
+    for update in yi_acp::update::to_updates(event, &mut ids) {
+        let frame = yi_acp::update::update_notification("s1", update);
+        schema.check("UpdateSessionNotification", &frame["params"])?;
+        out.push(frame["params"]["update"].clone());
+    }
+    Ok(out)
+}
+
+#[test]
+fn a_cancelled_tool_reports_cancelled_not_failed() -> TestResult {
+    let before_it_ran = mapped(&tool_end("write", json!({"errorKind": "aborted"}), true))?;
+    let mid_command = mapped(&tool_end(
+        "bash",
+        json!({"exitCode": 0, "cancelled": true}),
+        true,
+    ))?;
+    for updates in [before_it_ran, mid_command] {
+        let status = updates
+            .iter()
+            .find(|update| update["sessionUpdate"] == "tool_call_update")
+            .map(|update| update["status"].clone());
+        assert_eq!(
+            status,
+            Some(json!("cancelled")),
+            "a stop drew as a failure: {updates:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_negative_exit_code_never_reaches_the_wire() -> TestResult {
+    let updates = mapped(&tool_end("bash", json!({"exitCode": -1}), true))?;
+    let terminal = updates
+        .iter()
+        .find(|update| update["sessionUpdate"] == "terminal_update")
+        .ok_or("no terminal_update")?;
+    assert!(
+        terminal["exitStatus"].get("exitCode").is_none(),
+        "exitCode is uint32 on the wire: {terminal}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_turn_ends_on_an_extension_stop_reason() -> TestResult {
+    use yi_types::event::{AgentEvent, AssistantMessageEvent};
+    use yi_types::message::StopReason;
+    let mut ids = yi_acp::update::IdMap::new(1000);
+    let error = yi_runtime::faux::faux_assistant_message(Vec::new(), StopReason::Error);
+    yi_acp::update::to_updates(
+        &AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Error {
+                reason: StopReason::Error,
+                error,
+            },
+        },
+        &mut ids,
+    );
+    let end = yi_acp::update::to_updates(
+        &AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        },
+        &mut ids,
+    );
+    let schema = Schema::pinned()?;
+    for update in end {
+        let frame = yi_acp::update::update_notification("s1", update);
+        schema.check("UpdateSessionNotification", &frame["params"])?;
+    }
+    Ok(())
+}
+
+/// The console decodes a peer's updates with these types; a value outside Yi's own vocabulary
+/// must still decode as the standard kind, or the card silently stops updating.
+#[test]
+fn a_tool_status_yi_does_not_know_still_updates_the_card() -> TestResult {
+    let frame = json!({
+        "sessionUpdate": "tool_call_update", "toolCallId": "t1",
+        "name": "grep", "kind": "think", "status": "_paused",
+    });
+    let decoded: yi_types::acp::AcpSessionUpdate = serde_json::from_value(frame.clone())?;
+    assert!(
+        !matches!(decoded, yi_types::acp::AcpSessionUpdate::Extension(_)),
+        "a standard update fell through to the extension carrier: {decoded:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(&decoded)?,
+        frame,
+        "the unknown values re-emit verbatim"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_ask_offering_reject_always_reaches_the_console() -> TestResult {
+    let params = json!({
+        "sessionId": "s1",
+        "title": "run rm -rf target",
+        "options": [
+            {"optionId": "a", "name": "Allow once", "kind": "allow_once"},
+            {"optionId": "n", "name": "Never", "kind": "reject_always"},
+        ],
+    });
+    let decoded: yi_types::acp::AcpPermissionParams = serde_json::from_value(params)?;
+    assert_eq!(decoded.options.len(), 2, "{decoded:?}");
+    Ok(())
 }

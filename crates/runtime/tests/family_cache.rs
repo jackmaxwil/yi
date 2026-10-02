@@ -579,3 +579,18 @@ async fn fan_outs_over_two_partitions_do_not_wait_on_each_other() -> TestResult 
     assert!(apart < LEAD_DELAY, "one lead waited {apart:?} on the other");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_openrouter_variant_goes_out_whole_on_the_base_models_route() -> TestResult {
+    let scratch = Scratch::new("yi-variant")?;
+    let (port, from) = stand_in(sse_reply(&json!({"content": "OK"}), "stop"))?;
+    let mut model = yi_runtime::resolve_model("openrouter", "z-ai/glm-5.3-flash:exacto")
+        .ok_or("the variant is refused")?;
+    model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
+    let (session, _host) = root(&scratch, model, port, false)?;
+    session.prompt("variant probe")?;
+    let mut bodies = Vec::new();
+    let body = body_asking(&mut bodies, &from, "variant probe").await?;
+    assert_eq!(body["model"], "z-ai/glm-5.3-flash:exacto", "{body}");
+    Ok(())
+}

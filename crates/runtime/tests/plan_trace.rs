@@ -390,7 +390,7 @@ impl Asking {
 }
 
 fn host(text: &str) -> AgentMessage {
-    AgentMessage::host_user(yi_types::message::UserContent::Text(text.to_owned()), 0)
+    AgentMessage::host_text(yi_types::message::HostSource::Notice, text, 0)
 }
 
 /// Dies with a reply that mentions an option in passing, names two, or only shares a label's

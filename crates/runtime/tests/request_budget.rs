@@ -209,7 +209,7 @@ fn system_prompt() -> String {
 }
 
 fn user(text: &str) -> AgentMessage {
-    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
+    AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
 }
 
 fn assistant_call(id: &str, name: &str, arguments: Map<String, Value>) -> AgentMessage {

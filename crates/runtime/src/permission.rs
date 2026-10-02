@@ -465,7 +465,7 @@ impl PermissionBroker {
         self.confirm_judged(ask, None).0
     }
 
-    /// Asks with the classifier first in auto mode, whose allow answers; true when it answered.
+    /// [`PermissionBroker::confirm`] with auto mode's classifier first; the bool says it answered.
     pub fn confirm_judged(
         &self,
         ask: &PermissionAsk<'_>,
@@ -502,7 +502,7 @@ impl PermissionBroker {
         (outcome, false)
     }
 
-    /// Whether [`PermissionBroker::confirm_judged`] has an answerer: a person or auto's classifier.
+    /// Whether [`PermissionBroker::confirm_judged`] gets an answer: a person, or auto's classifier.
     pub fn can_confirm(&self) -> bool {
         self.can_ask() || (self.mode() == PermissionMode::Auto && self.approver.get().is_some())
     }
@@ -637,7 +637,7 @@ impl PermissionBroker {
         let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
         let refusal = self.retried_refusal(command);
-        if let Some(refused) = self.walled_retry(refusal.as_ref()) {
+        if let Some(refused) = self.walled_retry(command, refusal.as_ref()) {
             return self.denied(refused);
         }
         let mut split = None;
