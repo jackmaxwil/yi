@@ -465,8 +465,7 @@ impl PermissionBroker {
         self.confirm_judged(ask, None).0
     }
 
-    /// The same question with the classifier first in auto mode: its allow answers it, anything
-    /// else goes to the user. The bool says the classifier answered.
+    /// [`PermissionBroker::confirm`] with auto mode's classifier first; the bool says it answered.
     pub fn confirm_judged(
         &self,
         ask: &PermissionAsk<'_>,
@@ -503,8 +502,7 @@ impl PermissionBroker {
         (outcome, false)
     }
 
-    /// Whether [`PermissionBroker::confirm_judged`] can get an answer: a person, or the
-    /// classifier in auto mode.
+    /// Whether [`PermissionBroker::confirm_judged`] gets an answer: a person, or auto's classifier.
     pub fn can_confirm(&self) -> bool {
         self.can_ask() || (self.mode() == PermissionMode::Auto && self.approver.get().is_some())
     }
