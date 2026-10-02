@@ -48,7 +48,7 @@ fn bodies(choice: Option<ToolChoice>, tools: Vec<ToolDef>) -> [Value; 3] {
     let context = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "s".to_owned(),
-        messages: vec![AgentMessage::host_user(
+        messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),
             0,
         )],
@@ -151,7 +151,7 @@ fn a_forced_tool_switches_extended_thinking_off_for_that_turn() -> TestResult {
     let context = |choice| LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "s".to_owned(),
-        messages: vec![AgentMessage::host_user(
+        messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),
             0,
         )],

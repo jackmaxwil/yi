@@ -38,8 +38,16 @@ fn faux_model() -> Model {
     }
 }
 
+/// The cut's re-drive as the model reads it: runtime context under its own name.
+fn fenced_redrive() -> String {
+    format!(
+        "<yi_internal_context source=\"length_redrive\">\n{}\n</yi_internal_context>",
+        yi_loop::LENGTH_REDRIVE_TEXT
+    )
+}
+
 fn user(text: &str) -> AgentMessage {
-    AgentMessage::host_user(yi_types::message::UserContent::Text(text.to_owned()), 0)
+    AgentMessage::user_input(yi_types::message::UserContent::Text(text.to_owned()), 0)
 }
 
 struct Scripted {
@@ -1008,7 +1016,7 @@ async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped(
     }
     assert_eq!(
         last_message(&bodies[1]),
-        json!({"role": "user", "content": yi_loop::LENGTH_REDRIVE_TEXT}),
+        json!({"role": "user", "content": fenced_redrive()}),
         "a first cut is re-driven as before"
     );
     for (cut, body) in bodies.iter().enumerate().skip(2) {
@@ -1020,7 +1028,10 @@ async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped(
             text.contains(&format!("where turn {cut} stopped")),
             "the request after cut {cut} ends: {text}"
         );
-        assert!(text.starts_with(yi_loop::CUT_REDRIVE_TEXT), "{text}");
+        let body = text
+            .strip_prefix("<yi_internal_context source=\"length_redrive\">\n")
+            .unwrap_or_default();
+        assert!(body.starts_with(yi_loop::CUT_REDRIVE_TEXT), "{text}");
         assert!(text.chars().count() < 10_000, "a quote, not the cut");
     }
 }
@@ -1054,7 +1065,7 @@ async fn a_follow_up_after_three_cuts_sends_what_the_first_prompt_sent() {
     );
     assert_eq!(
         last_message(&bodies[5]),
-        json!({"role": "user", "content": yi_loop::LENGTH_REDRIVE_TEXT}),
+        json!({"role": "user", "content": fenced_redrive()}),
         "the follow-up's first cut quotes nothing"
     );
 }
