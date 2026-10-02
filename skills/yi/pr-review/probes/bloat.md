@@ -8,6 +8,6 @@ refute: {"high": 3, "medium": 1}
 ---
 Judge the footprint against the why. Every new file, module, type, option, layer and indirection
 must earn its place: ask what breaks if it is deleted or inlined, and report it when nothing
-does. Look for sprawl: one concern spread over several files, a new module or directory for a few
-lines, the same edit repeated in many places instead of once in the shared spot. Put the smaller
+does. Look for sprawl: one concern spread over several files, or a new module or directory for a
+few lines. Copies and twins belong to the reuse probe. Put the smaller
 shape in `fix`: what to delete, inline or move. Naming, formatting and taste are not findings.
