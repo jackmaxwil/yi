@@ -433,62 +433,14 @@ fn a_stated_worktree_accept_is_refused_with_the_command_road() -> TestResult {
     Ok(())
 }
 
-/// The orchestrate protocol as the model reads it: attached by a prompt that asks for a plan.
-fn orchestrate_protocol(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
-    let mut host = yi_runtime::ext::install(yi_runtime::ext::ExtOptions {
-        cwd: dir.to_path_buf(),
-        home: dir.to_path_buf(),
-        mode: yi_runtime::PermissionMode::Auto,
-        user_system: String::new(),
-        schema_instruction: None,
-        context_window: 128_000,
-        global_skills: Vec::new(),
-    });
-    host.start(None, false);
-    host.dispatch(&host.prompt_event("plan this: split the crate"), None);
-    let prompt = host.system_prompt();
-    let at = prompt
-        .find("# Orchestrate")
-        .ok_or("the protocol did not attach")?;
-    Ok(prompt.get(at..).ok_or("no protocol text")?.to_owned())
-}
-
-/// Dies on `check`: the protocol taught title, acceptance, check and deps, the tool refused
-/// each, and a model spent five init calls learning the tool's own names from its errors.
+/// Dies with doctrine teaching a todo-level check: its plan step names the contract item the tool
+/// takes; the protocol's and the skill's field lists are schema blocks (`prompt_drift`).
 #[test]
-fn every_todo_field_the_protocol_teaches_is_one_init_accepts() -> TestResult {
-    let rig = rig("protocol-keys")?;
-    let protocol = orchestrate_protocol(&rig.temp)?;
-    let section = protocol
-        .split("## Write the plan")
-        .nth(1)
-        .and_then(|rest| rest.split("\n## ").next())
-        .ok_or("no Write the plan section")?;
-    let keys: Vec<&str> = section
-        .lines()
-        .filter_map(|line| line.strip_prefix("- "))
-        .filter_map(|line| line.split(':').next())
-        .map(|key| key.trim_matches('`'))
-        .collect();
-    assert!(keys.len() >= 3, "the section names its fields: {section}");
+fn doctrine_names_where_a_check_goes() -> TestResult {
     assert!(
         yi_runtime::doctrine_fragment().contains("its check a `decider: {cmd}` item"),
         "doctrine's plan step names where a check goes"
     );
-    for key in keys {
-        let mut todo = serde_json::Map::new();
-        todo.insert("label".to_owned(), json!("probe"));
-        if key != "label" {
-            todo.insert(key.to_owned(), Value::Null);
-        }
-        let input = json!({"op": "init", "goal": "g", "todos": [todo]});
-        let verdict = rig.tool.validate(input.as_object().ok_or("args")?);
-        let refused = verdict.err().unwrap_or_default();
-        assert!(
-            !refused.contains("does not take"),
-            "the protocol teaches `{key}`, which init refuses: {refused}"
-        );
-    }
     Ok(())
 }
 
