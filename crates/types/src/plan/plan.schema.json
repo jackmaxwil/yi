@@ -168,7 +168,7 @@
             "type": "string"
           },
           "resolution": {
-            "description": "present when state is done: verified_done, accepted_by_user or legacy_unverified; absent on an uncontracted todo",
+            "description": "present when state is done: verified_done, accepted_by_user, accepted_by_classifier or legacy_unverified; absent on an uncontracted todo",
             "type": "string"
           },
           "intent": {

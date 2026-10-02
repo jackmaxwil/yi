@@ -59,8 +59,12 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
 }
 
 /// The tool's answer and whether it was an error.
+/// The loop's order: validate refuses before execute runs, so a shape only execute reads is refused.
 fn call(rig: &Rig, args: Value) -> (bool, String) {
     let input = args.as_object().cloned().unwrap_or_default();
+    if let Err(refusal) = rig.tool.validate(&input) {
+        return (true, refusal);
+    }
     let output = rig
         .tool
         .execute(input, &ToolContext::new(std::env::temp_dir()));
@@ -126,7 +130,7 @@ fn a_plain_checker_command_is_frozen_and_the_engine_starts_the_todo() -> TestRes
     else {
         return Err("not a cmd item".into());
     };
-    assert_eq!(*timeout_ms, 60_000);
+    assert_eq!(*timeout_ms, yi_runtime::goal::DEFAULT_CHECK_TIMEOUT_MS);
     let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
     assert_eq!(manifest.command, "grep -qx alpha alpha.txt");
     Ok(())
@@ -430,5 +434,157 @@ fn a_stated_worktree_accept_is_refused_with_the_command_road() -> TestResult {
         text.contains(r#"{"command": "#) && text.contains("alpha"),
         "{text}"
     );
+    Ok(())
+}
+
+/// Dies with doctrine teaching a todo-level check: its plan step names the contract item the tool
+/// takes; the protocol's and the skill's field lists are schema blocks (`prompt_drift`).
+#[test]
+fn doctrine_names_where_a_check_goes() -> TestResult {
+    assert!(
+        yi_runtime::doctrine_fragment().contains("its check a `decider: {cmd}` item"),
+        "doctrine's plan step names where a check goes"
+    );
+    Ok(())
+}
+
+/// Dies with no pointer to `decider`: the refusal listed the legal keys and left the model to
+/// guess where a check goes.
+#[test]
+fn a_todo_level_check_is_refused_with_where_it_belongs() -> TestResult {
+    let rig = rig("check-hint")?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "init", "goal": "g", "todos": [{"label": "t", "check": "cargo test"}]}),
+    );
+    assert!(refused, "{text}");
+    assert!(text.contains("decider: {cmd"), "{text}");
+    for (todo, hint) in [
+        (json!({"label": "t", "title": "t"}), "a todo is {label"),
+        (json!({"label": "t", "deps": ["a"]}), "a todo is {label"),
+        (
+            json!({"label": "t", "accept": {"command": "true"}}),
+            "accept: {command",
+        ),
+        (json!({"label": "t", "acceptance": "true"}), "decider: {cmd"),
+        (
+            json!({"label": "b", "after": "a"}),
+            "a todo's after is a list of labels",
+        ),
+        (
+            json!({"label": "t", "intent": ["verify the code"]}),
+            "user://<n> addresses, not prose",
+        ),
+    ] {
+        let (refused, text) = call(&rig, json!({"op": "init", "goal": "g", "todos": [todo]}));
+        assert!(refused && text.contains(hint), "{text}");
+    }
+    Ok(())
+}
+
+/// Dies on a label past the cap reaching the engine: the schema now carries the cap the
+/// parser enforces, so a provider that honours it never sends the 103-character label.
+#[test]
+fn the_todo_schema_carries_the_parsers_label_cap_and_list_shapes() -> TestResult {
+    let rig = rig("schema")?;
+    let schema = rig.tool.schema();
+    let todo = &schema["properties"]["todos"]["items"]["properties"];
+    assert_eq!(
+        todo["label"]["maxLength"],
+        json!(yi_types::plan::doc::TODO_LABEL_MAX)
+    );
+    assert_eq!(todo["after"]["items"]["type"], json!("string"));
+    assert_eq!(todo["intent"]["items"]["type"], json!("string"));
+    let item = &todo["contract"]["properties"]["items"]["items"];
+    assert_eq!(
+        item["required"],
+        json!(["id", "critical", "weight", "decider"])
+    );
+    Ok(())
+}
+
+/// Dies on the schema's own example: `{cmd: {checker, timeout_ms}}` is how the decider text says
+/// to set a check's deadline, and the deadline it names must be the one frozen.
+#[test]
+fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
+    let rig = rig("cmd-object")?;
+    let plan = opened(
+        &rig,
+        json!([{
+            "label": "slow",
+            "contract": {"class": "inline", "items": [
+                {"id": "gate", "critical": true, "weight": 1,
+                 "decider": {"cmd": {"checker": "true", "timeout_ms": 300_000}}}
+            ]},
+        }]),
+    )?;
+    let contract = todo_of(&plan, "slow")?
+        .contract
+        .as_ref()
+        .ok_or("no contract")?;
+    let [item] = contract.items.as_slice() else {
+        return Err("one item".into());
+    };
+    let Decider::Cmd {
+        checker,
+        timeout_ms,
+    } = &item.decider
+    else {
+        return Err("a cmd decider".into());
+    };
+    let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
+    assert_eq!((*timeout_ms, manifest.timeout_ms), (300_000, 300_000));
+    let decider = rig.tool.schema()["properties"]["todos"]["items"]["properties"]["contract"]
+        ["properties"]["items"]["items"]["properties"]["decider"]["description"]
+        .to_string();
+    assert!(
+        decider.contains("{cmd: {checker: command, timeout_ms}}"),
+        "{decider}"
+    );
+    Ok(())
+}
+
+/// Dies with one of the calls glm-5.3-flash sent in the dogfood refused again: each natural shape
+/// lands, and each refusal that stays names where the field goes (`dogfood/plan-shapes.json`, #982).
+#[test]
+fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/dogfood/plan-shapes.json");
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let mut wrong = Vec::new();
+    for case in fixture["cases"].as_array().ok_or("cases")? {
+        let name = case["name"].as_str().unwrap_or("?");
+        let rig = rig(&name.replace(' ', "-"))?;
+        for step in case["setup"].as_array().ok_or("setup")? {
+            let (refused, text) = call(&rig, step.clone());
+            assert!(!refused, "{name} setup: {text}");
+        }
+        let (refused, text) = call(&rig, case["call"].clone());
+        let lands = case["lands"].as_bool().unwrap_or(false);
+        let says = case["says"].as_str().unwrap_or("");
+        if refused == lands || !text.contains(says) {
+            wrong.push(format!("{name}: refused={refused} {text}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    Ok(())
+}
+
+/// Dies on a set whose todo rows carry a contract: each row became a checklist line, so the
+/// contract was dropped without a word and the todo would land unverified.
+#[test]
+fn a_set_row_with_a_contract_is_refused_and_bare_rows_land() -> TestResult {
+    let rig = rig("set-rows")?;
+    let contract = json!({"class": "inline", "items": [
+        {"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [{"label": "a"}, {"label": "b", "contract": contract}]}),
+    );
+    assert!(refused && text.contains("a todo is {label"), "{text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": []}));
+    assert!(refused, "an empty set is no checklist: {text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": [{"label": "a"}, "b"]}));
+    assert!(!refused, "{text}");
     Ok(())
 }

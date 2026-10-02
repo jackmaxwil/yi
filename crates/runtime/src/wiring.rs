@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
+use yi_types::message::HostSource;
 use yi_types::model::Model;
 
 use crate::args::Args;
@@ -355,8 +356,22 @@ fn wire_schedule(
             )
             .with_gate({
                 let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
+                let (wall, cwd, own) = (
+                    wiring.wall.clone(),
+                    wiring.cwd.clone(),
+                    wiring.own_paths(session),
+                );
+                let spills = crate::tools::default_spill_root();
+                let roots =
+                    crate::tools::spill_roots_and_stores(spills.as_deref(), broker.as_deref());
+                let roots: Vec<PathBuf> = roots.into_iter().filter(|_| !wall.is_empty()).collect();
+                // An `exec://` source runs on the host, where the wall is its text alone (#1001).
+                // The spares are read per call: a child's store attaches after its wiring.
                 Arc::new(move |command: &str| {
-                    crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
+                    let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
+                    crate::tools::host_wall(command, &wall, (&roots, &spared), &cwd).or_else(|| {
+                        crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
+                    })
                 })
             })
             .interned();
@@ -573,7 +588,7 @@ fn wire_plan_request(
     let store = match crate::plan::store::PlanStore::open(plans_dir.to_path_buf()) {
         Ok(store) => store,
         Err(error) => {
-            (session.notice_hook())(&format!("plan store unavailable: {error}"));
+            (session.notice_hook(HostSource::Notice))(&format!("plan store unavailable: {error}"));
             return None;
         }
     };
@@ -672,13 +687,14 @@ fn wire_plan_engine(
     if let Some(service) = session.plan_service() {
         service.set_engine(Arc::clone(&engine), actor.clone());
     }
-    tools.push(Arc::new(crate::plan::tool::PlanTool::new(
-        Arc::clone(&engine),
-        actor,
-    )));
-    tools.push(Arc::new(crate::todo::tool::TodoTool::new(Arc::clone(
-        &todos,
-    ))));
+    let store = session.store_handle();
+    let mut tool = crate::plan::tool::PlanTool::new(Arc::clone(&engine), actor.clone());
+    if let (crate::plan::ops::Actor::Owner, Some(broker)) = (&actor, wiring.broker.clone()) {
+        tool = tool.confirming(crate::plan::authority::Confirming { broker, store });
+    }
+    tools.push(Arc::new(tool));
+    let todo = crate::todo::tool::TodoTool::new(Arc::clone(&todos));
+    tools.push(Arc::new(todo));
     session.set_todos(Arc::clone(&todos));
     if let Some(clock) = session.heartbeat_service() {
         let clock = Arc::downgrade(&clock);
@@ -850,7 +866,7 @@ fn wire_kernel(
     wiring: &RuntimeWiring,
     registry: crate::kernel::HostRegistry,
 ) -> Arc<crate::kernel::KernelService> {
-    let restore_notice = session.notice_hook();
+    let restore_notice = session.notice_hook(HostSource::Restore);
     let waits = session.wait_hook();
     let options = wiring.kernel_options(
         Arc::new(registry),
@@ -980,7 +996,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     }
     let rule_set = crate::rules::discover_armed(&wiring.cwd, &wiring.home);
     if !rule_set.warnings.is_empty() {
-        let notice = session.notice_hook();
+        let notice = session.notice_hook(HostSource::Notice);
         for warning in &rule_set.warnings {
             notice(warning);
         }
@@ -1007,7 +1023,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
 /// would present it.
 pub fn lifecycle_notice(session: &AgentSession) -> Arc<crate::subagent::NoticeFn> {
     let wake = session.wake_idle_hook();
-    Arc::new(move |text: &str, news| wake(crate::session::user_message(text), news))
+    let host = |text: &str| crate::session::host_text(HostSource::Lifecycle, text);
+    Arc::new(move |text: &str, news| wake(host(text), news))
 }
 
 fn subagent_host(
@@ -1073,7 +1090,7 @@ fn wire_compacted(
 ) {
     {
         let service = Arc::clone(service);
-        let notice = session.notice_hook();
+        let notice = session.notice_hook(HostSource::Notice);
         let store = session.store_handle();
         let advisor = session.advisor();
         let deliver = session.advisory_hook();
@@ -1153,5 +1170,30 @@ mod tests {
         assert_eq!(wide["hits"].as_array().map(Vec::len), Some(10));
         assert!(wide.get("notice").is_none());
         Ok(())
+    }
+
+    /// #1001: with no Seatbelt (Linux) a walled kernel and its `bash()` jobs would run with no
+    /// profile, so a cell would meet no wall at all; it is refused before it boots.
+    #[tokio::test]
+    async fn a_walled_kernel_with_no_profile_never_boots() {
+        let dir = std::env::temp_dir();
+        let options = crate::kernel::KernelServiceOptions {
+            cwd: dir.clone(),
+            home: dir.join("yi-no-home"),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(crate::kernel::HostRegistry::default()),
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        };
+        let walled: OwnPathsFn = Arc::new(|_| Vec::new());
+        let service = crate::kernel::KernelService::new(options).with_own_paths(Some(walled));
+        service.prewarm().await;
+        let state = service.state();
+        assert!(state.starts_with("unavailable: ipython"), "{state}");
     }
 }

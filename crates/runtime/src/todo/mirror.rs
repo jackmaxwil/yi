@@ -111,7 +111,7 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
             };
             engine
                 .apply(request)
-                .map(|outcome| Some(crate::plan::tool::render_outcome(&op, &outcome)))
+                .map(|outcome| Some(crate::plan::render::render_outcome(&op, &outcome)))
                 .map_err(|error| error.to_string())
         };
         let start = Op::Start {

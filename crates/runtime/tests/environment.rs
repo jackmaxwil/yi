@@ -41,10 +41,6 @@ fn faux_model() -> Model {
     }
 }
 
-fn user(text: &str) -> AgentMessage {
-    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
-}
-
 fn text_of(message: &AgentMessage) -> String {
     match message {
         AgentMessage::User {
@@ -58,8 +54,15 @@ fn text_of(message: &AgentMessage) -> String {
 #[test]
 fn the_environment_block_is_one_tagged_user_message() -> TestResult {
     let out = message(render(&["cwd: /x".to_owned()]));
-    assert!(text_of(&out).starts_with(ENVIRONMENT_TAG), "{out:?}");
-    assert_eq!(out, user(&text_of(&out)));
+    let text = text_of(&out);
+    let body = text
+        .strip_prefix("<yi_internal_context source=\"environment\">\n")
+        .ok_or("the block is fenced as runtime context")?;
+    assert!(body.starts_with(ENVIRONMENT_TAG), "{out:?}");
+    assert!(
+        !out.attribution().reads_as_typed(0),
+        "never the user's words"
+    );
     Ok(())
 }
 

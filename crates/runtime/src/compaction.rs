@@ -10,7 +10,7 @@ use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, StopReason, UserContent};
+use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, LlmContext, Model, Reuse, ToolDef};
 
 use crate::provider::ProviderStream;
@@ -352,7 +352,7 @@ fn directive_message(
         instructions,
         prepared.previous_summary.as_deref(),
     ));
-    AgentMessage::host_user(UserContent::Text(text), 0)
+    AgentMessage::task(&text, 0)
 }
 
 impl Compactor {
@@ -607,7 +607,7 @@ impl Compactor {
                 // (#948): it reads the history as text.
                 if !warm {
                     let text = serialize_conversation(&converted);
-                    converted = vec![AgentMessage::host_user(UserContent::Text(text), 0)];
+                    converted = vec![AgentMessage::task(&text, 0)];
                 }
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));

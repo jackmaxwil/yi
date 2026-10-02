@@ -200,14 +200,14 @@ pub fn goal_view(value: &Value) -> Option<GoalView> {
 pub fn config_of(options: &[AcpConfigOption]) -> Config {
     let mut config = Config::default();
     for option in options {
-        let value = option.kind.get("value").and_then(Value::as_str);
-        match (option.config_id.as_str(), value) {
-            ("model", Some(value)) => {
+        let value = option.current_value.as_str();
+        match option.config_id.as_str() {
+            "model" => {
                 config.model = value
                     .split_once('/')
                     .map(|(provider, id)| (provider.to_owned(), id.to_owned()));
             }
-            ("thought_level", Some(value)) => config.effort = value.parse().ok(),
+            "thought_level" => config.effort = value.parse().ok(),
             _ => {}
         }
     }

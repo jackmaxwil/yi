@@ -7,7 +7,6 @@ use yi_types::plan::doc::{Isolation, PlanId, PlanState, Todo, TodoLabel, TodoSta
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
 
-const CHECK_TIMEOUT_MS: u64 = 60_000;
 pub(super) const NOTE_REF: &str = "note_ref";
 
 pub struct Blob {
@@ -27,14 +26,25 @@ fn stored(bytes: Vec<u8>, media_type: &'static str, blobs: &mut Vec<Blob>) -> Op
 }
 
 fn cmd_item(item: &mut Value, blobs: &mut Vec<Blob>) -> Option<()> {
-    let cmd = item.get_mut("decider")?.get_mut("cmd")?;
+    let decider = item.get_mut("decider")?.as_object_mut()?;
+    // Incident: a model wrote the deadline beside `cmd` and was refused with serde's
+    // "expected map with a single key"; it is the command's deadline, so it moves inside.
+    if let Some(Value::String(command)) = decider.get("cmd").cloned()
+        && let Some(timeout) = decider.remove("timeout_ms")
+    {
+        decider.insert(
+            "cmd".to_owned(),
+            json!({ "checker": command, "timeout_ms": timeout }),
+        );
+    }
+    let cmd = decider.get_mut("cmd")?;
     if let Value::String(command) = cmd {
         *cmd = json!({ "checker": command.clone() });
     }
     let cmd = cmd.as_object_mut()?;
     let timeout = cmd
         .entry("timeout_ms")
-        .or_insert(json!(CHECK_TIMEOUT_MS))
+        .or_insert(json!(crate::goal::DEFAULT_CHECK_TIMEOUT_MS))
         .as_u64()?;
     let command = cmd.get("checker")?.as_str()?.to_owned();
     let manifest = json!({
@@ -102,11 +112,6 @@ fn delegation_of(delegation: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> 
 }
 
 fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), String> {
-    if !todo.contains_key("delegation")
-        && let Some(delegation) = todo.remove("delegate")
-    {
-        todo.insert("delegation".to_owned(), delegation);
-    }
     let loose = todo
         .get("delegation")
         .is_some_and(|delegation| delegation.get("accept").is_none());

@@ -186,7 +186,7 @@ pub enum LaneError {
     Branch { text: String, reason: &'static str },
     #[error("lockfile {hash} was never synced by a session, so the warmer refuses it")]
     LockfileUnseen { hash: String },
-    #[error("git {} exited {exit_code:?}: {output}", args.join(" "))]
+    #[error("git {} {}: {output}", args.join(" "), exit_code.map_or_else(|| "failed".to_owned(), |code| format!("exited {code}")))]
     Git {
         args: Vec<String>,
         exit_code: Option<i32>,
@@ -214,6 +214,8 @@ pub enum LaneError {
         pid: u32,
         waited_ms: u64,
     },
+    #[error("lane {slot} belonged to a repository deleted since; {} keeps its uncommitted files: copy them out and delete it, and the next claim makes a fresh lane there", path.display())]
+    RepoGone { slot: SlotIndex, path: PathBuf },
     #[error("no forge: the repository has no `origin` remote")]
     NoForge,
     #[error("the lane is not quiescent: {} still running: {}", running.len(), running.join("; "))]
@@ -712,6 +714,19 @@ impl Pool {
         let _pool = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;
+        // A resumed session's tree holds its only copy of the work, so its gone slot is kept.
+        for slot in (0..self.slots).map(SlotIndex) {
+            let own = || {
+                self.read_state(slot)
+                    .is_ok_and(|state| state.session.as_deref() == Some(session))
+            };
+            if self.slot_path(slot).is_dir() && self.repo_gone(slot) && own() {
+                return Err(LaneError::RepoGone {
+                    slot,
+                    path: self.slot_path(slot),
+                });
+            }
+        }
         for n in 0..self.slots {
             let slot = SlotIndex(n);
             if !self.slot_path(slot).is_dir() {
@@ -722,6 +737,14 @@ impl Pool {
             if holder.is_some() {
                 held = held.saturating_add(1);
                 continue;
+            }
+            if self.repo_gone(slot) {
+                self.stop_warmer(slot)?;
+                let path = self.slot_path(slot);
+                std::fs::remove_dir_all(&path).map_err(io_error(&path))?;
+                self.write_state(slot, &SlotState::default())?;
+                free = Some((slot, Some(guard), true));
+                break;
             }
             match self.read_state(slot)?.session {
                 Some(left) if left == session => {
@@ -854,6 +877,12 @@ impl Pool {
         }
         state.lockfile = None;
         self.write_state(slot, &state)
+    }
+
+    /// Incident: a repository recreated at its path left slots whose `.git` named a gone gitdir.
+    fn repo_gone(&self, slot: SlotIndex) -> bool {
+        let path = self.slot_path(slot);
+        path.join(".git").is_file() && yi_permission::git_dirs(&path).is_empty()
     }
 
     /// Incident: three lanes left by dead `pid-` drives held nothing and still filled the pool.

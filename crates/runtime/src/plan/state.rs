@@ -743,11 +743,10 @@ pub fn apply_op(
         Op::Accept { label, output, .. } => {
             let output = output.clone();
             check_terminal(label, output.as_ref())?;
-            let resolution = completion(
-                state.plan(id)?,
-                label,
-                Some(contract::Resolution::AcceptedByUser),
-            )?;
+            let accepted = decided
+                .resolution
+                .or(Some(contract::Resolution::AcceptedByUser));
+            let resolution = completion(state.plan(id)?, label, accepted)?;
             step_todo(
                 state.plan_mut(id)?,
                 label,
@@ -817,7 +816,7 @@ fn completion_of(
     if super::acceptance::is_worktree(todo)
         && !matches!(
             resolution,
-            Some(contract::Resolution::VerifiedDone | contract::Resolution::AcceptedByUser)
+            Some(vouched) if vouched != contract::Resolution::LegacyUnverified
         )
     {
         return Err(PlanOpError::AcceptanceUnavailable {
@@ -1040,13 +1039,14 @@ fn apply_supersede(
 /// sub-plan, a new one starts plain, a missing one leaves, and every state is as written.
 fn apply_set(plan: &mut Plan, rows: &[SetRow]) -> Result<(), PlanOpError> {
     let mut todos: Vec<Todo> = Vec::with_capacity(rows.len());
+    let kept: Vec<&TodoLabel> = rows.iter().map(|row| &row.spec.label).collect();
     for row in rows {
         let existing = plan.todos.iter().find(|todo| todo.label == row.spec.label);
-        let mut todo = match existing {
-            Some(existing) => existing.clone(),
-            None => new_todo(row.spec.clone()),
-        };
+        let mut todo = existing
+            .cloned()
+            .unwrap_or_else(|| new_todo(row.spec.clone()));
         todo.children = row.spec.children.clone();
+        todo.after.retain(|after| kept.contains(&after));
         if let Some(contract) = &row.spec.contract {
             todo.contract = Some(contract.clone());
         }
