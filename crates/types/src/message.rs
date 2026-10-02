@@ -46,6 +46,38 @@ pub enum Attribution {
     #[default]
     Unproven,
     User,
+    /// The request a child or one-shot session was started with: its requester's words, read
+    /// bare like the user's, but never served by `user://`.
+    Task,
+    /// Text the host wrote, named by its producer; the model reads it as runtime context.
+    Host(HostSource),
+}
+
+/// Who in the host wrote a user-role message; the label the model reads it under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HostSource {
+    Notice,
+    Restore,
+    Job,
+    Lifecycle,
+    Mail,
+    Landing,
+    Deadline,
+}
+
+impl HostSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Notice => "notice",
+            Self::Restore => "restore",
+            Self::Job => "job",
+            Self::Lifecycle => "lifecycle",
+            Self::Mail => "mail",
+            Self::Landing => "landing",
+            Self::Deadline => "deadline",
+        }
+    }
 }
 
 /// When D25 landed (2026-09-01): no message written before it carries an attribution.
@@ -56,10 +88,14 @@ impl Attribution {
         matches!(self, Self::Unproven)
     }
 
-    /// Whether a user-role message stored at `stored_ms` draws as the user's words. Display
-    /// only: `user://` still serves [`Self::User`] alone.
+    /// Whether a user-role message stored at `stored_ms` is its requester's words, for the model
+    /// and every surface alike; a host message stamps 0, so only a dated one predates attribution.
     pub fn reads_as_typed(self, stored_ms: u64) -> bool {
-        self == Self::User || stored_ms < ATTRIBUTED_SINCE_MS
+        match self {
+            Self::User | Self::Task => true,
+            Self::Unproven => stored_ms != 0 && stored_ms < ATTRIBUTED_SINCE_MS,
+            Self::Host(_) => false,
+        }
     }
 }
 
@@ -297,13 +333,21 @@ pub fn join_text(blocks: &[Content], sep: &str) -> String {
 }
 
 impl AgentMessage {
-    /// A user-role message the host minted for itself; it never carries the
-    /// user's authority.
-    pub fn host_user(content: UserContent, timestamp: u64) -> Self {
+    /// Host text in the user role, named by its producer; the model reads it as runtime context.
+    pub fn host_text(source: HostSource, text: &str, timestamp: u64) -> Self {
         Self::User {
-            content,
+            content: UserContent::Text(text.to_owned()),
             timestamp,
-            attribution: Attribution::Unproven,
+            attribution: Attribution::Host(source),
+        }
+    }
+
+    /// The request a child or one-shot session runs on, read bare and never served by `user://`.
+    pub fn task(text: &str, timestamp: u64) -> Self {
+        Self::User {
+            content: UserContent::Text(text.to_owned()),
+            timestamp,
+            attribution: Attribution::Task,
         }
     }
 
@@ -390,8 +434,12 @@ mod tests {
 
     #[test]
     fn only_the_user_input_mint_carries_the_users_authority() -> TestResult {
-        let host = AgentMessage::host_user(UserContent::Text("hi".to_owned()), 7);
-        assert_eq!(host.attribution(), Attribution::Unproven);
+        let host = AgentMessage::host_text(super::HostSource::Notice, "hi", 7);
+        assert_eq!(
+            host.attribution(),
+            Attribution::Host(super::HostSource::Notice)
+        );
+        assert!(!host.attribution().reads_as_typed(7));
         let typed = AgentMessage::user_input(UserContent::Text("hi".to_owned()), 7);
         assert_eq!(typed.attribution(), Attribution::User);
         let wire = serde_json::to_string(&typed)?;

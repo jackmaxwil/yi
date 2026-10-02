@@ -177,8 +177,11 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 - Path: `main`-lane entries → `yi_context::project` (at attach; non-message entries dropped,
   starts at the latest `Compaction`'s summary + `retained_tail`) → session messages →
   `transform_context` (environment block) → `yi_context::convert_to_llm` → provider.
-- `convert_to_llm` wraps `custom` kinds `heartbeat_prompt, advisory, goal_prompt, ledger_prompt,
-  plan_dispatch, reminder` as `<yi_internal_context source="…">`; compaction drops them.
+- `convert_to_llm` reads bare only its requester's words: a user message attributed `user` or
+  `task`, or one dated before attribution existed. Every other user-role message (`host(source)`,
+  undated `unproven`), every `custom` kind and both summaries arrive as
+  `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
+  goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
   16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338). A
   usage the latest compaction kept in its tail is stale, and with none the messages count alone
