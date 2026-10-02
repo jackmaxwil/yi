@@ -98,7 +98,7 @@ fn assistant(text: &str) -> AgentMessage {
 }
 
 fn user_message(text: &str) -> AgentMessage {
-    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
+    AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
 }
 
 fn entry(id: &str, parent: Option<&str>, seq: u64, message: &AgentMessage) -> Value {

@@ -36,7 +36,7 @@ fn context() -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
-        messages: vec![AgentMessage::host_user(
+        messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),
             0,
         )],
@@ -251,7 +251,7 @@ fn a_message_start_without_a_usage_object_leaves_the_turn_unknown() -> Result<()
 #[test]
 fn the_breakpoint_stays_ahead_of_a_trailing_environment_block() -> Result<(), Box<dyn Error>> {
     let mut ctx = context();
-    ctx.transient.push(AgentMessage::host_user(
+    ctx.transient.push(AgentMessage::user_input(
         UserContent::Text("<environment>\ncwd: /x\n</environment>".to_owned()),
         0,
     ));
@@ -272,7 +272,7 @@ fn the_breakpoint_stays_ahead_of_a_trailing_environment_block() -> Result<(), Bo
 fn image_turns(count: usize, chars: usize) -> LlmContext {
     let messages = (0..count)
         .map(|turn| {
-            AgentMessage::host_user(
+            AgentMessage::user_input(
                 UserContent::Blocks(vec![
                     Content::Text {
                         text: format!("image {turn}"),
@@ -464,7 +464,7 @@ fn a_call_an_old_interrupt_left_unanswered_is_sent_as_an_error_result() -> Resul
             timestamp: 0,
         },
         assistant(Vec::new(), StopReason::Aborted),
-        AgentMessage::host_user(UserContent::Text("carry on".to_owned()), 0),
+        AgentMessage::user_input(UserContent::Text("carry on".to_owned()), 0),
     ]);
     let params = build_params(&model(), &ctx, &AnthropicOptions::default());
     let messages = params["messages"].as_array().ok_or("messages")?;

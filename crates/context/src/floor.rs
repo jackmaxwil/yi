@@ -57,14 +57,19 @@ pub fn retain_floor(summarized: &[AgentMessage], budget: Tokens) -> Vec<AgentMes
             remaining = remaining.saturating_sub(cost);
         } else {
             let truncated = middle_truncate(text, remaining);
-            let timestamp = match message {
-                AgentMessage::User { timestamp, .. } => *timestamp,
-                _ => 0,
+            let (timestamp, attribution) = match message {
+                AgentMessage::User {
+                    timestamp,
+                    attribution,
+                    ..
+                } => (*timestamp, *attribution),
+                _ => (0, yi_types::message::Attribution::Unproven),
             };
-            survivors_reversed.push(AgentMessage::host_user(
-                UserContent::Text(truncated),
+            survivors_reversed.push(AgentMessage::User {
+                content: UserContent::Text(truncated),
                 timestamp,
-            ));
+                attribution,
+            });
             remaining = Tokens(0);
         }
     }
