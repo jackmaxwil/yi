@@ -74,9 +74,13 @@ pub struct Outcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlanOpError {
-    #[error("no plan is open; add goal to this set to open one, or init")]
+    #[error(
+        "no plan is open; open one with init (a goal and todos), or with a set that names a goal"
+    )]
     NoPlan,
-    #[error("plan {id} already exists and is open; Plan.attach({id:?}) resumes it")]
+    #[error(
+        "plan {id} already exists and is open; view it, append to it, or supersede its todos (in the kernel, Plan.attach resumes it)"
+    )]
     PlanExists { id: PlanId },
     #[error("no todo labelled {label:?} in plan {plan}")]
     UnknownLabel { plan: PlanId, label: TodoLabel },
@@ -96,7 +100,9 @@ pub enum PlanOpError {
     Invalid { issue: PlanIssue },
     #[error("reorder names {got} labels; a full permutation of all {expected} is required")]
     NotAPermutation { got: usize, expected: usize },
-    #[error("DepthExhausted: sub-plan {plan} cannot open a child plan")]
+    #[error(
+        "sub-plan {plan} cannot open a child plan (DepthExhausted): decompose goes one level deep, so append the steps to {plan} instead"
+    )]
     DepthExhausted { plan: PlanId },
     #[error(
         "spawn ceiling exhausted: {spent} of cap {cap} spent",

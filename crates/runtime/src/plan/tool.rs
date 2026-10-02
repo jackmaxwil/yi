@@ -19,14 +19,32 @@ use yi_types::plan::op::{MODEL_OPS, SpecError, TodoSpecRepr};
 fn legal_ops() -> String {
     ALL_OPS
         .iter()
+        .take(MODEL_OPS)
         .map(|op| op_name(*op))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
+/// A key that belongs to another op or level, named where it goes; dogfood sessions sent a
+/// block's `on` inside init, and a todo's `label` beside append's `todos`.
+pub(super) fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
+    match (op, in_todo, key) {
+        (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => Some(
+            "; blocking is its own op after the todo exists: op=block, label, on: {user: null}, note, options",
+        ),
+        (OpKind::Init | OpKind::Append | OpKind::Decompose, false, "label") => {
+            Some("; each todo's label goes inside todos: [{label, ...}]")
+        }
+        (_, true, "todos") => {
+            Some("; a todo's own children come from decompose on it once it runs")
+        }
+        _ => None,
+    }
+}
+
 /// What the caller evidently meant, per argument: F0e sessions sent prose or a bare path as
 /// `output`, and a todo spec without its `spec`, against a schema text they had not read (#472).
-fn field_hint(field: &str) -> &'static str {
+pub(super) fn field_hint(field: &str) -> &'static str {
     match field {
         "output" => {
             "; output is a url of the product (tree://<child>/<path> or file:///abs/path), omitted when there is none, and a check's output line belongs to the todo tool's evidence"
@@ -79,9 +97,10 @@ pub enum ArgError {
     ActorArg,
     #[error("{0}")]
     Declared(String),
-    #[error("{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), field_hint(key))]
+    #[error("{}{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), todo.map(|at| format!(" todos[{at}]")).unwrap_or_default(), misplaced(*op, todo.is_some(), key).unwrap_or(field_hint(key)))]
     UnknownKey {
         op: OpKind,
+        todo: Option<usize>,
         key: String,
         legal: String,
     },
@@ -98,7 +117,7 @@ pub enum ArgError {
 }
 
 /// Every key an op reads, `op` and `plan` included; `todo` is the alias for `label`.
-fn known_keys(kind: OpKind) -> &'static [&'static str] {
+pub(super) fn known_keys(kind: OpKind) -> &'static [&'static str] {
     match kind {
         OpKind::Init => &["op", "plan", "goal", "todos"],
         OpKind::Append => &["op", "plan", "todos"],
@@ -125,7 +144,7 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
     }
 }
 
-const TODO_SPEC_KEYS: [&str; 6] = [
+pub(super) const TODO_SPEC_KEYS: [&str; 6] = [
     "label",
     "after",
     "delegation",
@@ -134,16 +153,18 @@ const TODO_SPEC_KEYS: [&str; 6] = [
     "waived",
 ];
 
-/// Invariant: a key no op reads is refused, never dropped: a misspelled `contract` or `output`
-/// would otherwise land a todo on the unverified path with no error.
+/// What [`super::natural::natural`] did not leave out: a key one edit from a known key, or one
+/// with a hint saying where it goes.
 fn refuse_unknown(
     args: &Map<String, Value>,
     op: OpKind,
+    todo: Option<usize>,
     legal: &[&'static str],
 ) -> Result<(), ArgError> {
     match args.keys().find(|key| !legal.contains(&key.as_str())) {
         Some(key) => Err(ArgError::UnknownKey {
             op,
+            todo,
             key: key.clone(),
             legal: legal.join(", "),
         }),
@@ -361,16 +382,20 @@ pub(super) fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, 
 
 fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, ArgError> {
     let field = "todos";
-    let raw: &Vec<Value> = args
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or(ArgError::Missing { op, field })?;
+    let raw: &Vec<Value> = match args.get(field) {
+        Some(Value::String(text)) => match serde_json::from_str::<Vec<Value>>(text) {
+            Err(cause) => return Err(ArgError::Malformed { op, field, cause }),
+            Ok(_) => None,
+        },
+        other => other.and_then(Value::as_array),
+    }
+    .ok_or(ArgError::Missing { op, field })?;
     let mut specs = Vec::with_capacity(raw.len());
     for (index, value) in raw.iter().enumerate() {
         let Value::Object(spec) = value else {
             return Err(ArgError::TodoShape { op, index });
         };
-        refuse_unknown(spec, op, &TODO_SPEC_KEYS)?;
+        refuse_unknown(spec, op, Some(index), &TODO_SPEC_KEYS)?;
         specs.push(TodoSpec::try_from(TodoSpecRepr {
             label: need(spec, op, "label").map_err(|error| {
                 let label = spec.get("label").and_then(Value::as_str);
@@ -408,7 +433,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         .ok_or_else(|| ArgError::UnknownOp {
             got: name.to_owned(),
         })?;
-    refuse_unknown(args, kind, known_keys(kind))?;
+    refuse_unknown(args, kind, None, known_keys(kind))?;
     Ok(match kind {
         OpKind::Init => Op::Init {
             goal: need(args, kind, "goal")?,
@@ -550,16 +575,195 @@ impl PlanTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        let (request, blobs) = declared(&self.actor, args)?;
+        let mut args = args.clone();
+        let blocks = super::natural::blocks(&mut args);
+        let mut text = self.apply(&args)?;
+        for block in &blocks {
+            match self.apply(block) {
+                Ok(reply) => text = reply,
+                Err(err) => {
+                    return Err(ArgError::Declared(format!("{text}\nblock refused: {err}")).into());
+                }
+            }
+        }
+        if !blocks.is_empty() {
+            text.push_str("\nnote: a todo's on became its own block once the todo existed");
+        }
+        Ok(text)
+    }
+
+    fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+        let (args, mut said) = super::natural::natural(args);
+        if let Some(Value::Array(labels)) = args.get("labels")
+            && (args.get("op").and_then(Value::as_str))
+                .is_some_and(|op| super::natural::TARGETED.contains(&op))
+        {
+            return self.each(&args, labels, said);
+        }
+        let (request, blobs) = declared(&self.actor, &args)?;
         if let Op::Accept { .. } = &request.op {
             let confirming = self.confirming.as_ref();
             return Ok(
-                super::authority::accept(&self.engine, &self.actor, confirming, args)?.text(),
+                super::authority::accept(&self.engine, &self.actor, confirming, &args)?.text(),
             );
         }
         let op = request.op.clone();
-        let outcome = self.engine.apply_with(request, &blobs)?;
-        Ok(render_outcome(&op, &outcome))
+        let outcome = match self.engine.apply_with(request.clone(), &blobs) {
+            Err(PlanOpError::IllegalStep {
+                label,
+                from: TodoStateName::Pending,
+                op: kind @ (OpKind::Done | OpKind::Decompose | OpKind::Fail | OpKind::Retry),
+            }) if self.runs_itself(&request, &label) => {
+                let start = OpRequest {
+                    op: Op::Start { label },
+                    ..request.clone()
+                };
+                if kind == OpKind::Retry {
+                    said.push("it had not run yet, so it was started".to_owned());
+                    self.engine.apply(start)?
+                } else {
+                    self.engine.apply(start)?;
+                    said.push("it was pending, so it was started first".to_owned());
+                    self.engine.apply_with(request, &blobs)?
+                }
+            }
+            Err(PlanOpError::IllegalStep {
+                from: TodoStateName::Pending | TodoStateName::Running,
+                op: OpKind::Unblock,
+                ..
+            }) => {
+                said.push("it was not blocked, so nothing changed".to_owned());
+                self.engine.apply(OpRequest {
+                    op: Op::View { full: false },
+                    ..request
+                })?
+            }
+            Err(
+                PlanOpError::NoPlan | PlanOpError::Store(super::store::StoreError::Missing { .. }),
+            ) if request.plan.is_some() => {
+                let mut again = args.clone();
+                again.remove("plan");
+                let mut text = self.run(&again)?;
+                said.push(
+                    "the plan named is not open, so the call ran on the open plan".to_owned(),
+                );
+                for line in said {
+                    text.push_str(&format!("\nnote: {line}"));
+                }
+                return Ok(text);
+            }
+            Err(refused @ (PlanOpError::NoPlan | PlanOpError::NotActive { .. })) => {
+                let first = match &request.op {
+                    Op::Set { goal: None, rows } => rows.first().map(|row| row.spec.label.clone()),
+                    Op::Append { todos } | Op::Supersede { todos, .. } => {
+                        todos.first().map(|todo| todo.label.clone())
+                    }
+                    _ => None,
+                };
+                let Some(first) = first else {
+                    return Err(refused.into());
+                };
+                let goal = GoalText::new(first.as_str()).map_err(PlanOpError::Doc)?;
+                let op = match request.op.clone() {
+                    Op::Set { rows, .. } => Op::Set {
+                        goal: Some(goal),
+                        rows,
+                    },
+                    Op::Append { todos } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
+                    other => other,
+                };
+                said.push(
+                    "no plan was open, so one was opened, named after the first todo".to_owned(),
+                );
+                let opened = OpRequest {
+                    op,
+                    plan: None,
+                    ..request
+                };
+                match self.engine.apply_with(opened, &blobs) {
+                    Err(PlanOpError::PlanExists { .. }) => return Err(refused.into()),
+                    other => other?,
+                }
+            }
+            Err(PlanOpError::NotAPermutation { .. }) => {
+                let Op::Reorder { labels } = &request.op else {
+                    return Err(PlanOpError::NotAPermutation {
+                        got: 0,
+                        expected: 0,
+                    }
+                    .into());
+                };
+                let view = OpRequest {
+                    op: Op::View { full: true },
+                    ..request.clone()
+                };
+                let mut order = labels.clone();
+                let rest: Vec<TodoLabel> = (self.engine.apply(view)?.plan.todos.iter())
+                    .map(|todo| todo.label.clone())
+                    .filter(|label| !labels.contains(label))
+                    .collect();
+                order.extend(rest);
+                said.push("the todos not named keep their order after the named ones".to_owned());
+                let reorder = Op::Reorder { labels: order };
+                self.engine.apply_with(
+                    OpRequest {
+                        op: reorder,
+                        ..request
+                    },
+                    &blobs,
+                )?
+            }
+            other => other?,
+        };
+        let mut text = render_outcome(&op, &outcome);
+        for line in said {
+            text.push_str(&format!("\nnote: {line}"));
+        }
+        Ok(text)
+    }
+
+    /// One call per label, in order; a refusal among them makes the whole reply an error.
+    fn each(
+        &self,
+        args: &Map<String, Value>,
+        labels: &[Value],
+        mut said: Vec<String>,
+    ) -> Result<String, PlanToolError> {
+        let (mut text, mut refused) = (String::new(), false);
+        for label in labels {
+            let mut one = args.clone();
+            one.remove("labels");
+            one.insert("todo".to_owned(), label.clone());
+            let reply = self.run(&one).unwrap_or_else(|err| {
+                refused = true;
+                format!("{label}: refused: {err}")
+            });
+            text.push_str(&format!("{reply}\n"));
+        }
+        said.push("labels named several todos, so each ran as its own call, in order".to_owned());
+        for line in said {
+            text.push_str(&format!("note: {line}\n"));
+        }
+        let text = text.trim_end().to_owned();
+        if refused {
+            Err(ArgError::Declared(text).into())
+        } else {
+            Ok(text)
+        }
+    }
+
+    /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.
+    fn runs_itself(&self, request: &OpRequest, label: &TodoLabel) -> bool {
+        let view = OpRequest {
+            op: Op::View { full: true },
+            ..request.clone()
+        };
+        self.actor == Actor::Owner
+            && (self.engine.apply(view).ok()).is_some_and(|seen| {
+                seen.plan
+                    .todo(label)
+                    .is_some_and(|t| t.delegation.is_none())
+            })
     }
 }
 
@@ -598,8 +802,8 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        declared(&self.actor, input)
-            .map(|_| ())
+        (super::natural::calls(input).iter())
+            .try_for_each(|call| declared(&self.actor, call).map(|_| ()))
             .map_err(|error| error.to_string())
     }
 
