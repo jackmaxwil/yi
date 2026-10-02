@@ -18,7 +18,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
 | Worktrees and node | Resource admission: a root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14); one machine is a node card, `~/.yi/node.json`, and every live kernel on it takes one of its slots or shares its family's (§9); a child may run its bash in a local container (§11) | D119, D203, D285, D286 |
-| ACP | v2 only; a lower `protocolVersion` gets a version-mismatch error; the wire is hand-rolled (§17.2) | D1, D40 |
+| ACP | v2 only; a lower `protocolVersion` gets a version-mismatch error; the wire is hand-rolled and held to a vendored upstream schema tag (§17.2) | D1, D40, D328 |
 | Workspace | `yi serve` owns sessions; `yi console` is an ACP client over its socket; bare `yi` on a terminal opens the console, `--solo` the TUI (§17) | D95, D118 |
 
 ### 1.2 Not in scope
@@ -177,8 +177,11 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 - Path: `main`-lane entries → `yi_context::project` (at attach; non-message entries dropped,
   starts at the latest `Compaction`'s summary + `retained_tail`) → session messages →
   `transform_context` (environment block) → `yi_context::convert_to_llm` → provider.
-- `convert_to_llm` wraps `custom` kinds `heartbeat_prompt, advisory, goal_prompt, ledger_prompt,
-  plan_dispatch, reminder` as `<yi_internal_context source="…">`; compaction drops them.
+- `convert_to_llm` reads bare only its requester's words: a user message attributed `user` or
+  `task`, or one dated before attribution existed. Every other user-role message (`host(source)`,
+  undated `unproven`), every `custom` kind and both summaries arrive as
+  `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
+  goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
   16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338). A
   usage the latest compaction kept in its tail is stale, and with none the messages count alone
@@ -532,8 +535,9 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   drops (reap, repossession, a failed spawn) and by name at the next spawn on that lane. A node
   whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
   with a notice.
-- Admission refuses at lever `family.cap` (16) live sessions, at depth `rlm.maxDepth` (1,
-  clamped 1..=3) but for a juror, at `family.max_children` (8) workers, and on a taken name.
+- Admission refuses at lever `family.cap` (16, an eval run's levers raise it to 128) live sessions,
+  at depth `rlm.maxDepth` (1, clamped 1..=3) but for a juror, at `family.max_children` (8, up to
+  128) workers, and on a taken name (D344).
 - `Standing { Worker, Juror, Reader, Service }`: juror, reader and service stand outside the worker cap; lease,
   wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
@@ -814,17 +818,21 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   [`config.rs`](../crates/types/src/config.rs)
 
 ### 17.2 ACP and daemon
-`yi-acp` speaks a hand-rolled ACP v2 subset over JSON-RPC 2.0, shapes in `yi-types::acp`.
-`initialize` below version 2 fails −32602, an unknown method −32601, bad JSON −32700.
+`yi-acp` speaks a hand-rolled ACP v2 subset over JSON-RPC 2.0, shapes in `yi-types::acp`,
+measured against the upstream `schema-v2.0.0-alpha.5` schema vendored under
+`crates/cli/tests/fixtures/acp-v2/` (D328): every frame a faux session emits must pass it, with
+no custom root field and no `other` value outside `_`. Yi's own fields on a standard shape ride
+`_meta.yi`. `initialize` advertises `session: {delete: {}}`; below version 2 it fails −32602,
+an unknown method −32601, bad JSON −32700.
 
 | Method | Side | What |
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
-| `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A busy session queues a prompt as a follow-up (§4.3); config ids `mode`, `model`, `thought_level` |
+| `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3), and one still queued at close gets −32800; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
 | `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/tape`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; the session's ledger over time; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
-| `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once` |
+| `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
@@ -846,7 +854,7 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - State: `Input{Client, ClientLine, ClientClosed, WorkerLine, WorkerReply, WorkerClosed, Shutdown}`,
   `SessionEntry{root, attached, unseen, last_state, last_event_ms, name, provisional}` (daemon.rs)
 - Shapes: [`crates/types/src/acp.rs`](../crates/types/src/acp.rs) (`DaemonLedger`)
-- Settled by: D1, D4, D40, D95, D113, D118
+- Settled by: D1, D4, D40, D95, D113, D118, D328
 
 ### 17.3 TUI
 `yi-tui` is the solo chat: an inline viewport on the normal screen above native scrollback.

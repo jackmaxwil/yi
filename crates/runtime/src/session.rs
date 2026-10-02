@@ -11,7 +11,6 @@ use yi_types::message::{AgentMessage, Usage, UserContent};
 use yi_types::model::{Effort, Model};
 
 use crate::provider::ProviderStream;
-
 mod deadline;
 mod hooks;
 mod run;
@@ -851,7 +850,7 @@ impl AgentSession {
     }
 
     pub fn steer(&self, text: &str) {
-        self.steer_message(user_message(text));
+        self.steer_message(task(text));
     }
 
     pub fn steer_message(&self, message: AgentMessage) {
@@ -859,7 +858,7 @@ impl AgentSession {
     }
 
     pub fn follow_up(&self, text: &str) {
-        self.follow_up_message(user_message(text));
+        self.follow_up_message(task(text));
     }
 
     /// Runs admitted so far, and how many of them have ended.
@@ -907,7 +906,7 @@ impl AgentSession {
 
     /// Returns at admission; the run streams in a spawned task (§4.3).
     pub fn prompt(&self, text: &str) -> Result<(), SessionError> {
-        self.prompt_message(user_message(text))
+        self.prompt_message(task(text))
     }
 
     /// Starts an idle session's turn without re-wrapping the message as plain user text.
@@ -1099,8 +1098,13 @@ fn start_ext(shared: &Arc<Shared>, prompt: &str) {
     dispatch_ext(shared, &event);
 }
 
-pub(crate) fn user_message(text: &str) -> AgentMessage {
-    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
+/// The request a parent, a reviewer's host or a test runs on: read bare, never via `user://`.
+pub fn task(text: &str) -> AgentMessage {
+    AgentMessage::task(text, 0)
+}
+
+pub(crate) fn host_text(source: yi_types::message::HostSource, text: &str) -> AgentMessage {
+    AgentMessage::host_text(source, text, 0)
 }
 
 /// Invariant: only input that crossed the process boundary mints

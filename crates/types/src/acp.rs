@@ -80,22 +80,7 @@ pub enum AcpSessionUpdate {
         content: Vec<AcpContentBlock>,
     },
     StateUpdate(AcpState),
-    #[serde(rename_all = "camelCase")]
-    ToolCallUpdate {
-        tool_call_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        kind: Option<AcpToolKind>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        status: Option<AcpToolCallStatus>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<Vec<AcpToolContent>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        raw_input: Option<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        raw_output: Option<Value>,
-    },
+    ToolCallUpdate(AcpToolCallUpdate),
     #[serde(rename_all = "camelCase")]
     ToolCallContentChunk {
         tool_call_id: String,
@@ -123,6 +108,28 @@ pub enum AcpSessionUpdate {
     /// with `_` are implementation extensions (`_yi/*`, design §17.2).
     #[serde(untagged)]
     Extension(AcpExtensionUpdate),
+}
+
+/// ACP v2 tool-call upsert: omitted fields leave the client's value unchanged; also the
+/// `toolCall` of a permission subject.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpToolCallUpdate {
+    pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AcpToolKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<AcpToolCallStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<AcpToolContent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_output: Option<Value>,
 }
 
 /// The daemon's session ledger on disk, keyed by session id: what a
@@ -201,8 +208,8 @@ pub struct AcpOtherBlock {
     pub fields: BTreeMap<String, Value>,
 }
 
-/// ACP tool-call content: a content block, or a display-only terminal
-/// reference (design §17.2; diff content lands with §7).
+/// ACP tool-call content: a content block, a display-only terminal reference, or a diff;
+/// unknown types round-trip via `Other`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcpToolContent {
@@ -213,15 +220,49 @@ pub enum AcpToolContent {
     Terminal {
         terminal_id: String,
     },
-    /// Design §17.2: `changes` are the paths the call would touch, `patch` the
-    /// Unified diff, absolute-pathed so `git apply` accepts it verbatim.
+    /// `changes` is authoritative for the paths; `patch` renders some or all of them.
     Diff {
-        changes: Vec<String>,
-        patch: String,
+        changes: Vec<AcpDiffChange>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        patch: Option<AcpDiffPatch>,
     },
+    #[serde(untagged)]
+    Other(AcpOtherBlock),
 }
 
-/// ACP v2 tool-call status vocabulary.
+/// One file a diff touches; `path` is absolute.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcpDiffChange {
+    pub operation: AcpDiffOperation,
+    pub path: String,
+}
+
+/// ACP v2 diff operations Yi emits; the rest round-trip via `Other`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpDiffOperation {
+    Add,
+    Modify,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Renderable patch text; the unified diff is absolute-pathed so `git apply` takes it verbatim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcpDiffPatch {
+    pub format: AcpPatchFormat,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpPatchFormat {
+    GitPatch,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// ACP v2 tool-call status vocabulary; unknown values round-trip via `Other`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcpToolCallStatus {
@@ -229,26 +270,35 @@ pub enum AcpToolCallStatus {
     InProgress,
     Completed,
     Failed,
+    Cancelled,
+    #[serde(untagged)]
+    Other(String),
 }
 
-/// ACP v2 tool kind vocabulary (subset Yi maps to).
+/// ACP v2 tool kind vocabulary; unknown values round-trip via `Unknown`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcpToolKind {
     Read,
     Edit,
+    Delete,
+    Move,
     Search,
     Execute,
+    Think,
     Fetch,
+    SwitchMode,
     Other,
+    #[serde(untagged)]
+    Unknown(String),
 }
 
-/// Exit information for a terminal update.
+/// Exit information for a terminal update; the wire's `exitCode` is unsigned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpTerminalExit {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i64>,
+    pub exit_code: Option<u32>,
 }
 
 /// `initialize` response body; `protocolVersion` is always 2.
@@ -268,22 +318,64 @@ pub struct AcpImplementation {
     pub version: String,
 }
 
-/// `session/new` and `session/resume` response body.
+/// `session/new` and `session/resume` response body; resume carries no `sessionId`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionResult {
-    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub config_options: Vec<AcpConfigOption>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<AcpMeta>,
 }
 
+/// The spec forbids custom fields at the root of its types; Yi's ride `_meta.yi`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AcpMeta {
+    pub yi: AcpYiMeta,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpYiMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The entry offset a resume replayed up to, for the next resume's `replayFrom`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed_to: Option<u64>,
+}
+
+/// A `select` session config option; `currentValue` is one of the `options` values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpConfigOption {
     pub config_id: String,
     pub name: String,
-    pub kind: Value,
+    #[serde(rename = "type")]
+    pub kind: AcpConfigKind,
+    pub current_value: String,
+    pub options: Vec<AcpConfigChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpConfigKind {
+    Select,
+    #[serde(untagged)]
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcpConfigChoice {
+    pub value: String,
+    pub name: String,
+}
+
+/// `session/prompt` response: sent once the prompt is inserted, naming its `user_message`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptResult {
+    pub message_id: String,
 }
 
 /// `session/request_permission` request params.
@@ -295,8 +387,18 @@ pub struct AcpPermissionParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub options: Vec<AcpPermissionOption>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<Vec<AcpToolContent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<AcpPermissionSubject>,
+}
+
+/// What an ask is about; a diff under approval rides as the tool call's content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AcpPermissionSubject {
+    #[serde(rename_all = "camelCase")]
+    ToolCall { tool_call: Box<AcpToolCallUpdate> },
+    #[serde(untagged)]
+    Other(AcpOtherBlock),
 }
 
 /// One selectable permission option.
@@ -308,13 +410,16 @@ pub struct AcpPermissionOption {
     pub kind: AcpPermissionOptionKind,
 }
 
-/// ACP v2 permission option kinds.
+/// ACP v2 permission option kinds; unknown values round-trip via `Other`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcpPermissionOptionKind {
     AllowOnce,
     AllowAlways,
     RejectOnce,
+    RejectAlways,
+    #[serde(untagged)]
+    Other(String),
 }
 
 /// `session/request_permission` response outcome.

@@ -1,0 +1,1670 @@
+{
+ "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
+ "cases": [
+  {
+   "name": "no op beside goal and todos",
+   "setup": [],
+   "call": {
+    "goal": "Add mod(a, b) to calc.py with a passing unit test",
+    "todos": [
+     {
+      "label": "Implement mod(a, b) in calc.py"
+     },
+     {
+      "label": "Add test_mod to test_calc.py"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "set with a todos array of rows",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "todos": [
+     "- [ ] Read calc.py and test_calc.py to ground the change",
+     "- [ ] Add subtract(a, b) to calc.py"
+    ]
+   },
+   "lands": true,
+   "says": "named after the first todo"
+  },
+  {
+   "name": "init without goal",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "items": [
+        {
+         "critical": true,
+         "id": "suite-green",
+         "weight": 1,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ],
+       "class": "inline"
+      },
+      "label": "Fix calc.divide to divide"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "first todo names the plan"
+  },
+  {
+   "name": "deadline beside cmd",
+   "setup": [],
+   "call": {
+    "goal": "Run the slow gate",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true",
+          "timeout_ms": 300000
+         },
+         "id": "slow-gate",
+         "weight": 100
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "label": "run the slow gate"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "fail with reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Demonstrate retry, fail and block ops"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "Demonstrate retry, fail and block ops"
+    }
+   ],
+   "call": {
+    "label": "Demonstrate retry, fail and block ops",
+    "op": "fail",
+    "reason": "simulated failure for the demo"
+   },
+   "lands": true
+  },
+  {
+   "name": "drop with reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Run python -m doctest calc.py -v"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Run python -m doctest calc.py -v",
+    "op": "drop",
+    "reason": "redundant: the unittest suite already covers mod"
+   },
+   "lands": true,
+   "says": "left out, they stay"
+  },
+  {
+   "name": "done with note",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "fix divide"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "fix divide"
+    }
+   ],
+   "call": {
+    "label": "fix divide",
+    "op": "done",
+    "note": "decider checks: suite OK, 3 tests"
+   },
+   "lands": true,
+   "says": "left out, they stay"
+  },
+  {
+   "name": "done on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Add power(a,b)"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Add power(a,b)",
+    "op": "done"
+   },
+   "lands": true,
+   "says": "started first"
+  },
+  {
+   "name": "append with a label",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "one"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Update README to document mod",
+    "op": "append"
+   },
+   "lands": true
+  },
+  {
+   "name": "block fields inside init",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "Choose divide-by-zero policy (user decision)",
+      "on": {
+       "user": null
+      },
+      "note": "Three options offered"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "became its own block"
+  },
+  {
+   "name": "a todo carrying todos",
+   "setup": [],
+   "call": {
+    "goal": "demo",
+    "op": "init",
+    "todos": [
+     {
+      "label": "Fix calc.divide to divide",
+      "todos": []
+     }
+    ]
+   },
+   "lands": false,
+   "says": "init todos[0] does not take \"todos\""
+  },
+  {
+   "name": "a duplicate label",
+   "setup": [],
+   "call": {
+    "goal": "Probe duplicate labels",
+    "op": "init",
+    "todos": [
+     {
+      "label": "same"
+     },
+     {
+      "label": "same"
+     }
+    ]
+   },
+   "lands": false,
+   "says": "label \"same\" is not unique"
+  },
+  {
+   "name": "weights past 100",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "weighted",
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "id": "i600",
+         "decider": {
+          "cmd": "true"
+         },
+         "weight": 600
+        },
+        {
+         "critical": true,
+         "id": "i400",
+         "decider": {
+          "cmd": "true"
+         },
+         "weight": 400
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "rescaled"
+  },
+  {
+   "name": "a missing weight",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "unweighted",
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "id": "iNone",
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "done with a path as output",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "fix"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "fix"
+    }
+   ],
+   "call": {
+    "op": "done",
+    "output": "calc.py",
+    "todo": "fix"
+   },
+   "lands": true,
+   "says": "output takes a url"
+  },
+  {
+   "name": "decompose as a flag",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "harden calc.py",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "harden calc.py"
+    }
+   ],
+   "call": {
+    "decompose": true,
+    "label": "harden calc.py",
+    "todos": [
+     {
+      "label": "fix divide"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "decompose holding its arguments",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "harden calc.py",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "harden calc.py"
+    }
+   ],
+   "call": {
+    "decompose": {
+     "label": "harden calc.py",
+     "todos": [
+      {
+       "label": "fix divide"
+      }
+     ]
+    }
+   },
+   "lands": true
+  },
+  {
+   "name": "todos as a JSON string",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "harden calc.py",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "harden calc.py"
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "label": "harden calc.py",
+    "todos": "[{\"label\": \"fix divide\"}]"
+   },
+   "lands": true
+  },
+  {
+   "name": "decompose on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Verify suite and close plan"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "todo": "Verify suite and close plan",
+    "todos": [
+     {
+      "label": "Re-run unittest suite"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "started first"
+  },
+  {
+   "name": "set with a heading and a struck row",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Implement mod"
+      },
+      {
+       "label": "Spare todo"
+      },
+      {
+       "label": "Verify suite",
+       "after": [
+        "Spare todo"
+       ]
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "set",
+    "list": "## demo\n- [x] Implement mod\n- [ ] Verify suite\n- [-] Spare todo"
+   },
+   "lands": true,
+   "says": "struck rows"
+  },
+  {
+   "name": "supersede with a list",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "one"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "reason": "the cut was wrong",
+    "list": "- [ ] Verify suite and close plan"
+   },
+   "lands": true
+  },
+  {
+   "name": "append with no plan open",
+   "setup": [],
+   "call": {
+    "op": "append",
+    "todos": [
+     {
+      "label": "Probe docs availability"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "no plan was open"
+  },
+  {
+   "name": "a partial reorder",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      },
+      {
+       "label": "b"
+      },
+      {
+       "label": "c"
+      },
+      {
+       "label": "d"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "reorder",
+    "labels": [
+     "c",
+     "a",
+     "b"
+    ]
+   },
+   "lands": true,
+   "says": "keep their order"
+  },
+  {
+   "name": "retry with a reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "t"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "t"
+    },
+    {
+     "op": "fail",
+     "label": "t",
+     "cause": "x"
+    }
+   ],
+   "call": {
+    "op": "retry",
+    "label": "t",
+    "reason": "the spawn failed"
+   },
+   "lands": true,
+   "says": "left out, they stay"
+  },
+  {
+   "name": "drop on a running todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "t"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "t"
+    }
+   ],
+   "call": {
+    "op": "drop",
+    "label": "t",
+    "note": "redundant"
+   },
+   "lands": false,
+   "says": "ends with fail and a cause"
+  },
+  {
+   "name": "done with several labels",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Add power(a, b) function"
+      },
+      {
+       "label": "Add tests for power"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "labels": [
+     "Add power(a, b) function",
+     "Add tests for power"
+    ],
+    "op": "done"
+   },
+   "lands": true,
+   "says": "each ran as its own call"
+  },
+  {
+   "name": "a decider with nothing in it",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Add input validation to calc.divide in calc.py, semantics per user decision",
+    "todos": [
+     {
+      "after": [],
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {},
+         "id": "decision-recorded",
+         "weight": 1000
+        }
+       ]
+      },
+      "delegation": null,
+      "label": "Decide division-by-zero semantics"
+     },
+     {
+      "after": [
+       "Decide division-by-zero semantics"
+      ],
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "divide-validated",
+         "weight": 500
+        },
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "zero-division-behavior",
+         "weight": 500
+        }
+       ]
+      },
+      "delegation": null,
+      "label": "Implement validation in calc.divide per chosen semantics"
+     },
+     {
+      "after": [
+       "Implement validation in calc.divide per chosen semantics"
+      ],
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "tests-pass",
+         "weight": 1000
+        }
+       ]
+      },
+      "delegation": null,
+      "label": "Add regression tests to test_calc.py and run suite"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "empty decider"
+  },
+  {
+   "name": "the op's own key naming the todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Write mod(a, b) in calc.py"
+      },
+      {
+       "label": "Run unittest gate green"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "add_edge": "Write mod(a, b) in calc.py",
+    "after": "Run unittest gate green",
+    "op": "add_edge"
+   },
+   "lands": true
+  },
+  {
+   "name": "labels on append",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Write mod(a, b) in calc.py"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "labels": [
+     "Park a scratch todo for the fail/retry demo"
+    ],
+    "op": "append"
+   },
+   "lands": true
+  },
+  {
+   "name": "unblock on a pending todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Deliberate placeholder to fail then retry"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Deliberate placeholder to fail then retry",
+    "op": "unblock"
+   },
+   "lands": true,
+   "says": "not blocked"
+  },
+  {
+   "name": "fail on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Deliberate placeholder to fail then retry"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "cause": "Deliberate fail to exercise the fail op; will be retried",
+    "label": "Deliberate placeholder to fail then retry",
+    "op": "fail"
+   },
+   "lands": true,
+   "says": "started first"
+  },
+  {
+   "name": "retry on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Deliberate placeholder to fail then retry"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "retry",
+    "todo": "Deliberate placeholder to fail then retry"
+   },
+   "lands": true,
+   "says": "had not run yet"
+  },
+  {
+   "name": "decompose holding its arguments beside op",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Run unittest gate green"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "decompose": {
+     "todos": [
+      {
+       "label": "Run focused test_mod check"
+      }
+     ]
+    },
+    "label": "Run unittest gate green",
+    "op": "decompose"
+   },
+   "lands": true
+  },
+  {
+   "name": "supersede with no reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Write mod(a, b) in calc.py"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "todos": [
+     {
+      "label": "Record full-suite state and close the plan"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "none was given"
+  },
+  {
+   "name": "supersede after the plan finished",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Write mod(a, b) in calc.py"
+      }
+     ]
+    },
+    {
+     "op": "done",
+     "label": "Write mod(a, b) in calc.py"
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "reason": "The implementation todos are done; the only remaining step is recording the suite state",
+    "todos": [
+     {
+      "label": "Record full-suite state and close the plan"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "no plan was open"
+  },
+  {
+   "name": "todos as a JSON string that does not parse",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Add a mean(values) function to calc.py",
+    "todos": "[{\"label\": \"Add mean(values) to calc.py with unittest tests\", \"delegation\": {\"spec\": {\"role\": \"root\", \"isolation\": \"worktree\"}, \"accept\": {\"stated\": \"Child implements mean(values) in calc.py and tests in test_calc.py; python3 -m unittest -q passes in the worktree\"}, \"context\": [\"calc.py\", \"test_calc.py\"]}, \"contract\": {\"class\": \"writer\", \"items\": [{\"id\": \"mean_implemented\", \"critical\": true, \"weight\": 40, \"decider\": {\"cmd\": \"python3 -c \\\"import calc; assert calc.mean([2,4,6]) == 4.0\\\"\"}}, {\"id\": \"tests_pass\", \"critical\": true, \"weight\": 60, \"decider\": {\"cmd\": \"python3 -m unittest -q\"}}, {\"id\": \"mean_test_present\", \"critical\": true, \"weight\": 20, \"decider\": {\"cmd\": \"grep -q 'def test_mean' test_calc.py\"}}}], \"after\": []}]"
+   },
+   "lands": false,
+   "says": "\"todos\" is malformed: expected"
+  },
+  {
+   "name": "a stray line under the checklist",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "list": "- [ ] User decides divide-by-zero behavior (ValueError vs None vs other)\n- [ ] Implement input validation in calc.divide\n- [ ] Add regression test for the chosen behavior\n- [ ] Run test suite\nuser://1"
+   },
+   "lands": true,
+   "says": "not checklist rows"
+  },
+  {
+   "name": "a box set does not read",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      },
+      {
+       "label": "implement mod(a, b) in calc.py"
+      },
+      {
+       "label": "add test_mod to test_calc.py"
+      },
+      {
+       "label": "run unittest gate green"
+      },
+      {
+       "label": "update README with mod usage"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "set",
+    "list": "- [x] survey calc.py and test_calc.py\n- [x] implement mod(a, b) in calc.py\n- [>] add test_mod to test_calc.py\n- [!] run unittest gate green\n- [-] update README with mod usage",
+    "plan": "add-a-mod-a-b-function-to-calc-py-with"
+   },
+   "lands": true,
+   "says": "kept unchecked"
+  },
+  {
+   "name": "decompose naming its sub-plan as plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      },
+      {
+       "label": "implement mod(a, b) in calc.py"
+      },
+      {
+       "label": "add test_mod to test_calc.py"
+      },
+      {
+       "label": "run unittest gate green"
+      },
+      {
+       "label": "update README with mod usage"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "plan": "gate",
+    "todo": "run unittest gate green",
+    "todos": [
+     {
+      "label": "focused test_mod run green",
+      "after": [
+       "full unittest gate green"
+      ]
+     },
+     {
+      "label": "full unittest gate green",
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "full-green",
+         "weight": 100
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "ran on the open plan"
+  },
+  {
+   "name": "prose output holding a scheme",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      },
+      {
+       "label": "implement mod(a, b) in calc.py"
+      },
+      {
+       "label": "add test_mod to test_calc.py"
+      },
+      {
+       "label": "run unittest gate green"
+      },
+      {
+       "label": "update README with mod usage"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "done",
+    "label": "survey calc.py and test_calc.py",
+    "output": "read://calc.py — add/divide present; read://test_calc.py — CalcTest with test_add, test_divide"
+   },
+   "lands": true,
+   "says": "output takes a url"
+  },
+  {
+   "name": "supersede a finished plan by name",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      }
+     ]
+    },
+    {
+     "op": "done",
+     "label": "survey calc.py and test_calc.py"
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "plan": "add-a-mod-a-b-function-to-calc-py-with",
+    "reason": "work complete: mod(a,b) added with test, unittest gate green (exit=0); decompose and accepted_by_user proved unreachable in this build, remaining ops all exercised",
+    "todos": [
+     {
+      "label": "mod(a, b) added to calc.py with test_mod, gate green"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "no plan was open"
+  },
+  {
+   "name": "a todo inside a todo, and a plan named root",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "plan": "root",
+    "todos": [
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "tests_pass",
+         "weight": 100
+        }
+       ],
+       "covers": [
+        "calc.py"
+       ]
+      },
+      "label": "Fix calc.divide to return a / b",
+      "todo": {
+       "intent": [
+        "user://1"
+       ],
+       "label": "Fix calc.divide to return a / b"
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "done naming a plan that does not exist",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Fix calc.divide to return a / b"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "done",
+    "plan": "root",
+    "todo": "Fix calc.divide to return a / b"
+   },
+   "lands": true,
+   "says": "ran on the open plan"
+  },
+  {
+   "name": "a description on a todo is left out, its on blocks it",
+   "setup": [],
+   "call": {
+    "goal": "Add input validation to calc.divide with the divide-by-zero behavior chosen by the user",
+    "op": "init",
+    "todos": [
+     {
+      "description": "divide must validate its inputs; the divide-by-zero decision (raise ValueError vs return None vs let ZeroDivisionError propagate) belongs to the user and is blocked on them",
+      "label": "decide divide-by-zero behavior",
+      "on": {
+       "user": null
+      }
+     },
+     {
+      "description": "Write the plan for calc.divide input validation once the zero behavior is decided",
+      "label": "plan validation for calc.divide",
+      "after": [
+       "decide divide-by-zero behavior"
+      ]
+     }
+    ]
+   },
+   "lands": true,
+   "says": "became its own block"
+  },
+  {
+   "name": "block with a question beside its note",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "decide divide-by-zero behavior"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "decide divide-by-zero behavior",
+    "note": "Pick how calc.divide should treat b == 0 once input validation is added",
+    "on": {
+     "user": null
+    },
+    "op": "block",
+    "options": [
+     {
+      "id": "valueerror",
+      "label": "Raise ValueError(\"cannot divide by zero\")"
+     },
+     {
+      "id": "none",
+      "label": "Return None"
+     },
+     {
+      "id": "zero-div",
+      "label": "Let Python's ZeroDivisionError propagate"
+     }
+    ],
+    "question": "When calc.divide is called with a zero divisor, what should it do?"
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "append with one label",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Fix calc.divide to return a / b"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "scratch todo for op exercise",
+    "op": "append"
+   },
+   "lands": true
+  },
+  {
+   "name": "delegation written once beside todos",
+   "setup": [],
+   "call": {
+    "delegation": {
+     "accept": {
+      "command": "true"
+     },
+     "spec": {
+      "isolation": "worktree",
+      "role": "root"
+     }
+    },
+    "goal": "Add a mean(values) function to calc.py with unit tests",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "weight": 100,
+         "id": "tests-pass",
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ],
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "command": "true"
+       },
+       "spec": {
+        "isolation": "worktree",
+        "role": "root"
+       }
+      },
+      "label": "Add mean(values) to calc.py with unit tests"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "went to each todo"
+  },
+  {
+   "name": "drop with a cause",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Add mean(values) to calc.py with unit tests"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "cause": "Engine could not spawn the worktree child: git status --porcelain exited 128: fatal: not a git repository: (null), twice, while manual git worktree add succeeds. Proceeding inline per user default.",
+    "label": "Add mean(values) to calc.py with unit tests",
+    "op": "drop"
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "drop with a disposition in prose",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Add mean(values) to calc.py with unit tests"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "disposition": "superseded inline; engine spawn failed twice with git status --porcelain exited 128: fatal: not a git repository: (null)",
+    "label": "Add mean(values) to calc.py with unit tests",
+    "op": "drop"
+   },
+   "lands": true,
+   "says": "retained or discarded"
+  },
+  {
+   "name": "a todo id beside the label",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Fix the failing divide test and add a negate(a) function with tests, all checks passing",
+    "todos": [
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "divide_test_passes",
+         "weight": 100
+        }
+       ]
+      },
+      "label": "Fix divide() to divide instead of multiply",
+      "todo": "fix_divide"
+     },
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "negate_test_passes",
+         "weight": 100
+        }
+       ]
+      },
+      "label": "Add negate(a) function and test",
+      "todo": "add_negate"
+     },
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "full_suite_passes",
+         "weight": 100
+        }
+       ]
+      },
+      "label": "Full test suite passes",
+      "todo": "full_suite"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "a misspelled contract still refuses",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "x",
+      "contarct": {
+       "class": "inline",
+       "items": [
+        {
+         "id": "t",
+         "critical": true,
+         "weight": 1,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": false,
+   "says": "does not take \"contarct\""
+  },
+  {
+   "name": "a misspelled output still refuses",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Fix calc.divide to return a / b"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "Fix calc.divide to return a / b"
+    }
+   ],
+   "call": {
+    "op": "done",
+    "label": "Fix calc.divide to return a / b",
+    "outpt": "file:///tmp/x"
+   },
+   "lands": false,
+   "says": "does not take \"outpt\""
+  },
+  {
+   "name": "todos with no op",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "survey"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "todos": [
+     {
+      "contract": {
+       "covers": [
+        "calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-exists",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Implement mod(a, b) in calc.py"
+     },
+     {
+      "after": [
+       "Implement mod(a, b) in calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-test-passes",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Add test_mod to test_calc.py"
+     },
+     {
+      "after": [
+       "Add test_mod to test_calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "suite-green",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Run the full test suite"
+     },
+     {
+      "label": "Exercise every plan-tool op and report"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "a contract with no class",
+   "setup": [],
+   "call": {
+    "goal": "Add a mod(a, b) function to calc.py with a passing unit test",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "covers": [
+        "calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-exists",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Implement mod(a, b) in calc.py"
+     },
+     {
+      "after": [
+       "Implement mod(a, b) in calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-test-passes",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Add test_mod to test_calc.py"
+     },
+     {
+      "after": [
+       "Add test_mod to test_calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "suite-green",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Run the full test suite"
+     },
+     {
+      "label": "Exercise every plan-tool op and report"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "is inline"
+  },
+  {
+   "name": "block with no note",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "AWAITING USER: fix divide(a, b)? (calc.py:9)"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "block",
+    "on": {
+     "user": null
+    },
+    "todo": "AWAITING USER: fix divide(a, b)? (calc.py:9)"
+   },
+   "lands": true,
+   "says": "label stands in"
+  },
+  {
+   "name": "supersede a finished sub-plan while its parent is open",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Harden calc.py: fix divide, add input validation",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "decompose",
+     "label": "harden calc.py",
+     "todos": [
+      {
+       "label": "fix divide to true division"
+      },
+      {
+       "label": "add validation and error path"
+      }
+     ]
+    },
+    {
+     "op": "done",
+     "plan": "harden-calc-py-fix-divide-add-input.harden-calc-py",
+     "label": "fix divide to true division"
+    },
+    {
+     "op": "done",
+     "plan": "harden-calc-py-fix-divide-add-input.harden-calc-py",
+     "label": "add validation and error path"
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "plan": "harden-calc-py-fix-divide-add-input.harden-calc-py",
+    "reason": "The 3-step cut left the isinstance check duplicated in both functions; a shared validation helper is smaller and the same gate judges it.",
+    "todos": [
+     {
+      "label": "extract shared number validation into one helper"
+     },
+     {
+      "after": [
+       "extract shared number validation into one helper"
+      ],
+      "label": "re-run test gate on the refactored code"
+     }
+    ]
+   },
+   "lands": false,
+   "says": "is not active"
+  },
+  {
+   "name": "a todo blocked on the user as it is declared",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Add input validation to calc.divide, with the divide-by-zero behavior chosen by the user",
+    "todos": [
+     {
+      "label": "Decide divide-by-zero behavior with user",
+      "after": [],
+      "on": {
+       "user": null
+      },
+      "note": "User picks: ValueError, return None, or another behavior"
+     },
+     {
+      "label": "Plan validation for calc.divide",
+      "after": [
+       "Decide divide-by-zero behavior with user"
+      ]
+     }
+    ]
+   },
+   "lands": true,
+   "says": "became its own block"
+  }
+ ]
+}

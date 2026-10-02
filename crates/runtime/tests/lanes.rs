@@ -89,20 +89,25 @@ impl Rig {
         let root = Scratch::new(&format!("yi-lanes-{label}"))?;
         let repo = root.join("repo");
         let home = root.join("home");
-        std::fs::create_dir_all(&repo)?;
         std::fs::create_dir_all(&home)?;
-        git(&repo, &["init", "-q", "-b", "main"])?;
-        git(&repo, &["config", "user.email", "lanes@test"])?;
-        git(&repo, &["config", "user.name", "lanes"])?;
-        std::fs::write(repo.join("README.md"), "base\n")?;
-        git(&repo, &["add", "README.md"])?;
-        git(&repo, &["commit", "-qm", "base"])?;
+        init_repo(&repo)?;
         Ok(Self { repo, home, root })
     }
 
     fn pool(&self, slots: u8) -> Result<Pool, Box<dyn Error>> {
         Ok(Pool::open(&self.home, &self.repo, slots)?)
     }
+}
+
+fn init_repo(repo: &Path) -> TestResult {
+    std::fs::create_dir_all(repo)?;
+    git(repo, &["init", "-q", "-b", "main"])?;
+    git(repo, &["config", "user.email", "lanes@test"])?;
+    git(repo, &["config", "user.name", "lanes"])?;
+    std::fs::write(repo.join("README.md"), "base\n")?;
+    git(repo, &["add", "README.md"])?;
+    git(repo, &["commit", "-qm", "base"])?;
+    Ok(())
 }
 
 #[test]
@@ -269,6 +274,50 @@ fn a_resumed_session_reclaims_its_slot_with_its_work_and_an_orphan_blocks_others
         "the commit is still on the branch"
     );
     drop(back);
+    Ok(())
+}
+
+/// Probe repos deleted and recreated at the same path left slots whose `.git` named a gitdir
+/// that was gone, and every later claim in the project died on `not a git repository`.
+#[test]
+fn a_slot_whose_repository_was_recreated_is_a_free_slot() -> TestResult {
+    let rig = Rig::new("recreated")?;
+    let pool = rig.pool(2)?;
+    let idle = pool.claim("s-idle", ClaimBase::Main)?;
+    let left = pool.claim("pid-left", ClaimBase::Main)?;
+    let slot = left.slot();
+    drop((idle, left));
+    git(&rig.repo, &["branch", "-q", "yi/pid-left", "main"])?;
+    orphan(&pool, slot, "pid-left")?;
+    let work = pool.dir().join(slot.to_string()).join("work.txt");
+    std::fs::write(&work, "UNCOMMITTED\n")?;
+    std::fs::remove_dir_all(&rig.repo)?;
+    init_repo(&rig.repo)?;
+    let pool = rig.pool(2)?;
+    // Review: its own session resuming must not lose the tree, which holds the only copy.
+    match pool.claim("pid-left", ClaimBase::Main) {
+        Err(LaneError::RepoGone { .. }) => {}
+        other => {
+            return Err(format!("a resume deleted or reused its tree: {:?}", other.err()).into());
+        }
+    }
+    assert!(
+        work.is_file(),
+        "the refused resume kept its uncommitted file"
+    );
+    let first = pool.claim("s-one", ClaimBase::Main)?;
+    let second = pool.claim("s-two", ClaimBase::Main)?;
+    for (lane, branch) in [(&first, "yi/s-one"), (&second, "yi/s-two")] {
+        assert_eq!(
+            git(lane.path(), &["symbolic-ref", "--short", "HEAD"])?,
+            branch
+        );
+        assert_eq!(
+            git(lane.path(), &["rev-parse", "HEAD"])?,
+            git(&rig.repo, &["rev-parse", "main"])?,
+            "the slot is a worktree of the new repository"
+        );
+    }
     Ok(())
 }
 
@@ -628,7 +677,7 @@ fn a_rollup_is_bounded_at_the_parser() {
 type Steers = std::sync::mpsc::Receiver<String>;
 
 fn handle_for(
-    lane: yi_runtime::lane::Lane,
+    lane: Option<yi_runtime::lane::Lane>,
     land_command: Option<Vec<String>>,
 ) -> (std::sync::Arc<LaneHandle>, Steers) {
     let (events, _keep) = tokio::sync::broadcast::channel(16);
@@ -637,34 +686,69 @@ fn handle_for(
         std::sync::Arc::new(move |message, _| {
             let _ = tx.send(format!("{message:?}"));
         });
-    (
-        LaneHandle::new(Some(lane), None, land_command, events, steer),
-        rx,
-    )
+    (LaneHandle::new(lane, None, land_command, events, steer), rx)
 }
 
-/// Two `/land` calls are one poller; the second is refused while the first runs.
+/// Two `/land` calls are one poller; the second is refused at once while the first pushes.
 #[test]
 fn two_lands_share_one_poller() -> TestResult {
     let rig = Rig::new("poller")?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-poll", ClaimBase::Main)?;
-    let slow = vec!["sh".to_owned(), "-c".to_owned(), "sleep 1".to_owned()];
-    let (handle, _steers) = handle_for(lane, Some(slow));
+    let gate = rig.root.join("gate");
+    let pushing = rig.root.join("gate.up");
+    std::fs::write(&gate, "")?;
+    let held = vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        r#": > "$0.up"; while [ -e "$0" ]; do sleep 0.01; done"#.to_owned(),
+        gate.to_string_lossy().into_owned(),
+    ];
+    let (handle, steers) = handle_for(Some(lane), Some(held));
     handle.land("Title")?;
-    let refused = handle.land("Title");
+    assert!(until(|| pushing.exists()), "the first push never started");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let second = std::sync::Arc::clone(&handle);
+    std::thread::spawn(move || {
+        let _ = tx.send(second.land("Title").map_err(|error| error.to_string()));
+    });
+    let refused = rx.recv_timeout(std::time::Duration::from_secs(60));
+    std::fs::remove_file(&gate)?;
     assert!(
-        matches!(&refused, Err(error) if error.to_string().contains("landing in progress")),
-        "{refused:?}"
+        matches!(&refused, Ok(Err(error)) if error.contains("landing in progress")),
+        "{refused:?}, steers {:?}",
+        steers.try_iter().collect::<Vec<_>>()
     );
-    std::thread::sleep(std::time::Duration::from_millis(1_800));
     assert!(
-        handle.land("Title").is_ok(),
+        until(|| handle.land("Title").is_ok()),
         "the poller is free once the first ends"
     );
-    std::thread::sleep(std::time::Duration::from_millis(1_500));
     handle.release()?;
     Ok(())
+}
+
+/// A `/land` that finds no lane gives the poller back: the next one says why, not "in progress".
+#[test]
+fn a_land_without_a_lane_frees_the_poller() {
+    let (handle, _steers) = handle_for(None, None);
+    for _ in 0..2 {
+        let refused = handle.land("Title");
+        assert!(
+            matches!(&refused, Err(error) if error.to_string().contains("nothing to land")),
+            "{refused:?}"
+        );
+    }
+}
+
+fn until(mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !ready() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
 }
 
 /// A base that conflicts stops the landing before the push: the steer names the file,
@@ -688,7 +772,7 @@ fn a_conflicting_base_pushes_nothing() -> TestResult {
     git(&rig.repo, &["commit", "-qam", "trunk edit"])?;
     git(&rig.repo, &["push", "-q", "origin", "main"])?;
     let lane_path = lane.path().to_path_buf();
-    let (handle, steers) = handle_for(lane, None);
+    let (handle, steers) = handle_for(Some(lane), None);
     handle.land("Title")?;
     let steer = steers.recv_timeout(std::time::Duration::from_secs(60))?;
     assert!(
@@ -1287,6 +1371,13 @@ mod accept {
             assert!(
                 matches!(refused, Err(LaneError::Git { .. })),
                 "{blocker}: {refused:?}"
+            );
+            let said = refused.as_ref().err().map(ToString::to_string);
+            assert!(
+                !said
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Some(") || text.contains("None")),
+                "{said:?}"
             );
             assert_eq!(parent_view(&parent)?, before, "{blocker}: nothing moved");
             std::fs::remove_file(&path)?;

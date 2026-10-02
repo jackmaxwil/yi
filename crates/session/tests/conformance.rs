@@ -27,7 +27,7 @@ fn for_each_backend(case: impl Fn(&mut dyn SessionRepo) -> TestResult) -> TestRe
 }
 
 fn user_message(text: &str) -> AgentMessage {
-    AgentMessage::host_user(
+    AgentMessage::user_input(
         UserContent::Blocks(vec![Content::Text {
             text: text.to_owned(),
             text_signature: None,
