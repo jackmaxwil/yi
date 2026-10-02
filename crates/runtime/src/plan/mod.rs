@@ -31,6 +31,7 @@ pub mod ops;
 pub mod output;
 pub mod program;
 pub mod recovery;
+pub(crate) mod render;
 pub mod request;
 pub mod schedule;
 pub mod snapshot;

@@ -743,11 +743,10 @@ pub fn apply_op(
         Op::Accept { label, output, .. } => {
             let output = output.clone();
             check_terminal(label, output.as_ref())?;
-            let resolution = completion(
-                state.plan(id)?,
-                label,
-                Some(contract::Resolution::AcceptedByUser),
-            )?;
+            let accepted = decided
+                .resolution
+                .or(Some(contract::Resolution::AcceptedByUser));
+            let resolution = completion(state.plan(id)?, label, accepted)?;
             step_todo(
                 state.plan_mut(id)?,
                 label,
@@ -817,7 +816,7 @@ fn completion_of(
     if super::acceptance::is_worktree(todo)
         && !matches!(
             resolution,
-            Some(contract::Resolution::VerifiedDone | contract::Resolution::AcceptedByUser)
+            Some(vouched) if vouched != contract::Resolution::LegacyUnverified
         )
     {
         return Err(PlanOpError::AcceptanceUnavailable {

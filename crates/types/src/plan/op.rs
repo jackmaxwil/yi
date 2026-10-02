@@ -42,7 +42,7 @@ pub enum OpKind {
 
 /// The kinds a model may call, in the tool schema's order; the administrative kinds below
 /// parse on every surface but cost the prompt no bytes.
-pub const MODEL_OPS: usize = 15;
+pub const MODEL_OPS: usize = 16;
 
 /// Every kind, in wire order; the parser reads this list and the schema its first `MODEL_OPS`.
 pub const ALL_OPS: [OpKind; 23] = [
@@ -61,13 +61,13 @@ pub const ALL_OPS: [OpKind; 23] = [
     OpKind::Decompose,
     OpKind::Supersede,
     OpKind::View,
+    OpKind::Accept,
     OpKind::FuseReset,
     OpKind::Repair,
     OpKind::Import,
     OpKind::Reconcile,
     OpKind::Submit,
     OpKind::Resolve,
-    OpKind::Accept,
     OpKind::Program,
 ];
 
@@ -305,7 +305,8 @@ pub enum Op {
         attempt: AttemptId,
         resolution: Resolve,
     },
-    /// The user's administrative acceptance: `Done { AcceptedByUser }`, never verified.
+    /// An acceptance the user or the classifier confirmed: `Done { AcceptedByUser }` or
+    /// `Done { AcceptedByClassifier }`, never verified.
     #[serde(rename = "accepted_by_user")]
     Accept {
         label: TodoLabel,

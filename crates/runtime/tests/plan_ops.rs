@@ -2107,10 +2107,12 @@ mod contracts {
     use yi_runtime::plan::authority::{Confirmer, Submission, SubmitError, submit};
     use yi_runtime::plan::capacity::{Capacity, Purpose};
     use yi_runtime::plan::journal::{Journal, RealFs};
+    use yi_runtime::plan::tool::PlanTool;
     use yi_runtime::plan::verify::Verifier;
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
     use yi_runtime::subagent::DEFAULT_MAX_CHILDREN;
     use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
+    use yi_tools::Tool;
     use yi_types::plan::canonical::{ArtifactRef, Digest};
     use yi_types::plan::contract::{
         Contract, ContractItem, ItemVerdict, JurorLine, Outcome as VerdictOutcome, Resolution,
@@ -3391,6 +3393,169 @@ mod contracts {
             events,
         ));
         Ok(Confirmer { broker, store })
+    }
+
+    /// The owner's plan tool over `rig`, confirming through a broker in `mode` that answers
+    /// `answer` and counts each time it asks, judged by a sidecar answering `safe` when given.
+    fn asking_tool(
+        rig: &Rig,
+        mode: PermissionMode,
+        answer: AskOutcome,
+        safe: Option<f64>,
+    ) -> Result<(PlanTool, Arc<std::sync::atomic::AtomicU32>), Box<dyn Error>> {
+        let Confirmer { store, .. } = confirmer(rig, answer)?;
+        let asked = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = Arc::clone(&asked);
+        let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            answer
+        });
+        let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
+        let broker = PermissionBroker::new(mode, rig.ws.clone(), Vec::new(), Some(asker), events);
+        if let Some(p) = safe {
+            use yi_runtime::classifier::{Approver, Sidecar, Thresholds};
+            let (port, _sidecar) =
+                crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(p)])?;
+            let sidecar = Sidecar {
+                url: format!("http://127.0.0.1:{port}"),
+                key: Some("k".to_owned()),
+                model: "english".to_owned(),
+                timeout: std::time::Duration::from_secs(2),
+                threshold: None,
+            };
+            let thresholds = Thresholds {
+                allow_at: 0.9,
+                allow_destructive_at: 0.98,
+                ask_at: 0.2,
+            };
+            broker.set_approver(Arc::new(Approver::new(
+                sidecar,
+                thresholds,
+                None,
+                Arc::new(|_| {}),
+            )));
+        }
+        let confirming = yi_runtime::plan::authority::Confirming {
+            broker: Arc::new(broker),
+            store: Arc::new(move || Some(store.clone())),
+        };
+        Ok((
+            PlanTool::new(Arc::clone(&rig.engine), Actor::Owner).confirming(confirming),
+            asked,
+        ))
+    }
+
+    /// A running todo whose checker the verifier refused, and the plan tool's accept on it.
+    fn accept_through(
+        tool: &PlanTool,
+        rig: &Rig,
+    ) -> Result<(PlanId, bool, String), Box<dyn Error>> {
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("ship it", contract)?])?;
+        start(&rig.engine, &plan, "ship it")?;
+        let verdict = refused(done(&rig.engine, &plan, "ship it", None))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        let args = json!({"op": "accept", "label": "ship it", "note": "just check exit 0 by hand"});
+        let output = tool.execute(
+            args.as_object().cloned().ok_or("args")?,
+            &yi_tools::ToolContext::new(rig.ws.clone()),
+        );
+        let text = output
+            .result
+            .content
+            .iter()
+            .map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        Ok((plan, output.is_error, text))
+    }
+
+    /// Dies with the model's accept refused as `NotOwner`, the escape hatch the CLI and the console
+    /// held but no model could reach: through the tool, the user's yes lands `AcceptedByUser`.
+    #[test]
+    fn the_models_accept_asks_the_user_and_lands_accepted_by_user() -> TestResult {
+        let rig = rig("yi-accept-tool-user", None)?;
+        let (tool, asked) = asking_tool(&rig, PermissionMode::Ask, AskOutcome::AllowOnce, None)?;
+        let (plan, refused, text) = accept_through(&tool, &rig)?;
+        assert!(!refused, "{text}");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "ship it")?.state,
+            TodoState::Done {
+                resolution: Some(Resolution::AcceptedByUser),
+                ..
+            }
+        ));
+        let declining = rig_tool_declined()?;
+        assert!(
+            declining.1 && declining.2.contains("declined"),
+            "{}",
+            declining.2
+        );
+        Ok(())
+    }
+
+    fn rig_tool_declined() -> Result<(PlanId, bool, String), Box<dyn Error>> {
+        let rig = rig("yi-accept-tool-declined", None)?;
+        let (tool, _) = asking_tool(&rig, PermissionMode::Ask, AskOutcome::Reject, None)?;
+        accept_through(&tool, &rig)
+    }
+
+    /// Dies with the person asked, or the acceptance recorded as theirs, when the classifier in
+    /// auto mode allows it: it lands `AcceptedByClassifier` with `classifier` as the actor.
+    #[test]
+    fn an_accept_the_classifier_allows_never_asks_and_is_not_the_users() -> TestResult {
+        let allowed = rig("yi-accept-tool-classifier", None)?;
+        let (tool, asked) = asking_tool(
+            &allowed,
+            PermissionMode::Auto,
+            AskOutcome::Reject,
+            Some(0.99),
+        )?;
+        let (plan, refused, text) = accept_through(&tool, &allowed)?;
+        assert!(!refused, "{text}");
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no person was asked"
+        );
+        assert!(matches!(
+            todo_of(&allowed.store, &plan, "ship it")?.state,
+            TodoState::Done {
+                resolution: Some(Resolution::AcceptedByClassifier),
+                ..
+            }
+        ));
+        let records = allowed.store.journal(&plan).read()?.records;
+        assert_eq!(
+            records.last().ok_or("no record")?.record.actor,
+            "classifier"
+        );
+        let unsure = rig("yi-accept-tool-unsure", None)?;
+        let (tool, asked) = asking_tool(
+            &unsure,
+            PermissionMode::Auto,
+            AskOutcome::AllowOnce,
+            Some(0.5),
+        )?;
+        let (plan, refused, text) = accept_through(&tool, &unsure)?;
+        assert!(!refused, "{text}");
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "an unsure classifier asks"
+        );
+        assert!(matches!(
+            todo_of(&unsure.store, &plan, "ship it")?.state,
+            TodoState::Done {
+                resolution: Some(Resolution::AcceptedByUser),
+                ..
+            }
+        ));
+        Ok(())
     }
 
     // Dies with the `Accept` arm of `check_actor` and with `apply_op`'s hard-coded
