@@ -1362,6 +1362,51 @@ fn a_prompt_dropped_before_insertion_is_answered_cancelled() -> TestResult {
     client.finish()
 }
 
+/// Dies on an ask left unanswered when the client hangs up: the ask waited on stdin forever, the
+/// runtime's drop waited on the ask, and `yi acp` never exited (every bash ask on Linux).
+#[test]
+fn a_client_that_hangs_up_on_an_ask_lets_the_agent_exit() -> TestResult {
+    let dir = temp_dir("hangup-ask")?;
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"tool": "write", "args": {"path": "note.txt", "content": "tidy\n"}}),
+            json!({"text": "wrote the note"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    client.request(
+        "mode",
+        "session/set_config_option",
+        json!({"sessionId": session_id, "configId": "mode", "type": "id", "value": "ask"}),
+    )?;
+    prompt(
+        &mut client,
+        "p",
+        &session_id,
+        json!([{"type": "text", "text": "tidy"}]),
+    )?;
+    client.read_until(|frame| frame["method"] == "session/request_permission")?;
+    let AcpClient {
+        mut child, stdin, ..
+    } = client;
+    drop(stdin);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while child.try_wait()?.is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill()?;
+            return Err("yi acp still running 20 s after stdin closed on an open ask".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        !dir.join("note.txt").exists(),
+        "an unanswered ask is a refusal"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_edit_approval_shows_its_diff_to_a_strict_client() -> TestResult {
     let dir = temp_dir("strict-diff")?;

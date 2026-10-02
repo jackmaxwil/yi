@@ -13,6 +13,10 @@ use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 
+type Pending = std::sync::Arc<
+    std::sync::Mutex<Option<std::collections::HashMap<String, std::sync::mpsc::Sender<Value>>>>,
+>;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn assistant_partial() -> AgentMessage {
@@ -456,8 +460,7 @@ fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResu
         ]),
     ];
     for (count, expected) in expected.iter().enumerate() {
-        let pending: Arc<Mutex<std::collections::HashMap<String, std::sync::mpsc::Sender<Value>>>> =
-            Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
         let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let (route, record) = (Arc::clone(&pending), Arc::clone(&seen));
         let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
@@ -465,7 +468,11 @@ fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResu
                 log.push(frame.clone());
             }
             let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
-            if let Some(sender) = route.lock().ok().and_then(|map| map.get(id).cloned()) {
+            if let Some(sender) = route
+                .lock()
+                .ok()
+                .and_then(|map| map.as_ref()?.get(id).cloned())
+            {
                 let _ = sender.send(json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}}));
             }
         });
@@ -488,8 +495,7 @@ fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResu
 #[test]
 fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestResult {
     use std::sync::{Arc, Mutex};
-    let pending: Arc<Mutex<std::collections::HashMap<String, std::sync::mpsc::Sender<Value>>>> =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pending: Pending = Arc::new(Mutex::new(Some(std::collections::HashMap::new())));
     let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let route = Arc::clone(&pending);
     let record = Arc::clone(&seen);
@@ -500,7 +506,10 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         let Some(id) = frame.get("id").and_then(Value::as_str) else {
             return;
         };
-        let sender = route.lock().ok().and_then(|map| map.get(id).cloned());
+        let sender = route
+            .lock()
+            .ok()
+            .and_then(|map| map.as_ref()?.get(id).cloned());
         if let Some(sender) = sender {
             let _ = sender.send(json!({
                 "jsonrpc": "2.0",
@@ -571,7 +580,8 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         pending
             .lock()
             .map_err(|error| error.to_string())?
-            .is_empty(),
+            .as_ref()
+            .is_some_and(std::collections::HashMap::is_empty),
         "the pending entry must be cleaned up after the answer"
     );
     Ok(())
