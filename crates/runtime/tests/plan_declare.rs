@@ -126,7 +126,7 @@ fn a_plain_checker_command_is_frozen_and_the_engine_starts_the_todo() -> TestRes
     else {
         return Err("not a cmd item".into());
     };
-    assert_eq!(*timeout_ms, 60_000);
+    assert_eq!(*timeout_ms, yi_runtime::goal::DEFAULT_CHECK_TIMEOUT_MS);
     let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
     assert_eq!(manifest.command, "grep -qx alpha alpha.txt");
     Ok(())
