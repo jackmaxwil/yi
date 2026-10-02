@@ -289,7 +289,19 @@ fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<String>) {
             }
             list.lines().map(str::to_owned).collect()
         }
-        ("set", None, Some(Value::Array(rows))) => rows.iter().filter_map(row_text).collect(),
+        ("set", None, Some(Value::Array(rows))) => {
+            let bare = |row: &Value| {
+                let label = row.get("label").is_some_and(Value::is_string);
+                row.is_string() || (label && row.as_object().is_some_and(|o| o.len() == 1))
+            };
+            // Invariant: a row carrying a contract, edges or a delegation is no checklist line, and
+            // set refuses it by its `todos` hint rather than land the todo unverified.
+            if rows.is_empty() || !rows.iter().all(bare) {
+                args.insert("todos".to_owned(), Value::Array(rows));
+                return;
+            }
+            rows.iter().filter_map(row_text).collect()
+        }
         ("supersede", Some(Value::String(list)), todos) => {
             let labels: Vec<Value> = list
                 .lines()

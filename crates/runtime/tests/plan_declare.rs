@@ -569,3 +569,22 @@ fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
     assert!(wrong.is_empty(), "{wrong:#?}");
     Ok(())
 }
+
+/// Dies on a set whose todo rows carry a contract: each row became a checklist line, so the
+/// contract was dropped without a word and the todo would land unverified.
+#[test]
+fn a_set_row_with_a_contract_is_refused_and_bare_rows_land() -> TestResult {
+    let rig = rig("set-rows")?;
+    let contract = json!({"class": "inline", "items": [
+        {"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [{"label": "a"}, {"label": "b", "contract": contract}]}),
+    );
+    assert!(refused && text.contains("a todo is {label"), "{text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": []}));
+    assert!(refused, "an empty set is no checklist: {text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": [{"label": "a"}, "b"]}));
+    assert!(!refused, "{text}");
+    Ok(())
+}
