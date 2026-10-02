@@ -96,7 +96,8 @@ pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
     }
 }
 
-type PendingAsks = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>>;
+/// `None` once stdin has ended: no answer can come, so an ask rejects instead of waiting.
+type PendingAsks = Arc<Mutex<Option<HashMap<String, std::sync::mpsc::Sender<Value>>>>>;
 
 fn permission_options(grants: &[yi_runtime::Grant]) -> Vec<AcpPermissionOption> {
     use AcpPermissionOptionKind::{AllowAlways, AllowOnce, RejectOnce};
@@ -125,8 +126,11 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             format!("perm_{session_id}_{n}")
         };
         let (sender, receiver) = std::sync::mpsc::channel();
-        if let Ok(mut map) = pending.lock() {
-            map.insert(id.clone(), sender);
+        let open = (pending.lock().ok())
+            .and_then(|mut map| map.as_mut().map(|map| map.insert(id.clone(), sender)))
+            .is_some();
+        if !open {
+            return AskOutcome::Reject;
         }
         let params = yi_types::acp::AcpPermissionParams {
             session_id: session_id.clone(),
@@ -155,7 +159,7 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
         };
         sink(&json!(request));
         let response = receiver.recv();
-        if let Ok(mut map) = pending.lock() {
+        if let Some(map) = pending.lock().ok().as_mut().and_then(|map| map.as_mut()) {
             map.remove(&id);
         }
         let Ok(response) = response else {
@@ -1083,7 +1087,7 @@ fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
 pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
     let repo = JsonlRepo::new(options.session_dir, options.cwd.display().to_string());
     let sink = stdout_sink();
-    let pending: PendingAsks = Arc::new(Mutex::new(HashMap::new()));
+    let pending: PendingAsks = Arc::new(Mutex::new(Some(HashMap::new())));
     let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<attach::Incoming>();
     let mut state = AcpState {
         user_cells: crate::cells::UserCells::default(),
@@ -1117,7 +1121,8 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                     && value.get("method").is_none()
                     && let Some(id) = value.get("id").and_then(Value::as_str)
                 {
-                    let sender = pending.lock().ok().and_then(|map| map.get(id).cloned());
+                    let sender =
+                        (pending.lock().ok()).and_then(|map| map.as_ref()?.get(id).cloned());
                     if let Some(sender) = sender {
                         let _ = sender.send(value);
                         continue;
@@ -1129,6 +1134,11 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                 {
                     break;
                 }
+            }
+            // Incident: a bash ask in flight when stdin closed waited forever on a reply, and the
+            // runtime's drop waited on that blocking task, so `yi acp` never exited (Linux asks).
+            if let Ok(mut map) = pending.lock() {
+                *map = None;
             }
         });
         while let Some(incoming) = line_rx.recv().await {
