@@ -555,7 +555,10 @@ impl App {
                 if let Some(row) = self.state.sessions.get_mut(&session) {
                     row.attached = true;
                 }
-                if let Some(replayed_to) = result.get("replayedTo").and_then(Value::as_u64) {
+                if let Some(replayed_to) = result
+                    .pointer("/_meta/yi/replayedTo")
+                    .and_then(Value::as_u64)
+                {
                     self.resume_offsets.insert(session.clone(), replayed_to);
                 }
                 self.absorb_result(&session, &result);
@@ -586,7 +589,7 @@ impl App {
             };
             let id = SessionId(id.to_owned());
             let attached = entry
-                .get("attached")
+                .pointer("/_meta/yi/attached")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let status = self
@@ -599,8 +602,14 @@ impl App {
                 root: root.clone(),
                 status,
                 attached,
-                name: entry.get("name").and_then(Value::as_str).map(str::to_owned),
-                created_ms: entry.get("createdAt").and_then(Value::as_u64).unwrap_or(0),
+                name: entry
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                created_ms: entry
+                    .pointer("/_meta/yi/createdAt")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
                 last_ms: 0,
             });
         }
@@ -615,9 +624,12 @@ impl App {
                 continue;
             };
             let id = SessionId(id.to_owned());
-            let name = entry.get("name").and_then(Value::as_str).map(str::to_owned);
+            let name = entry
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             let last_ms = entry
-                .get("lastEventMs")
+                .pointer("/_meta/yi/lastEventMs")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
             // A session on screen streams its own state; the ledger covers
@@ -629,15 +641,18 @@ impl App {
                 }
                 continue;
             }
-            let unseen = entry.get("unseen").and_then(Value::as_u64).unwrap_or(0);
+            let unseen = entry
+                .pointer("/_meta/yi/unseen")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             let status = entry
-                .get("lastState")
+                .pointer("/_meta/yi/lastState")
                 .and_then(Value::as_str)
                 .map_or(SessionStatus::Unknown, |state| {
                     SessionStatus::from_ledger(state, unseen)
                 });
             let attached = entry
-                .get("attached")
+                .pointer("/_meta/yi/attached")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let root = entry

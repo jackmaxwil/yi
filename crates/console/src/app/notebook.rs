@@ -1,5 +1,5 @@
 use serde_json::Value;
-use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolContent};
+use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolCallUpdate, AcpToolContent};
 
 /// Kernel cells out of the tool-call stream: the start carries the code,
 /// the end carries streams and attachments in the details record.
@@ -7,7 +7,7 @@ pub(super) fn apply_notebook(
     cells: &mut Vec<crate::model::NbCell>,
     update: &AcpSessionUpdate,
 ) -> bool {
-    let AcpSessionUpdate::ToolCallUpdate {
+    let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
         tool_call_id,
         title,
         raw_input,
@@ -15,7 +15,7 @@ pub(super) fn apply_notebook(
         status,
         content,
         ..
-    } = update
+    }) = update
     else {
         return false;
     };

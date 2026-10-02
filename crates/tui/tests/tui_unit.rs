@@ -652,7 +652,7 @@ fn the_status_bar_does_not_repeat_the_program_name() -> TestResult {
 fn entry(id: &str, parent: Option<&str>, seq: u64, text: &str) -> yi_types::entry::Entry {
     yi_types::entry::Entry::Message {
         id: id.to_owned(),
-        message: yi_types::message::AgentMessage::host_user(
+        message: yi_types::message::AgentMessage::user_input(
             yi_types::message::UserContent::Text(text.to_owned()),
             0,
         ),

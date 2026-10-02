@@ -609,7 +609,11 @@ fn a_goal_edit_requires_an_attributed_user_citation() -> TestResult {
         )?;
         session.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("host-minted continuation".to_owned()), 2),
+            AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                "host-minted continuation",
+                2,
+            ),
         )?;
     }
     let uncited = service.set_objective("new objective", None).err();
@@ -657,7 +661,11 @@ fn a_citation_ordinal_names_the_same_message_at_the_goal_and_the_fetch_seam() ->
         )?;
         session.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("host-minted continuation".to_owned()), 2),
+            AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                "host-minted continuation",
+                2,
+            ),
         )?;
         session.append_message(
             "main",

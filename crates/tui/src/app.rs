@@ -754,7 +754,7 @@ impl App {
                 };
                 let text = user_text(&content);
                 match attribution {
-                    Attribution::Unproven => {
+                    Attribution::Unproven | Attribution::Host(_) => {
                         let carded = text.starts_with("[subagent ")
                             && self
                                 .tasks
@@ -764,7 +764,7 @@ impl App {
                             self.commit_cell(&Cell::Notice { text });
                         }
                     }
-                    Attribution::User => {
+                    Attribution::User | Attribution::Task => {
                         self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         if focus.chars().count() > 40 {
