@@ -1935,8 +1935,10 @@ mod refusals {
         Ok(())
     }
 
+    /// Dies with "done is illegal ... in state pending" on the owner's own todo: two dogfood
+    /// sessions lost a call each; starting it first costs nothing when no child is spawned.
     #[test]
-    fn done_on_a_pending_todo_names_the_legal_move() -> TestResult {
+    fn done_on_the_owners_pending_todo_starts_it_first() -> TestResult {
         let (_temp, tool) = tool()?;
         let opened = tool.execute(
             serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "tablefmt"}]})
@@ -1946,30 +1948,46 @@ mod refusals {
             &ToolContext::new(std::env::temp_dir()),
         );
         assert!(!opened.is_error, "{opened:?}");
-        let text = refusal(
-            &tool,
-            serde_json::json!({"op": "done", "label": "tablefmt"}),
+        let done = tool.execute(
+            serde_json::json!({"op": "done", "label": "tablefmt"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
         );
-        assert!(text.contains("in state pending"), "{text}");
-        assert!(text.contains("start it first"), "{text}");
-        assert!(text.contains("- [x]"), "{text}");
+        let text = format!("{:?}", done.result.content);
+        assert!(!done.is_error, "{text}");
+        assert!(text.contains("started first"), "{text}");
         Ok(())
     }
 
+    /// Dies with "output ... contains whitespace" on a done whose output was prose: three dogfood
+    /// sessions sent one; the todo closes and the reply says where the text stays.
     #[test]
-    fn a_prose_output_names_the_url_shapes_and_the_evidence_field() -> TestResult {
+    fn a_prose_output_is_kept_as_the_calls_note() -> TestResult {
         let (_temp, tool) = tool()?;
-        let text = refusal(
-            &tool,
-            serde_json::json!({
-                "op": "done",
-                "label": "patchfuzz",
-                "output": "python3 check.py patchfuzz -> ok 8 of 8 public cases pass",
-            }),
+        for step in [
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "patchfuzz"}]}),
+            serde_json::json!({"op": "start", "label": "patchfuzz"}),
+        ] {
+            let opened = tool.execute(
+                step.as_object().cloned().unwrap_or_default(),
+                &ToolContext::new(std::env::temp_dir()),
+            );
+            assert!(!opened.is_error, "{opened:?}");
+        }
+        let done = tool.execute(
+            serde_json::json!({"op": "done", "label": "patchfuzz", "output": "python3 check.py patchfuzz -> ok 8 of 8 public cases pass"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
         );
-        assert!(text.contains("output is a url of the product"), "{text}");
-        assert!(text.contains("file:///abs/path"), "{text}");
-        assert!(text.contains("todo tool's evidence"), "{text}");
+        let text = format!("{:?}", done.result.content);
+        assert!(
+            !done.is_error && text.contains("output takes a url"),
+            "{text}"
+        );
         Ok(())
     }
 
@@ -1992,14 +2010,24 @@ mod refusals {
         Ok(())
     }
 
+    /// Dies with "no plan is open; open one with init": a checklist with nothing open now
+    /// opens a plan named after its first row, and says so.
     #[test]
-    fn a_set_with_no_open_plan_names_goal() -> TestResult {
+    fn a_set_with_no_open_plan_opens_one_named_by_its_first_row() -> TestResult {
         let (_temp, tool) = tool()?;
-        let text = refusal(
-            &tool,
-            serde_json::json!({"op": "set", "list": "- [ ] one\n"}),
+        let set = tool.execute(
+            serde_json::json!({"op": "set", "list": "- [ ] one\n- [ ] two\n"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
         );
-        assert!(text.contains("add goal to this set to open one"), "{text}");
+        let text = format!("{:?}", set.result.content);
+        assert!(!set.is_error, "{text}");
+        assert!(
+            text.contains("plan one ") && text.contains("named after the first todo"),
+            "{text}"
+        );
         Ok(())
     }
 

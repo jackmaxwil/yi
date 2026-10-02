@@ -1,4 +1,5 @@
 mod doc;
+pub(crate) use doc::edit_distance;
 mod ext;
 mod journal;
 pub(crate) mod rank;

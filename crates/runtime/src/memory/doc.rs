@@ -343,27 +343,32 @@ pub fn read_note(name: MemoryName, text: &str) -> Note {
     }
 }
 
-fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut diagonal = row.first().copied().unwrap_or(0);
-        if let Some(first) = row.first_mut() {
-            *first = i.saturating_add(1);
-        }
+/// Insertions, deletions, substitutions and swaps of neighbours (optimal string alignment).
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let at = |row: &[usize], k: usize| row.get(k).copied().unwrap_or(usize::MAX);
+    let (mut before, mut row): (Vec<usize>, Vec<usize>) = (Vec::new(), (0..=b.len()).collect());
+    for (i, ca) in a.iter().enumerate() {
+        let mut next = vec![i.saturating_add(1); b.len().saturating_add(1)];
         for (j, cb) in b.iter().enumerate() {
-            let above = row.get(j.saturating_add(1)).copied().unwrap_or(usize::MAX);
-            let left = row.get(j).copied().unwrap_or(usize::MAX);
-            let cost = usize::from(ca != *cb);
-            let next = diagonal
-                .saturating_add(cost)
-                .min(above.saturating_add(1))
-                .min(left.saturating_add(1));
-            diagonal = above;
-            if let Some(cell) = row.get_mut(j.saturating_add(1)) {
-                *cell = next;
+            let mut cell = (at(&row, j).saturating_add(usize::from(ca != cb)))
+                .min(at(&row, j.saturating_add(1)).saturating_add(1))
+                .min(at(&next, j).saturating_add(1));
+            let back = |k: usize| k.checked_sub(1);
+            if back(i).and_then(|k| a.get(k)) == Some(cb)
+                && back(j).and_then(|k| b.get(k)) == Some(ca)
+            {
+                cell = cell.min(
+                    back(j)
+                        .map_or(usize::MAX, |k| at(&before, k))
+                        .saturating_add(1),
+                );
+            }
+            if let Some(slot) = next.get_mut(j.saturating_add(1)) {
+                *slot = cell;
             }
         }
+        before = std::mem::replace(&mut row, next);
     }
     row.last().copied().unwrap_or(0)
 }

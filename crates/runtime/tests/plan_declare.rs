@@ -59,8 +59,12 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
 }
 
 /// The tool's answer and whether it was an error.
+/// The loop's order: validate refuses before execute runs, so a shape only execute reads is refused.
 fn call(rig: &Rig, args: Value) -> (bool, String) {
     let input = args.as_object().cloned().unwrap_or_default();
+    if let Err(refusal) = rig.tool.validate(&input) {
+        return (true, refusal);
+    }
     let output = rig
         .tool
         .execute(input, &ToolContext::new(std::env::temp_dir()));
@@ -537,5 +541,50 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
         decider.contains("{cmd: {checker: command, timeout_ms}}"),
         "{decider}"
     );
+    Ok(())
+}
+
+/// Dies with one of the calls glm-5.3-flash sent in the dogfood refused again: each natural shape
+/// lands, and each refusal that stays names where the field goes (`dogfood/plan-shapes.json`, #982).
+#[test]
+fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/dogfood/plan-shapes.json");
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let mut wrong = Vec::new();
+    for case in fixture["cases"].as_array().ok_or("cases")? {
+        let name = case["name"].as_str().unwrap_or("?");
+        let rig = rig(&name.replace(' ', "-"))?;
+        for step in case["setup"].as_array().ok_or("setup")? {
+            let (refused, text) = call(&rig, step.clone());
+            assert!(!refused, "{name} setup: {text}");
+        }
+        let (refused, text) = call(&rig, case["call"].clone());
+        let lands = case["lands"].as_bool().unwrap_or(false);
+        let says = case["says"].as_str().unwrap_or("");
+        if refused == lands || !text.contains(says) {
+            wrong.push(format!("{name}: refused={refused} {text}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    Ok(())
+}
+
+/// Dies on a set whose todo rows carry a contract: each row became a checklist line, so the
+/// contract was dropped without a word and the todo would land unverified.
+#[test]
+fn a_set_row_with_a_contract_is_refused_and_bare_rows_land() -> TestResult {
+    let rig = rig("set-rows")?;
+    let contract = json!({"class": "inline", "items": [
+        {"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [{"label": "a"}, {"label": "b", "contract": contract}]}),
+    );
+    assert!(refused && text.contains("a todo is {label"), "{text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": []}));
+    assert!(refused, "an empty set is no checklist: {text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": [{"label": "a"}, "b"]}));
+    assert!(!refused, "{text}");
     Ok(())
 }
