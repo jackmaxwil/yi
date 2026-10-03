@@ -931,7 +931,13 @@ fn a_sidecar_on_another_machine_is_left_alone_and_the_log_says_so() -> TestResul
         "#!/bin/sh\necho \"$$\" >> \"$HOME/starts\"\nexec sleep 600\n",
     )?;
     let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
-    let said = std::fs::read_to_string(home.join(".yi/laya-serve.log")).unwrap_or_default();
+    let log = home.join(".yi/laya-serve.log");
+    let _waited = wait_until(Instant::now() + Duration::from_secs(10), || {
+        Ok(std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("192.0.2.1"))
+    });
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
     let _ = daemon.kill();
     let _ = daemon.wait();
     for pid in started(&home) {
