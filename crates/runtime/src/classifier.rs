@@ -196,7 +196,7 @@ impl SkillClassifier {
                 if fail(&self.breaker) {
                     (self.deliver)(self.notice(&error));
                 }
-                record.error = Some(error);
+                record.error = Some(format!("{}: {error}", self.sidecar.url));
                 (self.record)(record);
                 return;
             }
@@ -353,7 +353,7 @@ impl Approver {
             }
             Err(error) => {
                 fail(&self.breaker);
-                record.error = Some(error);
+                record.error = Some(format!("{}: {error}", self.sidecar.url));
                 None
             }
         };
