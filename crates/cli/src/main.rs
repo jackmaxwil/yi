@@ -12,6 +12,7 @@ mod plan;
 mod rpc;
 mod sessions;
 mod setup;
+mod sidecar;
 mod stats;
 mod todo;
 mod tty;
