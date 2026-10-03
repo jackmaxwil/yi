@@ -248,6 +248,11 @@ async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
             .all(|text| text.contains("failed 3 times") && text.contains("trigger words only")),
         "{notices:?}"
     );
+    let named = format!("127.0.0.1:{port}");
+    assert!(
+        notices.iter().all(|text| text.matches(&named).count() == 1),
+        "the notice names the sidecar once: {notices:?}"
+    );
     let pointed = rig.engine.observe_user(&typed("$gate please"));
     assert_eq!(
         pointed.len(),
