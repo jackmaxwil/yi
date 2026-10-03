@@ -494,6 +494,25 @@ fn a_confident_answer_runs_an_unknown_command_unreviewed() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_dead_sidecar_journals_the_approval_it_could_not_give_naming_it_once() -> TestResult {
+    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
+    let outcome = run(&gate, "make build");
+    assert!(!outcome.allowed, "{}", outcome.reason);
+    let record = gate.records.recv_timeout(Duration::from_secs(5))?;
+    let named = format!("127.0.0.1:{port}");
+    assert!(
+        record.consumer == "approve"
+            && record
+                .error
+                .as_deref()
+                .is_some_and(|error| error.matches(&named).count() == 1),
+        "{record:?}"
+    );
+    Ok(())
+}
+
 /// The owner chose a stricter bar for what a checkpoint cannot undo: 0.95 runs `make`, not `rm`.
 #[test]
 fn a_destructive_command_needs_the_stricter_bar() -> TestResult {

@@ -1,5 +1,5 @@
 ---
 issue: Closes #1022
-raise: crate ai +10, tests +29, comments +3
+raise: crate ai +10, crate runtime +6, tests +48, comments +3
 ---
 A classifier error names the sidecar's URL once (Closes #1022). When the sidecar was down, every journaled `classify` entry read `http://127.0.0.1:8000/v1/systemone: http://127.0.0.1:8000/v1/systemone: Connection Failed: …` and the pause notice named the sidecar a third time, because ureq's transport error already starts with the URL and the request prefixed it again. A decision error is now its cause alone (`Connection Failed: Connect error: Connection refused (os error 61)`, `the sidecar answered HTTP 401`, `not a decision: …`), rendered for a transport failure by the same helper the provider retry notice uses, and each surface that shows it names the sidecar once: a journaled `classify` or `approve` entry (`http://127.0.0.1:8000: Connection Failed: …`), the pause notice, `yi setup`'s probe and `yi doctor`.
