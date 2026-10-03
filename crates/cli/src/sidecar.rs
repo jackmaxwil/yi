@@ -7,24 +7,37 @@ pub(crate) fn start(home: &Path) {
     else {
         return;
     };
+    let Some((host, port)) = loopback(&url) else {
+        return note(
+            home,
+            &format!(
+                "classifier.url {url} is not on this machine's loopback, so no sidecar is started"
+            ),
+        );
+    };
     let home = home.to_path_buf();
-    std::thread::spawn(move || match own(&home, &checkpoint, &url) {
+    std::thread::spawn(move || match own(&home, &checkpoint, host, port) {
         Ok(Some(_child)) => loop {
             std::thread::park();
         },
         Ok(None) => {}
-        Err(error) => {
-            let line = format!("yi serve: the classifier sidecar did not start: {error}");
-            eprintln!("warning: {line}");
-            let log = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(home.join(".yi/laya-serve.log"));
-            if let Ok(mut log) = log {
-                let _said = writeln!(log, "{line}");
-            }
-        }
+        Err(error) => note(
+            &home,
+            &format!("the classifier sidecar did not start: {error}"),
+        ),
     });
+}
+
+/// A note made off the lock, so a daemon with no sidecar to start never waits on another's.
+fn note(home: &Path, line: &str) {
+    eprintln!("yi serve: {line}");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home.join(".yi/laya-serve.log"));
+    if let Ok(mut log) = log {
+        let _said = log.write_all(format!("yi serve: {line}\n").as_bytes());
+    }
 }
 
 /// Invariant: the log's lock rides the sidecar's stdout and its stdin pipe is held only by this
@@ -33,16 +46,14 @@ pub(crate) fn start(home: &Path) {
     clippy::disallowed_methods,
     reason = "yi serve owns the classifier sidecar's lifetime"
 )]
-fn own(home: &Path, checkpoint: &str, url: &str) -> std::io::Result<Option<std::process::Child>> {
+fn own(
+    home: &Path,
+    checkpoint: &str,
+    host: &str,
+    port: u16,
+) -> std::io::Result<Option<std::process::Child>> {
     let mut log = yi_runtime::session_store::lock_file(&home.join(".yi/laya-serve.log"))?;
     log.seek(std::io::SeekFrom::End(0))?;
-    let Some((host, port)) = loopback(url) else {
-        writeln!(
-            log,
-            "yi serve: classifier.url {url} is not on this machine's loopback, so no sidecar is started"
-        )?;
-        return Ok(None);
-    };
     let answering = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))?.any(|addr| {
         std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok()
     });
