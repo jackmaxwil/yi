@@ -16,6 +16,9 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let socket = dir.join("yi.sock");
+    // Incident: a daemon on the real HOME started the owner's real classifier sidecar.
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
     #[expect(
         clippy::disallowed_methods,
         reason = "the daemon contract is the spawned binary's socket; tests must drive the real process"
@@ -33,6 +36,7 @@ fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .env("HOME", &home)
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     // Incident: the socket file exists between bind() and listen(), and a
