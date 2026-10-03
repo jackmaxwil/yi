@@ -204,6 +204,12 @@ def ready_problems(rounds, head, holds=on_head):
     return errs
 
 
+def promotes(rounds, head, holds=on_head):
+    """A draft leaves draft on its own (owner, 2026-10-03): two rounds, the last holding for the
+    head and not blocked, and no high or medium finding left in it."""
+    return not ready_problems(rounds, head, holds) and not any(f["severity"] in REPORTED for f in rounds[-1]["findings"])
+
+
 def skip_reason(rounds, head, wanted=2, holds=on_head):
     """Why a new round on this head would repeat one: a redelivered message, or a sweep racing
     another, must not post again. A head is read at most `wanted` times while clean, and once
@@ -646,6 +652,12 @@ def cmd_review(args):
         if not (answer or {}).get("id"):
             print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}")
             return 1
+        title = pr.get("title", "")
+        if title.startswith(forge_pr.DRAFT) and promotes(rounds_of(comments(repo, number), allowed, number), sha,
+                                                         holds_for(number, pr["base"]["ref"])):
+            ready = forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{number}", {"title": title.removeprefix(forge_pr.DRAFT)})
+            print(f"#{number}: " + ("out of draft, two clean rounds and nothing above low left" if (ready or {}).get("number")
+                                    else f"stays a draft, the forge refused: {(ready or {}).get('message')}"))
     said = verdict(findings, None)
     print(f"#{number} round {n}: {said} ({len(findings)} finding(s), {dropped} dropped)")
     print(status)
@@ -802,6 +814,10 @@ def selfcheck():
     assert family("openrouter/z-ai/glm-5.3-flash") == "z-ai" and family("anthropic/claude-x") == "anthropic"
     assert family("openrouter/anthropic/claude-x") in AVOID_FAMILIES
     # A redelivered message, or a sweep racing another, must not post a round the rule does not owe.
+    clean = lambda n, found=(): {"n": n, "sha": "abc1234", "verdict": "clean", "findings": [{"severity": s} for s in found]}
+    assert promotes([clean(1), clean(2, ["low"])], "abc1234ff"), "two clean rounds with only lows promote"
+    assert not promotes([clean(1), clean(2, ["medium"])], "abc1234ff"), "a medium left keeps the draft"
+    assert not promotes([clean(2)], "abc1234ff") and not promotes([clean(1), clean(2)], "def5678"), "one round, or an old head"
     assert skip_reason([], "abc1234") is None
     one = [{"n": 1, "sha": "abc1234", "verdict": "clean"}]
     assert skip_reason(one, "abc1234ff") is None, "a clean head is read a second time"

@@ -17,3 +17,6 @@ high (Opus 5.5), by points: three per high finding or conflicted file, one per m
 extra conflict hunk, with cuts at 10 and 15 that put 61/30/9 of the last 44 fixable rounds on
 the three tiers. A fix the review did not clear, or a failed attempt, moves the next one a tier
 up. Each comment's meta line names the models it paid for, and `just pr spend` totals per model.
+
+Review fixes go to drafts only; conflict fixes still go to every PR. A draft leaves draft on its
+own once it has two review rounds, the last on its head with no high or medium finding left.
