@@ -1359,7 +1359,33 @@ fn a_prompt_dropped_before_insertion_is_answered_cancelled() -> TestResult {
         answer["error"]["code"], -32800,
         "a dropped prompt is a cancelled request, never a messageId: {answer}"
     );
+    // No frame follows a close, so the transcript says whether the cancelled prompt ran: unfixed,
+    // it lands once `sleep 2` ends; a negative wait has no state to wait on, so it is 4x that.
+    let sessions = dir.join("sessions");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while std::time::Instant::now() < deadline && !transcript_has(&sessions, "never runs")? {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        !transcript_has(&sessions, "never runs")?,
+        "a prompt answered cancelled ran after the close"
+    );
     client.finish()
+}
+
+fn transcript_has(dir: &std::path::Path, text: &str) -> Result<bool, Box<dyn Error>> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let found = if path.is_dir() {
+            transcript_has(&path, text)?
+        } else {
+            std::fs::read_to_string(&path).is_ok_and(|body| body.contains(text))
+        };
+        if found {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Dies on an ask left unanswered when the client hangs up: the ask waited on stdin forever, the
