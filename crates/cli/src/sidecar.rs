@@ -2,20 +2,12 @@ use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 
 pub(crate) fn start(home: &Path) {
-    let config = crate::config();
-    let Some(checkpoint) = config
-        .models
-        .as_ref()
-        .and_then(|roles| roles.classifier.clone())
+    let Some(yi_runtime::classifier::Endpoint { checkpoint, url }) =
+        yi_runtime::classifier::endpoint(crate::config())
     else {
         return;
     };
-    let url = config
-        .classifier
-        .as_ref()
-        .and_then(|block| block.url.as_deref())
-        .unwrap_or(yi_runtime::classifier::DEFAULT_URL);
-    let Some(port) = loopback_port(url) else {
+    let Some(port) = loopback_port(&url) else {
         return;
     };
     let home = home.to_path_buf();
