@@ -490,9 +490,8 @@ impl AcpState {
     fn drop_session(&mut self, session_id: &str) {
         if let Some(handle) = self.sessions.remove(session_id) {
             // Incident: the turn and its queued follow-ups ran on after a close told the client
-            // they were cancelled; cancel starts no further run and abort stops the one in flight.
-            handle.session.cancel();
-            handle.session.abort();
+            // they were cancelled.
+            handle.session.stop();
             let closed = "the session closed before this prompt was inserted";
             refuse(&self.sink, &handle.prompts, REQUEST_CANCELLED, closed);
         }
