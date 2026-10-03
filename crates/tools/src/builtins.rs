@@ -312,10 +312,47 @@ const READ_ONLY_GIT: [&str; 10] = [
     "shortlog",
 ];
 
-/// Grid's query verbs read the chart; `survey` and `edit` write.
-const READ_ONLY_GRID: [&str; 14] = [
-    "resolve", "uses", "scope", "todo", "roots", "explain", "version", "orphans", "hotspots",
-    "log", "diff", "drift", "check", "help",
+/// Ripwire's query flags read the tree; its edit, baseline, note, export, server and run-trace
+/// flags write or execute, so a command carrying any flag outside this set stays `Exec`.
+const READ_ONLY_RIPWIRE: [&str; 38] = [
+    "for",
+    "pack-task",
+    "callers",
+    "callees",
+    "uses",
+    "around",
+    "expand",
+    "outline",
+    "path",
+    "connect",
+    "impact",
+    "verify",
+    "mentions",
+    "affected",
+    "exercises",
+    "situ",
+    "test-gate",
+    "edit-check",
+    "safe-delete",
+    "slice",
+    "at",
+    "from-trace",
+    "cochange",
+    "whereis",
+    "tree",
+    "recall",
+    "lego",
+    "json",
+    "limit",
+    "offset",
+    "detail",
+    "signatures-only",
+    "pack-signatures",
+    "token-budget",
+    "max-tokens",
+    "compress",
+    "help",
+    "version",
 ];
 
 /// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
@@ -346,7 +383,11 @@ fn read_only_segment(segment: &str) -> bool {
     let verb = verb.rsplit('/').next().unwrap_or(verb);
     match verb {
         "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub)),
-        "grid" => words.next().is_some_and(|sub| READ_ONLY_GRID.contains(sub)),
+        // Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write.
+        "ripwire" => words.all(|word| match word.strip_prefix("--") {
+            Some(flag) => READ_ONLY_RIPWIRE.contains(&flag.split('=').next().unwrap_or(flag)),
+            None => !(word.contains("://") || word.starts_with("git@")),
+        }),
         _ => READ_ONLY_VERBS.contains(&verb),
     }
 }

@@ -251,7 +251,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, the permission-mode
   fragment, user system text and schema instruction (text compiled in from
   `crates/runtime/src/prompts/`), then registers `project-resources` (skills catalog), `pack`
-  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `grid`, `route-telemetry`, `memory`.
+  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `ripwire`, `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
   Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML

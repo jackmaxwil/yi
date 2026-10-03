@@ -6,7 +6,6 @@ pub mod diff;
 mod document;
 mod exec;
 mod grep;
-mod grid;
 pub mod hashline;
 mod ignore;
 mod ipython;
@@ -14,6 +13,7 @@ pub mod jobs;
 mod orient;
 mod process;
 pub mod reduce;
+pub mod ripwire;
 pub mod sandbox;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
