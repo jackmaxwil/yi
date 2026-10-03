@@ -19,6 +19,7 @@ pub fn decide(
     }
     let response = call.send_string(&body).map_err(|error| match error {
         ureq::Error::Status(code, _) => format!("{url} answered HTTP {code}"),
+        ureq::Error::Transport(transport) if transport.url().is_some() => transport.to_string(),
         ureq::Error::Transport(transport) => format!("{url}: {transport}"),
     })?;
     let mut text = String::new();
