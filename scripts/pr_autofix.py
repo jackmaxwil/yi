@@ -521,6 +521,10 @@ def attempt(repo, pr, ids, asked=False):
     blocked = bool(rnd and rnd["verdict"] == "blocked")
     if blocked and pr_review.answered(forge_pr.git("log", "-1", "--format=%B", pr["head"]["sha"]), rnd["n"], number):
         blocked = False
+    # The owner (2026-10-03): review fixes go to drafts only; a ready PR is being landed, and a bot
+    # push mid-landing restarts its checks. Conflict fixes still go to every PR.
+    if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
+        blocked = False
     conflicted = conflicts_of(pr["base"]["ref"], pr["head"]["sha"])
     said = decide(labels, conflicted, quiet_for(pr, notes, time.time()), asked, blocked)
     if said == "clean" and "autofix" in labels:
@@ -813,7 +817,7 @@ def selfcheck():
         errs.append("a claim that closes the findings fence reaches the prompt as a fence")
     # attempt() end to end over stand-ins: a failed try since the last push reaches fix() as a tier step.
     saved = {name: getattr(mod, name) for mod, name in ((forge_pr, "git"), (forge_pr, "fgj_api"), (pr_review, "comments"),
-                                                        (pr_review, "authors"), (bot_meter, "since"))}
+                                                        (pr_review, "authors"), (bot_meter, "since"), (pr_review, "rounds_of"))}
     passed, module = {}, sys.modules[__name__]
     stand = {"conflicts_of": lambda base, sha: ["a.rs"], "set_label": lambda *a: None, "quiet_for": lambda *a: 0,
              "fix": lambda pr, **kw: passed.update(kw) or {"kind": "conflict", "from": "a", "to": "b", "base": "main",
@@ -833,9 +837,20 @@ def selfcheck():
             errs.append("a fork's PR was handed to the fixer, which pushes to origin")
         if passed.get("tried") != 1:
             errs.append(f"attempt handed fix() tried={passed.get('tried')}, not the 1 failed try since the last push")
+        # A blocked round at the head: answered on a draft, left alone on a ready PR.
+        module.conflicts_of = lambda base, sha: []
+        pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
+        for title, want in ((forge_pr.DRAFT + "t", "findings"), ("t", None)):
+            passed.clear()
+            attempt("o/r", {"number": 1, "title": title, "labels": [{"name": "autofix"}],
+                            "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
+            if passed.get("kind") != want:
+                errs.append(f"a blocked round on {title!r} reached fix() as {passed.get('kind')}, not {want}")
+        if False:
+            errs.append(f"attempt handed fix() tried={passed.get('tried')}, not the 1 failed try since the last push")
     finally:
         for (mod, name), value in zip(((forge_pr, "git"), (forge_pr, "fgj_api"), (pr_review, "comments"),
-                                       (pr_review, "authors"), (bot_meter, "since")), saved.values()):
+                                       (pr_review, "authors"), (bot_meter, "since"), (pr_review, "rounds_of")), saved.values()):
             setattr(mod, name, value)
         for name, value in kept.items():
             setattr(module, name, value)
