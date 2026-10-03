@@ -848,9 +848,7 @@ impl SubagentHost {
             (key, record)
         };
         if record.exit.is_none() {
-            // Cancelled first, so the settle of the aborted run starts none for mail it queued.
-            record.session.cancel();
-            record.session.abort();
+            record.session.stop();
             // A lane refusal stays the cause of a plain removal; a repossession names itself.
             let cause = match exit {
                 ChildExit::Reaped => record
