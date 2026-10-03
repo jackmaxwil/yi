@@ -2,7 +2,7 @@ use std::error::Error;
 use std::io::{BufRead, BufReader, Lines, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -11,6 +11,10 @@ use yi_types::schedule::ScheduleState;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+
+#[path = "support/daemon.rs"]
+mod daemon;
+use daemon::{spawn_daemon, spawn_daemon_in};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -81,46 +85,6 @@ impl DaemonClient {
         self.stream.write_all(b"\n")?;
         self.read_until(|frame| frame["id"] == id)
     }
-}
-
-/// Incident: a daemon on the real HOME started the owner's real classifier sidecar.
-fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
-    let home = dir.join("home");
-    std::fs::create_dir_all(&home)?;
-    spawn_daemon_in(dir, &home)
-}
-
-fn spawn_daemon_in(dir: &Path, home: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
-    let socket = dir.join("yi.sock");
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the daemon contract is the spawned binary's socket; tests must drive the real process"
-    )]
-    let child = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args([
-            "serve",
-            "--socket",
-            &socket.display().to_string(),
-            "--model",
-            "faux/faux-1",
-            "--session-dir",
-            &dir.join("sessions").display().to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .env("HOME", home)
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    // Incident: the socket file exists between bind() and listen(), and a
-    // connect in that gap is refused; under load the gap outlasted the poll.
-    while UnixStream::connect(&socket).is_err() {
-        if Instant::now() > deadline {
-            return Err("daemon socket never accepted a connection".into());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    Ok((child, socket))
 }
 
 /// A root session's jobs live in `<sessions>/schedules/<session id>/`, so each
@@ -912,6 +876,43 @@ fn a_restarted_daemon_starts_its_own_sidecar_once_the_old_one_is_gone() -> TestR
         let _ = daemon.kill();
         let _ = daemon.wait();
     }
+    for pid in started(&home) {
+        let _ = kill(&["-9", &pid]);
+    }
+    outcome
+}
+
+#[test]
+fn a_sidecar_already_answering_is_used_and_no_second_one_starts() -> TestResult {
+    let dir = Scratch::new("yi-serve-sidecar-reuse")?;
+    let (home, port) = sidecar_home(
+        &dir,
+        "#!/bin/sh\necho \"$$\" >> \"$HOME/starts\"\nexec sleep 600\n",
+    )?;
+    let by_hand = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
+    let log = home.join(".yi/laya-serve.log");
+    // The decision is final once the line is written and the log's lock is free again: a sidecar
+    // started beside the running one would hold that lock for as long as it lives.
+    let outcome = wait_until(Instant::now() + Duration::from_secs(10), || {
+        let said = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("already answers");
+        let free = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&log)
+            .is_ok_and(|file| file.try_lock().is_ok());
+        Ok(said && free)
+    })
+    .map_err(|_| "the daemon never settled on the running sidecar".into())
+    .and_then(|()| match started(&home).as_slice() {
+        [] => Ok(()),
+        pids => Err(format!("a second sidecar started beside the running one: {pids:?}").into()),
+    });
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(by_hand);
     for pid in started(&home) {
         let _ = kill(&["-9", &pid]);
     }

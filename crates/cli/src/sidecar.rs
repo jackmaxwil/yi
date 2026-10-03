@@ -31,6 +31,10 @@ fn own(home: &Path, checkpoint: &str, port: u16) -> std::io::Result<Option<std::
     log.seek(std::io::SeekFrom::End(0))?;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok() {
+        writeln!(
+            log,
+            "yi serve: a sidecar already answers on {addr}; it is used, not owned"
+        )?;
         return Ok(None);
     }
     let binary: PathBuf = home.join(crate::setup::LAYA_VENV).join("bin/laya-serve");
@@ -43,6 +47,7 @@ fn own(home: &Path, checkpoint: &str, port: u16) -> std::io::Result<Option<std::
         return Ok(None);
     }
     let stderr = log.try_clone()?;
+    let mut note = log.try_clone()?;
     let mut command = std::process::Command::new("sh");
     command
         .args([
@@ -59,11 +64,22 @@ fn own(home: &Path, checkpoint: &str, port: u16) -> std::io::Result<Option<std::
     if let Some(key) = yi_runtime::auth::api_key("laya") {
         command.env("LAYA_API_KEY", key.expose());
     }
-    command.spawn().map(Some)
+    match command.spawn() {
+        Ok(child) => Ok(Some(child)),
+        Err(error) => {
+            writeln!(
+                note,
+                "yi serve: {} did not start: {error}",
+                binary.display()
+            )?;
+            Err(error)
+        }
+    }
 }
 
 fn loopback_port(url: &str) -> Option<u16> {
-    url.strip_prefix("http://127.0.0.1:")?
+    url.strip_prefix("http://127.0.0.1:")
+        .or_else(|| url.strip_prefix("http://localhost:"))?
         .split('/')
         .next()?
         .parse()
