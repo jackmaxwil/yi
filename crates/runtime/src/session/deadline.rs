@@ -79,10 +79,16 @@ impl super::Shared {
 }
 
 impl super::AgentSession {
-    /// A parent's `cancel` or a closed ACP session: the turn in flight settles, no request follows.
-    pub fn cancel(&self) {
+    /// A `cancel` from the parent: the turn in flight settles and no request follows it.
+    pub(crate) fn cancel(&self) {
         let flag = &self.shared.cancelled;
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Invariant: cancelled before the abort, so the aborted run's settle starts no queued prompt.
+    pub fn stop(&self) {
+        self.cancel();
+        self.abort();
     }
 
     pub(crate) fn cancelled(&self) -> bool {
