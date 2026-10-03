@@ -35,6 +35,12 @@ pub struct Sidecar {
     pub threshold: Option<f64>,
 }
 
+impl Sidecar {
+    fn named(&self, error: &str) -> String {
+        format!("{}: {error}", self.url)
+    }
+}
+
 #[derive(Default)]
 struct Breaker {
     failures: u32,
@@ -196,7 +202,7 @@ impl SkillClassifier {
                 if fail(&self.breaker) {
                     (self.deliver)(self.notice(&error));
                 }
-                record.error = Some(error);
+                record.error = Some(self.sidecar.named(&error));
                 (self.record)(record);
                 return;
             }
@@ -353,7 +359,7 @@ impl Approver {
             }
             Err(error) => {
                 fail(&self.breaker);
-                record.error = Some(error);
+                record.error = Some(self.sidecar.named(&error));
                 None
             }
         };
