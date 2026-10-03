@@ -120,3 +120,21 @@ fn a_silent_sidecar_fails_at_the_deadline() -> Res {
     );
     Ok(())
 }
+
+/// Incident: every journaled error from a dead sidecar named its URL twice; callers name it.
+#[test]
+fn a_dead_sidecar_error_is_the_cause_without_the_url_or_key() -> Res {
+    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let error = decide(
+        &format!("http://127.0.0.1:{port}"),
+        Some("sekrit"),
+        Duration::from_millis(300),
+        &skill_question(),
+    )
+    .err()
+    .ok_or("a closed port must fail")?;
+    assert!(!error.contains("127.0.0.1"), "{error}");
+    assert!(error.contains("Connection Failed"), "{error}");
+    assert!(!error.contains("sekrit"), "{error}");
+    Ok(())
+}
