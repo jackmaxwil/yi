@@ -7,11 +7,21 @@ pub(crate) fn start(home: &Path) {
     else {
         return;
     };
-    let Some(port) = loopback_port(&url) else {
+    let Some((host, port)) = loopback(&url) else {
+        let note = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(home.join(".yi/laya-serve.log"));
+        if let Ok(mut note) = note {
+            let _said = writeln!(
+                note,
+                "yi serve: classifier.url {url} is not on this machine's loopback, so no sidecar is started"
+            );
+        }
         return;
     };
     let home = home.to_path_buf();
-    std::thread::spawn(move || match own(&home, &checkpoint, port) {
+    std::thread::spawn(move || match own(&home, &checkpoint, host, port) {
         Ok(Some(_child)) => loop {
             std::thread::park();
         },
@@ -26,14 +36,21 @@ pub(crate) fn start(home: &Path) {
     clippy::disallowed_methods,
     reason = "yi serve owns the classifier sidecar's lifetime"
 )]
-fn own(home: &Path, checkpoint: &str, port: u16) -> std::io::Result<Option<std::process::Child>> {
+fn own(
+    home: &Path,
+    checkpoint: &str,
+    host: &str,
+    port: u16,
+) -> std::io::Result<Option<std::process::Child>> {
     let mut log = yi_runtime::session_store::lock_file(&home.join(".yi/laya-serve.log"))?;
     log.seek(std::io::SeekFrom::End(0))?;
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok() {
+    let answering = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))?.any(|addr| {
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok()
+    });
+    if answering {
         writeln!(
             log,
-            "yi serve: something already answers on {addr}, so no sidecar is started"
+            "yi serve: something already answers on {host}:{port}, so no sidecar is started"
         )?;
         return Ok(None);
     }
@@ -54,7 +71,7 @@ fn own(home: &Path, checkpoint: &str, port: u16) -> std::io::Result<Option<std::
             r#""$0" & pid=$!; read -r _; kill "$pid"; wait "$pid""#,
         ])
         .arg(&binary)
-        .env("LAYA_HOST", "127.0.0.1")
+        .env("LAYA_HOST", host)
         .env("LAYA_PORT", port.to_string())
         .env("LAYA_MODELS", checkpoint)
         .stdin(std::process::Stdio::piped())
@@ -66,10 +83,14 @@ fn own(home: &Path, checkpoint: &str, port: u16) -> std::io::Result<Option<std::
     command.spawn().map(Some)
 }
 
-fn loopback_port(url: &str) -> Option<u16> {
-    url.strip_prefix("http://127.0.0.1:")?
-        .split('/')
-        .next()?
-        .parse()
-        .ok()
+fn loopback(url: &str) -> Option<(&'static str, u16)> {
+    let rest = url.strip_prefix("http://")?;
+    ["127.0.0.1", "localhost"].into_iter().find_map(|host| {
+        let port = rest
+            .strip_prefix(host)?
+            .strip_prefix(':')?
+            .split('/')
+            .next()?;
+        Some((host, port.parse().ok()?))
+    })
 }

@@ -775,8 +775,8 @@ fn alive(pid: &str) -> Result<bool, Box<dyn Error>> {
     kill(&["-0", pid])
 }
 
-/// A HOME whose config turns the classifier on at a free loopback port, with `fake` as laya-serve.
-fn sidecar_home(dir: &Path, fake: &str) -> Result<(PathBuf, u16), Box<dyn Error>> {
+/// A HOME whose config turns the classifier on at `host` and a free port, with `fake` as laya-serve.
+fn sidecar_home(dir: &Path, host: &str, fake: &str) -> Result<(PathBuf, u16), Box<dyn Error>> {
     let home = dir.join("home");
     let bin = home.join(".local/share/laya-venv/bin");
     std::fs::create_dir_all(&bin)?;
@@ -786,7 +786,7 @@ fn sidecar_home(dir: &Path, fake: &str) -> Result<(PathBuf, u16), Box<dyn Error>
         .port();
     let config = json!({
         "models": {"classifier": "english"},
-        "classifier": {"url": format!("http://127.0.0.1:{port}")},
+        "classifier": {"url": format!("http://{host}:{port}")},
     });
     std::fs::write(home.join(".yi/config.json"), config.to_string())?;
     std::fs::write(bin.join("laya-serve"), fake)?;
@@ -810,6 +810,7 @@ fn the_daemon_starts_the_classifier_sidecar_and_a_sigkill_takes_it_down() -> Tes
     let dir = Scratch::new("yi-serve-sidecar")?;
     let (home, port) = sidecar_home(
         &dir,
+        "localhost",
         "#!/bin/sh\necho \"$$ $LAYA_HOST $LAYA_PORT $LAYA_MODELS\" >> \"$HOME/starts\"\nexec sleep 600\n",
     )?;
     let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
@@ -822,7 +823,7 @@ fn the_daemon_starts_the_classifier_sidecar_and_a_sigkill_takes_it_down() -> Tes
     let outcome = (|| -> TestResult {
         waited.map_err(|_| "yi serve never started the configured sidecar")?;
         let port = port.to_string();
-        if fields.get(1..) != Some(&["127.0.0.1", port.as_str(), "english"][..]) {
+        if fields.get(1..) != Some(&["localhost", port.as_str(), "english"][..]) {
             return Err(
                 format!("the sidecar must bind the configured url and checkpoint: {line}").into(),
             );
@@ -848,6 +849,7 @@ fn a_restarted_daemon_starts_its_own_sidecar_once_the_old_one_is_gone() -> TestR
     let dir = Scratch::new("yi-serve-sidecar-restart")?;
     let (home, _port) = sidecar_home(
         &dir,
+        "127.0.0.1",
         "#!/usr/bin/env python3\nimport os, signal, socket, time\n\
          s = socket.socket()\ns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
          s.bind(('127.0.0.1', int(os.environ['LAYA_PORT'])))\ns.listen(8)\n\
@@ -887,6 +889,7 @@ fn a_sidecar_already_answering_is_used_and_no_second_one_starts() -> TestResult 
     let dir = Scratch::new("yi-serve-sidecar-reuse")?;
     let (home, port) = sidecar_home(
         &dir,
+        "127.0.0.1",
         "#!/bin/sh\necho \"$$\" >> \"$HOME/starts\"\nexec sleep 600\n",
     )?;
     let by_hand = std::net::TcpListener::bind(("127.0.0.1", port))?;
@@ -917,4 +920,25 @@ fn a_sidecar_already_answering_is_used_and_no_second_one_starts() -> TestResult 
         let _ = kill(&["-9", &pid]);
     }
     outcome
+}
+
+#[test]
+fn a_sidecar_on_another_machine_is_left_alone_and_the_log_says_so() -> TestResult {
+    let dir = Scratch::new("yi-serve-sidecar-remote")?;
+    let (home, _port) = sidecar_home(
+        &dir,
+        "192.0.2.1",
+        "#!/bin/sh\necho \"$$\" >> \"$HOME/starts\"\nexec sleep 600\n",
+    )?;
+    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
+    let said = std::fs::read_to_string(home.join(".yi/laya-serve.log")).unwrap_or_default();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    for pid in started(&home) {
+        let _ = kill(&["-9", &pid]);
+    }
+    if !said.contains("192.0.2.1") || !started(&home).is_empty() {
+        return Err(format!("a remote url must start nothing and say so: {said:?}").into());
+    }
+    Ok(())
 }
