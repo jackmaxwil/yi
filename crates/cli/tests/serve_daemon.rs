@@ -83,11 +83,14 @@ impl DaemonClient {
     }
 }
 
+/// Incident: a daemon on the real HOME started the owner's real classifier sidecar.
 fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
-    spawn_daemon_in(dir, None)
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
+    spawn_daemon_in(dir, &home)
 }
 
-fn spawn_daemon_in(dir: &Path, home: Option<&Path>) -> Result<(Child, PathBuf), Box<dyn Error>> {
+fn spawn_daemon_in(dir: &Path, home: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let socket = dir.join("yi.sock");
     #[expect(
         clippy::disallowed_methods,
@@ -106,7 +109,7 @@ fn spawn_daemon_in(dir: &Path, home: Option<&Path>) -> Result<(Child, PathBuf), 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .envs(home.map(|home| ("HOME", home.to_path_buf())))
+        .env("HOME", home)
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     // Incident: the socket file exists between bind() and listen(), and a
@@ -764,7 +767,7 @@ fn the_daemon_delivers_the_workdir_the_worker_named_at_attach() -> TestResult {
             "base",
         ],
     )?;
-    let (mut daemon, socket) = spawn_daemon_in(&dir, Some(&home))?;
+    let (mut daemon, socket) = spawn_daemon_in(&dir, &home)?;
     let mut client = DaemonClient::connect(&socket)?;
     client.request("1", "initialize", json!({"protocolVersion": 2}))?;
     client.request_with_notifications(
@@ -789,4 +792,128 @@ fn the_daemon_delivers_the_workdir_the_worker_named_at_attach() -> TestResult {
     );
     let _ = daemon.kill();
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the sidecar is a grandchild the test can only see through its pid"
+)]
+fn kill(args: &[&str]) -> Result<bool, Box<dyn Error>> {
+    Ok(Command::new("sh")
+        .args(["-c", r#"kill "$@""#, "kill"])
+        .args(args)
+        .stderr(Stdio::null())
+        .status()?
+        .success())
+}
+
+fn alive(pid: &str) -> Result<bool, Box<dyn Error>> {
+    kill(&["-0", pid])
+}
+
+/// A HOME whose config turns the classifier on at a free loopback port, with `fake` as laya-serve.
+fn sidecar_home(dir: &Path, fake: &str) -> Result<(PathBuf, u16), Box<dyn Error>> {
+    let home = dir.join("home");
+    let bin = home.join(".local/share/laya-venv/bin");
+    std::fs::create_dir_all(&bin)?;
+    std::fs::create_dir_all(home.join(".yi"))?;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let config = json!({
+        "models": {"classifier": "english"},
+        "classifier": {"url": format!("http://127.0.0.1:{port}")},
+    });
+    std::fs::write(home.join(".yi/config.json"), config.to_string())?;
+    std::fs::write(bin.join("laya-serve"), fake)?;
+    std::fs::set_permissions(
+        bin.join("laya-serve"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )?;
+    Ok((home, port))
+}
+
+fn started(home: &Path) -> Vec<String> {
+    std::fs::read_to_string(home.join("starts"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_daemon_starts_the_classifier_sidecar_and_a_sigkill_takes_it_down() -> TestResult {
+    let dir = Scratch::new("yi-serve-sidecar")?;
+    let (home, port) = sidecar_home(
+        &dir,
+        "#!/bin/sh\necho \"$$ $LAYA_HOST $LAYA_PORT $LAYA_MODELS\" >> \"$HOME/starts\"\nexec sleep 600\n",
+    )?;
+    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
+    let waited = wait_until(Instant::now() + Duration::from_secs(10), || {
+        Ok(!started(&home).is_empty())
+    });
+    let line = started(&home).join(" ");
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let pid = fields.first().copied().unwrap_or("0").to_owned();
+    let outcome = (|| -> TestResult {
+        waited.map_err(|_| "yi serve never started the configured sidecar")?;
+        let port = port.to_string();
+        if fields.get(1..) != Some(&["127.0.0.1", port.as_str(), "english"][..]) {
+            return Err(
+                format!("the sidecar must bind the configured url and checkpoint: {line}").into(),
+            );
+        }
+        daemon.kill()?;
+        daemon.wait()?;
+        wait_until(Instant::now() + Duration::from_secs(10), || {
+            Ok(!alive(&pid)?)
+        })
+        .map_err(|_| "the sidecar outlived a SIGKILLed daemon".into())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    if pid != "0" {
+        let _ = kill(&[&pid]);
+    }
+    outcome
+}
+
+/// The old sidecar keeps its port for a second after SIGTERM, as uvicorn's graceful exit does.
+#[test]
+fn a_restarted_daemon_starts_its_own_sidecar_once_the_old_one_is_gone() -> TestResult {
+    let dir = Scratch::new("yi-serve-sidecar-restart")?;
+    let (home, _port) = sidecar_home(
+        &dir,
+        "#!/usr/bin/env python3\nimport os, signal, socket, time\n\
+         s = socket.socket()\ns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
+         s.bind(('127.0.0.1', int(os.environ['LAYA_PORT'])))\ns.listen(8)\n\
+         signal.signal(signal.SIGTERM, lambda *_: (time.sleep(1), os._exit(0)))\n\
+         open(os.environ['HOME'] + '/starts', 'a').write(f'{os.getpid()}\\n')\n\
+         while True:\n    time.sleep(60)\n",
+    )?;
+    let (mut first, _socket) = spawn_daemon_in(&dir, &home)?;
+    let mut second = None;
+    let outcome = (|| -> TestResult {
+        wait_until(Instant::now() + Duration::from_secs(10), || {
+            Ok(started(&home).len() == 1)
+        })
+        .map_err(|_| "the first daemon never started its sidecar")?;
+        first.kill()?;
+        first.wait()?;
+        second = Some(spawn_daemon_in(&dir, &home)?.0);
+        wait_until(Instant::now() + Duration::from_secs(15), || {
+            Ok(started(&home).len() == 2)
+        })
+        .map_err(|_| "the restarted daemon took the dying sidecar for a live one".into())
+    })();
+    let _ = first.kill();
+    let _ = first.wait();
+    if let Some(mut daemon) = second {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
+    for pid in started(&home) {
+        let _ = kill(&["-9", &pid]);
+    }
+    outcome
 }

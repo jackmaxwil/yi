@@ -222,6 +222,9 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
     };
     let socket = daemon_socket(args);
     let worker_args = serve_flags(args);
+    if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        crate::sidecar::start(crate::home());
+    }
     yi_acp::daemon::run_daemon(
         yi_acp::daemon::DaemonOptions {
             socket,
