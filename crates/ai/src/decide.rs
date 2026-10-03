@@ -4,6 +4,8 @@ use yi_types::classifier::{DecisionRequest, DecisionResponse};
 
 const BODY_CAP: u64 = 64 * 1024;
 
+/// Invariant: an error is the cause alone; the journal, the pause notice, setup and doctor each
+/// prefix the sidecar's URL once.
 pub fn decide(
     base_url: &str,
     key: Option<&str>,
@@ -19,7 +21,7 @@ pub fn decide(
     }
     let response = call.send_string(&body).map_err(|error| match error {
         ureq::Error::Status(code, _) => format!("the sidecar answered HTTP {code}"),
-        ureq::Error::Transport(transport) => cause(&transport),
+        ureq::Error::Transport(transport) => crate::request::transport_cause(&transport),
     })?;
     let mut text = String::new();
     std::io::Read::read_to_string(
@@ -28,17 +30,4 @@ pub fn decide(
     )
     .map_err(|error| error.to_string())?;
     serde_json::from_str(&text).map_err(|error| format!("not a decision: {error}"))
-}
-
-/// Invariant: an error carries the cause and never the URL, since every caller names the sidecar
-/// itself; ureq's own rendering of a transport error starts with the URL.
-fn cause(transport: &ureq::Transport) -> String {
-    let message = transport
-        .message()
-        .map(|message| format!(": {message}"))
-        .unwrap_or_default();
-    let source = std::error::Error::source(transport)
-        .map(|source| format!(": {source}"))
-        .unwrap_or_default();
-    format!("{}{message}{source}", transport.kind())
 }
