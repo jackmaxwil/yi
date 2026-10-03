@@ -923,6 +923,7 @@ fn a_sidecar_already_answering_is_used_and_no_second_one_starts() -> TestResult 
 }
 
 #[test]
+/// The log's lock is held throughout, as another daemon's live sidecar would hold it.
 fn a_sidecar_on_another_machine_is_left_alone_and_the_log_says_so() -> TestResult {
     let dir = Scratch::new("yi-serve-sidecar-remote")?;
     let (home, _port) = sidecar_home(
@@ -930,8 +931,13 @@ fn a_sidecar_on_another_machine_is_left_alone_and_the_log_says_so() -> TestResul
         "192.0.2.1",
         "#!/bin/sh\necho \"$$\" >> \"$HOME/starts\"\nexec sleep 600\n",
     )?;
-    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
     let log = home.join(".yi/laya-serve.log");
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)?;
+    held.lock()?;
+    let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
     let _waited = wait_until(Instant::now() + Duration::from_secs(10), || {
         Ok(std::fs::read_to_string(&log)
             .unwrap_or_default()
