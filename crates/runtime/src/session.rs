@@ -676,9 +676,7 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
-        if let Some(todos) = self.todos() {
-            todos.rehydrate();
-        }
+        self.todos().iter().for_each(|todos| todos.rehydrate());
         // Invariant: bound last, so a tick owed since the last process finds the ledger and list.
         if let Some(service) = self.heartbeat_service() {
             service.bind_session(id);
@@ -690,6 +688,7 @@ impl AgentSession {
             telemetry.bind(&file, &id);
         }
         self.restore_settings(&entries);
+        self.compactor.iter().for_each(|c| c.resume(&entries));
         Ok(count)
     }
 

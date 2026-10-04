@@ -245,7 +245,6 @@ pub struct Compactor {
     opening: Mutex<Option<AgentMessage>>,
     /// The newest reply with a usage that the latest compaction kept: its count is the history
     /// before that compaction, so `due` does not read it (D338).
-    /// ponytail: in memory, so a resumed session compacts once more; persist with the window.
     stale: Mutex<Option<AgentMessage>>,
 }
 
@@ -368,6 +367,37 @@ impl Compactor {
             standing: Mutex::new(None),
             opening: Mutex::new(None),
             stale: Mutex::new(None),
+        }
+    }
+
+    /// Rebuilds the window chain and the stale reply from the latest compaction entry, which
+    /// stores both its details and the kept tail; resume would otherwise compact once more.
+    pub fn resume(&self, entries: &[yi_types::entry::Entry]) {
+        let Some(yi_types::entry::Entry::Compaction {
+            retained_tail,
+            details,
+            ..
+        }) = entries
+            .iter()
+            .rfind(|entry| matches!(entry, yi_types::entry::Entry::Compaction { .. }))
+        else {
+            return;
+        };
+        let window = details
+            .as_ref()
+            .and_then(|value| {
+                serde_json::from_value::<yi_types::compaction::CompactionDetails>(value.clone())
+                    .ok()
+            })
+            .and_then(|details| details.window);
+        if let Some(ids) = window {
+            *lock_window(&self.window) = Window::restore(ids.number, ids);
+        }
+        if let Ok(mut slot) = self.stale.lock() {
+            *slot = retained_tail
+                .iter()
+                .rfind(|message| reply_tokens(message).is_some())
+                .cloned();
         }
     }
 

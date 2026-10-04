@@ -491,6 +491,51 @@ async fn the_prompt_after_an_idle_compaction_does_not_compact_again() -> Result<
     Ok(())
 }
 
+/// #958: the stale-reply marker lived in memory, so a session resumed right after a compaction
+/// read the kept tail's pre-compaction usage as the count and compacted again on its first prompt.
+#[tokio::test]
+async fn the_first_prompt_after_resuming_a_compacted_session_does_not_compact()
+-> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-resume")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-resume");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-resume".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let summary = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    let first = Arc::new(ProviderStream::new(None));
+    first.queue_faux(vec![
+        reply_with_usage(&"answer ".repeat(20), 1_400, 1_500),
+        summary("## Goal\nFIRST"),
+    ]);
+    let session = session_for_compaction(first);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("ask")?;
+    session.wait_idle().await;
+    assert!(
+        session
+            .compact_now()
+            .await
+            .is_ok_and(|outcome| outcome.applied())
+    );
+    drop(session);
+
+    let resumed_store = repo.open("compact-resume")?;
+    let second = Arc::new(ProviderStream::new(None));
+    second.queue_faux(vec![summary("ok"), summary("## Goal\nSECOND")]);
+    let resumed = session_for_compaction(Arc::clone(&second));
+    resumed.attach_store(resumed_store)?;
+    resumed.prompt("next ask")?;
+    resumed.wait_idle().await;
+    let left = second
+        .faux
+        .lock()
+        .map_err(|_| "faux lock")?
+        .pending_response_count();
+    assert_eq!(left, 1, "one request: the prompt's own, no second summary");
+    Ok(())
+}
+
 #[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
