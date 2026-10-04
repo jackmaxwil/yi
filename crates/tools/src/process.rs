@@ -10,7 +10,6 @@ use crate::spill::Spill;
 use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
-const OMITTED: &str = " bytes omitted from the middle]\n";
 
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
@@ -31,6 +30,8 @@ pub struct CommandCapture {
     /// When a stream was cut and a recovery dir was given, the pointer to a file with every byte
     /// of both streams, interleaved as they arrived.
     pub spill: Option<String>,
+    /// Bytes kept over bytes received, summed over both streams, when a stream was cut.
+    pub cut: Option<(usize, usize)>,
 }
 
 impl CommandCapture {
@@ -43,26 +44,13 @@ impl CommandCapture {
 
     /// The one row naming a cut capture: kept over total bytes, the cap, and the file with the rest.
     pub fn cut_row(&self) -> Option<String> {
-        if !self.truncated {
-            return None;
-        }
-        let (kept, total) = [&self.stdout, &self.stderr].into_iter().fold(
-            (0_usize, 0_usize),
-            |(kept, total), stream| {
-                let (omitted, marker) = omitted_bytes(stream).unwrap_or((0, 0));
-                let shown = stream.len().saturating_sub(marker);
-                (
-                    kept.saturating_add(shown),
-                    total.saturating_add(shown).saturating_add(omitted),
-                )
-            },
-        );
+        let (kept, total) = self.cut.filter(|_| self.truncated)?;
         let rest = match self.spill.as_deref().and_then(spill_path) {
             Some((label, path)) => format!("{label}: {path}"),
             None => "no file kept the rest".to_owned(),
         };
         Some(format!(
-            "[capture cut: kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP}); {rest}]"
+            "[capture cut: kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP} per stream); {rest}]"
         ))
     }
 }
@@ -196,7 +184,7 @@ fn drain_capped(
     cap: usize,
     live: Option<&LiveOutput>,
     spill: &Mutex<Spill>,
-) -> (String, bool) {
+) -> (String, Option<(usize, usize)>) {
     let head_cap = cap / 2;
     let tail_cap = cap.saturating_sub(head_cap);
     let mut head = Vec::new();
@@ -226,20 +214,16 @@ fn drain_capped(
     let tail = tail.make_contiguous();
     if omitted == 0 {
         head.extend_from_slice(tail);
-        return (String::from_utf8_lossy(&head).into_owned(), false);
+        return (String::from_utf8_lossy(&head).into_owned(), None);
     }
+    let kept = head.len().saturating_add(tail.len());
+    let cut = (kept, kept.saturating_add(omitted));
     let head = String::from_utf8_lossy(&head);
     let tail = String::from_utf8_lossy(tail);
-    (format!("{head}\n[{omitted}{OMITTED}{tail}"), true)
-}
-
-/// The bytes [`drain_capped`] cut from `stream`, and the length of the marker it wrote there.
-pub(crate) fn omitted_bytes(stream: &str) -> Option<(usize, usize)> {
-    stream.match_indices("\n[").find_map(|(at, _)| {
-        let (digits, _) = stream.get(at.saturating_add(2)..)?.split_once(OMITTED)?;
-        let omitted = digits.parse().ok()?;
-        Some((omitted, digits.len().saturating_add(2 + OMITTED.len())))
-    })
+    (
+        format!("{head}\n[{omitted} bytes omitted from the middle]\n{tail}"),
+        Some(cut),
+    )
 }
 
 /// Incident: waiting under the guard parked the cancel watchdog on the same lock, so an early
@@ -345,15 +329,15 @@ pub(crate) fn run_captured_live(
     let stderr_spill = Arc::clone(&spill);
     let stderr_reader = std::thread::spawn(move || match stderr_pipe {
         Some(pipe) => drain_capped(pipe, cap, stderr_live.as_deref(), &stderr_spill),
-        None => (String::new(), false),
+        None => (String::new(), None),
     });
-    let (stdout, stdout_truncated) = match stdout_pipe {
+    let (stdout, stdout_cut) = match stdout_pipe {
         Some(pipe) => drain_capped(pipe, cap, live.as_deref(), &spill),
-        None => (String::new(), false),
+        None => (String::new(), None),
     };
-    let (stderr, stderr_truncated) = stderr_reader
+    let (stderr, stderr_cut) = stderr_reader
         .join()
-        .unwrap_or_else(|_| (String::new(), false));
+        .unwrap_or_else(|_| (String::new(), None));
 
     let waited = wait_polled(&child, &done);
     done.store(true, Ordering::SeqCst);
@@ -365,7 +349,18 @@ pub(crate) fn run_captured_live(
         let _writer_done = writer.join();
     }
 
-    let truncated = stdout_truncated || stderr_truncated;
+    let cut = match (stdout_cut, stderr_cut) {
+        (None, None) => None,
+        (out, err) => {
+            let (kept, total) = out.unwrap_or_default();
+            let (err_kept, err_total) = err.unwrap_or_default();
+            Some((
+                kept.saturating_add(err_kept),
+                total.saturating_add(err_total),
+            ))
+        }
+    };
+    let truncated = cut.is_some();
     let spill = spill.lock().ok().filter(|_| truncated);
     Ok(CommandCapture {
         stdout,
@@ -375,6 +370,7 @@ pub(crate) fn run_captured_live(
         truncated,
         kill_error,
         spill: spill.and_then(|mut spill| spill.keep()),
+        cut,
     })
 }
 
@@ -406,7 +402,7 @@ mod tests {
         let spill = Mutex::new(Spill::new(None));
         assert_eq!(
             drain_capped(text.as_bytes(), 35, None, &spill),
-            (text, false)
+            (text, None)
         );
     }
 

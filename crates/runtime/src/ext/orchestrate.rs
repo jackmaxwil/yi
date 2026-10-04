@@ -284,37 +284,12 @@ impl Extension for Orchestrate {
 }
 
 pub(crate) fn is_check(command: &str) -> bool {
-    let mut segments = vec![String::new()];
-    let mut quote = None;
-    let mut chars = command.chars().peekable();
-    while let Some(ch) = chars.next() {
-        let redirect = segments
-            .last()
-            .is_some_and(|text| text.ends_with(['>', '<']))
-            || chars.peek() == Some(&'>');
-        match (quote, ch) {
-            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
-            (Some('\''), _) => {}
-            (_, '\\') => {
-                chars.next();
-            }
-            (Some(_), _) => {}
-            (None, '\'' | '"') => quote = Some(ch),
-            (None, '&') if redirect => {}
-            (None, '&' | '|' | ';' | '\n') => {
-                segments.push(String::new());
-                continue;
-            }
-            (None, _) => {}
-        }
-        if let Some(current) = segments.last_mut() {
-            current.push(ch);
-        }
-    }
-    segments.iter().any(|segment| segment_is_check(segment))
+    yi_permission::command_segments(command)
+        .iter()
+        .any(|argv| argv_is_check(argv))
 }
 
-fn segment_is_check(segment: &str) -> bool {
+fn argv_is_check(argv: &[String]) -> bool {
     let assignment = |word: &&str| {
         word.split_once('=').is_some_and(|(name, _)| {
             name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
@@ -323,12 +298,15 @@ fn segment_is_check(segment: &str) -> bool {
                     .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         })
     };
-    let mut words = segment.split_whitespace().skip_while(assignment);
-    match (words.next(), words.next()) {
-        (Some("cargo"), Some(sub)) => {
+    let mut words = argv.iter().map(String::as_str).skip_while(assignment);
+    match (words.next(), words.next(), words.next()) {
+        (Some("cargo"), Some(sub), _) => {
             matches!(sub, "test" | "nextest" | "clippy" | "build" | "check")
         }
-        (Some("npm"), Some("test")) | (Some("just" | "pytest" | "make"), _) => true,
+        (Some("npm" | "yarn" | "pnpm"), Some("test"), _)
+        | (Some("npm" | "yarn" | "pnpm"), Some("run"), Some("test"))
+        | (Some("go"), Some("test" | "vet" | "build"), _)
+        | (Some("just" | "pytest" | "make"), _, _) => true,
         _ => false,
     }
 }
@@ -345,5 +323,7 @@ mod tests {
         assert!(!is_check("pwd"));
         assert!(!is_check("echo 'cargo test'; false"));
         assert!(!is_check("cargo fmt"));
+        assert!(is_check("npm run test -- --watch=false"));
+        assert!(is_check("go test ./... > out.txt"));
     }
 }
