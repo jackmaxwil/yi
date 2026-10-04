@@ -1,3 +1,4 @@
+use rustix::fs::{AtFlags, unlinkat};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -380,21 +381,22 @@ impl ReadGate {
         }
     }
 
-    /// Unlinks `path`, the link itself when it is one, once judged as a write and while its name
-    /// still names the file opened. Linux unlinks inside the directory held open; macOS by name.
+    /// Unlinks `path`, the link itself when it is one, once judged as a write, inside the parent
+    /// held open as judged, so a parent swapped to a link afterwards deletes nothing behind it.
     pub fn remove(&self, path: &Path, walls: &[PathBuf]) -> io::Result<()> {
+        self.remove_after(path, walls, || ())
+    }
+
+    fn remove_after(&self, path: &Path, walls: &[PathBuf], held: impl FnOnce()) -> io::Result<()> {
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return Err(io::ErrorKind::InvalidInput.into());
         };
-        let real = fs::canonicalize(parent)?.join(name);
+        let parent = fs::canonicalize(parent)?;
+        let real = parent.join(name);
         self.guard_resolved(&real, walls, true)?;
-        let (_dir, at) = beside(&real)?;
-        let file = no_link(OpenOptions::new().read(true))?.open(&at)?;
-        let id = |meta: io::Result<fs::Metadata>| meta.ok().as_ref().and_then(file_id);
-        if !opened_at(&file, &real) || id(file.metadata()) != id(fs::symlink_metadata(&at)) {
-            return Err(refused(&real));
-        }
-        fs::remove_file(at)
+        let dir = judged_dir(&parent, &real)?;
+        held();
+        Ok(unlinkat(&dir, name, AtFlags::empty())?)
     }
 
     fn guard_resolved(&self, real: &Path, walls: &[PathBuf], writes: bool) -> io::Result<()> {
@@ -498,18 +500,23 @@ fn opened_at(_file: &File, _real: &Path) -> bool {
     true
 }
 
-/// Where to open `real` from: on Linux through its parent held open and checked, so a create or
-/// an unlink lands in the directory judged (std has no `openat` or `unlinkat`).
+/// `real`'s parent opened with no link on its path (macOS) or under the very name judged (Linux).
+fn judged_dir(parent: &Path, real: &Path) -> io::Result<File> {
+    let dir = no_link(OpenOptions::new().read(true))?.open(parent)?;
+    opened_at(&dir, parent)
+        .then_some(dir)
+        .ok_or_else(|| refused(real))
+}
+
+/// Where to open `real` from: on Linux through its parent held open and checked, so a create
+/// lands in the directory judged (std has no `openat`).
 #[cfg(target_os = "linux")]
 fn beside(real: &Path) -> io::Result<(Option<File>, PathBuf)> {
     use std::os::fd::AsRawFd;
     let (Some(parent), Some(name)) = (real.parent(), real.file_name()) else {
         return Ok((None, real.to_path_buf()));
     };
-    let dir = File::open(parent)?;
-    if !opened_at(&dir, parent) {
-        return Err(refused(real));
-    }
+    let dir = judged_dir(parent, real)?;
     let at = Path::new(&format!("/proc/self/fd/{}", dir.as_raw_fd())).join(name);
     Ok((Some(dir), at))
 }
@@ -739,4 +746,42 @@ pub fn command_targets_catastrophic(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The swap lands between the judgement and the unlink every time, where the race found in
+    /// review lands once in 100,000 tries: the delete must stay in the directory judged.
+    #[test]
+    fn a_parent_swapped_after_the_judgement_deletes_in_the_judged_dir() -> io::Result<()> {
+        let root = std::env::temp_dir().join(format!("yi-gate-unlink-{}", std::process::id()));
+        let (store, workspace) = (root.join("home/.ssh"), root.join("workspace"));
+        let (d, stash) = (workspace.join("d"), workspace.join("dir.tmp"));
+        fs::create_dir_all(&store)?;
+        fs::create_dir_all(&d)?;
+        fs::write(store.join("id_rsa"), "FAKE KEY MARKER\n")?;
+        fs::write(d.join("id_rsa"), "ordinary\n")?;
+        let gate = ReadGate::new(&CatastrophicContext {
+            home_dir: Some(root.join("home")),
+            working_dir: Some(workspace.clone()),
+            workspace_git: Vec::new(),
+            host_owned: Vec::new(),
+        });
+        let removed = gate.remove_after(&d.join("id_rsa"), &[], || {
+            let swapped =
+                fs::rename(&d, &stash).and_then(|()| std::os::unix::fs::symlink(&store, &d));
+            assert!(swapped.is_ok(), "the swap failed: {swapped:?}");
+        });
+        let (key, ordinary) = (store.join("id_rsa").exists(), stash.join("id_rsa").exists());
+        fs::remove_dir_all(&root)?;
+        assert!(removed.is_ok(), "{removed:?}");
+        assert!(key, "the remove deleted the key behind the swapped parent");
+        assert!(
+            !ordinary,
+            "the remove left the file in the directory it judged"
+        );
+        Ok(())
+    }
 }
