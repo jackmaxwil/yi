@@ -291,7 +291,7 @@ async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
     );
     assert_eq!(
         choices,
-        vec![None, None, None],
+        vec![None, None, None, None],
         "no forced choice, the retry included"
     );
     assert_eq!(
@@ -300,11 +300,73 @@ async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
         "only the turn before the last word ran"
     );
     assert!(ended, "the run ends");
-    let last = messages.last();
+    let refused = messages.iter().rev().nth(1);
     assert!(
-        matches!(last, Some(AgentMessage::ToolResult { is_error: true, .. })),
-        "the last word's call is answered as not run: {last:?}"
+        matches!(
+            refused,
+            Some(AgentMessage::ToolResult { is_error: true, .. })
+        ),
+        "the last word's call is answered as not run: {refused:?}"
     );
+}
+
+/// Records whether each request offered tools and carried the schema; every reply calls `noop`.
+struct Insistent(Arc<Mutex<Vec<(bool, bool)>>>);
+
+impl yi_loop::run::StreamFn for Insistent {
+    fn stream(
+        &self,
+        _model: &Model,
+        context: &LlmContext,
+        _effort: Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push((context.tools.is_some(), context.schema.is_some()));
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let call = faux_tool_call("call-1", "noop", serde_json::Map::new());
+        let message = faux_assistant_message(vec![call], StopReason::ToolUse);
+        let _ = sender.try_send(AssistantMessageEvent::Done {
+            reason: StopReason::ToolUse,
+            message,
+        });
+        receiver
+    }
+}
+
+/// A last word answered with a tool call gets exactly one more request, offering no tools so
+/// the answer schema rides it; a model that calls a tool there too ends the run (#992).
+#[tokio::test]
+async fn a_refused_last_word_is_asked_once_more_without_tools() {
+    let mut config = LoopConfig::new(faux_model());
+    config.schema = Some(serde_json::json!({"type": "object"}));
+    config.should_stop_after_turn = Some(Box::new(|_| true));
+    config.last_word = Some(Box::new(|_| {
+        Some(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("[turns] No more tool calls".to_owned()),
+            0,
+        ))
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(Noop)],
+    };
+    let mut emit = |_: AgentEvent| {};
+    let prompt = yi_types::message::UserContent::Text("hi".to_owned());
+    run_loop(
+        &mut context,
+        vec![AgentMessage::user_input(prompt, 0)],
+        &config,
+        &InterruptSignal::default(),
+        &mut emit,
+        &Insistent(Arc::clone(&seen)),
+    )
+    .await;
+    let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+    assert_eq!(seen, vec![(true, false), (true, false), (false, true)]);
 }
 
 /// Records every request's messages and answers `done`.

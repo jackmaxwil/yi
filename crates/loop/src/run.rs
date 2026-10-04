@@ -503,6 +503,15 @@ fn nothing_delivered(message: &AgentMessage) -> bool {
         })
 }
 
+fn answered(message: &AgentMessage) -> bool {
+    let AgentMessage::Assistant { content, .. } = message else {
+        return false;
+    };
+    content
+        .iter()
+        .any(|block| matches!(block, Content::Text { text, .. } if !text.trim().is_empty()))
+}
+
 /// A dropped stream that showed nothing is the one error a rerun cannot duplicate.
 fn stream_retry(error: Option<&str>) -> AgentMessage {
     AgentMessage::Custom {
@@ -565,6 +574,7 @@ struct TurnRequest<'a> {
     effort: Effort,
     tool_choice: Option<ToolChoice>,
     watch: bool,
+    tools: bool,
 }
 
 async fn due_now(due: Option<&(dyn Fn() -> bool + Send + Sync)>, watch: bool) {
@@ -589,6 +599,7 @@ async fn stream_assistant_response<S: StreamFn>(
         effort,
         tool_choice,
         watch,
+        tools,
     } = turn;
     let preparing =
         yi_types::trace::span("loop.prepare_request").arg("messages", context.messages.len());
@@ -606,9 +617,10 @@ async fn stream_assistant_response<S: StreamFn>(
             (config.convert_to_llm)(&tail),
         )
     };
-    let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
+    let offered = context.tools.iter().filter(|_| tools);
+    let tool_defs: Vec<ToolDef> = offered.map(|tool| tool.definition()).collect();
     // The loop says whether its tail is read again: the forced-none last word is the end.
-    let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) {
+    let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) || !tools {
         yi_types::model::Reuse::LastTurn
     } else {
         config.reuse
@@ -868,6 +880,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut repeating: u32 = 0;
     let mut steered = false;
     let mut last_word_said = false;
+    let mut tool_less = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending = read_steering(config);
 
@@ -904,6 +917,7 @@ pub async fn run_loop<S: StreamFn>(
                     effort: current_effort,
                     tool_choice: tool_choice.take(),
                     watch: !last_word_said,
+                    tools: !tool_less,
                 },
                 signal,
                 emit,
@@ -961,6 +975,7 @@ pub async fn run_loop<S: StreamFn>(
             let calls = extract_tool_calls(&message);
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
+            let refused_last_word = last_word_said && !calls.is_empty();
             if !calls.is_empty() {
                 let (finalized, terminate) = if reason == StopReason::Length {
                     length_stops = length_stops.saturating_add(1);
@@ -1017,6 +1032,13 @@ pub async fn run_loop<S: StreamFn>(
                 tool_results: tool_results.clone(),
             });
 
+            // Incident: two capped readers called a tool on the last word and ended with no
+            // answer; one request offering no tools follows, and the schema rides it.
+            if refused_last_word && !tool_less && !answered(&message) {
+                tool_less = true;
+                has_more_tool_calls = true;
+                continue;
+            }
             let snapshot = TurnSnapshot {
                 message: &message,
                 tool_results: &tool_results,
