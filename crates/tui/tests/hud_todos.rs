@@ -404,3 +404,54 @@ fn old_session_lists_read_as_they_did_before_the_merge() -> TestResult {
     assert_eq!(now, include_str!("fixtures/todo-before.txt"));
     Ok(())
 }
+
+/// Seen in the console: a model blocked a todo with its own label as the reason, and the row
+/// read the sentence twice before running off the screen.
+#[test]
+fn a_block_reason_that_repeats_the_label_shows_once() -> TestResult {
+    let label = "Put a check that cannot run here to the classifier via accepted_by_user";
+    let mut blocked = item(label, TodoStateName::Blocked)?;
+    blocked.state = TodoState::Blocked {
+        on: BlockedOn::User,
+        note: label.to_owned(),
+    };
+    let (_, shown) = rows(&list(vec![blocked])?, false)?;
+    let row = shown.first().ok_or("one row")?;
+    assert_eq!(row.matches("Put a check").count(), 1, "{row}");
+    assert!(row.ends_with("(blocked on user)"), "{row}");
+    let mut other = item("ship it", TodoStateName::Blocked)?;
+    other.state = TodoState::Blocked {
+        on: BlockedOn::User,
+        note: "needs the forge".to_owned(),
+    };
+    let (_, shown) = rows(&list(vec![other])?, false)?;
+    assert_eq!(
+        shown.first().map(String::as_str),
+        Some("1. ! ship it (blocked on user: needs the forge)")
+    );
+    Ok(())
+}
+
+/// A row wider than the screen keeps what fits and says it was cut, at the edge; wide
+/// characters count two columns, and a row that fits is left as it is.
+#[test]
+fn a_hud_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestResult {
+    use ratatui::text::{Line, Span};
+    use unicode_width::UnicodeWidthStr;
+    let row = Line::from(vec![
+        Span::raw("  "),
+        Span::raw("1. ! Put a check that cannot run here to the classifier via accepted_by_user"),
+        Span::raw(" (blocked on user: the forge is unreachable from this sandbox)"),
+    ]);
+    let cut = yi_tui::wrap::fit(row, 100);
+    let shown = text(&cut);
+    assert_eq!(shown.width(), 100, "{shown}");
+    assert!(shown.ends_with('…'), "{shown}");
+    assert!(shown.starts_with("  1. ! Put a check"), "{shown}");
+    let wide = yi_tui::wrap::fit(Line::from("日本語のテキスト"), 7);
+    let shown = text(&wide);
+    assert!(shown.width() <= 7 && shown.ends_with('…'), "{shown}");
+    let short = yi_tui::wrap::fit(Line::from("1. ○ ship it"), 100);
+    assert_eq!(text(&short), "1. ○ ship it");
+    Ok(())
+}

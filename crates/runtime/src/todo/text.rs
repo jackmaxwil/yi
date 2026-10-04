@@ -183,7 +183,11 @@ pub fn asked(item: &Todo) -> String {
 
 pub fn suffix(item: &Todo) -> String {
     match (&item.state, &item.note) {
-        (TodoState::Blocked { on, note }, _) if note.is_empty() => {
+        (TodoState::Blocked { on, note }, _)
+            if note.is_empty()
+                || note.as_str() == item.label.as_str()
+                || (item.is_cut() && note.starts_with(item.label.as_str())) =>
+        {
             format!(" (blocked on {})", on.as_str())
         }
         (TodoState::Blocked { on, note }, _) => {
