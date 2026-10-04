@@ -64,6 +64,7 @@ run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
 # The hard cap is checked independent of the baseline file, so nothing here reads
 # target/dist/yi; only this flag proves the cap fires on its own reason (D249).
 run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
+run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
