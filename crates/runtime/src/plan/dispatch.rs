@@ -918,30 +918,29 @@ pub(crate) mod tests {
     /// fenced block, and the parent had no road past them (#475).
     #[tokio::test]
     async fn a_fenced_json_answer_validates_against_a_schema() -> TestResult {
-        let schema = serde_json::json!({
-            "type": "object",
-            "properties": {"outcome": {"type": "string"}},
-            "required": ["outcome"],
-        });
-        let fenced = rig("```json\n{\"outcome\": \"the quota parser lands\"}\n```")?;
-        fenced.host.spawn("work".to_owned(), worker("quota"))?;
-        assert!(wait_done(&fenced.host).await, "child never completed");
-        let reply = fenced.host.result("quota", Some(&schema))?;
-        assert_eq!(
-            reply["json"]["outcome"],
-            Value::String("the quota parser lands".to_owned())
-        );
-
-        // Prose is still refused, with its text attached: there is nothing to read as JSON.
-        let prose = rig("the quota parser lands")?;
-        prose.host.spawn("work".to_owned(), worker("prose"))?;
-        assert!(wait_done(&prose.host).await, "child never completed");
-        let refused = prose
-            .host
-            .result("prose", Some(&schema))
-            .err()
-            .ok_or("prose was admitted as JSON")?;
-        assert!(refused.contains("text, not JSON"), "{refused}");
+        let schema = serde_json::json!({"type": "object", "required": ["outcome"]});
+        let object = "```json\n{\"outcome\": \"x\"}\n```";
+        // The last two are #989: a reader's fence after a non-ASCII paragraph, and a fence
+        // after prose that is not JSON, which stays refused with its text attached.
+        let cases: [(&'static str, bool); 4] = [
+            (object, true),
+            ("the quota parser lands", false),
+            (
+                "Voil\u{e0} la r\u{e9}ponse:\n\n```json\n{\"outcome\": \"x\"}\n```\n",
+                true,
+            ),
+            ("Voil\u{e0} la r\u{e9}ponse:\n```\nnot json\n```\n", false),
+        ];
+        for (answer, admitted) in cases {
+            let rig = rig(answer)?;
+            rig.host.spawn("work".to_owned(), worker("q"))?;
+            assert!(wait_done(&rig.host).await, "child never completed");
+            let reply = rig.host.result("q", Some(&schema));
+            assert_eq!(reply.is_ok(), admitted, "{answer}: {reply:?}");
+            if !admitted {
+                assert!(reply.err().is_some_and(|e| e.contains("text, not JSON")));
+            }
+        }
         Ok(())
     }
 
