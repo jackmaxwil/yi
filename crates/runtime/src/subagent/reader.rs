@@ -226,6 +226,11 @@ pub(crate) fn partition(
                 "partition {raw}: a kernel value rides context_keys, not the partition"
             ));
         }
+        if url.scheme().as_str() == "family" {
+            return Err(format!(
+                "partition {raw}: a family entry shows a reader only its sidecar; a computed value rides context_keys"
+            ));
+        }
         if let Some(denied) = wall.check_url(&url, cwd) {
             return Err(format!(
                 "the partition names what its wall denies. {denied}"
