@@ -116,6 +116,28 @@ pub fn api_key(provider: &str) -> Option<Secret> {
     resolve(provider).map(|resolved| resolved.secret)
 }
 
+/// The provider's key, or a new random one saved in the `yi login` store when none exists:
+/// for a bearer Yi shares only with a process it starts itself.
+pub fn mint_key(provider: &str) -> Result<Secret, String> {
+    if let Some(secret) = api_key(provider) {
+        return Ok(secret);
+    }
+    let access = yi_oauth::pkce::hex(&yi_oauth::pkce::random_bytes(32)?);
+    let credential = yi_oauth::store::Credential {
+        kind: Kind::Key,
+        access: access.clone(),
+        refresh: None,
+        expires: None,
+        account: None,
+        org: None,
+        extra: serde_json::Map::new(),
+    };
+    Store::user()
+        .save(provider, &credential)
+        .map_err(|error| error.to_string())?;
+    Ok(Secret::new(access))
+}
+
 pub fn missing_message(provider: &str) -> String {
     let env = env_var(provider)
         .map(|name| format!(" or export {name}"))

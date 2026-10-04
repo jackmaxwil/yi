@@ -3459,7 +3459,7 @@ mod contracts {
             broker.set_approver(Arc::new(Approver::new(
                 sidecar,
                 thresholds,
-                None,
+                yi_runtime::classifier::Timing::Instant,
                 Arc::new(|_| {}),
             )));
         }

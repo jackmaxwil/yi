@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use yi_types::classifier::{ClassifyRecord, DecisionRequest, DecisionResponse, Question};
-use yi_types::config::UserConfig;
+use yi_types::config::{ApprovalMode, ClassifierConfig, UserConfig};
 use yi_types::message::{AgentMessage, UserContent};
 
 use crate::AgentSession;
@@ -251,7 +251,7 @@ const SAFE_INSTRUCTIONS: &str = "Is it safe for a coding agent to run this witho
 const DEFAULT_ALLOW_AT: f64 = 0.9;
 const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.98;
 const DEFAULT_ASK_AT: f64 = 0.05;
-const DEFAULT_ASK_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_DELAY_SECS: u64 = 30;
 
 pub struct Thresholds {
     pub allow_at: f64,
@@ -274,32 +274,33 @@ pub enum Judgement {
     Undecided,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timing {
+    Instant,
+    AfterDelay(Duration),
+}
+
 pub struct Approver {
     sidecar: Sidecar,
     thresholds: Thresholds,
-    ask_timeout: Option<Duration>,
+    timing: Timing,
     breaker: Mutex<Breaker>,
     record: Record,
 }
 
 impl Approver {
-    pub fn new(
-        sidecar: Sidecar,
-        thresholds: Thresholds,
-        ask_timeout: Option<Duration>,
-        record: Record,
-    ) -> Self {
+    pub fn new(sidecar: Sidecar, thresholds: Thresholds, timing: Timing, record: Record) -> Self {
         Self {
             sidecar,
             thresholds,
-            ask_timeout,
+            timing,
             breaker: Mutex::new(Breaker::default()),
             record,
         }
     }
 
-    pub fn ask_timeout(&self) -> Option<Duration> {
-        self.ask_timeout
+    pub fn timing(&self) -> Timing {
+        self.timing
     }
 
     pub fn judge(&self, call: &Call<'_>) -> Judgement {
@@ -463,6 +464,21 @@ pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
     })
 }
 
+pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
+    let mode = match (block.approval, block.approve) {
+        (Some(mode), _) => mode,
+        (None, Some(false)) => ApprovalMode::WaitForUser,
+        (None, _) => ApprovalMode::Instant,
+    };
+    match mode {
+        ApprovalMode::Instant => Some(Timing::Instant),
+        ApprovalMode::AfterDelay => Some(Timing::AfterDelay(Duration::from_secs(
+            block.ask_timeout_secs.unwrap_or(DEFAULT_DELAY_SECS),
+        ))),
+        ApprovalMode::WaitForUser => None,
+    }
+}
+
 pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
     let Some(Endpoint {
         checkpoint: model,
@@ -483,7 +499,8 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         allow_destructive_at: number(&block.allow_destructive_at, DEFAULT_ALLOW_DESTRUCTIVE_AT),
         ask_at: number(&block.ask_at, DEFAULT_ASK_AT),
     };
-    let approve = block.approve == Some(true);
+    let timing = timing(&block);
+    let chosen = block.approval.is_some() || block.approve.is_some();
     let sidecar = Sidecar {
         url,
         key: yi_ai::auth::api_key("laya").map(|secret| secret.expose().to_owned()),
@@ -495,22 +512,19 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             .and_then(serde_json::Number::as_f64),
     };
     let mut warnings = Vec::new();
-    if approve {
+    if let Some(timing) = timing {
         match (&sidecar.key, session.permission_broker()) {
-            (None, _) => warnings.push(
-                "classifier.approve is on but LAYA_API_KEY is not set, so the classifier approves nothing"
+            (None, _) if chosen => warnings.push(
+                "classifier approval is on but no laya key exists yet (`yi serve` makes one, or export LAYA_API_KEY), so the classifier approves nothing"
                     .to_owned(),
             ),
             (Some(_), Some(broker)) => broker.set_approver(Arc::new(Approver::new(
                 sidecar.clone(),
                 thresholds,
-                match block.ask_timeout_secs {
-                    Some(0) => None,
-                    secs => Some(Duration::from_secs(secs.unwrap_or(DEFAULT_ASK_TIMEOUT_SECS))),
-                },
+                timing,
                 journal(session),
             ))),
-            (Some(_), None) => {}
+            _ => {}
         }
     }
     let Some(rules) = session.rules_engine() else {
