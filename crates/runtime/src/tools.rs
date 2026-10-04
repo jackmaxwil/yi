@@ -23,6 +23,7 @@ pub struct ToolAdapter {
     wall: crate::wall::Wall,
     ext: Option<crate::session::ExtHook>,
     check: Option<Arc<crate::plan::covers::WriteCheck>>,
+    job_owner: Option<yi_tools::jobs::JobOwner>,
     rejections: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
 }
 
@@ -289,8 +290,14 @@ impl ToolAdapter {
             wall: crate::wall::Wall::default(),
             ext: None,
             check: None,
+            job_owner: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub fn with_job_owner(mut self, owner: yi_tools::jobs::JobOwner) -> Self {
+        self.job_owner = Some(owner);
+        self
     }
 
     /// The session's key names its spill dir, read per call: the store may attach after wiring.
@@ -417,6 +424,7 @@ impl AgentTool for ToolAdapter {
             deny_write: self.wall.deny_write.clone(),
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
+            job_owner: self.job_owner,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
