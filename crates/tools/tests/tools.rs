@@ -91,6 +91,60 @@ fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
     Ok(())
 }
 
+/// Incident: grep prints hits under `[pkg/more.py#TAG]` and a reader passed that `path#TAG` to
+/// read, which answered "No such file or directory" (#993).
+#[test]
+fn read_takes_the_path_hash_tag_form_that_grep_prints() -> TestResult {
+    let dir = temp_dir("read-tagged")?;
+    fs::create_dir_all(dir.join("pkg"))?;
+    let body: String = (1..=80).map(|n| format!("café line {n}\n")).collect();
+    fs::write(dir.join("pkg/more.py"), &body)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let read = |path: &str| {
+        read_tool().execute(
+            args(&[
+                ("path", json!(path)),
+                ("offset", json!(60)),
+                ("limit", json!(5)),
+            ]),
+            &context,
+        )
+    };
+    let first = output_text(&read("pkg/more.py"));
+    let tag = first
+        .split("pkg/more.py#")
+        .nth(1)
+        .and_then(|rest| rest.get(..4))
+        .ok_or("the read prints no tag")?
+        .to_owned();
+
+    let current = read(&format!("pkg/more.py#{tag}"));
+    assert!(!current.is_error, "{}", output_text(&current));
+    let current = output_text(&current);
+    assert!(current.contains("café line 60"), "{current}");
+    assert!(!current.contains("not the current"), "{current}");
+
+    fs::write(
+        dir.join("pkg/more.py"),
+        body.replace("line 60", "line sixty"),
+    )?;
+    let stale = read(&format!("pkg/more.py#{tag}"));
+    assert!(!stale.is_error, "{}", output_text(&stale));
+    let stale = output_text(&stale);
+    assert!(
+        stale.contains(&format!("pkg/more.py#{tag} is not the current version")),
+        "{stale}"
+    );
+    assert!(stale.contains("line sixty"), "{stale}");
+
+    fs::write(dir.join("odd#ABCD"), "named with a hash\n".repeat(80))?;
+    let named = output_text(&read("odd#ABCD"));
+    assert!(named.contains("named with a hash"), "{named}");
+
+    assert!(read("absent.py#ABCD").is_error);
+    Ok(())
+}
+
 /// Incident: a read of `~/.ssh/id_rsa` failed on `<cwd>/~/.ssh/id_rsa`, so the permission
 /// check judged a path in the workspace while the model meant HOME's.
 #[test]
