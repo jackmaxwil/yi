@@ -448,10 +448,16 @@ fn a_hud_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestResu
     assert_eq!(shown.width(), 100, "{shown}");
     assert!(shown.ends_with('…'), "{shown}");
     assert!(shown.starts_with("  1. ! Put a check"), "{shown}");
+    // A wide character that would straddle the edge goes whole: 日本語 is six columns.
     let wide = yi_tui::wrap::fit(Line::from("日本語のテキスト"), 7);
-    let shown = text(&wide);
-    assert!(shown.width() <= 7 && shown.ends_with('…'), "{shown}");
-    let short = yi_tui::wrap::fit(Line::from("1. ○ ship it"), 100);
-    assert_eq!(text(&short), "1. ○ ship it");
+    assert_eq!(text(&wide), "日本語…");
+    let exact = yi_tui::wrap::fit(Line::from("1. ○ ship it"), 12);
+    assert_eq!(text(&exact), "1. ○ ship it", "at the limit nothing is cut");
+    let over = yi_tui::wrap::fit(Line::from("1. ○ ship it"), 11);
+    assert_eq!(
+        text(&over),
+        "1. ○ ship …",
+        "one past it keeps width - 1 and the mark"
+    );
     Ok(())
 }
