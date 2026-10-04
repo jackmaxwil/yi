@@ -769,13 +769,13 @@ mod tests {
             workspace_git: Vec::new(),
             host_owned: Vec::new(),
         });
+        let mut swapped = Ok(());
         let removed = gate.remove_after(&d.join("id_rsa"), &[], || {
-            let swapped =
-                fs::rename(&d, &stash).and_then(|()| std::os::unix::fs::symlink(&store, &d));
-            assert!(swapped.is_ok(), "the swap failed: {swapped:?}");
+            swapped = fs::rename(&d, &stash).and_then(|()| std::os::unix::fs::symlink(&store, &d));
         });
         let (key, ordinary) = (store.join("id_rsa").exists(), stash.join("id_rsa").exists());
         fs::remove_dir_all(&root)?;
+        swapped?;
         assert!(removed.is_ok(), "{removed:?}");
         assert!(key, "the remove deleted the key behind the swapped parent");
         assert!(
