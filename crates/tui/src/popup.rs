@@ -92,6 +92,7 @@ impl BottomView for ListPopup {
         let count = self.filtered().len();
         match key.code {
             KeyCodeValue::Esc => PopupResult::Close,
+            KeyCodeValue::Char('c') if key.ctrl => PopupResult::Close,
             KeyCodeValue::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 PopupResult::Open

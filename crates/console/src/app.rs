@@ -1112,7 +1112,7 @@ impl App {
             let drafting = self
                 .focused_chat()
                 .is_some_and(|chat| !chat.app.composer_text().is_empty());
-            if on_chat && drafting {
+            if on_chat && (drafting || self.popup_open()) {
                 return self.chat_event(CtEvent::Key(key));
             }
             let now = Instant::now();

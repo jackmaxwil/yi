@@ -4,7 +4,7 @@ use std::sync::Arc;
 use yi_loop::{LoopConfig, LoopContext, run_loop};
 use yi_types::event::AgentEvent;
 use yi_types::mail::Delivery;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Attribution};
 
 use super::{
     RunParts, SessionError, Shared, Status, dispatch_ext, extensions_of, hooks, persist_message,
@@ -94,7 +94,11 @@ fn owed(shared: &Shared, follow_ups: bool) -> Option<AgentMessage> {
     }
     if let Ok(mut queue) = shared.steer.lock() {
         queue.retain(Queued::current);
-        if queue.iter().any(|queued| queued.wakes) {
+        // Incident: a user steer sent after the loop's last read waited behind the next prompt.
+        let waking = |queued: &Queued| {
+            queued.wakes || (follow_ups && queued.message.attribution() == Attribution::User)
+        };
+        if queue.iter().any(waking) {
             return queue.pop_front().map(|queued| queued.message);
         }
     }
@@ -550,4 +554,51 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         config.intercept_stop = Some(Box::new(move |snapshot| intercept(snapshot)));
     }
     config.waiting = shared.waits.lock().ok().and_then(|slot| slot.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::dispatch::tests::faux_model;
+    use crate::provider::ProviderStream;
+    use crate::session::{AgentSession, SessionConfig, user_input};
+    use yi_ai::faux::{faux_assistant_message, faux_text};
+    use yi_types::message::{StopReason, UserContent};
+
+    /// Dies with a user steer that landed after the loop's last read: the run settled idle, the
+    /// UI forgot the row, and the text waited for the next prompt to arrive behind it.
+    #[tokio::test]
+    async fn a_steer_the_loop_never_read_runs_as_the_next_prompt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(ProviderStream::new(None));
+        provider.queue_faux(vec![faux_assistant_message(
+            vec![faux_text("on it")],
+            StopReason::Stop,
+        )]);
+        let session = AgentSession::new(
+            SessionConfig {
+                system_prompt: String::new(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            provider,
+        );
+        let parts = session.parts();
+        *parts.shared.status.lock().map_err(|_| "status poisoned")? = Status::Running;
+        parts
+            .shared
+            .steer
+            .lock()
+            .map_err(|_| "queue poisoned")?
+            .push_back(Queued::new(user_input("one more thing"), false, None));
+        settle(parts).await;
+        session.wait_idle().await;
+        let said = session.messages().into_iter().any(|message| {
+            matches!(message, AgentMessage::User { content: UserContent::Text(text), .. }
+                if text == "one more thing")
+        });
+        assert!(said, "the stranded steer never reached the model");
+        Ok(())
+    }
 }
