@@ -308,7 +308,7 @@ pub(crate) fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::Unbounded
 
 impl App {
     /// An open approval never takes it (closing it rejects the tool call); a closed box takes it
-    /// when it holds any text, the one predicate `Action::Quit` clears on.
+    /// when it holds any text, the one predicate [`Action::Quit`] clears on.
     pub fn takes_ctrl_c(&self) -> bool {
         match &self.bottom {
             Some(Bottom::Approval(..)) => false,
