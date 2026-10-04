@@ -17,7 +17,7 @@ mod run;
 
 use deadline::Deadline;
 use run::Queued;
-pub use run::{FollowUpFn, StillNews};
+pub use run::StillNews;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -89,6 +89,8 @@ struct Shared {
     /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
     held: std::sync::atomic::AtomicBool,
     runs: std::sync::atomic::AtomicU64,
+    job_owner: yi_tools::jobs::JobOwner,
+    retired: std::sync::atomic::AtomicBool,
 }
 
 pub type PromptChoiceFn =
@@ -202,6 +204,8 @@ impl AgentSession {
                 cancelled: false.into(),
                 held: false.into(),
                 runs: 0.into(),
+                job_owner: yi_tools::jobs::JobOwner::mint(),
+                retired: false.into(),
             }),
             config,
             provider,
@@ -221,17 +225,6 @@ impl AgentSession {
     pub fn set_kernel_service(&self, service: Arc<crate::kernel::KernelService>) {
         if let Ok(mut slot) = self.kernel.lock() {
             *slot = Some(service);
-        }
-    }
-
-    /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session
-    /// leaks its IPython process. Every path that retires a session calls this.
-    pub fn dispose_kernel(&self) {
-        let Some(kernel) = self.kernel_service() else {
-            return;
-        };
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::spawn(async move { kernel.dispose().await });
         }
     }
 
@@ -614,6 +607,7 @@ impl AgentSession {
                     .with_wall(self.wall())
                     .with_spill_key(Arc::clone(&spill_key))
                     .with_transcript(self.store_handle())
+                    .with_job_owner(self.shared.job_owner)
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
@@ -873,7 +867,7 @@ impl AgentSession {
 
     /// Taken after a running turn's answer, or it starts an idle session's turn.
     pub fn follow_up_message(&self, message: AgentMessage) -> bool {
-        run::follow(&self.parts(), message)
+        run::follow(&self.parts(), message, None)
     }
 
     /// Presented in arrival order at the next boundary; `wakes` starts an idle session's turn.
