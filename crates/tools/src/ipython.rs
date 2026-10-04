@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
+use yi_types::image::image_defect;
 use yi_types::kernel::{ExecuteResult, ExecuteStatus, KernelAttachment};
 use yi_types::message::Content;
 
@@ -141,11 +142,6 @@ fn missing_module(evalue: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
-/// Invariant: an image the provider refuses stays in history and fails every later request;
-/// these are the types it takes and its 10 MB of base64 per image, `attach_image`'s cap too.
-const MODEL_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const MAX_MODEL_IMAGE_CHARS: usize = 10_000_000;
-
 pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     let result = outcome.result;
     let mut sections = Vec::new();
@@ -176,21 +172,20 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         sections.push("[cell aborted]".to_owned());
     }
     sections.extend(outcome.notes.iter().cloned());
-    let to_model = |attachment: &&KernelAttachment| {
-        MODEL_IMAGE_TYPES.contains(&attachment.mime_type.as_str())
-            && attachment.data.len() <= MAX_MODEL_IMAGE_CHARS
-    };
+    let defect =
+        |attachment: &KernelAttachment| image_defect(&attachment.mime_type, &attachment.data);
     let (images, refused): (Vec<_>, Vec<_>) = result
         .attachments
         .iter()
         .filter(|attachment| attachment.mime_type.starts_with("image/"))
-        .partition(to_model);
-    sections.extend(refused.iter().map(|attachment| {
-        format!(
-            "[{} attachment of {} base64 chars not sent to the model: it takes png, jpeg, gif or webp up to {MAX_MODEL_IMAGE_CHARS}]",
+        .partition(|attachment| defect(attachment).is_none());
+    sections.extend(refused.iter().filter_map(|attachment| {
+        Some(format!(
+            "[{} attachment of {} base64 chars not sent to the model: the image {}]",
             attachment.mime_type,
-            attachment.data.len()
-        )
+            attachment.data.len(),
+            defect(attachment)?
+        ))
     }));
     let text = if sections.is_empty() {
         "(no output)".to_owned()
@@ -222,7 +217,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         "durationMs": result.duration_ms,
         "diffs": diffs,
         "attachments": result.attachments.len(),
-        "attachmentMedia": result.attachments.iter().map(|attachment| if to_model(&attachment) {
+        "attachmentMedia": result.attachments.iter().map(|attachment| if defect(attachment).is_none() {
             json!({ "mime_type": attachment.mime_type, "path": attachment.path })
         } else {
             json!(attachment)
