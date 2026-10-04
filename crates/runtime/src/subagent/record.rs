@@ -130,7 +130,7 @@ impl ChildRecord {
                 self.phase = Phase::Queued;
                 (self.exit, self.error, self.replied) = (None, None, false);
                 // The lease was returned on the last incarnation's count and drawn again.
-                (self.token_count, self.tool_use_count) = (0, 0);
+                (self.token_count, self.tool_use_count, self.cost) = (0, 0, 0.0);
                 self.activity = ChildActivity::Waiting;
                 true
             }
@@ -195,6 +195,7 @@ impl ChildRecord {
             } => {
                 let tokens = u64::try_from(usage.total_tokens).unwrap_or(0);
                 self.token_count = self.token_count.saturating_add(tokens);
+                self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.activity = ChildActivity::Waiting;
                 let text: String = yi_types::message::join_text(content, "\n");
                 if !text.is_empty() {
