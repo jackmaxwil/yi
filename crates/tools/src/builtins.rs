@@ -860,9 +860,9 @@ impl Tool for BashTool {
             crate::sandbox::sandbox_refusal(sandbox, &context.cwd, capture.exit_code, &raw, command)
         });
         sections.extend(refusal.as_ref().map(crate::sandbox::denial_hint));
-        sections.extend(
-            (context.sandbox.as_ref()).and_then(|_| crate::sandbox::nested_sandbox_note(&raw)),
-        );
+        let note = (context.sandbox.as_ref())
+            .and_then(|_| crate::sandbox::outcome_note(&raw, command, exit_code));
+        sections.extend(note);
         let mut text = if sections.is_empty() {
             "(no output)".to_owned()
         } else {

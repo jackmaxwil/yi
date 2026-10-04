@@ -147,7 +147,7 @@ fn the_doctor_lists_each_reachable_listener_once() {
     let detail = yi_runtime::listeners_detail(&listeners);
     assert!(
         detail.starts_with("14 TCP listeners a contained process can reach: rapportd:52097,")
-            && detail.contains("[8 of 14 shown (cap 8)"),
+            && detail.contains("[8 of 14 listeners shown, cap sandbox-listeners=8"),
         "{detail}"
     );
     assert!(

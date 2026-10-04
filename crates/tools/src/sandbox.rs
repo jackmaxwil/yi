@@ -629,8 +629,17 @@ fn refused_path(
         .find(|path| sandbox.denies_write(path))
 }
 
-/// A denied write target counts at any exit; else a non-zero exit naming a denial. A network
-/// denial also counts past a shell-failure exit, and at exit 0 behind `|| true` or a pipe.
+const NETWORK_DENIALS: [&str; 3] = [
+    // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
+    "resolve host",
+    // getaddrinfo's EAI_NONAME, as Python and ssh print it.
+    "nodename nor servname",
+    // `ping` to a host past loopback, which exits 2.
+    "sendto: operation not permitted",
+];
+
+/// A denied write target counts at any exit; else a non-zero exit naming a denial, a network
+/// denial also past a shell-failure exit. Exit 0 never records a scope: see [`exit_zero_note`].
 pub fn sandbox_refusal(
     sandbox: &Sandbox,
     cwd: &Path,
@@ -646,30 +655,59 @@ pub fn sandbox_refusal(
         "sandbox",
         "deny file-write",
     ];
-    const NETWORK_DENIALS: [&str; 3] = [
-        // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
-        "resolve host",
-        // getaddrinfo's EAI_NONAME, as Python and ssh print it.
-        "nodename nor servname",
-        // `ping` to a host past loopback, which exits 2.
-        "sendto: operation not permitted",
-    ];
     if let Some(path) = refused_path(sandbox, cwd, exit_code, output, command) {
         return Some(SandboxRefusal::Path(path));
     }
     let code = exit_code?;
     let lower = output.to_lowercase();
     let contains = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
-    let ran_a_program = || {
-        yi_permission::command_segments(command)
-            .iter()
-            .any(|argv| yi_permission::classify(argv) != yi_permission::Class::Safe)
-    };
-    let refused = match code {
-        0 => contains(&NETWORK_DENIALS) && ran_a_program(),
-        code => contains(&NETWORK_DENIALS) || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)),
-    };
+    let refused = code != 0
+        && (contains(&NETWORK_DENIALS) || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
     refused.then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
+}
+
+/// A refusal hidden behind exit 0 is a note, never recorded: fetched text can quote the phrase.
+/// The line must read `<program>: ...` for a network program the command names (`fatal:` for git).
+pub fn exit_zero_note(output: &str, command: &str) -> Option<String> {
+    const PROGRAMS: [&str; 9] = [
+        "curl",
+        "wget",
+        "git",
+        "ssh",
+        "scp",
+        "rsync",
+        "ping",
+        "ping6",
+        "traceroute",
+    ];
+    let diagnostic = output.lines().any(|line| {
+        let lower = line.to_lowercase();
+        let at = NETWORK_DENIALS
+            .iter()
+            .filter_map(|needle| lower.find(needle))
+            .min();
+        let before = at.and_then(|at| line.get(..at)).unwrap_or_default();
+        PROGRAMS.iter().any(|program| {
+            let head = match *program {
+                "git" => "fatal: ".to_owned(),
+                other => format!("{other}: "),
+            };
+            before.contains(&head) && command.contains(program)
+        })
+    });
+    diagnostic.then(|| {
+        format!("[this output shows the sandbox refusing the network ({CONTAINED}) though the command exited 0; nothing is recorded and no call will ask]")
+    })
+}
+
+/// The note under a bash result that has no refusal to record: a nested apply failure, or a
+/// network refusal behind exit 0.
+pub fn outcome_note(output: &str, command: &str, exit_code: i32) -> Option<String> {
+    nested_sandbox_note(output).or_else(|| {
+        (exit_code == 0)
+            .then(|| exit_zero_note(output, command))
+            .flatten()
+    })
 }
 
 /// Incident: `sandbox-exec: sandbox_apply: Operation not permitted` read as a refused write to
@@ -693,16 +731,22 @@ pub fn kernel_cell_note(
     code: &str,
     result: &yi_types::kernel::ExecuteResult,
 ) -> Option<String> {
+    const OS_ERRORS: [&str; 4] = ["PermissionError", "OSError", "gaierror", "URLError"];
     let sandbox = sandbox.filter(|_| Sandbox::available())?;
-    let error = (result.error.as_ref()).map(|error| error.traceback.join("\n"));
+    // A traceback echoes the cell's source, so only an OS error's own name and text count.
+    let error = (result.error.as_ref())
+        .filter(|error| OS_ERRORS.contains(&error.ename.as_str()))
+        .map(|error| format!("{}: {}", error.ename, error.evalue));
     let raw = format!(
         "{}{}{}",
         result.stdout,
         result.stderr,
         error.unwrap_or_default()
     );
-    let failed = result.status != yi_types::kernel::ExecuteStatus::Ok;
-    let refusal = sandbox_refusal(sandbox, cwd, Some(i32::from(failed)), &raw, code)?;
+    if result.status == yi_types::kernel::ExecuteStatus::Ok {
+        return exit_zero_note(&raw, code);
+    }
+    let refusal = sandbox_refusal(sandbox, cwd, Some(1), &raw, code)?;
     let what = match &refusal {
         SandboxRefusal::Path(path) => format!("writing `{}`", path.display()),
         SandboxRefusal::Scopes(_) => "this".to_owned(),
@@ -733,7 +777,7 @@ pub fn denial_hint(refusal: &SandboxRefusal) -> String {
         SandboxRefusal::Scopes(scopes)
             if scopes
                 .iter()
-                .any(|scope| RAW_SOCKET.contains(&scope.as_str())) =>
+                .all(|scope| RAW_SOCKET.contains(&scope.as_str())) =>
         {
             let programs: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
             format!(

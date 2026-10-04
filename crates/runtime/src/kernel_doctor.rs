@@ -136,7 +136,7 @@ pub fn listeners_detail(listeners: &[String]) -> String {
     let shown = listeners.iter().take(SHOWN).cloned().collect::<Vec<_>>();
     let cut = match listeners.len().checked_sub(SHOWN) {
         Some(more) if more > 0 => format!(
-            "; [{SHOWN} of {} shown (cap {SHOWN}); `lsof -nP -iTCP -sTCP:LISTEN` lists all]",
+            "; [{SHOWN} of {} listeners shown, cap sandbox-listeners={SHOWN}; `lsof -nP -iTCP -sTCP:LISTEN` lists all]",
             listeners.len()
         ),
         _ => String::new(),
