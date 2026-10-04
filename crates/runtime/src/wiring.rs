@@ -354,26 +354,11 @@ fn wire_schedule(
                     .unwrap_or(&wiring.rlm_dir)
                     .join("channels"),
             )
-            .with_gate({
-                let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
-                let (wall, cwd, own) = (
-                    wiring.wall.clone(),
-                    wiring.cwd.clone(),
-                    wiring.own_paths(session),
-                );
-                let spills = crate::tools::default_spill_root();
-                let roots =
-                    crate::tools::spill_roots_and_stores(spills.as_deref(), broker.as_deref());
-                let roots: Vec<PathBuf> = roots.into_iter().filter(|_| !wall.is_empty()).collect();
-                // An `exec://` source runs on the host, where the wall is its text alone (#1001).
-                // The spares are read per call: a child's store attaches after its wiring.
-                Arc::new(move |command: &str| {
-                    let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
-                    crate::tools::host_wall(command, &wall, (&roots, &spared), &cwd).or_else(|| {
-                        crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
-                    })
-                })
-            })
+            .with_gate(crate::tools::heartbeat_gate(
+                wiring,
+                session.rules_handle(),
+                wiring.own_paths(session),
+            ))
             .interned();
     crate::schedule::adapter::adapters_home(&wiring.home);
     let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
@@ -819,11 +804,10 @@ fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
         let settled = job_settled();
         let never: std::convert::Infallible = crate::session::until(settled, || {
             for report in yi_tools::jobs::registry().take_finished(&cwd) {
-                let (job, headline) = (report.id, report.headline());
-                follow_up(&format!(
-                    "<async_result job=\"{job}\">{headline}\n{}</async_result>",
-                    report.output
-                ));
+                let (job, headline, body) = (report.id, report.headline(), &report.output);
+                let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
+                let unread = move || !yi_tools::jobs::registry().delivered(job);
+                follow_up(&text, Some(Arc::new(unread)));
             }
             std::ops::ControlFlow::Continue(None)
         })

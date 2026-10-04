@@ -1236,6 +1236,66 @@ async fn a_job_that_exits_after_the_turn_waits_for_the_next_one() -> Result<(), 
     Ok(())
 }
 
+/// An idle session whose one backgrounded job settled and sits on its follow-up queue.
+async fn an_idle_session_with_a_queued_job(
+    name: &str,
+    replies: &[&str],
+) -> Result<(Scratch, AgentSession, yi_tools::jobs::JobId), Box<dyn Error>> {
+    let root = scratch(name)?;
+    let calls = [serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5})];
+    let session = bash_session(&root, &calls, replies, None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let job = job_in(&serde_json::to_string(&session.messages())?)?;
+    let queued = async {
+        while session.pending_count() == 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), queued).await?;
+    Ok((root, session, job))
+}
+
+/// Dies without the delivered bit: a job the completion loop queued and the model then polled
+/// to finished reached the model a second time as an `<async_result>` after the next turn.
+#[tokio::test]
+async fn a_polled_job_queued_before_the_poll_is_not_announced() -> Result<(), Box<dyn Error>> {
+    let (root, session, job) =
+        an_idle_session_with_a_queued_job("job-polled", &["done", "next", "again"]).await?;
+    let input = serde_json::json!({ "job": job.0 });
+    let polled = yi_tools::Tool::execute(
+        &yi_tools::BashTool::default(),
+        input.as_object().cloned().unwrap_or_default(),
+        &yi_tools::ToolContext::new(root.to_path_buf()),
+    );
+    let polled = serde_json::to_string(&polled.result)?;
+    assert!(
+        polled.contains("finished (exit 0)") && polled.contains("w2ke"),
+        "{polled}"
+    );
+    session.prompt("next")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    assert!(!said.contains("<async_result"), "{said}");
+    Ok(())
+}
+
+/// The bit is a poll's alone: a queued job no poll read still reaches the model.
+#[tokio::test]
+async fn an_unpolled_job_is_announced_after_the_next_turn() -> Result<(), Box<dyn Error>> {
+    let (_root, session, _job) =
+        an_idle_session_with_a_queued_job("job-unpolled", &["done", "next", "seen"]).await?;
+    session.prompt("next")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    let report = said
+        .split("<async_result")
+        .nth(1)
+        .ok_or_else(|| said.clone())?;
+    assert!(report.contains("w2ke") && report.contains("seen"), "{said}");
+    Ok(())
+}
+
 /// A job the watchdog killed says so in its `<async_result>`, not a bare exit code.
 #[tokio::test]
 async fn a_killed_job_reports_that_timeout_secs_killed_it() -> Result<(), Box<dyn Error>> {
