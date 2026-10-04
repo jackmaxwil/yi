@@ -1026,6 +1026,7 @@ fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
 /// The remedy the ping hint names: after the sandbox refuses a real `ping`, the next `ping` asks,
 /// and approving it runs that call outside the sandbox. The refusal is the bash tool's own, read
 /// off a contained run of `ping`.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
     let command = "ping -c1 -W1 1.1.1.1";
