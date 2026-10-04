@@ -1650,6 +1650,106 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     Ok(())
 }
 
+fn reader(id: &str, status: yi_runtime::ChildStatus, calls: u64) -> yi_runtime::ChildUpdate {
+    yi_runtime::ChildUpdate {
+        id: yi_types::subagent::ChildId(id.to_owned()),
+        name: id.to_owned(),
+        status,
+        activity: yi_types::subagent::ChildActivity::Executing,
+        tool_use_count: calls,
+        token_count: 1500,
+        answer_preview: None,
+        error: None,
+        exit: None,
+        flag: None,
+    }
+}
+
+/// Blank rows between each box's bottom border and the next box's top border, read off screen.
+fn gaps_between_boxes(backend: &VT100Backend, rows: u16) -> Vec<usize> {
+    let mut gaps = Vec::new();
+    let mut open: Option<usize> = None;
+    for row in 0..rows {
+        let text = backend.row_text(row);
+        if text.starts_with("  ╭─") {
+            gaps.extend(open.take());
+        } else if text.starts_with("  ╰") {
+            open = Some(0);
+        } else if let Some(blank) = open.as_mut() {
+            if text.trim().is_empty() {
+                *blank += 1;
+            } else {
+                open = None;
+            }
+        }
+    }
+    gaps
+}
+
+/// The dependent finishes first: a reader that ends before its sibling commits to scrollback
+/// while the sibling is still live, and that handoff must keep the one blank row between them.
+/// The roster's first snapshot lands before any call, and its activity is no previous step.
+#[test]
+fn a_reader_that_finishes_first_stays_one_blank_above_its_running_sibling() -> TestResult {
+    use yi_runtime::ChildStatus;
+    const ROWS: u16 = 30;
+    let backend = VT100Backend::with_scrollback(80, ROWS, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let ids = ["reader-g1", "reader-g2"];
+    let roster: Vec<yi_runtime::ChildView> = ids
+        .iter()
+        .map(|id| yi_runtime::ChildView {
+            update: reader(id, ChildStatus::Running, 0),
+            session: yi_runtime::ChildFeed::of(Arc::new(faux_session("read it"))),
+        })
+        .collect();
+    app.sync_children(&roster);
+    for (call, path) in [("r1", "a.rs"), ("r2", "b.rs")] {
+        for id in ids {
+            app.reduce_child(
+                id,
+                yi_types::event::AgentEvent::ToolExecutionStart {
+                    tool_call_id: format!("{id}-{call}"),
+                    tool_name: "read".to_owned(),
+                    args: serde_json::json!({ "path": format!("{id}/{path}") }),
+                },
+            );
+        }
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        let first = terminal.backend().contents();
+        assert!(
+            !first.contains("⚙ executing"),
+            "a label is not a step:\n{first}"
+        );
+    }
+    let live = terminal.backend().contents();
+    assert_eq!(
+        gaps_between_boxes(terminal.backend(), ROWS),
+        vec![1],
+        "{live}"
+    );
+    app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 2));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let handed = terminal.backend().contents();
+    assert_eq!(
+        gaps_between_boxes(terminal.backend(), ROWS),
+        vec![1],
+        "{handed}"
+    );
+    let top = (0..ROWS)
+        .find(|row| terminal.backend().row_text(*row).contains("Reader g2"))
+        .ok_or_else(|| format!("no live sibling:\n{handed}"))?;
+    let below = |offset: u16| terminal.backend().row_text(top.saturating_add(offset));
+    assert!(below(1).contains("⚙ read reader-g2/a.rs"), "{handed}");
+    assert!(
+        below(2).contains("⚙ read reader-g2/b.rs · 1K tokens"),
+        "{handed}"
+    );
+    Ok(())
+}
+
 /// The owner asked for the orb two thirds bigger: a 10x5 cell image whose five reserved rows
 /// carry the working label on the middle one, beside the image's centre rather than its top.
 #[test]
