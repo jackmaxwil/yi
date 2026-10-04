@@ -163,6 +163,7 @@ fn the_children_line_groups_members_by_state_with_their_notes() {
         note: note.map(str::to_owned),
         tools: 0,
         tokens: 0,
+        cost: 0.0,
         idle_s: 0,
         worktree: None,
     };
@@ -228,6 +229,7 @@ fn member(name: &str, session: &yi_session::SharedSession, now_ms: u64) -> Membe
         note,
         tools: 0,
         tokens: 0,
+        cost: 0.0,
         idle_s,
         worktree: None,
     }
