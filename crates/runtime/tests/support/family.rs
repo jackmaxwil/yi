@@ -66,7 +66,7 @@ pub fn faux_model() -> Model {
 }
 
 /// `hold` makes every child run that shell command first, so its turn stays open; each
-/// reply bills 120 tokens.
+/// reply bills 120 tokens and costs a quarter dollar.
 pub fn family(
     dir: PathBuf,
     cwd: PathBuf,
@@ -109,6 +109,7 @@ pub fn family(
             let mut reply = faux_assistant_message(vec![faux_text("ok")], StopReason::Stop);
             if let AgentMessage::Assistant { usage, .. } = &mut reply {
                 usage.total_tokens = 120;
+                usage.cost.total = serde_json::Number::from_f64(0.25).unwrap_or_else(|| 0.into());
             }
             script.push(reply);
             provider.queue_faux(script);
