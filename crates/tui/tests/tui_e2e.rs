@@ -1699,6 +1699,49 @@ fn pane_rows(app: &mut App, height: u16) -> Vec<String> {
         .collect()
 }
 
+/// Forty user turns, far more rows than any pane in these tests holds.
+fn outgrow_the_pane(app: &mut App) {
+    for turn in 1..=40 {
+        app.commit_cell(&Cell::User {
+            text: format!("question {turn}"),
+        });
+    }
+}
+
+/// A pane whose history outgrows it ends on a finished box's blank row, and the live answer
+/// opens on its own blank: the two collapse to one, and the status row stays on the last row.
+#[test]
+fn a_pane_that_collapses_its_seam_still_ends_on_the_status_row() -> TestResult {
+    let mut app = app();
+    app.set_pane();
+    outgrow_the_pane(&mut app);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let done = reader("reader-g1", yi_runtime::ChildStatus::Completed, 1);
+    app.adopt(&done, None);
+    app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+        message: yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text("")],
+            StopReason::Stop,
+        ),
+    });
+    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "Reading the pane code first".to_owned(),
+        },
+    });
+    let rows = pane_rows(&mut app, 20);
+    assert!(
+        rows.iter().any(|r| r.contains("Reading the pane code")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.last().is_some_and(|r| r.contains("faux-1")),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
 /// A console pane joins its history to its live rows: a finished box above a running sibling
 /// keeps the one blank row there too, not the box's trailing blank plus the sibling's leading one.
 #[test]
@@ -1706,6 +1749,7 @@ fn a_pane_keeps_one_blank_between_a_finished_box_and_its_running_sibling() -> Te
     use yi_runtime::ChildStatus;
     let mut app = app();
     app.set_pane();
+    outgrow_the_pane(&mut app);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     for id in ["reader-g1", "reader-g2"] {
         app.adopt(&reader(id, ChildStatus::Running, 1), None);
@@ -1713,6 +1757,10 @@ fn a_pane_keeps_one_blank_between_a_finished_box_and_its_running_sibling() -> Te
     app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 1));
     let rows = pane_rows(&mut app, 30);
     assert_eq!(gaps_between_boxes(rows.clone()), vec![1], "{rows:#?}");
+    assert!(
+        rows.last().is_some_and(|r| r.contains("faux-1")),
+        "{rows:#?}"
+    );
     Ok(())
 }
 
@@ -1885,30 +1933,27 @@ fn a_committed_box_keeps_one_blank_row_above_a_one_row_cell() -> TestResult {
 }
 
 /// A pane with fewer rows left than the orb's five must not get a five-row placement: kitty
-/// would paint it over the composer, the status row or the pane below.
+/// would paint it over the composer, the status row or the pane below. Five rows still place it.
 #[test]
 fn an_orb_that_cannot_fit_its_rows_is_not_placed() -> TestResult {
-    let mut app = app();
-    app.set_pane();
-    app.set_kitty(true);
-    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-    let area = ratatui::layout::Rect::new(0, 0, 80, 3);
-    let mut buffer = ratatui::buffer::Buffer::empty(area);
-    let _ = yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut 0);
-    let mut out = Vec::new();
-    yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
-    let out = String::from_utf8_lossy(&out);
-    for placement in out.split("\x1b_Ga=p,").skip(1) {
-        let keys = placement.split("\x1b\\").next().unwrap_or_default();
-        let rows: u16 = keys
-            .split(',')
-            .find_map(|kv| kv.strip_prefix("r="))
-            .ok_or("no r")?
-            .parse()?;
+    for (height, placed) in [(5, 1), (4, 0)] {
+        let mut app = app();
+        app.set_pane();
+        app.set_kitty(true);
+        app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        let _ = pane_rows(&mut app, height);
+        let mut out = Vec::new();
+        yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+        let out = String::from_utf8_lossy(&out);
+        let sizes: Vec<&str> = out
+            .split("\x1b_Ga=p,")
+            .skip(1)
+            .filter_map(|keys| keys.split("\x1b\\").next())
+            .collect();
+        assert_eq!(sizes.len(), placed, "a {height}-row pane: {sizes:?}");
         assert!(
-            rows <= area.height,
-            "a {rows}-row orb in a {}-row pane",
-            area.height
+            sizes.iter().all(|keys| keys.ends_with("c=10,r=5")),
+            "a {height}-row pane: {sizes:?}"
         );
     }
     Ok(())
