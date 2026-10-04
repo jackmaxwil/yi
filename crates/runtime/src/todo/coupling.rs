@@ -2,19 +2,17 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
-use yi_types::plan::doc::{BlockedOn, Todo, TodoState, TodoStateName};
-use yi_types::todo::PhaseName;
+use yi_types::plan::doc::{BlockedOn, TodoState, TodoStateName};
 use yi_types::todo::{TodoInterceptRecord, TodoList};
 
-use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
+use super::{TodoStore, text, tool};
 use crate::goal::StoreHandle;
-use crate::plan::loop_coupling::gate::{eager_init, enumerated};
+use crate::plan::loop_coupling::gate::eager_init;
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
 
 pub const NUDGE_CUSTOM_TYPE: &str = "todo_nudge";
 pub const PRELUDE_CUSTOM_TYPE: &str = "todo_prelude";
 pub const INTERCEPT_CUSTOM_TYPE: &str = "todo_intercept";
-pub const SEED_ACTOR: &str = "prompt";
 
 pub mod gate {
     pub const NUDGE_WORK: u32 = 12;
@@ -194,7 +192,7 @@ fn open_moves(list: &TodoList) -> String {
 pub fn prelude_text(list: &TodoList) -> String {
     let open = list.progress().open.saturating_add(list.progress().blocked);
     if open == 0 {
-        return "Before substantive work, put the whole request in the todo tool: one `init` (phases and items) or `set` (a checklist) covering every item the user named plus investigation and verification, in the same message as your first reads. Then continue.".to_owned();
+        return "Before substantive work, write the todo list yourself: one `init` (phases and items) or `set` (a checklist), in your own words, covering what this request needs plus investigation and verification, in the same message as your first reads. Nothing was written for you; the list holds only what you put in it. A pasted document, log or output is context, not a checklist: take from it only what the request asks for. Then continue.".to_owned();
     }
     format!(
         "The todo list still holds {open} open item(s) from before. Reconcile first: `drop` with a reason what no longer applies, keep what does, and `append` this request's items; then continue.\n{}",
@@ -206,42 +204,6 @@ pub fn first_list_text() -> String {
     format!(
         "{} changes have landed with no todo list. `init` the list naming what remains, batched with your next call.",
         crate::levers::get().todo_first_list_work
-    )
-}
-
-/// A numbered request is the list: one pending item per enumerated line, cut to the label
-/// max with the line as its note, under the default phase.
-pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
-    let mut items: Vec<Todo> = Vec::new();
-    for line in prompt.lines().filter_map(enumerated) {
-        let Ok(item) = Todo::from_text(line) else {
-            continue;
-        };
-        if !items.iter().any(|seen| seen.label == item.label) {
-            items.push(item);
-        }
-    }
-    if items.len() < crate::levers::get().plan_enumerated_min {
-        return false;
-    }
-    let Ok(phase) = PhaseName::new(DEFAULT_PHASE) else {
-        return false;
-    };
-    todos
-        .apply_as(
-            Op::Init {
-                phases: vec![(phase, items)],
-            },
-            None,
-            SEED_ACTOR,
-        )
-        .is_ok()
-}
-
-pub fn seeded_text(list: &TodoList) -> String {
-    format!(
-        "The todo list was seeded from the request's numbered lines; a long line is cut to its label with the line kept as the note. `append` investigation and verification items, `start` the first, and batch each op with real work.\n{}",
-        text::checklist(list).join("\n")
     )
 }
 
@@ -744,14 +706,7 @@ fn prompt_hook(
         if eager == Eager::Off || mirrored || (!open && !eager_init(text)) {
             return inner.as_ref().and_then(|inner| inner(prompt));
         }
-        let seeded = !open && seed(&todos, text);
-        let list = todos.list();
-        let prelude = if seeded {
-            seeded_text(&list)
-        } else {
-            prelude_text(&list)
-        };
-        deliver(custom(PRELUDE_CUSTOM_TYPE, prelude, false));
+        deliver(custom(PRELUDE_CUSTOM_TYPE, prelude_text(&list), false));
         if eager == Eager::Force && !open {
             return ForcedTool::new(tool::NAME).ok().map(ToolChoice::Tool);
         }
