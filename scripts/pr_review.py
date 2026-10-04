@@ -240,7 +240,17 @@ def delta_base(rounds, merge_base, is_ancestor, head, forked_from=lambda sha: Tr
     return merge_base
 
 
-def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0):
+def review_diff(git, merge_base, base, sha):
+    """The PR's own change, fork to head, so what main brought in by merge is never read as the PR's.
+    After a clean round only the paths touched since it are kept: the delta, without main's work."""
+    own = f"{merge_base}..{sha}"
+    if base == merge_base:
+        return git("diff", own)
+    paths = git("diff", "--name-only", f"{base}..{sha}").splitlines()
+    return git("diff", own, "--", *[f":(literal){p}" for p in paths]) if paths else ""
+
+
+def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=()):
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     said = verdict(findings, overridden)
     meta = " ".join([f"pr={pr}", f"sha={sha}", f"base={base}", f"verdict={said}", f"mode={mode}"]
@@ -261,6 +271,8 @@ def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0):
             lines.append(f"| {i} | {f['lens']} | {f['severity']} | {cell(f['claim'])} | `{f.get('path', '')}:{f.get('line', '')}` | {cell(f.get('fix'))} |")
     else:
         lines.append("No finding survived.")
+    if unanswered:
+        lines += ["", f"Skipped, no answer after retries (nothing from these is in the table, none blocks): {', '.join(unanswered)}."]
     if dropped:
         lines += ["", f"Dropped before this table: {dropped} finding(s) whose quote was not on its line, or that a refuter broke."]
     if outside:
@@ -469,7 +481,10 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
         if out.returncode == 3:
             out = run(["--continue"], repair_prompt(schema))
         if out.returncode == 0:
-            return json.loads(out.stdout)
+            try:
+                return json.loads(out.stdout)
+            except ValueError:
+                out.returncode, out.stderr = 3, f"answer is not valid JSON: {out.stdout[-200:]!r}"
         if out.returncode not in (1, 3):
             break
     raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-600:]}")
@@ -478,21 +493,37 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
 def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None):
     """Every probe that applies, then the host's quote and scope checks, then the refuters, each
     stage's calls at once. `own` is the PR's own patch (fork to head) by added line, the read
-    diff when absent. Returns (kept, dropped, outside); an unanswered call raises, no round."""
+    diff when absent. Returns (kept, dropped, outside, unanswered). A lens or refuter that stays
+    silent is named in `unanswered` and the round goes on; only every lens silent raises, no round."""
     added = added_at(diff)
     own = added if own is None else own
     chosen = [p for p in probes.values() if applies(p, added, full_read)]
+    unanswered = []
+
+    def tried(what, *call):
+        try:
+            return answer(*call)
+        except Unanswered as err:
+            unanswered.append(what)
+            last[0] = err
+
+    last = [None]
     with ThreadPoolExecutor(max_workers=max(1, len(chosen))) as pool:
-        said = list(pool.map(lambda probe: answer(lens_prompt(probe, pr, diff, base, sha), LENS_SCHEMA, tree), chosen))
-        candidates = [{**f, "lens": probe["id"]} for probe, answer_ in zip(chosen, said)
+        said = list(pool.map(lambda probe: tried(f"{probe['id']} lens", lens_prompt(probe, pr, diff, base, sha), LENS_SCHEMA, tree), chosen))
+        # Incident: the first dry run on #733 had every lens exit 4 (no key) and read clean.
+        if chosen and all(a is None for a in said):
+            raise last[0]
+        candidates = [{**f, "lens": probe["id"]} for probe, answer_ in zip(chosen, said) if answer_
                       for f in answer_.get("findings", []) if f.get("severity") in REPORTED]
         quoted_ = [f for f in candidates if quoted(f, tree)]
         checked = [f for f in quoted_ if in_scope(f, own)]
         seats_ = [(i, f) for i, f in enumerate(checked) for _ in range(seats(f, probes))]
-        votes = list(pool.map(lambda seat: answer(refute_prompt(seat[1]), REFUTE_SCHEMA, tree), seats_))
-    kept = [f for i, f in enumerate(checked) if survives([v for (j, _), v in zip(seats_, votes) if j == i])]
+        votes = list(pool.map(lambda seat: tried(f"refuter on {seat[1]['lens']} finding at {seat[1]['path']}:{seat[1]['line']}",
+                                                 refute_prompt(seat[1]), REFUTE_SCHEMA, tree), seats_))
+    # A silent refuter casts no vote; a finding with none cast is not confirmed, so it is dropped.
+    kept = [f for i, f in enumerate(checked) if survives([v for (j, _), v in zip(seats_, votes) if j == i and v])]
     outside = len(quoted_) - len(checked)
-    return kept, len(candidates) - len(kept) - outside, outside
+    return kept, len(candidates) - len(kept) - outside, outside, unanswered
 
 
 # --- the verbs ------------------------------------------------------------------------
@@ -573,18 +604,19 @@ def read_pr(repo, number, allowed):
         is_ancestor = lambda rev: subprocess.run(("git", "-C", str(ROOT), "merge-base", "--is-ancestor", rev, sha), capture_output=True).returncode == 0
         forked_from = lambda rev: subprocess.run(("git", "-C", str(ROOT), "merge-base", "--is-ancestor", merge_base, rev), capture_output=True).returncode == 0
         base = delta_base(rounds, merge_base, is_ancestor, sha, forked_from)
-        diff = forge_pr.git("diff", f"{base}..{sha}")
+        diff = review_diff(forge_pr.git, merge_base, base, sha)
         own = added_at(forge_pr.git("diff", f"{merge_base}..{sha}"))
         others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
                  (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=30") or [])
         found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo, stacked)
-        kept, dropped, outside = read_round(pr, diff, base, sha, tree, lambda p, s, cwd: ask(p, s, cwd),
+        kept, dropped, outside, unanswered = read_round(pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd),
                                             load_probes(), full_read=base == merge_base, own=own)
     finally:
         discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
     return {"pr": pr, "n": rounds[-1]["n"] + 1 if rounds else 1, "sha": sha, "base": base,
-            "intake": found, "kept": kept, "dropped": dropped, "outside": outside}
+            "intake": found, "kept": kept, "dropped": dropped, "outside": outside,
+            "unanswered": unanswered}
 
 
 class held:
@@ -630,7 +662,7 @@ def cmd_review(args):
             print(f"#{number}: no round — a lens or refuter did not answer ({err})")
             return 1
         n, sha, base, findings, dropped = read["n"], read["sha"], read["base"], read["intake"] + read["kept"], read["dropped"]
-        body = render(n, number, sha, base, findings, dropped, None, MODE, read["outside"])
+        body = render(n, number, sha, base, findings, dropped, None, MODE, read["outside"], read["unanswered"])
         if args.dry_run:
             print(body)
             return 0
@@ -883,12 +915,12 @@ def selfcheck():
             return {"refuted": False, "reason": "holds"}
 
         change = "+++ b/a.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    let x = 1;\n }\n"
-        kept, dropped, outside = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes)
+        kept, dropped, outside, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes)
         assert kept == [finding] and dropped == 1 and outside == 0, (kept, dropped, outside)
         assert seen.count(REFUTE_SCHEMA) == 3, "a high finding meets three refuters; a dropped or low one none"
         # Incident: rounds after a merge from main posted findings on the code main brought in.
         seen.clear()
-        kept, dropped, outside = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
+        kept, dropped, outside, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
                                             answer, probes, own={"a.rs": {9}})
         assert kept == [] and outside == 1 and dropped == 1, (kept, dropped, outside)
         assert REFUTE_SCHEMA not in seen, "a finding outside the PR's own change meets no refuter"
@@ -900,8 +932,57 @@ def selfcheck():
             raise AssertionError("a round with a silent lens must not return")
         except Unanswered:
             pass
+        # Incident: #1002's review job failed whole when one lens answered text, and no round posted.
+        def one_silent(prompt, schema, cwd):
+            if schema is LENS_SCHEMA and " as its correctness lens" in prompt:
+                raise Unanswered("yi ask exited 3: error: answer is not valid JSON")
+            return answer(prompt, schema, cwd)
+        kept, dropped, outside, skipped = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, one_silent, probes)
+        assert skipped == ["correctness lens"] and kept == [], (kept, skipped)
+        assert "correctness lens" in render(1, 1, "abcdef1", "abcdef0", [], 0, None, "blocking", 0, skipped), "the round says which lens it lost"
+
+        def no_refuter(prompt, schema, cwd):
+            if schema is REFUTE_SCHEMA:
+                raise Unanswered("exit 3")
+            return answer(prompt, schema, cwd)
+        kept, dropped, outside, skipped = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, no_refuter, probes)
+        assert kept == [] and len(skipped) == 3 and skipped[0].startswith("refuter on correctness"), (kept, skipped)
+        fake = pathlib.Path(tree) / "yi"
+        fake.write_text("#!/bin/sh\necho 'sorry, no JSON here'\n")
+        fake.chmod(0o755)
+        os.environ["YI_BIN"] = str(fake)
+        try:
+            ask("p", LENS_SCHEMA, tree, sessions=tree / "s")
+            raise AssertionError("prose on stdout with exit 0 must not return")
+        except Unanswered as err:
+            assert "not valid JSON" in str(err), err
+        finally:
+            del os.environ["YI_BIN"]
     finally:
         shutil.rmtree(tree)
+    # Incident: #911's round 3 read main's commits, merged into the branch, as the PR's own.
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-scope-"))
+    try:
+        run = lambda *a: subprocess.run(("git", "-C", str(tmp), "-c", "user.name=t", "-c", "user.email=t@t") + a,
+                                        capture_output=True, text=True, check=True).stdout.strip()
+        put = lambda name, text: ((tmp / name).write_text(text), run("add", name), run("commit", "-q", "-m", name))
+        run("init", "-q", "-b", "main")
+        put("seed.txt", "s\n")
+        run("checkout", "-q", "-b", "pr")
+        put("own.txt", "one\n")
+        clean_head = run("rev-parse", "HEAD")
+        run("checkout", "-q", "main")
+        put("landed.txt", "other pr\n")
+        run("checkout", "-q", "pr")
+        run("merge", "-q", "--no-edit", "main")
+        put("own.txt", "one\ntwo\n")
+        head = run("rev-parse", "HEAD")
+        seen = review_diff(lambda *a: run(*a), run("merge-base", "main", head), clean_head, head)
+        assert "own.txt" in seen and "+two" in seen, seen
+        assert "landed.txt" not in seen, "a commit main brought in is not the PR's change"
+        assert "+one" in seen, "a path changed since the clean round shows the PR's whole change to it"
+    finally:
+        shutil.rmtree(tmp)
     hunk = "+++ b/a.rs\n@@ -1,3 +1,4 @@\n fn main() {\n+    let x = 1;\n-    old();\n }\n@@ -40 +41,2 @@\n+tail\n context\n"
     assert added_at(hunk) == {"a.rs": {2, 41}}, added_at(hunk)
     assert in_scope(finding, {"a.rs": {2}}), "a finding on a line the PR adds is in scope"

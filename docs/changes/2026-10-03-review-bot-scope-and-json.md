@@ -1,0 +1,4 @@
+---
+issue: Closes #920, closes #1004
+---
+A review round reads only the PR's own change, and a silent lens no longer voids it (Closes #920, closes #1004). Round two onward read from the last clean head to the new head, so a branch that had merged main in between put main's commits in the lens's diff and blocked on other PRs' code (#911's round 3 on #913's test). The round now diffs the fork point to the head (`origin/main...HEAD`), and after a clean round keeps only the paths touched since it, so "what changed since" survives without main's work. A lens or refuter that stays unanswered after the existing repair retries (including a reply on stdout that is not JSON) is now named in the round as skipped and blocks nothing; only a round with every lens silent still posts nothing, as on #733. A finding whose refuters all stayed silent is dropped, not confirmed.
