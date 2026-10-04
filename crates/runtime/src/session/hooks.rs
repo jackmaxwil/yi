@@ -64,6 +64,19 @@ impl AgentSession {
         std::sync::Arc::new(move || store_of(&shared))
     }
 
+    /// The environment block as the host would render it now, for checks that count its facts.
+    pub fn environment_handle(&self) -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            let hook = shared
+                .environment
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())?;
+            hook()
+        })
+    }
+
     /// Incident: snapshotting these left `rlm.run` and `model.info` on the
     /// startup model once the TUI could switch.
     pub fn kernel_state_handle(&self) -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
@@ -165,7 +178,7 @@ impl AgentSession {
                     run::push(&mut queue, Queued::new(message, false, None));
                 }
             } else if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(message);
+                queue.push(Queued::new(message, false, None));
             }
         })
     }
@@ -282,12 +295,14 @@ impl AgentSession {
         })
     }
 
-    /// A job's report (§4.3), taken after a running turn's answer or the next one's, never waking.
-    pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+    /// A job's report (§4.3), taken after a running turn's answer or the next one's, never waking;
+    /// `news` false when the queue is read drops it unread.
+    pub fn follow_up_hook(&self) -> Arc<super::FollowUpFn> {
         let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str| {
+        Arc::new(move |text: &str, news| {
             if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(host_text(yi_types::message::HostSource::Job, text));
+                let message = host_text(yi_types::message::HostSource::Job, text);
+                queue.push(Queued::new(message, false, news));
             }
         })
     }

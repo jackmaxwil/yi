@@ -647,6 +647,36 @@ fn timeout_limit(segment: &str) -> Option<std::time::Duration> {
     std::time::Duration::try_from_secs_f64(seconds * scale).ok()
 }
 
+/// Invariant: a list's status is its last command's, so only a final top-level `&&` can
+/// mean a later segment was skipped.
+fn ends_in_and_chain(command: &str) -> bool {
+    let mut chars = command.trim_end().chars().peekable();
+    let (mut quote, mut depth, mut prev, mut and_last) = (None, 0usize, ' ', false);
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => {
+                chars.next();
+            }
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(') => depth = depth.saturating_add(1),
+            (None, ')') => depth = depth.saturating_sub(1),
+            (None, '&') if matches!(prev, '>' | '<' | '|') || chars.peek() == Some(&'>') => {}
+            (None, '&' | '|' | ';' | '\n') if depth == 0 => {
+                and_last = c == '&' && chars.next_if_eq(&'&').is_some();
+                if c == '|' {
+                    chars.next_if_eq(&'|');
+                }
+            }
+            (None, _) => {}
+        }
+        prev = c;
+    }
+    and_last
+}
+
 /// Where no `bash` is on PATH the tool falls back to POSIX `sh`, so a bashism is a shell
 /// refusal the model cannot see in the output; named only when the shape matches (#476).
 fn posix_shell_hint(command: &str, exit_code: i32, stderr: &str) -> Option<String> {
@@ -688,7 +718,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -786,10 +816,16 @@ impl Tool for BashTool {
                 .filter(|_| !capture.truncated),
             max_lines,
         );
-        if !reduced.text.is_empty() {
-            sections.push(reduced.text.clone());
+        let body = match (&reduced.recovery, capture.truncated) {
+            (Some(note), true) => (reduced.text.strip_suffix(note.as_str()))
+                .map_or(reduced.text.as_str(), str::trim_end),
+            _ => reduced.text.as_str(),
+        };
+        if !body.is_empty() {
+            sections.push(body.to_owned());
         }
-        sections.extend(capture.cut_note().filter(|_| reduced.recovery.is_none()));
+        sections.extend(capture.cut_row());
+        sections.extend(capture.cut_note());
         if timed_out {
             sections.extend(timed_out_notes(timeout, nudge.is_some(), asked_wait));
         } else if capture.cancelled {
@@ -801,7 +837,7 @@ impl Tool for BashTool {
         let exit_code = capture.exit_code.unwrap_or(-1);
         if exit_code != 0 {
             sections.push(format!("exit code: {exit_code}"));
-            if command.contains("&&") {
+            if ends_in_and_chain(command) {
                 sections.push(format!(
                     "[exit {exit_code} inside a && chain: any segment after the failing one did not run]"
                 ));
@@ -952,6 +988,7 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
             return error_output("no background job to check on".to_owned());
         };
         if report.finished {
+            jobs.mark_delivered(id);
             let exit_code = report.exit_code.unwrap_or(-1);
             let mut output = text_output(format!("{}\n{}", report.headline(), report.output));
             output.result.details = json!({ "job": id.0, "exitCode": exit_code });
