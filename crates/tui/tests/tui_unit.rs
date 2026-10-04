@@ -449,6 +449,11 @@ fn a_model_with_emoji_presentation_is_clipped_by_drawn_width() {
             row.width(),
             flat(&row)
         );
+        let text = flat(&row);
+        assert!(
+            text.contains("⚠️g") && (text.contains('…') || text.contains("-preview")),
+            "{width}: the name keeps its head and marks the cut: {text}"
+        );
     }
 }
 
