@@ -624,10 +624,21 @@ impl SubagentHost {
                 .trim(),
             None => body,
         };
-        serde_json::Deserializer::from_str(body)
-            .into_iter::<Value>()
-            .next()?
-            .ok()
+        let first = |body: &str| {
+            serde_json::Deserializer::from_str(body)
+                .into_iter::<Value>()
+                .next()?
+                .ok()
+        };
+        // Incident: a reader put its object in a fence after a paragraph (#989); the last
+        // fence that parses wins, as a model's final block is its answer.
+        first(body).or_else(|| {
+            text.split("```")
+                .skip(1)
+                .step_by(2)
+                .filter_map(|fence| first(fence.split_once('\n').map_or(fence, |(_, rest)| rest)))
+                .last()
+        })
     }
 
     /// The mailbox interrupt: ends the run and keeps the record, unlike delete.
