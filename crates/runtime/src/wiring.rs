@@ -819,11 +819,10 @@ fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
         let settled = job_settled();
         let never: std::convert::Infallible = crate::session::until(settled, || {
             for report in yi_tools::jobs::registry().take_finished(&cwd) {
-                let (job, headline) = (report.id, report.headline());
-                follow_up(&format!(
-                    "<async_result job=\"{job}\">{headline}\n{}</async_result>",
-                    report.output
-                ));
+                let (job, headline, body) = (report.id, report.headline(), &report.output);
+                let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
+                let unread = move || !yi_tools::jobs::registry().delivered(job);
+                follow_up(&text, Some(Arc::new(unread)));
             }
             std::ops::ControlFlow::Continue(None)
         })

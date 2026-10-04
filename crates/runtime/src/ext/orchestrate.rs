@@ -255,6 +255,7 @@ impl Extension for Orchestrate {
             Event::ToolResult {
                 name,
                 exit,
+                check,
                 files_matched,
                 ..
             } => {
@@ -262,7 +263,7 @@ impl Extension for Orchestrate {
                     self.attach(out, "files_matched", false);
                 }
                 if self.edited && name == "bash" && exit.is_some_and(|code| code != 0) {
-                    self.attach(out, "failed_check_after_edit", true);
+                    self.attach(out, "failed_check_after_edit", *check);
                 }
             }
             Event::TurnEnd {
@@ -279,5 +280,70 @@ impl Extension for Orchestrate {
             }
             _ => {}
         }
+    }
+}
+
+pub(crate) fn is_check(command: &str) -> bool {
+    let mut segments = vec![String::new()];
+    let mut quote = None;
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let redirect = segments
+            .last()
+            .is_some_and(|text| text.ends_with(['>', '<']))
+            || chars.peek() == Some(&'>');
+        match (quote, ch) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => {
+                chars.next();
+            }
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, '&') if redirect => {}
+            (None, '&' | '|' | ';' | '\n') => {
+                segments.push(String::new());
+                continue;
+            }
+            (None, _) => {}
+        }
+        if let Some(current) = segments.last_mut() {
+            current.push(ch);
+        }
+    }
+    segments.iter().any(|segment| segment_is_check(segment))
+}
+
+fn segment_is_check(segment: &str) -> bool {
+    let assignment = |word: &&str| {
+        word.split_once('=').is_some_and(|(name, _)| {
+            name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+    };
+    let mut words = segment.split_whitespace().skip_while(assignment);
+    match (words.next(), words.next()) {
+        (Some("cargo"), Some(sub)) => {
+            matches!(sub, "test" | "nextest" | "clippy" | "build" | "check")
+        }
+        (Some("npm"), Some("test")) | (Some("just" | "pytest" | "make"), _) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_check;
+
+    #[test]
+    fn failed_check_classifies_the_gate_commands() {
+        assert!(is_check("cd x && cargo test 2>&1"));
+        assert!(is_check("CARGO_TARGET_DIR=/t cargo nextest run"));
+        assert!(is_check("just check -q"));
+        assert!(!is_check("pwd"));
+        assert!(!is_check("echo 'cargo test'; false"));
+        assert!(!is_check("cargo fmt"));
     }
 }

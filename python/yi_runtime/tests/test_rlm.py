@@ -469,6 +469,15 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(rlm, "host_request", fake_host_request):
             self.assertEqual((await rlm.status("ledger")).name, "audit/ledger")
 
+    async def test_a_status_member_carries_its_summed_cost(self) -> None:
+        """Dies with the member's ``cost`` dropped: the parent cannot see what a child spent."""
+
+        async def fake_host_request(kind, payload):
+            return {"members": [{"name": "n", "state": "finished", "tokens": 120, "cost": 0.25}]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual((await rlm.status("n")).cost, 0.25)
+
     async def test_a_handle_reads_its_state_from_the_host(self) -> None:
         """Dies with no ``state`` on a spawn handle (the final confirmation's r2 fanout)."""
 
@@ -531,6 +540,22 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handle.name, "index")
         wanted = {"name": "index", "prompt": "serve the index", "restart": 1, "kwargs": {"tokens": 500}}
         self.assertEqual(sent, [("rlm.service", wanted)])
+
+
+class FindModelsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_an_entry_with_cost_and_one_without_both_parse(self) -> None:
+        """Dies with ``cost`` dropped from the model, or with an entry lacking it refused."""
+        priced = {"provider": "openrouter", "id": "a/b", "name": "B", "selector": "openrouter/a/b",
+                  "cost": {"input": 0.8, "output": 1.6}}
+        bare = {"provider": "faux", "id": "faux-1", "name": "Faux", "selector": "faux/faux-1"}
+
+        async def fake_host_request(kind, payload):
+            return {"models": [priced, bare]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            models = await rlm.find_models()
+        self.assertEqual([model.cost for model in models], [{"input": 0.8, "output": 1.6}, None])
+        self.assertEqual([model.selector for model in models], ["openrouter/a/b", "faux/faux-1"])
 
 
 class NoSuchChildTests(unittest.IsolatedAsyncioTestCase):
