@@ -880,7 +880,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut repeating: u32 = 0;
     let mut steered = false;
     let mut last_word_said = false;
-    let mut tool_less = false;
+    let mut followed_up = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending = read_steering(config);
 
@@ -917,7 +917,7 @@ pub async fn run_loop<S: StreamFn>(
                     effort: current_effort,
                     tool_choice: tool_choice.take(),
                     watch: !last_word_said,
-                    tools: !tool_less,
+                    tools: !(followed_up && stream_retries > 0),
                 },
                 signal,
                 emit,
@@ -1032,10 +1032,11 @@ pub async fn run_loop<S: StreamFn>(
                 tool_results: tool_results.clone(),
             });
 
-            // Incident: two capped readers called a tool on the last word and ended with no
-            // answer; one request offering no tools follows, and the schema rides it.
-            if refused_last_word && !tool_less && !answered(&message) {
-                tool_less = true;
+            // Incident: two capped readers called a tool on the last word and ended with no answer.
+            // One more request forces none; a route refusing that (glm-5.3-flash) retries tool-less.
+            if refused_last_word && !followed_up && !answered(&message) {
+                followed_up = true;
+                tool_choice = Some(ToolChoice::None);
                 has_more_tool_calls = true;
                 continue;
             }
