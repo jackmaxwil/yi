@@ -345,6 +345,87 @@ async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its
     Ok(())
 }
 
+/// Dies with a resumed session writing five-minute marks where its ledger had learned an hour:
+/// the tracker started empty in each new process, so every resume lost the hour tier until the
+/// session paused long again. The ledger is folded as the store attaches, before any request,
+/// and into the tracker too, so the first live reply refines the ledger's estimate.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_root_holds_its_history_an_hour_from_its_first_request() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let scratch = Scratch::new("yi-family-ttl-resume")?;
+    let reply = |content: &str| {
+        let usage = json!({"prompt_tokens": 41_500, "completion_tokens": 5,
+            "total_tokens": 41_505, "prompt_tokens_details": {"cached_tokens": 41_000}});
+        [
+            json!({"choices": [{"index": 0, "delta": {"content": content}}]}),
+            json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": usage}),
+        ]
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect::<String>()
+            + "data: [DONE]\n\n"
+    };
+    let (port, from) = stand_in(reply("blue sky"))?;
+    let mut model = openrouter_claude();
+    let price = |value: f64| serde_json::Number::from_f64(value).ok_or("price");
+    (model.cost.input, model.cost.cache_write) = (price(1.0)?, price(1.25)?);
+    model.cost.cache_read = price(0.1)?;
+    let mut repo = JsonlRepo::new(scratch.join("sessions"), "/tmp".to_owned());
+    let store = repo.create(CreateOptions::default())?;
+    let minute = 60_000;
+    for (prompt, elapsed) in [(40_000, 60 * minute), (40_500, 30 * minute), (41_000, 0)] {
+        let mut reply = recorded_reply(&model, prompt, elapsed)?;
+        if let AgentMessage::Assistant { diagnostics, .. } = &mut reply {
+            for note in diagnostics.iter_mut().flatten() {
+                note.details = json!({"elapsed_ms": elapsed, "ttl": "1h"})
+                    .as_object()
+                    .cloned();
+            }
+        }
+        let mut ledger = lock_session(&store);
+        ledger.append_message("main", AgentMessage::task("look again", 0))?;
+        ledger.append_message("main", reply)?;
+    }
+    let (session, _host) = root(&scratch, model.clone(), port, false)?;
+    yi_runtime::cache_miss::attach(&session);
+    session.attach_store(store)?;
+    let hour = yi_types::model::Ttl::Hour1;
+    let ttl = || yi_loop::run::StreamFn::cache_ttl(session.provider(), &model);
+    assert_eq!(
+        ttl(),
+        hour,
+        "the ledger's estimate missed the first request"
+    );
+    session.prompt("resumed turn")?;
+    let mut bodies = Vec::new();
+    let marks = cache_controls(&body_asking(&mut bodies, &from, "resumed turn").await?);
+    let mark = json!({"type": "ephemeral", "ttl": "1h"});
+    assert!(
+        !marks.is_empty() && marks.iter().all(|m| *m == mark),
+        "{marks:?}"
+    );
+    // The live reply re-derives the estimate from the tracker alone; an empty one says five.
+    session.provider().set_ttl_estimate(None);
+    session
+        .events_sender()
+        .send(yi_types::event::AgentEvent::MessageEnd {
+            message: recorded_reply(&model, 41_500, 0)?,
+        })?;
+    let mut refined = false;
+    for _ in 0..100 {
+        refined = ttl() == hour;
+        if refined {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        refined,
+        "the tracker the live replies feed was never seeded"
+    );
+    Ok(())
+}
+
 /// A fan-out's first reader writes the partition entry its siblings read: both mark it, and
 /// the second's partition message is the first's, byte for byte.
 #[tokio::test(flavor = "multi_thread")]

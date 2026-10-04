@@ -8,7 +8,7 @@
 //! entry would pay, the chance of that rewrite being the session's own share of pauses between
 //! five minutes and an hour.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use yi_ai::breakpoints::{Engine, Ttl};
 use yi_types::entry::Entry;
@@ -315,12 +315,26 @@ impl TtlEstimate {
 
 /// Watches the session's own requests, shows the notice when the tripwire fires, and hands
 /// the fold's estimate to the session's provider for its next loop request.
-// ponytail: a resumed session's tracker starts empty, so it writes five minutes until it pauses
-// again between five minutes and an hour; fold the loaded entries here if that proves too slow.
 pub fn attach(session: &AgentSession) {
-    let mut tracker = MissTracker::default();
+    let tracker = Arc::new(Mutex::new(MissTracker::default()));
     let provider = Arc::clone(session.provider_arc());
+    let (resumed, seeded) = (Arc::clone(&tracker), Arc::clone(&provider));
+    session.on_attach(move |entries, _| {
+        let mut folded = MissTracker::default();
+        for entry in entries {
+            folded.observe_entry(entry);
+        }
+        // A notice the ledger earned was shown by the process that wrote it.
+        folded.notice = None;
+        seeded.set_ttl_estimate(folded.estimate());
+        if let Ok(mut tracker) = resumed.lock() {
+            *tracker = folded;
+        }
+    });
     session.show_notices(CACHE_ALERT_TYPE, move |event| {
+        let Ok(mut tracker) = tracker.lock() else {
+            return None;
+        };
         match event {
             AgentEvent::MessageEnd { message } => {
                 tracker.observe(message, yi_session::now_ms());

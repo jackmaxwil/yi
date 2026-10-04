@@ -1051,6 +1051,44 @@ fn a_spend_alert_fires_once_per_crossing() -> TestResult {
     Ok(())
 }
 
+/// Dies with a resumed session's alarm counting from zero, so a session past its budget went
+/// silent after every restart; or with it re-announcing a crossing the last process announced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_spend_alarm_counts_on_from_the_ledger() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-resume")?;
+    let store =
+        JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned()).create(CreateOptions::default())?;
+    if let yi_types::event::AgentEvent::MessageEnd { message } = turn_of(1_500) {
+        lock_session(&store).append_message("main", message)?;
+    }
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(ProviderStream::new(None)),
+    );
+    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    session.attach_store(store)?;
+    for tokens in [400, 200] {
+        session.events_sender().send(turn_of(tokens))?;
+    }
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "2,100 tokens crossed 2,000 and nothing fired"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        1,
+        "the crossing at 1,000 fired again"
+    );
+    Ok(())
+}
+
 async fn until(mut ready: impl FnMut() -> bool) -> bool {
     wait_until(5_000, &mut ready).await
 }
