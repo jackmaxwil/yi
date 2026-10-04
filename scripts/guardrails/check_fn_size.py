@@ -19,6 +19,7 @@ def fn_sizes(lines):
         name, start, depth, opened = match.group(1), index, 0, False
         while index < len(lines):
             stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', lines[index])
+            stripped = re.sub(r"'(?:[^'\\]|\\.)'", "''", stripped)
             stripped = re.sub(r"//.*", "", stripped)
             depth += stripped.count("{") - stripped.count("}")
             if stripped.count("{"):
