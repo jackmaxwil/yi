@@ -14,7 +14,7 @@ use super::{
     store_of,
 };
 
-pub(super) type LedgerFold = dyn FnMut(&[Entry], &SessionStats) + Send;
+pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
 
 pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
     let model = shared
@@ -32,8 +32,8 @@ pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
 
 impl AgentSession {
     /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
-    /// `fold` runs over every store attached after this call, before its first request.
-    pub fn on_attach(&self, fold: impl FnMut(&[Entry], &SessionStats) + Send + 'static) {
+    /// `fold` reads each store attached after this call (id, branch, totals) before a request.
+    pub fn on_attach(&self, fold: impl FnMut(&str, &[Entry], &SessionStats) + Send + 'static) {
         if let Ok(mut folds) = self.on_attach.lock() {
             folds.push(Box::new(fold));
         }
@@ -62,12 +62,16 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.effort.lock() {
             *slot = restored;
         }
-        let stats = store_of(&self.shared).map_or_else(SessionStats::zero, |store| {
-            yi_session::lock_session(&store).stats()
-        });
+        let (id, stats) = store_of(&self.shared).map_or_else(
+            || (String::new(), SessionStats::zero()),
+            |store| {
+                let session = yi_session::lock_session(&store);
+                (session.metadata().id.clone(), session.stats())
+            },
+        );
         if let Ok(mut folds) = self.on_attach.lock() {
             for fold in folds.iter_mut() {
-                fold(entries, &stats);
+                fold(&id, entries, &stats);
             }
         }
     }

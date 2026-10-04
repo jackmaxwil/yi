@@ -67,22 +67,25 @@ impl SpendAlarm {
         ))
     }
 
-    /// Starts from a resumed ledger's total; the crossings below it were announced when made.
+    /// Starts from a session ledger's total; the crossings below it were announced when made.
     pub fn seed(&mut self, total: u64) {
         (self.own, self.announced) = (total, total / self.every);
+        self.children.clear();
     }
 }
 
 /// Queues each alert as a shown notice, never a wake: an alert must not buy another turn.
 pub fn attach(session: &AgentSession, every: NonZeroU64) {
     let alarm = Arc::new(Mutex::new(SpendAlarm::new(every)));
-    let (resumed, mut first) = (Arc::clone(&alarm), true);
-    // Invariant: only the first attach seeds; a rewind's ledger holds children published again.
-    session.on_attach(move |_, stats| {
-        if std::mem::take(&mut first)
+    let (resumed, mut seeded) = (Arc::clone(&alarm), None::<String>);
+    // Invariant: a re-attach of the same session (rewind) keeps the live counts; its ledger holds
+    // finished children the host publishes again. Another session's store seeds from its own.
+    session.on_attach(move |id, _, stats| {
+        if seeded.as_deref() != Some(id)
             && let Ok(mut alarm) = resumed.lock()
         {
             alarm.seed(u64::try_from(stats.total_tokens).unwrap_or(0));
+            seeded = Some(id.to_owned());
         }
     });
     session.show_notices(SPEND_ALERT_TYPE, move |event| {
