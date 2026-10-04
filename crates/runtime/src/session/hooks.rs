@@ -137,10 +137,18 @@ impl AgentSession {
         Arc::clone(&self.shared.mail)
     }
 
+    /// Incident: under a client's cell every finished child woke the idle root, a paid model
+    /// turn for news the cell was about to read itself; while one runs, the notice only queues.
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage, Option<StillNews>) + Send + Sync> {
         let parts = self.parts();
+        let kernel = Arc::clone(&self.kernel);
         Arc::new(move |message, news| {
-            run::enqueue(&parts, Queued::new(message, true, news));
+            let cell = kernel
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .is_some_and(|service| service.user_cell_running());
+            run::enqueue(&parts, Queued::new(message, !cell, news));
         })
     }
 

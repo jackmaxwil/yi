@@ -14,8 +14,10 @@ pub use crate::kernel_bootstrap::{
     BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
 };
 use crate::kernel_variables::{
-    VariableReply, dump_variable_code, parse_variable_reply, read_variable_code, render_value,
+    VARIABLE_MARKER, VariableReply, dump_variable_code, parse_variable_reply, read_variable_code,
+    render_value,
 };
+pub use crate::kernel_variables::{VariableName, VariableReadError};
 use crate::wiring::make_board;
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
@@ -250,6 +252,7 @@ pub struct KernelService {
     snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
     waited: Mutex<Option<String>>,
     own_paths: Option<crate::wiring::OwnPathsFn>,
+    user_cells: std::sync::atomic::AtomicUsize,
 }
 
 impl KernelService {
@@ -271,6 +274,7 @@ impl KernelService {
             snapshot_lock: Mutex::new(None),
             waited: Mutex::new(None),
             own_paths: None,
+            user_cells: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -606,10 +610,21 @@ impl KernelService {
     }
 
     pub async fn execute_user_cell(&self, code: &str, cancelled: &CancelFlag) -> ToolOutput {
-        match self.execute_async(code, cancelled, None).await {
+        use std::sync::atomic::Ordering::SeqCst;
+        // Invariant: only an abort skips the decrement, and a user cell is aborted only when its
+        // session closes, after which no notice can wake it.
+        self.user_cells.fetch_add(1, SeqCst);
+        let output = match self.execute_async(code, cancelled, None).await {
             Ok(outcome) => yi_tools::cell_output(code, outcome),
             Err(message) => yi_tools::error_output(message),
-        }
+        };
+        self.user_cells.fetch_sub(1, SeqCst);
+        output
+    }
+
+    /// A cell a client sent, not the model, is executing: it awaits its own children.
+    pub fn user_cell_running(&self) -> bool {
+        self.user_cells.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 
     async fn restart_note(&self, manager: &KernelManager) -> String {
@@ -732,61 +747,6 @@ impl KernelBridge for KernelService {
             .map_err(|_| "ipython requires a tokio runtime".to_owned())?;
         handle.block_on(self.execute_async(code, cancelled, recovery_dir))
     }
-}
-
-pub(crate) const VARIABLE_MARKER: &str = "__yi_kernel_var__";
-pub(crate) const VARIABLE_MAX_CHARS: usize = 8_192;
-const VARIABLE_NAME_MAX_BYTES: usize = 128;
-
-/// Invariant: an ASCII Python identifier, never a dotted path: the name is
-/// interpolated into a cell, and attribute access runs arbitrary code.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VariableName(String);
-
-impl VariableName {
-    pub fn parse(raw: &str) -> Result<Self, VariableReadError> {
-        let head_ok = raw
-            .chars()
-            .next()
-            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
-        let body_ok = raw
-            .chars()
-            .all(|char| char.is_ascii_alphanumeric() || char == '_');
-        if head_ok && body_ok && raw.len() <= VARIABLE_NAME_MAX_BYTES {
-            return Ok(Self(raw.to_owned()));
-        }
-        Err(VariableReadError::NotAnIdentifier {
-            name: raw.to_owned(),
-            max: VARIABLE_NAME_MAX_BYTES,
-        })
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for VariableName {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum VariableReadError {
-    #[error("{name:?} is not an ASCII Python identifier of 1 to {max} bytes")]
-    NotAnIdentifier { name: String, max: usize },
-    #[error("no IPython kernel is running for this agent")]
-    NotRunning,
-    #[error("the kernel could not be read: {detail}")]
-    Cell { detail: String },
-    #[error(
-        "the agent is running a cell; nothing was read within {} s",
-        yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
-    )]
-    Busy,
-    #[error("repr({name}) raised {python}")]
-    Unreadable { name: VariableName, python: String },
 }
 
 impl KernelService {
@@ -920,7 +880,7 @@ mod tests {
             let parsed = VariableName::parse(good)?;
             assert_eq!(parsed.as_str(), good);
         }
-        let long = "a".repeat(VARIABLE_NAME_MAX_BYTES.saturating_add(1));
+        let long = "a".repeat(crate::kernel_variables::VARIABLE_NAME_MAX_BYTES.saturating_add(1));
         for bad in [
             "",
             "a.b",
