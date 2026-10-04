@@ -25,6 +25,7 @@ impl SubagentHost {
                     "id": model.id,
                     "name": model.name,
                     "selector": selector_of(&model),
+                    "cost": {"input": model.cost.input, "output": model.cost.output},
                 })
             })
             .collect();

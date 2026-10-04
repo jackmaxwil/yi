@@ -48,6 +48,7 @@ pub enum Event {
     ToolResult {
         name: String,
         exit: Option<i32>,
+        check: bool,
         files_matched: u32,
     },
     TurnEnd {
