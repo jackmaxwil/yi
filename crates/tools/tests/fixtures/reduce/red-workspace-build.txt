@@ -1,0 +1,1458 @@
+   Compiling a v0.1.0 (/private/tmp/redws/a)
+warning: unused variable: `x0`
+ --> a/src/lib.rs:1:20
+  |
+1 | pub fn a_0() { let x0 = 0; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x0`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `x1`
+ --> a/src/lib.rs:2:20
+  |
+2 | pub fn a_1() { let x1 = 1; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x1`
+
+warning: unused variable: `x2`
+ --> a/src/lib.rs:3:20
+  |
+3 | pub fn a_2() { let x2 = 2; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x2`
+
+warning: unused variable: `x3`
+ --> a/src/lib.rs:4:20
+  |
+4 | pub fn a_3() { let x3 = 3; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x3`
+
+warning: unused variable: `x4`
+ --> a/src/lib.rs:5:20
+  |
+5 | pub fn a_4() { let x4 = 4; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x4`
+
+warning: unused variable: `x5`
+ --> a/src/lib.rs:6:20
+  |
+6 | pub fn a_5() { let x5 = 5; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x5`
+
+warning: unused variable: `x6`
+ --> a/src/lib.rs:7:20
+  |
+7 | pub fn a_6() { let x6 = 6; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x6`
+
+warning: unused variable: `x7`
+ --> a/src/lib.rs:8:20
+  |
+8 | pub fn a_7() { let x7 = 7; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x7`
+
+warning: unused variable: `x8`
+ --> a/src/lib.rs:9:20
+  |
+9 | pub fn a_8() { let x8 = 8; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_x8`
+
+warning: unused variable: `x9`
+  --> a/src/lib.rs:10:20
+   |
+10 | pub fn a_9() { let x9 = 9; }
+   |                    ^^ help: if this is intentional, prefix it with an underscore: `_x9`
+
+warning: unused variable: `x10`
+  --> a/src/lib.rs:11:21
+   |
+11 | pub fn a_10() { let x10 = 10; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x10`
+
+warning: unused variable: `x11`
+  --> a/src/lib.rs:12:21
+   |
+12 | pub fn a_11() { let x11 = 11; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x11`
+
+warning: unused variable: `x12`
+  --> a/src/lib.rs:13:21
+   |
+13 | pub fn a_12() { let x12 = 12; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x12`
+
+warning: unused variable: `x13`
+  --> a/src/lib.rs:14:21
+   |
+14 | pub fn a_13() { let x13 = 13; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x13`
+
+warning: unused variable: `x14`
+  --> a/src/lib.rs:15:21
+   |
+15 | pub fn a_14() { let x14 = 14; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x14`
+
+warning: unused variable: `x15`
+  --> a/src/lib.rs:16:21
+   |
+16 | pub fn a_15() { let x15 = 15; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x15`
+
+warning: unused variable: `x16`
+  --> a/src/lib.rs:17:21
+   |
+17 | pub fn a_16() { let x16 = 16; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x16`
+
+warning: unused variable: `x17`
+  --> a/src/lib.rs:18:21
+   |
+18 | pub fn a_17() { let x17 = 17; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x17`
+
+warning: unused variable: `x18`
+  --> a/src/lib.rs:19:21
+   |
+19 | pub fn a_18() { let x18 = 18; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x18`
+
+warning: unused variable: `x19`
+  --> a/src/lib.rs:20:21
+   |
+20 | pub fn a_19() { let x19 = 19; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x19`
+
+warning: unused variable: `x20`
+  --> a/src/lib.rs:21:21
+   |
+21 | pub fn a_20() { let x20 = 20; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x20`
+
+warning: unused variable: `x21`
+  --> a/src/lib.rs:22:21
+   |
+22 | pub fn a_21() { let x21 = 21; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x21`
+
+warning: unused variable: `x22`
+  --> a/src/lib.rs:23:21
+   |
+23 | pub fn a_22() { let x22 = 22; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x22`
+
+warning: unused variable: `x23`
+  --> a/src/lib.rs:24:21
+   |
+24 | pub fn a_23() { let x23 = 23; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x23`
+
+warning: unused variable: `x24`
+  --> a/src/lib.rs:25:21
+   |
+25 | pub fn a_24() { let x24 = 24; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x24`
+
+warning: unused variable: `x25`
+  --> a/src/lib.rs:26:21
+   |
+26 | pub fn a_25() { let x25 = 25; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x25`
+
+warning: unused variable: `x26`
+  --> a/src/lib.rs:27:21
+   |
+27 | pub fn a_26() { let x26 = 26; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x26`
+
+warning: unused variable: `x27`
+  --> a/src/lib.rs:28:21
+   |
+28 | pub fn a_27() { let x27 = 27; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x27`
+
+warning: unused variable: `x28`
+  --> a/src/lib.rs:29:21
+   |
+29 | pub fn a_28() { let x28 = 28; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x28`
+
+warning: unused variable: `x29`
+  --> a/src/lib.rs:30:21
+   |
+30 | pub fn a_29() { let x29 = 29; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x29`
+
+warning: unused variable: `x30`
+  --> a/src/lib.rs:31:21
+   |
+31 | pub fn a_30() { let x30 = 30; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x30`
+
+warning: unused variable: `x31`
+  --> a/src/lib.rs:32:21
+   |
+32 | pub fn a_31() { let x31 = 31; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x31`
+
+warning: unused variable: `x32`
+  --> a/src/lib.rs:33:21
+   |
+33 | pub fn a_32() { let x32 = 32; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x32`
+
+warning: unused variable: `x33`
+  --> a/src/lib.rs:34:21
+   |
+34 | pub fn a_33() { let x33 = 33; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x33`
+
+warning: unused variable: `x34`
+  --> a/src/lib.rs:35:21
+   |
+35 | pub fn a_34() { let x34 = 34; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x34`
+
+warning: unused variable: `x35`
+  --> a/src/lib.rs:36:21
+   |
+36 | pub fn a_35() { let x35 = 35; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x35`
+
+warning: unused variable: `x36`
+  --> a/src/lib.rs:37:21
+   |
+37 | pub fn a_36() { let x36 = 36; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x36`
+
+warning: unused variable: `x37`
+  --> a/src/lib.rs:38:21
+   |
+38 | pub fn a_37() { let x37 = 37; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x37`
+
+warning: unused variable: `x38`
+  --> a/src/lib.rs:39:21
+   |
+39 | pub fn a_38() { let x38 = 38; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x38`
+
+warning: unused variable: `x39`
+  --> a/src/lib.rs:40:21
+   |
+40 | pub fn a_39() { let x39 = 39; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x39`
+
+warning: unused variable: `x40`
+  --> a/src/lib.rs:41:21
+   |
+41 | pub fn a_40() { let x40 = 40; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x40`
+
+warning: unused variable: `x41`
+  --> a/src/lib.rs:42:21
+   |
+42 | pub fn a_41() { let x41 = 41; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x41`
+
+warning: unused variable: `x42`
+  --> a/src/lib.rs:43:21
+   |
+43 | pub fn a_42() { let x42 = 42; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x42`
+
+warning: unused variable: `x43`
+  --> a/src/lib.rs:44:21
+   |
+44 | pub fn a_43() { let x43 = 43; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x43`
+
+warning: unused variable: `x44`
+  --> a/src/lib.rs:45:21
+   |
+45 | pub fn a_44() { let x44 = 44; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x44`
+
+warning: unused variable: `x45`
+  --> a/src/lib.rs:46:21
+   |
+46 | pub fn a_45() { let x45 = 45; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x45`
+
+warning: unused variable: `x46`
+  --> a/src/lib.rs:47:21
+   |
+47 | pub fn a_46() { let x46 = 46; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x46`
+
+warning: unused variable: `x47`
+  --> a/src/lib.rs:48:21
+   |
+48 | pub fn a_47() { let x47 = 47; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x47`
+
+warning: unused variable: `x48`
+  --> a/src/lib.rs:49:21
+   |
+49 | pub fn a_48() { let x48 = 48; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x48`
+
+warning: unused variable: `x49`
+  --> a/src/lib.rs:50:21
+   |
+50 | pub fn a_49() { let x49 = 49; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x49`
+
+warning: unused variable: `x50`
+  --> a/src/lib.rs:51:21
+   |
+51 | pub fn a_50() { let x50 = 50; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x50`
+
+warning: unused variable: `x51`
+  --> a/src/lib.rs:52:21
+   |
+52 | pub fn a_51() { let x51 = 51; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x51`
+
+warning: unused variable: `x52`
+  --> a/src/lib.rs:53:21
+   |
+53 | pub fn a_52() { let x52 = 52; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x52`
+
+warning: unused variable: `x53`
+  --> a/src/lib.rs:54:21
+   |
+54 | pub fn a_53() { let x53 = 53; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x53`
+
+warning: unused variable: `x54`
+  --> a/src/lib.rs:55:21
+   |
+55 | pub fn a_54() { let x54 = 54; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x54`
+
+warning: unused variable: `x55`
+  --> a/src/lib.rs:56:21
+   |
+56 | pub fn a_55() { let x55 = 55; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x55`
+
+warning: unused variable: `x56`
+  --> a/src/lib.rs:57:21
+   |
+57 | pub fn a_56() { let x56 = 56; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x56`
+
+warning: unused variable: `x57`
+  --> a/src/lib.rs:58:21
+   |
+58 | pub fn a_57() { let x57 = 57; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x57`
+
+warning: unused variable: `x58`
+  --> a/src/lib.rs:59:21
+   |
+59 | pub fn a_58() { let x58 = 58; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x58`
+
+warning: unused variable: `x59`
+  --> a/src/lib.rs:60:21
+   |
+60 | pub fn a_59() { let x59 = 59; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x59`
+
+warning: unused variable: `x60`
+  --> a/src/lib.rs:61:21
+   |
+61 | pub fn a_60() { let x60 = 60; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x60`
+
+warning: unused variable: `x61`
+  --> a/src/lib.rs:62:21
+   |
+62 | pub fn a_61() { let x61 = 61; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x61`
+
+warning: unused variable: `x62`
+  --> a/src/lib.rs:63:21
+   |
+63 | pub fn a_62() { let x62 = 62; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x62`
+
+warning: unused variable: `x63`
+  --> a/src/lib.rs:64:21
+   |
+64 | pub fn a_63() { let x63 = 63; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x63`
+
+warning: unused variable: `x64`
+  --> a/src/lib.rs:65:21
+   |
+65 | pub fn a_64() { let x64 = 64; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x64`
+
+warning: unused variable: `x65`
+  --> a/src/lib.rs:66:21
+   |
+66 | pub fn a_65() { let x65 = 65; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x65`
+
+warning: unused variable: `x66`
+  --> a/src/lib.rs:67:21
+   |
+67 | pub fn a_66() { let x66 = 66; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x66`
+
+warning: unused variable: `x67`
+  --> a/src/lib.rs:68:21
+   |
+68 | pub fn a_67() { let x67 = 67; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x67`
+
+warning: unused variable: `x68`
+  --> a/src/lib.rs:69:21
+   |
+69 | pub fn a_68() { let x68 = 68; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x68`
+
+warning: unused variable: `x69`
+  --> a/src/lib.rs:70:21
+   |
+70 | pub fn a_69() { let x69 = 69; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x69`
+
+warning: unused variable: `x70`
+  --> a/src/lib.rs:71:21
+   |
+71 | pub fn a_70() { let x70 = 70; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x70`
+
+warning: unused variable: `x71`
+  --> a/src/lib.rs:72:21
+   |
+72 | pub fn a_71() { let x71 = 71; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x71`
+
+warning: unused variable: `x72`
+  --> a/src/lib.rs:73:21
+   |
+73 | pub fn a_72() { let x72 = 72; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x72`
+
+warning: unused variable: `x73`
+  --> a/src/lib.rs:74:21
+   |
+74 | pub fn a_73() { let x73 = 73; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x73`
+
+warning: unused variable: `x74`
+  --> a/src/lib.rs:75:21
+   |
+75 | pub fn a_74() { let x74 = 74; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x74`
+
+warning: unused variable: `x75`
+  --> a/src/lib.rs:76:21
+   |
+76 | pub fn a_75() { let x75 = 75; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x75`
+
+warning: unused variable: `x76`
+  --> a/src/lib.rs:77:21
+   |
+77 | pub fn a_76() { let x76 = 76; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x76`
+
+warning: unused variable: `x77`
+  --> a/src/lib.rs:78:21
+   |
+78 | pub fn a_77() { let x77 = 77; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x77`
+
+warning: unused variable: `x78`
+  --> a/src/lib.rs:79:21
+   |
+79 | pub fn a_78() { let x78 = 78; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x78`
+
+warning: unused variable: `x79`
+  --> a/src/lib.rs:80:21
+   |
+80 | pub fn a_79() { let x79 = 79; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x79`
+
+warning: unused variable: `x80`
+  --> a/src/lib.rs:81:21
+   |
+81 | pub fn a_80() { let x80 = 80; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x80`
+
+warning: unused variable: `x81`
+  --> a/src/lib.rs:82:21
+   |
+82 | pub fn a_81() { let x81 = 81; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x81`
+
+warning: unused variable: `x82`
+  --> a/src/lib.rs:83:21
+   |
+83 | pub fn a_82() { let x82 = 82; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x82`
+
+warning: unused variable: `x83`
+  --> a/src/lib.rs:84:21
+   |
+84 | pub fn a_83() { let x83 = 83; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x83`
+
+warning: unused variable: `x84`
+  --> a/src/lib.rs:85:21
+   |
+85 | pub fn a_84() { let x84 = 84; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x84`
+
+warning: unused variable: `x85`
+  --> a/src/lib.rs:86:21
+   |
+86 | pub fn a_85() { let x85 = 85; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x85`
+
+warning: unused variable: `x86`
+  --> a/src/lib.rs:87:21
+   |
+87 | pub fn a_86() { let x86 = 86; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x86`
+
+warning: unused variable: `x87`
+  --> a/src/lib.rs:88:21
+   |
+88 | pub fn a_87() { let x87 = 87; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x87`
+
+warning: unused variable: `x88`
+  --> a/src/lib.rs:89:21
+   |
+89 | pub fn a_88() { let x88 = 88; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x88`
+
+warning: unused variable: `x89`
+  --> a/src/lib.rs:90:21
+   |
+90 | pub fn a_89() { let x89 = 89; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x89`
+
+warning: unused variable: `x90`
+  --> a/src/lib.rs:91:21
+   |
+91 | pub fn a_90() { let x90 = 90; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x90`
+
+warning: unused variable: `x91`
+  --> a/src/lib.rs:92:21
+   |
+92 | pub fn a_91() { let x91 = 91; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x91`
+
+warning: unused variable: `x92`
+  --> a/src/lib.rs:93:21
+   |
+93 | pub fn a_92() { let x92 = 92; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x92`
+
+warning: unused variable: `x93`
+  --> a/src/lib.rs:94:21
+   |
+94 | pub fn a_93() { let x93 = 93; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x93`
+
+warning: unused variable: `x94`
+  --> a/src/lib.rs:95:21
+   |
+95 | pub fn a_94() { let x94 = 94; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x94`
+
+warning: unused variable: `x95`
+  --> a/src/lib.rs:96:21
+   |
+96 | pub fn a_95() { let x95 = 95; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x95`
+
+warning: unused variable: `x96`
+  --> a/src/lib.rs:97:21
+   |
+97 | pub fn a_96() { let x96 = 96; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x96`
+
+warning: unused variable: `x97`
+  --> a/src/lib.rs:98:21
+   |
+98 | pub fn a_97() { let x97 = 97; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x97`
+
+warning: unused variable: `x98`
+  --> a/src/lib.rs:99:21
+   |
+99 | pub fn a_98() { let x98 = 98; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x98`
+
+warning: unused variable: `x99`
+   --> a/src/lib.rs:100:21
+    |
+100 | pub fn a_99() { let x99 = 99; }
+    |                     ^^^ help: if this is intentional, prefix it with an underscore: `_x99`
+
+warning: unused variable: `x100`
+   --> a/src/lib.rs:101:22
+    |
+101 | pub fn a_100() { let x100 = 100; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x100`
+
+warning: unused variable: `x101`
+   --> a/src/lib.rs:102:22
+    |
+102 | pub fn a_101() { let x101 = 101; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x101`
+
+warning: unused variable: `x102`
+   --> a/src/lib.rs:103:22
+    |
+103 | pub fn a_102() { let x102 = 102; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x102`
+
+warning: unused variable: `x103`
+   --> a/src/lib.rs:104:22
+    |
+104 | pub fn a_103() { let x103 = 103; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x103`
+
+warning: unused variable: `x104`
+   --> a/src/lib.rs:105:22
+    |
+105 | pub fn a_104() { let x104 = 104; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x104`
+
+warning: unused variable: `x105`
+   --> a/src/lib.rs:106:22
+    |
+106 | pub fn a_105() { let x105 = 105; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x105`
+
+warning: unused variable: `x106`
+   --> a/src/lib.rs:107:22
+    |
+107 | pub fn a_106() { let x106 = 106; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x106`
+
+warning: unused variable: `x107`
+   --> a/src/lib.rs:108:22
+    |
+108 | pub fn a_107() { let x107 = 107; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x107`
+
+warning: unused variable: `x108`
+   --> a/src/lib.rs:109:22
+    |
+109 | pub fn a_108() { let x108 = 108; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x108`
+
+warning: unused variable: `x109`
+   --> a/src/lib.rs:110:22
+    |
+110 | pub fn a_109() { let x109 = 109; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x109`
+
+warning: unused variable: `x110`
+   --> a/src/lib.rs:111:22
+    |
+111 | pub fn a_110() { let x110 = 110; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x110`
+
+warning: unused variable: `x111`
+   --> a/src/lib.rs:112:22
+    |
+112 | pub fn a_111() { let x111 = 111; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x111`
+
+warning: unused variable: `x112`
+   --> a/src/lib.rs:113:22
+    |
+113 | pub fn a_112() { let x112 = 112; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x112`
+
+warning: unused variable: `x113`
+   --> a/src/lib.rs:114:22
+    |
+114 | pub fn a_113() { let x113 = 113; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x113`
+
+warning: unused variable: `x114`
+   --> a/src/lib.rs:115:22
+    |
+115 | pub fn a_114() { let x114 = 114; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x114`
+
+warning: unused variable: `x115`
+   --> a/src/lib.rs:116:22
+    |
+116 | pub fn a_115() { let x115 = 115; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x115`
+
+warning: unused variable: `x116`
+   --> a/src/lib.rs:117:22
+    |
+117 | pub fn a_116() { let x116 = 116; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x116`
+
+warning: unused variable: `x117`
+   --> a/src/lib.rs:118:22
+    |
+118 | pub fn a_117() { let x117 = 117; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x117`
+
+warning: unused variable: `x118`
+   --> a/src/lib.rs:119:22
+    |
+119 | pub fn a_118() { let x118 = 118; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x118`
+
+warning: unused variable: `x119`
+   --> a/src/lib.rs:120:22
+    |
+120 | pub fn a_119() { let x119 = 119; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_x119`
+
+warning: `a` (lib) generated 120 warnings (run `cargo fix --lib -p a` to apply 120 suggestions)
+   Compiling b v0.1.0 (/private/tmp/redws/b)
+error[E0308]: mismatched types
+   --> b/src/main.rs:121:36
+    |
+121 | fn main() { a::a_0(); let s: u32 = "oops"; println!("{}", s); }
+    |                              ---   ^^^^^^ expected `u32`, found `&str`
+    |                              |
+    |                              expected due to this
+
+warning: unused variable: `y0`
+ --> b/src/main.rs:1:20
+  |
+1 | pub fn b_0() { let y0 = 0; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y0`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `y1`
+ --> b/src/main.rs:2:20
+  |
+2 | pub fn b_1() { let y1 = 1; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y1`
+
+warning: unused variable: `y2`
+ --> b/src/main.rs:3:20
+  |
+3 | pub fn b_2() { let y2 = 2; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y2`
+
+warning: unused variable: `y3`
+ --> b/src/main.rs:4:20
+  |
+4 | pub fn b_3() { let y3 = 3; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y3`
+
+warning: unused variable: `y4`
+ --> b/src/main.rs:5:20
+  |
+5 | pub fn b_4() { let y4 = 4; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y4`
+
+warning: unused variable: `y5`
+ --> b/src/main.rs:6:20
+  |
+6 | pub fn b_5() { let y5 = 5; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y5`
+
+warning: unused variable: `y6`
+ --> b/src/main.rs:7:20
+  |
+7 | pub fn b_6() { let y6 = 6; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y6`
+
+warning: unused variable: `y7`
+ --> b/src/main.rs:8:20
+  |
+8 | pub fn b_7() { let y7 = 7; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y7`
+
+warning: unused variable: `y8`
+ --> b/src/main.rs:9:20
+  |
+9 | pub fn b_8() { let y8 = 8; }
+  |                    ^^ help: if this is intentional, prefix it with an underscore: `_y8`
+
+warning: unused variable: `y9`
+  --> b/src/main.rs:10:20
+   |
+10 | pub fn b_9() { let y9 = 9; }
+   |                    ^^ help: if this is intentional, prefix it with an underscore: `_y9`
+
+warning: unused variable: `y10`
+  --> b/src/main.rs:11:21
+   |
+11 | pub fn b_10() { let y10 = 10; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y10`
+
+warning: unused variable: `y11`
+  --> b/src/main.rs:12:21
+   |
+12 | pub fn b_11() { let y11 = 11; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y11`
+
+warning: unused variable: `y12`
+  --> b/src/main.rs:13:21
+   |
+13 | pub fn b_12() { let y12 = 12; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y12`
+
+warning: unused variable: `y13`
+  --> b/src/main.rs:14:21
+   |
+14 | pub fn b_13() { let y13 = 13; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y13`
+
+warning: unused variable: `y14`
+  --> b/src/main.rs:15:21
+   |
+15 | pub fn b_14() { let y14 = 14; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y14`
+
+warning: unused variable: `y15`
+  --> b/src/main.rs:16:21
+   |
+16 | pub fn b_15() { let y15 = 15; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y15`
+
+warning: unused variable: `y16`
+  --> b/src/main.rs:17:21
+   |
+17 | pub fn b_16() { let y16 = 16; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y16`
+
+warning: unused variable: `y17`
+  --> b/src/main.rs:18:21
+   |
+18 | pub fn b_17() { let y17 = 17; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y17`
+
+warning: unused variable: `y18`
+  --> b/src/main.rs:19:21
+   |
+19 | pub fn b_18() { let y18 = 18; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y18`
+
+warning: unused variable: `y19`
+  --> b/src/main.rs:20:21
+   |
+20 | pub fn b_19() { let y19 = 19; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y19`
+
+warning: unused variable: `y20`
+  --> b/src/main.rs:21:21
+   |
+21 | pub fn b_20() { let y20 = 20; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y20`
+
+warning: unused variable: `y21`
+  --> b/src/main.rs:22:21
+   |
+22 | pub fn b_21() { let y21 = 21; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y21`
+
+warning: unused variable: `y22`
+  --> b/src/main.rs:23:21
+   |
+23 | pub fn b_22() { let y22 = 22; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y22`
+
+warning: unused variable: `y23`
+  --> b/src/main.rs:24:21
+   |
+24 | pub fn b_23() { let y23 = 23; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y23`
+
+warning: unused variable: `y24`
+  --> b/src/main.rs:25:21
+   |
+25 | pub fn b_24() { let y24 = 24; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y24`
+
+warning: unused variable: `y25`
+  --> b/src/main.rs:26:21
+   |
+26 | pub fn b_25() { let y25 = 25; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y25`
+
+warning: unused variable: `y26`
+  --> b/src/main.rs:27:21
+   |
+27 | pub fn b_26() { let y26 = 26; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y26`
+
+warning: unused variable: `y27`
+  --> b/src/main.rs:28:21
+   |
+28 | pub fn b_27() { let y27 = 27; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y27`
+
+warning: unused variable: `y28`
+  --> b/src/main.rs:29:21
+   |
+29 | pub fn b_28() { let y28 = 28; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y28`
+
+warning: unused variable: `y29`
+  --> b/src/main.rs:30:21
+   |
+30 | pub fn b_29() { let y29 = 29; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y29`
+
+warning: unused variable: `y30`
+  --> b/src/main.rs:31:21
+   |
+31 | pub fn b_30() { let y30 = 30; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y30`
+
+warning: unused variable: `y31`
+  --> b/src/main.rs:32:21
+   |
+32 | pub fn b_31() { let y31 = 31; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y31`
+
+warning: unused variable: `y32`
+  --> b/src/main.rs:33:21
+   |
+33 | pub fn b_32() { let y32 = 32; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y32`
+
+warning: unused variable: `y33`
+  --> b/src/main.rs:34:21
+   |
+34 | pub fn b_33() { let y33 = 33; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y33`
+
+warning: unused variable: `y34`
+  --> b/src/main.rs:35:21
+   |
+35 | pub fn b_34() { let y34 = 34; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y34`
+
+warning: unused variable: `y35`
+  --> b/src/main.rs:36:21
+   |
+36 | pub fn b_35() { let y35 = 35; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y35`
+
+warning: unused variable: `y36`
+  --> b/src/main.rs:37:21
+   |
+37 | pub fn b_36() { let y36 = 36; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y36`
+
+warning: unused variable: `y37`
+  --> b/src/main.rs:38:21
+   |
+38 | pub fn b_37() { let y37 = 37; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y37`
+
+warning: unused variable: `y38`
+  --> b/src/main.rs:39:21
+   |
+39 | pub fn b_38() { let y38 = 38; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y38`
+
+warning: unused variable: `y39`
+  --> b/src/main.rs:40:21
+   |
+40 | pub fn b_39() { let y39 = 39; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y39`
+
+warning: unused variable: `y40`
+  --> b/src/main.rs:41:21
+   |
+41 | pub fn b_40() { let y40 = 40; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y40`
+
+warning: unused variable: `y41`
+  --> b/src/main.rs:42:21
+   |
+42 | pub fn b_41() { let y41 = 41; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y41`
+
+warning: unused variable: `y42`
+  --> b/src/main.rs:43:21
+   |
+43 | pub fn b_42() { let y42 = 42; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y42`
+
+warning: unused variable: `y43`
+  --> b/src/main.rs:44:21
+   |
+44 | pub fn b_43() { let y43 = 43; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y43`
+
+warning: unused variable: `y44`
+  --> b/src/main.rs:45:21
+   |
+45 | pub fn b_44() { let y44 = 44; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y44`
+
+warning: unused variable: `y45`
+  --> b/src/main.rs:46:21
+   |
+46 | pub fn b_45() { let y45 = 45; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y45`
+
+warning: unused variable: `y46`
+  --> b/src/main.rs:47:21
+   |
+47 | pub fn b_46() { let y46 = 46; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y46`
+
+warning: unused variable: `y47`
+  --> b/src/main.rs:48:21
+   |
+48 | pub fn b_47() { let y47 = 47; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y47`
+
+warning: unused variable: `y48`
+  --> b/src/main.rs:49:21
+   |
+49 | pub fn b_48() { let y48 = 48; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y48`
+
+warning: unused variable: `y49`
+  --> b/src/main.rs:50:21
+   |
+50 | pub fn b_49() { let y49 = 49; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y49`
+
+warning: unused variable: `y50`
+  --> b/src/main.rs:51:21
+   |
+51 | pub fn b_50() { let y50 = 50; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y50`
+
+warning: unused variable: `y51`
+  --> b/src/main.rs:52:21
+   |
+52 | pub fn b_51() { let y51 = 51; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y51`
+
+warning: unused variable: `y52`
+  --> b/src/main.rs:53:21
+   |
+53 | pub fn b_52() { let y52 = 52; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y52`
+
+warning: unused variable: `y53`
+  --> b/src/main.rs:54:21
+   |
+54 | pub fn b_53() { let y53 = 53; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y53`
+
+warning: unused variable: `y54`
+  --> b/src/main.rs:55:21
+   |
+55 | pub fn b_54() { let y54 = 54; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y54`
+
+warning: unused variable: `y55`
+  --> b/src/main.rs:56:21
+   |
+56 | pub fn b_55() { let y55 = 55; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y55`
+
+warning: unused variable: `y56`
+  --> b/src/main.rs:57:21
+   |
+57 | pub fn b_56() { let y56 = 56; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y56`
+
+warning: unused variable: `y57`
+  --> b/src/main.rs:58:21
+   |
+58 | pub fn b_57() { let y57 = 57; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y57`
+
+warning: unused variable: `y58`
+  --> b/src/main.rs:59:21
+   |
+59 | pub fn b_58() { let y58 = 58; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y58`
+
+warning: unused variable: `y59`
+  --> b/src/main.rs:60:21
+   |
+60 | pub fn b_59() { let y59 = 59; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y59`
+
+warning: unused variable: `y60`
+  --> b/src/main.rs:61:21
+   |
+61 | pub fn b_60() { let y60 = 60; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y60`
+
+warning: unused variable: `y61`
+  --> b/src/main.rs:62:21
+   |
+62 | pub fn b_61() { let y61 = 61; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y61`
+
+warning: unused variable: `y62`
+  --> b/src/main.rs:63:21
+   |
+63 | pub fn b_62() { let y62 = 62; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y62`
+
+warning: unused variable: `y63`
+  --> b/src/main.rs:64:21
+   |
+64 | pub fn b_63() { let y63 = 63; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y63`
+
+warning: unused variable: `y64`
+  --> b/src/main.rs:65:21
+   |
+65 | pub fn b_64() { let y64 = 64; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y64`
+
+warning: unused variable: `y65`
+  --> b/src/main.rs:66:21
+   |
+66 | pub fn b_65() { let y65 = 65; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y65`
+
+warning: unused variable: `y66`
+  --> b/src/main.rs:67:21
+   |
+67 | pub fn b_66() { let y66 = 66; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y66`
+
+warning: unused variable: `y67`
+  --> b/src/main.rs:68:21
+   |
+68 | pub fn b_67() { let y67 = 67; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y67`
+
+warning: unused variable: `y68`
+  --> b/src/main.rs:69:21
+   |
+69 | pub fn b_68() { let y68 = 68; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y68`
+
+warning: unused variable: `y69`
+  --> b/src/main.rs:70:21
+   |
+70 | pub fn b_69() { let y69 = 69; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y69`
+
+warning: unused variable: `y70`
+  --> b/src/main.rs:71:21
+   |
+71 | pub fn b_70() { let y70 = 70; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y70`
+
+warning: unused variable: `y71`
+  --> b/src/main.rs:72:21
+   |
+72 | pub fn b_71() { let y71 = 71; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y71`
+
+warning: unused variable: `y72`
+  --> b/src/main.rs:73:21
+   |
+73 | pub fn b_72() { let y72 = 72; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y72`
+
+warning: unused variable: `y73`
+  --> b/src/main.rs:74:21
+   |
+74 | pub fn b_73() { let y73 = 73; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y73`
+
+warning: unused variable: `y74`
+  --> b/src/main.rs:75:21
+   |
+75 | pub fn b_74() { let y74 = 74; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y74`
+
+warning: unused variable: `y75`
+  --> b/src/main.rs:76:21
+   |
+76 | pub fn b_75() { let y75 = 75; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y75`
+
+warning: unused variable: `y76`
+  --> b/src/main.rs:77:21
+   |
+77 | pub fn b_76() { let y76 = 76; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y76`
+
+warning: unused variable: `y77`
+  --> b/src/main.rs:78:21
+   |
+78 | pub fn b_77() { let y77 = 77; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y77`
+
+warning: unused variable: `y78`
+  --> b/src/main.rs:79:21
+   |
+79 | pub fn b_78() { let y78 = 78; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y78`
+
+warning: unused variable: `y79`
+  --> b/src/main.rs:80:21
+   |
+80 | pub fn b_79() { let y79 = 79; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y79`
+
+warning: unused variable: `y80`
+  --> b/src/main.rs:81:21
+   |
+81 | pub fn b_80() { let y80 = 80; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y80`
+
+warning: unused variable: `y81`
+  --> b/src/main.rs:82:21
+   |
+82 | pub fn b_81() { let y81 = 81; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y81`
+
+warning: unused variable: `y82`
+  --> b/src/main.rs:83:21
+   |
+83 | pub fn b_82() { let y82 = 82; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y82`
+
+warning: unused variable: `y83`
+  --> b/src/main.rs:84:21
+   |
+84 | pub fn b_83() { let y83 = 83; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y83`
+
+warning: unused variable: `y84`
+  --> b/src/main.rs:85:21
+   |
+85 | pub fn b_84() { let y84 = 84; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y84`
+
+warning: unused variable: `y85`
+  --> b/src/main.rs:86:21
+   |
+86 | pub fn b_85() { let y85 = 85; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y85`
+
+warning: unused variable: `y86`
+  --> b/src/main.rs:87:21
+   |
+87 | pub fn b_86() { let y86 = 86; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y86`
+
+warning: unused variable: `y87`
+  --> b/src/main.rs:88:21
+   |
+88 | pub fn b_87() { let y87 = 87; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y87`
+
+warning: unused variable: `y88`
+  --> b/src/main.rs:89:21
+   |
+89 | pub fn b_88() { let y88 = 88; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y88`
+
+warning: unused variable: `y89`
+  --> b/src/main.rs:90:21
+   |
+90 | pub fn b_89() { let y89 = 89; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y89`
+
+warning: unused variable: `y90`
+  --> b/src/main.rs:91:21
+   |
+91 | pub fn b_90() { let y90 = 90; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y90`
+
+warning: unused variable: `y91`
+  --> b/src/main.rs:92:21
+   |
+92 | pub fn b_91() { let y91 = 91; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y91`
+
+warning: unused variable: `y92`
+  --> b/src/main.rs:93:21
+   |
+93 | pub fn b_92() { let y92 = 92; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y92`
+
+warning: unused variable: `y93`
+  --> b/src/main.rs:94:21
+   |
+94 | pub fn b_93() { let y93 = 93; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y93`
+
+warning: unused variable: `y94`
+  --> b/src/main.rs:95:21
+   |
+95 | pub fn b_94() { let y94 = 94; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y94`
+
+warning: unused variable: `y95`
+  --> b/src/main.rs:96:21
+   |
+96 | pub fn b_95() { let y95 = 95; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y95`
+
+warning: unused variable: `y96`
+  --> b/src/main.rs:97:21
+   |
+97 | pub fn b_96() { let y96 = 96; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y96`
+
+warning: unused variable: `y97`
+  --> b/src/main.rs:98:21
+   |
+98 | pub fn b_97() { let y97 = 97; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y97`
+
+warning: unused variable: `y98`
+  --> b/src/main.rs:99:21
+   |
+99 | pub fn b_98() { let y98 = 98; }
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y98`
+
+warning: unused variable: `y99`
+   --> b/src/main.rs:100:21
+    |
+100 | pub fn b_99() { let y99 = 99; }
+    |                     ^^^ help: if this is intentional, prefix it with an underscore: `_y99`
+
+warning: unused variable: `y100`
+   --> b/src/main.rs:101:22
+    |
+101 | pub fn b_100() { let y100 = 100; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y100`
+
+warning: unused variable: `y101`
+   --> b/src/main.rs:102:22
+    |
+102 | pub fn b_101() { let y101 = 101; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y101`
+
+warning: unused variable: `y102`
+   --> b/src/main.rs:103:22
+    |
+103 | pub fn b_102() { let y102 = 102; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y102`
+
+warning: unused variable: `y103`
+   --> b/src/main.rs:104:22
+    |
+104 | pub fn b_103() { let y103 = 103; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y103`
+
+warning: unused variable: `y104`
+   --> b/src/main.rs:105:22
+    |
+105 | pub fn b_104() { let y104 = 104; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y104`
+
+warning: unused variable: `y105`
+   --> b/src/main.rs:106:22
+    |
+106 | pub fn b_105() { let y105 = 105; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y105`
+
+warning: unused variable: `y106`
+   --> b/src/main.rs:107:22
+    |
+107 | pub fn b_106() { let y106 = 106; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y106`
+
+warning: unused variable: `y107`
+   --> b/src/main.rs:108:22
+    |
+108 | pub fn b_107() { let y107 = 107; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y107`
+
+warning: unused variable: `y108`
+   --> b/src/main.rs:109:22
+    |
+109 | pub fn b_108() { let y108 = 108; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y108`
+
+warning: unused variable: `y109`
+   --> b/src/main.rs:110:22
+    |
+110 | pub fn b_109() { let y109 = 109; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y109`
+
+warning: unused variable: `y110`
+   --> b/src/main.rs:111:22
+    |
+111 | pub fn b_110() { let y110 = 110; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y110`
+
+warning: unused variable: `y111`
+   --> b/src/main.rs:112:22
+    |
+112 | pub fn b_111() { let y111 = 111; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y111`
+
+warning: unused variable: `y112`
+   --> b/src/main.rs:113:22
+    |
+113 | pub fn b_112() { let y112 = 112; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y112`
+
+warning: unused variable: `y113`
+   --> b/src/main.rs:114:22
+    |
+114 | pub fn b_113() { let y113 = 113; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y113`
+
+warning: unused variable: `y114`
+   --> b/src/main.rs:115:22
+    |
+115 | pub fn b_114() { let y114 = 114; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y114`
+
+warning: unused variable: `y115`
+   --> b/src/main.rs:116:22
+    |
+116 | pub fn b_115() { let y115 = 115; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y115`
+
+warning: unused variable: `y116`
+   --> b/src/main.rs:117:22
+    |
+117 | pub fn b_116() { let y116 = 116; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y116`
+
+warning: unused variable: `y117`
+   --> b/src/main.rs:118:22
+    |
+118 | pub fn b_117() { let y117 = 117; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y117`
+
+warning: unused variable: `y118`
+   --> b/src/main.rs:119:22
+    |
+119 | pub fn b_118() { let y118 = 118; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y118`
+
+warning: unused variable: `y119`
+   --> b/src/main.rs:120:22
+    |
+120 | pub fn b_119() { let y119 = 119; }
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_y119`
+
+For more information about this error, try `rustc --explain E0308`.
+warning: `b` (bin "b") generated 120 warnings
+error: could not compile `b` (bin "b") due to 1 previous error; 120 warnings emitted
