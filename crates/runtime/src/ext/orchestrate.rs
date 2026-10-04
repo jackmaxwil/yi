@@ -255,6 +255,7 @@ impl Extension for Orchestrate {
             Event::ToolResult {
                 name,
                 exit,
+                check,
                 files_matched,
                 ..
             } => {
@@ -262,7 +263,7 @@ impl Extension for Orchestrate {
                     self.attach(out, "files_matched", false);
                 }
                 if self.edited && name == "bash" && exit.is_some_and(|code| code != 0) {
-                    self.attach(out, "failed_check_after_edit", true);
+                    self.attach(out, "failed_check_after_edit", *check);
                 }
             }
             Event::TurnEnd {
@@ -279,5 +280,50 @@ impl Extension for Orchestrate {
             }
             _ => {}
         }
+    }
+}
+
+pub(crate) fn is_check(command: &str) -> bool {
+    yi_permission::command_segments(command)
+        .iter()
+        .any(|argv| argv_is_check(argv))
+}
+
+fn argv_is_check(argv: &[String]) -> bool {
+    let assignment = |word: &&str| {
+        word.split_once('=').is_some_and(|(name, _)| {
+            name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+    };
+    let mut words = argv.iter().map(String::as_str).skip_while(assignment);
+    match (words.next(), words.next(), words.next()) {
+        (Some("cargo"), Some(sub), _) => {
+            matches!(sub, "test" | "nextest" | "clippy" | "build" | "check")
+        }
+        (Some("npm" | "yarn" | "pnpm"), Some("test"), _)
+        | (Some("npm" | "yarn" | "pnpm"), Some("run"), Some("test"))
+        | (Some("go"), Some("test" | "vet" | "build"), _)
+        | (Some("just" | "pytest" | "make"), _, _) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_check;
+
+    #[test]
+    fn failed_check_classifies_the_gate_commands() {
+        assert!(is_check("cd x && cargo test 2>&1"));
+        assert!(is_check("CARGO_TARGET_DIR=/t cargo nextest run"));
+        assert!(is_check("just check -q"));
+        assert!(!is_check("pwd"));
+        assert!(!is_check("echo 'cargo test'; false"));
+        assert!(!is_check("cargo fmt"));
+        assert!(is_check("npm run test -- --watch=false"));
+        assert!(is_check("go test ./... > out.txt"));
     }
 }
