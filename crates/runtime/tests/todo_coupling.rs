@@ -912,6 +912,45 @@ fn a_number_written_to_an_answer_file_with_no_source_is_re_driven() -> TestResul
     Ok(())
 }
 
+fn wrote_report(r: &Rig, body: &str) -> TestResult {
+    yi_session::lock_session(&r.store).append_message("main", user("Write the report"))?;
+    let mut args: Map<String, Value> = Map::new();
+    args.insert("path".to_owned(), json!("report.md"));
+    args.insert("content".to_owned(), json!(body));
+    let wrote = faux_assistant_message(
+        vec![faux_tool_call("c1", "write", args)],
+        StopReason::ToolUse,
+    );
+    yi_session::lock_session(&r.store).append_message("main", wrote)?;
+    r.session.set_environment(Arc::new(|| {
+        Some(yi_runtime::environment::render(&[
+            "cwd: /lane (git: yi/sub-4097, 0 modified)".to_owned(),
+            "time: 2026-10-02 20:37 PDT".to_owned(),
+            "model: faux/faux-1 · effort high".to_owned(),
+            "context: 4096 of 128K used · session $1.234".to_owned(),
+        ]))
+    }));
+    Ok(())
+}
+
+#[test]
+fn the_environment_date_is_a_source_and_its_counts_are_not() -> TestResult {
+    let r = rig("environment_date")?;
+    let hooks = prelude_hooks(&r);
+    wrote_report(&r, "# Report\nDated 2026-10-02 on yi/sub-4097.\n")?;
+    let done = stop("Written on 2026-10-02.");
+    let flag = (hooks.intercept_stop)(&snap(&done, &[])).map(|m| custom_type(&m).2);
+    assert_eq!(flag, None, "the date the host printed is sourced");
+
+    let r = rig("environment_date-count")?;
+    let hooks = prelude_hooks(&r);
+    wrote_report(&r, "# Report\nDated 2026-10-02, 4096 rows.\n")?;
+    let first = (hooks.intercept_stop)(&snap(&done, &[])).ok_or("4096 is unsourced")?;
+    let text = custom_type(&first).2;
+    assert!(text.contains("4096") && !text.contains("2026"), "{text}");
+    Ok(())
+}
+
 #[test]
 fn the_cycle_counter_survives_a_resume() -> TestResult {
     let r = rig("resume")?;
