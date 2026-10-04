@@ -87,9 +87,9 @@ pub struct TuiOptions {
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
 pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
-pub(crate) const ORB_COLS: u16 = 6;
-pub(crate) const ORB_ROWS: u16 = 3;
-pub(crate) const ORB_PX: usize = 192;
+pub(crate) const ORB_COLS: u16 = 10;
+pub(crate) const ORB_ROWS: u16 = 5;
+pub(crate) const ORB_PX: usize = 320;
 pub struct TaskState {
     pub(crate) cell: TaskCell,
     pub(crate) streaming: Option<AgentMessage>,
