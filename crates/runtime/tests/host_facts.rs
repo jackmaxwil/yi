@@ -132,3 +132,26 @@ fn host_probe_reads_container_vm_cloud_ssh_and_wsl() -> TestResult {
     );
     Ok(())
 }
+
+/// `lsof` as this Mac printed it: rapportd and ControlCenter on the wildcard in both families,
+/// Raycast and a node server on 127.0.0.1, and six kernels' ZMQ ports. Each socket is one row per family, one
+/// listener for the doctor; the header alone is the degenerate input.
+#[test]
+fn the_doctor_lists_each_reachable_listener_once() {
+    let lsof = include_str!("fixtures/lsof-listen.txt");
+    let listeners = yi_runtime::reachable_listeners(lsof);
+    assert_eq!(listeners.len(), 14, "{listeners:?}");
+    assert_eq!(listeners[0], "rapportd:52097");
+    assert!(listeners.contains(&"ControlCenter:7000".to_owned()));
+    assert!(listeners.contains(&"Raycast:7265".to_owned()));
+    let detail = yi_runtime::listeners_detail(&listeners);
+    assert!(
+        detail.starts_with("14 TCP listeners a contained process can reach: rapportd:52097,")
+            && detail.contains("[8 of 14 shown (cap 8)"),
+        "{detail}"
+    );
+    assert!(
+        yi_runtime::reachable_listeners("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n")
+            .is_empty()
+    );
+}

@@ -4,7 +4,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use yi_tools::{
-    Run, Sandbox, SandboxRefusal, ToolContext, denial_hint, run_or_background, sandbox_refusal,
+    Run, Sandbox, SandboxRefusal, Tool, ToolContext, denial_hint, run_or_background,
+    sandbox_refusal,
 };
 
 #[path = "../../types/tests/support/scratch.rs"]
@@ -989,5 +990,126 @@ fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
     std::fs::write(lane.join("change.txt"), "from the lane\n")?;
     let (code, output) = run("git add -A", &lane, Some(&sandbox))?;
     assert_eq!(code, 0, "a contained `git add` still works: {output}");
+    Ok(())
+}
+
+/// A `sandbox-exec` run inside the sandbox cannot apply its profile: the real binary prints
+/// `sandbox-exec: sandbox_apply: Operation not permitted` and exits 71. From a cwd the outer
+/// profile denies, the errno reader took `<cwd>/sandbox_apply` for a refused write, a path no
+/// approval widens. It stays the pathless refusal a nested sandbox always was, which an
+/// interactive approval runs outside, and the result says what failed.
+#[test]
+fn a_nested_sandbox_apply_failure_is_no_refused_write() -> TestResult {
+    let (_root, project, _scratch_home) = workspace("nested")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let outer = Sandbox::for_workspace(&project, &home, None);
+    if !outer.denies_write(&home) {
+        return Ok(());
+    }
+    let command = "/usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true";
+    let (code, output) = run(command, &home, Some(&outer))?;
+    assert_eq!(code, 71, "{output}");
+    let found = sandbox_refusal(&outer, &home, Some(code), &output, "python3 nest.py");
+    assert_eq!(
+        found,
+        Some(SandboxRefusal::Scopes(vec!["python3".to_owned()])),
+        "{output}"
+    );
+    let mut context = ToolContext::new(home.clone());
+    context.sandbox = Some(outer);
+    let mut input = serde_json::Map::new();
+    input.insert("command".to_owned(), command.into());
+    let result = yi_tools::BashTool::default()
+        .execute(input, &context)
+        .result;
+    let text = format!("{:?}", result.content);
+    assert!(
+        text.contains("could not apply its profile") && text.contains("no refused write"),
+        "{text}"
+    );
+    assert!(
+        result.details["sandboxRefusal"]["path"].is_null(),
+        "{}",
+        result.details
+    );
+    Ok(())
+}
+
+/// Only the line `sandbox-exec` itself prints is the note; a program naming the words, or
+/// failing to touch a file of that name, is not.
+#[test]
+fn only_sandbox_exec_speaking_is_a_nested_apply_failure() {
+    for output in [
+        "echo: sandbox_apply\n",
+        "the sandbox-exec: sandbox_apply: line is quoted\n",
+        "touch: sandbox_apply: Operation not permitted\n",
+    ] {
+        assert_eq!(yi_tools::nested_sandbox_note(output), None, "{output}");
+    }
+}
+
+/// `ping` to a host past loopback fails in `sendto` with exit 2, which the exit filter skips as a
+/// shell failure; the sandbox refused it, and the hint names ICMP rather than a generic network.
+#[test]
+fn a_refused_ping_gets_its_own_hint() -> TestResult {
+    let (_root, project, home) = workspace("ping")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let (code, output) = run("ping -c1 -W1 1.1.1.1", &project, Some(&sandbox))?;
+    let refusal = sandbox_refusal(
+        &sandbox,
+        &project,
+        Some(code),
+        &output,
+        "ping -c1 -W1 1.1.1.1",
+    )
+    .ok_or_else(|| format!("exit {code}: {output}"))?;
+    let hint = denial_hint(&refusal);
+    assert!(hint.contains("ICMP") && hint.contains("`ping`"), "{hint}");
+    let (code, output) = run("ping -c1 127.0.0.1", &project, Some(&sandbox))?;
+    assert_eq!(code, 0, "loopback ping works: {output}");
+    assert_eq!(
+        sandbox_refusal(
+            &sandbox,
+            &project,
+            Some(code),
+            &output,
+            "ping -c1 127.0.0.1"
+        ),
+        None
+    );
+    Ok(())
+}
+
+/// A name that fails to resolve behind `|| true` or a pipe exits 0; the refusal still counts.
+/// Printed text does not: a grep that finds the phrase in a file is the degenerate case.
+#[test]
+fn a_refused_network_call_behind_a_zero_exit_is_found() -> TestResult {
+    let (_root, project, home) = workspace("zero")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    std::fs::write(
+        project.join("notes.txt"),
+        "curl: (6) Could not resolve host: example.com\n",
+    )?;
+    for command in [
+        "curl -sS -m5 https://example.com || echo done",
+        "git ls-remote https://github.com/octocat/Hello-World 2>&1 | tail -3",
+    ] {
+        let (code, output) = run(command, &project, Some(&sandbox))?;
+        assert_eq!(code, 0, "{command}: {output}");
+        let found = sandbox_refusal(&sandbox, &project, Some(code), &output, command);
+        assert!(
+            matches!(found, Some(SandboxRefusal::Scopes(_))),
+            "{command}: {output}"
+        );
+    }
+    let grep = "grep -rn 'resolve host' .";
+    let (code, output) = run(grep, &project, Some(&sandbox))?;
+    assert!(output.contains("Could not resolve host"), "{output}");
+    assert_eq!(
+        sandbox_refusal(&sandbox, &project, Some(code), &output, grep),
+        None
+    );
     Ok(())
 }
