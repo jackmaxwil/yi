@@ -258,7 +258,9 @@ pub fn layout_chat(
         .is_some_and(|at| at.elapsed() < crate::input::ESC_WINDOW);
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
-        if let (Some(mid), Some(label)) = (rows.get_mut(1), app.working_label()) {
+        if let (Some(mid), Some(label)) =
+            (rows.get_mut(usize::from(ORB_ROWS / 2)), app.working_label())
+        {
             let hint = if esc_armed {
                 "esc again to interrupt"
             } else {

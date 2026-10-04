@@ -1650,6 +1650,48 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     Ok(())
 }
 
+/// The owner asked for the orb two thirds bigger: a 10x5 cell image whose five reserved rows
+/// carry the working label on the middle one, beside the image's centre rather than its top.
+#[test]
+fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let mut out = Vec::new();
+    yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+    let out = String::from_utf8_lossy(&out);
+    let (before, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
+    let cup = before.rsplit("\x1b[").next().ok_or("no cursor move")?;
+    let row: u16 = cup.split(';').next().ok_or("no row")?.parse()?;
+    let keys: Vec<&str> = after
+        .split("\x1b\\")
+        .next()
+        .unwrap_or_default()
+        .split(',')
+        .collect();
+    assert!(keys.contains(&"c=10") && keys.contains(&"r=5"), "{keys:?}");
+    let screen = terminal.backend().contents();
+    let top = row.checked_sub(1).ok_or("cursor rows are 1-based")?;
+    for band in top..top.saturating_add(5) {
+        let text = terminal.backend().row_text(band);
+        let under_image: String = text.chars().take(10).collect();
+        assert!(
+            under_image.trim().is_empty(),
+            "row {band} is under the image:\n{screen}"
+        );
+        let labelled = text.contains("[esc] interrupt");
+        assert_eq!(
+            labelled,
+            band == top.saturating_add(2),
+            "row {band}:\n{screen}"
+        );
+    }
+    Ok(())
+}
+
 /// The screenshot's fourth defect: a host notice arrived as a user-role
 /// message, so it retitled the window, opened a turn with a divider, and drew
 /// the user's `›` rail on text the user never typed.
