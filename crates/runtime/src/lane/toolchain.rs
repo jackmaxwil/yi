@@ -150,7 +150,7 @@ pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>,
             &program,
             &borrowed,
             std::time::Duration::from_millis(SYNC_TIMEOUT_MS),
-            30_000,
+            super::CAPTURE_CAP,
         )
         .map_err(LaneError::Forge)?;
     }
