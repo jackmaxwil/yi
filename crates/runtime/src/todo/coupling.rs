@@ -10,6 +10,14 @@ use crate::goal::StoreHandle;
 use crate::plan::loop_coupling::gate::eager_init;
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
 
+type EnvironmentHandle = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+fn printed_facts(printed: &EnvironmentHandle) -> String {
+    printed()
+        .map(|block| crate::environment::printed_facts(&block))
+        .unwrap_or_default()
+}
+
 pub const NUDGE_CUSTOM_TYPE: &str = "todo_nudge";
 pub const PRELUDE_CUSTOM_TYPE: &str = "todo_prelude";
 pub const INTERCEPT_CUSTOM_TYPE: &str = "todo_intercept";
@@ -304,8 +312,12 @@ pub fn figures_of(text: &str) -> Vec<String> {
     out
 }
 
-/// Figures written to data files this prompt cycle that no tool result or user message shows.
-fn artifact_figures(store: &StoreHandle) -> Vec<(String, Vec<String>)> {
+/// Figures written to data files this prompt cycle that no tool result, user message or
+/// environment fact the host printed shows.
+fn artifact_figures(
+    store: &StoreHandle,
+    printed: &EnvironmentHandle,
+) -> Vec<(String, Vec<String>)> {
     let Some(session) = store() else {
         return Vec::new();
     };
@@ -369,6 +381,9 @@ fn artifact_figures(store: &StoreHandle) -> Vec<(String, Vec<String>)> {
             }
             _ => {}
         }
+    }
+    if !written.is_empty() {
+        seen.push_str(&printed_facts(printed));
     }
     written
         .into_iter()
@@ -638,6 +653,7 @@ fn claim_redrive(
     cycle: &mut Cycle,
     todos: &TodoStore,
     store: &StoreHandle,
+    printed: &EnvironmentHandle,
     text: &str,
 ) -> Option<AgentMessage> {
     let fingerprint = todos.list().fingerprint();
@@ -651,7 +667,7 @@ fn claim_redrive(
         ));
     }
     if !cycle.artifact
-        && let Some((path, figures)) = artifact_figures(store).into_iter().next()
+        && let Some((path, figures)) = artifact_figures(store, printed).into_iter().next()
     {
         cycle.artifact = true;
         record_intercept(store, 0, "artifact", &fingerprint, cycle.intercepts);
@@ -662,7 +678,8 @@ fn claim_redrive(
         ));
     }
     if !cycle.unsourced && !numbers_of(text).is_empty() {
-        let numbers = unsourced(text, &seen_text(store));
+        let seen = format!("{}{}", seen_text(store), printed_facts(printed));
+        let numbers = unsourced(text, &seen);
         if !numbers.is_empty() {
             cycle.unsourced = true;
             cycle.awaiting_unsourced = true;
@@ -721,6 +738,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         inner,
     } = options;
     let store = session.store_handle();
+    let printed = session.environment_handle();
     let cycle = Arc::new(Mutex::new(rehydrate(&store)));
     let deliver = session.advisory_hook();
 
@@ -811,7 +829,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 }
                 return None;
             }
-            if let Some(message) = claim_redrive(&mut cycle, &todos, &store, &text) {
+            if let Some(message) = claim_redrive(&mut cycle, &todos, &store, &printed, &text) {
                 return Some(message);
             }
             let list = todos.list();
