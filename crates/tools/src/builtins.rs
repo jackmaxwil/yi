@@ -688,7 +688,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you when it exits, starting your next turn if this one ended: end the turn, never sleep or poll; bash with job=N, wait and no command waits now, returning once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -761,7 +761,8 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
                 let after = background_after.unwrap_or_default();
-                return backgrounded_output(sections, id, after, timeout);
+                let owned = context.job_owner.is_some();
+                return backgrounded_output(sections, id, after, timeout, owned);
             }
             Err(message) => return error_output(message),
         };
@@ -870,12 +871,18 @@ fn backgrounded_output(
     id: crate::jobs::JobId,
     after: std::time::Duration,
     timeout: std::time::Duration,
+    owned: bool,
 ) -> ToolOutput {
     const TAIL_LINES: usize = 20;
     const TAIL_BYTES: usize = 2_048;
     let timeout = timeout.as_secs();
+    let arrival = if owned {
+        "when it exits, starting your next turn: end the turn rather than sleep or poll"
+    } else {
+        "only if it exits while this turn is still running"
+    };
     sections.push(format!(
-        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own only if it exits while this turn is still running; before you end the turn, wait for it with bash job={id} wait=<s>.]"
+        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own {arrival}; bash job={id} wait=<s> waits for it now.]"
     ));
     let chunk = crate::jobs::registry().output_since(id, 0);
     let (so_far, printed) = chunk.map_or((String::new(), 0), |chunk| (chunk.text, chunk.next));

@@ -274,14 +274,40 @@ impl AgentSession {
         })
     }
 
-    /// A job's report (§4.3), taken after a running turn's answer or the next one's, never waking.
-    pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str| {
-            if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(host_text(yi_types::message::HostSource::Job, text));
+    /// Job reports (§4.3) start a turn on an idle session; false once retired, ending the loop.
+    pub fn job_report_hook(&self) -> Arc<dyn Fn(Vec<String>) -> bool + Send + Sync> {
+        let parts = self.parts();
+        Arc::new(move |reports: Vec<String>| {
+            if parts
+                .shared
+                .retired
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return false;
             }
+            for text in reports {
+                run::follow(&parts, host_text(yi_types::message::HostSource::Job, &text));
+            }
+            true
         })
+    }
+
+    /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session
+    /// leaks its IPython process. Every path that retires a session calls this.
+    pub fn retire(&self) {
+        self.shared
+            .retired
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let Some(kernel) = self.kernel_service() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(async move { kernel.dispose().await });
+        }
+    }
+
+    pub fn job_owner(&self) -> yi_tools::jobs::JobOwner {
+        self.shared.job_owner
     }
 
     pub fn wait_hook(&self) -> Arc<crate::compaction::WaitFn> {

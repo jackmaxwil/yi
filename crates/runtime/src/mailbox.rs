@@ -859,7 +859,7 @@ impl SubagentHost {
             };
             record.step(Step::Exit(exit, Some(cause)));
         }
-        SubagentHost::dispose_child_kernel(&record.session);
+        SubagentHost::retire_child(&record.session);
         // The lane settles under the journaled choice; one that cannot restores the record.
         let (mut record, settled) = self.settle_or_restore(&key, record)?;
         if let Err(reason) = commit(&record, settled.as_ref().map(|(_, candidate)| candidate)) {

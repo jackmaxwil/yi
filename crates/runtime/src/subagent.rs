@@ -924,8 +924,8 @@ impl SubagentHost {
         reply
     }
 
-    pub(crate) fn dispose_child_kernel(session: &AgentSession) {
-        session.dispose_kernel();
+    pub(crate) fn retire_child(session: &AgentSession) {
+        session.retire();
     }
 
     pub(crate) fn key_of(

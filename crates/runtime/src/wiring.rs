@@ -811,25 +811,26 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     session.set_advisor(advisor);
 }
 
-/// A job of this session's cwd reports through the §4.3 follow-up queue, read at a running
-/// turn's end; an idle session hears it only after its next turn (#820 wakes it).
-fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
-    let follow_up = session.follow_up_hook();
-    tokio::spawn(async move {
-        let settled = job_settled();
-        let never: std::convert::Infallible = crate::session::until(settled, || {
-            for report in yi_tools::jobs::registry().take_finished(&cwd) {
-                let (job, headline) = (report.id, report.headline());
-                follow_up(&format!(
-                    "<async_result job=\"{job}\">{headline}\n{}</async_result>",
-                    report.output
-                ));
-            }
+/// A job this session started reports through its follow-up queue and wakes it when idle; the
+/// loop ends with the session, so a retired child's job starts no paid turn in it.
+fn wire_job_completions(session: &AgentSession) {
+    let (report, owner) = (session.job_report_hook(), session.job_owner());
+    tokio::spawn(crate::session::until(job_settled(), move || {
+        let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
+        let texts = reports.map(|job| {
+            let output = job.output.as_str();
+            format!(
+                "<async_result job=\"{}\">{}\n{output}</async_result>",
+                job.id,
+                job.headline()
+            )
+        });
+        if report(texts.collect()) {
             std::ops::ControlFlow::Continue(None)
-        })
-        .await;
-        match never {}
-    });
+        } else {
+            std::ops::ControlFlow::Break(())
+        }
+    }));
 }
 
 pub(crate) fn journal_into<T: yi_types::entry::CustomRecord + 'static>(
@@ -1015,7 +1016,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         wiring.broker.clone(),
         wiring.auto_background,
     );
-    wire_job_completions(session, wiring.cwd.clone());
+    wire_job_completions(session);
     host
 }
 
