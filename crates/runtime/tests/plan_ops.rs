@@ -3532,6 +3532,72 @@ mod contracts {
         accept_through(&tool, &rig)
     }
 
+    /// Dies with the plan's prompt left open: the review found an `after-delay` allow settling
+    /// under an id the prompt never carried, so the front end could not close it.
+    #[test]
+    fn an_accept_the_classifier_settles_after_the_delay_closes_the_persons_prompt() -> TestResult {
+        use yi_runtime::classifier::{Approver, Sidecar, Thresholds, Timing};
+        let rig = rig("yi-accept-after-delay", None)?;
+        let Confirmer { store, .. } = confirmer(&rig, AskOutcome::Reject)?;
+        let shown: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&shown);
+        let asker: Asker = Arc::new(move |ask: &PermissionAsk<'_>| {
+            if let Ok(mut seen) = seen.lock() {
+                *seen = ask.tool_call_id.map(str::to_owned);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            AskOutcome::Reject
+        });
+        let (events, mut heard) = tokio::sync::broadcast::channel(16);
+        let broker = PermissionBroker::new(
+            PermissionMode::Auto,
+            rig.ws.clone(),
+            Vec::new(),
+            Some(asker),
+            events,
+        );
+        broker.prompts_close_on_settle();
+        let (port, _sidecar) =
+            crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+        broker.set_approver(Arc::new(Approver::new(
+            Sidecar {
+                url: format!("http://127.0.0.1:{port}"),
+                key: Some("k".to_owned()),
+                model: "english".to_owned(),
+                timeout: std::time::Duration::from_secs(2),
+                threshold: None,
+            },
+            Thresholds {
+                allow_at: 0.9,
+                allow_destructive_at: 0.98,
+                ask_at: 0.2,
+            },
+            Timing::AfterDelay(std::time::Duration::from_millis(200)),
+            Arc::new(|_| {}),
+        )));
+        let tool = PlanTool::new(Arc::clone(&rig.engine), Actor::Owner).confirming(
+            yi_runtime::plan::authority::Confirming {
+                broker: Arc::new(broker),
+                store: Arc::new(move || Some(store.clone())),
+            },
+        );
+        let (_plan, refused, text) = accept_through(&tool, &rig)?;
+        assert!(!refused, "{text}");
+        let shown = shown
+            .lock()
+            .map_err(|_| "poisoned")?
+            .clone()
+            .ok_or("the prompt carried no id")?;
+        let mut resolved = None;
+        while let Ok(event) = heard.try_recv() {
+            if let yi_types::event::AgentEvent::PermissionResolved { tool_call_id, .. } = event {
+                resolved = Some(tool_call_id);
+            }
+        }
+        assert_eq!(resolved.as_deref(), Some(shown.as_str()));
+        Ok(())
+    }
+
     /// Dies with the person asked, or the acceptance recorded as theirs, when the classifier in
     /// auto mode allows it: it lands `AcceptedByClassifier` with `classifier` as the actor.
     #[test]
