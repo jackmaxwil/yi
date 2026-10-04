@@ -1163,7 +1163,9 @@ def put(name: str, obj: Any) -> dict[str, Any]:
     The object is dilled to ``<family>/<name>.dill`` with a ``<name>.json`` sidecar
     ``{name, owner, at, bytes, type, serializer}``; any member reads it back with
     ``get(name)`` and the host serves the sidecar at ``family://<name>``. A large
-    result comes home this way, never through the transcript.
+    result comes home this way, never through the transcript. A reader or worker has no
+    kernel and sees only the sidecar at ``family://``; give it a computed value through
+    ``context_keys``.
     """
     if not isinstance(name, str) or not FAMILY_NAME.match(name):
         raise ValueError("a blackboard name is a plain file-safe token, e.g. 'shard_auth'")
