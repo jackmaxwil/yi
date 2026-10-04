@@ -291,9 +291,9 @@ read of a large file you need one function of. The same command failing
 twice is a hypothesis, not a retry.
 
 Long commands: pass `wait`; a command still running then becomes a job.
-Its result comes on its own only while your turn runs, so before you end
-the turn wait for it with `bash job=N wait=S`. `timeout_secs` still bounds
-it. Never sleep to wait.
+To wait on it, end the turn: its exit starts your next one. `bash job=N
+wait=S` waits now instead. `timeout_secs` still bounds it. Never sleep,
+loop or poll to wait.
 
 ## Git, lanes, and the tree
 
@@ -327,8 +327,8 @@ check; it is the rare case and the one that needs ownership.
    you conclude.
 2. A reader is walled and cheap: a bare `rlm.run`, or `rlm.ask(question,
    partition)`, gets a short reader prompt, `read` and `grep`, three turns
-   and no writes; it runs in your tree with no worktree, on a cheaper model
-   when `rlm.find_models` offers one, with one question, the lines it needs
+   and no writes; it runs in your tree with no worktree, on a model whose
+   `rlm.find_models` cost is one input, with one question, the lines it needs
    inlined as `partition` URLs, and findings shaped
    `{path, line, claim, evidence}` where `evidence` is the quoted line. A
    reader's claim is data: open the cited line before you build on it; a

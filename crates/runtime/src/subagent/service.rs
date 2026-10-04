@@ -215,7 +215,7 @@ impl SubagentHost {
         let requested = session.abort_epoch();
         let dead = {
             let Ok(mut children) = self.children.lock() else {
-                Self::dispose_child_kernel(&session);
+                Self::retire_child(&session);
                 return None;
             };
             // Invariant: a stop the owner asked for while the build ran wins. The record is
@@ -224,12 +224,12 @@ impl SubagentHost {
                 Some(Standing::Service(service)) => service.stopped,
                 Some(_) => true,
                 None => {
-                    Self::dispose_child_kernel(&session);
+                    Self::retire_child(&session);
                     return None;
                 }
             };
             if stopped {
-                Self::dispose_child_kernel(&session);
+                Self::retire_child(&session);
                 return refused("it was stopped while its next run was being built".to_owned());
             }
             let record = children.get_mut(key)?;
@@ -244,7 +244,7 @@ impl SubagentHost {
         self.options.family_live.enroll(&session);
         // A queued or woken receipt is owed a turn: what the dead run never drained moves on.
         session.adopt_pending(&dead);
-        Self::dispose_child_kernel(&dead);
+        Self::retire_child(&dead);
         // A request parked on the dead incarnation is refused by name, never answered by this one.
         if let Ok(mut desk) = self.mail.lock() {
             desk.drop_respondent(&name, "respawned");
