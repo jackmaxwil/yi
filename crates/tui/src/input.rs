@@ -206,7 +206,7 @@ pub(crate) fn handle_action(
                 return;
             }
             let now = Instant::now();
-            if !app.composer.is_empty() {
+            if !app.composer.textarea.is_empty() {
                 app.composer.set_text("");
                 return;
             }

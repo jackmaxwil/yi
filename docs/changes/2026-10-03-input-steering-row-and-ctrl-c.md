@@ -1,0 +1,5 @@
+---
+issue: Closes #1032
+raise: crate runtime +51, crate tui +4, tests +229, comments +1
+---
+A queued steer leaves the HUD when the loop injects it, and ctrl+c always acts on the box (Closes #1032). The `Steering` row only cleared at the end of the run, so a message the model had already read, and the transcript already showed as a user cell, still read as queued; `reduce_agent` now drops the first queued entry equal to an injected user message. Ctrl+C closes an open `/`, `@`, agents or model popup (the popup used to swallow the key, and in the console an empty box armed the daemon-stop note over it), and clears a box holding only blank lines instead of aborting the running turn. A user steer that arrived after the loop's last read, before the run went idle, now runs as the next prompt rather than waiting behind the following one; Steering delivery itself is unchanged: every queued steer is read after the tool batch ends, and `steers_sent_during_a_tool_batch_arrive_together_in_the_next_request` pins it.

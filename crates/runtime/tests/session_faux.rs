@@ -1263,3 +1263,44 @@ async fn a_lagging_reader_gets_the_gap_then_the_next_event() -> Result<(), Box<d
     assert_eq!(yi_runtime::next_event(&mut reader).await, None);
     Ok(())
 }
+
+/// Two steers sent while one tool batch runs are read together when it ends: both sit in the
+/// context ahead of the next reply, in arrival order, and nothing is left queued behind them.
+#[tokio::test]
+async fn steers_sent_during_a_tool_batch_arrive_together_in_the_next_request()
+-> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-steer-batch")?;
+    let started = dir.join("started");
+    let mut session = tool_call_session("echo up > started; sleep 1");
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Yolo,
+        dir.to_path_buf(),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    ));
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), Some(broker));
+    session.prompt("run it")?;
+    for _ in 0..500 {
+        if started.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(started.exists(), "the tool never started");
+    for text in ["fast forward main", "then run the tests"] {
+        session.steer_message(yi_runtime::session::user_input(text));
+    }
+    session.wait_idle().await;
+    assert_eq!(
+        transcript(&session),
+        [
+            "user: run it",
+            "assistant",
+            "user: fast forward main",
+            "user: then run the tests",
+            "assistant"
+        ]
+    );
+    Ok(())
+}
