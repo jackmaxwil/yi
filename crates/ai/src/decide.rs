@@ -4,6 +4,8 @@ use yi_types::classifier::{DecisionRequest, DecisionResponse};
 
 const BODY_CAP: u64 = 64 * 1024;
 
+/// Invariant: an error is the cause alone; the journal, the pause notice, setup and doctor each
+/// prefix the sidecar's URL once.
 pub fn decide(
     base_url: &str,
     key: Option<&str>,
@@ -18,14 +20,14 @@ pub fn decide(
         call = call.set("authorization", &format!("Bearer {key}"));
     }
     let response = call.send_string(&body).map_err(|error| match error {
-        ureq::Error::Status(code, _) => format!("{url} answered HTTP {code}"),
-        ureq::Error::Transport(transport) => format!("{url}: {transport}"),
+        ureq::Error::Status(code, _) => format!("the sidecar answered HTTP {code}"),
+        ureq::Error::Transport(transport) => crate::request::transport_cause(&transport),
     })?;
     let mut text = String::new();
     std::io::Read::read_to_string(
         &mut std::io::Read::take(response.into_reader(), BODY_CAP),
         &mut text,
     )
-    .map_err(|error| format!("{url}: {error}"))?;
-    serde_json::from_str(&text).map_err(|error| format!("{url}: not a decision: {error}"))
+    .map_err(|error| error.to_string())?;
+    serde_json::from_str(&text).map_err(|error| format!("not a decision: {error}"))
 }

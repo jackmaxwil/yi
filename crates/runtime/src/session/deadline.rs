@@ -85,6 +85,12 @@ impl super::AgentSession {
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Invariant: cancelled before the abort, so the aborted run's settle starts no queued prompt.
+    pub fn stop(&self) {
+        self.cancel();
+        self.abort();
+    }
+
     pub(crate) fn cancelled(&self) -> bool {
         self.shared
             .cancelled

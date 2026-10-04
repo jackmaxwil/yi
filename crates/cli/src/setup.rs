@@ -8,7 +8,7 @@ const PROVIDERS: [(&str, &str); 3] = [
     ("openai", "openai/gpt-5.5"),
     ("openrouter", "openrouter/anthropic/claude-sonnet-5"),
 ];
-const LAYA_VENV: &str = ".local/share/laya-venv";
+pub(crate) const LAYA_VENV: &str = ".local/share/laya-venv";
 const CLASSIFIER_URL: &str = "http://127.0.0.1:8000";
 const CHECKPOINT: &str = "english";
 
@@ -188,7 +188,7 @@ fn classifier_step(
     say(
         out,
         &format!(
-            "Start it in another terminal:\n  LAYA_HOST=127.0.0.1 LAYA_PORT=8000 {}",
+            "`yi serve` starts it once this is saved; to probe it now, start it in another terminal:\n  LAYA_HOST=127.0.0.1 LAYA_PORT=8000 {}",
             venv.join("bin/laya-serve").display()
         ),
     )?;

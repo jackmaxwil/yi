@@ -369,7 +369,7 @@ fn a_routed_claude_request_keeps_its_newest_twenty_images() {
             .map(|_| {
                 AgentMessage::user_input(
                     UserContent::Blocks(vec![Content::Image {
-                        data: "iVBORw0KGgo=".to_owned(),
+                        data: crate::images::PNG.to_owned(),
                         mime_type: "image/png".to_owned(),
                     }]),
                     0,
@@ -428,7 +428,7 @@ fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
                     text_signature: None,
                 },
                 Content::Image {
-                    data: "iVBORw0KGgo=".to_owned(),
+                    data: crate::images::PNG.to_owned(),
                     mime_type: "image/png".to_owned(),
                 },
             ],
@@ -439,6 +439,35 @@ fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
             timestamp: 0,
         },
     ]
+}
+
+/// A PNG cut inside its header in a cell's result is refused on every wire, not only Claude's
+/// (#860): the tool message names it and no image message follows.
+#[test]
+fn a_refused_tool_result_image_is_named_and_not_sent() -> Result<(), Box<dyn Error>> {
+    let mut ctx = context();
+    let mut exchange = image_exchange("openai-completions", "call_1");
+    if let Some(AgentMessage::ToolResult { content, .. }) = exchange.last_mut()
+        && let Some(Content::Image { data, .. }) = content.last_mut()
+    {
+        *data = crate::images::PNG.get(..20).ok_or("cut")?.to_owned();
+    }
+    ctx.messages.extend(exchange);
+    let params = build_params(&model(false), &ctx, &OpenAiOptions::default());
+    let last = params["messages"]
+        .as_array()
+        .ok_or("messages")?
+        .last()
+        .ok_or("last")?;
+    assert_eq!(last["role"], "tool", "{last}");
+    let text = last["content"].as_str().ok_or("content")?;
+    assert!(
+        text.starts_with(
+            "attached\n[image omitted: image/png, 0 KB of base64; the image has no whole header for its type"
+        ),
+        "{text}"
+    );
+    Ok(())
 }
 
 /// Chat completions takes only text in a tool message, so the image follows as a
@@ -460,7 +489,7 @@ fn a_tool_result_image_follows_as_a_user_message_for_a_vision_model() -> Result<
             json!({"role": "tool", "content": "attached", "tool_call_id": "call_1"}),
             json!({"role": "user", "content": [
                 {"type": "text", "text": "Attached image(s) from tool result:"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+                {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", crate::images::PNG)}},
             ]}),
         ]
     );

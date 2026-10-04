@@ -848,9 +848,7 @@ impl SubagentHost {
             (key, record)
         };
         if record.exit.is_none() {
-            // Cancelled first, so the settle of the aborted run starts none for mail it queued.
-            record.session.cancel();
-            record.session.abort();
+            record.session.stop();
             // A lane refusal stays the cause of a plain removal; a repossession names itself.
             let cause = match exit {
                 ChildExit::Reaped => record
@@ -861,7 +859,7 @@ impl SubagentHost {
             };
             record.step(Step::Exit(exit, Some(cause)));
         }
-        SubagentHost::dispose_child_kernel(&record.session);
+        SubagentHost::retire_child(&record.session);
         // The lane settles under the journaled choice; one that cannot restores the record.
         let (mut record, settled) = self.settle_or_restore(&key, record)?;
         if let Err(reason) = commit(&record, settled.as_ref().map(|(_, candidate)| candidate)) {
