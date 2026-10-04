@@ -79,13 +79,25 @@ pub struct ClassifierConfig {
     pub url: Option<String>,
     pub timeout_ms: Option<u64>,
     pub threshold: Option<serde_json::Number>,
-    /// Command approval in auto mode, a separate switch; it needs `LAYA_API_KEY` to arm.
+    /// Before `approval` existed: `false` is `wait-for-user`, `true` is `instant`.
     pub approve: Option<bool>,
+    /// When the classifier answers an auto-mode approval; unset is `instant`.
+    pub approval: Option<ApprovalMode>,
     pub allow_at: Option<serde_json::Number>,
     pub allow_destructive_at: Option<serde_json::Number>,
     pub ask_at: Option<serde_json::Number>,
-    /// With approval on, an ask unanswered this long gets the classifier's decision; 0 waits.
+    /// The `after-delay` wait before the classifier answers an ask nobody has.
     pub ask_timeout_secs: Option<u64>,
+}
+
+/// `instant` asks the classifier before the person; `after-delay` once the person has not
+/// answered for `askTimeoutSecs`; `wait-for-user` never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApprovalMode {
+    Instant,
+    AfterDelay,
+    WaitForUser,
 }
 
 /// `node`: overrides `~/.yi/node.json` field by field; `slots` bounds the kernels this

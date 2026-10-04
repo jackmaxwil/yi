@@ -15,8 +15,19 @@ pub(crate) fn start(home: &Path) {
             ),
         );
     };
+    // Minted before any session attaches, so its approver finds the key the sidecar is given.
+    let key = match yi_runtime::auth::mint_key("laya") {
+        Ok(key) => Some(key),
+        Err(error) => {
+            note(
+                home,
+                &format!("no laya key, so classifier approval stays off: {error}"),
+            );
+            None
+        }
+    };
     let home = home.to_path_buf();
-    std::thread::spawn(move || match own(&home, &checkpoint, host, port) {
+    std::thread::spawn(move || match own(&home, &checkpoint, host, port, key) {
         Ok(Some(_child)) => loop {
             std::thread::park();
         },
@@ -51,6 +62,7 @@ fn own(
     checkpoint: &str,
     host: &str,
     port: u16,
+    key: Option<yi_runtime::auth::Secret>,
 ) -> std::io::Result<Option<std::process::Child>> {
     let mut log = yi_runtime::session_store::lock_file(&home.join(".yi/laya-serve.log"))?;
     log.seek(std::io::SeekFrom::End(0))?;
@@ -87,7 +99,7 @@ fn own(
         .stdin(std::process::Stdio::piped())
         .stdout(log)
         .stderr(stderr);
-    if let Some(key) = yi_runtime::auth::api_key("laya") {
+    if let Some(key) = key {
         command.env("LAYA_API_KEY", key.expose());
     }
     command.spawn().map(Some)

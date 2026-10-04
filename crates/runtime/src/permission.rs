@@ -17,6 +17,8 @@ use yi_types::permission::{
 };
 
 mod kept;
+mod late;
+use late::{Answered, Late, ask_or_judge};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -34,52 +36,6 @@ pub struct PermissionAsk<'a> {
     pub changes: &'a [PathBuf],
     pub grants: &'a [yi_permission::Grant],
     pub tool_call_id: Option<&'a str>,
-}
-
-struct OwnedAsk {
-    title: String,
-    description: String,
-    patch: Option<String>,
-    changes: Vec<PathBuf>,
-    grants: Vec<yi_permission::Grant>,
-    tool_call_id: Option<String>,
-}
-
-impl OwnedAsk {
-    fn of(ask: &PermissionAsk<'_>) -> Self {
-        Self {
-            title: ask.title.to_owned(),
-            description: ask.description.to_owned(),
-            patch: ask.patch.map(str::to_owned),
-            changes: ask.changes.to_vec(),
-            grants: ask.grants.to_vec(),
-            tool_call_id: ask.tool_call_id.map(str::to_owned),
-        }
-    }
-
-    fn ask(&self) -> PermissionAsk<'_> {
-        PermissionAsk {
-            title: &self.title,
-            description: &self.description,
-            patch: self.patch.as_deref(),
-            changes: &self.changes,
-            grants: &self.grants,
-            tool_call_id: self.tool_call_id.as_deref(),
-        }
-    }
-}
-
-fn ask_within(
-    asker: &Asker,
-    ask: &PermissionAsk<'_>,
-    limit: std::time::Duration,
-) -> Option<AskOutcome> {
-    let (owned, asker) = (OwnedAsk::of(ask), Arc::clone(asker));
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _gone_if_expired = sender.send(asker(&owned.ask()));
-    });
-    receiver.recv_timeout(limit).ok()
 }
 
 impl PermissionAsk<'_> {
@@ -465,48 +421,6 @@ impl PermissionBroker {
         self.confirm_judged(ask, None).0
     }
 
-    /// [`PermissionBroker::confirm`] with auto mode's classifier first; the bool says it answered.
-    pub fn confirm_judged(
-        &self,
-        ask: &PermissionAsk<'_>,
-        call: Option<&crate::classifier::Call<'_>>,
-    ) -> (AskOutcome, bool) {
-        let ordinal = self
-            .confirms
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let tool_call_id = format!("confirm-{ordinal}");
-        let _ = self.events.send(AgentEvent::PermissionRequested {
-            tool_call_id: tool_call_id.clone(),
-            title: ask.title.to_owned(),
-            description: ask.text(),
-        });
-        let judged = call
-            .filter(|_| self.mode() == PermissionMode::Auto)
-            .and_then(|call| Some(self.approver.get()?.judge(call)));
-        if let Some(crate::classifier::Judgement::Allow(_)) = judged {
-            self.settle(&tool_call_id, ask, true, Answerer::Classifier);
-            return (AskOutcome::AllowOnce, true);
-        }
-        let outcome = self
-            .asker
-            .as_ref()
-            .map_or(AskOutcome::Reject, |asker| asker(ask));
-        let by = if self.asker.is_some() {
-            Answerer::User
-        } else {
-            Answerer::Nobody
-        };
-        let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-        self.settle(&tool_call_id, ask, allowed, by);
-        (outcome, false)
-    }
-
-    /// Whether [`PermissionBroker::confirm_judged`] gets an answer: a person, or auto's classifier.
-    pub fn can_confirm(&self) -> bool {
-        self.can_ask() || (self.mode() == PermissionMode::Auto && self.approver.get().is_some())
-    }
-
     /// Whether an interactive asker exists — without one, an advisor Hold
     /// would be an Ask nobody can answer (D28), so callers degrade it.
     pub fn can_ask(&self) -> bool {
@@ -787,11 +701,12 @@ impl PermissionBroker {
             reason: reviewed.reason,
             cwd: &cwd,
         };
-        let approver =
-            (self.approver.get()).filter(|_| reviewed.reviewable && !self.answered(canonical));
+        let approver = (self.approver.get()).filter(|_| {
+            reviewed.reviewable && !self.answered(canonical) && self.mode() == PermissionMode::Auto
+        });
         let mut prior = None;
-        if let Some(approver) = approver
-            && self.mode() == PermissionMode::Auto
+        if let Some(approver) =
+            approver.filter(|approver| approver.timing() == crate::classifier::Timing::Instant)
         {
             let judgement = approver.judge(&call);
             prior = Some(judgement);
@@ -813,15 +728,20 @@ impl PermissionBroker {
                 | crate::classifier::Judgement::Undecided => {}
             }
         }
-        let timed = approver
-            .filter(|_| prior.is_some())
-            .and_then(|approver| approver.ask_timeout());
+        let late = approver.and_then(|approver| match approver.timing() {
+            crate::classifier::Timing::AfterDelay(delay) => Some(Late {
+                approver,
+                call: &call,
+                delay,
+            }),
+            crate::classifier::Timing::Instant => None,
+        });
         let asks_user = matches!(prior, Some(crate::classifier::Judgement::AskUser(_)));
         let Some(reviewer) = self.reviewer.get().cloned().filter(|_| !asks_user) else {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, timed);
+            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, late);
         };
         if !reviewed.reviewable || self.mode() != PermissionMode::Auto {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, timed);
+            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, late);
         }
         // Invariant: a call the deterministic ladder could not prove is announced and settled
         // whoever answers. The TUI's waiting cell and ACP's RequiresAction read this pair.
@@ -1074,24 +994,6 @@ impl PermissionBroker {
         crate::auto_review::resolution_text(&stored.display, verdict)
     }
 
-    fn expired(
-        &self,
-        ask: &PermissionAsk<'_>,
-        tool_call_id: &str,
-        limit: std::time::Duration,
-    ) -> CallOutcome {
-        let waited = limit.as_secs();
-        self.settle(tool_call_id, ask, false, Answerer::Nobody);
-        CallOutcome {
-            allowed: false,
-            reason: format!(
-                "No one answered within {waited} s and the classifier did not clear it. {}",
-                ask.text()
-            ),
-            containment: Containment::Uncontained,
-        }
-    }
-
     /// A long patch is cut: the prompt is a decision aid, not the file.
     pub(crate) fn cut_preview(patch: &str) -> String {
         const PREVIEW_LINES: usize = 40;
@@ -1109,7 +1011,7 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
-        timed: Option<std::time::Duration>,
+        late: Option<Late<'_>>,
     ) -> CallOutcome {
         let rendered = ask.text();
         let _ = self.events.send(AgentEvent::PermissionRequested {
@@ -1117,13 +1019,21 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: rendered.clone(),
         });
-        let limit = timed.filter(|_| self.prompts_close_on_settle.load(Ordering::Relaxed));
-        let outcome = match (&self.asker, limit) {
-            (Some(asker), Some(limit)) => match ask_within(asker, ask, limit) {
-                Some(outcome) => outcome,
-                None => return self.expired(ask, tool_call_id, limit),
-            },
-            (Some(asker), None) => asker(ask),
+        let late = late.as_ref().and_then(|late| self.late(late));
+        let answered = late.map(|late| ask_or_judge(self.asker.as_ref(), ask, late));
+        if let Some(Answered::Classifier(safe)) = answered {
+            self.settle(tool_call_id, ask, true, Answerer::Classifier);
+            return CallOutcome {
+                allowed: true,
+                reason: format!(
+                    "allowed by the classifier once no one answered (P(safe) {safe:.2})"
+                ),
+                containment: Containment::Uncontained,
+            };
+        }
+        let outcome = match (&self.asker, answered) {
+            (Some(_), Some(Answered::Person(outcome))) => outcome,
+            (Some(asker), _) => asker(ask),
             (None, _) => {
                 self.settle(tool_call_id, ask, false, Answerer::Nobody);
                 let asked = yi_permission::Decision::Ask {
