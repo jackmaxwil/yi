@@ -1007,9 +1007,13 @@ fn child_done(tokens: u64) -> yi_types::event::AgentEvent {
 }
 
 fn child_at(tokens: u64) -> yi_types::event::AgentEvent {
+    child_named("c1", tokens)
+}
+
+fn child_named(id: &str, tokens: u64) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::ChildUpdate {
         update: yi_types::subagent::ChildUpdate {
-            id: yi_types::subagent::ChildId("c1".to_owned()),
+            id: yi_types::subagent::ChildId(id.to_owned()),
             name: "scout".to_owned(),
             status: yi_types::subagent::ChildStatus::Running,
             activity: yi_types::subagent::ChildActivity::Executing,
@@ -1236,6 +1240,59 @@ async fn a_finished_child_counts_once_across_a_switch_and_back() -> TestResult {
     assert!(
         until(|| session.pending_count() > 0).await,
         "X's 1,100 crossed 1,000 and nothing fired"
+    );
+    Ok(())
+}
+
+/// Dies with a second alert at 1,000: a failed child's 1,900 live tokens never reach the
+/// ledger, and a re-attach seeding from its 900 moved the announced crossing back down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reattach_below_the_live_total_never_announces_again() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-below")?;
+    let store =
+        JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned()).create(CreateOptions::default())?;
+    let session = alarmed()?;
+    session.attach_store(Arc::clone(&store))?;
+    session.events_sender().send(child_at(1_900))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "1,900 fired nothing"
+    );
+    if let yi_types::event::AgentEvent::MessageEnd { message } = turn_of(900) {
+        lock_session(&store).append_message("main", message)?;
+    }
+    session.attach_store(store)?;
+    session.events_sender().send(turn_of(100))?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        1,
+        "the crossing at 1,000 fired again"
+    );
+    Ok(())
+}
+
+/// Dies with every child ignored after an attach: a child's live growth alone must cross the
+/// alert under X, and after `/new` a child first seen under Y counts in Y.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_childs_live_growth_counts_under_the_session_that_saw_it() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let dir = Scratch::new("yi-spend-owner")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned());
+    let session = alarmed()?;
+    session.attach_store(repo.create(CreateOptions::default())?)?;
+    session.events_sender().send(child_named("x1", 1_100))?;
+    assert!(
+        until(|| session.pending_count() == 1).await,
+        "X's child crossed nothing"
+    );
+    session.reset();
+    session.attach_store(repo.create(CreateOptions::default())?)?;
+    session.events_sender().send(child_named("y1", 1_100))?;
+    assert!(
+        until(|| session.pending_count() == 2).await,
+        "Y's child crossed nothing"
     );
     Ok(())
 }
