@@ -291,8 +291,9 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
                 },
             }),
             None => {
-                let closed =
-                    (strict.then(|| crate::schema::strict_tool(&tool.parameters, true))).flatten();
+                let closed = (strict.then(|| crate::schema::strict_tool(&tool.parameters)))
+                    .flatten()
+                    .filter(crate::schema::strict);
                 json!({
                     "type": "function",
                     "name": tool.name,
@@ -672,11 +673,7 @@ impl EventMapper {
         let parsed = if slot.freeform {
             freeform_arguments(&slot.partial_args)
         } else {
-            let mut parsed = parse_streaming_json(&slot.partial_args);
-            if crate::compat::strict_tools(&self.model) {
-                crate::schema::drop_nulls(&mut parsed);
-            }
-            parsed
+            parse_streaming_json(&slot.partial_args)
         };
         let content_index = slot.content_index;
         let call_id = slot.call_id.clone();

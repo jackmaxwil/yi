@@ -226,7 +226,7 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
         .iter()
         .map(|tool| {
             let schema = &tool.parameters;
-            let closed = (strict.then(|| crate::schema::strict_tool(schema, false)))
+            let closed = (strict.then(|| crate::schema::strict_tool(schema)))
                 .flatten()
                 .filter(|closed| {
                     let (optional, unions) = crate::schema::weight(closed);
