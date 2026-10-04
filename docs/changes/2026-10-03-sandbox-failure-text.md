@@ -1,6 +1,6 @@
 ---
 issue: Closes #929, refs #939
-raise: tests +275, comments +18, crate cli +7, crate runtime +58, crate tools +119
+raise: tests +276, comments +18, crate cli +7, crate runtime +58, crate tools +119
 growth: +184 the doctor row, the kernel cell note and the exit-0 note are each a surface #929 names; weighed for deletion: a new SandboxRefusal variant (six broker matches), a per-job kernel note (the cell text already carries it) and recording exit-0 refusals (fetched text could then trigger an ask), all dropped
 ---
 A nested `sandbox-exec` that cannot apply its profile is no longer read as a refused write to `<cwd>/sandbox_apply` when the profile denies the cwd (Refs #939: the issue asked for a profile error and no pathless refusal; the pathless refusal is settled design, so only the misread is fixed): it stays the pathless refusal a nested sandbox always was, and the bash result says what failed. Loopback-era network refusals now name the sandbox wherever the model meets them (Closes #929): a kernel cell, and a `bash()` job inside one, get a note that the kernel cannot leave the sandbox; `ping` gets a hint that names ICMP and exit 2 no longer hides it; a resolver failure behind an exit-0 pipe or `|| true` is noted, never recorded, when a `<program>: ...` line names a program in the command; and `yi doctor` lists the TCP listeners a contained process can reach.
