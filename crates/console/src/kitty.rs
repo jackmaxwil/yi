@@ -21,8 +21,7 @@ pub fn place_png(out: &mut impl Write, base64_png: &str, rect: Rect) -> std::io:
     write!(out, "\u{1b}_Ga=d,d=i,i={IMAGE_ID},q=2\u{1b}\\")?;
     // Invariant (#817): a byte outside base64 could end this escape and start another; the
     // kernel refuses such data, but a session saved before it did still replays here.
-    let base64 = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=');
-    if !base64_png.bytes().all(base64) {
+    if !yi_types::image::is_strict_base64(base64_png) {
         return Ok(());
     }
     let bytes = base64_png.as_bytes();

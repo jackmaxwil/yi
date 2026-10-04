@@ -134,6 +134,7 @@ pub struct MemberView {
     pub note: Option<String>,
     pub tools: u64,
     pub tokens: u64,
+    pub cost: f64,
     pub idle_s: u64,
     pub worktree: Option<String>,
 }
