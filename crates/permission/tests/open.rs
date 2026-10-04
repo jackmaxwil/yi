@@ -110,9 +110,7 @@ fn a_parent_swapped_under_the_gate_creates_nothing_in_the_store() -> TestResult 
     Ok(())
 }
 
-/// Linux unlinks inside the directory the gate held open; macOS has no std way to, so its
-/// delete keeps the gap D339 names and is not pinned here.
-#[cfg(target_os = "linux")]
+/// Both systems unlink inside the directory the gate held open as judged.
 #[test]
 fn a_parent_swapped_under_the_gate_deletes_no_key() -> TestResult {
     let (tries, leaks) = flipping("yi-gate-remove", &|gate, target, walls, key| {
