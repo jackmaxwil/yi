@@ -372,32 +372,41 @@ impl Compactor {
 
     /// Rebuilds the window chain and the stale reply from the latest compaction entry, which
     /// stores both its details and the kept tail; resume would otherwise compact once more.
+    /// A branch with none (a rewind past the compaction) goes back to the initial window.
     pub fn resume(&self, entries: &[yi_types::entry::Entry]) {
-        let Some(yi_types::entry::Entry::Compaction {
-            retained_tail,
-            details,
-            ..
-        }) = entries
-            .iter()
-            .rfind(|entry| matches!(entry, yi_types::entry::Entry::Compaction { .. }))
-        else {
-            return;
-        };
-        let window = details
-            .as_ref()
-            .and_then(|value| {
-                serde_json::from_value::<yi_types::compaction::CompactionDetails>(value.clone())
-                    .ok()
-            })
-            .and_then(|details| details.window);
-        if let Some(ids) = window {
-            *lock_window(&self.window) = Window::restore(ids.number, ids);
+        let latest = entries.iter().rev().find_map(|entry| match entry {
+            yi_types::entry::Entry::Compaction {
+                retained_tail,
+                details,
+                ..
+            } => Some((retained_tail, details)),
+            _ => None,
+        });
+        let mut window = lock_window(&self.window);
+        match latest {
+            None => *window = Window::new_initial(window.ids().first),
+            Some((_, details)) => {
+                let ids = details
+                    .as_ref()
+                    .and_then(|value| {
+                        serde_json::from_value::<yi_types::compaction::CompactionDetails>(
+                            value.clone(),
+                        )
+                        .ok()
+                    })
+                    .and_then(|details| details.window);
+                if let Some(ids) = ids {
+                    *window = Window::restore(ids.number, ids);
+                }
+            }
         }
+        drop(window);
         if let Ok(mut slot) = self.stale.lock() {
-            *slot = retained_tail
-                .iter()
-                .rfind(|message| reply_tokens(message).is_some())
-                .cloned();
+            *slot = latest.and_then(|(tail, _)| {
+                tail.iter()
+                    .rfind(|message| reply_tokens(message).is_some())
+                    .cloned()
+            });
         }
     }
 
