@@ -256,6 +256,10 @@ fn keys_beside_the_token_stores_reach_no_read_grep_or_glob() -> TestResult {
         r#"{"sessions":{"gh":{"name":"gh","spec":{"command":"npx","args":["-y","@modelcontextprotocol/server-github"],"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"FAKE ENV KEY MARKER"}},"state":"live","createdAt":1,"updatedAt":1}}}"#,
     )?;
     fs::write(
+        home.join(".yi/mcp.json"),
+        r#"{"mcpServers":{"gh":{"command":"npx","env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"FAKE ENV KEY MARKER"}}}}"#,
+    )?;
+    fs::write(
         home.join(".yi/oauth/acme.json"),
         r#"{"clientSecret":"FAKE OAUTH KEY MARKER"}"#,
     )?;
@@ -275,6 +279,8 @@ fn keys_beside_the_token_stores_reach_no_read_grep_or_glob() -> TestResult {
         "h/.yi/mcp/sessions.json",
         "s.json",
         "hard.json",
+        "~/.yi/mcp.json",
+        "h/.yi/mcp.json",
         "~/.yi/oauth/acme.json",
         "h/.yi/oauth/acme.json",
     ];

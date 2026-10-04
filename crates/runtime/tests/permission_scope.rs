@@ -635,6 +635,7 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
     std::fs::write(home.join(".yi/providers/tokens/openai.json"), secret)?;
     std::fs::write(home.join(".yi/mcp/tokens/default_mcp.json"), secret)?;
     std::fs::write(home.join(".yi/mcp/sessions.json"), secret)?;
+    std::fs::write(home.join(".yi/mcp.json"), secret)?;
     std::fs::write(home.join("notes.md"), "ordinary\n")?;
     symlink(home.join(".ssh"), elsewhere.join("link"))?;
     symlink(&home, elsewhere.join("h"))?;
@@ -669,6 +670,7 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
         "~/.yi/mcp/tokens/default_mcp.json",
         "~/.yi/mcp/sessions.json",
         "h/.yi/mcp/sessions.json",
+        "~/.yi/mcp.json",
         "link/id_rsa",
         "link",
         "h/.ssh/id_rsa",
