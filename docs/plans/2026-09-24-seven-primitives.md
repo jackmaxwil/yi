@@ -5,7 +5,7 @@ status:  PROPOSAL, revision 2 (2026-09-26). Revision 1 (2026-09-24, #504) consol
          the 2026-09-23/24 design sessions: the hive revision, channels, the pressure
          test, and eight rounds of owner decisions. Revision 2 answers an adversarial
          review (§17) and the owner's four decisions on it. Extends
-         docs/plans/2026-09-01-hive.md. Nothing lands without its D-rows (§15). The
+         docs/archive/plans/2026-09-01-hive.md. Nothing lands without its D-rows (§15). The
          owner's words are quoted verbatim, never paraphrased: §6 says why. Method:
          the yi-ideate skill.
 tree:    main @ 36cd8eaa (0.319.0, last decision row D244). Every ✓ was re-read there.
@@ -257,8 +257,7 @@ A node is a card:
   `clamp(cores−1,1,8)` becomes that machine's default slot count.
 - **One computer is a hive of one.** The card is computed locally, and nothing else
   changes for a single-machine install.
-- **Placement across machines is ⏸.** It waits for a second machine, and so does its
-  default (§8.4).
+- **Placement across machines is not built** (§8.1).
 - **Sleep.** A laptop card has `always_on: false`, so a scheduled tick can fall while the
   lid is shut. The catch-up rule is data on the clock subscription (§5.2). The default is
   to fire once on wake, the way anacron does.
@@ -627,7 +626,8 @@ The model sizes the class, and the rules bound it. The shares are data the host 
 ### 8.1 Isolation
 
 `isolation="worktree"` ✓ grows into a placement URL ✚. `container:rust:1.91` comes first,
-on the same machine. VMs and cloud come later (⏸).
+on the same machine. Placement on another machine, a VM or a cloud is not built and is
+out of scope (YI_DESIGN 1.2); the hive plan is archived in docs/archive/plans/.
 
 ### 8.2 Placement drivers ✚
 
@@ -636,28 +636,18 @@ A placement driver is an executable per isolation kind, with two verbs, `up` and
 - **Result out:** a diff with its gate verdict. `merge_worktree` ✓ generalizes to
   `merge(child)`.
 
-On one machine the transport is a Unix socket. Across machines it is tailcat first (⏸).
+On one machine the transport is a Unix socket.
 
 ### 8.3 Reads
 
 Reads are open within one owner by default (D164). Walls narrow them per child, but only
 `deny_url` walls `kernel://` and `family://` (§3.7).
 
-### 8.4 Across machines (⏸, open)
-
-The default placement once a second machine exists is still open:
-
-| default | for | against |
-| --- | --- | --- |
-| local unless told | predictable, offline, private, no workspace shipping | a closed lid pauses the work |
-| nearest strong node | survives sleep, faster, scales | remote without being asked; uncommitted edits must ship; network dependence; a priced node means surprise cost |
-| placement follows lifetime and capacity | attended work stays; unattended or oversized work moves to an always-on free node; a priced node only when named | one more rule to explain |
-
 ## 9. Scale
 
 ### 9.1 The claim protocol (⏸, a new mechanism)
 
-Task queues, merge queues, re-dispatch and partition all need the same thing, and none of
+Task queues, merge queues and re-dispatch all need the same thing, and none of
 it exists:
 
 | piece | why | today |
@@ -770,8 +760,8 @@ Each stage has its own demo and gate, and each gets a D-row and an issue when it
 | **3. Todo merge** | one type, migration, before/after fixtures | old sessions and plans load unchanged | the schema fixtures before and after |
 | **4. Channels** | the `clock` adapter; subscriptions creating or unblocking todos; `BlockedOn::Channel`; overlap and catch-up; kill switch; spend alerts | the 9 a.m. workflow on an awake laptop, and a tick missed during sleep that fires once on wake; a plan that waits for approval at $0 | the eight `mbx-*` trials stay green; the heartbeat store retires |
 | **5. Node admission and containers** | the node card for one computer; `container:` placement | eight container children on one laptop, the ninth waiting for a slot | the result and merge path are identical to worktrees |
-| **6. Adapters** | `exec`, `file`, `github`, `aws+sqs` | CI red → todo → verified fix | the probe ladder retires |
-| **7. Claim protocol and many machines** ⏸ | epochs, fences, expiry, `@node`, `Wire`, registry, partition | close the lid and the work continues on the forge | the hive plan's O1 drive script |
+| **6. Adapters** | `exec`, `file`, `github`, `forgejo` | CI red → todo → verified fix | the probe ladder retires |
+| **7. Claim protocol** ⏸ | epochs, fences, expiry (§9.1) | two workers never start one todo | the archived hive plan's O1 drive script |
 
 ### 14.1 Stage 0 result, 2026-09-27
 
@@ -882,7 +872,7 @@ How revision 2 reconciles the two sets:
 **Open:**
 1. Previews on trivial todos. The owner said "always", and the review would bind previews to
    intake classes.
-2. The default placement once there is a second machine (§8.4).
+2. The default placement once there is a second machine (not built, §8.1).
 3. Whether background todos wait for AC power on battery.
 4. Whether the missed-tick default stays "once on wake" for every schedule.
 
