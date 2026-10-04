@@ -45,7 +45,7 @@ impl SpendAlarm {
                 if *owner != self.session {
                     return None;
                 }
-                // A respawn restarts the child's count; what the last incarnation spent stays spent.
+                // A respawn restarts the child's count; the last incarnation's spend stays spent.
                 let grown = update
                     .token_count
                     .checked_sub(*last)
@@ -70,10 +70,15 @@ impl SpendAlarm {
         ))
     }
 
-    /// Starts from a session ledger's total, which holds its finished children's usage; the
-    /// crossings below it were announced when made.
+    /// Invariant: late, never early, but for one window: a child ending after a switch or failing
+    /// reaches no ledger a re-attach reads; one recorded mid-re-attach counts its last step twice.
     pub fn seed(&mut self, session: &str, total: u64) {
-        (self.total, self.announced) = (total, total / self.every);
+        let floor = if self.session == session {
+            self.announced
+        } else {
+            0
+        };
+        (self.total, self.announced) = (total, floor.max(total / self.every));
         self.session = session.to_owned();
     }
 }
