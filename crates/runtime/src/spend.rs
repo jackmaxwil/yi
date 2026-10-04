@@ -7,13 +7,16 @@ use yi_types::record::LaneRecord;
 
 use crate::AgentSession;
 
-/// Invariant: every model call a session pays for leaves one `Usage` record on the main lane,
-/// so the stored cost total (a fold of the ledger) cannot undercount a side call.
+/// Invariant: a side call that reports spend leaves one `Usage` record on the main lane, so the
+/// stored cost total cannot undercount it; a known zero leaves no row.
 pub(crate) fn book_side_call(
     store: &yi_session::SharedSession,
     cause: &str,
     usage: Usage,
 ) -> Result<(), yi_session::SessionError> {
+    if usage == Usage::zero() {
+        return Ok(());
+    }
     let mut session = yi_session::lock_session(store);
     let id = session.next_id();
     session.append_record(LaneRecord::Usage {

@@ -238,6 +238,33 @@ async fn a_compaction_call_is_booked_in_the_session_cost_total() -> Result<(), B
     Ok(())
 }
 
+/// Dies with a billed attempt dropped when its reply had no text: the summarize closure
+/// turned the empty answer into an error before anything read its usage.
+#[tokio::test]
+async fn an_empty_compaction_reply_is_still_booked() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-empty-cost")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-empty-cost");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-empty-cost".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
+        crate::support::priced_reply("", 0.25),
+        crate::support::priced_reply("", 0.25),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+    let before = yi_session::lock_session(&store).stats().cost_total;
+    session.compact_now().await.ok();
+    let after = yi_session::lock_session(&store).stats().cost_total;
+    assert!((after - before - 0.5).abs() < 1e-9, "{before} -> {after}");
+    Ok(())
+}
+
 /// The summarizer ran but the entry never reached disk: the live history must stay what a
 /// resume loads, the model must read why at the next request, and a disk that stays broken
 /// must not buy another summarizer call at every boundary.
