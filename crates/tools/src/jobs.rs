@@ -441,6 +441,9 @@ fn start(
             }
         };
         process.current_dir(&dir);
+        for (_, variable) in yi_types::PROVIDER_KEY_VARS {
+            process.env_remove(variable);
+        }
         let capture = run_captured_live(
             process,
             None,

@@ -532,7 +532,9 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
             }
             None => {
                 assert_eq!(outcome.containment, Containment::Uncontained, "{text}");
-                assert!(text.contains("is protected"), "{text}");
+                // The session store is a key file now (#906), so the belt names it first.
+                let said = "approving runs this one call outside the sandbox";
+                assert!(text.contains(said), "{text}");
             }
         }
     }
@@ -632,6 +634,7 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
     std::fs::write(home.join(".ssh/id_rsa"), secret)?;
     std::fs::write(home.join(".yi/providers/tokens/openai.json"), secret)?;
     std::fs::write(home.join(".yi/mcp/tokens/default_mcp.json"), secret)?;
+    std::fs::write(home.join(".yi/mcp/sessions.json"), secret)?;
     std::fs::write(home.join("notes.md"), "ordinary\n")?;
     symlink(home.join(".ssh"), elsewhere.join("link"))?;
     symlink(&home, elsewhere.join("h"))?;
@@ -664,6 +667,8 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
         "~/.yi/providers/tokens/openai.json",
         "~/.yi/providers/tokens",
         "~/.yi/mcp/tokens/default_mcp.json",
+        "~/.yi/mcp/sessions.json",
+        "h/.yi/mcp/sessions.json",
         "link/id_rsa",
         "link",
         "h/.ssh/id_rsa",

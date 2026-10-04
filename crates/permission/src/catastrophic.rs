@@ -276,10 +276,18 @@ pub fn credential_stores(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Keys a contained `yi mcp` reads, so no sandbox profile hides them: the MCP session store keeps
+/// each stdio server's `env` (#906). The read gate and the bash read belt refuse them.
+const CONTAINED_KEY_FILES: [&str; 1] = [".yi/mcp/sessions.json"];
+
 fn stores(context: &CatastrophicContext) -> Vec<PathBuf> {
-    (context.home_dir.as_deref())
-        .map(credential_stores)
-        .unwrap_or_default()
+    let Some(home) = context.home_dir.as_deref() else {
+        return Vec::new();
+    };
+    let files = CONTAINED_KEY_FILES
+        .iter()
+        .map(|sub| lexical_normalize(&home.join(sub)));
+    credential_stores(home).into_iter().chain(files).collect()
 }
 
 /// Directories that hold users' key stores whatever HOME is, refused to a read's walk.

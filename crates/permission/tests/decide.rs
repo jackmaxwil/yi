@@ -359,6 +359,13 @@ fn a_credential_read_is_named_before_it_happens() -> TestResult {
     assert!(command_reads_credentials("cat $HOME/.gnupg/secring.gpg", &context).is_some());
     let token = "cat ~/.yi/providers/tokens/openai.json";
     assert!(command_reads_credentials(token, &context).is_some(), "#887");
+    // The MCP session store keeps each stdio server's `env` (#906).
+    for command in ["cat ~/.yi/mcp/sessions.json", "cat ~/.yi/mcp/s*.json"] {
+        assert!(
+            command_reads_credentials(command, &context).is_some(),
+            "{command}"
+        );
+    }
     assert!(command_reads_credentials("cat /etc/hosts", &context).is_none());
     assert!(command_reads_credentials("cat notes.md", &context).is_none());
     // The flag is not a path, and the verb is not an argument.

@@ -5,6 +5,16 @@
 /// refuses a name containing one, and a sandboxed process inherits none ending in one (D324).
 pub const SECRET_NAME_MARKS: [&str; 5] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"];
 
+/// Each provider's key variable, by provider name. Bash and the kernel inherit none, contained or
+/// not, so neither a command nor a cell prints yi's own key (#906).
+pub const PROVIDER_KEY_VARS: [(&str, &str); 5] = [
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("openai", "OPENAI_API_KEY"),
+    ("openrouter", "OPENROUTER_API_KEY"),
+    ("google", "GEMINI_API_KEY"),
+    ("laya", "LAYA_API_KEY"),
+];
+
 pub mod acp;
 pub mod advisor;
 pub mod backoff;
