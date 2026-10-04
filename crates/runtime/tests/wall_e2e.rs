@@ -1142,6 +1142,43 @@ async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
     Ok(())
 }
 
+/// #1003: a user's gate rule that names a command stops a heartbeat's `exec://` source as it
+/// stops the same command armed from a todo; a command the rule does not name still arms.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_rule_stops_a_heartbeat_source_it_names() -> TestResult {
+    let root = Scratch::new("yi-rule-heartbeat")?;
+    let project = root.join("project");
+    std::fs::create_dir_all(root.join("home/.yi/rules"))?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        root.join("home/.yi/rules/no-denied.md"),
+        "---\ntrigger: denied-marker\nscope: tool:bash\nmode: gate\n---\nNever run denied-marker.\n",
+    )?;
+    let yolo = yi_permission::PermissionMode::Yolo;
+    let (session, _) = wired_child(&root, &project, Wall::default(), yolo, None);
+    let heartbeats = session.heartbeat_service().ok_or("no heartbeats")?;
+    heartbeats.bind_session("juror".to_owned());
+    let mut host = yi_runtime::HostRegistry::default();
+    heartbeats.register(&mut host);
+    for (command, denied) in [
+        (format!("touch {}/denied-marker", project.display()), true),
+        (format!("touch {}/other", project.display()), false),
+    ] {
+        let payload = serde_json::json!({"address": format!("exec://{command}?every=30s"), "prompt": "watch"});
+        let payload = payload.as_object().cloned().unwrap_or_default();
+        let made =
+            yi_kernel::client::HostHandlers::dispatch(&host, "rlm_heartbeat.create", payload)
+                .ok_or("rlm_heartbeat.create is not registered")?
+                .await;
+        let refused = made
+            .as_ref()
+            .is_err_and(|text| text.contains("Denied by rule"));
+        assert_eq!(refused, denied, "{command}: {made:?}");
+        assert!(!project.join("denied-marker").exists());
+    }
+    Ok(())
+}
+
 /// #1001: with no Seatbelt (Linux) a walled session's kernel and its `bash()` jobs would run with
 /// no profile, so a cell would meet no wall at all; it never boots, and the cell says why.
 #[tokio::test]

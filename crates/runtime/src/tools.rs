@@ -89,14 +89,7 @@ async fn gate_armed(
     walled: (&[PathBuf], &[PathBuf]),
     context: &ToolContext,
 ) -> Option<String> {
-    let json = serde_json::to_string(&bash(command)).unwrap_or_default();
-    if let Some(denial) = rules
-        .as_ref()
-        .and_then(|rules| rules.check_tool("bash", &json))
-    {
-        return Some(denial);
-    }
-    let refused = host_wall(command, wall, walled, &context.cwd);
+    let refused = host_wall(command, rules.as_deref(), wall, walled, &context.cwd);
     if refused.is_some() {
         return refused;
     }
@@ -107,15 +100,39 @@ async fn gate_armed(
         .unwrap_or_else(|join_error| Some(format!("permission check failed: {join_error}")))
 }
 
-/// Invariant: a command run on the host meets the wall by its text alone: the wall's own lists,
-/// and its walled roots save a spare (#1001).
+/// The gate of a heartbeat's `exec://` source: it runs on the host, so it meets what an armed
+/// todo command does. The spares are read per call: a child's store attaches after its wiring.
+pub(crate) fn heartbeat_gate(
+    wiring: &crate::wiring::RuntimeWiring,
+    rules: Arc<dyn Fn() -> Option<Arc<crate::rules::RuleEngine>> + Send + Sync>,
+    own: Option<crate::wiring::OwnPathsFn>,
+) -> Arc<crate::schedule::GateFn> {
+    let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
+    let (wall, cwd) = (wiring.wall.clone(), wiring.cwd.clone());
+    let spills = default_spill_root();
+    let roots = spill_roots_and_stores(spills.as_deref(), broker.as_deref());
+    let roots: Vec<PathBuf> = roots.into_iter().filter(|_| !wall.is_empty()).collect();
+    Arc::new(move |command: &str| {
+        let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
+        let rules = rules();
+        host_wall(command, rules.as_deref(), &wall, (&roots, &spared), &cwd)
+            .or_else(|| refuse_armed(command, contained, broker.as_deref(), ""))
+    })
+}
+
+/// Invariant: a command run on the host meets the user's gate rules, then the wall by its text
+/// alone: the wall's own lists, and its walled roots save a spare (#1001).
 pub(crate) fn host_wall(
     command: &str,
+    rules: Option<&crate::rules::RuleEngine>,
     wall: &crate::wall::Wall,
     (roots, spared): (&[PathBuf], &[PathBuf]),
     cwd: &std::path::Path,
 ) -> Option<String> {
-    let walled = wall.check("bash", yi_tools::ToolKind::Exec, &bash(command), cwd);
+    let args = bash(command);
+    let json = serde_json::to_string(&args).unwrap_or_default();
+    let walled = (rules.and_then(|rules| rules.check_tool("bash", &json)))
+        .or_else(|| wall.check("bash", yi_tools::ToolKind::Exec, &args, cwd));
     walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
 

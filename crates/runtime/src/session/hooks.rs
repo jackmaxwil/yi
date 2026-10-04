@@ -49,6 +49,14 @@ impl AgentSession {
         Arc::new(move |event| dispatch_ext(&shared, &event))
     }
 
+    /// Read per call: the engine attaches after the heartbeat service is wired.
+    pub fn rules_handle(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<Arc<crate::rules::RuleEngine>> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || shared.rules.lock().ok().and_then(|slot| slot.clone()))
+    }
+
     pub fn store_handle(
         &self,
     ) -> std::sync::Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync> {
