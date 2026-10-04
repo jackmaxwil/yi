@@ -29,7 +29,7 @@ impl ImageDefect {
                 "If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit."
             }
             Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => {
-                "If its source file is still on disk, re-encode it in ipython: `from PIL import Image; Image.open(path).convert('RGB').save(path + '.jpg'); print(await attach_image(path + '.jpg'))`."
+                "If its source file is still on disk, re-encode it in ipython: `from PIL import Image; Image.open(path).convert('RGB').save(f'{path}.jpg'); print(await attach_image(f'{path}.jpg'))`."
             }
         }
     }
