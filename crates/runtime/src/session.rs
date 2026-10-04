@@ -158,6 +158,7 @@ pub struct AgentSession {
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
     wall: Mutex<crate::wall::Wall>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
+    on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
 
 impl AgentSession {
@@ -215,6 +216,7 @@ impl AgentSession {
             memory: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
             kernel: Arc::new(Mutex::new(None)),
+            on_attach: Mutex::new(Vec::new()),
         }
     }
 
@@ -689,33 +691,8 @@ impl AgentSession {
         if let (Some(telemetry), Some((file, id))) = (self.telemetry(), sidecar) {
             telemetry.bind(&file, &id);
         }
-        self.restore_settings(&entries);
+        self.restore_from_ledger(&entries);
         Ok(count)
-    }
-
-    fn restore_settings(&self, entries: &[Entry]) {
-        let mut effort = None;
-        for entry in entries {
-            match entry {
-                Entry::ModelChange {
-                    provider, model_id, ..
-                } => {
-                    if let Some(model) = crate::provider::resolve_model(provider, model_id)
-                        && let Ok(mut slot) = self.shared.model.lock()
-                    {
-                        *slot = model;
-                    }
-                }
-                Entry::ThinkingLevelChange { thinking_level, .. } => {
-                    effort = thinking_level.parse().ok();
-                }
-                _ => {}
-            }
-        }
-        let restored = self.model().clamp_effort(effort.unwrap_or(self.effort()));
-        if let Ok(mut slot) = self.shared.effort.lock() {
-            *slot = restored;
-        }
     }
 
     pub fn store(&self) -> Option<yi_session::SharedSession> {

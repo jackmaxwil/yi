@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::sync::{Arc, Mutex};
 
 use yi_types::event::AgentEvent;
 use yi_types::message::AgentMessage;
@@ -65,10 +66,24 @@ impl SpendAlarm {
             reached.saturating_add(1).saturating_mul(every),
         ))
     }
+
+    /// Starts from a resumed ledger's total; the crossings below it were announced when made.
+    pub fn seed(&mut self, total: u64) {
+        (self.own, self.announced) = (total, total / self.every);
+        self.children.clear();
+    }
 }
 
 /// Queues each alert as a shown notice, never a wake: an alert must not buy another turn.
 pub fn attach(session: &AgentSession, every: NonZeroU64) {
-    let mut alarm = SpendAlarm::new(every);
-    session.show_notices(SPEND_ALERT_TYPE, move |event| alarm.observe(event));
+    let alarm = Arc::new(Mutex::new(SpendAlarm::new(every)));
+    let resumed = Arc::clone(&alarm);
+    session.on_attach(move |_, stats| {
+        if let Ok(mut alarm) = resumed.lock() {
+            alarm.seed(u64::try_from(stats.total_tokens).unwrap_or(0));
+        }
+    });
+    session.show_notices(SPEND_ALERT_TYPE, move |event| {
+        alarm.lock().ok().and_then(|mut alarm| alarm.observe(event))
+    });
 }

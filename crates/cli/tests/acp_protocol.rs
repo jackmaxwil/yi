@@ -893,6 +893,54 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     client.finish()
 }
 
+/// A resumed session's status row starts from the ledger, not $0: the replay carries the
+/// stored totals, a reply's cost and a finished child's usage record alike.
+#[test]
+fn resume_replays_the_ledgers_spend_with_child_usage() -> TestResult {
+    let dir = temp_dir("replay-spend")?;
+    let reply = json!({"role": "assistant", "content": [{"type": "text", "text": "priced"}],
+        "api": "faux", "provider": "faux", "model": "faux-1", "stopReason": "stop", "timestamp": 0,
+        "usage": {"input": 300, "output": 20, "cacheRead": 9_700, "cacheWrite": 0,
+            "totalTokens": 10_020, "cost": {"input": 0.04, "output": 0.03, "cacheRead": 0.03,
+            "cacheWrite": 0, "total": 0.1}}});
+    let script = dir.join("script.jsonl");
+    std::fs::write(&script, reply.to_string())?;
+    let script = script.display().to_string();
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    prompt_until_idle(&mut client, "3", &session_id, "price this")?;
+    client.request("4", "session/close", json!({"sessionId": session_id}))?;
+    {
+        use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
+        let sessions = dir.join("sessions");
+        let mut repo = JsonlRepo::new(sessions, dir.display().to_string());
+        let store = repo.open(&session_id)?;
+        let mut session = lock_session(&store);
+        let id = session.next_id();
+        session.append_record(serde_json::from_value(json!({"type": "usage", "id": id,
+            "lane": "main", "cause": "child_usage_attributed", "seq": 0, "timestamp": 0,
+            "usage": {"input": 100, "output": 10, "cacheRead": 0, "cacheWrite": 0,
+                "totalTokens": 110, "cost": {"input": 0.04, "output": 0.01, "cacheRead": 0,
+                "cacheWrite": 0, "total": 0.05}}}))?)?;
+    }
+    let frames = client.request(
+        "5",
+        "session/resume",
+        json!({"sessionId": session_id, "cwd": dir.display().to_string(), "replayFrom": 0}),
+    )?;
+    let replays = updates_of(&frames, "_yi/replay");
+    let stats = &replays.last().ok_or("no replay")?["params"]["update"]["stats"];
+    let cost = stats["costTotal"]
+        .as_f64()
+        .ok_or_else(|| format!("{stats}"))?;
+    assert!((cost - 0.15).abs() < 1e-9, "{stats}");
+    assert_eq!(
+        (&stats["cachedTokens"], &stats["uncachedTokens"]),
+        (&json!(9_700), &json!(400))
+    );
+    client.finish()
+}
+
 /// `replayUpdates: false` drops the standard updates a yi client would decode twice; the
 /// default resume keeps them for generic ACP clients.
 #[test]

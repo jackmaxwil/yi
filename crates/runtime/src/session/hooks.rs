@@ -3,14 +3,18 @@
 
 use std::sync::Arc;
 
+use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::{Effort, Model};
+use yi_types::wire::SessionStats;
 
 use super::run::{self, Queued};
 use super::{
     AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, host_text,
     store_of,
 };
+
+pub(super) type LedgerFold = dyn FnMut(&[Entry], &SessionStats) + Send;
 
 pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
     let model = shared
@@ -27,6 +31,47 @@ pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
 }
 
 impl AgentSession {
+    /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
+    /// `fold` runs over every store attached after this call, before its first request.
+    pub fn on_attach(&self, fold: impl FnMut(&[Entry], &SessionStats) + Send + 'static) {
+        if let Ok(mut folds) = self.on_attach.lock() {
+            folds.push(Box::new(fold));
+        }
+    }
+
+    pub(super) fn restore_from_ledger(&self, entries: &[Entry]) {
+        let mut effort = None;
+        for entry in entries {
+            match entry {
+                Entry::ModelChange {
+                    provider, model_id, ..
+                } => {
+                    if let Some(model) = crate::provider::resolve_model(provider, model_id)
+                        && let Ok(mut slot) = self.shared.model.lock()
+                    {
+                        *slot = model;
+                    }
+                }
+                Entry::ThinkingLevelChange { thinking_level, .. } => {
+                    effort = thinking_level.parse().ok();
+                }
+                _ => {}
+            }
+        }
+        let restored = self.model().clamp_effort(effort.unwrap_or(self.effort()));
+        if let Ok(mut slot) = self.shared.effort.lock() {
+            *slot = restored;
+        }
+        let stats = store_of(&self.shared).map_or_else(SessionStats::zero, |store| {
+            yi_session::lock_session(&store).stats()
+        });
+        if let Ok(mut folds) = self.on_attach.lock() {
+            for fold in folds.iter_mut() {
+                fold(entries, &stats);
+            }
+        }
+    }
+
     pub fn abort(&self) {
         self.shared.signal.fire();
     }
