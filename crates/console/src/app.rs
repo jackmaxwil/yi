@@ -1109,10 +1109,7 @@ impl App {
             return self.chat_event(CtEvent::Key(key));
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            let drafting = self
-                .focused_chat()
-                .is_some_and(|chat| !chat.app.composer_text().is_empty());
-            if on_chat && (drafting || self.popup_open()) {
+            if on_chat && self.chat_takes_ctrl_c() {
                 return self.chat_event(CtEvent::Key(key));
             }
             let now = Instant::now();

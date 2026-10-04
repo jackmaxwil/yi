@@ -305,3 +305,15 @@ pub(crate) fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::Unbounded
         _ => app.last_esc_at = Some(now),
     }
 }
+
+impl App {
+    /// An open approval never takes it (closing it rejects the tool call); a closed box takes it
+    /// when it holds any text, the one predicate `Action::Quit` clears on.
+    pub fn takes_ctrl_c(&self) -> bool {
+        match &self.bottom {
+            Some(Bottom::Approval(..)) => false,
+            Some(_) => true,
+            None => !self.composer.textarea.is_empty(),
+        }
+    }
+}

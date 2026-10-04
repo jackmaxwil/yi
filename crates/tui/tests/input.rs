@@ -147,3 +147,26 @@ fn ctrl_c_clears_a_whitespace_only_draft_without_aborting() -> TestResult {
     assert_eq!(sent(&mut rx), ["abort"], "an empty box still aborts");
     Ok(())
 }
+
+/// Dies with one injected message removing every queued row of the same text: the row count
+/// must fall by one, since each queued steer is its own message in the loop.
+#[test]
+fn an_injected_message_leaves_one_of_two_identical_queued_rows() -> TestResult {
+    let mut app = app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.reduce_agent(AgentEvent::AgentStart);
+    for _ in 0..2 {
+        type_text(&mut app, &tx, "go on");
+        press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    }
+    assert_eq!(sent(&mut rx), ["steer go on", "steer go on"]);
+    app.reduce_agent(injected("go on"));
+    let rows = live_rows(&mut app)?;
+    assert!(has_row(&rows, "Steering · 1"), "{rows:#?}");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let rows = live_rows(&mut app)?;
+    assert!(!has_row(&rows, "Steering"), "{rows:#?}");
+    Ok(())
+}

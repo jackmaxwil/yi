@@ -146,3 +146,16 @@ fn the_roster_marks_each_child_in_the_status_vocabulary() -> TestResult {
     }
     Ok(())
 }
+
+/// Dies with ctrl+c ignored by the agents popup: the key that cancels everywhere else left it
+/// open, and an unarmed `x` row stayed unarmed.
+#[test]
+fn ctrl_c_closes_the_agents_popup_without_stopping_a_row() {
+    let mut popup = AgentsPopup::new(vec![row("scout", AgentState::Running, 1, None)], 200_000);
+    let ctrl_c = SingleKey {
+        ctrl: true,
+        ..key(KeyCodeValue::Char('c'))
+    };
+    assert!(matches!(popup.handle_key(&ctrl_c), PopupResult::Close));
+    assert_eq!(popup.stop, None);
+}
