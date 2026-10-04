@@ -9,6 +9,39 @@ struct Cell {
     width: usize,
 }
 
+/// One row: a line wider than `width` keeps what fits before a closing `…`.
+pub fn fit(line: Line<'static>, width: usize) -> Line<'static> {
+    let cells = flatten(&line);
+    if cells.iter().map(|cell| cell.width).sum::<usize>() <= width {
+        return line;
+    }
+    let budget = width.saturating_sub(1);
+    let mut used = 0usize;
+    let kept = cells
+        .iter()
+        .take_while(|cell| {
+            used = used.saturating_add(cell.width);
+            used <= budget
+        })
+        .count();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for cell in cells.iter().take(kept) {
+        match spans.last_mut() {
+            Some(span) if span.style == cell.style => span.content.to_mut().push(cell.ch),
+            _ => spans.push(Span::styled(cell.ch.to_string(), cell.style)),
+        }
+    }
+    let style = cells
+        .get(kept)
+        .map_or_else(Style::default, |cell| cell.style);
+    spans.push(Span::styled("…", style));
+    Line {
+        spans,
+        style: line.style,
+        alignment: line.alignment,
+    }
+}
+
 fn flatten(line: &Line<'_>) -> Vec<Cell> {
     let mut cells = Vec::new();
     for span in &line.spans {
