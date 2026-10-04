@@ -216,20 +216,48 @@ fn convert_messages(messages: &[AgentMessage]) -> (Vec<Value>, Vec<Option<usize>
     (params, origins)
 }
 
-fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
+/// Anthropic's documented caps: strict tools in one request carry at most 20 tools,
+/// 24 optional and 16 union-typed properties together; past them a tool goes loose, in order.
+const STRICT_CAPS: (usize, usize, usize) = (20, 24, 16);
+
+fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
+    let mut spent = (0usize, 0usize, 0usize);
     tools
         .iter()
         .map(|tool| {
             let schema = &tool.parameters;
-            json!({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": {
-                    "type": "object",
-                    "properties": schema.get("properties").cloned().unwrap_or_else(|| json!({})),
-                    "required": schema.get("required").cloned().unwrap_or_else(|| json!([])),
-                },
-            })
+            let closed = (strict.then(|| crate::schema::strict_tool(schema, false)))
+                .flatten()
+                .filter(|closed| {
+                    let (optional, unions) = crate::schema::weight(closed);
+                    let next = (
+                        spent.0.saturating_add(1),
+                        spent.1.saturating_add(optional),
+                        spent.2.saturating_add(unions),
+                    );
+                    let fits = next.0 <= STRICT_CAPS.0 && next.1 <= STRICT_CAPS.1 && next.2 <= STRICT_CAPS.2;
+                    if fits {
+                        spent = next;
+                    }
+                    fits
+                });
+            match closed {
+                Some(closed) => json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": closed,
+                    "strict": true,
+                }),
+                None => json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": schema.get("properties").cloned().unwrap_or_else(|| json!({})),
+                        "required": schema.get("required").cloned().unwrap_or_else(|| json!([])),
+                    },
+                }),
+            }
         })
         .collect()
 }
@@ -285,7 +313,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
-        params["tools"] = Value::Array(convert_tools(tools));
+        params["tools"] = Value::Array(convert_tools(tools, crate::compat::strict_tools(model)));
     }
     if let Some(choice) = &context.tool_choice {
         params["tool_choice"] = convert_tool_choice(choice);
