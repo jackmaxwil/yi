@@ -49,11 +49,32 @@ impl AgentSession {
         Arc::new(move |event| dispatch_ext(&shared, &event))
     }
 
+    /// Read per call: the engine attaches after the heartbeat service is wired.
+    pub fn rules_handle(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<Arc<crate::rules::RuleEngine>> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || shared.rules.lock().ok().and_then(|slot| slot.clone()))
+    }
+
     pub fn store_handle(
         &self,
     ) -> std::sync::Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         std::sync::Arc::new(move || store_of(&shared))
+    }
+
+    /// The environment block as the host would render it now, for checks that count its facts.
+    pub fn environment_handle(&self) -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            let hook = shared
+                .environment
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())?;
+            hook()
+        })
     }
 
     /// Incident: snapshotting these left `rlm.run` and `model.info` on the
@@ -83,7 +104,7 @@ impl AgentSession {
                 run::enqueue(&parts, Queued::new(message, true, None));
             }
             yi_types::schedule::DeliveryMode::FollowUp => {
-                run::follow(&parts, message);
+                run::follow(&parts, message, None);
             }
         })
     }
@@ -157,7 +178,7 @@ impl AgentSession {
                     run::push(&mut queue, Queued::new(message, false, None));
                 }
             } else if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(message);
+                queue.push(Queued::new(message, false, None));
             }
         })
     }
@@ -275,9 +296,10 @@ impl AgentSession {
     }
 
     /// Job reports (§4.3) start a turn on an idle session; false once retired, ending the loop.
-    pub fn job_report_hook(&self) -> Arc<dyn Fn(Vec<String>) -> bool + Send + Sync> {
+    /// Each carries its `news`: a report already read by a wait on the job is dropped unread.
+    pub fn job_report_hook(&self) -> Arc<super::run::JobReportFn> {
         let parts = self.parts();
-        Arc::new(move |reports: Vec<String>| {
+        Arc::new(move |reports: Vec<(String, StillNews)>| {
             if parts
                 .shared
                 .retired
@@ -285,8 +307,12 @@ impl AgentSession {
             {
                 return false;
             }
-            for text in reports {
-                run::follow(&parts, host_text(yi_types::message::HostSource::Job, &text));
+            for (text, news) in reports {
+                run::follow(
+                    &parts,
+                    host_text(yi_types::message::HostSource::Job, &text),
+                    Some(news),
+                );
             }
             true
         })

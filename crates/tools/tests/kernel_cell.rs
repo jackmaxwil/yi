@@ -41,6 +41,10 @@ impl KernelBridge for NoKernel {
     }
 }
 
+/// Pillow 12.3's 1x1 RGB PNG.
+const PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
+
 /// Incident: `attach_image` promised the model the picture, which reached only `details`.
 /// A type or size the provider refuses would sit in history and fail every later request.
 /// Its bytes are stored once: the details copy doubled every session row and event.
@@ -48,7 +52,7 @@ impl KernelBridge for NoKernel {
 fn an_attached_image_is_in_the_models_view() -> TestResult {
     let result: yi_types::kernel::ExecuteResult = serde_json::from_value(serde_json::json!({
         "stdout": "attached", "stderr": "", "status": "ok", "durationMs": 1,
-        "attachments": [{"mime_type": "image/png", "data": "iVBORw0KGgo="},
+        "attachments": [{"mime_type": "image/png", "data": PNG},
                         {"mime_type": "text/csv", "data": "YSxi"},
                         {"mime_type": "image/svg+xml", "data": "PHN2Zy8+"},
                         {"mime_type": "image/png", "data": "A".repeat(10_000_004)}],
@@ -60,7 +64,7 @@ fn an_attached_image_is_in_the_models_view() -> TestResult {
     };
     let stored = yi_tools::cell_output("x", outcome).result;
     let wire = serde_json::to_string(&stored)?;
-    assert_eq!(wire.matches("iVBORw0KGgo=").count(), 1, "{wire}");
+    assert_eq!(wire.matches(PNG).count(), 1, "{wire}");
     assert_eq!(wire.matches("YSxi").count(), 1, "{wire}");
     let content = stored.content;
     let text: String = content
@@ -71,7 +75,11 @@ fn an_attached_image_is_in_the_models_view() -> TestResult {
         })
         .collect();
     assert!(text.contains("image/svg+xml"), "{text}");
-    assert!(text.contains("10000004"), "{text}");
+    assert!(
+        text.contains("[image/png attachment of 10000004 base64 chars not sent to the model: the image is 10000004 base64 chars, over MAX_IMAGE_CHARS 10000000. If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit.]"),
+        "{text}"
+    );
+    assert!(text.contains("the image is not png, jpeg, gif or webp. If its source file is still on disk, re-encode it"), "{text}");
     assert!(!text.contains("text/csv"), "{text}");
     let images: Vec<_> = content
         .into_iter()
@@ -80,21 +88,21 @@ fn an_attached_image_is_in_the_models_view() -> TestResult {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        images,
-        vec![("iVBORw0KGgo=".to_owned(), "image/png".to_owned())]
-    );
+    assert_eq!(images, vec![(PNG.to_owned(), "image/png".to_owned())]);
     Ok(())
 }
 
 /// Incident: a self-imposed 350k-char cap sent a 1 MB screenshot to the model as a note, where
-/// the provider takes up to 10 MB of base64 per image.
+/// the provider takes up to 10 MB of base64 per image. Pillow's PNG with a tEXt chunk, at the cap.
 #[test]
 fn an_image_up_to_the_providers_limit_reaches_the_model() -> TestResult {
-    let data = "A".repeat(1_000_000);
+    let data = format!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAHJwjXRFWHRrZXkA{}YaWqugAAAAxJREFUeJxjOPt4PwAE8AJwxPF7PgAAAABJRU5ErkJggg==",
+        "QUFB".repeat(2_499_971)
+    );
     let result: yi_types::kernel::ExecuteResult = serde_json::from_value(serde_json::json!({
         "stdout": "", "stderr": "", "status": "ok", "durationMs": 1,
-        "attachments": [{"mime_type": "image/jpeg", "data": data}],
+        "attachments": [{"mime_type": "image/png", "data": data}],
     }))?;
     let outcome = KernelCellOutcome {
         result,

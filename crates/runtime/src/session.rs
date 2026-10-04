@@ -60,7 +60,7 @@ struct Shared {
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<VecDeque<Queued>>,
     mail: Arc<tokio::sync::Notify>,
-    follow_up: Mutex<Vec<AgentMessage>>,
+    follow_up: Mutex<Vec<Queued>>,
     tools: Mutex<Vec<Arc<dyn yi_loop::AgentTool>>>,
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
@@ -670,9 +670,7 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
-        if let Some(todos) = self.todos() {
-            todos.rehydrate();
-        }
+        self.todos().iter().for_each(|todos| todos.rehydrate());
         // Invariant: bound last, so a tick owed since the last process finds the ledger and list.
         if let Some(service) = self.heartbeat_service() {
             service.bind_session(id);
@@ -684,6 +682,7 @@ impl AgentSession {
             telemetry.bind(&file, &id);
         }
         self.restore_settings(&entries);
+        self.compactor.iter().for_each(|c| c.resume(&entries));
         Ok(count)
     }
 
@@ -868,7 +867,7 @@ impl AgentSession {
 
     /// Taken after a running turn's answer, or it starts an idle session's turn.
     pub fn follow_up_message(&self, message: AgentMessage) -> bool {
-        run::follow(&self.parts(), message)
+        run::follow(&self.parts(), message, None)
     }
 
     /// Presented in arrival order at the next boundary; `wakes` starts an idle session's turn.

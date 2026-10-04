@@ -533,6 +533,22 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent, [("rlm.service", wanted)])
 
 
+class FindModelsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_an_entry_with_cost_and_one_without_both_parse(self) -> None:
+        """Dies with ``cost`` dropped from the model, or with an entry lacking it refused."""
+        priced = {"provider": "openrouter", "id": "a/b", "name": "B", "selector": "openrouter/a/b",
+                  "cost": {"input": 0.8, "output": 1.6}}
+        bare = {"provider": "faux", "id": "faux-1", "name": "Faux", "selector": "faux/faux-1"}
+
+        async def fake_host_request(kind, payload):
+            return {"models": [priced, bare]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            models = await rlm.find_models()
+        self.assertEqual([model.cost for model in models], [{"input": 0.8, "output": 1.6}, None])
+        self.assertEqual([model.selector for model in models], ["openrouter/a/b", "faux/faux-1"])
+
+
 class NoSuchChildTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_unknown_child_raises_one_error_both_excepts_catch(self) -> None:
         """Dies with one miss raised two ways: ``status`` raised KeyError while ``result`` and

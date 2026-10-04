@@ -181,7 +181,7 @@ pub fn warm(pool: &Pool, slot: SlotIndex) -> Result<(), LaneError> {
     let Some((program, args)) = contained(&tree, pool.home(), toolchain.warm) else {
         return Ok(());
     };
-    let mut command = yi_tools::command("nice");
+    let mut command = yi_tools::keyless_command("nice");
     command
         .arg("-n")
         .arg("19")
@@ -218,4 +218,38 @@ pub fn warm(pool: &Pool, slot: SlotIndex) -> Result<(), LaneError> {
         let _ = reaper.write_state(slot, &state);
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// #906 review: a sync runs the repo's install hooks on the host and a failed one hands back
+    /// their output; where no sandbox scrubbed it, yi's provider keys were in that output.
+    #[test]
+    fn a_failed_sync_prints_no_provider_key() -> Result<(), Box<dyn std::error::Error>> {
+        const NAME: &str = "lane::toolchain::tests::a_failed_sync_prints_no_provider_key";
+        const KEY: &str = "ENV-906-OPENAI";
+        if std::env::var_os("OPENAI_API_KEY").is_none_or(|key| key != KEY) {
+            let rerun = yi_tools::command(std::env::current_exe()?)
+                .args(["--exact", NAME])
+                .env("OPENAI_API_KEY", KEY)
+                .output()?;
+            let said =
+                String::from_utf8_lossy(&rerun.stdout) + String::from_utf8_lossy(&rerun.stderr);
+            assert!(
+                rerun.status.success() && said.contains("1 passed"),
+                "{said}"
+            );
+            return Ok(());
+        }
+        let hook = ["-c", "printenv OPENAI_API_KEY; exit 1"];
+        let ran = super::super::capture(
+            &std::env::temp_dir(),
+            "sh",
+            &hook,
+            std::time::Duration::from_secs(10),
+        );
+        let error = ran.err().ok_or("the hook exits 1")?;
+        assert!(error.contains("failed") && !error.contains(KEY), "{error}");
+        Ok(())
+    }
 }

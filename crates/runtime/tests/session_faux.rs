@@ -1215,6 +1215,52 @@ async fn a_retired_session_s_job_starts_no_turn() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+/// Dies without the delivered bit: a job the completion loop queued while a turn ran, and the
+/// model then polled to finished, reached the model a second time as an `<async_result>`.
+#[tokio::test]
+async fn a_polled_job_queued_before_the_poll_is_not_announced() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-polled")?;
+    let session = bash_session(
+        &root,
+        &[serde_json::json!({"command": "sleep 6"})],
+        &["done", "again"],
+        None,
+    );
+    let mut context = yi_tools::ToolContext::new(root.to_path_buf());
+    context.job_owner = Some(session.job_owner());
+    let bash = |input: serde_json::Value, context: &yi_tools::ToolContext| {
+        let ran = yi_tools::Tool::execute(
+            &yi_tools::BashTool::default(),
+            input.as_object().cloned().unwrap_or_default(),
+            context,
+        );
+        serde_json::to_string(&ran.result)
+    };
+    let started = bash(
+        serde_json::json!({"command": "sleep 7; echo w$((1+1))ke", "wait": 5}),
+        &context,
+    )?;
+    let job = job_in(&started)?;
+    session.prompt("run it")?;
+    let jobs = yi_tools::jobs::registry();
+    tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(20)))
+        .await?;
+    assert_eq!(
+        session.status(),
+        Status::Running,
+        "the poll must land while the turn runs"
+    );
+    let polled = bash(serde_json::json!({ "job": job.0 }), &context)?;
+    assert!(
+        polled.contains("finished (exit 0)") && polled.contains("w2ke"),
+        "{polled}"
+    );
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    assert!(!said.contains("<async_result"), "{said}");
+    Ok(())
+}
+
 /// A job the watchdog killed says so in its `<async_result>`, not a bare exit code.
 #[tokio::test]
 async fn a_killed_job_reports_that_timeout_secs_killed_it() -> Result<(), Box<dyn Error>> {

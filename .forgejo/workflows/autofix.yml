@@ -53,4 +53,7 @@ jobs:
           fi
           login=$(fgj api --hostname git.example.invalid user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login", ""))')
           [ "$login" = yi-bot ] || { echo "autofix: fgj is signed in as '$login', not yi-bot"; exit 1; }
+          # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the Opus 5.5
+          # tier as an unknown model; the fetched catalog names every model the key can reach.
+          ./target/debug/yi catalog refresh openrouter
           just pr autofix
