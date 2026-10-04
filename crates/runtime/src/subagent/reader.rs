@@ -6,7 +6,14 @@ use yi_types::url::{Scheme, Url};
 
 use crate::session::{AgentSession, SessionConfig};
 
-pub const READER_PROMPT: &str = include_str!("../prompts/reader.md");
+const FENCED_READER: &str = concat!(
+    include_str!("../prompts/reader.md"),
+    include_str!("../prompts/reader_fenced.md")
+);
+const UNFENCED_READER: &str = concat!(
+    include_str!("../prompts/reader.md"),
+    include_str!("../prompts/reader_unfenced.md")
+);
 pub const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
 pub(crate) const PARTITION_CAP: usize = 65_536;
 
@@ -64,6 +71,7 @@ pub struct Reader {
     pub turns: u32,
     pub schema: Option<Value>,
     pub shared_through: Option<usize>,
+    pub fenced: bool,
 }
 
 pub(crate) fn parse(kwargs: &Map<String, Value>) -> Result<Option<Reader>, String> {
@@ -99,6 +107,7 @@ pub(crate) fn parse(kwargs: &Map<String, Value>) -> Result<Option<Reader>, Strin
         turns: turns_of(kwargs, role)?,
         schema: schema_of(kwargs)?,
         shared_through: None,
+        fenced: false,
     }))
 }
 
@@ -169,7 +178,8 @@ pub fn session(
     let mut child = AgentSession::new(
         SessionConfig {
             system_prompt: match reader.role {
-                Role::Reader => READER_PROMPT.to_owned(),
+                Role::Reader if reader.fenced => FENCED_READER.to_owned(),
+                Role::Reader => UNFENCED_READER.to_owned(),
                 Role::Worker => String::new(),
             },
             model: build.model,
@@ -320,6 +330,7 @@ pub(crate) fn brief(
     let Some(reader) = cast.3.as_mut() else {
         return Ok((None, format!("{}{prompt}", fenced.unwrap_or_default())));
     };
+    reader.fenced = fenced.is_some();
     let question = match &reader.schema {
         Some(schema) => {
             format!("{prompt}\n\nReply with one JSON object matching this schema:\n{schema}")

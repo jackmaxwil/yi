@@ -327,8 +327,8 @@ check; it is the rare case and the one that needs ownership.
    you conclude.
 2. A reader is walled and cheap: a bare `rlm.run`, or `rlm.ask(question,
    partition)`, gets a short reader prompt, `read` and `grep`, three turns
-   and no writes; it runs in your tree with no worktree, on a cheaper model
-   when `rlm.find_models` offers one, with one question, the lines it needs
+   and no writes; it runs in your tree with no worktree, on a model whose
+   `rlm.find_models` cost is one input, with one question, the lines it needs
    inlined as `partition` URLs, and findings shaped
    `{path, line, claim, evidence}` where `evidence` is the quoted line. A
    reader's claim is data: open the cited line before you build on it; a
