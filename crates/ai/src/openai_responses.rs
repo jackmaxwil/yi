@@ -276,7 +276,7 @@ fn freeform_arguments(input: &str) -> Map<String, Value> {
     arguments
 }
 
-fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
+fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| match &tool.freeform {
@@ -290,13 +290,17 @@ fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
                     "definition": format.definition,
                 },
             }),
-            None => json!({
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-                "strict": false,
-            }),
+            None => {
+                let closed =
+                    (strict.then(|| crate::schema::strict_tool(&tool.parameters, true))).flatten();
+                json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": closed.as_ref().unwrap_or(&tool.parameters),
+                    "strict": closed.is_some(),
+                })
+            }
         })
         .collect()
 }
@@ -374,7 +378,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
-        params["tools"] = Value::Array(convert_tools(tools));
+        params["tools"] = Value::Array(convert_tools(tools, crate::compat::strict_tools(model)));
     }
     if let Some(choice) = &context.tool_choice {
         params["tool_choice"] = convert_tool_choice(choice, context.tools.as_deref());
@@ -668,7 +672,11 @@ impl EventMapper {
         let parsed = if slot.freeform {
             freeform_arguments(&slot.partial_args)
         } else {
-            parse_streaming_json(&slot.partial_args)
+            let mut parsed = parse_streaming_json(&slot.partial_args);
+            if crate::compat::strict_tools(&self.model) {
+                crate::schema::drop_nulls(&mut parsed);
+            }
+            parsed
         };
         let content_index = slot.content_index;
         let call_id = slot.call_id.clone();

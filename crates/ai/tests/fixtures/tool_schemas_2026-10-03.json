@@ -1,0 +1,539 @@
+[
+  {
+    "name": "read",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File, directory, or glob such as src/**/*.rs (relative to the working directory, or absolute)"
+        },
+        "find": {
+          "type": "string",
+          "description": "Show the block around the first line containing this text, then, for a definition, its references; exclusive with offset/ranges"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "1-based first line to read"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max lines (default 2000; explicit values may exceed it, byte-budgeted)"
+        },
+        "ranges": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "description": "1-based inclusive [start, end] windows; exclusive with offset/limit"
+        },
+        "pages": {
+          "type": "string",
+          "description": "PDF only: the 1-based pages to convert, such as \"3-5,9\"; the rest are left out"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "edit",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string",
+          "description": "Hashline patch: [path#TAG] section headers followed by PUT/CUT/REM/MV ops and +TEXT body rows"
+        }
+      },
+      "required": [
+        "patch"
+      ]
+    }
+  },
+  {
+    "name": "write",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path (absolute, or relative to the working directory)"
+        },
+        "content": {
+          "type": "string",
+          "description": "Full file content to write"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    }
+  },
+  {
+    "name": "grep",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": [
+            "string",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Regex (Rust syntax), or an array of them matched as alternatives"
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory or file to search (default: cwd)"
+        },
+        "literal": {
+          "type": "boolean",
+          "description": "Match the pattern as plain text"
+        },
+        "ignore_case": {
+          "type": "boolean",
+          "description": "Case-insensitive"
+        },
+        "include": {
+          "type": "string",
+          "description": "Glob on file paths: relative to path, or absolute"
+        },
+        "type": {
+          "type": "string",
+          "description": "Type filter: rust, py, js, ts, md, toml, json, yaml, sh, html, css, c"
+        },
+        "context": {
+          "type": "integer",
+          "description": "Context lines per side (max 10)"
+        },
+        "block": {
+          "type": "boolean",
+          "description": "Show each hit's enclosing block instead of context lines (max 20 hits per page)"
+        },
+        "def": {
+          "type": "boolean",
+          "description": "Only hits on definition lines (fn, struct, class, def, …)"
+        },
+        "count": {
+          "type": "boolean",
+          "description": "Per-file hit counts, descending"
+        },
+        "multiline": {
+          "type": "boolean",
+          "description": "Match across lines; a hit reports its first line"
+        },
+        "replace": {
+          "type": "string",
+          "description": "Replacement text ($1 captures); previews the diff, writes nothing"
+        },
+        "apply": {
+          "type": "boolean",
+          "description": "With replace: write the previewed rewrite and tag every file"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Matches to skip (paging)"
+        },
+        "files_with_matches": {
+          "type": "boolean",
+          "description": "Paths only, no content rows"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "name": "bash",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to run. Omit it to check on a background job instead."
+        },
+        "job": {
+          "type": "integer",
+          "description": "Background job to check on; defaults to the most recent"
+        },
+        "wait": {
+          "type": "integer",
+          "description": "With command: seconds, below timeout_secs, before a still-running command becomes a background job. Without: seconds to wait for that job. Clamped 5-300."
+        },
+        "timeout_secs": {
+          "type": "integer",
+          "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."
+        },
+        "max_output_lines": {
+          "type": "integer",
+          "description": "Per-call reducer line budget, for when the full output matters"
+        }
+      }
+    }
+  },
+  {
+    "name": "get_context",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Optional callsign or type name for the symbol-neighborhood layer"
+        }
+      }
+    }
+  },
+  {
+    "name": "ipython",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. The kernel is Yi's own venv over the machine's site-packages: what `python3` here imports, a cell imports; a project's own venv is reached through a `%%bash` cell that runs its interpreter or runner (`uv run`, `.venv/bin/python`, `cargo`, `npm`)."
+        }
+      },
+      "required": [
+        "code"
+      ]
+    }
+  },
+  {
+    "name": "ask_user",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "What only the user can decide, in one sentence"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Two to four choices, the recommended one first"
+        },
+        "default": {
+          "type": "string",
+          "description": "The option you proceed on if the user does not answer"
+        },
+        "request": {
+          "type": "integer",
+          "description": "The request number quoted in an auto-review denial."
+        }
+      }
+    }
+  },
+  {
+    "name": "plan",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "set",
+            "init",
+            "append",
+            "drop",
+            "block",
+            "unblock",
+            "reorder",
+            "add_edge",
+            "start",
+            "done",
+            "fail",
+            "retry",
+            "decompose",
+            "supersede",
+            "view",
+            "accepted_by_user"
+          ],
+          "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it; accepted_by_user asks the user, or the classifier in auto mode, to close a todo whose check cannot run here"
+        },
+        "list": {
+          "type": "string",
+          "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent; trailing `user://<n>` tokens cite the user's messages the row serves"
+        },
+        "plan": {
+          "type": "string",
+          "description": "Sub-plan id; omit for the root plan"
+        },
+        "goal": {
+          "type": "string",
+          "description": "init: the whole deliverable in one line"
+        },
+        "todos": {
+          "type": "array",
+          "minItems": 1,
+          "description": "init/append/decompose/supersede: the todos. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract",
+          "items": {
+            "type": "object",
+            "required": [
+              "label"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "the todo's name, imperative, at most 80 chars"
+              },
+              "after": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "labels of the todos this one waits on"
+              },
+              "intent": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "user://<n> of each user message it serves; default the latest"
+              },
+              "waived": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "description": "[{address, reason}]: a user message the plan leaves unserved"
+              },
+              "delegation": {
+                "type": "object",
+                "description": "{spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}"
+              },
+              "contract": {
+                "type": "object",
+                "required": [
+                  "class",
+                  "items"
+                ],
+                "description": "what must hold when the todo is done; done runs its items and passes at the threshold",
+                "properties": {
+                  "class": {
+                    "type": "string",
+                    "enum": [
+                      "writer",
+                      "reader",
+                      "inline"
+                    ],
+                    "description": "writer needs a critical cmd or example item, reader a critical schema item, inline either"
+                  },
+                  "covers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "globs whose writes preview the cmd items"
+                  },
+                  "threshold": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "description": "thousandths of the decided weight that must pass; default 1000"
+                  },
+                  "min_coverage": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "description": "thousandths of the whole weight that must decide rather than abstain; default 1000"
+                  },
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "critical",
+                        "weight",
+                        "decider"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "the item's name, unique in the contract"
+                        },
+                        "critical": {
+                          "type": "boolean",
+                          "description": "a failed critical item fails the todo, an abstaining one holds it"
+                        },
+                        "weight": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100,
+                          "description": "the item's share of the score"
+                        },
+                        "decider": {
+                          "type": "object",
+                          "description": "{cmd: \"shell command that exits 0 only when the item holds\"}, or {cmd: {checker: command, timeout_ms}} (default and ceiling 600000); {schema: {schema: artifact}}; {example: {cases: artifact, runner: artifact, timeout_ms}}; an artifact is {digest, media_type, length}"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "label": {
+          "type": "string",
+          "description": "drop/block/unblock/start/done/fail/retry/decompose/accepted_by_user: the todo"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "reorder: every label of the plan, in the new priority order"
+        },
+        "todo": {
+          "type": "string",
+          "description": "add_edge: the todo that waits"
+        },
+        "after": {
+          "type": "string",
+          "description": "add_edge: the sibling it waits on"
+        },
+        "on": {
+          "type": "object",
+          "description": "block: {\"child\": agent} | {\"user\": null} | {\"external\": {\"probe\": command}} | {\"channel\": {\"address\": \"clock://at <ISO time>\" or an exec://, file:// or channel:// address as in todo, \"filter\"?}}, unblocked by the first match"
+        },
+        "note": {
+          "type": "string",
+          "description": "block: what would unblock it; accepted_by_user: the check you ran by hand and its exit line"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by replying with its number, id or label; a preview is light (a line, a small diagram's source, or an address), at most 2048 bytes"
+        },
+        "cause": {
+          "type": "string",
+          "description": "fail: what went wrong"
+        },
+        "output": {
+          "type": "string",
+          "description": "done: url of the product; required when the delegation declares an output schema"
+        },
+        "delegation": {
+          "type": "object",
+          "description": "retry: replacement delegation, shaped as in todos"
+        },
+        "reason": {
+          "type": "string",
+          "description": "supersede: why the cut is wrong"
+        },
+        "full": {
+          "type": "boolean",
+          "description": "view: every todo instead of counts plus the frontier"
+        }
+      },
+      "required": [
+        "op"
+      ]
+    }
+  },
+  {
+    "name": "todo",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "set",
+            "init",
+            "append",
+            "start",
+            "done",
+            "drop",
+            "block",
+            "unblock",
+            "rm",
+            "view"
+          ],
+          "description": "done/drop/rm also take a phase, or nothing for all"
+        },
+        "list": {
+          "type": "string",
+          "description": "set: the checklist; trailing `user://<n>` tokens on a row cite the user messages it serves"
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "init: [{name, items: [label]}]"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "init (flat, one phase) or append: labels to add"
+        },
+        "phase": {
+          "type": "string",
+          "description": "append: the phase (created if missing); done/drop/rm: every item in it"
+        },
+        "under": {
+          "type": "string",
+          "description": "append: the parent label the items nest under"
+        },
+        "id": {
+          "type": "string",
+          "description": "start/done/drop/block/unblock/rm: the item's id, e.g. t3; or use label"
+        },
+        "label": {
+          "type": "string",
+          "description": "start/done/drop/block/unblock/rm: the item, verbatim"
+        },
+        "evidence": {
+          "type": "string",
+          "description": "done: the command in backticks and the output line that proves it"
+        },
+        "reason": {
+          "type": "string",
+          "description": "drop: why the item no longer applies"
+        },
+        "on": {
+          "type": "string",
+          "description": "block: who it waits on: user, external, child, or an address: `clock://at <ISO time>`, `exec://<command>?every=30s`, `file://<path>`, `channel://<name>`; the first message matching `filter` unblocks it"
+        },
+        "filter": {
+          "type": "string",
+          "description": "block: `key=value&…` matched exactly, or a substring; `ok=true` waits for an exec to pass"
+        },
+        "note": {
+          "type": "string",
+          "description": "block: what would unblock it"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by number, id or label; a preview is light, at most 2048 bytes"
+        },
+        "touched": {
+          "type": "integer",
+          "description": "optional: the touched counter you last saw; a stale value is refused so a user edit is never overwritten"
+        }
+      }
+    }
+  }
+]

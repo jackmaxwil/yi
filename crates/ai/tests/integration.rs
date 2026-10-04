@@ -18,5 +18,6 @@ mod openrouter;
 mod proxy;
 mod refresh;
 mod resend;
+mod strict_tools;
 mod structured;
 mod tool_choice;

@@ -266,17 +266,19 @@ fn push_tool_results(
     index
 }
 
-fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
+fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| {
+            let closed =
+                (strict.then(|| crate::schema::strict_tool(&tool.parameters, true))).flatten();
             json!({
                 "type": "function",
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.parameters,
-                    "strict": false,
+                    "parameters": closed.as_ref().unwrap_or(&tool.parameters),
+                    "strict": closed.is_some(),
                 },
             })
         })
@@ -364,7 +366,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
-        params["tools"] = Value::Array(convert_tools(tools));
+        params["tools"] = Value::Array(convert_tools(tools, crate::compat::strict_tools(model)));
     }
     if let Some(choice) = &context.tool_choice {
         params["tool_choice"] = convert_tool_choice(choice);
@@ -748,6 +750,10 @@ impl ChunkMapper {
                     arguments.to_owned(),
                 )
             };
+            let mut parsed = parsed;
+            if crate::compat::strict_tools(&self.model) {
+                crate::schema::drop_nulls(&mut parsed);
+            }
             if let Some(Content::ToolCall {
                 id: block_id,
                 name: block_name,
