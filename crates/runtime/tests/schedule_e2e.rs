@@ -1051,6 +1051,21 @@ fn a_spend_alert_fires_once_per_crossing() -> TestResult {
     Ok(())
 }
 
+/// A faux session whose spend alarm fires every 1,000 tokens, wired as `yi` wires it.
+fn alarmed() -> Result<AgentSession, Box<dyn Error>> {
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(ProviderStream::new(None)),
+    );
+    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    Ok(session)
+}
+
 /// Dies with a resumed session's alarm counting from zero, so a session past its budget went
 /// silent after every restart; or with it re-announcing a crossing the last process announced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1062,16 +1077,7 @@ async fn a_resumed_spend_alarm_counts_on_from_the_ledger() -> TestResult {
     if let yi_types::event::AgentEvent::MessageEnd { message } = turn_of(1_500) {
         lock_session(&store).append_message("main", message)?;
     }
-    let session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        Arc::new(ProviderStream::new(None)),
-    );
-    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    let session = alarmed()?;
     session.attach_store(store)?;
     for tokens in [400, 200] {
         session.events_sender().send(turn_of(tokens))?;
@@ -1097,16 +1103,7 @@ async fn a_rewind_does_not_count_a_finished_child_twice() -> TestResult {
     let dir = Scratch::new("yi-spend-rewind")?;
     let store =
         JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned()).create(CreateOptions::default())?;
-    let session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        Arc::new(ProviderStream::new(None)),
-    );
-    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    let session = alarmed()?;
     session.attach_store(Arc::clone(&store))?;
     session.events_sender().send(child_at(600))?;
     {
@@ -1132,6 +1129,41 @@ async fn a_rewind_does_not_count_a_finished_child_twice() -> TestResult {
         session.pending_count(),
         1,
         "the finished child counted twice"
+    );
+    Ok(())
+}
+
+/// Dies with `/new` or an rpc switch carrying the last session's count into the next: an alert
+/// at 1,100 where the new session has spent 200, and none at its own ledger's 2,000 crossing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_sessions_store_reseeds_the_alarm_from_its_own_ledger() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-switch")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned());
+    let (first, second) = (
+        repo.create(CreateOptions::default())?,
+        repo.create(CreateOptions::default())?,
+    );
+    if let yi_types::event::AgentEvent::MessageEnd { message } = turn_of(1_500) {
+        lock_session(&second).append_message("main", message)?;
+    }
+    let session = alarmed()?;
+    session.attach_store(first)?;
+    session.events_sender().send(turn_of(900))?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    session.reset();
+    session.attach_store(second)?;
+    session.events_sender().send(turn_of(400))?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        0,
+        "the last session's 900 carried over"
+    );
+    session.events_sender().send(turn_of(200))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "the new session's 2,100 crossed 2,000 and nothing fired"
     );
     Ok(())
 }

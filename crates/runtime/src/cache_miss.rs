@@ -319,7 +319,7 @@ pub fn attach(session: &AgentSession) {
     let tracker = Arc::new(Mutex::new(MissTracker::default()));
     let provider = Arc::clone(session.provider_arc());
     let (resumed, seeded) = (Arc::clone(&tracker), Arc::clone(&provider));
-    session.on_attach(move |entries, _| {
+    session.on_attach(move |_, entries, _| {
         let mut folded = MissTracker::default();
         for entry in entries {
             folded.observe_entry(entry);
