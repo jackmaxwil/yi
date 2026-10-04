@@ -183,3 +183,37 @@ async fn only_credentialed_models_are_offered_or_spawned() -> TestResult {
     assert_eq!(refused.err(), Some(missing_message("anthropic")));
     Ok(())
 }
+
+/// Dies with no `cost` on an entry, which is a reader picked by name with its price unseen,
+/// or with the listing reordered, which makes the cheapest family (the one that refused) the default.
+#[tokio::test]
+async fn find_models_cost_rides_every_entry_in_registry_order() -> TestResult {
+    let root = Scratch::new("yi-find-models-cost")?;
+    unsafe { std::env::set_var("HOME", root.home()?) };
+    for variable in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"] {
+        unsafe { std::env::remove_var(variable) };
+    }
+    unsafe { std::env::set_var("OPENROUTER_API_KEY", "key-or") };
+    let family = support::family(
+        root.to_path_buf(),
+        root.to_path_buf(),
+        support::memory_store("root"),
+        None,
+    );
+    let registry: Vec<Model> = yi_runtime::provider::available_models()
+        .into_iter()
+        .filter(|model| model.provider == "openrouter")
+        .collect();
+    let listed = family.host.find_models("", 10_000);
+    let entries = listed["models"]
+        .as_array()
+        .ok_or("find_models returned no list")?;
+    let order: Vec<&str> = entries.iter().filter_map(|m| m["id"].as_str()).collect();
+    let wanted: Vec<&str> = registry.iter().map(|model| model.id.as_str()).collect();
+    assert_eq!(order, wanted);
+    for (entry, model) in entries.iter().zip(&registry) {
+        let cost = json!({"input": model.cost.input, "output": model.cost.output});
+        assert_eq!(entry["cost"], cost, "{entry}");
+    }
+    Ok(())
+}
