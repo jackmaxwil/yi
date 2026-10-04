@@ -2,9 +2,9 @@ use std::error::Error;
 
 use serde_json::{Map, Value, json};
 use yi_ai::anthropic::{self, AnthropicOptions};
-use yi_ai::openai::{self, ChunkMapper, OpenAiOptions};
+use yi_ai::openai::{self, OpenAiOptions};
 use yi_ai::schema;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -81,42 +81,35 @@ fn chat_strict(model: &Model, tools: Vec<ToolDef>) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// Dies with a tool sent strict in a shape OpenAI refuses, or with a tool left loose that the
-/// converter could close; the judge is the existing response-format check, not the converter.
+/// Dies with a tool that has an optional property sent strict to OpenAI, whose strict mode
+/// makes every property required: in the #995 A/B the model then filled the extras with junk
+/// (59% of calls refused, against 17% loose). Only a tool with nothing optional goes strict.
 #[test]
-fn every_closable_yi_tool_goes_to_openai_in_the_strict_shape() -> TestResult {
-    let mut closed = Vec::new();
+fn openai_gets_strict_only_for_tools_with_nothing_optional() -> TestResult {
+    let openai = model("gpt-5.5", "https://api.openai.com/v1", None);
+    let strict: Vec<String> = chat_strict(&openai, yi_tools()?)
+        .into_iter()
+        .filter(|(_, on)| *on)
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(strict, ["edit", "write", "ipython"]);
     for tool in yi_tools()? {
-        if let Some(strict) = schema::strict_tool(&tool.parameters, true) {
-            assert!(
-                schema::strict(&strict),
-                "{} converted to {strict}",
+        if let Some(closed) = schema::strict_tool(&tool.parameters) {
+            assert_eq!(
+                closed["additionalProperties"],
+                json!(false),
+                "{}",
                 tool.name
             );
-            closed.push(tool.name);
         }
     }
-    assert_eq!(
-        closed,
-        [
-            "read",
-            "edit",
-            "write",
-            "grep",
-            "bash",
-            "get_context",
-            "ipython",
-            "ask_user"
-        ],
-        "plan and todo carry free-form objects and stay loose"
-    );
     let grep = yi_tools()?
         .into_iter()
         .find(|tool| tool.name == "grep")
         .ok_or("grep")?;
-    let strict = schema::strict_tool(&grep.parameters, true).ok_or("grep closes")?;
+    let closed = schema::strict_tool(&grep.parameters).ok_or("grep closes")?;
     assert!(
-        strict["properties"].get("pattern").is_some(),
+        closed["properties"].get("pattern").is_some(),
         "a property named like a keyword stays"
     );
     Ok(())
@@ -126,15 +119,21 @@ fn every_closable_yi_tool_goes_to_openai_in_the_strict_shape() -> TestResult {
 #[test]
 fn a_free_form_object_is_never_strict() {
     let loose = json!({"type": "object", "properties": {"spec": {"type": "object"}}});
-    assert_eq!(schema::strict_tool(&loose, true), None);
-    assert_eq!(schema::strict_tool(&loose, false), None);
+    assert_eq!(schema::strict_tool(&loose), None);
 }
 
 /// Dies with strict sent where the route cannot enforce it (a 400 on every request) or withheld
 /// where it can.
 #[test]
 fn strict_follows_the_route_and_an_entry_can_opt_in() -> TestResult {
-    let tools = || yi_tools().map(|tools| tools.into_iter().take(1).collect::<Vec<_>>());
+    let tools = || {
+        yi_tools().map(|tools| {
+            tools
+                .into_iter()
+                .filter(|tool| tool.name == "write")
+                .collect::<Vec<_>>()
+        })
+    };
     let cases = [
         (model("gpt-5.5", "https://api.openai.com/v1", None), true),
         (
@@ -161,7 +160,7 @@ fn strict_follows_the_route_and_an_entry_can_opt_in() -> TestResult {
     for (model, strict) in cases {
         assert_eq!(
             chat_strict(&model, tools()?),
-            [("read".to_owned(), strict)],
+            [("write".to_owned(), strict)],
             "{}",
             model.base_url
         );
@@ -223,42 +222,4 @@ fn the_session_tools_fit_anthropic_caps_in_order() -> TestResult {
     let strict: Vec<String> = marked.filter(|(_, on)| *on).map(|(name, _)| name).collect();
     assert_eq!(strict, ["read", "edit", "write", "grep", "bash", "ipython"]);
     Ok(())
-}
-
-/// Dies with an OpenAI strict call's `null` reaching the tool, which reads it as a value; a
-/// route without strict keeps what the model sent.
-#[test]
-fn a_strict_calls_nulls_reach_the_tool_as_absent() {
-    let chunks = [
-        json!({"id":"c","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":\"a.rs\",\"offset\":null,"}}]}}]}),
-        json!({"id":"c","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ranges\":[{\"from\":1,\"to\":null}]}"}}]}}]}),
-        json!({"id":"c","choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
-    ];
-    let arguments = |model: &Model| {
-        let mut mapper = ChunkMapper::new(model);
-        for chunk in &chunks {
-            let _ = mapper.push_chunk(chunk);
-        }
-        let mut found = Map::new();
-        for event in mapper.finish() {
-            if let yi_types::event::AssistantMessageEvent::Done { message, .. } = event
-                && let AgentMessage::Assistant { content, .. } = message
-            {
-                for block in content {
-                    if let Content::ToolCall { arguments, .. } = block {
-                        found = arguments;
-                    }
-                }
-            }
-        }
-        Value::Object(found)
-    };
-    assert_eq!(
-        arguments(&model("gpt-5.5", "https://api.openai.com/v1", None)),
-        json!({"path": "a.rs", "ranges": [{"from": 1}]})
-    );
-    assert_eq!(
-        arguments(&model("glm", "https://openrouter.ai/api/v1", None)),
-        json!({"path": "a.rs", "offset": null, "ranges": [{"from": 1, "to": null}]})
-    );
 }

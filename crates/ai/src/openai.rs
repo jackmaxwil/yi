@@ -270,8 +270,9 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| {
-            let closed =
-                (strict.then(|| crate::schema::strict_tool(&tool.parameters, true))).flatten();
+            let closed = (strict.then(|| crate::schema::strict_tool(&tool.parameters)))
+                .flatten()
+                .filter(crate::schema::strict);
             json!({
                 "type": "function",
                 "function": {
@@ -750,10 +751,6 @@ impl ChunkMapper {
                     arguments.to_owned(),
                 )
             };
-            let mut parsed = parsed;
-            if crate::compat::strict_tools(&self.model) {
-                crate::schema::drop_nulls(&mut parsed);
-            }
             if let Some(Content::ToolCall {
                 id: block_id,
                 name: block_name,

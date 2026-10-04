@@ -94,9 +94,9 @@ pub fn responses(schema: &Value) -> Value {
     json!({"type": "json_schema", "name": "answer", "schema": schema, "strict": strict(schema)})
 }
 
-/// A tool schema as strict decoding takes it: every object closed, bounds dropped; with
-/// `all_required` (OpenAI) an optional property is required and nullable. None: no closed shape.
-pub fn strict_tool(schema: &Value, all_required: bool) -> Option<Value> {
+/// A tool schema as strict decoding takes it: every object closed, bounds dropped, optional
+/// properties left optional. None: no closed shape to give it.
+pub fn strict_tool(schema: &Value) -> Option<Value> {
     let Value::Object(map) = schema else {
         return None;
     };
@@ -111,17 +111,17 @@ pub fn strict_tool(schema: &Value, all_required: bool) -> Option<Value> {
         }
         let each = |values: &Map<String, Value>| {
             (values.iter())
-                .map(|(name, value)| Some((name.clone(), strict_tool(value, all_required)?)))
+                .map(|(name, value)| Some((name.clone(), strict_tool(value)?)))
                 .collect::<Option<Map<String, Value>>>()
         };
         let value = match (key, value) {
             ("properties" | "$defs" | "definitions", Value::Object(values)) => {
                 Value::Object(each(values)?)
             }
-            ("items", item) => strict_tool(item, all_required)?,
+            ("items", item) => strict_tool(item)?,
             ("anyOf", Value::Array(options)) => Value::Array(
                 (options.iter())
-                    .map(|option| strict_tool(option, all_required))
+                    .map(strict_tool)
                     .collect::<Option<Vec<Value>>>()?,
             ),
             (_, value) => value.clone(),
@@ -129,21 +129,8 @@ pub fn strict_tool(schema: &Value, all_required: bool) -> Option<Value> {
         out.insert(key.to_owned(), value);
     }
     if is_object(schema) {
-        let required: Vec<Value> = match out.get("required") {
-            Some(Value::Array(keys)) => keys.clone(),
-            _ => Vec::new(),
-        };
-        let Some(Value::Object(properties)) = out.get_mut("properties") else {
+        if !matches!(out.get("properties"), Some(Value::Object(_))) {
             return None;
-        };
-        if all_required {
-            let names: Vec<Value> = properties.keys().map(|name| json!(name)).collect();
-            for (name, property) in properties.iter_mut() {
-                if !required.contains(&json!(name)) {
-                    nullable(property);
-                }
-            }
-            out.insert("required".to_owned(), Value::Array(names));
         }
         out.insert("additionalProperties".to_owned(), Value::Bool(false));
     } else if !["type", "anyOf", "enum", "const", "$ref"]
@@ -153,30 +140,6 @@ pub fn strict_tool(schema: &Value, all_required: bool) -> Option<Value> {
         return None;
     }
     Some(Value::Object(out))
-}
-
-fn nullable(node: &mut Value) {
-    let Value::Object(map) = node else {
-        return;
-    };
-    match map.get_mut("type") {
-        Some(Value::String(kind)) => {
-            let kind = kind.clone();
-            map.insert("type".to_owned(), json!([kind, "null"]));
-        }
-        Some(Value::Array(kinds)) if !kinds.contains(&json!("null")) => kinds.push(json!("null")),
-        Some(_) => {}
-        None => {
-            if let Some(Value::Array(options)) = map.get_mut("anyOf") {
-                options.push(json!({"type": "null"}));
-            }
-        }
-    }
-    if let Some(Value::Array(values)) = map.get_mut("enum")
-        && !values.contains(&Value::Null)
-    {
-        values.push(Value::Null);
-    }
 }
 
 /// Optional and union-typed properties in a schema, nested ones included: what Anthropic's
@@ -214,21 +177,4 @@ pub fn weight(schema: &Value) -> (usize, usize) {
         add(weight(option));
     }
     total
-}
-
-/// A null a strict call sends for an optional property means absent: every tool reads the key's
-/// absence, so a null is dropped at any object depth before the call reaches it.
-pub(crate) fn drop_nulls(arguments: &mut Map<String, Value>) {
-    arguments.retain(|_, value| !value.is_null());
-    for value in arguments.values_mut() {
-        match value {
-            Value::Object(inner) => drop_nulls(inner),
-            Value::Array(items) => {
-                for inner in items.iter_mut().filter_map(Value::as_object_mut) {
-                    drop_nulls(inner);
-                }
-            }
-            _ => {}
-        }
-    }
 }
