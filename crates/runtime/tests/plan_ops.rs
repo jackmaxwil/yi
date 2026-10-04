@@ -3435,10 +3435,10 @@ mod contracts {
         safe: Option<f64>,
     ) -> Result<(PlanTool, Asked), Box<dyn Error>> {
         let Confirmer { store, .. } = confirmer(rig, answer)?;
-        let asked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let counted = Arc::clone(&asked);
+        let asked: Asked = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&asked);
         let asker: Asker = Arc::new(move |ask: &PermissionAsk<'_>| {
-            if let Ok(mut asked) = counted.lock() {
+            if let Ok(mut asked) = recorded.lock() {
                 asked.push(ask.description.to_owned());
             }
             answer
