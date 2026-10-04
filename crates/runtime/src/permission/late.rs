@@ -111,57 +111,47 @@ impl PermissionBroker {
             .approver
             .get()
             .filter(|_| self.mode() == PermissionMode::Auto);
-        let judged = match (approver, call) {
+        let answered = match (approver, call) {
             (Some(approver), Some(call)) => match approver.timing() {
-                crate::classifier::Timing::Instant => approver.judge(call),
+                crate::classifier::Timing::Instant => match approver.judge(call) {
+                    crate::classifier::Judgement::Allow(safe) => Some(Answered::Classifier(safe)),
+                    _ => None,
+                },
                 crate::classifier::Timing::AfterDelay(delay) => {
                     let late = Late {
                         approver,
                         call,
                         delay,
                     };
-                    match self
-                        .late(&late)
+                    self.late(&late)
                         .map(|late| ask_or_judge(self.asker.as_ref(), ask, late))
-                    {
-                        Some(Answered::Classifier(safe)) => {
-                            crate::classifier::Judgement::Allow(safe)
-                        }
-                        Some(Answered::Person(outcome)) => {
-                            let allowed = matches!(
-                                outcome,
-                                AskOutcome::AllowOnce | AskOutcome::AllowAlways(_)
-                            );
-                            let by = if self.asker.is_some() {
-                                Answerer::User
-                            } else {
-                                Answerer::Nobody
-                            };
-                            self.settle(&tool_call_id, ask, allowed, by);
-                            return (outcome, false);
-                        }
-                        None => crate::classifier::Judgement::Undecided,
-                    }
                 }
             },
-            _ => crate::classifier::Judgement::Undecided,
+            _ => None,
         };
-        if let crate::classifier::Judgement::Allow(_) = judged {
-            self.settle(&tool_call_id, ask, true, Answerer::Classifier);
-            return (AskOutcome::AllowOnce, true);
+        let answered = answered.unwrap_or_else(|| {
+            Answered::Person(
+                self.asker
+                    .as_ref()
+                    .map_or(AskOutcome::Reject, |asker| asker(ask)),
+            )
+        });
+        match answered {
+            Answered::Classifier(_) => {
+                self.settle(&tool_call_id, ask, true, Answerer::Classifier);
+                (AskOutcome::AllowOnce, true)
+            }
+            Answered::Person(outcome) => {
+                let by = if self.asker.is_some() {
+                    Answerer::User
+                } else {
+                    Answerer::Nobody
+                };
+                let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
+                self.settle(&tool_call_id, ask, allowed, by);
+                (outcome, false)
+            }
         }
-        let outcome = self
-            .asker
-            .as_ref()
-            .map_or(AskOutcome::Reject, |asker| asker(ask));
-        let by = if self.asker.is_some() {
-            Answerer::User
-        } else {
-            Answerer::Nobody
-        };
-        let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-        self.settle(&tool_call_id, ask, allowed, by);
-        (outcome, false)
     }
 
     /// Whether [`PermissionBroker::confirm_judged`] gets an answer: a person, or auto's classifier.

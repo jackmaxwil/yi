@@ -935,5 +935,12 @@ fn approval_is_instant_unless_the_config_says_otherwise() -> TestResult {
         )?),
         None
     );
+    assert_eq!(
+        timing(&read(
+            serde_json::json!({"approval": "after-delay", "askTimeoutSecs": 0})
+        )?),
+        None,
+        "0 kept its old meaning: the person decides"
+    );
     Ok(())
 }

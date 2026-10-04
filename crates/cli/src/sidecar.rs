@@ -16,7 +16,7 @@ pub(crate) fn start(home: &Path) {
         );
     };
     // Minted before any session attaches; `own` reads the stored key back under the lock.
-    if let Err(error) = yi_runtime::auth::mint_key("laya") {
+    if let Err(error) = yi_runtime::auth::key_in(home, "laya") {
         note(
             home,
             &format!("no laya key, so classifier approval stays off: {error}"),
@@ -94,7 +94,7 @@ fn own(
         .stdin(std::process::Stdio::piped())
         .stdout(log)
         .stderr(stderr);
-    if let Some(key) = yi_runtime::auth::api_key("laya") {
+    if let Ok(key) = yi_runtime::auth::key_in(home, "laya") {
         command.env("LAYA_API_KEY", key.expose());
     }
     command.spawn().map(Some)

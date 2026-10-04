@@ -779,6 +779,71 @@ async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// The owner: approval "should be on by default". A session attached with a classifier and no
+/// `approval` key arms it, minting the key under the session's HOME, and an auto-mode ask the
+/// classifier is sure of runs unasked. Dies with the default left off, the incident's state.
+#[tokio::test]
+async fn a_classifier_with_no_mode_set_approves_by_default() -> Result<(), Box<dyn Error>> {
+    let root = scratch("approve-default")?;
+    let home = root.join("home");
+    std::fs::create_dir_all(&home)?;
+    let mut session = tool_call_session("echo unused");
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        root.to_path_buf(),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    ));
+    let provider = Arc::clone(session.provider_arc());
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: home.clone(),
+            lane_slots: 1,
+            broker: Some(Arc::clone(&broker)),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+    let raw = format!(
+        r#"{{"models": {{"classifier": "english"}}, "classifier": {{"url": "http://127.0.0.1:{port}"}}}}"#
+    );
+    let (config, _) = yi_types::config::parse(&raw)?;
+    let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("make build"));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+    assert!(
+        outcome.allowed && outcome.reason.starts_with("allowed by the classifier"),
+        "{}",
+        outcome.reason
+    );
+    Ok(())
+}
+
 /// What the model was sent, in order: user text, reminder text, or `assistant`.
 fn transcript(session: &AgentSession) -> Vec<String> {
     use yi_types::message::UserContent;
