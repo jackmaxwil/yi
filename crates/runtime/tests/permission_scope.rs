@@ -1029,3 +1029,40 @@ fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
     assert_no_leak("grep apply", Swap::Parent, tried);
     Ok(())
 }
+
+/// The remedy the ping hint names: after the sandbox refuses a real `ping`, the next `ping` asks,
+/// and approving it runs that call outside the sandbox. The refusal is the bash tool's own, read
+/// off a contained run of `ping`.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
+    let command = "ping -c1 -W1 1.1.1.1";
+    let scratch = Scratch::new("yi-ping-remedy")?;
+    let home = scratch.join("home");
+    std::fs::create_dir_all(&home)?;
+    let sandbox = yi_tools::Sandbox::for_workspace(&scratch, &home, None);
+    let context = yi_tools::ToolContext::new(scratch.to_path_buf());
+    let timeout = std::time::Duration::from_secs(60);
+    let yi_tools::Run::Finished(capture) =
+        yi_tools::run_or_background(command, &context, None, timeout, Some(&sandbox), None)?
+    else {
+        return Err("ping did not finish".into());
+    };
+    let output = format!("{}{}", capture.stdout, capture.stderr);
+    let refusal =
+        yi_tools::sandbox_refusal(&sandbox, &scratch, capture.exit_code, &output, command)
+            .ok_or_else(|| format!("no refusal read from: {output}"))?;
+    let (broker, asks) = counted(Vec::new(), |_| AskOutcome::AllowOnce);
+    let decide =
+        |id: &str| broker.decide_call("bash", ToolKind::Exec, true, id, &bash_args(command), None);
+    assert!(matches!(
+        decide("c1").containment,
+        Containment::Contained { .. }
+    ));
+    broker.note_containment_failure(refusal);
+    let retry = decide("c2");
+    assert!(retry.allowed, "{}", retry.reason);
+    assert_eq!(retry.containment, Containment::Uncontained);
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 1, "the retry asks");
+    Ok(())
+}
