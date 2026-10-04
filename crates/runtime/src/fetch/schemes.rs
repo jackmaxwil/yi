@@ -581,17 +581,16 @@ fn user_text(url: &Url, content: &UserContent) -> Result<String, FetchError> {
     }
 }
 
-/// Invariant: the fragment tag pins the whole file, never the span — the line
-/// range only locates within the pinned version, so any edit anywhere is stale.
+/// Invariant: a tag pins the whole file, never the span, so any edit anywhere is stale; no tag, no pin.
 fn apply_fragment(url: &Url, text: String) -> Result<String, FetchError> {
     let Some(fragment) = url.fragment() else {
         return Ok(text);
     };
     let live = compute_file_hash(&text);
-    if live.0 != fragment.tag() {
+    if let Some(tag) = fragment.tag().filter(|tag| *tag != live.0) {
         return Err(FetchError::Stale {
             url: url.to_string(),
-            expected: format!("{:04X}", fragment.tag()),
+            expected: format!("{tag:04X}"),
             found: live.to_string(),
         });
     }
@@ -604,7 +603,7 @@ fn apply_fragment(url: &Url, text: String) -> Result<String, FetchError> {
         .ok_or_else(|| FetchError::BadAddress {
             url: url.to_string(),
             detail: format!(
-                "line range {}-{} is beyond the {} lines of the pinned file",
+                "line range {}-{} is beyond the {} lines of the file",
                 fragment.start(),
                 fragment.end(),
                 lines.len()
@@ -752,6 +751,16 @@ mod tests {
         let url: Url = format!("local://auth.rs#L2-3@{tag}").parse()?;
         let fetched = resolver.fetch(&url)?;
         assert_eq!(fetched.text, "beta\ngamma");
+        Ok(())
+    }
+
+    #[test]
+    fn an_untagged_fragment_serves_the_current_lines_of_an_unread_file() -> TestResult {
+        let workspace = Scratch::new("yi-schemes-untagged")?;
+        std::fs::write(workspace.join("more.rs"), "one\ntwo\nthree\nfour\n")?;
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
+        let served = resolver.fetch(&"local://more.rs#L2-3".parse()?)?;
+        assert_eq!(served.text, "two\nthree");
         Ok(())
     }
 
