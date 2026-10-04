@@ -626,6 +626,7 @@ impl AgentTool for ToolAdapter {
                                 .and_then(Value::as_i64)
                                 .and_then(|code| i32::try_from(code).ok())
                                 .or(Some(i32::from(output.is_error))),
+                            check: name == "bash" && crate::ext::orchestrate::is_check(&command),
                             name,
                         });
                     }
