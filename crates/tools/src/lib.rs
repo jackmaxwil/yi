@@ -34,7 +34,7 @@ pub use ipython::cell_output;
 pub use ipython::{CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, clamp_timeout, run_or_background};
 pub use orient::GetContextTool;
-pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
+pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, keyless_command, run_captured};
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,

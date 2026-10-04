@@ -283,6 +283,9 @@ fn spawn_kernel_process(
     if let Some(cwd) = &inner.cwd {
         command.current_dir(cwd);
     }
+    for (_, variable) in yi_types::PROVIDER_KEY_VARS {
+        command.env_remove(variable);
+    }
     for (key, value) in &inner.env {
         command.env(key, value);
     }

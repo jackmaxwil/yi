@@ -325,6 +325,23 @@ fn check_gate_rejects_completion_and_persists_the_evidence() -> TestResult {
     Ok(())
 }
 
+/// #906 review: a check is model-written and its red tail goes back to the model, so a key it
+/// inherited from yi was printed there.
+#[test]
+fn a_red_check_prints_no_provider_key() -> TestResult {
+    // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+    unsafe { std::env::set_var("OPENAI_API_KEY", "ENV-906-OPENAI") };
+    let (_plans, (service, _store, _delivered)) = service_with_plans()?;
+    let check = "printenv OPENAI_API_KEY; echo checked; false";
+    service.create("leak", None, Some(check.to_owned()), None)?;
+    let error = service.update("complete").err().ok_or("must reject")?;
+    assert!(
+        error.contains("checked") && !error.contains("ENV-906"),
+        "{error}"
+    );
+    Ok(())
+}
+
 #[test]
 fn check_gate_passes_and_clears_the_failure() -> TestResult {
     let (_plans, (service, store, _delivered)) = service_with_plans()?;
