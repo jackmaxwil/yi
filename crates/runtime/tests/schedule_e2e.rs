@@ -996,6 +996,16 @@ fn turn_of(total: i64) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::MessageEnd { message }
 }
 
+/// The update a finished child's host publishes, again on every `publish_all`.
+fn child_done(tokens: u64) -> yi_types::event::AgentEvent {
+    let mut event = child_at(tokens);
+    if let yi_types::event::AgentEvent::ChildUpdate { update } = &mut event {
+        update.status = yi_types::subagent::ChildStatus::Completed;
+        update.exit = Some(yi_types::subagent::ChildExit::Completed);
+    }
+    event
+}
+
 fn child_at(tokens: u64) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::ChildUpdate {
         update: yi_types::subagent::ChildUpdate {
@@ -1164,6 +1174,68 @@ async fn another_sessions_store_reseeds_the_alarm_from_its_own_ledger() -> TestR
     assert!(
         until(|| session.pending_count() > 0).await,
         "the new session's 2,100 crossed 2,000 and nothing fired"
+    );
+    Ok(())
+}
+
+/// Dies with a finished child counted again after `/new` and back: the host keeps its children
+/// across a switch, and a stall notice re-publishes X's finished child into Y's alarm and into
+/// X's again, whose ledger already holds that child's usage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finished_child_counts_once_across_a_switch_and_back() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-x-y-x")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned());
+    let (x, y) = (
+        repo.create(CreateOptions::default())?,
+        repo.create(CreateOptions::default())?,
+    );
+    let session = alarmed()?;
+    let send = |event| {
+        session
+            .events_sender()
+            .send(event)
+            .map(|_| ())
+            .map_err(|_| "closed")
+    };
+    session.attach_store(Arc::clone(&x))?;
+    send(child_at(300))?;
+    {
+        let mut ledger = lock_session(&x);
+        let id = ledger.next_id();
+        ledger.append_record(serde_json::from_value(serde_json::json!({"type": "usage",
+            "id": id, "lane": "main", "cause": "child_usage_attributed", "seq": 0,
+            "timestamp": 0, "usage": {"input": 600, "output": 0, "cacheRead": 0,
+            "cacheWrite": 0, "totalTokens": 600, "cost": {"input": 0, "output": 0,
+            "cacheRead": 0, "cacheWrite": 0, "total": 0}}}))?)?;
+    }
+    send(child_done(600))?;
+    let settle = || tokio::time::sleep(std::time::Duration::from_millis(150));
+    settle().await;
+    session.reset();
+    session.attach_store(y)?;
+    send(child_done(600))?;
+    send(turn_of(500))?;
+    settle().await;
+    assert_eq!(
+        session.pending_count(),
+        0,
+        "X's finished child counted in Y"
+    );
+    session.reset();
+    session.attach_store(x)?;
+    send(child_done(600))?;
+    send(turn_of(300))?;
+    settle().await;
+    assert_eq!(
+        session.pending_count(),
+        0,
+        "X's finished child counted twice"
+    );
+    send(turn_of(200))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "X's 1,100 crossed 1,000 and nothing fired"
     );
     Ok(())
 }
