@@ -433,6 +433,25 @@ fn a_model_wider_than_the_row_is_clipped_with_a_mark() {
     assert!(flat(&row).contains("模…"), "{}", flat(&row));
 }
 
+/// `⚠️` is 1 + 0 cells a character at a time and 2 as a string; clipping by the character sum
+/// left the row a cell over at every width the cut landed on one.
+#[test]
+fn a_model_with_emoji_presentation_is_clipped_by_drawn_width() {
+    let input = StatusInput {
+        model: "⚠️gpt-⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️-preview".to_owned(),
+        ..StatusInput::default()
+    };
+    for width in 8..=40 {
+        let row = yi_tui::status::render(&input, width, &theme());
+        assert!(
+            row.width() < width,
+            "{width}: {} cells: {}",
+            row.width(),
+            flat(&row)
+        );
+    }
+}
+
 /// A lane session's row names the checkout and the slot, not the pool's hash path.
 #[test]
 fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
