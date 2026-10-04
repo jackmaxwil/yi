@@ -92,3 +92,58 @@ async fn boot_once(python: PathBuf, home: PathBuf) -> Result<String, String> {
         cell.elapsed().as_millis()
     ))
 }
+
+/// `name:port` of each listener in `lsof -nP +c 0 -iTCP -sTCP:LISTEN`, once per IP family. All are
+/// reachable: Seatbelt's `localhost` is every address of this host, the LAN one included.
+pub fn reachable_listeners(lsof: &str) -> Vec<String> {
+    let mut seen = Vec::new();
+    for line in lsof.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (Some(name), Some(address)) = (fields.first(), fields.iter().rev().nth(1)) else {
+            continue;
+        };
+        let port = address.rsplit(':').next().unwrap_or(address);
+        let listener = format!("{}:{port}", name.replace("\\x20", " "));
+        if !seen.contains(&listener) {
+            seen.push(listener);
+        }
+    }
+    seen
+}
+
+/// The `sandbox-listeners` row's text: `lsof` read for two seconds, its failure said in the row.
+pub fn sandbox_listeners() -> String {
+    if !cfg!(target_os = "macos") {
+        return "no sandbox on this platform".to_owned();
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let cancelled: yi_tools::CancelFlag =
+        std::sync::Arc::new(move || std::time::Instant::now() >= deadline);
+    let mut lsof = yi_tools::command("/usr/sbin/lsof");
+    lsof.args(["-nP", "+c", "0", "-iTCP", "-sTCP:LISTEN"]);
+    match yi_tools::run_captured(lsof, None, &cancelled, 1 << 20) {
+        Ok(capture) if capture.cancelled || capture.truncated => {
+            "listeners not listed: lsof was cut at 2 s or 1 MiB".to_owned()
+        }
+        Ok(capture) => listeners_detail(&reachable_listeners(&capture.stdout)),
+        Err(error) => format!("listeners not listed: lsof did not run ({error})"),
+    }
+}
+
+/// The row's text, its cap named where it cuts.
+pub fn listeners_detail(listeners: &[String]) -> String {
+    const SHOWN: usize = 8;
+    let shown = listeners.iter().take(SHOWN).cloned().collect::<Vec<_>>();
+    let cut = match listeners.len().checked_sub(SHOWN) {
+        Some(more) if more > 0 => format!(
+            "; [{SHOWN} of {} shown (cap {SHOWN}); `lsof -nP -iTCP -sTCP:LISTEN` lists all]",
+            listeners.len()
+        ),
+        _ => String::new(),
+    };
+    format!(
+        "{} TCP listeners a contained process can reach: {}{cut}",
+        listeners.len(),
+        shown.join(", ")
+    )
+}

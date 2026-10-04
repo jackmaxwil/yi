@@ -1000,3 +1000,36 @@ async fn walled_roots_probe(
     }
     Ok((outputs, [id, root_id]))
 }
+
+/// A cell the sandbox refused says so: the Python error of a socket past loopback, and a
+/// `bash()` job whose `curl` cannot resolve a name and exits 0 through `|| true`. Neither text
+/// names the sandbox, and the kernel has no retry outside it, so the note promises none.
+#[tokio::test]
+async fn a_kernel_cell_the_sandbox_refused_names_the_sandbox() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("refused")?;
+    let session = root_session(&project, &home, &root.join("rlm"), None, None, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let socket = "import socket\nsocket.create_connection(('1.1.1.1', 80), 3)";
+    let job = "print(await bash(\"curl -sS -m5 https://example.com || true\"))";
+    let calm = "print(1 + 1)";
+    let mut notes = Vec::new();
+    for code in [socket, job, calm] {
+        let outcome = cell(&kernel, code.to_owned()).await?;
+        notes.push((code, outcome.notes.join("\n"), outcome.result));
+    }
+    kernel.dispose().await;
+    for (code, note, result) in &notes[..2] {
+        assert!(
+            note.contains("the sandbox refused") && note.contains("cannot leave it"),
+            "{code}: {note}\n{result:?}"
+        );
+        assert!(!note.contains("asks"), "{note}");
+    }
+    assert!(!notes[2].1.contains("sandbox"), "{}", notes[2].1);
+    Ok(())
+}

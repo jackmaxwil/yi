@@ -819,11 +819,14 @@ impl Tool for BashTool {
             sections.push(hint);
         }
         // The raw output, not the reduced text: a refusal line the reducer cut still counts.
+        let raw = format!("{}{}", capture.stdout, capture.stderr);
         let refusal = context.sandbox.as_ref().and_then(|sandbox| {
-            let raw = format!("{}{}", capture.stdout, capture.stderr);
             crate::sandbox::sandbox_refusal(sandbox, &context.cwd, capture.exit_code, &raw, command)
         });
         sections.extend(refusal.as_ref().map(crate::sandbox::denial_hint));
+        sections.extend(
+            (context.sandbox.as_ref()).and_then(|_| crate::sandbox::nested_sandbox_note(&raw)),
+        );
         let mut text = if sections.is_empty() {
             "(no output)".to_owned()
         } else {
