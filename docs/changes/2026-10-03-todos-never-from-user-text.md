@@ -1,6 +1,6 @@
 ---
 issue: Closes #1030, Closes #1031
-raise: crate tui +1, tests +79
+raise: crate tui +1, tests +71
 decision: user text never seeds the todo list: the agent alone writes todos, with the `first_list` backstop and the hidden planning hint kept and the hint now saying nothing was written for it and a pasted document is context; a list line needs one to three digits and a space after its marker (revises D148) | the owner: "Never from my text", and that the seed did not slice a message correctly and was low quality and noisy; pasted README text and numeric output such as `1.234 ms` filled the todo block before the model replied | restore `seed` and `seeded_text` from D148
 ---
 Typed or pasted text no longer becomes todos, and `/todo` views and clears them (Closes #1030, Closes #1031). A prompt with two list lines used to seed one pending item per line before the model said a word, so a pasted README or a pair of benchmark lines filled the block with cut fragments. That seed is deleted; the hidden planning hint stays and now tells the agent nothing was written for it, that it writes the list in its own words, and that a pasted document is context. `/todo` prints the list the way `yi todo` does, and `/todo clear` removes every item through the op the model uses, recorded as actor `user`; while a plan mirrors the list it refuses and names the plan.

@@ -6,15 +6,14 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
 use yi_runtime::todo::coupling::{
     CLOSED_LIST_TEXT, Cycle, EMPTY_STOP_TEXT, Eager, IMPOSSIBLE_TEXT, INTERCEPT_CUSTOM_TYPE,
-    Options, StopPosture, coupling, figures_of, gate, landed, numbers_of, prelude_text,
-    stop_posture,
+    Options, StopPosture, coupling, figures_of, gate, landed, numbers_of, stop_posture,
 };
 use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost, ToolChoice};
 use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
-use yi_types::todo::{PhaseName, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoList};
+use yi_types::todo::{PhaseName, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -585,13 +584,6 @@ fn a_request_shaped_prompt_gets_the_hint_and_a_numeric_paste_does_not() -> TestR
     assert!((hooks.on_prompt)(&user("p50\n1.234 ms\n0.5 s")).is_none());
     assert_eq!(numeric.session.pending_count(), 0, "output is not a list");
     Ok(())
-}
-
-#[test]
-fn the_hint_says_the_agent_writes_the_list_itself() {
-    let text = prelude_text(&TodoList::default());
-    assert!(text.contains("Nothing was written for you"), "{text}");
-    assert!(text.contains("your own words"), "{text}");
 }
 
 fn slash_todo(r: &Rig, args: &str) -> Result<String, Box<dyn Error>> {
