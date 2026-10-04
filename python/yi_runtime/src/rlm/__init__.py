@@ -350,6 +350,7 @@ class RLMModel:
     id: str
     name: str
     selector: str
+    cost: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -663,12 +664,18 @@ def _model_from_payload(payload: Any) -> RLMModel:
     selector = payload.get("selector")
     if not all(isinstance(value, str) and value for value in (provider, model_id, name, selector)):
         raise RuntimeError("rlm.find_models returned an invalid model entry")
-    return RLMModel(provider=provider, id=model_id, name=name, selector=selector)
+    cost = payload.get("cost")
+    if cost is not None and not isinstance(cost, dict):
+        raise RuntimeError("rlm.find_models returned an invalid model cost")
+    return RLMModel(provider=provider, id=model_id, name=name, selector=selector, cost=cost)
 
 
 @_public
 async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
-    """Search a bounded list of models backed by active user credentials."""
+    """Search a bounded list of models backed by active user credentials, in registry order.
+
+    Each model's ``cost`` is ``{input, output}`` in USD per million tokens, ``None`` when unknown.
+    """
     if not isinstance(query, str):
         raise TypeError(f"query must be str, got {type(query).__name__}")
     if not isinstance(limit, int):
@@ -868,7 +875,8 @@ async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
 async def status(name: str | None = None) -> "list[Reply] | Reply":
     """Every child's state as its own records show it (D165).
 
-    Each entry is ``{name, state, note, tools, tokens, idle_s, worktree}`` with ``state``
+    Each entry is ``{name, state, note, tools, tokens, cost, idle_s, worktree}`` (``cost`` the
+    USD its turns' usage records sum to) with ``state``
     one of ``queued`` (admitted, not yet started), ``running``, ``finished``, ``failed``
     (its run ended badly, or it sent you a ``failure`` of its own while still running),
     ``needs_you`` (it waits on your answer, ``note`` reading ``asks <id>: <question>``:

@@ -884,6 +884,79 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
     Ok(())
 }
 
+fn reduce_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/reduce/{name}"))
+}
+
+/// Incident: a two-crate build printed its one error at byte 23920 of 48279, the middle that
+/// the capture cut and the red path's line cap both dropped, under either exit status.
+#[test]
+fn a_red_workspace_build_keeps_its_error_through_the_reducer() -> TestResult {
+    let dir = temp_dir("reduce-red-workspace")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let build = reduce_fixture("red-workspace-build.txt");
+    let streamed = usize::try_from(fs::metadata(&build)?.len())?;
+    let cases = [
+        (format!("cat '{}'; exit 101", build.display()), 0),
+        (
+            format!("cat '{}'; echo EXIT=$?", build.display()),
+            "EXIT=0\n".len(),
+        ),
+    ];
+    for (command, extra) in cases {
+        let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
+        let text = output_text(&output);
+        assert!(text.contains("error[E0308]"), "{command}: {text}");
+        assert!(text.contains("b/src/main.rs:121:36"), "{command}: {text}");
+        let cap = yi_tools::OUTPUT_CAP;
+        let row = format!(
+            "[capture cut: kept {cap} of {} bytes (OUTPUT_CAP {cap}); every byte: ",
+            streamed + extra
+        );
+        assert!(
+            text.lines().any(|line| line.starts_with(&row)),
+            "{command}: no {row}: {text}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_omitted_lines_notice_names_lines_of_the_file_it_points_at() -> TestResult {
+    let dir = temp_dir("reduce-notice-lines")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let output = BashTool::default().execute(args(&[("command", json!("seq 1 20000"))]), &context);
+    let text = output_text(&output);
+    let range = (text.lines())
+        .find_map(|line| line.split_once(" lines omitted: ")?.1.strip_suffix(']'))
+        .and_then(|range| range.split_once('-'))
+        .ok_or_else(|| format!("no notice: {text}"))?;
+    let (from, to): (usize, usize) = (range.0.parse()?, range.1.parse()?);
+    let path = (text.lines())
+        .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .ok_or_else(|| format!("no pointer: {text}"))?;
+    let whole = fs::read_to_string(path)?;
+    let spill: Vec<&str> = whole.lines().collect();
+    let shown: std::collections::HashSet<&str> = text.lines().collect();
+    let at = |n: usize| {
+        spill
+            .get(n.wrapping_sub(1))
+            .copied()
+            .unwrap_or("<past the file>")
+    };
+    assert!(
+        shown.contains(at(from - 1)),
+        "line {} is not shown",
+        from - 1
+    );
+    assert!(shown.contains(at(to + 1)), "line {} is not shown", to + 1);
+    let named_but_shown: Vec<usize> = (from..=to).filter(|n| shown.contains(at(*n))).collect();
+    assert!(named_but_shown.is_empty(), "shown: {named_but_shown:?}");
+    Ok(())
+}
+
 #[test]
 fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let dir = temp_dir("background")?;
@@ -2338,6 +2411,47 @@ fn a_stopped_chain_says_so_beside_the_exit_code() -> TestResult {
         !plain.contains("chain stopped"),
         "a single command has no chain: {plain}"
     );
+    Ok(())
+}
+
+fn chain_notice_for(command: &str) -> String {
+    let output = BashTool::default().execute(
+        args(&[("command", json!(command))]),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    output_text(&output)
+}
+
+const CHAIN_NOTICE: &str = "inside a && chain";
+
+#[test]
+fn chain_notice_absent_when_the_list_ends_after_a_semicolon() -> TestResult {
+    let text = chain_notice_for("true && true; false");
+    assert!(text.contains("exit code: 1"), "{text}");
+    assert!(!text.contains(CHAIN_NOTICE), "{text}");
+    Ok(())
+}
+
+#[test]
+fn chain_notice_present_when_the_last_operator_is_and() -> TestResult {
+    let text = chain_notice_for("false && echo x");
+    assert_eq!(text.matches(CHAIN_NOTICE).count(), 1, "{text}");
+    Ok(())
+}
+
+#[test]
+fn chain_notice_ignores_a_quoted_and() -> TestResult {
+    let text = chain_notice_for("echo 'a && b'; false");
+    assert!(text.contains("exit code: 1"), "{text}");
+    assert!(!text.contains(CHAIN_NOTICE), "{text}");
+    Ok(())
+}
+
+#[test]
+fn chain_notice_present_after_a_failed_redirect() -> TestResult {
+    let text = chain_notice_for("echo x > /nonexistent-dir/f && echo y");
+    assert_eq!(text.matches(CHAIN_NOTICE).count(), 1, "{text}");
+    assert!(!text.contains("\ny\n"), "{text}");
     Ok(())
 }
 

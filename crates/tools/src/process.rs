@@ -10,6 +10,7 @@ use crate::spill::Spill;
 use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
+const OMITTED: &str = " bytes omitted from the middle]\n";
 
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
@@ -39,6 +40,38 @@ impl CommandCapture {
         self.truncated
             .then(|| kept.unwrap_or_else(|| "[output truncated]".to_owned()))
     }
+
+    /// The one row naming a cut capture: kept over total bytes, the cap, and the file with the rest.
+    pub fn cut_row(&self) -> Option<String> {
+        if !self.truncated {
+            return None;
+        }
+        let (kept, total) = [&self.stdout, &self.stderr].into_iter().fold(
+            (0_usize, 0_usize),
+            |(kept, total), stream| {
+                let (omitted, marker) = omitted_bytes(stream).unwrap_or((0, 0));
+                let shown = stream.len().saturating_sub(marker);
+                (
+                    kept.saturating_add(shown),
+                    total.saturating_add(shown).saturating_add(omitted),
+                )
+            },
+        );
+        let rest = match self.spill.as_deref().and_then(spill_path) {
+            Some((label, path)) => format!("{label}: {path}"),
+            None => "no file kept the rest".to_owned(),
+        };
+        Some(format!(
+            "[capture cut: kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP}); {rest}]"
+        ))
+    }
+}
+
+/// The label (`every byte`, or the clip) and the path of a `[full output: …]` pointer.
+pub(crate) fn spill_path(pointer: &str) -> Option<(&str, &str)> {
+    let rest = pointer.strip_prefix("[full output")?.strip_suffix(']')?;
+    let (clip, path) = rest.split_once(": ")?;
+    Some((clip.strip_prefix(", ").unwrap_or("every byte"), path))
 }
 
 /// Walk the descendants, then kill the group, the shell and each walked pid: a live grandchild
@@ -197,10 +230,16 @@ fn drain_capped(
     }
     let head = String::from_utf8_lossy(&head);
     let tail = String::from_utf8_lossy(tail);
-    (
-        format!("{head}\n[{omitted} bytes omitted from the middle]\n{tail}"),
-        true,
-    )
+    (format!("{head}\n[{omitted}{OMITTED}{tail}"), true)
+}
+
+/// The bytes [`drain_capped`] cut from `stream`, and the length of the marker it wrote there.
+pub(crate) fn omitted_bytes(stream: &str) -> Option<(usize, usize)> {
+    stream.match_indices("\n[").find_map(|(at, _)| {
+        let (digits, _) = stream.get(at.saturating_add(2)..)?.split_once(OMITTED)?;
+        let omitted = digits.parse().ok()?;
+        Some((omitted, digits.len().saturating_add(2 + OMITTED.len())))
+    })
 }
 
 /// Incident: waiting under the guard parked the cancel watchdog on the same lock, so an early

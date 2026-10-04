@@ -400,6 +400,7 @@ mod tests {
             note: None,
             tools: 0,
             tokens: 0,
+            cost: 0.0,
             idle_s: 0,
             worktree: None,
         };
