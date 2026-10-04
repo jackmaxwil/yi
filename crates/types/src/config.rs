@@ -86,7 +86,7 @@ pub struct ClassifierConfig {
     pub allow_at: Option<serde_json::Number>,
     pub allow_destructive_at: Option<serde_json::Number>,
     pub ask_at: Option<serde_json::Number>,
-    /// The `after-delay` wait, at least 1 s, before the classifier answers an ask nobody has.
+    /// The `after-delay` wait before the classifier answers an ask nobody has; 0 never hands it over.
     pub ask_timeout_secs: Option<u64>,
 }
 

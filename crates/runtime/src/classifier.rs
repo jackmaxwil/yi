@@ -472,9 +472,10 @@ pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
     };
     match mode {
         ApprovalMode::Instant => Some(Timing::Instant),
-        ApprovalMode::AfterDelay => Some(Timing::AfterDelay(Duration::from_secs(
-            block.ask_timeout_secs.unwrap_or(DEFAULT_DELAY_SECS).max(1),
-        ))),
+        ApprovalMode::AfterDelay => match block.ask_timeout_secs.unwrap_or(DEFAULT_DELAY_SECS) {
+            0 => None,
+            secs => Some(Timing::AfterDelay(Duration::from_secs(secs))),
+        },
         ApprovalMode::WaitForUser => None,
     }
 }
@@ -500,10 +501,19 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         ask_at: number(&block.ask_at, DEFAULT_ASK_AT),
     };
     let timing = timing(&block);
-    let chosen = block.approval.is_some() || block.approve.is_some();
+    let mut warnings = Vec::new();
+    let key = match yi_ai::auth::key_in(home, "laya") {
+        Ok(key) => Some(key.expose().to_owned()),
+        Err(error) => {
+            warnings.push(format!(
+                "no laya key could be made ({error}), so the classifier approves nothing"
+            ));
+            None
+        }
+    };
     let sidecar = Sidecar {
         url,
-        key: yi_ai::auth::api_key("laya").map(|secret| secret.expose().to_owned()),
+        key,
         model,
         timeout: Duration::from_millis(block.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         threshold: block
@@ -511,21 +521,15 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             .as_ref()
             .and_then(serde_json::Number::as_f64),
     };
-    let mut warnings = Vec::new();
-    if let Some(timing) = timing {
-        match (&sidecar.key, session.permission_broker()) {
-            (None, _) if chosen => warnings.push(
-                "classifier approval is on but no laya key exists yet (`yi serve` makes one, or export LAYA_API_KEY), so the classifier approves nothing"
-                    .to_owned(),
-            ),
-            (Some(_), Some(broker)) => broker.set_approver(Arc::new(Approver::new(
-                sidecar.clone(),
-                thresholds,
-                timing,
-                journal(session),
-            ))),
-            _ => {}
-        }
+    if let (Some(timing), Some(_), Some(broker)) =
+        (timing, &sidecar.key, session.permission_broker())
+    {
+        broker.set_approver(Arc::new(Approver::new(
+            sidecar.clone(),
+            thresholds,
+            timing,
+            journal(session),
+        )));
     }
     let Some(rules) = session.rules_engine() else {
         return warnings;
