@@ -7,8 +7,8 @@ use yi_types::record::LaneRecord;
 
 use crate::AgentSession;
 
-/// Invariant: a side call that reports spend leaves one `Usage` record on the main lane, so the
-/// stored cost total cannot undercount it; a known zero leaves no row.
+/// Invariant: a side call that reports spend leaves one [`yi_types::record::LaneRecord::Usage`]
+/// on the main lane, so the cost total cannot undercount it; a known zero leaves no row.
 pub(crate) fn book_side_call(
     store: &yi_session::SharedSession,
     cause: &str,

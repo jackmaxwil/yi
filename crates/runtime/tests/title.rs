@@ -189,3 +189,43 @@ async fn a_title_call_is_booked_even_when_its_reply_is_unusable() -> Result<(), 
     }
     Ok(())
 }
+
+/// Dies with a row of zeros per free call: the faux provider, an HTTP 4xx refusal and a local
+/// model all report a known zero, and each would append a `Usage` record that says nothing.
+#[tokio::test]
+async fn a_side_call_that_reports_no_spend_books_no_row() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-title-zero")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-title-zero");
+    let store = repo.create(CreateOptions {
+        id: Some("titled-zero".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        faux_assistant_message(vec![faux_text("The gauge now counts.")], StopReason::Stop),
+        faux_assistant_message(vec![faux_text("Fix the context gauge")], StopReason::Stop),
+    ]);
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("the status row says 0 / 1M")?;
+    session.wait_idle().await;
+    let title = yi_runtime::title::title_session(&session).await?;
+    assert_eq!(title.as_deref(), Some("Fix the context gauge"));
+    let booked = lock_session(&store)
+        .find_records(&yi_session::RecordQuery::default())?
+        .into_iter()
+        .filter(|record| {
+            matches!(record, yi_types::record::LaneRecord::Usage { cause, .. } if cause.starts_with("side:"))
+        })
+        .count();
+    assert_eq!(booked, 0);
+    Ok(())
+}
