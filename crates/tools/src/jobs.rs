@@ -572,6 +572,7 @@ pub fn run_or_background(
                         exit_code: None,
                         cancelled: true,
                         truncated: false,
+                        cut: None,
                         kill_error: None,
                         spill: None,
                     })))
@@ -645,6 +646,7 @@ mod tests {
             exit_code: Some(0),
             cancelled: false,
             truncated: false,
+            cut: None,
             spill: None,
             kill_error: None,
         }
@@ -827,6 +829,7 @@ mod tests {
                 exit_code: None,
                 cancelled: true,
                 truncated: false,
+                cut: None,
                 spill: None,
                 kill_error: Some("/bin/sh: No such file or directory".to_owned()),
             },

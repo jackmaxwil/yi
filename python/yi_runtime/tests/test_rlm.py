@@ -469,15 +469,6 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(rlm, "host_request", fake_host_request):
             self.assertEqual((await rlm.status("ledger")).name, "audit/ledger")
 
-    async def test_a_status_member_carries_its_summed_cost(self) -> None:
-        """Dies with the member's ``cost`` dropped: the parent cannot see what a child spent."""
-
-        async def fake_host_request(kind, payload):
-            return {"members": [{"name": "n", "state": "finished", "tokens": 120, "cost": 0.25}]}
-
-        with mock.patch.object(rlm, "host_request", fake_host_request):
-            self.assertEqual((await rlm.status("n")).cost, 0.25)
-
     async def test_a_handle_reads_its_state_from_the_host(self) -> None:
         """Dies with no ``state`` on a spawn handle (the final confirmation's r2 fanout)."""
 

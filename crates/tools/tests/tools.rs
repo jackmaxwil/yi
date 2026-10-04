@@ -911,7 +911,7 @@ fn a_red_workspace_build_keeps_its_error_through_the_reducer() -> TestResult {
         assert!(text.contains("b/src/main.rs:121:36"), "{command}: {text}");
         let cap = yi_tools::OUTPUT_CAP;
         let row = format!(
-            "[capture cut: kept {cap} of {} bytes (OUTPUT_CAP {cap}); every byte: ",
+            "[capture cut: kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream); every byte: ",
             streamed + extra
         );
         assert!(
