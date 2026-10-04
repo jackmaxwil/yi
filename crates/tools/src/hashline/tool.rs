@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
-use super::format::{format_hashline_header, format_numbered_line};
+use super::format::{FileTag, compute_file_hash, format_hashline_header, format_numbered_line};
 use super::input::Patch;
 use super::normalize::{normalize_to_lf, strip_bom};
 use super::patcher::{PatchSectionResult, Patcher, SectionOp};
@@ -135,11 +135,39 @@ impl Tool for HashlineReadTool {
         if display_path.contains(['*', '?', '[']) {
             return self.read_glob(&display_path, context);
         }
+        // Incident: grep prints hits under `[path#TAG]` and a reader passed that `path#TAG`
+        // to read, which found no such file (#993). A file really named so still reads.
+        let tagged = (!resolve_path(context, &display_path).exists())
+            .then(|| super::tokenizer::try_parse_header(&format!("[{display_path}]")))
+            .flatten()
+            .and_then(|header| Some((header.path, FileTag::parse(&header.file_hash?)?)))
+            .filter(|(bare, _)| resolve_path(context, bare).is_file());
+        let (display_path, tag) = match tagged {
+            Some((bare, tag)) => (bare, Some(tag)),
+            None => (display_path, None),
+        };
         let path = resolve_path(context, &display_path);
         if path.is_dir() {
             return read_dir(&display_path, &path, context);
         }
-        self.read_file(&display_path, &path, &input, context)
+        let mut output = self.read_file(&display_path, &path, &input, context);
+        let live = tag.and_then(|tag| {
+            let text = String::from_utf8(context.read(&path).ok()?).ok()?;
+            let live = compute_file_hash(&normalize_to_lf(strip_bom(&text).text));
+            (live != tag).then_some((tag, live))
+        });
+        if let Some((tag, live)) = live
+            && let Some(yi_types::message::Content::Text { text, .. }) =
+                output.result.content.first_mut()
+        {
+            text.insert_str(
+                0,
+                &format!(
+                    "[{display_path}#{tag} is not the current version: the file is now #{live}; this is the current content]\n"
+                ),
+            );
+        }
+        output
     }
 }
 
