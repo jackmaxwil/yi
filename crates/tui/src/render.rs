@@ -427,7 +427,8 @@ pub fn paint_pane(
     let (shown, owners, thumb) = if *scroll == 0 {
         app.pane_hold = None;
         let history = yi_types::trace::span("tui.history_rows");
-        let want = above.saturating_sub(live.len()).max(1);
+        // One spare row: the seam may collapse a blank, and the trim below keeps `above`.
+        let want = above.saturating_sub(live.len()).saturating_add(1);
         let (mut column, mut owners) = app.history.lines(width, &theme, mode, want);
         drop(history);
         join_live(&mut column, false, live);
