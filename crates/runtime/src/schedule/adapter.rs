@@ -312,7 +312,7 @@ fn poll(
 /// Emits on a change of exit status, not per output line: a check is a level, red or green,
 /// and a line stream would re-send the same log on every run of an unchanged check.
 fn exec(command: &str, cwd: &Path) -> Value {
-    let mut shell = yi_tools::command("sh");
+    let mut shell = yi_tools::keyless_command("sh");
     shell.arg("-c").arg(command).current_dir(cwd);
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(EXEC_TIMEOUT_MS))
