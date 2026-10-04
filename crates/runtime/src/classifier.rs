@@ -35,6 +35,12 @@ pub struct Sidecar {
     pub threshold: Option<f64>,
 }
 
+impl Sidecar {
+    fn named(&self, error: &str) -> String {
+        format!("{}: {error}", self.url)
+    }
+}
+
 #[derive(Default)]
 struct Breaker {
     failures: u32,
@@ -196,7 +202,7 @@ impl SkillClassifier {
                 if fail(&self.breaker) {
                     (self.deliver)(self.notice(&error));
                 }
-                record.error = Some(error);
+                record.error = Some(self.sidecar.named(&error));
                 (self.record)(record);
                 return;
             }
@@ -353,7 +359,7 @@ impl Approver {
             }
             Err(error) => {
                 fail(&self.breaker);
-                record.error = Some(error);
+                record.error = Some(self.sidecar.named(&error));
                 None
             }
         };
@@ -441,11 +447,27 @@ pub fn probe(url: &str, checkpoint: &str) -> Result<(), String> {
     }
 }
 
+pub struct Endpoint {
+    pub checkpoint: String,
+    pub url: String,
+}
+
+pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
+    Some(Endpoint {
+        checkpoint: config.models.as_ref()?.classifier.clone()?,
+        url: config
+            .classifier
+            .as_ref()
+            .and_then(|block| block.url.clone())
+            .unwrap_or_else(|| DEFAULT_URL.to_owned()),
+    })
+}
+
 pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
-    let Some(model) = config
-        .models
-        .as_ref()
-        .and_then(|roles| roles.classifier.clone())
+    let Some(Endpoint {
+        checkpoint: model,
+        url,
+    }) = endpoint(config)
     else {
         return Vec::new();
     };
@@ -463,7 +485,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
     };
     let approve = block.approve == Some(true);
     let sidecar = Sidecar {
-        url: block.url.unwrap_or_else(|| DEFAULT_URL.to_owned()),
+        url,
         key: yi_ai::auth::api_key("laya").map(|secret| secret.expose().to_owned()),
         model,
         timeout: Duration::from_millis(block.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),

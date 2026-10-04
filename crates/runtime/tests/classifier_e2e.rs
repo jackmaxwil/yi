@@ -233,12 +233,19 @@ async fn at_the_threshold_it_points_and_never_twice() -> TestResult {
 async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    let named = format!("127.0.0.1:{port}");
     for turn in 0..3 {
         rig.engine.observe_user(&typed("land this branch"));
         let record = next(&rig, Duration::from_secs(5))
             .await
             .ok_or("no failure recorded")?;
-        assert!(record.error.is_some(), "turn {turn}: {record:?}");
+        assert!(
+            record
+                .error
+                .as_deref()
+                .is_some_and(|error| error.matches(&named).count() == 1),
+            "turn {turn}: the journal names the sidecar once: {record:?}"
+        );
     }
     let notices = delivered(&rig);
     assert_eq!(notices.len(), 1, "{notices:?}");
@@ -247,6 +254,10 @@ async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
             .iter()
             .all(|text| text.contains("failed 3 times") && text.contains("trigger words only")),
         "{notices:?}"
+    );
+    assert!(
+        notices.iter().all(|text| text.matches(&named).count() == 1),
+        "the notice names the sidecar once: {notices:?}"
     );
     let pointed = rig.engine.observe_user(&typed("$gate please"));
     assert_eq!(
@@ -479,6 +490,25 @@ fn a_confident_answer_runs_an_unknown_command_unreviewed() -> TestResult {
     assert!(
         body.contains(r#""type":"noul""#) && body.contains("make build"),
         "{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dead_sidecar_journals_the_approval_it_could_not_give_naming_it_once() -> TestResult {
+    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
+    let outcome = run(&gate, "make build");
+    assert!(!outcome.allowed, "{}", outcome.reason);
+    let record = gate.records.recv_timeout(Duration::from_secs(5))?;
+    let named = format!("127.0.0.1:{port}");
+    assert!(
+        record.consumer == "approve"
+            && record
+                .error
+                .as_deref()
+                .is_some_and(|error| error.matches(&named).count() == 1),
+        "{record:?}"
     );
     Ok(())
 }
