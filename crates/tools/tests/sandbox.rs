@@ -1067,6 +1067,12 @@ fn a_refused_ping_gets_its_own_hint() -> TestResult {
     .ok_or_else(|| format!("exit {code}: {output}"))?;
     let hint = denial_hint(&refusal);
     assert!(hint.contains("ICMP") && hint.contains("`ping`"), "{hint}");
+    // Another program refused beside it: ICMP is named for none of them.
+    let mixed = "ping -c1 -W1 1.1.1.1; curl -sS -m5 https://example.com";
+    let (code, output) = run(mixed, &project, Some(&sandbox))?;
+    let refusal = sandbox_refusal(&sandbox, &project, Some(code), &output, mixed)
+        .ok_or_else(|| format!("exit {code}: {output}"))?;
+    assert!(!denial_hint(&refusal).contains("ICMP"), "{refusal:?}");
     let (code, output) = run("ping -c1 127.0.0.1", &project, Some(&sandbox))?;
     assert_eq!(code, 0, "loopback ping works: {output}");
     assert_eq!(
@@ -1082,34 +1088,80 @@ fn a_refused_ping_gets_its_own_hint() -> TestResult {
     Ok(())
 }
 
-/// A name that fails to resolve behind `|| true` or a pipe exits 0; the refusal still counts.
-/// Printed text does not: a grep that finds the phrase in a file is the degenerate case.
+/// A name that fails to resolve behind `|| true` or a pipe exits 0. The output is a note and never
+/// a recorded refusal, since fetched or printed text can quote the phrase and no ask may follow
+/// it: a `curl -s` of a page holding the phrase, a python print and a grep are the other side.
 #[test]
-fn a_refused_network_call_behind_a_zero_exit_is_found() -> TestResult {
+fn a_network_refusal_behind_a_zero_exit_is_a_note_and_never_recorded() -> TestResult {
     let (_root, project, home) = workspace("zero")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let phrase = "curl: (6) Could not resolve host: example.com";
     std::fs::write(
-        project.join("notes.txt"),
-        "curl: (6) Could not resolve host: example.com\n",
+        project.join("page.html"),
+        "<p>Could not resolve host: example.com</p>\n",
     )?;
+    std::fs::write(project.join("quoted.html"), format!("{phrase}\n"))?;
+    let page = format!("curl -s file://{}/page.html", project.display());
+    let print = "python3 -c \"print('Could not resolve host: example.com')\"".to_owned();
+    let grep = "grep -rn 'resolve host' .".to_owned();
     for command in [
         "curl -sS -m5 https://example.com || echo done",
         "git ls-remote https://github.com/octocat/Hello-World 2>&1 | tail -3",
     ] {
         let (code, output) = run(command, &project, Some(&sandbox))?;
         assert_eq!(code, 0, "{command}: {output}");
-        let found = sandbox_refusal(&sandbox, &project, Some(code), &output, command);
         assert!(
-            matches!(found, Some(SandboxRefusal::Scopes(_))),
+            yi_tools::exit_zero_note(&output, command).is_some(),
             "{command}: {output}"
         );
+        assert_eq!(
+            sandbox_refusal(&sandbox, &project, Some(code), &output, command),
+            None
+        );
     }
-    let grep = "grep -rn 'resolve host' .";
-    let (code, output) = run(grep, &project, Some(&sandbox))?;
-    assert!(output.contains("Could not resolve host"), "{output}");
-    assert_eq!(
-        sandbox_refusal(&sandbox, &project, Some(code), &output, grep),
-        None
-    );
+    for command in [page, print, grep] {
+        let (code, output) = run(&command, &project, Some(&sandbox))?;
+        assert_eq!(code, 0, "{command}: {output}");
+        assert!(output.contains("resolve host"), "{command}: {output}");
+        assert_eq!(
+            yi_tools::exit_zero_note(&output, &command),
+            None,
+            "{command}"
+        );
+        assert_eq!(
+            sandbox_refusal(&sandbox, &project, Some(code), &output, &command),
+            None
+        );
+    }
+    // Through the bash tool: the note shows, the broker is handed nothing to remember.
+    let mut context = ToolContext::new(project.clone());
+    context.sandbox = Some(sandbox);
+    for (command, noted) in [
+        (
+            "curl -sS -m5 https://example.com || echo done".to_owned(),
+            true,
+        ),
+        (
+            format!("curl -s file://{}/page.html", project.display()),
+            false,
+        ),
+    ] {
+        let mut input = serde_json::Map::new();
+        input.insert("command".to_owned(), command.clone().into());
+        let result = yi_tools::BashTool::default()
+            .execute(input, &context)
+            .result;
+        let text = format!("{:?}", result.content);
+        assert_eq!(
+            text.contains("nothing is recorded"),
+            noted,
+            "{command}: {text}"
+        );
+        assert!(
+            result.details["sandboxRefusal"].is_null(),
+            "{command}: {}",
+            result.details
+        );
+    }
     Ok(())
 }

@@ -37,7 +37,8 @@ pub use orient::GetContextTool;
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{
-    Sandbox, SandboxRefusal, denial_hint, kernel_cell_note, nested_sandbox_note, sandbox_refusal,
+    Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
+    outcome_note, sandbox_refusal,
 };
 pub use spill::{FLAT_SPILLS, SPILLS};
 pub use tool::{
