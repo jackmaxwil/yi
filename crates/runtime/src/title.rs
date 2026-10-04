@@ -65,15 +65,17 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
         tools: None,
         tool_choice: None,
     };
-    let (text, usage) = crate::compaction::complete_text(
+    let (reply, usage) = crate::compaction::complete_text(
         session.provider(),
         &model,
         &context,
         model.clamp_effort(yi_types::model::Effort::Off),
         &InterruptSignal::default(),
     )
-    .await?;
-    crate::spend::book_side_call(&store, "side:title", usage).map_err(|error| error.to_string())?;
+    .await;
+    // A lost cost row must not cost the session its title.
+    crate::spend::book_side_call(&store, "side:title", usage).ok();
+    let text = reply?;
     let Some(title) = clean(&text) else {
         return Err(format!("the summarizer's title was empty: {text:?}"));
     };

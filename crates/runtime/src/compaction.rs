@@ -289,46 +289,46 @@ fn synthesize_entries(messages: &[AgentMessage]) -> Vec<Entry> {
         .collect()
 }
 
+/// Invariant: the usage is the terminal message's own, error stops included: a reply that
+/// ended in an error was still billed when the provider reported tokens, so it is never dropped.
 pub(crate) async fn complete_text(
     provider: &ProviderStream,
     model: &Model,
     context: &LlmContext,
     effort: Effort,
     signal: &InterruptSignal,
-) -> Result<(String, Usage), String> {
+) -> (Result<String, String>, Usage) {
     let mut receiver = provider.stream(model, context, effort, signal);
     while let Some(event) = receiver.recv().await {
-        match event {
-            AssistantMessageEvent::Done { message, .. } => {
-                if let AgentMessage::Assistant {
-                    content,
-                    stop_reason,
-                    error_message,
-                    usage,
-                    ..
-                } = message
-                {
-                    if stop_reason == StopReason::Error {
-                        return Err(error_message.unwrap_or_else(|| "unknown error".to_owned()));
-                    }
-                    let text: String = yi_types::message::join_text(&content, "\n");
-                    return Ok((text, usage));
-                }
-                return Err("summarizer returned a non-assistant message".to_owned());
-            }
-            AssistantMessageEvent::Error { error, .. } => {
-                let text = match error {
-                    AgentMessage::Assistant { error_message, .. } => {
-                        error_message.unwrap_or_else(|| "unknown error".to_owned())
-                    }
-                    _ => "unknown error".to_owned(),
-                };
-                return Err(text);
-            }
-            _ => {}
-        }
+        let (AssistantMessageEvent::Done { message, .. }
+        | AssistantMessageEvent::Error { error: message, .. }) = event
+        else {
+            continue;
+        };
+        let AgentMessage::Assistant {
+            content,
+            stop_reason,
+            error_message,
+            usage,
+            ..
+        } = message
+        else {
+            return (
+                Err("summarizer returned a non-assistant message".to_owned()),
+                Usage::zero(),
+            );
+        };
+        let text = if stop_reason == StopReason::Error {
+            Err(error_message.unwrap_or_else(|| "unknown error".to_owned()))
+        } else {
+            Ok(yi_types::message::join_text(&content, "\n"))
+        };
+        return (text, usage);
     }
-    Err("summarizer stream ended without a terminal event".to_owned())
+    (
+        Err("summarizer stream ended without a terminal event".to_owned()),
+        Usage::zero(),
+    )
 }
 
 fn merge(standing: Option<String>, once: Option<String>) -> Option<String> {
@@ -633,9 +633,15 @@ impl Compactor {
             }
         };
         let summarize = |context: LlmContext, warm: bool| async move {
-            match complete_text(provider, summarizer, &context, effort(warm), signal).await {
+            let (reply, usage) =
+                complete_text(provider, summarizer, &context, effort(warm), signal).await;
+            if let Some(store) = store {
+                // A lost cost row must not undo a compaction that can still apply.
+                crate::spend::book_side_call(store, "side:compact", usage).ok();
+            }
+            match reply {
                 // With the loop's tools attached a reply can be a call alone: no summary in it.
-                Ok((text, _)) if text.trim().is_empty() => {
+                Ok(text) if text.trim().is_empty() => {
                     Err("the summarizer returned no text".to_owned())
                 }
                 outcome => outcome,
@@ -663,11 +669,7 @@ impl Compactor {
             }
         }
         let (composed, mut details, retained_tail, elision) = match summary {
-            Ok((text, usage)) => {
-                if let Some(store) = store {
-                    // A lost cost row must not undo a compaction that is about to apply.
-                    crate::spend::book_side_call(store, "side:compact", usage).ok();
-                }
+            Ok(text) => {
                 let (composed, details) =
                     compose_summary(&text, &prepared.file_ops, &prepared.view);
                 (
