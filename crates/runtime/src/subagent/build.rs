@@ -186,7 +186,7 @@ impl SubagentHost {
         {
             // ponytail: `messages` trails a live turn, so counters only ever move up here.
             let messages = record.session.messages();
-            let mut fresh = (0_u64, 0_u64);
+            let mut fresh = (0_u64, 0_u64, 0.0_f64);
             for message in record.billable(&messages) {
                 if let AgentMessage::Assistant { usage, content, .. } = message {
                     let calls = content
@@ -197,10 +197,12 @@ impl SubagentHost {
                     fresh.1 = fresh
                         .1
                         .saturating_add(u64::try_from(usage.total_tokens).unwrap_or(0));
+                    fresh.2 += usage.cost.total.as_f64().unwrap_or(0.0);
                 }
             }
             record.tool_use_count = record.tool_use_count.max(fresh.0);
             record.token_count = record.token_count.max(fresh.1);
+            record.cost = record.cost.max(fresh.2);
             let live = record.session.status() == crate::session::Status::Running;
             running = live || (record.exit.is_none() && !record.concluding);
             record.activity = if live {

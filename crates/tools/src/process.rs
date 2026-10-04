@@ -30,6 +30,8 @@ pub struct CommandCapture {
     /// When a stream was cut and a recovery dir was given, the pointer to a file with every byte
     /// of both streams, interleaved as they arrived.
     pub spill: Option<String>,
+    /// Bytes kept over bytes received, summed over both streams, when a stream was cut.
+    pub cut: Option<(usize, usize)>,
 }
 
 impl CommandCapture {
@@ -39,6 +41,25 @@ impl CommandCapture {
         self.truncated
             .then(|| kept.unwrap_or_else(|| "[output truncated]".to_owned()))
     }
+
+    /// The one row naming a cut capture: kept over total bytes, the cap, and the file with the rest.
+    pub fn cut_row(&self) -> Option<String> {
+        let (kept, total) = self.cut.filter(|_| self.truncated)?;
+        let rest = match self.spill.as_deref().and_then(spill_path) {
+            Some((label, path)) => format!("{label}: {path}"),
+            None => "no file kept the rest".to_owned(),
+        };
+        Some(format!(
+            "[capture cut: kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP} per stream); {rest}]"
+        ))
+    }
+}
+
+/// The label (`every byte`, or the clip) and the path of a `[full output: …]` pointer.
+pub(crate) fn spill_path(pointer: &str) -> Option<(&str, &str)> {
+    let rest = pointer.strip_prefix("[full output")?.strip_suffix(']')?;
+    let (clip, path) = rest.split_once(": ")?;
+    Some((clip.strip_prefix(", ").unwrap_or("every byte"), path))
 }
 
 /// Walk the descendants, then kill the group, the shell and each walked pid: a live grandchild
@@ -163,7 +184,7 @@ fn drain_capped(
     cap: usize,
     live: Option<&LiveOutput>,
     spill: &Mutex<Spill>,
-) -> (String, bool) {
+) -> (String, Option<(usize, usize)>) {
     let head_cap = cap / 2;
     let tail_cap = cap.saturating_sub(head_cap);
     let mut head = Vec::new();
@@ -193,13 +214,15 @@ fn drain_capped(
     let tail = tail.make_contiguous();
     if omitted == 0 {
         head.extend_from_slice(tail);
-        return (String::from_utf8_lossy(&head).into_owned(), false);
+        return (String::from_utf8_lossy(&head).into_owned(), None);
     }
+    let kept = head.len().saturating_add(tail.len());
+    let cut = (kept, kept.saturating_add(omitted));
     let head = String::from_utf8_lossy(&head);
     let tail = String::from_utf8_lossy(tail);
     (
         format!("{head}\n[{omitted} bytes omitted from the middle]\n{tail}"),
-        true,
+        Some(cut),
     )
 }
 
@@ -306,15 +329,15 @@ pub(crate) fn run_captured_live(
     let stderr_spill = Arc::clone(&spill);
     let stderr_reader = std::thread::spawn(move || match stderr_pipe {
         Some(pipe) => drain_capped(pipe, cap, stderr_live.as_deref(), &stderr_spill),
-        None => (String::new(), false),
+        None => (String::new(), None),
     });
-    let (stdout, stdout_truncated) = match stdout_pipe {
+    let (stdout, stdout_cut) = match stdout_pipe {
         Some(pipe) => drain_capped(pipe, cap, live.as_deref(), &spill),
-        None => (String::new(), false),
+        None => (String::new(), None),
     };
-    let (stderr, stderr_truncated) = stderr_reader
+    let (stderr, stderr_cut) = stderr_reader
         .join()
-        .unwrap_or_else(|_| (String::new(), false));
+        .unwrap_or_else(|_| (String::new(), None));
 
     let waited = wait_polled(&child, &done);
     done.store(true, Ordering::SeqCst);
@@ -326,7 +349,18 @@ pub(crate) fn run_captured_live(
         let _writer_done = writer.join();
     }
 
-    let truncated = stdout_truncated || stderr_truncated;
+    let cut = match (stdout_cut, stderr_cut) {
+        (None, None) => None,
+        (out, err) => {
+            let (kept, total) = out.unwrap_or_default();
+            let (err_kept, err_total) = err.unwrap_or_default();
+            Some((
+                kept.saturating_add(err_kept),
+                total.saturating_add(err_total),
+            ))
+        }
+    };
+    let truncated = cut.is_some();
     let spill = spill.lock().ok().filter(|_| truncated);
     Ok(CommandCapture {
         stdout,
@@ -336,6 +370,7 @@ pub(crate) fn run_captured_live(
         truncated,
         kill_error,
         spill: spill.and_then(|mut spill| spill.keep()),
+        cut,
     })
 }
 
@@ -367,7 +402,7 @@ mod tests {
         let spill = Mutex::new(Spill::new(None));
         assert_eq!(
             drain_capped(text.as_bytes(), 35, None, &spill),
-            (text, false)
+            (text, None)
         );
     }
 
