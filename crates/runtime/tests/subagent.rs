@@ -87,6 +87,25 @@ fn family(label: &str) -> Result<(scratch::Scratch, support::Family), Box<dyn st
     Ok((root, family))
 }
 
+/// Dies with no `cost` on a member: the parent sees tokens but not the dollars a child spent,
+/// which is the reader-model choice made blind to price.
+#[tokio::test]
+async fn status_reports_the_summed_cost_of_a_child() -> TestResult {
+    let (_root, family) = family("yi-status-cost")?;
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("priced"))]))?;
+    assert!(family.reaches("priced", "finished").await);
+    let status = family.host.status();
+    let members = status["members"].as_array().ok_or("no members")?;
+    let member = members
+        .iter()
+        .find(|member| member["name"] == "priced")
+        .ok_or("no priced member")?;
+    assert_eq!(member["cost"], json!(0.25), "{member}");
+    Ok(())
+}
+
 /// Dies with the refusal in `draw`: clamp instead and a child told it has ten minutes is cut
 /// at two with no word why, which is the silent failure the both-numbers refusal replaces.
 #[tokio::test]

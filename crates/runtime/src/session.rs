@@ -17,7 +17,7 @@ mod run;
 
 use deadline::Deadline;
 use run::Queued;
-pub use run::StillNews;
+pub use run::{FollowUpFn, StillNews};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -60,7 +60,7 @@ struct Shared {
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<VecDeque<Queued>>,
     mail: Arc<tokio::sync::Notify>,
-    follow_up: Mutex<Vec<AgentMessage>>,
+    follow_up: Mutex<Vec<Queued>>,
     tools: Mutex<Vec<Arc<dyn yi_loop::AgentTool>>>,
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
