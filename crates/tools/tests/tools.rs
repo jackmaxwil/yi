@@ -3069,3 +3069,32 @@ fn a_rustup_proxy_is_asked_once_and_its_binary_runs_directly() -> TestResult {
     }
     Ok(())
 }
+
+/// #906: yi's provider keys reached every uncontained bash call (yolo, an approved run outside
+/// the sandbox, any host with no sandbox), where `printenv` passes as read-only.
+#[test]
+fn bash_inherits_no_provider_key() -> TestResult {
+    let keys = [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "LAYA_API_KEY",
+    ];
+    for name in keys.iter().chain(&["YI_906_ORDINARY"]) {
+        // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+        unsafe { std::env::set_var(name, format!("ENV-906-{name}")) };
+    }
+    let dir = temp_dir("bash-keys")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let shown = BashTool::default().execute(args(&[("command", json!("env"))]), &context);
+    let text = output_text(&shown);
+    let leaked: Vec<&str> = (keys.into_iter())
+        .filter(|name| text.contains(&format!("ENV-906-{name}")))
+        .collect();
+    assert!(
+        !shown.is_error && text.contains("ENV-906-YI_906_ORDINARY") && leaked.is_empty(),
+        "bash `env` saw {leaked:?} or lost an ordinary variable"
+    );
+    Ok(())
+}
