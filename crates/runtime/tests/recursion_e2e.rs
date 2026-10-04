@@ -1141,36 +1141,42 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
     Ok(())
 }
 
-/// Dies with the 100 ms poll back in the family wait: a child's end was seen a poll late, so
-/// five spawn-and-wait rounds took half a second or more.
+/// Invariant: on this current-thread runtime a notify wake makes the waiter ready, so it runs
+/// within a yield or two; a 100 ms poll's timer cannot fire in that window, and load cannot fake one.
+const WAKE_YIELDS: usize = 8;
+
+async fn wakes<T>(task: &tokio::task::JoinHandle<T>) -> bool {
+    for _ in 0..WAKE_YIELDS {
+        if task.is_finished() {
+            return true;
+        }
+        tokio::task::yield_now().await;
+    }
+    task.is_finished()
+}
+
+/// Dies with the 100 ms poll back in the family wait: the parked wait sleeps through the
+/// interrupt's move instead of waking on it.
 #[tokio::test]
 async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
-    let harness = harness(0, 1, "done")?;
-    let started = std::time::Instant::now();
-    for round in 0..5 {
-        let name = format!("c{round}");
-        harness
-            .host
-            .spawn(format!("work {round}"), kwargs(&[("name", &name)]))?;
-        let mut cursor = 0;
-        loop {
-            let reply = harness.host.wait(5_000, Some(cursor)).await?;
-            if reply["state"] == "settled" {
-                break;
-            }
-            cursor = reply["cursor"].as_u64().ok_or("cursor")?;
+    let (harness, _busy) = busy_child().await?;
+    let mut cursor = 0;
+    let parked = loop {
+        let host = Arc::clone(&harness.host);
+        let wait = tokio::spawn(async move { host.wait(5_000, Some(cursor)).await });
+        if !wakes(&wait).await {
+            break wait;
         }
-    }
-    let took = started.elapsed();
-    assert!(
-        took < std::time::Duration::from_millis(250),
-        "five rounds took {took:?}"
-    );
+        cursor = wait.await??["cursor"].as_u64().ok_or("cursor")?;
+    };
+    harness.host.interrupt("busy")?;
+    assert!(wakes(&parked).await, "the interrupt did not wake the wait");
+    parked.await??;
     Ok(())
 }
 
-/// Dies with the 100 ms poll back in `rlm.receive`: mail sent just after the wait began sat a
-/// poll in the queue, so five sends took half a second or more.
+/// Dies with the 100 ms poll back in `rlm.receive`: the parked receive sleeps through the mail
+/// instead of waking on it.
 #[tokio::test]
 async fn a_receive_wakes_on_the_mail_not_on_a_poll() -> TestResult {
     use yi_kernel::client::HostHandlers as _;
@@ -1184,25 +1190,19 @@ async fn a_receive_wakes_on_the_mail_not_on_a_poll() -> TestResult {
     let beta = beta.ok_or("beta was built without its receive")?;
     let payload = json!({"timeout_ms": 5_000});
     let payload = payload.as_object().cloned().ok_or("payload")?;
-    let started = std::time::Instant::now();
-    for round in 0..5 {
-        let waiting = beta.dispatch("rlm.receive", payload.clone());
-        let waiting = tokio::spawn(waiting.ok_or("rlm.receive is not registered")?);
-        tokio::task::yield_now().await;
-        harness
-            .host
-            .route("parent", "beta", &format!("note {round}"), false)?;
-        let got = waiting.await??;
-        assert_eq!(
-            got["envelopes"].as_array().map(Vec::len),
-            Some(1),
-            "{got:?}"
-        );
-    }
-    let took = started.elapsed();
+    let waiting = beta.dispatch("rlm.receive", payload);
+    let waiting = tokio::spawn(waiting.ok_or("rlm.receive is not registered")?);
     assert!(
-        took < std::time::Duration::from_millis(250),
-        "five receives took {took:?}"
+        !wakes(&waiting).await,
+        "rlm.receive answered an empty inbox"
+    );
+    harness.host.route("parent", "beta", "note", false)?;
+    assert!(wakes(&waiting).await, "the mail did not wake the receive");
+    let got = waiting.await??;
+    assert_eq!(
+        got["envelopes"].as_array().map(Vec::len),
+        Some(1),
+        "{got:?}"
     );
     Ok(())
 }
