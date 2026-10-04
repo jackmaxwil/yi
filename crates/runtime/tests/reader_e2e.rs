@@ -881,3 +881,60 @@ async fn a_workers_reminder_fires_again_after_it_compacts() -> TestResult {
     );
     Ok(())
 }
+
+fn call(id: &str, tool: &str, args: Value) -> AgentMessage {
+    faux_assistant_message(
+        vec![faux_tool_call(id, tool, kwargs(args))],
+        StopReason::ToolUse,
+    )
+}
+
+#[tokio::test]
+async fn a_worker_hears_its_backgrounded_bash_job_finish() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![
+        call(
+            "c1",
+            "bash",
+            json!({"command": "sleep 6; echo job-marker", "wait": 5}),
+        ),
+        call("c2", "bash", json!({"command": "sleep 3"})),
+        reply("waiting"),
+        reply("heard it"),
+    ]));
+    let family = family(1, script)?;
+    family.host.spawn(
+        "Start the job".to_owned(),
+        kwargs(json!({"name": "jobber", "role": "worker", "tools": ["bash"]})),
+    )?;
+    let rows = transcript(&family, "jobber").await?;
+    assert!(
+        rows.iter().any(|(role, text)| role == "user"
+            && text.contains("<async_result")
+            && text.contains("job-marker")),
+        "the worker was never told its job finished: {rows:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_worker_and_a_reader_read_a_history_url() -> TestResult {
+    for role in ["worker", "reader"] {
+        let name = format!("own-{role}");
+        let script: Script = Arc::new(Mutex::new(vec![
+            call("c1", "read", json!({"path": format!("history://{name}")})),
+            reply("read it"),
+        ]));
+        let family = family(1, script)?;
+        family.host.spawn(
+            "Read your own transcript".to_owned(),
+            kwargs(json!({"name": name, "role": role})),
+        )?;
+        let rows = transcript(&family, &name).await?;
+        assert!(
+            rows.iter()
+                .any(|(kind, text)| kind == "tool" && text.contains("Read your own transcript")),
+            "a {role}'s history:// read did not resolve: {rows:?}"
+        );
+    }
+    Ok(())
+}

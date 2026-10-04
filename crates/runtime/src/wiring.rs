@@ -813,7 +813,7 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 
 /// A job of this session's cwd reports through the §4.3 follow-up queue, read at a running
 /// turn's end; an idle session hears it only after its next turn (#820 wakes it).
-fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
+pub(crate) fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {
         let settled = job_settled();
