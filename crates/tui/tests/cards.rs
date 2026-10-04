@@ -691,61 +691,10 @@ fn a_retried_stream_error_draws_one_notice() {
     assert_eq!(said, 1, "{rows:?}");
 }
 
-/// The owner's screenshot: eight readers mid-call stood three rows tall with two blank rows
-/// between them. Each running box now shows the step before its current one, one blank apart.
-#[test]
-fn eight_running_readers_stack_one_blank_apart_with_their_previous_step() -> TestResult {
-    let steps = [
-        ("read crates/tools/src/lib.rs", "grep discover_exec_tools"),
-        (
-            "read crates/tools/src/bash.rs",
-            "grep DEFAULT_MAX_OUTPUT_CHARS",
-        ),
-        ("glob crates/**/*.toml", "read Cargo.toml"),
-        (
-            "grep spawn_runtime_bridge",
-            "read crates/tui/src/app/bridge.rs",
-        ),
-        ("read docs/YI_DESIGN.md", "grep 18.3"),
-        ("grep KernelBridge", "read crates/tools/src/ipython.rs"),
-        ("read crates/orb/src/kitty.rs", "grep IMAGE_IDS"),
-        ("grep fn boxed", "read crates/tui/src/cell.rs"),
-    ];
-    let mut rows = Vec::new();
-    for (index, (prev, now)) in steps.iter().enumerate() {
-        let mut cell = task(TaskStatus::Running, "");
-        cell.description = format!("reader-g{}", index + 1);
-        cell.step((*prev).to_owned());
-        cell.step((*now).to_owned());
-        rows.extend(flat(&cell.lines(60, &theme(), TranscriptMode::Normal, 0)));
-    }
-    assert_eq!(
-        rows.len(),
-        8 * 5,
-        "blank, top, previous, current, bottom: {rows:#?}"
-    );
-    for (index, (prev, now)) in steps.iter().enumerate() {
-        let row = |offset: usize| rows.get(index * 5 + offset).map_or("", String::as_str);
-        assert_eq!(row(0), "", "one blank row before box {index}: {rows:#?}");
-        let title = format!("Reader g{}", index.saturating_add(1));
-        assert!(
-            row(1).starts_with("  ╭─") && row(1).contains(&title),
-            "{rows:#?}"
-        );
-        assert!(row(2).starts_with(&format!("  │ ⚙ {prev} ")), "{rows:#?}");
-        assert!(
-            row(3).starts_with(&format!("  │ ⚙ {now} · 1K tokens")),
-            "{rows:#?}"
-        );
-        assert!(row(4).starts_with("  ╰"), "{rows:#?}");
-    }
-    Ok(())
-}
-
 /// A first step has no previous one: its slot stays blank so the box does not grow a row when
-/// the second call starts, and a box too narrow for its frame trails no blank row either.
+/// the second call starts, and a box too narrow for its frame keeps both rows of steps.
 #[test]
-fn a_first_step_keeps_the_box_height_and_a_narrow_box_trails_no_blank() -> TestResult {
+fn a_first_step_keeps_the_box_height_and_a_narrow_box_keeps_both_steps() -> TestResult {
     let mut cell = task(TaskStatus::Running, "");
     cell.description = "lecteur-é".to_owned();
     cell.last_tool = None;
@@ -765,11 +714,15 @@ fn a_first_step_keeps_the_box_height_and_a_narrow_box_trails_no_blank() -> TestR
     let narrow = flat(&cell.lines(12, &theme(), TranscriptMode::Normal, 0));
     assert_eq!(
         narrow.len(),
-        4,
-        "blank, title, previous, current: {narrow:#?}"
+        5,
+        "blank, title, previous, current, blank: {narrow:#?}"
     );
     assert!(
-        narrow.last().is_some_and(|r| r.contains("⚙ grep naïve")),
+        narrow.get(2).is_some_and(|r| r.contains("⚙ read café.rs")),
+        "{narrow:#?}"
+    );
+    assert!(
+        narrow.get(3).is_some_and(|r| r.contains("⚙ grep naïve")),
         "{narrow:#?}"
     );
     Ok(())

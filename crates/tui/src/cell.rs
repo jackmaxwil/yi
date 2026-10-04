@@ -851,13 +851,17 @@ fn fade(line: Line<'static>, age: usize, total: usize, theme: &Theme) -> Line<'s
     Line::from(spans.collect::<Vec<_>>())
 }
 
-/// Invariant: one leading blank row and none trailing, so stacked boxes sit one blank apart.
+/// Invariant: a box leads and trails one blank row; where two blanks meet they collapse to one.
 /// A rounded frame from `Line`s alone; under eight inner columns the frame is dropped.
 fn boxed(title: &str, body: Vec<Line<'static>>, width: usize, style: Style) -> Vec<Line<'static>> {
     let inner = width.saturating_sub(6);
     if inner < 8 {
         let head = Line::from(Span::styled(format!("  {title}"), style));
-        return [Line::default(), head].into_iter().chain(body).collect();
+        return [Line::default(), head]
+            .into_iter()
+            .chain(body)
+            .chain([Line::default()])
+            .collect();
     }
     let mut used = 0_usize;
     let title: String = title
@@ -888,6 +892,7 @@ fn boxed(title: &str, body: Vec<Line<'static>>, width: usize, style: Style) -> V
         out.push(Line::from(spans));
     }
     out.push(Line::from(Span::styled(bottom, style)));
+    out.push(Line::default());
     out
 }
 
