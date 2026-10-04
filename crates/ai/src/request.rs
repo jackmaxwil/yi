@@ -224,14 +224,10 @@ pub fn send_with_retry(
                     let delay = retry_delay(attempt, None, None, &policy);
                     attempt = attempt.saturating_add(1);
                     // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
-                    let text = error.to_string();
-                    let url = match &error {
-                        ureq::Error::Transport(transport) => {
-                            transport.url().map(|url| format!("{url}: "))
-                        }
-                        ureq::Error::Status(..) => None,
+                    let reason = match &error {
+                        ureq::Error::Transport(transport) => transport_cause(transport),
+                        ureq::Error::Status(..) => error.to_string(),
                     };
-                    let reason = url.and_then(|url| text.strip_prefix(&url)).unwrap_or(&text);
                     let cause: String = reason.chars().take(80).collect();
                     announce(on_retry, attempt, &policy, delay, cause);
                     if let Some(delay) = delay {
@@ -566,4 +562,16 @@ pub fn spawn_provider_stream(
     let (sender, receiver) = tokio::sync::mpsc::channel(256);
     tokio::task::spawn_blocking(move || run(&sender));
     receiver
+}
+
+/// A transport failure's kind, message and source, without the URL ureq's own rendering leads with.
+pub(crate) fn transport_cause(transport: &ureq::Transport) -> String {
+    let message = transport
+        .message()
+        .map(|message| format!(": {message}"))
+        .unwrap_or_default();
+    let source = std::error::Error::source(transport)
+        .map(|source| format!(": {source}"))
+        .unwrap_or_default();
+    format!("{}{message}{source}", transport.kind())
 }

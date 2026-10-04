@@ -89,13 +89,13 @@ fn classifier_answers(site: &Site) -> Finding {
     let Ok((config, _)) = read_config(&site.home) else {
         return ok("see config");
     };
-    let Some(model) = config.models.and_then(|roles| roles.classifier) else {
+    let Some(yi_runtime::classifier::Endpoint {
+        checkpoint: model,
+        url,
+    }) = yi_runtime::classifier::endpoint(&config)
+    else {
         return ok("off; `yi setup` offers it");
     };
-    let url = config
-        .classifier
-        .and_then(|block| block.url)
-        .unwrap_or_else(|| yi_runtime::classifier::DEFAULT_URL.to_owned());
     match yi_runtime::classifier::probe(&url, &model) {
         Ok(()) => ok(format!("{model} answers at {url}")),
         Err(error) => fail(format!(
