@@ -94,6 +94,7 @@ pub struct TaskCell {
     pub description: String,
     pub status: TaskStatus,
     pub last_tool: Option<String>,
+    pub prev_tool: Option<String>,
     pub toolcalls: u32,
     pub tokens: u64,
     pub elapsed_ms: u64,
@@ -693,6 +694,13 @@ pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
 }
 
 impl TaskCell {
+    /// A repeated call is the same step, so it does not push itself into the previous row.
+    pub fn step(&mut self, tool: String) {
+        if self.last_tool.as_ref() != Some(&tool) {
+            self.prev_tool = self.last_tool.replace(tool);
+        }
+    }
+
     pub fn lines(
         &self,
         width: usize,
@@ -740,7 +748,12 @@ impl TaskCell {
                 body.push(Line::from(Span::styled(REPLY_HINT, theme.dim_style())));
             }
         } else if self.status == TaskStatus::Running {
-            let tool = self.last_tool.as_deref().unwrap_or("starting");
+            let prev = self.prev_tool.as_deref().map(|p| format!("⚙ {p}"));
+            body.push(Line::from(Span::styled(
+                prev.unwrap_or_default(),
+                theme.dim_style(),
+            )));
+            let tool = self.last_tool.as_deref().unwrap_or(activity);
             let row = format!(
                 "⚙ {tool} · {} tokens",
                 crate::status::fmt_tokens(self.tokens)
@@ -838,16 +851,13 @@ fn fade(line: Line<'static>, age: usize, total: usize, theme: &Theme) -> Line<'s
     Line::from(spans.collect::<Vec<_>>())
 }
 
+/// Invariant: one leading blank row and none trailing, so stacked boxes sit one blank apart.
 /// A rounded frame from `Line`s alone; under eight inner columns the frame is dropped.
 fn boxed(title: &str, body: Vec<Line<'static>>, width: usize, style: Style) -> Vec<Line<'static>> {
     let inner = width.saturating_sub(6);
     if inner < 8 {
         let head = Line::from(Span::styled(format!("  {title}"), style));
-        return [Line::default(), head]
-            .into_iter()
-            .chain(body)
-            .chain([Line::default()])
-            .collect();
+        return [Line::default(), head].into_iter().chain(body).collect();
     }
     let mut used = 0_usize;
     let title: String = title
@@ -878,7 +888,6 @@ fn boxed(title: &str, body: Vec<Line<'static>>, width: usize, style: Style) -> V
         out.push(Line::from(spans));
     }
     out.push(Line::from(Span::styled(bottom, style)));
-    out.push(Line::default());
     out
 }
 

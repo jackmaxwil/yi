@@ -48,14 +48,11 @@ impl App {
             let Some(state) = self.tasks.get_mut(child.update.id.as_str()) else {
                 continue;
             };
-            // "starting" lasts until the first roster snapshot; then the record speaks.
+            // Invariant: only a real call is stored, or the previous-step row names an activity.
             if state.cell.last_tool.is_none() {
                 state.cell.last_tool = (child.update.tool_use_count > 0)
                     .then(|| last_tool_of(&child.session))
-                    .flatten()
-                    .or_else(|| {
-                        Some(crate::cell::activity_label(child.update.activity).to_owned())
-                    });
+                    .flatten();
             }
         }
         let gone: Vec<ChildUpdate> = self
@@ -98,6 +95,7 @@ impl App {
                         description: update.name.clone(),
                         status: TaskStatus::Running,
                         last_tool: None,
+                        prev_tool: None,
                         toolcalls: 0,
                         tokens: 0,
                         elapsed_ms: 0,

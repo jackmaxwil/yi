@@ -915,7 +915,7 @@ impl App {
             && let Some(state) = self.tasks.get_mut(child_id)
         {
             let summary = arg_summary(tool_name, args);
-            state.cell.last_tool = Some(if summary.is_empty() {
+            state.cell.step(if summary.is_empty() {
                 tool_name.clone()
             } else {
                 format!("{tool_name} {summary}")
