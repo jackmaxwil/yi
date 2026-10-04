@@ -1352,7 +1352,8 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "daemon-socket",
             "daemon-ledger",
             "lanes",
-            "cache"
+            "cache",
+            "sandbox-listeners"
         ]
     );
     assert_eq!(rows[11]["detail"], "no session here", "{rows}");

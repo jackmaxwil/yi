@@ -17,6 +17,17 @@ impl std::fmt::Display for JobId {
     }
 }
 
+/// Minted once per session: sessions sharing one process and one cwd never take each other's jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct JobOwner(u64);
+
+impl JobOwner {
+    pub fn mint() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum JobError {
     #[error("no such job: {0}")]
@@ -61,10 +72,13 @@ pub struct JobReport {
     pub output: String,
 }
 
-/// Who settles the job: the two-second follow-up poller, or one handle that
-/// asked for it by [`spawn_job`] and will [`Jobs::release`] it itself.
+/// Who settles the job: its owner's completion loop, which announces it (an ownerless one only a
+/// poll reads), or one handle that asked for it by [`spawn_job`] and [`Jobs::release`]s it.
 enum Reaper {
-    Poller { reported: bool },
+    Poller {
+        reported: bool,
+        owner: Option<JobOwner>,
+    },
     Handle,
 }
 
@@ -74,6 +88,7 @@ struct Job {
     cwd: PathBuf,
     started: u64,
     reaper: Reaper,
+    polled: bool,
     capture: Option<CommandCapture>,
     live: Arc<LiveOutput>,
     kill: Arc<AtomicBool>,
@@ -171,6 +186,7 @@ impl Jobs {
                 cwd: cwd.to_path_buf(),
                 started: id,
                 reaper,
+                polled: false,
                 capture: None,
                 live,
                 kill,
@@ -218,7 +234,7 @@ impl Jobs {
         let Some(job) = jobs.get_mut(&id.0) else {
             return;
         };
-        if let Reaper::Poller { reported } = &mut job.reaper {
+        if let Reaper::Poller { reported, .. } = &mut job.reaper {
             *reported = held;
         }
         if !held && job.capture.is_some() {
@@ -230,6 +246,17 @@ impl Jobs {
 
     pub fn report(&self, id: JobId) -> Option<JobReport> {
         self.lock().get(&id.0).map(|job| render(id.0, job))
+    }
+
+    /// Whether a poll returned this job's finished output, so its queued announcement is a repeat.
+    pub fn delivered(&self, id: JobId) -> bool {
+        self.lock().get(&id.0).is_some_and(|job| job.polled)
+    }
+
+    pub(crate) fn mark_delivered(&self, id: JobId) {
+        if let Some(job) = self.lock().get_mut(&id.0) {
+            job.polled = true;
+        }
     }
 
     pub fn latest(&self) -> Option<JobReport> {
@@ -281,15 +308,20 @@ impl Jobs {
         running.into_iter().map(|(_, command)| command).collect()
     }
 
-    /// The unannounced finished jobs a session in `cwd` started, marked so none repeats; another
-    /// session in the same process takes only its own (#820 still shares one cwd's).
-    pub fn take_finished(&self, cwd: &Path) -> Vec<JobReport> {
+    /// The unannounced finished jobs `owner` started, marked so none repeats.
+    pub fn take_finished(&self, owner: JobOwner) -> Vec<JobReport> {
         let mut jobs = self.lock();
         let mut out = Vec::new();
         for (id, job) in jobs.iter_mut() {
-            let unannounced = matches!(job.reaper, Reaper::Poller { reported: false });
-            if job.capture.is_some() && unannounced && job.cwd == cwd {
-                job.reaper = Reaper::Poller { reported: true };
+            let Reaper::Poller {
+                reported: reported @ false,
+                owner: Some(started_by),
+            } = &mut job.reaper
+            else {
+                continue;
+            };
+            if job.capture.is_some() && *started_by == owner {
+                *reported = true;
                 out.push(render(*id, job));
             }
         }
@@ -345,7 +377,7 @@ fn render(id: u64, job: &Job) -> JobReport {
         command: job.command.clone(),
         finished: matches!(state, JobState::Settled(_)),
         reported: match &job.reaper {
-            Reaper::Poller { reported } => *reported,
+            Reaper::Poller { reported, .. } => *reported,
             Reaper::Handle => true,
         },
         exit_code: match state {
@@ -430,12 +462,12 @@ fn start(
     std::thread::spawn(move || {
         let mut process = match &wrapped {
             Some((program, args)) => {
-                let mut process = command(program);
+                let mut process = crate::keyless_command(program);
                 process.args(args);
                 process
             }
             None => {
-                let mut process = command(interpreter());
+                let mut process = crate::keyless_command(interpreter());
                 process.arg("-c").arg(&text);
                 process
             }
@@ -525,7 +557,10 @@ pub fn run_or_background(
         &context.cancelled,
         sandbox,
         // Invariant: held until the call hands the turn back, or its output is announced twice.
-        Reaper::Poller { reported: true },
+        Reaper::Poller {
+            reported: true,
+            owner: context.job_owner,
+        },
         sweep,
         context.recovery_dir.as_deref(),
     );
@@ -559,6 +594,7 @@ pub fn run_or_background(
                         exit_code: None,
                         cancelled: true,
                         truncated: false,
+                        cut: None,
                         kill_error: None,
                         spill: None,
                     })))
@@ -623,6 +659,25 @@ mod tests {
             JobState::Settled(outcome) => Some(outcome),
             JobState::Running => None,
         })
+    }
+
+    fn exited() -> CommandCapture {
+        CommandCapture {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            cut: None,
+            spill: None,
+            kill_error: None,
+        }
+    }
+
+    fn poll(id: JobId, cwd: &Path) -> crate::ToolOutput {
+        use crate::Tool;
+        let input = serde_json::Map::from_iter([("job".to_owned(), serde_json::json!(id.0))]);
+        crate::BashTool::default().execute(input, &crate::ToolContext::new(cwd.to_path_buf()))
     }
 
     #[test]
@@ -724,26 +779,21 @@ mod tests {
     /// it replaced reported a finished job up to two seconds late).
     #[test]
     fn a_settle_wakes_the_completion_wait() -> Fallible {
-        // Its own cwd and the count it saw, since `cargo test` shares the registry across tests.
+        // Its own owner and the count it saw, since `cargo test` shares the registry across tests.
         let cwd = Path::new("/yi-jobs-test/settle-wakes");
-        let reaper = Reaper::Poller { reported: false };
+        let owner = JobOwner::mint();
+        let reaper = Reaper::Poller {
+            reported: false,
+            owner: Some(owner),
+        };
         let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
         let seen = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
         std::thread::spawn(move || woke.send(registry().wait_settle(seen)));
         std::thread::sleep(Duration::from_millis(20));
-        let capture = CommandCapture {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            cancelled: false,
-            truncated: false,
-            spill: None,
-            kill_error: None,
-        };
-        registry().finish(id, capture);
+        registry().finish(id, exited());
         assert!(waking.recv_timeout(Duration::from_secs(5))? > seen);
-        assert_eq!(registry().take_finished(cwd).len(), 1);
+        assert_eq!(registry().take_finished(owner).len(), 1);
         Ok(())
     }
 
@@ -752,25 +802,45 @@ mod tests {
     #[test]
     fn a_report_handed_back_after_its_settle_wakes_the_completion_wait() -> Fallible {
         let cwd = Path::new("/yi-jobs-test/handed-back");
-        let reaper = Reaper::Poller { reported: true };
-        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
-        let capture = CommandCapture {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            cancelled: false,
-            truncated: false,
-            spill: None,
-            kill_error: None,
+        let owner = JobOwner::mint();
+        let reaper = Reaper::Poller {
+            reported: true,
+            owner: Some(owner),
         };
-        registry().finish(id, capture);
+        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        registry().finish(id, exited());
         let held = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
         std::thread::spawn(move || woke.send(registry().wait_settle(held)));
         std::thread::sleep(Duration::from_millis(20));
         registry().set_reported(id, false);
         assert!(waking.recv_timeout(Duration::from_secs(5))? > held);
-        assert_eq!(registry().take_finished(cwd).len(), 1);
+        assert_eq!(registry().take_finished(owner).len(), 1);
+        Ok(())
+    }
+
+    /// Dies without the bit: a poll that returned a job the completion loop had already queued
+    /// left that `<async_result>` to reach the model again a turn later.
+    #[test]
+    fn a_poll_after_the_queue_marks_the_announcement_delivered() -> Fallible {
+        let cwd = Path::new("/yi-jobs-test/polled-after-queue");
+        let owner = JobOwner::mint();
+        let reaper = || Reaper::Poller {
+            reported: false,
+            owner: Some(owner),
+        };
+        let queued = registry().insert("true", cwd, reaper(), Arc::default(), Arc::default());
+        registry().finish(queued, exited());
+        assert_eq!(registry().take_finished(owner).len(), 1);
+        assert!(!registry().delivered(queued));
+        assert!(!poll(queued, cwd).is_error);
+        assert!(registry().delivered(queued));
+
+        let running = registry().insert("true", cwd, reaper(), Arc::default(), Arc::default());
+        assert_eq!(poll(running, cwd).result.details["running"], true);
+        registry().finish(running, exited());
+        assert_eq!(registry().take_finished(owner).len(), 1);
+        assert!(!registry().delivered(running));
         Ok(())
     }
 
@@ -793,6 +863,7 @@ mod tests {
                 exit_code: None,
                 cancelled: true,
                 truncated: false,
+                cut: None,
                 spill: None,
                 kill_error: Some("/bin/sh: No such file or directory".to_owned()),
             },

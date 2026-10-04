@@ -41,7 +41,7 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 12] = [
+const ROWS: [(&str, Check); 13] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
@@ -54,6 +54,7 @@ const ROWS: [(&str, Check); 12] = [
     ("daemon-ledger", ledger_roots_exist),
     ("lanes", lanes_consistent),
     ("cache", cache_reads),
+    ("sandbox-listeners", sandbox_listeners),
 ];
 
 /// Never a failure: where yi runs decides what a contained command and a placement can reach.
@@ -89,13 +90,13 @@ fn classifier_answers(site: &Site) -> Finding {
     let Ok((config, _)) = read_config(&site.home) else {
         return ok("see config");
     };
-    let Some(model) = config.models.and_then(|roles| roles.classifier) else {
+    let Some(yi_runtime::classifier::Endpoint {
+        checkpoint: model,
+        url,
+    }) = yi_runtime::classifier::endpoint(&config)
+    else {
         return ok("off; `yi setup` offers it");
     };
-    let url = config
-        .classifier
-        .and_then(|block| block.url)
-        .unwrap_or_else(|| yi_runtime::classifier::DEFAULT_URL.to_owned());
     match yi_runtime::classifier::probe(&url, &model) {
         Ok(()) => ok(format!("{model} answers at {url}")),
         Err(error) => fail(format!(
@@ -315,6 +316,12 @@ fn cache_reads(site: &Site) -> Finding {
     let name = path.file_stem().unwrap_or_default().to_string_lossy();
     let row = format!("session {name}: misses [{}]", misses.join(", "));
     ok(notice.map_or(row.clone(), |notice| format!("{row}; {notice}")))
+}
+
+/// Never a failure: every profile gives a contained process loopback, which on Seatbelt is each
+/// address of this host, so these listeners are open to it. Only macOS has that sandbox.
+fn sandbox_listeners(_site: &Site) -> Finding {
+    ok(yi_runtime::sandbox_listeners())
 }
 
 /// Runs before the config loads, so a config that will not parse is a row, not a death.
