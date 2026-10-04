@@ -6,6 +6,7 @@ mod config_migrate;
 mod contract;
 mod effort;
 mod graph;
+mod image;
 mod journal_chain;
 mod lease;
 mod mail;
