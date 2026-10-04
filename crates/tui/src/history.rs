@@ -84,6 +84,17 @@ pub(crate) fn is_blank(line: &Line<'_>) -> bool {
     line.spans.iter().all(|span| span.content.trim().is_empty())
 }
 
+/// Invariant: a cell keeps at least this many rows once joined (a join collapses blank runs and
+/// may drop its leading blank), so a read that must fill a height counts these, not its length.
+fn kept_rows(rows: &[Line<'_>]) -> usize {
+    let runs = rows
+        .windows(2)
+        .filter(|pair| pair.iter().all(is_blank))
+        .count();
+    let lead = usize::from(rows.first().is_some_and(is_blank));
+    rows.len().saturating_sub(runs).saturating_sub(lead)
+}
+
 /// A blank row separates two blocks of more than one row; one rule for scrollback and rebuild.
 pub(crate) fn separated(rows_above: usize, blank_above: bool, next: &[Line<'_>]) -> bool {
     rows_above > 1 && next.len() > 1 && !blank_above && !next.first().is_some_and(is_blank)
@@ -179,7 +190,7 @@ impl History {
         while index > done && held <= cap {
             index -= 1;
             let rows = rendered.cell_rows((&self.cells, index), width, theme, mode);
-            held = held.saturating_add(rows.len());
+            held = held.saturating_add(kept_rows(&rows));
             fresh.push_front(rows);
         }
         if index > done {
@@ -188,12 +199,12 @@ impl History {
         } else {
             rendered.rows.extend(fresh);
         }
-        let mut held: usize = rendered.rows.iter().map(Vec::len).sum();
+        let mut held: usize = rendered.rows.iter().map(|rows| kept_rows(rows)).sum();
         while (held <= cap || rendered.start > back_to) && rendered.start > 0 {
             rendered.start -= 1;
             let start = rendered.start;
             let rows = rendered.cell_rows((&self.cells, start), width, theme, mode);
-            held = held.saturating_add(rows.len());
+            held = held.saturating_add(kept_rows(&rows));
             rendered.rows.push_front(rows);
         }
         let start = rendered.start;
@@ -275,7 +286,7 @@ impl History {
             let mut rows = 0usize;
             let mut from = cells.len();
             for cell in cells.iter().rev() {
-                rows = rows.saturating_add(cell.len());
+                rows = rows.saturating_add(kept_rows(cell));
                 from = from.saturating_sub(1);
                 if rows > cap {
                     break;
@@ -303,7 +314,7 @@ impl History {
             let mut from = start.saturating_add(cells.len());
             for cell in cells.iter().rev() {
                 from = from.saturating_sub(1);
-                held = held.saturating_add(cell.len());
+                held = held.saturating_add(kept_rows(cell));
                 if from <= at_most && held > rows {
                     break;
                 }

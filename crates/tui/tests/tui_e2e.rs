@@ -1687,9 +1687,13 @@ fn gaps_between_boxes(rows: impl IntoIterator<Item = String>) -> Vec<usize> {
 
 /// The rows a console pane of `height` paints, top to bottom.
 fn pane_rows(app: &mut App, height: u16) -> Vec<String> {
+    pane_rows_scrolled(app, height, &mut 0)
+}
+
+fn pane_rows_scrolled(app: &mut App, height: u16, scroll: &mut usize) -> Vec<String> {
     let area = ratatui::layout::Rect::new(0, 0, 80, height);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
-    let _ = yi_tui::render::paint_pane(app, None, &mut buffer, area, &mut 0);
+    let _ = yi_tui::render::paint_pane(app, None, &mut buffer, area, scroll);
     (0..area.height)
         .map(|y| {
             (0..area.width)
@@ -1739,6 +1743,36 @@ fn a_pane_that_collapses_its_seam_still_ends_on_the_status_row() -> TestResult {
         rows.last().is_some_and(|r| r.contains("faux-1")),
         "{rows:#?}"
     );
+    Ok(())
+}
+
+/// A long history ending on a run of finished boxes: each boundary between two boxes collapses
+/// a blank row, and a pane counting rows before that collapse came up short by the run.
+#[test]
+fn a_pane_ending_on_a_run_of_boxes_still_ends_on_the_status_row() -> TestResult {
+    use yi_runtime::ChildStatus;
+    for (boxes, scroll, height) in [(20, 0, 60), (12, 3, 20)] {
+        let mut app = app();
+        app.set_pane();
+        outgrow_the_pane(&mut app);
+        app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        for n in 1..=boxes {
+            app.adopt(
+                &reader(&format!("reader-g{n}"), ChildStatus::Completed, 1),
+                None,
+            );
+        }
+        let mut at = scroll;
+        let rows = pane_rows_scrolled(&mut app, height, &mut at);
+        assert_eq!(
+            at, scroll,
+            "the view stays scrolled where it was put: {rows:#?}"
+        );
+        assert!(
+            rows.last().is_some_and(|r| r.contains("faux-1")),
+            "{boxes} boxes, scrolled {scroll}: {rows:#?}"
+        );
+    }
     Ok(())
 }
 
