@@ -354,6 +354,31 @@ async fn a_prune_keeps_an_over_cap_variable_that_shrank_in_place() -> TestResult
 
 /// Incident: every cell, Yi's own included, was written to the user's
 /// `~/.ipython/profile_default/history.sqlite`, one sqlite lock shared by every kernel.
+/// #906: yi's provider keys reached the kernel and everything a cell starts, wherever no
+/// sandbox stood between them (a host with no Seatbelt).
+#[tokio::test]
+async fn the_kernel_inherits_no_provider_key() -> TestResult {
+    for name in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "YI_906_ORDINARY"] {
+        // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+        unsafe { std::env::set_var(name, format!("ENV-906-{name}")) };
+    }
+    let kernel = manager()?;
+    let probe = kernel
+        .execute(
+            "import os; print(sorted(k for k, v in os.environ.items() if v.startswith('ENV-906-')))",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    kernel.dispose().await;
+    assert_eq!(
+        probe.stdout.trim(),
+        "['YI_906_ORDINARY']",
+        "{}",
+        probe.stderr
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_kernel_keeps_no_ipython_history() -> TestResult {
     let kernel = manager()?;
