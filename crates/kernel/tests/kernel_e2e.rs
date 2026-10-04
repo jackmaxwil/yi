@@ -12,6 +12,7 @@ use yi_kernel::client::{
     KernelSnapshotConfig,
 };
 use yi_kernel::snapshot::{manifest_path_in, snapshot_path_in};
+use yi_types::image::{ImageDefect, image_defect};
 use yi_types::kernel::ExecuteStatus;
 
 #[path = "../../types/tests/support/scratch.rs"]
@@ -41,6 +42,11 @@ impl HostHandlers for EchoHost {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 Ok(Map::new())
             }));
+        }
+        if request_type == "model.info" {
+            let mut reply = Map::new();
+            reply.insert("input".to_owned(), serde_json::json!(["text", "image"]));
+            return Some(Box::pin(async move { Ok(reply) }));
         }
         if request_type != "test.echo" {
             return None;
@@ -427,6 +433,54 @@ async fn an_image_whose_data_is_not_base64_attaches_nothing() -> TestResult {
     );
     assert_eq!(png.attachments.len(), 1, "{}", png.stderr);
     assert_eq!(png.status, ExecuteStatus::Ok);
+    Ok(())
+}
+
+/// A refused image names a remedy (#860); each one is run here as the model would run it, on
+/// a source the defect describes, and must attach an image the provider takes.
+#[tokio::test]
+async fn the_remedy_an_image_refusal_names_attaches_the_image() -> TestResult {
+    let dir = Scratch::new("yi-image-remedy")?;
+    let kernel = manager()?;
+    let sources = [
+        (
+            ImageDefect::Type,
+            "x.bmp",
+            "Image.new('RGB', (4, 4)).save(path, 'BMP')",
+        ),
+        (
+            ImageDefect::TooWide {
+                width: 9000,
+                height: 2,
+            },
+            "wide.png",
+            "Image.new('RGB', (9000, 2)).save(path)",
+        ),
+    ];
+    let mut outcomes = Vec::new();
+    for (defect, name, make) in sources {
+        let remedy = defect.remedy();
+        let call = remedy.split('`').nth(1).ok_or("no call in the remedy")?;
+        let cell = format!(
+            "from PIL import Image\nfrom attach_image import run as attach_image\npath = {:?}\n{make}\n{call}",
+            dir.join(name).display().to_string()
+        );
+        outcomes.push((
+            defect,
+            kernel.execute(&cell, ExecuteOptions::default()).await?,
+        ));
+    }
+    kernel.dispose().await;
+    for (defect, outcome) in outcomes {
+        let [attachment] = outcome.attachments.as_slice() else {
+            return Err(format!("{defect:?}: {} {:?}", outcome.stderr, outcome.error).into());
+        };
+        assert_eq!(
+            image_defect(&attachment.mime_type, &attachment.data),
+            None,
+            "{defect:?}"
+        );
+    }
     Ok(())
 }
 
