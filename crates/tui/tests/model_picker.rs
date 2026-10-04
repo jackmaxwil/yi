@@ -187,3 +187,27 @@ fn the_slot_reads_the_glyph_where_no_image_can_be_drawn() {
     );
     assert_eq!(kitty.visible_keys(), vec!["faux", "openai", "z-ai"]);
 }
+
+fn ctrl(code: KeyCodeValue) -> SingleKey {
+    SingleKey {
+        ctrl: true,
+        ..key(code)
+    }
+}
+
+/// Dies with ctrl+c typing a literal `c` into the filter and ctrl+x a literal `x`: the list
+/// emptied under the user's hands and the key that means "stop" did not close the picker.
+#[test]
+fn ctrl_c_closes_the_model_picker_and_other_ctrl_keys_are_not_typed() {
+    let model = reasoning("m", None);
+    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[], false);
+    assert!(matches!(
+        popup.handle_key(&ctrl(KeyCodeValue::Char('x'))),
+        PopupResult::Open
+    ));
+    assert!(!text(&popup).contains("model x"), "{}", text(&popup));
+    assert!(matches!(
+        popup.handle_key(&ctrl(KeyCodeValue::Char('c'))),
+        PopupResult::Close
+    ));
+}

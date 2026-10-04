@@ -88,7 +88,8 @@ fn with_pointers(shared: &Shared, messages: Vec<AgentMessage>) -> Vec<AgentMessa
 }
 
 /// The prompt a waking entry or a follow-up is owed, taken under the status lock enqueue takes.
-fn owed(shared: &Shared, follow_ups: bool) -> Option<AgentMessage> {
+/// `ended_clean` is true only where a run settles undisturbed: only then is a user steer owed a turn.
+fn owed(shared: &Shared, follow_ups: bool, ended_clean: bool) -> Option<AgentMessage> {
     if shared.winding_down() || shared.held.load(std::sync::atomic::Ordering::SeqCst) {
         return None;
     }
@@ -96,7 +97,7 @@ fn owed(shared: &Shared, follow_ups: bool) -> Option<AgentMessage> {
         queue.retain(Queued::current);
         // Incident: a user steer sent after the loop's last read waited behind the next prompt.
         let waking = |queued: &Queued| {
-            queued.wakes || (follow_ups && queued.message.attribution() == Attribution::User)
+            queued.wakes || (ended_clean && queued.message.attribution() == Attribution::User)
         };
         if queue.iter().any(waking) {
             return queue.pop_front().map(|queued| queued.message);
@@ -119,7 +120,7 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     if *status == Status::Running {
         return Delivery::Queued;
     }
-    let Some(prompt) = wakes.then(|| owed(&parts.shared, false)).flatten() else {
+    let Some(prompt) = wakes.then(|| owed(&parts.shared, false, false)).flatten() else {
         return Delivery::Inboxed;
     };
     admit(&parts.shared, &mut status);
@@ -135,7 +136,7 @@ pub(super) fn kick(parts: &RunParts) {
     if *status == Status::Running {
         return;
     }
-    if let Some(prompt) = owed(&parts.shared, true) {
+    if let Some(prompt) = owed(&parts.shared, true, false) {
         admit(&parts.shared, &mut status);
         drop(status);
         launch(parts.clone(), prompt, None);
@@ -172,7 +173,7 @@ pub(super) fn follow(parts: &RunParts, message: AgentMessage) -> bool {
     if *status == Status::Running {
         return true;
     }
-    if let Some(prompt) = owed(&parts.shared, true) {
+    if let Some(prompt) = owed(&parts.shared, true, false) {
         admit(&parts.shared, &mut status);
         drop(status);
         launch(parts.clone(), prompt, None);
@@ -222,7 +223,8 @@ async fn settle(parts: RunParts) {
     let next = match shared.status.lock() {
         Ok(mut status) => {
             // An abort keeps what was queued for after the answer until the user's next turn.
-            let next = owed(&shared, !shared.signal.is_fired());
+            let undisturbed = !shared.signal.is_fired();
+            let next = owed(&shared, undisturbed, undisturbed);
             match next {
                 Some(_) => admit(&shared, &mut status),
                 None => *status = Status::Idle,
@@ -565,17 +567,16 @@ mod tests {
     use yi_ai::faux::{faux_assistant_message, faux_text};
     use yi_types::message::{StopReason, UserContent};
 
-    /// Dies with a user steer that landed after the loop's last read: the run settled idle, the
-    /// UI forgot the row, and the text waited for the next prompt to arrive behind it.
-    #[tokio::test]
-    async fn a_steer_the_loop_never_read_runs_as_the_next_prompt()
-    -> Result<(), Box<dyn std::error::Error>> {
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn session(replies: usize) -> AgentSession {
         let provider = Arc::new(ProviderStream::new(None));
-        provider.queue_faux(vec![faux_assistant_message(
-            vec![faux_text("on it")],
-            StopReason::Stop,
-        )]);
-        let session = AgentSession::new(
+        provider.queue_faux(
+            (0..replies)
+                .map(|_| faux_assistant_message(vec![faux_text("on it")], StopReason::Stop))
+                .collect(),
+        );
+        AgentSession::new(
             SessionConfig {
                 system_prompt: String::new(),
                 model: faux_model(),
@@ -583,22 +584,70 @@ mod tests {
                 tool_execution: yi_loop::ExecutionMode::Sequential,
             },
             provider,
-        );
+        )
+    }
+
+    fn running_with_a_steer(session: &AgentSession) -> Result<RunParts, &'static str> {
         let parts = session.parts();
         *parts.shared.status.lock().map_err(|_| "status poisoned")? = Status::Running;
+        let held = Queued::new(user_input("one more thing"), false, None);
         parts
             .shared
             .steer
             .lock()
             .map_err(|_| "queue poisoned")?
-            .push_back(Queued::new(user_input("one more thing"), false, None));
-        settle(parts).await;
+            .push_back(held);
+        Ok(parts)
+    }
+
+    fn user_texts(session: &AgentSession) -> Vec<String> {
+        session
+            .messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                AgentMessage::User {
+                    content: UserContent::Text(text),
+                    ..
+                } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Dies with a user steer that landed after the loop's last read: the run settled idle, the
+    /// UI forgot the row, and the text waited for the next prompt to arrive behind it.
+    #[tokio::test]
+    async fn a_steer_the_loop_never_read_runs_as_the_next_prompt() -> TestResult {
+        let session = session(1);
+        settle(running_with_a_steer(&session)?).await;
         session.wait_idle().await;
-        let said = session.messages().into_iter().any(|message| {
-            matches!(message, AgentMessage::User { content: UserContent::Text(text), .. }
-                if text == "one more thing")
-        });
-        assert!(said, "the stranded steer never reached the model");
+        assert_eq!(user_texts(&session), ["one more thing"]);
+        Ok(())
+    }
+
+    /// Dies with an abort that restarts the run: the queue keeps what was steered for the user's
+    /// next turn, so a settle after a fired signal leaves it there and goes idle.
+    #[tokio::test]
+    async fn a_steer_left_by_an_abort_waits_for_the_next_turn() -> TestResult {
+        let session = session(1);
+        let parts = running_with_a_steer(&session)?;
+        parts.shared.signal.fire();
+        let shared = Arc::clone(&parts.shared);
+        settle(parts).await;
+        assert_eq!(session.status(), Status::Idle);
+        assert_eq!(shared.steer.lock().map_err(|_| "queue poisoned")?.len(), 1);
+        Ok(())
+    }
+
+    /// Dies with a follow-up to an idle session starting the steer it found inboxed as the
+    /// prompt: only the end of a run owes a stranded steer a turn, so the follow-up is the prompt.
+    #[tokio::test]
+    async fn a_follow_up_does_not_start_a_steer_inboxed_while_idle() -> TestResult {
+        let session = session(2);
+        session.steer_message(user_input("one more thing"));
+        session.follow_up("later");
+        session.wait_idle().await;
+        assert_eq!(user_texts(&session), ["later", "one more thing"]);
         Ok(())
     }
 }

@@ -206,6 +206,7 @@ impl BottomView for AgentsPopup {
                 _ => self.armed = Some((self.selected, Instant::now())),
             },
             KeyCodeValue::Esc | KeyCodeValue::Enter => return PopupResult::Close,
+            KeyCodeValue::Char('c') if key.ctrl => return PopupResult::Close,
             _ => {}
         }
         PopupResult::Open
