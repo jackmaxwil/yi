@@ -16,8 +16,23 @@ pub enum ImageDefect {
     TooLarge { chars: usize },
     NotBase64,
     NotItsType,
-    Truncated,
+    NoHeader,
     TooWide { width: u32, height: u32 },
+}
+
+impl ImageDefect {
+    /// The call that sends the image again, each one run in the kernel venv by a test.
+    #[must_use]
+    pub fn remedy(self) -> &'static str {
+        match self {
+            Self::TooLarge { .. } | Self::TooWide { .. } => {
+                "If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit."
+            }
+            Self::Type | Self::NotBase64 | Self::NotItsType | Self::NoHeader => {
+                "If its source file is still on disk, re-encode it in ipython: `from PIL import Image; Image.open(path).convert('RGB').save(path + '.jpg'); print(await attach_image(path + '.jpg'))`."
+            }
+        }
+    }
 }
 
 impl fmt::Display for ImageDefect {
@@ -30,7 +45,7 @@ impl fmt::Display for ImageDefect {
             ),
             Self::NotBase64 => write!(f, "is not strict base64"),
             Self::NotItsType => write!(f, "does not open as its type"),
-            Self::Truncated => write!(f, "is cut short: its end marker is missing"),
+            Self::NoHeader => write!(f, "has no whole header for its type"),
             Self::TooWide { width, height } => write!(
                 f,
                 "is {width}x{height} px, over MAX_IMAGE_SIDE {MAX_IMAGE_SIDE} px a side"
@@ -39,8 +54,8 @@ impl fmt::Display for ImageDefect {
     }
 }
 
-/// What a provider would refuse in this image, or [`None`] when it takes it. Only the head and the
-/// tail are decoded: a type's header and its end marker, not a decode of every pixel.
+/// What a provider would refuse in this image, or [`None`] when it takes it. Only the first 24
+/// bytes are decoded: a body cut short or followed by a trailer is still sent, as decoders read it.
 #[must_use]
 pub fn image_defect(mime_type: &str, data: &str) -> Option<ImageDefect> {
     if !MODEL_IMAGE_TYPES.contains(&mime_type) {
@@ -55,42 +70,29 @@ pub fn image_defect(mime_type: &str, data: &str) -> Option<ImageDefect> {
     if !has_magic_number(mime_type, &head) {
         return Some(ImageDefect::NotItsType);
     }
-    let body = unpadded(data);
-    let tail = decode_base64(
-        body.as_bytes()
-            .get(tail_start(body.len())..)
-            .unwrap_or_default(),
-    );
-    let padding = data.len().saturating_sub(body.len());
-    let decoded = (data.len() / 4).saturating_mul(3).saturating_sub(padding);
+    let whole = head.len() == 24
+        && match mime_type {
+            "image/png" => head.get(8..16) == Some(b"\0\0\0\rIHDR"),
+            "image/webp" => matches!(head.get(12..16), Some(b"VP8 " | b"VP8L" | b"VP8X")),
+            _ => true,
+        };
+    if !whole {
+        return Some(ImageDefect::NoHeader);
+    }
     let u32_at = |at: usize| head.get(at..at.saturating_add(4))?.try_into().ok();
     let u16_at = |at: usize| head.get(at..at.saturating_add(2))?.try_into().ok();
-    let (whole, side) = match mime_type {
-        "image/png" => (
-            tail.ends_with(b"\0\0\0\0IEND\xaeB`\x82"),
-            u32_at(16)
-                .zip(u32_at(20))
-                .map(|(w, h)| (u32::from_be_bytes(w), u32::from_be_bytes(h))),
-        ),
-        "image/gif" => (
-            tail.ends_with(b";"),
-            u16_at(6).zip(u16_at(8)).map(|(w, h)| {
-                (
-                    u32::from(u16::from_le_bytes(w)),
-                    u32::from(u16::from_le_bytes(h)),
-                )
-            }),
-        ),
-        "image/jpeg" => (tail.ends_with(b"\xff\xd9"), None),
-        _ => (
-            u32_at(4).and_then(|size| usize::try_from(u32::from_le_bytes(size)).ok())
-                == Some(decoded.saturating_sub(8)),
-            None,
-        ),
+    let side = match mime_type {
+        "image/png" => u32_at(16)
+            .zip(u32_at(20))
+            .map(|(w, h)| (u32::from_be_bytes(w), u32::from_be_bytes(h))),
+        "image/gif" => u16_at(6).zip(u16_at(8)).map(|(w, h)| {
+            (
+                u32::from(u16::from_le_bytes(w)),
+                u32::from(u16::from_le_bytes(h)),
+            )
+        }),
+        _ => None,
     };
-    if !whole {
-        return Some(ImageDefect::Truncated);
-    }
     match side {
         Some((width, height)) if width.max(height) > MAX_IMAGE_SIDE => {
             Some(ImageDefect::TooWide { width, height })
@@ -115,12 +117,6 @@ fn unpadded(data: &str) -> &str {
     data.strip_suffix("==")
         .or_else(|| data.strip_suffix('='))
         .unwrap_or(data)
-}
-
-/// The start of the last six whole groups of an unpadded body `len` chars long.
-fn tail_start(len: usize) -> usize {
-    let whole = len.saturating_sub(1) / 4 * 4;
-    whole.saturating_sub(20)
 }
 
 /// The bytes `chars` decodes to: whole four-character groups, the last one possibly short.

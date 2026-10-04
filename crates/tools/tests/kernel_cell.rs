@@ -75,7 +75,11 @@ fn an_attached_image_is_in_the_models_view() -> TestResult {
         })
         .collect();
     assert!(text.contains("image/svg+xml"), "{text}");
-    assert!(text.contains("10000004"), "{text}");
+    assert!(
+        text.contains("[image/png attachment of 10000004 base64 chars not sent to the model: the image is 10000004 base64 chars, over MAX_IMAGE_CHARS 10000000. If its source file is still on disk, run `print(await attach_image(path))` in ipython; it resizes to fit.]"),
+        "{text}"
+    );
+    assert!(text.contains("the image is not png, jpeg, gif or webp. If its source file is still on disk, re-encode it"), "{text}");
     assert!(!text.contains("text/csv"), "{text}");
     let images: Vec<_> = content
         .into_iter()

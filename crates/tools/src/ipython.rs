@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::image::image_defect;
-use yi_types::kernel::{ExecuteResult, ExecuteStatus, KernelAttachment};
+use yi_types::kernel::{ExecuteResult, ExecuteStatus};
 use yi_types::message::Content;
 
 use crate::spill::Spill;
@@ -172,19 +172,24 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         sections.push("[cell aborted]".to_owned());
     }
     sections.extend(outcome.notes.iter().cloned());
-    let defect =
-        |attachment: &KernelAttachment| image_defect(&attachment.mime_type, &attachment.data);
-    let (images, refused): (Vec<_>, Vec<_>) = result
+    let checked: Vec<_> = result
         .attachments
         .iter()
-        .filter(|attachment| attachment.mime_type.starts_with("image/"))
-        .partition(|attachment| defect(attachment).is_none());
-    sections.extend(refused.iter().filter_map(|attachment| {
+        .map(|attachment| {
+            let defect = image_defect(&attachment.mime_type, &attachment.data);
+            (attachment, defect)
+        })
+        .collect();
+    let images = checked.iter().filter(|(attachment, defect)| {
+        attachment.mime_type.starts_with("image/") && defect.is_none()
+    });
+    sections.extend(checked.iter().filter_map(|(attachment, defect)| {
+        let defect = defect.filter(|_| attachment.mime_type.starts_with("image/"))?;
         Some(format!(
-            "[{} attachment of {} base64 chars not sent to the model: the image {}]",
+            "[{} attachment of {} base64 chars not sent to the model: the image {defect}. {}]",
             attachment.mime_type,
             attachment.data.len(),
-            defect(attachment)?
+            defect.remedy()
         ))
     }));
     let text = if sections.is_empty() {
@@ -196,7 +201,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     output
         .result
         .content
-        .extend(images.into_iter().map(|attachment| Content::Image {
+        .extend(images.map(|(attachment, _)| Content::Image {
             data: attachment.data.clone(),
             mime_type: attachment.mime_type.clone(),
         }));
@@ -217,7 +222,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         "durationMs": result.duration_ms,
         "diffs": diffs,
         "attachments": result.attachments.len(),
-        "attachmentMedia": result.attachments.iter().map(|attachment| if defect(attachment).is_none() {
+        "attachmentMedia": checked.iter().map(|(attachment, defect)| if defect.is_none() {
             json!({ "mime_type": attachment.mime_type, "path": attachment.path })
         } else {
             json!(attachment)

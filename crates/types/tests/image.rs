@@ -72,10 +72,16 @@ fn an_image_is_refused_for_what_the_provider_refuses() -> Result<(), Box<dyn Err
         ),
         ("image/bmp", BMP, Some(ImageDefect::Type)),
         ("image/png", JPEG, Some(ImageDefect::NotItsType)),
+        ("image/png", "iVBORw0KGgoAAAAA", Some(ImageDefect::NoHeader)),
         (
             "image/png",
-            "iVBORw0KGgoAAAAA",
-            Some(ImageDefect::Truncated),
+            "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA",
+            Some(ImageDefect::NoHeader),
+        ),
+        (
+            "image/webp",
+            "UklGRjoAAABXRUJQAAAAAAAAAAAAAAAA",
+            Some(ImageDefect::NoHeader),
         ),
         (
             "image/png",
@@ -93,24 +99,61 @@ fn an_image_is_refused_for_what_the_provider_refuses() -> Result<(), Box<dyn Err
     Ok(())
 }
 
-/// A real encode cut at any four-character boundary is still strict base64 with a good head,
-/// which is what the kernel's check passed; only the end marker shows the cut.
+/// Decoders stop at the end marker and read what came before it, so a trailer or a cut body is
+/// kept: a Pixel motion photo is a JPEG with an MP4 after its EOI, sent raw by `attach_image`.
+const KEPT: [(&str, &str); 4] = [
+    (
+        "image/jpeg",
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD1iiiiuMwP/9kAAAAYZnR5cG1wNDIAAAAAaXNvbW1wNDI=",
+    ),
+    (
+        "image/png",
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCCAAECAwQ=",
+    ),
+    (
+        "image/gif",
+        "R0lGODdhAQABAIEAAMgeHgAAAAAAAAAAACwAAAAAAQABAAAIBAABBAQA",
+    ),
+    (
+        "image/webp",
+        "UklGRjoAAABXRUJQVlA4IC4AAACwAQCdASoBAAEAAUAmJaACdLoABDAAAP7x3I/4DdfFtMv/vYL/3YL/3YL/WwAAAAA=",
+    ),
+];
+
+/// The issue's payload is a PNG signature over zeros: strict base64 with the magic number, which
+/// the kernel kept. A real encode cut inside its first 24 bytes has no whole header either.
 #[test]
-fn an_image_cut_short_is_refused() -> Result<(), Box<dyn Error>> {
+fn an_image_without_a_whole_header_is_refused_and_a_trailer_is_kept() -> Result<(), Box<dyn Error>>
+{
+    for (mime_type, data) in KEPT {
+        assert_eq!(
+            image_defect(mime_type, data),
+            None,
+            "{mime_type} {data:.40}"
+        );
+    }
     for (mime_type, data) in [
         ("image/png", PNG),
         ("image/jpeg", JPEG),
         ("image/gif", GIF),
         ("image/webp", WEBP),
     ] {
-        for cut in (16..data.len()).step_by(4) {
+        for cut in (16..32).step_by(4) {
             let head = data.get(..cut).ok_or("cut")?;
             assert_eq!(
                 image_defect(mime_type, head),
-                Some(ImageDefect::Truncated),
+                Some(ImageDefect::NoHeader),
                 "{mime_type} at {cut}"
             );
         }
+        let body = data
+            .get(..data.len().saturating_sub(8) / 4 * 4)
+            .ok_or("body")?;
+        assert_eq!(
+            image_defect(mime_type, body),
+            None,
+            "{mime_type} cut in its body"
+        );
     }
     Ok(())
 }

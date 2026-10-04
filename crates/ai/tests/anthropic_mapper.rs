@@ -369,8 +369,9 @@ fn a_refused_image_in_history_is_sent_as_a_placeholder() -> Result<(), Box<dyn E
     assert_eq!(sent_images(&params), ["image 0", "image 2"]);
     let turn = params["messages"][1]["content"].to_string();
     assert!(
-        turn.contains("[image omitted: image/png, 0 KB of base64; the image is cut short")
-            && turn.contains("print(await attach_image(path))"),
+        turn.contains(
+            "[image omitted: image/png, 0 KB of base64; the image has no whole header for its type"
+        ) && turn.contains("re-encode it in ipython"),
         "{turn}"
     );
     Ok(())

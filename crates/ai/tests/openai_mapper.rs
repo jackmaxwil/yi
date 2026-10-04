@@ -441,8 +441,8 @@ fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
     ]
 }
 
-/// A truncated image in a cell's result is refused on every wire, not only Claude's (#860): the
-/// tool message names it and no image message follows.
+/// A PNG cut inside its header in a cell's result is refused on every wire, not only Claude's
+/// (#860): the tool message names it and no image message follows.
 #[test]
 fn a_refused_tool_result_image_is_named_and_not_sent() -> Result<(), Box<dyn Error>> {
     let mut ctx = context();
@@ -450,7 +450,7 @@ fn a_refused_tool_result_image_is_named_and_not_sent() -> Result<(), Box<dyn Err
     if let Some(AgentMessage::ToolResult { content, .. }) = exchange.last_mut()
         && let Some(Content::Image { data, .. }) = content.last_mut()
     {
-        *data = crate::images::PNG.get(..64).ok_or("cut")?.to_owned();
+        *data = crate::images::PNG.get(..20).ok_or("cut")?.to_owned();
     }
     ctx.messages.extend(exchange);
     let params = build_params(&model(false), &ctx, &OpenAiOptions::default());
@@ -463,7 +463,7 @@ fn a_refused_tool_result_image_is_named_and_not_sent() -> Result<(), Box<dyn Err
     let text = last["content"].as_str().ok_or("content")?;
     assert!(
         text.starts_with(
-            "attached\n[image omitted: image/png, 0 KB of base64; the image is cut short"
+            "attached\n[image omitted: image/png, 0 KB of base64; the image has no whole header for its type"
         ),
         "{text}"
     );

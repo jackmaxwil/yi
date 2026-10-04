@@ -304,8 +304,9 @@ fn omit_refused_images(messages: &mut [AgentMessage]) {
         };
         *block = Content::Text {
             text: format!(
-                "[image omitted: {mime_type}, {} KB of base64; the image {defect}, which the provider refuses. To see the file, run `print(await attach_image(path))` in ipython]",
-                data.len() / 1000
+                "[image omitted: {mime_type}, {} KB of base64; the image {defect}, which the provider refuses. {}]",
+                data.len() / 1000,
+                defect.remedy()
             ),
             text_signature: None,
         };
