@@ -235,13 +235,16 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> LaneError + '_ {
     }
 }
 
+/// A lane command's captured output, past which the capture is cut.
+pub(crate) const CAPTURE_CAP: usize = 30_000;
+
 pub(crate) fn capture(
     cwd: &Path,
     program: &str,
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
-    capture_capped(cwd, program, args, deadline, 30_000).map(|capture| capture.stdout)
+    capture_capped(cwd, program, args, deadline, CAPTURE_CAP).map(|capture| capture.stdout)
 }
 
 pub(crate) fn capture_capped(
