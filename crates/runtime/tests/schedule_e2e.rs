@@ -1089,6 +1089,53 @@ async fn a_resumed_spend_alarm_counts_on_from_the_ledger() -> TestResult {
     Ok(())
 }
 
+/// Dies with an alert at 1,200 of 600 real tokens: a rewind re-attaches the store, the ledger
+/// already holds the finished child's usage, and a stall notice re-publishes that child.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewind_does_not_count_a_finished_child_twice() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-rewind")?;
+    let store =
+        JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned()).create(CreateOptions::default())?;
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(ProviderStream::new(None)),
+    );
+    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    session.attach_store(Arc::clone(&store))?;
+    session.events_sender().send(child_at(600))?;
+    {
+        let mut ledger = lock_session(&store);
+        let id = ledger.next_id();
+        ledger.append_record(serde_json::from_value(serde_json::json!({"type": "usage",
+            "id": id, "lane": "main", "cause": "child_usage_attributed", "seq": 0,
+            "timestamp": 0, "usage": {"input": 600, "output": 0, "cacheRead": 0,
+            "cacheWrite": 0, "totalTokens": 600, "cost": {"input": 0, "output": 0,
+            "cacheRead": 0, "cacheWrite": 0, "total": 0}}}))?)?;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    session.attach_store(store)?;
+    for event in [child_at(600), turn_of(1_000)] {
+        session.events_sender().send(event)?;
+    }
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "1,600 tokens crossed 1,000 and nothing fired"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        1,
+        "the finished child counted twice"
+    );
+    Ok(())
+}
+
 async fn until(mut ready: impl FnMut() -> bool) -> bool {
     wait_until(5_000, &mut ready).await
 }
