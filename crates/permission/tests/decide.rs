@@ -360,7 +360,11 @@ fn a_credential_read_is_named_before_it_happens() -> TestResult {
     let token = "cat ~/.yi/providers/tokens/openai.json";
     assert!(command_reads_credentials(token, &context).is_some(), "#887");
     // The MCP session store keeps each stdio server's `env` (#906).
-    for command in ["cat ~/.yi/mcp/sessions.json", "cat ~/.yi/mcp/s*.json"] {
+    for command in [
+        "cat ~/.yi/mcp/sessions.json",
+        "cat ~/.yi/mcp/s*.json",
+        "cat ~/.yi/mcp.json",
+    ] {
         assert!(
             command_reads_credentials(command, &context).is_some(),
             "{command}"

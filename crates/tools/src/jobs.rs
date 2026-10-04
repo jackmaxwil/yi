@@ -443,20 +443,17 @@ fn start(
     std::thread::spawn(move || {
         let mut process = match &wrapped {
             Some((program, args)) => {
-                let mut process = command(program);
+                let mut process = crate::keyless_command(program);
                 process.args(args);
                 process
             }
             None => {
-                let mut process = command(interpreter());
+                let mut process = crate::keyless_command(interpreter());
                 process.arg("-c").arg(&text);
                 process
             }
         };
         process.current_dir(&dir);
-        for (_, variable) in yi_types::PROVIDER_KEY_VARS {
-            process.env_remove(variable);
-        }
         let capture = run_captured_live(
             process,
             None,

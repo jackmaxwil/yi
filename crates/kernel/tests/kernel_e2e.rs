@@ -352,8 +352,6 @@ async fn a_prune_keeps_an_over_cap_variable_that_shrank_in_place() -> TestResult
     Ok(())
 }
 
-/// Incident: every cell, Yi's own included, was written to the user's
-/// `~/.ipython/profile_default/history.sqlite`, one sqlite lock shared by every kernel.
 /// #906: yi's provider keys reached the kernel and everything a cell starts, wherever no
 /// sandbox stood between them (a host with no Seatbelt).
 #[tokio::test]
@@ -379,6 +377,8 @@ async fn the_kernel_inherits_no_provider_key() -> TestResult {
     Ok(())
 }
 
+/// Incident: every cell, Yi's own included, was written to the user's
+/// `~/.ipython/profile_default/history.sqlite`, one sqlite lock shared by every kernel.
 #[tokio::test]
 async fn the_kernel_keeps_no_ipython_history() -> TestResult {
     let kernel = manager()?;

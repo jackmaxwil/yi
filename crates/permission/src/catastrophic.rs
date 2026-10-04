@@ -276,9 +276,9 @@ pub fn credential_stores(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Keys a contained `yi mcp` reads, so no sandbox profile hides them: the MCP session store keeps
-/// each stdio server's `env` (#906). The read gate and the bash read belt refuse them.
-const CONTAINED_KEY_FILES: [&str; 1] = [".yi/mcp/sessions.json"];
+/// Keys a contained `yi mcp` reads, so no sandbox profile hides them: the MCP config and session
+/// store keep each stdio server's `env` (#906). The read gate and the bash read belt refuse them.
+const CONTAINED_KEY_FILES: [&str; 2] = [".yi/mcp.json", ".yi/mcp/sessions.json"];
 
 fn stores(context: &CatastrophicContext) -> Vec<PathBuf> {
     let Some(home) = context.home_dir.as_deref() else {
