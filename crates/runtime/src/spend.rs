@@ -2,9 +2,36 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use yi_types::event::AgentEvent;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Usage};
+use yi_types::record::LaneRecord;
 
 use crate::AgentSession;
+
+/// Invariant: every model call a session pays for leaves one `Usage` record on the main lane,
+/// so the stored cost total (a fold of the ledger) cannot undercount a side call.
+pub(crate) fn book_side_call(
+    store: &yi_session::SharedSession,
+    cause: &str,
+    usage: Usage,
+) -> Result<(), yi_session::SessionError> {
+    let mut session = yi_session::lock_session(store);
+    let id = session.next_id();
+    session.append_record(LaneRecord::Usage {
+        id,
+        lane: "main".to_owned(),
+        usage,
+        cause: cause.to_owned(),
+        run_id: None,
+        entry_id: None,
+        attempt: None,
+        stop_reason: None,
+        tool_call_id: None,
+        details: None,
+        seq: 0,
+        timestamp: 0,
+    })?;
+    Ok(())
+}
 
 pub const SPEND_ALERT_TYPE: &str = "spend_alert";
 

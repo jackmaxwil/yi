@@ -13,6 +13,19 @@ use yi_types::lease::LeaseRecord;
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Model, ModelCost};
 
+/// A finished reply that reports it cost `dollars`: what a priced provider's terminal message
+/// carries and the faux provider's own replies never do.
+pub fn priced_reply(text: &str, dollars: f64) -> AgentMessage {
+    let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    if let AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.input = 100;
+        usage.output = 20;
+        usage.total_tokens = 120;
+        usage.cost.total = serde_json::Number::from_f64(dollars).unwrap_or_else(|| 0.into());
+    }
+    message
+}
+
 pub struct Built {
     pub wall: Wall,
     pub deadline: Option<std::time::Duration>,

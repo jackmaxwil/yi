@@ -65,7 +65,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
         tools: None,
         tool_choice: None,
     };
-    let text = crate::compaction::complete_text(
+    let (text, usage) = crate::compaction::complete_text(
         session.provider(),
         &model,
         &context,
@@ -73,6 +73,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
         &InterruptSignal::default(),
     )
     .await?;
+    crate::spend::book_side_call(&store, "side:title", usage).map_err(|error| error.to_string())?;
     let Some(title) = clean(&text) else {
         return Err(format!("the summarizer's title was empty: {text:?}"));
     };
