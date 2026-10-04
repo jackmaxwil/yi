@@ -524,6 +524,31 @@ fn the_warmer_refuses_a_lockfile_no_session_synced() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_failing_sync_names_its_command_and_not_the_sandbox_profile() -> TestResult {
+    let rig = Rig::new("syncfail")?;
+    std::fs::write(rig.repo.join("uv.lock"), "not a lockfile\n")?;
+    git(&rig.repo, &["add", "uv.lock"])?;
+    git(&rig.repo, &["commit", "-qm", "lock"])?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-syncfail", ClaimBase::Main)?;
+    let message = lane
+        .sync()
+        .err()
+        .ok_or("a bad lockfile synced")?
+        .to_string();
+    assert!(
+        message.contains("uv sync --frozen --offline --quiet"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("(version 1)") && !message.contains("-D"),
+        "{message}"
+    );
+    assert!(message.len() < 2_000, "{} bytes: {message}", message.len());
+    Ok(())
+}
+
 /// The one HEAD reader: a branch, a detached sha, and a refusal for anything else.
 #[test]
 fn head_reads_a_branch_a_detached_sha_and_refuses_garbage() -> TestResult {

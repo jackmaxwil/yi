@@ -251,6 +251,26 @@ pub(crate) fn capture_capped(
     deadline: std::time::Duration,
     cap: usize,
 ) -> Result<yi_tools::CommandCapture, String> {
+    capture_named(
+        cwd,
+        &format!("{program} {}", args.join(" ")),
+        program,
+        args,
+        deadline,
+        cap,
+    )
+}
+
+/// Incident: the lane sync ran under the sandbox wrapper and its refusal quoted the wrapper's
+/// whole argv, 17 KB of profile before the one line saying why; `label` is what the caller meant.
+pub(crate) fn capture_named(
+    cwd: &Path,
+    label: &str,
+    program: &str,
+    args: &[&str],
+    deadline: std::time::Duration,
+    cap: usize,
+) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::command(program);
     command.current_dir(cwd).args(args);
@@ -259,16 +279,17 @@ pub(crate) fn capture_capped(
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
     let capture = yi_tools::run_captured(command, None, &cancelled, cap)
-        .map_err(|error| format!("{program} {}: {error}", args.join(" ")))?;
+        .map_err(|error| format!("{label}: {error}"))?;
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
-    Err(format!(
-        "{program} {} failed:\n{}{}",
-        args.join(" "),
-        capture.stdout,
-        capture.stderr
-    ))
+    let output = format!("{}{}", capture.stdout, capture.stderr);
+    let denied = if output.contains("Operation not permitted") {
+        "\n[the sandbox denied a write outside its writable roots; the path is in the error above]"
+    } else {
+        ""
+    };
+    Err(format!("{label} failed:\n{output}{denied}"))
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {

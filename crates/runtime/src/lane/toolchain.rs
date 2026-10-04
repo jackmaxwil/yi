@@ -144,11 +144,13 @@ pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>,
         && let Some((program, args)) = contained(tree, pool.home(), argv)
     {
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-        super::capture(
+        super::capture_named(
             tree,
+            &argv.join(" "),
             &program,
             &borrowed,
             std::time::Duration::from_millis(SYNC_TIMEOUT_MS),
+            30_000,
         )
         .map_err(LaneError::Forge)?;
     }
