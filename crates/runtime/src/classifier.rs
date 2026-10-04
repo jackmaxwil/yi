@@ -473,7 +473,7 @@ pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
     match mode {
         ApprovalMode::Instant => Some(Timing::Instant),
         ApprovalMode::AfterDelay => Some(Timing::AfterDelay(Duration::from_secs(
-            block.ask_timeout_secs.unwrap_or(DEFAULT_DELAY_SECS),
+            block.ask_timeout_secs.unwrap_or(DEFAULT_DELAY_SECS).max(1),
         ))),
         ApprovalMode::WaitForUser => None,
     }

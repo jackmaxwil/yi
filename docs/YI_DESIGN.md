@@ -400,7 +400,8 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
 - With a classifier and its `laya` key (minted by `yi serve`), `classifier.approval` says when the
   sidecar's `noul` answers a reviewable auto-mode ask: `instant` (default) first — P(safe) ≥ 0.9
   (0.98 if destructive) allows, ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
-  person has not answered for `askTimeoutSecs` (30), a confident allow only; `wait-for-user` never.
+  person has not answered for `askTimeoutSecs` (30, at least 1), a confident allow only, and only
+  where a prompt closes when its call settles elsewhere (the solo TUI); `wait-for-user` never.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and

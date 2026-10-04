@@ -74,7 +74,12 @@ pub(super) fn ask_or_judge(
     if let Ok(outcome) = receiver.recv_timeout(late.delay) {
         return Answered::Person(outcome);
     }
-    if let crate::classifier::Judgement::Allow(safe) = late.approver.judge(late.call) {
+    let judged = late.approver.judge(late.call);
+    // A person who answered while the sidecar was judging decides, a refusal included.
+    if let Ok(outcome) = receiver.try_recv() {
+        return Answered::Person(outcome);
+    }
+    if let crate::classifier::Judgement::Allow(safe) = judged {
         return Answered::Classifier(safe);
     }
     Answered::Person(receiver.recv().unwrap_or(AskOutcome::Reject))
@@ -92,6 +97,11 @@ impl PermissionBroker {
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
         let tool_call_id = format!("confirm-{ordinal}");
+        // The asker's prompt carries the id it settles under, so a front end can close it.
+        let ask = &PermissionAsk {
+            tool_call_id: Some(&tool_call_id),
+            ..*ask
+        };
         let _ = self.events.send(AgentEvent::PermissionRequested {
             tool_call_id: tool_call_id.clone(),
             title: ask.title.to_owned(),

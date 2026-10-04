@@ -33,6 +33,14 @@ fn skill(name: &str, needle: &str) -> RuleDoc {
 pub(crate) fn sidecar(
     bodies: Vec<&'static str>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
+    sidecar_after(bodies, Duration::ZERO)
+}
+
+/// [`sidecar`] that waits `pause` before each answer, as a loaded checkpoint does.
+fn sidecar_after(
+    bodies: Vec<&'static str>,
+    pause: Duration,
+) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let handle = std::thread::spawn(move || {
@@ -55,6 +63,7 @@ pub(crate) fn sidecar(
             let mut sent = vec![0; length];
             let _ = reader.read_exact(&mut sent);
             seen.push(String::from_utf8_lossy(&sent).into_owned());
+            std::thread::sleep(pause);
             let reply = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
                 body.len()
@@ -687,6 +696,28 @@ fn an_unsure_classifier_past_the_delay_keeps_the_ask_open_for_the_person() -> Te
     assert_eq!(outcome.reason, "allowed by user");
     let judged = gate.records.recv_timeout(Duration::from_secs(1))?;
     assert_eq!(judged.answer.as_deref(), Some("undecided"));
+    Ok(())
+}
+
+/// A refusal that lands while the sidecar is still judging is the person's, even when the
+/// classifier comes back confident: the review found the allow overruling it.
+#[test]
+fn a_refusal_given_while_the_classifier_judges_stands() -> TestResult {
+    let (port, _served) = sidecar_after(vec![safe(0.95)], Duration::from_millis(400))?;
+    let gate = gate_in(
+        port,
+        yi_runtime::PermissionMode::Auto,
+        Some(yi_runtime::AskOutcome::Reject),
+        Duration::from_millis(300),
+        Timing::AfterDelay(Duration::from_millis(200)),
+    );
+    let outcome = run(&gate, "make build");
+    assert!(!outcome.allowed, "{}", outcome.reason);
+    assert!(
+        outcome.reason.starts_with("The user denied"),
+        "{}",
+        outcome.reason
+    );
     Ok(())
 }
 
