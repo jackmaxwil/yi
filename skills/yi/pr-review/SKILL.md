@@ -24,16 +24,15 @@ just pr sweep
 ```
 
 The sweep reviews every open draft whose head no round has read enough, and skips the rest, so
-a repeated or late message does nothing. It never merges. It runs the fixer only when
-`YI_REVIEW_FIX=1` is set, which is the owner's switch, not yours.
+a repeated or late message does nothing. It never merges. A blocked round is the autofixer's
+(`just pr autofix N`), which the `autofix` workflow runs every 15 minutes.
 
 ## By hand
 
 - `just pr review N` posts one round; `--dry-run` prints it instead; `--again` reads a head the
   rule says is read enough.
-- `just pr fix N` hands the last round's high and medium findings to a fresh fixer on the PR
-  branch; it refuses a branch outside this repository, a PR that is not a draft, and a head that
-  is already its answer to that round.
+- `just pr autofix N` answers the last round's findings, or a conflict, on the PR branch now;
+  `just pr spend` totals what the bots spent, from their comments' meta lines.
 - `just pr ready N` lists what a draft still owes.
 
 ## Subscribing a reviewer session
