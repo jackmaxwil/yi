@@ -207,6 +207,37 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Dies with the summary's spend never booked: the compaction's own call billed the provider
+/// and the session's cost total counted only the turns around it.
+#[tokio::test]
+async fn a_compaction_call_is_booked_in_the_session_cost_total() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-cost")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-cost");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-cost".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
+        crate::support::priced_reply("## Goal\nPriced summary", 0.25),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+    let before = yi_session::lock_session(&store).stats().cost_total;
+    assert!(
+        session
+            .compact_now()
+            .await
+            .is_ok_and(|outcome| outcome.applied())
+    );
+    let after = yi_session::lock_session(&store).stats().cost_total;
+    assert!((after - before - 0.25).abs() < 1e-9, "{before} -> {after}");
+    Ok(())
+}
+
 /// The summarizer ran but the entry never reached disk: the live history must stay what a
 /// resume loads, the model must read why at the next request, and a disk that stays broken
 /// must not buy another summarizer call at every boundary.

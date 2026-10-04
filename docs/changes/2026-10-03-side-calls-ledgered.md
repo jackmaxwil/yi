@@ -1,0 +1,6 @@
+---
+issue: Closes #1033
+raise: crate runtime +36, tests +108, comments +5
+decision: every spend is a ledger record and every displayed total is a fold of the ledger, set by the client and never summed; a side call (session title, branch summary, compaction summary) records `LaneRecord::Usage` on the main lane with a cause naming its job (`side:title`, `side:branch`, `side:compact`) | a title, a rewind's branch summary and a compaction summary billed the provider while the session's cost total never saw them, because `complete_text` returned the text and dropped the reply's usage | drop the three `book_side_call` calls and `complete_text` returns the text alone again
+---
+A session's cost total now includes its side calls (Closes #1033). The title, branch-summary and compaction-summary calls went through `complete_text`, which returned the reply's text and threw away its `Usage`, so their spend reached provider telemetry but never the session JSONL. `complete_text` now returns the usage, and each caller appends a `Usage` record on the main lane (`side:title`, `side:branch`, `side:compact`), which `SessionStats.cost_total` already folds. A record is booked whenever the call answered, even if its text was unusable; a failed call reports no usage and books none. No schema change: the record and its free-form `cause` already existed.

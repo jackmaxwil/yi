@@ -97,3 +97,42 @@ async fn a_first_turn_is_titled_by_the_model_and_the_name_is_stored() -> Result<
     );
     Ok(())
 }
+
+/// Dies with the title's spend never booked: `complete_text` handed back the text alone, so a
+/// session's cost total stayed at the main turns' sum while a side call billed on the side.
+#[tokio::test]
+async fn a_title_call_is_booked_in_the_session_cost_total() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-title-cost")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-title-cost");
+    let store = repo.create(CreateOptions {
+        id: Some("titled-cost".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        faux_assistant_message(vec![faux_text("The gauge now counts.")], StopReason::Stop),
+        crate::support::priced_reply("Fix the context gauge", 0.25),
+    ]);
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("the status row says 0 / 1M")?;
+    session.wait_idle().await;
+    assert_eq!(lock_session(&store).stats().cost_total, 0.0);
+    yi_runtime::title::title_session(&session).await?;
+    let stats = lock_session(&store).stats();
+    assert!(
+        (stats.cost_total - 0.25).abs() < 1e-9,
+        "{}",
+        stats.cost_total
+    );
+    assert_eq!(stats.total_tokens, 120);
+    Ok(())
+}
