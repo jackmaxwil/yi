@@ -105,16 +105,7 @@ pub fn content_hash(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub fn git_root(cwd: &Path) -> Option<PathBuf> {
-    let mut dir = Some(cwd);
-    while let Some(current) = dir {
-        if current.join(".git").exists() {
-            return Some(current.to_path_buf());
-        }
-        dir = current.parent();
-    }
-    None
-}
+pub use yi_tools::ripwire::git_root;
 
 pub struct ProjectResources {
     cwd: PathBuf,

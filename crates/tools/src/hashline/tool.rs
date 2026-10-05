@@ -1009,18 +1009,26 @@ fn post_edit_checks(
     results: &[PatchSectionResult],
     context: &ToolContext,
 ) -> (Vec<Option<String>>, Option<CheckLayer>) {
-    let regions: Vec<(String, u64)> = (results.iter())
+    let updates: Vec<&PatchSectionResult> = (results.iter())
         .filter(|result| result.op == SectionOp::Update && crate::ripwire::installed())
+        .collect();
+    let regions: Vec<(String, u64)> = (updates.iter())
         .flat_map(|result| {
             let (path, before) = (&result.canonical_path, &result.before);
             crate::ripwire::regions(context, path, before, &result.after)
         })
         .collect();
+    let removed: Vec<(String, String)> = (updates.iter())
+        .flat_map(|result| {
+            let (path, before) = (&result.canonical_path, &result.before);
+            crate::ripwire::removed(context, path, before, &result.after)
+        })
+        .collect();
     std::thread::scope(|scope| {
-        let ripwire = (!regions.is_empty()).then(|| {
+        let ripwire = (!regions.is_empty() || !removed.is_empty()).then(|| {
             scope.spawn(|| {
                 let _span = yi_types::trace::span("edit.ripwire");
-                crate::ripwire::check(context, regions)
+                crate::ripwire::check(context, regions, removed)
             })
         });
         let verdicts = paths

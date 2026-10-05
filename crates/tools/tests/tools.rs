@@ -2865,12 +2865,37 @@ fn a_line_outside_definitions_is_clean_and_a_failure_is_named() -> TestResult {
             None => fs::write(dir.join("err"), "")?,
         }
         fs::write(dir.join("answer"), answer.unwrap_or_default())?;
-        fs::write(dir.join("a.rs"), "fn a() {}\n")?;
+        fs::write(dir.join("a.rs"), "// old\nfn a() {}\n")?;
         let edit = edit_with(&dir, "a.rs", "PUT 1.=1:\n+// a note\n");
         let text = output_text(&edit);
         assert!(text.contains(line), "{text}");
         assert_eq!(edit.result.details["ripwire"], json!(name));
     }
+    Ok(())
+}
+
+/// Ripwire answers "symbol not found" for the comment left where a definition was deleted, so
+/// the deletion itself is named with its callers' search, never read as clean.
+#[cfg(unix)]
+#[test]
+fn a_deleted_definition_is_named_not_clean() -> TestResult {
+    let Some(dir) = fake_path("ripwire-deleted") else {
+        let dir = temp_dir("ripwire-deleted")?;
+        fake_ripwire(&dir)?;
+        fs::write(dir.join("code"), "1")?;
+        fs::copy(ripwire_fixture("edit-check-miss.txt"), dir.join("err"))?;
+        return rerun_on_path("a_deleted_definition_is_named_not_clean", &dir);
+    };
+    fs::write(dir.join("m.py"), "def alpha(a, b):\n    return a + b\n")?;
+    let edit = edit_with(&dir, "m.py", "PUT 1.=2:\n+# alpha moved\n");
+    let text = output_text(&edit);
+    assert!(
+        text.contains(
+            "[ripwire check]\nalpha removed from m.py: its callers still call it — grep: \\balpha\\b"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["ripwire"], json!("findings"));
     Ok(())
 }
 

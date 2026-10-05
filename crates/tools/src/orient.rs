@@ -149,7 +149,7 @@ fn clamp(name: &str, body: String) -> String {
 
 fn task_map(task: Option<&str>, context: &ToolContext) -> LayerBody {
     let task = task.ok_or_else(|| "no task argument was given".to_owned())?;
-    let root = crate::ripwire::root(&context.cwd);
+    let root = &crate::ripwire::root(&context.cwd);
     let answer = crate::ripwire::json(root, &[&format!("--for={task}")], &context.cancelled)?;
     let rows = answer.get("sigs").and_then(Value::as_array);
     let mut out = vec![format!(
@@ -187,7 +187,7 @@ fn task_map(task: Option<&str>, context: &ToolContext) -> LayerBody {
 
 fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     let symbol = bare(symbol.ok_or_else(|| "no symbol argument was given".to_owned())?);
-    let root = crate::ripwire::root(&context.cwd);
+    let root = &crate::ripwire::root(&context.cwd);
     let ask = |verb: &str| -> Result<(String, bool), String> {
         let flag = format!("--{verb}={symbol}");
         let answer = crate::ripwire::json(root, &[&flag], &context.cancelled)?;

@@ -1,6 +1,6 @@
 //! Every `ripwire` spawn. Ripwire indexes the tree it is pointed at, so each runs at the repository's top.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -89,10 +89,25 @@ pub fn installed() -> bool {
 }
 
 /// The repository's top, where ripwire indexes; a worktree never borrows the main checkout's.
-pub(crate) fn root(cwd: &Path) -> &Path {
-    cwd.ancestors()
+pub fn git_root(cwd: &Path) -> Option<PathBuf> {
+    (cwd.ancestors())
         .find(|dir| dir.join(".git").exists())
-        .unwrap_or(cwd)
+        .map(Path::to_path_buf)
+}
+
+pub(crate) fn root(cwd: &Path) -> PathBuf {
+    git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+}
+
+fn relative(context: &ToolContext, path: &Path) -> Option<String> {
+    let code = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| CODE_EXTS.contains(&extension));
+    let top = root(&context.cwd);
+    let top = top.canonicalize().unwrap_or(top);
+    let relative = path.strip_prefix(&top).ok().filter(|_| code)?;
+    Some(relative.to_string_lossy().into_owned())
 }
 
 pub(crate) fn regions(
@@ -101,17 +116,9 @@ pub(crate) fn regions(
     before: &str,
     after: &str,
 ) -> Vec<(String, u64)> {
-    let path = Path::new(path);
-    let code = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| CODE_EXTS.contains(&extension));
-    let top = root(&context.cwd);
-    let top = top.canonicalize().unwrap_or_else(|_| top.to_path_buf());
-    let Some(relative) = path.strip_prefix(&top).ok().filter(|_| code) else {
+    let Some(relative) = relative(context, Path::new(path)) else {
         return Vec::new();
     };
-    let relative = relative.to_string_lossy().into_owned();
     let lines: Vec<&str> = after.split('\n').collect();
     let blank = |line: u64| {
         usize::try_from(line.saturating_sub(1))
@@ -126,10 +133,45 @@ pub(crate) fn regions(
         .collect()
 }
 
+/// Incident: ripwire answers for the definition a line holds now, so a deleted one had none to ask
+/// about and read as clean while its callers broke.
+pub(crate) fn removed(
+    context: &ToolContext,
+    path: &str,
+    before: &str,
+    after: &str,
+) -> Vec<(String, String)> {
+    let Some(relative) = relative(context, Path::new(path)) else {
+        return Vec::new();
+    };
+    let defined = |text: &str| -> Vec<String> {
+        (text.lines())
+            .filter_map(crate::orient::defined_name)
+            .collect()
+    };
+    let kept = defined(after);
+    let mut gone = defined(before);
+    gone.retain(|name| !kept.contains(name));
+    gone.sort();
+    gone.dedup();
+    (gone.iter())
+        .map(|name| {
+            let row = format!(
+                "{name} removed from {relative}: its callers still call it — grep: \\b{name}\\b"
+            );
+            (relative.clone(), row)
+        })
+        .collect()
+}
+
 /// Incident: a cold index took 8 to 18 s on Yi, and killing it at the deadline meant none ever built.
-pub(crate) fn check(context: &ToolContext, regions: Vec<(String, u64)>) -> CheckLayer {
+pub(crate) fn check(
+    context: &ToolContext,
+    regions: Vec<(String, u64)>,
+    removed: Vec<(String, String)>,
+) -> CheckLayer {
     let deadline = Instant::now() + Duration::from_millis(CHECK_TIMEOUT_MS);
-    let top = root(&context.cwd).to_path_buf();
+    let top = root(&context.cwd);
     let asked = regions.len().min(CHECK_REGIONS);
     let (send, answers) = std::sync::mpsc::channel();
     for (index, (file, line)) in regions.iter().take(asked).enumerate() {
@@ -151,6 +193,7 @@ pub(crate) fn check(context: &ToolContext, regions: Vec<(String, u64)>) -> Check
         }
     }
     let (mut rows, mut missed, mut seen) = (Vec::new(), Vec::new(), Vec::new());
+    let mut unfound: Vec<&str> = Vec::new();
     for ((file, line), outcome) in regions.iter().zip(outcomes) {
         let reason = match outcome {
             None => format!(
@@ -166,7 +209,10 @@ pub(crate) fn check(context: &ToolContext, regions: Vec<(String, u64)>) -> Check
                     Err(reason) => reason,
                 },
                 // A changed line inside no definition (a comment, an import) has no contract.
-                Some(1) if capture.stderr.contains("symbol not found") => continue,
+                Some(1) if capture.stderr.contains("symbol not found") => {
+                    unfound.push(file);
+                    continue;
+                }
                 Some(code) => format!("exit {code}"),
                 None => "killed before it exited".to_owned(),
             },
@@ -175,6 +221,11 @@ pub(crate) fn check(context: &ToolContext, regions: Vec<(String, u64)>) -> Check
             "[ripwire check: {file}:{line} unavailable — {reason}; bash: ripwire . --edit-check=@{file}:{line}]"
         ));
     }
+    let answered = |file: &str| regions.iter().any(|(asked, _)| asked == file);
+    let deleted = (removed.into_iter())
+        .filter(|(file, _)| unfound.contains(&file.as_str()) || !answered(file))
+        .map(|(_, row)| row);
+    rows.splice(0..0, deleted);
     CheckLayer {
         rows,
         missed,
