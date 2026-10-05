@@ -119,20 +119,11 @@ pub(crate) fn regions(
             .and_then(|index| lines.get(index))
             .is_none_or(|text| text.trim().is_empty())
     };
-    let mut out = Vec::new();
-    let mut previous: Option<u64> = None;
-    let mut open = false;
-    for line in crate::diff::changed_after_lines(before, after) {
-        if previous.is_none_or(|last| line > last.saturating_add(1)) {
-            open = true;
-        }
-        previous = Some(line);
-        if open && !blank(line) {
-            out.push((relative.clone(), line));
-            open = false;
-        }
-    }
-    out
+    crate::diff::changed_after_lines(before, after)
+        .into_iter()
+        .filter(|line| !blank(*line))
+        .map(|line| (relative.clone(), line))
+        .collect()
 }
 
 /// Incident: a cold index took 8 to 18 s on Yi, and killing it at the deadline meant none ever built.
@@ -168,11 +159,11 @@ pub(crate) fn check(context: &ToolContext, regions: Vec<(String, u64)>) -> Check
             Some(Err(error)) => format!("not runnable: {error}"),
             Some(Ok(capture)) => match capture.exit_code {
                 Some(0) => match finding(&uncommented(&capture.stdout), &mut seen) {
-                    Some(found) => {
+                    Ok(found) => {
                         rows.extend(found);
                         continue;
                     }
-                    None => "the answer was not ripwire's edit-check".to_owned(),
+                    Err(reason) => reason,
                 },
                 // A changed line inside no definition (a comment, an import) has no contract.
                 Some(1) if capture.stderr.contains("symbol not found") => continue,
@@ -192,11 +183,13 @@ pub(crate) fn check(context: &ToolContext, regions: Vec<(String, u64)>) -> Check
     }
 }
 
-fn finding(xml: &str, seen: &mut Vec<String>) -> Option<Vec<String>> {
-    let head = *tags(xml, "edit-check").first()?;
+fn finding(xml: &str, seen: &mut Vec<String>) -> Result<Vec<String>, String> {
+    let Some(head) = tags(xml, "edit-check").first().copied() else {
+        return Err("the answer was not ripwire's edit-check".to_owned());
+    };
     let at = attr(head, "p");
     if seen.contains(&at) {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     }
     seen.push(at.clone());
     let extension = at
@@ -225,10 +218,16 @@ fn finding(xml: &str, seen: &mut Vec<String>) -> Option<Vec<String>> {
         "no-baseline" => {
             format!("{lead}: no git HEAD to compare, so a contract change is unknown; {fit}")
         }
-        _ if proven && incompatible != "0" => {
+        "unchanged" | "new-symbol" if incompatible.parse::<u64>().is_err() => {
+            return Err(format!(
+                "the answer named no incompatible count ({incompatible})"
+            ));
+        }
+        "unchanged" | "new-symbol" if proven && incompatible != "0" => {
             format!("{lead}: {incompatible} callers do not fit it now")
         }
-        _ => return Some(Vec::new()),
+        "unchanged" | "new-symbol" => return Ok(Vec::new()),
+        _ => return Err(format!("the answer named an unknown status ({status})")),
     };
     let mut out = vec![row];
     for caller in tags(xml, "c") {
@@ -242,7 +241,7 @@ fn finding(xml: &str, seen: &mut Vec<String>) -> Option<Vec<String>> {
             attr(caller, "p")
         ));
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Incident: ripwire's legend comment spells its own rows (`<c n= p=>`), which read as a caller.
