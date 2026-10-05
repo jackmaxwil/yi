@@ -241,6 +241,67 @@ fn a_glob_never_walks_into_a_key_store() -> TestResult {
     Ok(())
 }
 
+/// #906: the MCP session store keeps each stdio server's `env`, and yi's OAuth profiles a client
+/// secret; read, grep and a glob reached both by name, by a link, or by a hard link in the cwd.
+#[cfg(unix)]
+#[test]
+fn keys_beside_the_token_stores_reach_no_read_grep_or_glob() -> TestResult {
+    let scratch = Scratch::new("yi-paths-beside")?;
+    let home = scratch.join("home");
+    fs::create_dir_all(home.join(".yi/mcp"))?;
+    fs::create_dir_all(home.join(".yi/oauth"))?;
+    // The shape `yi mcp connect` writes for a stdio entry whose config carries an env.
+    fs::write(
+        home.join(".yi/mcp/sessions.json"),
+        r#"{"sessions":{"gh":{"name":"gh","spec":{"command":"npx","args":["-y","@modelcontextprotocol/server-github"],"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"FAKE ENV KEY MARKER"}},"state":"live","createdAt":1,"updatedAt":1}}}"#,
+    )?;
+    fs::write(
+        home.join(".yi/mcp.json"),
+        r#"{"mcpServers":{"gh":{"command":"npx","env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"FAKE ENV KEY MARKER"}}}}"#,
+    )?;
+    fs::write(
+        home.join(".yi/oauth/acme.json"),
+        r#"{"clientSecret":"FAKE OAUTH KEY MARKER"}"#,
+    )?;
+    let elsewhere = scratch.join("elsewhere");
+    fs::create_dir_all(&elsewhere)?;
+    std::os::unix::fs::symlink(&home, elsewhere.join("h"))?;
+    std::os::unix::fs::symlink(home.join(".yi/mcp/sessions.json"), elsewhere.join("s.json"))?;
+    fs::hard_link(
+        home.join(".yi/mcp/sessions.json"),
+        elsewhere.join("hard.json"),
+    )?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let context = ToolContext::new(elsewhere.clone());
+    let named = [
+        "~/.yi/mcp/sessions.json",
+        "h/.yi/mcp/sessions.json",
+        "s.json",
+        "hard.json",
+        "~/.yi/mcp.json",
+        "h/.yi/mcp.json",
+        "~/.yi/oauth/acme.json",
+        "h/.yi/oauth/acme.json",
+    ];
+    let mut answers: Vec<(String, String)> = Vec::new();
+    for path in named {
+        answers.push((format!("read {path}"), read(&elsewhere, &[("path", path)])));
+        let found = grep(&context, &[("pattern", "KEY MARKER"), ("path", path)]);
+        answers.push((format!("grep path={path}"), found));
+    }
+    for glob in ["*.json", "h/.yi/mcp/*", "h/.yi/**/*.json"] {
+        answers.push((format!("read {glob}"), read(&elsewhere, &[("path", glob)])));
+    }
+    let walked = grep(&context, &[("pattern", "KEY MARKER")]);
+    answers.push(("grep over the cwd".to_owned(), walked));
+    for (call, answer) in answers {
+        let leaked = ["ENV KEY MARKER", "OAUTH KEY MARKER"].map(|key| answer.contains(key));
+        assert!(leaked == [false, false], "{call} leaks: {answer}");
+    }
+    Ok(())
+}
+
 /// A walk that starts at a home, a system root or inside a key store walks nothing, and says so
 /// with the remedy: yi started in `~` answered "No matches found" to every grep.
 #[cfg(unix)]
