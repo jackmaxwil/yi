@@ -199,7 +199,14 @@ impl History {
         } else {
             rendered.rows.extend(fresh);
         }
-        let mut held: usize = rendered.rows.iter().map(|rows| kept_rows(rows)).sum();
+        // Invariant: the loop below only asks whether the cap is passed, so the sum stops there.
+        let mut held = 0_usize;
+        for rows in rendered.rows.iter().rev() {
+            held = held.saturating_add(kept_rows(rows));
+            if held > cap {
+                break;
+            }
+        }
         while (held <= cap || rendered.start > back_to) && rendered.start > 0 {
             rendered.start -= 1;
             let start = rendered.start;
