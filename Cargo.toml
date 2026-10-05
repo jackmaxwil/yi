@@ -66,6 +66,7 @@ pulldown-cmark = { version = "0.12", default-features = false }
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 unicode-width = { version = "0.2", default-features = false }
+rustix = { version = "0.38", default-features = false, features = ["fs", "std"] }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 vt100 = { version = "0.15", default-features = false }
 insta = { version = "1", default-features = false }
