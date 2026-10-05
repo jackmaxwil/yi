@@ -228,10 +228,12 @@ def accept(clone, conflicted, before, keep_new=lambda path: False):
     return [p for p in touched if p not in strays and not any(p.startswith(s) for s in strays)], note
 
 
-def reprice(clone):
-    """After the merge the fork moved: the branch's change file raises what the gates now measure."""
+def reprice(clone, base="MERGE_HEAD"):
+    """The branch's change file raises what the gates now measure; its own file is the one `base`
+    lacks. Incident: a findings fix has no MERGE_HEAD, so every file read as the branch's, and
+    #1025's fix rewrote a change file main holds, which the hook refused."""
     pending = [p for p in sorted((clone / "docs/changes").glob("*.md"))
-               if sh(clone, "git", "cat-file", "-e", f"MERGE_HEAD:docs/changes/{p.name}", check=False).returncode]
+               if sh(clone, "git", "cat-file", "-e", f"{base}:docs/changes/{p.name}", check=False).returncode]
     if not pending:
         return
     path = pending[-1]
@@ -403,7 +405,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
                 raise RuntimeError("two fixes in a row did not clear the review; a person is next")
             summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before)
             subject, signed = f"Answer the findings review round {rnd['n']} confirmed", f"{SIGNED} {rnd['n']} on #{pr['number']}.\n"
-        reprice(clone)
+        reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
         message = lambda: (f"{subject}\n\n{summary}\n\n{signed}"
                            f"Made by the autofixer{f' with {model[0]}' if model else ''}; #{pr['number']}.\n")
         # The author is set in the environment: git hands a hook's own GIT_AUTHOR_* to every child,
@@ -424,7 +426,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
             refused = weakened(clone) if kind == "findings" else None
             if refused:
                 raise RuntimeError(refused)
-            reprice(clone)
+            reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
             summary += ("\n\nThe commit hook refused the first attempt; one more turn: "
                         + ((said.get("summary") or "").strip() or "no summary") + note)
             committed = commit(message())
@@ -639,6 +641,9 @@ def selfcheck():
         git = lambda *a: sh(tmp, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
         git("init", "-q", "-b", "main")
         (tmp / "a.txt").write_text("one\n")
+        main_row = "---\nraise: tests +1\n---\nmain's own row\n"
+        (tmp / "docs/changes").mkdir(parents=True)
+        (tmp / "docs/changes/2026-01-01-main.md").write_text(main_row)
         git("add", "-A"); git("commit", "-q", "-m", "seed")
         git("checkout", "-q", "-b", "topic"); (tmp / "a.txt").write_text("topic\n"); git("commit", "-qam", "topic")
         git("checkout", "-q", "main"); (tmp / "a.txt").write_text("main\n"); git("commit", "-qam", "main")
@@ -760,6 +765,8 @@ def selfcheck():
         body = sh(tmp, "git", "log", "-1", "--format=%B", "origin/topic").stdout
         if not (isinstance(good, dict) and good["tier"] == "low" and pr_review.answered(body, 4, 7) and [n for n, _, _ in good["declined"]] == [2]):
             errs.append(f"an answered round read {good if not isinstance(good, dict) else good['declined']}, signed={pr_review.answered(body, 4, 7)}")
+        if sh(tmp, "git", "show", "origin/topic:docs/changes/2026-01-01-main.md").stdout != main_row:
+            errs.append("a findings fix rewrote a change file main holds")
         if prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
             errs.append("the fixer's own commit at the head is not counted as one prior fix")
         only_intake = dict(rnd, findings=rnd["findings"][2:])
