@@ -465,10 +465,10 @@ pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
 }
 
 pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
-    let mode = match (block.approval, block.approve) {
-        (Some(mode), _) => mode,
-        (None, Some(true)) => ApprovalMode::Instant,
-        (None, _) => ApprovalMode::WaitForUser,
+    let mode = match (block.approval, block.approve, block.ask_timeout_secs) {
+        (Some(mode), _, _) => mode,
+        (None, Some(false), _) | (None, Some(true), Some(0)) => ApprovalMode::WaitForUser,
+        (None, _, _) => ApprovalMode::Instant,
     };
     match mode {
         ApprovalMode::Instant => Some(Timing::Instant),
