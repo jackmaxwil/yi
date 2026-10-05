@@ -14,6 +14,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import forge_pr  # noqa: E402
+import forge_tracking  # noqa: E402
 
 BOT = "yi-bot"
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
@@ -104,16 +105,9 @@ def spent(found):
 
 
 def since(repo, start):
-    """Every comment on the repository since `start`, paged until a page adds nothing new."""
-    out, seen = [], set()
-    for page in range(1, 41):
-        batch = forge_pr.fgj_api("GET", f"repos/{repo}/issues/comments?since={start}&limit=50&page={page}") or []
-        fresh = [c for c in batch if isinstance(c, dict) and c.get("id") not in seen]
-        if not fresh:
-            break
-        seen |= {c.get("id") for c in fresh}
-        out += fresh
-    return out
+    """Every comment on the repository since `start`."""
+    transport = lambda method, url, body: forge_pr.fgj_api(method, url, body)
+    return [c for c in forge_tracking.paged(transport, f"repos/{repo}/issues/comments?since={start}") if isinstance(c, dict)]
 
 
 def midnight():
