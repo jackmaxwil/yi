@@ -32,15 +32,17 @@ pub mod gate {
             .to_ascii_lowercase()
     }
 
-    /// The text of a list line (`- `, `* `, `1.`, `1)`), or None for prose.
-    pub fn enumerated(line: &str) -> Option<&str> {
+    /// A list line: `- `, `* `, or one to three digits, then `.` or `)` and a space.
+    pub fn enumerated(line: &str) -> bool {
         let lead = line.trim_start();
-        if let Some(rest) = lead.strip_prefix("- ").or_else(|| lead.strip_prefix("* ")) {
-            return Some(rest);
+        if lead.starts_with("- ") || lead.starts_with("* ") {
+            return true;
         }
-        lead.split_once(['.', ')'])
-            .filter(|(head, _)| !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()))
-            .map(|(_, rest)| rest)
+        lead.split_once(['.', ')']).is_some_and(|(head, rest)| {
+            (1..=3).contains(&head.len())
+                && head.bytes().all(|b| b.is_ascii_digit())
+                && rest.starts_with(' ')
+        })
     }
 
     /// True for multi-step work: the verdict is advisory to the loop and never
@@ -57,7 +59,7 @@ pub mod gate {
         {
             return false;
         }
-        if trimmed.lines().filter_map(enumerated).count() >= levers.plan_enumerated_min {
+        if trimmed.lines().filter(|line| enumerated(line)).count() >= levers.plan_enumerated_min {
             return true;
         }
         let conjunctions = words
@@ -285,6 +287,13 @@ mod tests {
     #[test]
     fn enumerated_items_alone_read_as_multi_step() {
         assert!(gate::eager_init("do these:\n- fix the build\n- ship it"));
+        assert!(gate::eager_init("do these:\n1. fix the build\n2) ship it"));
+    }
+
+    #[test]
+    fn a_number_is_not_a_list_marker() {
+        assert!(!gate::eager_init("p50\n1.234 ms\n0.5 s"));
+        assert!(!gate::eager_init("rows\n1234. a\n1.\n2)x"));
     }
 
     fn todo(label: &str, state: TodoState) -> Fallible2<Todo> {

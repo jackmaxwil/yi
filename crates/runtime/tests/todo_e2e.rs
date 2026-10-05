@@ -1076,7 +1076,7 @@ fn sequences(source: &str) -> Result<Vec<Sequence>, Box<dyn Error>> {
     Ok(sequences)
 }
 
-/// A fresh session seeded as the runtime seeds it, with the session's landed calls before `upto`
+/// A fresh session whose list is the seed's numbered lines, with the session's landed calls before `upto`
 /// replayed; a refused call moved nothing, so this is the list the model saw. The scratch dir
 /// comes back with the tool: the session writes into it for as long as the tool is used.
 fn replayed_to(
@@ -1087,7 +1087,22 @@ fn replayed_to(
     let (root, session) = session(&format!("{}-{upto}-{tag}", sequence.name))?;
     let store = store_for(&session);
     if let Some(seed) = &sequence.seed {
-        yi_runtime::todo::coupling::seed(&store, seed);
+        let items: Vec<Todo> = seed
+            .lines()
+            .filter_map(|line| line.split_once(". ").map(|(_, text)| text))
+            .filter_map(|text| Todo::from_text(text).ok())
+            .fold(Vec::new(), |mut items, item| {
+                if !items.iter().any(|seen: &Todo| seen.label == item.label) {
+                    items.push(item);
+                }
+                items
+            });
+        store.apply(
+            Op::Init {
+                phases: vec![(PhaseName::new("Tasks")?, items)],
+            },
+            None,
+        )?;
     }
     let tool = TodoTool::new(store);
     for row in sequence.calls.iter().take(upto) {

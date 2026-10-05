@@ -105,6 +105,11 @@ impl App {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Session { chat: Some(_), .. }))
     }
 
+    pub(super) fn chat_takes_ctrl_c(&mut self) -> bool {
+        self.focused_chat()
+            .is_some_and(|chat| chat.app.takes_ctrl_c())
+    }
+
     pub(super) fn popup_open(&self) -> bool {
         self.state
             .focused_pane()
