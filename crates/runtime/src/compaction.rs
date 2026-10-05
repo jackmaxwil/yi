@@ -300,10 +300,10 @@ pub(crate) async fn complete_text(
 ) -> (Result<String, String>, Usage) {
     let mut receiver = provider.stream(model, context, effort, signal);
     while let Some(event) = receiver.recv().await {
-        let (AssistantMessageEvent::Done { message, .. }
-        | AssistantMessageEvent::Error { error: message, .. }) = event
-        else {
-            continue;
+        let (message, failed) = match event {
+            AssistantMessageEvent::Done { message, .. } => (message, false),
+            AssistantMessageEvent::Error { error, .. } => (error, true),
+            _ => continue,
         };
         let AgentMessage::Assistant {
             content,
@@ -318,7 +318,7 @@ pub(crate) async fn complete_text(
                 Usage::zero(),
             );
         };
-        let text = if stop_reason == StopReason::Error {
+        let text = if failed || stop_reason == StopReason::Error {
             Err(error_message.unwrap_or_else(|| "unknown error".to_owned()))
         } else {
             Ok(yi_types::message::join_text(&content, "\n"))

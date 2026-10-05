@@ -119,12 +119,7 @@ pub fn family(
                 let call = faux_tool_call("call-1", "bash", args);
                 script.push(faux_assistant_message(vec![call], StopReason::ToolUse));
             }
-            let mut reply = faux_assistant_message(vec![faux_text("ok")], StopReason::Stop);
-            if let AgentMessage::Assistant { usage, .. } = &mut reply {
-                usage.total_tokens = 120;
-                usage.cost.total = serde_json::Number::from_f64(0.25).unwrap_or_else(|| 0.into());
-            }
-            script.push(reply);
+            script.push(priced_reply("ok", 0.25));
             provider.queue_faux(script);
             let config = SessionConfig {
                 system_prompt: "child sys".to_owned(),

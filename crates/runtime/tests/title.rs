@@ -151,6 +151,55 @@ fn priced_failure(dollars: f64) -> yi_types::message::AgentMessage {
     message
 }
 
+fn priced_abort(text: &str, dollars: f64) -> yi_types::message::AgentMessage {
+    let mut message = crate::support::priced_reply(text, dollars);
+    if let yi_types::message::AgentMessage::Assistant { stop_reason, .. } = &mut message {
+        *stop_reason = StopReason::Aborted;
+    }
+    message
+}
+
+/// Dies with an aborted reply accepted as the title: a provider terminates an aborted call
+/// with an Error event, whose partial text is not a name; the aborted call's spend is still booked.
+#[tokio::test]
+async fn an_aborted_title_call_fails_and_still_books_its_spend() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-title-aborted")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-title-aborted");
+    let store = repo.create(CreateOptions {
+        id: Some("titled-aborted".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        faux_assistant_message(vec![faux_text("The gauge now counts.")], StopReason::Stop),
+        priced_abort("Fix the context gauge", 0.25),
+    ]);
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("the status row says 0 / 1M")?;
+    session.wait_idle().await;
+    assert!(
+        yi_runtime::title::title_session(&session).await.is_err(),
+        "an aborted summarizer reply must fail, not name the session"
+    );
+    let stats = lock_session(&store).stats();
+    assert!(
+        (stats.cost_total - 0.25).abs() < 1e-9,
+        "{}",
+        stats.cost_total
+    );
+    assert_eq!(lock_session(&store).name().as_deref(), None);
+    Ok(())
+}
+
 /// Dies with a billed call left off the books because its reply was unusable: an empty title
 /// and an error stop both answered, and both carry the usage the provider charged.
 #[tokio::test]
