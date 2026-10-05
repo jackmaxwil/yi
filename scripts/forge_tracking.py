@@ -9,6 +9,7 @@ lets the selfcheck exercise the arithmetic and the routing without a server.
 """
 import argparse
 import datetime
+import json
 import math
 import os
 import pathlib
@@ -51,13 +52,16 @@ def points(issue):
 
 
 def paged(transport, url):
-    """Every list endpoint here pages, and a miss on page 1 is silent, not an error."""
-    page = 1
+    """Every list endpoint here pages, and a miss on page 1 is silent, not an error. Incident: an
+    endpoint that ignores `page` returns the same list forever, so a page with nothing new ends it."""
+    page, seen = 1, set()
     while True:
-        batch = transport("GET", f"{url}&limit=50&page={page}", None)
-        if not batch:
+        batch = transport("GET", f"{url}&limit=50&page={page}", None) or []
+        fresh = [item for item in batch if json.dumps(item, sort_keys=True) not in seen]
+        if not fresh:
             return
-        yield from batch
+        seen |= {json.dumps(item, sort_keys=True) for item in fresh}
+        yield from fresh
         page += 1
 
 
@@ -244,6 +248,12 @@ def selfcheck():
             "closed_at": closed_at,
             "milestone": milestone,
         }
+
+    # An endpoint that ignores `page` answers the same list forever; it is read once.
+    asked = []
+    forever = lambda method, url, body: asked.append(url) or ([{"id": 1}, {"id": 2}] if len(asked) <= 40 else [])
+    read = list(paged(forever, "repos/o/r/issues/1/comments?x=1"))
+    assert read == [{"id": 1}, {"id": 2}] and len(asked) == 2, f"a page that repeats was asked {len(asked)} times"
 
     today = datetime.date(2026, 3, 10)
     pages = {
