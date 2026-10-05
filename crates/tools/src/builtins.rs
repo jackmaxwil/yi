@@ -386,7 +386,7 @@ fn read_only_segment(segment: &str) -> bool {
         // Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write.
         "ripwire" => words.all(|word| match word.strip_prefix("--") {
             Some(flag) => READ_ONLY_RIPWIRE.contains(&flag.split('=').next().unwrap_or(flag)),
-            None => !(word.contains("://") || word.starts_with("git@")),
+            None => !(word.starts_with('-') || word.contains(':') || word.contains('@')),
         }),
         _ => READ_ONLY_VERBS.contains(&verb),
     }

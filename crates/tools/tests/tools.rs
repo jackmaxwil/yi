@@ -1810,6 +1810,12 @@ fn a_read_only_command_is_a_read_kind_call() {
             "ripwire git@github.com:redhat-et/ripwire.git --tree",
             ToolKind::Exec,
         ),
+        (
+            "ripwire github.com:redhat-et/ripwire.git --tree",
+            ToolKind::Exec,
+        ),
+        ("ripwire user@host:repo --tree", ToolKind::Exec),
+        ("ripwire -o file", ToolKind::Exec),
         ("cat f > g", ToolKind::Exec),
         ("cargo test", ToolKind::Exec),
         ("rm f", ToolKind::Exec),
@@ -3041,6 +3047,55 @@ fn the_fifth_changed_region_is_named_not_asked() -> TestResult {
             None => assert!(!text.contains("changed regions checked"), "{text}"),
         }
     }
+    Ok(())
+}
+
+/// Two adjacent definitions rewritten in one block are two contracts, so both are asked.
+#[cfg(unix)]
+#[test]
+fn adjacent_changed_definitions_are_each_asked() -> TestResult {
+    let Some(dir) = fake_path("ripwire-adjacent") else {
+        let dir = temp_dir("ripwire-adjacent")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-unchanged.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path("adjacent_changed_definitions_are_each_asked", &dir);
+    };
+    fs::write(dir.join("a.py"), "def f(a): pass\ndef g(a): pass\n")?;
+    edit_with(&dir, "a.py", "PUT 1.=2:\n+def f(): pass\n+def g(): pass\n");
+    let asked = fs::read_to_string(dir.join("args"))?;
+    assert!(asked.contains("--edit-check=@a.py:1"), "{asked}");
+    assert!(asked.contains("--edit-check=@a.py:2"), "{asked}");
+    Ok(())
+}
+
+/// A status this version does not know, with the `incompatible="0"` Rust answers carry, is named
+/// as unavailable, never read as clean.
+#[cfg(unix)]
+#[test]
+fn an_unknown_edit_check_status_is_named_not_clean() -> TestResult {
+    let Some(dir) = fake_path("ripwire-status") else {
+        let dir = temp_dir("ripwire-status")?;
+        fake_ripwire(&dir)?;
+        let real = fs::read_to_string(ripwire_fixture("edit-check-rust-contract.xml"))?;
+        let renamed = real.replace("status=\"contract-change\"", "status=\"symbol-removed\"");
+        fs::write(dir.join("answer"), renamed)?;
+        return rerun_on_path("an_unknown_edit_check_status_is_named_not_clean", &dir);
+    };
+    fs::create_dir_all(dir.join("src"))?;
+    fs::write(dir.join("src/lib.rs"), "pub fn alpha(a: u32, b: u32) {}\n")?;
+    let edit = edit_with(&dir, "src/lib.rs", "PUT 1.=1:\n+pub fn alpha(a: u32) {}\n");
+    let text = output_text(&edit);
+    assert!(
+        text.contains(
+            "[ripwire check: src/lib.rs:1 unavailable — the answer named an unknown status \
+             (symbol-removed); bash: ripwire . --edit-check=@src/lib.rs:1]"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["ripwire"], json!("unavailable"));
     Ok(())
 }
 
