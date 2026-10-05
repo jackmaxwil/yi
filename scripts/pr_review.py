@@ -468,14 +468,16 @@ def repair_prompt(schema):
 
 def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None):
     """One `yi ask` answering `schema`; raises Unanswered. A reader runs under --confirm
-    with no terminal, so every write and command that would ask is refused."""
+    with no terminal, so every write and command that would ask is refused; the fixer runs
+    --yolo (owner, 2026-10-04): --auto asked about a network or install command, which a
+    runner with no terminal refused."""
     # Every round's calls land in one session directory, so the ledger of what each lens and
     # refuter read and answered is found in one place rather than under a temp checkout's name.
     # One directory per call, so `--continue` below resumes this call's session and no parallel one.
     sessions = pathlib.Path(sessions or pathlib.Path.home() / ".yi/sessions/pr-rounds") / os.urandom(6).hex()
     command = [yi_bin(), "ask", "--here", "--cwd", str(cwd), "--session-dir", str(sessions),
                "--schema", json.dumps(schema), "--deadline", str(deadline)]
-    command += ["--auto"] if write else ["--confirm"]
+    command += ["--yolo"] if write else ["--confirm"]
     model = model or os.environ.get("YI_REVIEW_MODEL")
     if model:
         command += ["--model", model]
@@ -1171,6 +1173,10 @@ def selfcheck():
             assert "refute this" in calls[0] and "--continue" in calls[1] and "only that JSON value" in calls[1], calls
             assert calls[0].split("--session-dir ")[1].split()[0] == calls[1].split("--session-dir ")[1].split()[0], \
                 "the repair resumes the call's own session"
+            assert "--confirm" in calls[0] and "--yolo" not in calls[0], "a reader asks, so it is refused"
+            (flaky / "calls").unlink()
+            ask("fix this", REFUTE_SCHEMA, flaky, write=True)
+            assert "--yolo" in (flaky / "calls").read_text(), "the fixer runs with no permission prompt"
         finally:
             os.environ.pop("YI_BIN") if before is None else os.environ.update(YI_BIN=before)
     finally:
