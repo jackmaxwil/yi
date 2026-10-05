@@ -524,7 +524,9 @@ def cmd_merge(args):
             return 0
         if verdict == "behind":
             print(f"#{number} is behind main; updating")
-            cmd_update(argparse.Namespace(number=number))
+            if cmd_update(argparse.Namespace(number=number)):
+                print(f"merge: stopped — the forge refused to update #{number}; merge origin/main by hand")
+                return 1
         elif verdict == "green":
             if errs := unreviewed(number, pr):
                 for err in errs:
@@ -687,6 +689,15 @@ def selfcheck():
     finally:
         globals().update(fakes)
     assert held == 1 and not posted and "needs two review rounds" in merging.getvalue(), "a green PR without rounds is not merged"
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+                     jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: True, decide=lambda *a: "behind",
+                     fgj_api=lambda method, path, payload=None: {"message": "merge conflict"})
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as conflicted:
+            refused = cmd_merge(argparse.Namespace(number=7, timeout=0, wait=True))
+    finally:
+        globals().update(fakes)
+    assert refused == 1 and "refused to update" in conflicted.getvalue(), "a refused update stops the merge loop"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
     real_measure = gate.measure
     gate.measure = lambda: (([], [], 0, ([], [])), None)
@@ -755,7 +766,7 @@ def build_parser():
     import pr_review
 
     for name, run in (("status", cmd_status), ("ready", cmd_ready), ("update", cmd_update), ("rerun", cmd_rerun),
-                      ("review", pr_review.cmd_review), ("fix", pr_review.cmd_fix)):
+                      ("review", pr_review.cmd_review)):
         sub = pr.add_parser(name)
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)
@@ -767,6 +778,11 @@ def build_parser():
     autofix = pr.add_parser("autofix", help="fix conflicts with the base: one PR now, or one pass oldest first")
     autofix.add_argument("number", nargs="?")
     autofix.set_defaults(run=pr_autofix.cmd_autofix)
+    import bot_meter
+
+    spend = pr.add_parser("spend", help="what the review and autofix bots spent, from their comments")
+    spend.add_argument("--days", type=int, default=1)
+    spend.set_defaults(run=bot_meter.cmd_spend)
     replay = pr.add_parser("replay")
     replay.add_argument("numbers", nargs="+", type=int)
     replay.add_argument("--label", required=True, help="what the PR is known to be: bad, kept, closed")
