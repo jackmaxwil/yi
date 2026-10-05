@@ -17,6 +17,7 @@ const LAST_WORD: &str = "[deadline] Time is up: no more tool calls. Write your f
 /// Invariant: asked under the session's status lock when a turn would present the message, so
 /// it may lock a host's roster but nothing that waits on this session; false drops it unread.
 pub type StillNews = Arc<dyn Fn() -> bool + Send + Sync>;
+pub type JobReportFn = dyn Fn(Vec<(String, StillNews)>) -> bool + Send + Sync;
 
 pub(super) struct Queued {
     pub(super) message: AgentMessage,
@@ -99,7 +100,8 @@ fn owed(shared: &Shared, follow_ups: bool) -> Option<AgentMessage> {
         }
     }
     let mut follow = shared.follow_up.lock().ok()?;
-    (follow_ups && !follow.is_empty()).then(|| follow.remove(0))
+    follow.retain(Queued::current);
+    (follow_ups && !follow.is_empty()).then(|| follow.remove(0).message)
 }
 
 /// The answer is what happened, decided under the lock a run's end takes to go idle.
@@ -158,12 +160,12 @@ fn compaction_notice(message: &AgentMessage) -> bool {
     matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == crate::compaction::COMPACTION_NOTICE)
 }
 
-pub(super) fn follow(parts: &RunParts, message: AgentMessage) -> bool {
+pub(super) fn follow(parts: &RunParts, message: AgentMessage, news: Option<StillNews>) -> bool {
     let Ok(mut status) = parts.shared.status.lock() else {
         return false;
     };
     if let Ok(mut queue) = parts.shared.follow_up.lock() {
-        queue.push(message);
+        queue.push(Queued::new(message, false, news));
     }
     if *status == Status::Running {
         return true;
@@ -527,11 +529,15 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         taken
     }));
     config.get_follow_up_messages = Some(Box::new(move || {
-        let taken = follow
+        let taken: Vec<AgentMessage> = follow
             .follow_up
             .lock()
             .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(Queued::current)
+            .map(|queued| queued.message)
+            .collect();
         with_pointers(&follow, taken)
     }));
     let coupling = shared

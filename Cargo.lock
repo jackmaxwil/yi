@@ -2318,6 +2318,7 @@ name = "yi-permission"
 version = "0.2.0"
 dependencies = [
  "globset",
+ "rustix 0.38.44",
  "sha2",
  "thiserror 2.0.20",
  "yi-types",
