@@ -918,27 +918,39 @@ pub(crate) mod tests {
     /// fenced block, and the parent had no road past them (#475).
     #[tokio::test]
     async fn a_fenced_json_answer_validates_against_a_schema() -> TestResult {
-        let schema = serde_json::json!({"type": "object", "required": ["outcome"]});
-        let object = "```json\n{\"outcome\": \"x\"}\n```";
-        // The last two are #989: a reader's fence after a non-ASCII paragraph, and a fence
-        // after prose that is not JSON, which stays refused with its text attached.
-        let cases: [(&'static str, bool); 4] = [
-            (object, true),
-            ("the quota parser lands", false),
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"outcome": {"type": "string"}},
+            "required": ["outcome"],
+        });
+        let object = "```json\n{\"outcome\": \"the quota parser lands\"}\n```";
+        // The #989 cases: a reader's fence after a non-ASCII paragraph, and a fence after
+        // prose that is not JSON, which stays refused with its text attached.
+        let cases: [(&'static str, Result<&str, &str>); 5] = [
+            (object, Ok("the quota parser lands")),
+            ("the quota parser lands", Err("text, not JSON")),
             (
-                "Voil\u{e0} la r\u{e9}ponse:\n\n```json\n{\"outcome\": \"x\"}\n```\n",
-                true,
+                "Voil\u{e0} la r\u{e9}ponse:\n\n```json\n{\"outcome\": \"the quota parser lands\"}\n```\n",
+                Ok("the quota parser lands"),
             ),
-            ("Voil\u{e0} la r\u{e9}ponse:\n```\nnot json\n```\n", false),
+            (
+                "Voil\u{e0} la r\u{e9}ponse:\n```\nnot json\n```\n",
+                Err("text, not JSON"),
+            ),
+            ("```json\n{\"outcome\": 5}\n```", Err("result rejected")),
         ];
-        for (answer, admitted) in cases {
+        for (answer, expected) in cases {
             let rig = rig(answer)?;
             rig.host.spawn("work".to_owned(), worker("q"))?;
             assert!(wait_done(&rig.host).await, "child never completed");
-            let reply = rig.host.result("q", Some(&schema));
-            assert_eq!(reply.is_ok(), admitted, "{answer}: {reply:?}");
-            if !admitted {
-                assert!(reply.err().is_some_and(|e| e.contains("text, not JSON")));
+            match (rig.host.result("q", Some(&schema)), expected) {
+                (Ok(reply), Ok(outcome)) => {
+                    assert_eq!(reply["json"]["outcome"], Value::String(outcome.to_owned()));
+                }
+                (Err(refused), Err(reason)) => assert!(refused.contains(reason), "{refused}"),
+                (reply, expected) => {
+                    return Err(format!("{answer}: {reply:?}, expected {expected:?}").into());
+                }
             }
         }
         Ok(())
@@ -1116,13 +1128,7 @@ pub(crate) mod tests {
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
         }));
-        let mut kwargs = serde_json::Map::new();
-        kwargs.insert(
-            "name".to_owned(),
-            serde_json::Value::String("helper".to_owned()),
-        );
-        kwargs.insert("role".to_owned(), serde_json::Value::from("root"));
-        host.spawn("answer once".to_owned(), kwargs)
+        host.spawn("answer once".to_owned(), worker("helper"))
             .map_err(|error| error.to_string())?;
         let mut woke = false;
         let mut pace = backoff(std::time::Duration::from_millis(25));

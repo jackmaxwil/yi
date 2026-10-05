@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
-use super::format::{FileTag, compute_file_hash, format_hashline_header, format_numbered_line};
+use super::format::{FileTag, format_hashline_header, format_numbered_line};
 use super::input::Patch;
 use super::normalize::{normalize_to_lf, strip_bom};
 use super::patcher::{PatchSectionResult, Patcher, SectionOp};
@@ -151,14 +151,15 @@ impl Tool for HashlineReadTool {
             return read_dir(&display_path, &path, context);
         }
         let mut output = self.read_file(&display_path, &path, &input, context);
-        let live = tag.and_then(|tag| {
-            let text = String::from_utf8(context.read(&path).ok()?).ok()?;
-            let live = compute_file_hash(&normalize_to_lf(strip_bom(&text).text));
-            (live != tag).then_some((tag, live))
-        });
-        if let Some((tag, live)) = live
+        if let Some(tag) = tag
             && let Some(yi_types::message::Content::Text { text, .. }) =
                 output.result.content.first_mut()
+            && let Some(live) = text
+                .lines()
+                .next()
+                .and_then(super::tokenizer::try_parse_header)
+                .and_then(|header| header.file_hash)
+            && FileTag::parse(&live) != Some(tag)
         {
             text.insert_str(
                 0,
