@@ -19,6 +19,16 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     Command::new(program)
 }
 
+/// [`command`] for a command the model wrote, whose output it reads: yi's provider keys never
+/// reach it, contained or not (#906). The kernel, which cannot reach this crate, strips the same.
+pub fn keyless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut process = command(program);
+    for (_, variable) in yi_types::PROVIDER_KEY_VARS {
+        process.env_remove(variable);
+    }
+    process
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandCapture {
     pub stdout: String,
