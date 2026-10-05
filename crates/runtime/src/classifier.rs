@@ -467,8 +467,8 @@ pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
 pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
     let mode = match (block.approval, block.approve) {
         (Some(mode), _) => mode,
-        (None, Some(false)) => ApprovalMode::WaitForUser,
-        (None, _) => ApprovalMode::Instant,
+        (None, Some(true)) => ApprovalMode::Instant,
+        (None, _) => ApprovalMode::WaitForUser,
     };
     match mode {
         ApprovalMode::Instant => Some(Timing::Instant),
@@ -501,16 +501,14 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         ask_at: number(&block.ask_at, DEFAULT_ASK_AT),
     };
     let timing = timing(&block);
+    let broker = session.permission_broker();
     let mut warnings = Vec::new();
-    let key = match yi_ai::auth::key_in(home, "laya") {
-        Ok(key) => Some(key.expose().to_owned()),
-        Err(error) => {
-            warnings.push(format!(
-                "no laya key could be made ({error}), so the classifier approves nothing"
-            ));
-            None
-        }
-    };
+    let key = sidecar_key(
+        home,
+        "laya",
+        timing.is_some() && broker.is_some(),
+        &mut warnings,
+    );
     let sidecar = Sidecar {
         url,
         key,
@@ -521,9 +519,7 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             .as_ref()
             .and_then(serde_json::Number::as_f64),
     };
-    if let (Some(timing), Some(_), Some(broker)) =
-        (timing, &sidecar.key, session.permission_broker())
-    {
+    if let (Some(timing), Some(_), Some(broker)) = (timing, &sidecar.key, broker) {
         broker.set_approver(Arc::new(Approver::new(
             sidecar.clone(),
             thresholds,
@@ -548,6 +544,27 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
     warnings
 }
 
+fn sidecar_key(
+    home: &Path,
+    provider: &str,
+    armed: bool,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    if !armed {
+        // Approval is off: an existing key may still serve skill reminders, nothing mints.
+        return yi_ai::auth::stored_key(home, provider).map(|secret| secret.expose().to_owned());
+    }
+    match yi_ai::auth::key_in(home, provider) {
+        Ok(key) => Some(key.expose().to_owned()),
+        Err(error) => {
+            warnings.push(format!(
+                "no {provider} key could be made ({error}), so the classifier approves nothing"
+            ));
+            None
+        }
+    }
+}
+
 fn journal(session: &AgentSession) -> Record {
     let store = session.store_handle();
     Arc::new(move |record| {
@@ -555,4 +572,36 @@ fn journal(session: &AgentSession) -> Record {
             let _journaled = yi_session::lock_session(&store).append_custom_record(&record);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sidecar_key;
+    use std::path::PathBuf;
+
+    fn temp_home(tag: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("yi-classifier-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap_or_default();
+        home
+    }
+
+    #[test]
+    fn an_opt_out_session_mints_no_key_and_an_armed_one_does() {
+        let home = temp_home("opt-out");
+        let token = home.join(".yi/providers/tokens/yi-key-test.json");
+        let mut warnings = Vec::new();
+        assert!(sidecar_key(&home, "yi-key-test", false, &mut warnings).is_none());
+        assert!(warnings.is_empty());
+        assert!(!token.exists(), "an opt-out session never mints a key");
+        let home = temp_home("armed");
+        let token = home.join(".yi/providers/tokens/yi-key-test.json");
+        let mut warnings = Vec::new();
+        assert!(sidecar_key(&home, "yi-key-test", true, &mut warnings).is_some());
+        assert!(
+            token.exists(),
+            "an armed session mints the key it arms with"
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
 }

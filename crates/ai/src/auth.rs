@@ -64,7 +64,7 @@ fn stored(
     proxy: Option<&crate::request::ProxyConfig>,
 ) -> Option<(yi_oauth::store::Credential, Vec<(String, String)>)> {
     let store = Store::user();
-    let current = store.load(provider)?;
+    let current = stored_credential(Store::default_root(), provider)?;
     let spec = match registry::lookup(provider) {
         Ok(Some(registry::Kind::OauthCode(spec))) => spec,
         Ok(_) => return Some((current, Vec::new())),
@@ -80,6 +80,29 @@ fn stored(
         proxy.and_then(|config| config.proxy_for(crate::request::host_of(&spec.token)));
     let live = flow::live_oauth(&spec, &store, refresh_proxy).unwrap_or(current);
     Some((live, headers))
+}
+
+fn providers_root(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".yi").join("providers")
+}
+
+fn stored_credential(
+    root: std::path::PathBuf,
+    provider: &str,
+) -> Option<yi_oauth::store::Credential> {
+    Store::open(root).load(provider)
+}
+
+/// The provider's key from the environment or the store at `root`; only [`key_in`] mints.
+fn key_at(root: std::path::PathBuf, provider: &str) -> Option<Secret> {
+    env_key(provider).or_else(|| {
+        stored_credential(root, provider).map(|credential| Secret::new(credential.access))
+    })
+}
+
+/// [`key_in`] without the mint: a session that opted out reads a sidecar key it never made.
+pub fn stored_key(home: &std::path::Path, provider: &str) -> Option<Secret> {
+    key_at(providers_root(home), provider)
 }
 
 pub fn resolve(provider: &str) -> Option<Resolved> {
@@ -119,13 +142,10 @@ pub fn api_key(provider: &str) -> Option<Secret> {
 /// The provider's key from the environment or the `yi login` store under `home`, minted there
 /// when neither has one: for a bearer Yi shares only with a process it starts itself.
 pub fn key_in(home: &std::path::Path, provider: &str) -> Result<Secret, String> {
-    if let Some(secret) = env_key(provider) {
+    if let Some(secret) = key_at(providers_root(home), provider) {
         return Ok(secret);
     }
-    let store = Store::open(home.join(".yi").join("providers"));
-    if let Some(stored) = store.load(provider) {
-        return Ok(Secret::new(stored.access));
-    }
+    let store = Store::open(providers_root(home));
     let access = yi_oauth::pkce::hex(&yi_oauth::pkce::random_bytes(32)?);
     let credential = yi_oauth::store::Credential {
         kind: Kind::Key,

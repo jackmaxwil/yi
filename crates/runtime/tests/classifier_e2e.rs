@@ -907,13 +907,14 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
     Ok(())
 }
 
-/// The owner: approval "should be on by default"; `approve: false` from before modes still opts out.
+/// The default keeps the person in the loop; an explicit `approval` (or the legacy
+/// `approve: true`) is what hands the classifier the answer.
 #[test]
-fn approval_is_instant_unless_the_config_says_otherwise() -> TestResult {
+fn approval_is_opt_in_unless_the_config_says_otherwise() -> TestResult {
     use yi_runtime::classifier::timing;
     use yi_types::config::ClassifierConfig;
     let read = |json: serde_json::Value| serde_json::from_value::<ClassifierConfig>(json);
-    assert_eq!(timing(&read(serde_json::json!({}))?), Some(Timing::Instant));
+    assert_eq!(timing(&read(serde_json::json!({}))?), None);
     assert_eq!(timing(&read(serde_json::json!({"approve": false}))?), None);
     assert_eq!(
         timing(&read(serde_json::json!({"approve": true}))?),

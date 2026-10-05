@@ -80,6 +80,10 @@ pub(super) fn ask_or_judge(
         return Answered::Person(outcome);
     }
     if let crate::classifier::Judgement::Allow(safe) = judged {
+        // Invariant: an answer that lands while the allow is applied still beats it.
+        if let Ok(outcome) = receiver.try_recv() {
+            return Answered::Person(outcome);
+        }
         return Answered::Classifier(safe);
     }
     Answered::Person(receiver.recv().unwrap_or(AskOutcome::Reject))
