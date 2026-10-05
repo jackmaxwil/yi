@@ -1747,7 +1747,8 @@ fn a_pane_that_collapses_its_seam_still_ends_on_the_status_row() -> TestResult {
 }
 
 /// A long history ending on a run of finished boxes: each boundary between two boxes collapses
-/// a blank row, and a pane counting rows before that collapse came up short by the run.
+/// a blank row, and a pane counting rows before that collapse came up short by the run, or
+/// slid a scrolled view when another box landed below it.
 #[test]
 fn a_pane_ending_on_a_run_of_boxes_still_ends_on_the_status_row() -> TestResult {
     use yi_runtime::ChildStatus;
@@ -1772,6 +1773,15 @@ fn a_pane_ending_on_a_run_of_boxes_still_ends_on_the_status_row() -> TestResult 
             rows.last().is_some_and(|r| r.contains("faux-1")),
             "{boxes} boxes, scrolled {scroll}: {rows:#?}"
         );
+        if scroll > 0 {
+            let late = reader("reader-late", ChildStatus::Completed, 1);
+            app.adopt(&late, None);
+            let held = pane_rows_scrolled(&mut app, height, &mut at);
+            assert_eq!(
+                held, rows,
+                "a box landing below a scrolled view moves nothing"
+            );
+        }
     }
     Ok(())
 }
