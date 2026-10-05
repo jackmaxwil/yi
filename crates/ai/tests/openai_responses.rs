@@ -625,7 +625,7 @@ fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
                     text_signature: None,
                 },
                 Content::Image {
-                    data: "iVBORw0KGgo=".to_owned(),
+                    data: crate::images::PNG.to_owned(),
                     mime_type: "image/png".to_owned(),
                 },
             ],
@@ -649,7 +649,7 @@ fn a_tool_result_image_is_an_input_image_in_the_output() -> TestResult {
         input.last().ok_or("last")?,
         &json!({"type": "function_call_output", "call_id": "call_1", "output": [
             {"type": "input_text", "text": "attached"},
-            {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64,iVBORw0KGgo="},
+            {"type": "input_image", "detail": "auto", "image_url": format!("data:image/png;base64,{}", crate::images::PNG)},
         ]})
     );
     Ok(())
