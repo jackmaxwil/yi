@@ -1141,17 +1141,23 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
     Ok(())
 }
 
-/// Invariant: on this current-thread runtime a notify wake makes the waiter ready, so it runs
-/// within a yield or two; a 100 ms poll's timer cannot fire in that window, and load cannot fake one.
+/// Invariant: readiness, not wall time, decides a wake here. A poll's wall-clock re-check
+/// under OS starvation satisfies a wait bounded by elapsed time, so a red against a
+/// restored poll must hold without a wall timer ever firing: `pause` first, yield with the
+/// clock frozen, one `advance` after a finished poll.
 const WAKE_YIELDS: usize = 8;
-
 async fn wakes<T>(task: &tokio::task::JoinHandle<T>) -> bool {
+    tokio::time::pause();
     for _ in 0..WAKE_YIELDS {
         if task.is_finished() {
+            tokio::time::advance(std::time::Duration::from_millis(1)).await;
+            tokio::time::resume();
             return true;
         }
         tokio::task::yield_now().await;
     }
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    tokio::time::resume();
     task.is_finished()
 }
 
