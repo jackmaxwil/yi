@@ -46,7 +46,7 @@ pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
 pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> Result<(), String> {
-    let mut command = yi_tools::command("sh");
+    let mut command = yi_tools::keyless_command("sh");
     command.arg("-c").arg(check).current_dir(cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
