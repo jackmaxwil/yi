@@ -307,7 +307,7 @@ def findings_prompt(pr, n, todo):
     listed = "\n".join(fenced(f"{i}. [{f['lens']}, {f['severity']}] {f['claim']} at {f.get('path')}:{f.get('line')}"
                                + (f" — suggested: {f['fix']}" if f.get("fix") else "")) for i, f in enumerate(todo, 1))
     return (
-        f"Your working directory is pull request #{pr['number']} ({fenced(pr['title'])!r}). Review round {n} blocked it "
+        f"Your working directory is pull request #{pr['number']} ({fenced(pr['title'])!r}). Review round {n} left it "
         "with the findings below. Fix every one, high and medium, with the smallest change that does it. A finding "
         "you can show is wrong after reading the code: change nothing for it and decline it in `declined`, naming "
         "the file:line that shows why; a person decides those. Scope is no reason to decline: these are the work.\n"
@@ -379,11 +379,17 @@ def prior_fixes(repo, sha):
     return count
 
 
+def owed_mediums(rnd):
+    """A clean round's medium findings the fixer answers: every one but the intake checks'."""
+    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and f["lens"] not in INTAKE for f in rnd["findings"])
+
+
 def findings_in(clone, pr, rnd, answer, tried=0):
-    """Answer a blocked round's findings in the clone. Returns (summary, model, touched, declined highs)."""
+    """Answer a round's high and medium findings in the clone: a blocked round's, or a clean one's
+    mediums. Returns (summary, model, touched, declined highs)."""
     todo = [f for f in rnd["findings"] if f["severity"] in ("high", "medium") and f["lens"] not in INTAKE]
     highs = [f for f in todo if f["severity"] == "high"]
-    if not highs:
+    if not highs and not owed_mediums(rnd):
         lenses = sorted({f["lens"] for f in rnd["findings"] if f["severity"] == "high"})
         raise RuntimeError(f"round {rnd['n']} is blocked by {', '.join(lenses) or 'nothing'} findings the fixer does not "
                            "answer (the PR body's template, a duplicate); a person does")
@@ -554,7 +560,9 @@ def attempt(repo, pr, ids, asked=False):
     notes = pr_review.comments(repo, number)
     rounds = pr_review.rounds_of(notes, pr_review.authors(), number)
     rnd = rounds[-1] if rounds and pr["head"]["sha"].startswith(rounds[-1]["sha"]) else None
-    blocked = bool(rnd and rnd["verdict"] == "blocked")
+    # The owner (2026-10-05): a clean round's mediums are fixed too, since a draft leaves draft
+    # only with none left; `blocked` means a round on the head owes a findings fix.
+    blocked = bool(rnd and (rnd["verdict"] == "blocked" or owed_mediums(rnd)))
     if blocked and pr_review.answered(forge_pr.git("log", "-1", "--format=%B", pr["head"]["sha"]), rnd["n"], number):
         blocked = False
     # The owner (2026-10-03): review fixes go to drafts only; a ready PR is being landed, and a bot
@@ -910,7 +918,17 @@ def selfcheck():
                             "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
             if passed.get("kind") != want:
                 errs.append(f"a blocked round on {title!r} reached fix() as {passed.get('kind')}, not {want}")
+        # A clean round still listing a medium is answered; one listing only lows is not.
+        for found, want in (([{"severity": "medium", "lens": "correctness"}], "findings"), ([{"severity": "low", "lens": "x"}], None),
+                            ([{"severity": "medium", "lens": "template"}], None)):
+            pr_review.rounds_of = lambda *a, found=found: [{"n": 2, "sha": "abc", "verdict": "clean", "findings": found}]
+            passed.clear()
+            attempt("o/r", {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
+                            "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
+            if passed.get("kind") != want:
+                errs.append(f"a clean round listing {found[0]['severity']} ({found[0]['lens']}) reached fix() as {passed.get('kind')}, not {want}")
         # A provider's 429 defers: no failed label, and the next try is no tier step.
+        pr_review.rounds_of = lambda *a: [{"n": 2, "sha": "abc", "verdict": "blocked", "findings": []}]
         labelled = []
         module.set_label = lambda repo, n, ids, name, on: labelled.append((name, on))
         def busy(pr, **kw):
@@ -926,6 +944,28 @@ def selfcheck():
             setattr(mod, name, value)
         for name, value in kept.items():
             setattr(module, name, value)
+    # findings_in hands a clean round's mediums to the model, and refuses one with nothing it answers.
+    bare = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-bare-"))
+    try:
+        sh(bare, "git", "init", "-q")
+        class Asked(Exception):
+            pass
+        def asked(*a, **k):
+            raise Asked()
+        for found, want in (([{"severity": "medium", "lens": "correctness", "claim": "c"}], "asked"),
+                            ([{"severity": "medium", "lens": "template", "claim": "c"}], "refused")):
+            try:
+                findings_in(bare, {"number": 1, "title": "t", "base": {"ref": "main"}},
+                            {"n": 2, "verdict": "clean", "findings": found}, asked)
+                got = "returned"
+            except Asked:
+                got = "asked"
+            except RuntimeError:
+                got = "refused"
+            if got != want:
+                errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
+    finally:
+        shutil.rmtree(bare)
     crate = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-fmt-"))
     try:
         sh(crate, "git", "init", "-q")
