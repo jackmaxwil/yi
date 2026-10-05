@@ -2258,6 +2258,7 @@ fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
         description: "trace".to_owned(),
         status: TaskStatus::Failed,
         last_tool: None,
+        prev_tool: None,
         toolcalls: 0,
         tokens: 0,
         elapsed_ms: 0,

@@ -228,3 +228,28 @@ async fn an_empty_abandoned_span_writes_nothing() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the branch summary's spend never booked: a rewind's side call billed the provider
+/// and the session's cost total never moved.
+#[tokio::test]
+async fn a_branch_summary_call_is_booked_in_the_session_cost_total() -> TestResult {
+    let seeded = seeded("rewind-cost").await?;
+    let target = first_reply_id(&seeded.store).ok_or("no assistant entry to rewind onto")?;
+    let stub = yi_runtime::rewind_to(&seeded.session, &target)?
+        .abandoned
+        .ok_or("expected an abandoned span")?;
+    assert_eq!(
+        yi_session::lock_session(&seeded.store).stats().cost_total,
+        0.0
+    );
+    seeded
+        .provider
+        .queue_faux(vec![crate::support::priced_reply(
+            "Tried it; deadlocked.",
+            0.25,
+        )]);
+    yi_runtime::summarize_branch(&seeded.session, stub).await;
+    let total = yi_session::lock_session(&seeded.store).stats().cost_total;
+    assert!((total - 0.25).abs() < 1e-9, "{total}");
+    Ok(())
+}
