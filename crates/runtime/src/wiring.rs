@@ -387,7 +387,7 @@ fn wire_goal(
 fn wire_fetch(
     session: &AgentSession,
     wiring: &RuntimeWiring,
-    plans_dir: &Path,
+    _plans_dir: &Path,
     host: &Arc<SubagentHost>,
     registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
@@ -402,15 +402,18 @@ fn wire_fetch(
         .parent_link
         .as_ref()
         .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
-    let mut resolver = crate::fetch::Resolver::new(wiring.cwd.clone(), wiring.wall.clone())
-        .with_plans_dir(plans_dir.to_path_buf())
-        .with_session_handle(agent, session.store_handle())
-        .with_log(log)
-        .with_kernel_variables(kernels)
-        .with_transcripts(transcripts)
-        .with_family_dir(wiring.family_dir())
-        .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>)
-        .with_session_stores(crate::tools::session_stores(wiring.broker.as_deref()));
+    let mut resolver = crate::fetch::Resolver::for_child(
+        wiring.cwd.clone(),
+        wiring.wall.clone(),
+        agent,
+        session.store_handle(),
+        wiring.broker.as_deref(),
+    )
+    .with_log(log)
+    .with_kernel_variables(kernels)
+    .with_transcripts(transcripts)
+    .with_family_dir(wiring.family_dir())
+    .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>);
     if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
         resolver = resolver.with_checkpoint_show(show);
     }
