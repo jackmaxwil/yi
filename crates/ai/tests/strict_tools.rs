@@ -1,3 +1,5 @@
+use crate::common;
+
 use std::error::Error;
 
 use serde_json::{Map, Value, json};
@@ -5,33 +7,12 @@ use yi_ai::anthropic::{self, AnthropicOptions};
 use yi_ai::openai::{self, OpenAiOptions};
 use yi_ai::schema;
 use yi_types::message::{AgentMessage, UserContent};
-use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{LlmContext, Model, ToolDef};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn model(id: &str, base_url: &str, compat: Option<Value>) -> Model {
-    let zero = || serde_json::Number::from(0);
-    Model {
-        id: id.to_owned(),
-        name: id.to_owned(),
-        api: "a".to_owned(),
-        provider: "p".to_owned(),
-        base_url: base_url.to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 1_000,
-        max_tokens: 100,
-        compat,
-        thinking_level_map: None,
-        headers: None,
-    }
+fn model(id: &str, base_url: &str, compat: Option<Value>) -> yi_types::model::Model {
+    common::model(id, "a", "p", base_url, compat)
 }
 
 /// The ten tool schemas a root session sends, as `request_budget`'s `tool_defs` built them.
@@ -293,4 +274,52 @@ fn the_caps_count_properties_hidden_in_defs() {
         freeform: None,
     }];
     assert_eq!(claude_strict("claude-opus-5-5", tools), [false]);
+}
+
+/// Dies with a tool strict where the provider 400s the whole request instead: a bare
+/// `"type": "array"` node (no `items`) and a keyword outside strict mode's subset both pass
+/// the old closure-only gate and reach OpenAI with `strict: true`, which refuses
+/// "'items' must be defined for arrays" and unsupported keywords. None loosens the tool.
+#[test]
+fn strict_tool_refuses_what_strict_mode_refuses() {
+    let bare_array = json!({
+        "type": "object",
+        "properties": {"tags": {"type": "array"}},
+        "required": ["tags"],
+    });
+    assert_eq!(schema::strict_tool_json(&bare_array, true), (None, false));
+    let unknown_keyword = json!({
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "required": ["x"],
+        "examples": [{"x": "a"}],
+    });
+    assert_eq!(
+        schema::strict_tool_json(&unknown_keyword, true),
+        (None, false)
+    );
+    let refused_combinator = json!({
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "required": ["x"],
+        "discriminator": {"propertyName": "x"},
+    });
+    assert_eq!(
+        schema::strict_tool_json(&refused_combinator, true),
+        (None, false)
+    );
+}
+
+/// Dies with the open-map pattern (`"additionalProperties": {"type": "string"}`) coerced to
+/// `false`: strict mode can only express the closed form, so the tool loosens and keeps its
+/// contract (extra keys allowed, must be strings) rather than silently forbidding them.
+#[test]
+fn a_schema_valued_additional_properties_loosens_the_tool() {
+    let open_map = json!({
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": {"type": "string"},
+    });
+    assert_eq!(schema::strict_tool_json(&open_map, true), (None, false));
 }

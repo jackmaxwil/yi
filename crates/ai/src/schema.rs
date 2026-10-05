@@ -30,6 +30,25 @@ const REFUSED: [&str; 11] = [
     "contains",
 ];
 
+/// Keys strict mode's providers give meaning to; anything else they refuse whole (an unknown
+/// keyword like `examples` 400s the route), so it loosens the tool instead.
+const STRICT_KEYS: [&str; 14] = [
+    "type",
+    "description",
+    "properties",
+    "required",
+    "items",
+    "additionalProperties",
+    "enum",
+    "const",
+    "anyOf",
+    "$ref",
+    "$defs",
+    "definitions",
+    "title",
+    "default",
+];
+
 pub fn strict(schema: &Value) -> bool {
     is_object(schema) && node(schema)
 }
@@ -100,6 +119,14 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
     let Value::Object(map) = schema else {
         return None;
     };
+    let array = matches!(map.get("type"), Some(Value::String(kind)) if kind == "array")
+        || matches!(
+            map.get("type"),
+            Some(Value::Array(kinds)) if kinds.iter().any(|kind| kind == "array")
+        );
+    if array && !map.contains_key("items") {
+        return None;
+    }
     let mut out = Map::new();
     for (key, value) in map {
         let key = key.as_str();
@@ -107,6 +134,12 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
             continue;
         }
         if REFUSED.contains(&key) {
+            return None;
+        }
+        if !STRICT_KEYS.contains(&key) {
+            return None;
+        }
+        if key == "additionalProperties" && value != &Value::Bool(false) {
             return None;
         }
         let each = |values: &Map<String, Value>| {

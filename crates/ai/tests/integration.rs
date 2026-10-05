@@ -5,6 +5,7 @@
 mod scratch;
 
 mod anthropic_mapper;
+mod common;
 mod compat;
 mod decide;
 mod effort_catalog;
