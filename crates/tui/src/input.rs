@@ -265,7 +265,8 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "editor" => app.pending_editor = true,
         "agents" => app.open_agents(),
         "model" => app.open_model_picker(),
-        "advisor" | "plan" | "goal" | "permissions" | "compact" | "sessions" | "heartbeat" => {
+        "advisor" | "plan" | "goal" | "permissions" | "compact" | "sessions" | "heartbeat"
+        | "todo" => {
             app.pending_command = Some(if args.is_empty() {
                 command.to_owned()
             } else {

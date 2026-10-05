@@ -6,7 +6,7 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
 use yi_runtime::todo::coupling::{
     CLOSED_LIST_TEXT, Cycle, EMPTY_STOP_TEXT, Eager, IMPOSSIBLE_TEXT, INTERCEPT_CUSTOM_TYPE,
-    Options, SEED_ACTOR, StopPosture, coupling, figures_of, gate, landed, numbers_of, stop_posture,
+    Options, StopPosture, coupling, figures_of, gate, landed, numbers_of, stop_posture,
 };
 use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
@@ -542,36 +542,75 @@ fn labels(todos: &TodoStore) -> Vec<String> {
         .collect()
 }
 
+/// The owner's report: pasted README text and numeric output filled the todo block before the
+/// model had said a word. Nothing the user typed or pasted is written into the list.
 #[test]
-fn a_numbered_prompt_seeds_one_pending_item_per_line() -> TestResult {
-    let r = rig("seed")?;
-    let hooks = prelude_hooks(&r);
-    let prompt =
-        user("Do these:\n1. add the parser\n2) wire the CLI\n- write the test\n1. add the parser");
-    assert!((hooks.on_prompt)(&prompt).is_none(), "seeding never forces");
-    assert_eq!(
-        labels(&r.todos),
-        vec!["add the parser", "wire the CLI", "write the test"],
-        "one item per line, duplicates once"
+fn what_the_user_types_never_becomes_a_todo() -> TestResult {
+    let paste = include_str!("fixtures/todo/paste-readme.md");
+    let cases = [
+        (
+            "numbered",
+            "Do these:\n1. add the parser\n2) wire the CLI\n- write the test",
+        ),
+        ("paste", paste),
+        ("numeric", "p50\n1.234 ms\n0.5 s"),
+    ];
+    let mut seeded = Vec::new();
+    for (name, text) in cases {
+        let r = rig(&format!("seed-{name}"))?;
+        let hooks = prelude_hooks(&r);
+        assert!(
+            (hooks.on_prompt)(&user(text)).is_none(),
+            "{name}: nothing forces"
+        );
+        if !labels(&r.todos).is_empty() || latest_record(&r.store).is_some() {
+            seeded.push((name, labels(&r.todos)));
+        }
+    }
+    assert!(seeded.is_empty(), "the list stays empty: {seeded:?}");
+    Ok(())
+}
+
+#[test]
+fn a_request_shaped_prompt_gets_the_hint_and_a_numeric_paste_does_not() -> TestResult {
+    let prose = rig("hint-prose")?;
+    let hooks = prelude_hooks(&prose);
+    let request = user("Fix the parser, then add the test, and land it on the branch.");
+    assert!((hooks.on_prompt)(&request).is_none());
+    assert_eq!(prose.session.pending_count(), 1, "the planning hint rides");
+
+    let numeric = rig("hint-numeric")?;
+    let hooks = prelude_hooks(&numeric);
+    assert!((hooks.on_prompt)(&user("p50\n1.234 ms\n0.5 s")).is_none());
+    assert_eq!(numeric.session.pending_count(), 0, "output is not a list");
+    Ok(())
+}
+
+fn slash_todo(r: &Rig, args: &str) -> Result<String, Box<dyn Error>> {
+    r.session.set_todos(Arc::clone(&r.todos));
+    yi_runtime::slash::run(&r.session, "todo", args).ok_or_else(|| "/todo is not a verb".into())
+}
+
+/// The owner: "Should be a way to clear all TODOs quickly". Only the model could call `rm`.
+#[test]
+fn todo_clear_empties_the_list_and_records_the_user() -> TestResult {
+    let r = rig("clear")?;
+    open_list(&r.todos)?;
+    let shown = slash_todo(&r, "")?;
+    assert!(
+        shown.contains("first") && shown.contains("second"),
+        "{shown}"
     );
-    assert_eq!(r.todos.progress().open, 3);
+    assert_eq!(slash_todo(&r, "clear")?, "cleared 2 todos");
+    assert_eq!(labels(&r.todos), Vec::<String>::new());
     assert_eq!(
         latest_record(&r.store).map(|record| record.actor),
-        Some(SEED_ACTOR.to_owned()),
-        "the record names the prompt as the actor"
+        Some("user".to_owned()),
+        "the session records who cleared it"
     );
-    assert_eq!(r.session.pending_count(), 1, "the seeded prelude is queued");
-
-    let prose = user("Fix the parser, then add the test, and land it on the branch.");
-    let fresh = rig("seed-prose")?;
-    let hooks = prelude_hooks(&fresh);
-    assert!((hooks.on_prompt)(&prose).is_none());
-    assert_eq!(fresh.todos.progress().total, 0, "prose seeds nothing");
-    assert_eq!(
-        fresh.session.pending_count(),
-        1,
-        "the plain prelude still rides"
-    );
+    assert_eq!(slash_todo(&r, "clear")?, "no todos to clear");
+    assert_eq!(slash_todo(&r, "")?, "Todos: empty");
+    assert_eq!(slash_todo(&r, "clear now")?, "/todo [clear]");
     Ok(())
 }
 
@@ -583,21 +622,6 @@ fn an_open_list_is_never_reseeded() -> TestResult {
     let prompt = user("Now:\n1. something else\n2. and another");
     assert!((hooks.on_prompt)(&prompt).is_none());
     assert_eq!(labels(&r.todos), vec!["first", "second"]);
-    Ok(())
-}
-
-#[test]
-fn a_line_over_the_label_max_is_cut_not_dropped() -> TestResult {
-    let r = rig("seed-long")?;
-    let hooks = prelude_hooks(&r);
-    let long = "word ".repeat(40);
-    let prompt = user(&format!("1. {long}\n2. short"));
-    assert!((hooks.on_prompt)(&prompt).is_none());
-    let labels = labels(&r.todos);
-    assert_eq!(labels.len(), 2);
-    let first = labels.first().ok_or("no first label")?;
-    assert!(first.chars().count() <= yi_types::plan::doc::TODO_LABEL_MAX);
-    assert!(first.starts_with("word word"));
     Ok(())
 }
 
