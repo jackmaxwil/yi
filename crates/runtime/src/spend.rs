@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::event::AgentEvent;
 use yi_types::message::AgentMessage;
@@ -88,11 +88,11 @@ pub fn attach(session: &AgentSession, every: NonZeroU64) {
     let alarm = Arc::new(Mutex::new(SpendAlarm::new(every)));
     let resumed = Arc::clone(&alarm);
     session.on_attach(move |id, _, stats| {
-        if let Ok(mut alarm) = resumed.lock() {
-            alarm.seed(id, u64::try_from(stats.total_tokens).unwrap_or(0));
-        }
+        let mut alarm = resumed.lock().unwrap_or_else(PoisonError::into_inner);
+        alarm.seed(id, u64::try_from(stats.total_tokens).unwrap_or(0));
     });
     session.show_notices(SPEND_ALERT_TYPE, move |event| {
-        alarm.lock().ok().and_then(|mut alarm| alarm.observe(event))
+        let mut alarm = alarm.lock().unwrap_or_else(PoisonError::into_inner);
+        alarm.observe(event)
     });
 }

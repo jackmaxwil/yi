@@ -8,7 +8,7 @@
 //! entry would pay, the chance of that rewrite being the session's own share of pauses between
 //! five minutes and an hour.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_ai::breakpoints::{Engine, Ttl};
 use yi_types::entry::Entry;
@@ -327,14 +327,10 @@ pub fn attach(session: &AgentSession) {
         // A notice the ledger earned was shown by the process that wrote it.
         folded.notice = None;
         seeded.set_ttl_estimate(folded.estimate());
-        if let Ok(mut tracker) = resumed.lock() {
-            *tracker = folded;
-        }
+        *resumed.lock().unwrap_or_else(PoisonError::into_inner) = folded;
     });
     session.show_notices(CACHE_ALERT_TYPE, move |event| {
-        let Ok(mut tracker) = tracker.lock() else {
-            return None;
-        };
+        let mut tracker = tracker.lock().unwrap_or_else(PoisonError::into_inner);
         match event {
             AgentEvent::MessageEnd { message } => {
                 tracker.observe(message, yi_session::now_ms());

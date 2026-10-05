@@ -1,7 +1,7 @@
 //! The session's handle vocabulary: every closure the runtime hands a subsystem so it can
 //! steer, notice or read this session without holding it. The run loop stays out.
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
@@ -34,9 +34,11 @@ impl AgentSession {
     /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
     /// `fold` reads each store attached after this call (id, branch, totals) before a request.
     pub fn on_attach(&self, fold: impl FnMut(&str, &[Entry], &SessionStats) + Send + 'static) {
-        if let Ok(mut folds) = self.on_attach.lock() {
-            folds.push(Box::new(fold));
-        }
+        let mut folds = self
+            .on_attach
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        folds.push(Box::new(fold));
     }
 
     pub(super) fn restore_from_ledger(&self, entries: &[Entry]) {
@@ -69,10 +71,12 @@ impl AgentSession {
                 (session.metadata().id.clone(), session.stats())
             },
         );
-        if let Ok(mut folds) = self.on_attach.lock() {
-            for fold in folds.iter_mut() {
-                fold(&id, entries, &stats);
-            }
+        let mut folds = self
+            .on_attach
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for fold in folds.iter_mut() {
+            fold(&id, entries, &stats);
         }
     }
 
