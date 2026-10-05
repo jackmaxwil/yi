@@ -297,7 +297,12 @@ pub(crate) async fn complete_text(
     effort: Effort,
     signal: &InterruptSignal,
 ) -> (Result<String, String>, Usage) {
-    let mut receiver = provider.stream(model, context, effort, signal);
+    reply_of(provider.stream(model, context, effort, signal)).await
+}
+
+async fn reply_of(
+    mut receiver: tokio::sync::mpsc::Receiver<AssistantMessageEvent>,
+) -> (Result<String, String>, Usage) {
     while let Some(event) = receiver.recv().await {
         let (message, failed) = match event {
             AssistantMessageEvent::Done { message, .. } => (message, false),
@@ -314,7 +319,7 @@ pub(crate) async fn complete_text(
         else {
             return (
                 Err("summarizer returned a non-assistant message".to_owned()),
-                Usage::zero(),
+                Usage::unknown(),
             );
         };
         let text = if failed || stop_reason == StopReason::Error {
@@ -326,7 +331,7 @@ pub(crate) async fn complete_text(
     }
     (
         Err("summarizer stream ended without a terminal event".to_owned()),
-        Usage::zero(),
+        Usage::unknown(),
     )
 }
 
@@ -772,5 +777,30 @@ impl Compactor {
             messages: replacement,
             elision,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::message::Content;
+
+    /// A stream cut before its terminal event billed something nobody can read: the row it books
+    /// must say "unknown", and a zero would leave the call off the books.
+    #[tokio::test]
+    async fn a_stream_cut_before_its_terminal_event_reports_unknown_usage() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(4);
+        let partial = yi_ai::faux::faux_assistant_message(
+            vec![Content::Text {
+                text: "## Goal\nhalf a summ".to_owned(),
+                text_signature: None,
+            }],
+            StopReason::Pending,
+        );
+        let _ = sender.send(AssistantMessageEvent::Start { partial }).await;
+        drop(sender);
+        let (reply, usage) = reply_of(receiver).await;
+        assert!(reply.is_err());
+        assert!(usage.unknown, "{usage:?}");
     }
 }
