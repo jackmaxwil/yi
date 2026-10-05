@@ -179,12 +179,8 @@ fn a_resumed_session_shows_its_stored_spend_and_cache_rate_once() -> TestResult 
         ledger.append_message("main", typed("price the build"))?;
         ledger.append_message("main", priced("costed", 0.1, false)?)?;
         ledger.append_message("main", priced("unreported", 0.0, true)?)?;
-        let id = ledger.next_id();
-        ledger.append_record(serde_json::from_value(json!({"type": "usage", "id": id,
-            "lane": "main", "cause": "child_usage_attributed", "seq": 0, "timestamp": 0,
-            "usage": {"input": 100, "output": 10, "cacheRead": 0, "cacheWrite": 0,
-                "totalTokens": 110, "cost": {"input": 0, "output": 0, "cacheRead": 0,
-                "cacheWrite": 0, "total": 0.05}}}))?)?;
+        let record = crate::usage_record::child_usage(ledger.next_id(), 100, 0.05)?;
+        ledger.append_record(record)?;
     }
     let session = Arc::new(yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {

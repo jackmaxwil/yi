@@ -282,15 +282,9 @@ fn recorded_reply(
     }))?)
 }
 
-/// Through the production wiring (D315): `cache_miss::attach` folds the root's replies, and once
-/// they show two half-hour pauses the next OpenRouter request holds every history breakpoint an
-/// hour; the root's worker child, a loop whose stream no ledger feeds, stays at five minutes.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none()
--> TestResult {
-    let scratch = Scratch::new("yi-family-ttl-choice")?;
-    // Each reply reads 41k of a 41.5k prompt, so the root's own reply keeps the ledger's
-    // estimate pricing an hour when the child's request goes out.
+/// An OpenRouter Claude route priced for the TTL choice, and a stand-in whose every reply reads
+/// 41k of a 41.5k prompt, so a root's own reply keeps the ledger's estimate pricing an hour.
+fn ttl_route() -> Result<(Model, u16, mpsc::Receiver<Value>), Box<dyn Error>> {
     let usage = json!({"prompt_tokens": 41_500, "completion_tokens": 5, "total_tokens": 41_505,
         "prompt_tokens_details": {"cached_tokens": 41_000}});
     let reply_stream = [
@@ -306,6 +300,17 @@ async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its
     let price = |value: f64| serde_json::Number::from_f64(value).ok_or("price");
     (model.cost.input, model.cost.cache_write) = (price(1.0)?, price(1.25)?);
     model.cost.cache_read = price(0.1)?;
+    Ok((model, port, from))
+}
+
+/// Through the production wiring (D315): `cache_miss::attach` folds the root's replies, and once
+/// they show two half-hour pauses the next OpenRouter request holds every history breakpoint an
+/// hour; the root's worker child, a loop whose stream no ledger feeds, stays at five minutes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none()
+-> TestResult {
+    let scratch = Scratch::new("yi-family-ttl-choice")?;
+    let (model, port, from) = ttl_route()?;
     let (session, host) = root(&scratch, model.clone(), port, false)?;
     yi_runtime::cache_miss::attach(&session);
     let minute = 60_000;
@@ -353,23 +358,7 @@ async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its
 async fn a_resumed_root_holds_its_history_an_hour_from_its_first_request() -> TestResult {
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
     let scratch = Scratch::new("yi-family-ttl-resume")?;
-    let reply = |content: &str| {
-        let usage = json!({"prompt_tokens": 41_500, "completion_tokens": 5,
-            "total_tokens": 41_505, "prompt_tokens_details": {"cached_tokens": 41_000}});
-        [
-            json!({"choices": [{"index": 0, "delta": {"content": content}}]}),
-            json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": usage}),
-        ]
-        .iter()
-        .map(|chunk| format!("data: {chunk}\n\n"))
-        .collect::<String>()
-            + "data: [DONE]\n\n"
-    };
-    let (port, from) = stand_in(reply("blue sky"))?;
-    let mut model = openrouter_claude();
-    let price = |value: f64| serde_json::Number::from_f64(value).ok_or("price");
-    (model.cost.input, model.cost.cache_write) = (price(1.0)?, price(1.25)?);
-    model.cost.cache_read = price(0.1)?;
+    let (model, port, from) = ttl_route()?;
     let mut repo = JsonlRepo::new(scratch.join("sessions"), "/tmp".to_owned());
     let store = repo.create(CreateOptions::default())?;
     let minute = 60_000;
