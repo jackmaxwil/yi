@@ -4,6 +4,8 @@
 mod common;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "../../types/tests/support/usage_record.rs"]
+mod usage_record;
 
 mod agents;
 mod asks;

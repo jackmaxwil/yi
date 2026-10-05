@@ -1122,16 +1122,12 @@ async fn a_rewind_does_not_count_a_finished_child_twice() -> TestResult {
     session.events_sender().send(child_at(600))?;
     {
         let mut ledger = lock_session(&store);
-        let id = ledger.next_id();
-        ledger.append_record(serde_json::from_value(serde_json::json!({"type": "usage",
-            "id": id, "lane": "main", "cause": "child_usage_attributed", "seq": 0,
-            "timestamp": 0, "usage": {"input": 600, "output": 0, "cacheRead": 0,
-            "cacheWrite": 0, "totalTokens": 600, "cost": {"input": 0, "output": 0,
-            "cacheRead": 0, "cacheWrite": 0, "total": 0}}}))?)?;
+        let record = crate::usage_record::child_usage(ledger.next_id(), 600, 0.0)?;
+        ledger.append_record(record)?;
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     session.attach_store(store)?;
-    for event in [child_at(600), turn_of(1_000)] {
+    for event in [child_done(600), turn_of(1_000)] {
         session.events_sender().send(event)?;
     }
     assert!(
@@ -1206,12 +1202,8 @@ async fn a_finished_child_counts_once_across_a_switch_and_back() -> TestResult {
     send(child_at(300))?;
     {
         let mut ledger = lock_session(&x);
-        let id = ledger.next_id();
-        ledger.append_record(serde_json::from_value(serde_json::json!({"type": "usage",
-            "id": id, "lane": "main", "cause": "child_usage_attributed", "seq": 0,
-            "timestamp": 0, "usage": {"input": 600, "output": 0, "cacheRead": 0,
-            "cacheWrite": 0, "totalTokens": 600, "cost": {"input": 0, "output": 0,
-            "cacheRead": 0, "cacheWrite": 0, "total": 0}}}))?)?;
+        let record = crate::usage_record::child_usage(ledger.next_id(), 600, 0.0)?;
+        ledger.append_record(record)?;
     }
     send(child_done(600))?;
     let settle = || tokio::time::sleep(std::time::Duration::from_millis(150));

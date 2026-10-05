@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "../../types/tests/support/usage_record.rs"]
+mod usage_record;
 use scratch::Scratch;
 
 #[path = "support/acp_schema.rs"]
@@ -916,12 +918,8 @@ fn resume_replays_the_ledgers_spend_with_child_usage() -> TestResult {
         let mut repo = JsonlRepo::new(sessions, dir.display().to_string());
         let store = repo.open(&session_id)?;
         let mut session = lock_session(&store);
-        let id = session.next_id();
-        session.append_record(serde_json::from_value(json!({"type": "usage", "id": id,
-            "lane": "main", "cause": "child_usage_attributed", "seq": 0, "timestamp": 0,
-            "usage": {"input": 100, "output": 10, "cacheRead": 0, "cacheWrite": 0,
-                "totalTokens": 110, "cost": {"input": 0.04, "output": 0.01, "cacheRead": 0,
-                "cacheWrite": 0, "total": 0.05}}}))?)?;
+        let record = usage_record::child_usage(session.next_id(), 100, 0.05)?;
+        session.append_record(record)?;
     }
     let frames = client.request(
         "5",
