@@ -269,7 +269,7 @@ fn the_breakpoint_stays_ahead_of_a_trailing_environment_block() -> Result<(), Bo
     Ok(())
 }
 
-fn image_turns(count: usize, chars: usize) -> LlmContext {
+fn image_turns(count: usize, image: &str) -> LlmContext {
     let messages = (0..count)
         .map(|turn| {
             AgentMessage::user_input(
@@ -279,7 +279,7 @@ fn image_turns(count: usize, chars: usize) -> LlmContext {
                         text_signature: None,
                     },
                     Content::Image {
-                        data: format!("{turn:04}{}", "A".repeat(chars)),
+                        data: image.to_owned(),
                         mime_type: "image/png".to_owned(),
                     },
                 ]),
@@ -300,15 +300,15 @@ fn image_turns(count: usize, chars: usize) -> LlmContext {
     }
 }
 
+/// The label of each turn whose image the request still carries.
 fn sent_images(params: &Value) -> Vec<String> {
     params["messages"]
         .as_array()
         .into_iter()
         .flatten()
-        .flat_map(|message| message["content"].as_array().into_iter().flatten())
-        .filter(|block| block["type"] == "image")
-        .filter_map(|block| block["source"]["data"].as_str())
-        .map(|data| data.chars().take(4).collect())
+        .filter_map(|message| message["content"].as_array())
+        .filter(|blocks| blocks.iter().any(|block| block["type"] == "image"))
+        .filter_map(|blocks| blocks.first()?["text"].as_str().map(str::to_owned))
         .collect()
 }
 
@@ -316,10 +316,14 @@ fn sent_images(params: &Value) -> Vec<String> {
 /// resent image counts, so an image-heavy session was refused on every later turn.
 #[test]
 fn a_claude_request_keeps_its_newest_twenty_images() -> Result<(), Box<dyn Error>> {
-    let params = build_params(&model(), &image_turns(25, 8), &AnthropicOptions::default());
+    let params = build_params(
+        &model(),
+        &image_turns(25, crate::images::PNG),
+        &AnthropicOptions::default(),
+    );
     let sent = sent_images(&params);
     assert_eq!(sent.len(), 20, "{sent:?}");
-    assert_eq!(sent.first().map(String::as_str), Some("0005"));
+    assert_eq!(sent.first().map(String::as_str), Some("image 5"));
     assert_eq!(
         params.to_string().matches("earlier image omitted").count(),
         5
@@ -332,7 +336,7 @@ fn a_claude_request_keeps_its_newest_twenty_images() -> Result<(), Box<dyn Error
 fn a_claude_request_keeps_its_images_under_the_request_cap() -> Result<(), Box<dyn Error>> {
     let params = build_params(
         &model(),
-        &image_turns(4, 9_000_000),
+        &image_turns(4, &crate::images::png_at_cap()),
         &AnthropicOptions::default(),
     );
     let sent = sent_images(&params);
@@ -341,7 +345,35 @@ fn a_claude_request_keeps_its_images_under_the_request_cap() -> Result<(), Box<d
         "{}",
         params.to_string().len()
     );
-    assert_eq!(sent.last().map(String::as_str), Some("0003"), "{sent:?}");
+    assert_eq!(sent.last().map(String::as_str), Some("image 3"), "{sent:?}");
+    Ok(())
+}
+
+/// Incident: a PNG signature over four zero bytes passed the kernel's header check, and a
+/// session saved with it sent the provider an image it refuses on every later request (#860).
+#[test]
+fn a_refused_image_in_history_is_sent_as_a_placeholder() -> Result<(), Box<dyn Error>> {
+    let mut ctx = image_turns(3, crate::images::PNG);
+    let AgentMessage::User {
+        content: UserContent::Blocks(blocks),
+        ..
+    } = ctx.messages.get_mut(1).ok_or("turn 1")?
+    else {
+        return Err("turn 1 is not blocks".into());
+    };
+    *blocks.get_mut(1).ok_or("image")? = Content::Image {
+        data: "iVBORw0KGgoAAAAA".to_owned(),
+        mime_type: "image/png".to_owned(),
+    };
+    let params = build_params(&model(), &ctx, &AnthropicOptions::default());
+    assert_eq!(sent_images(&params), ["image 0", "image 2"]);
+    let turn = params["messages"][1]["content"].to_string();
+    assert!(
+        turn.contains(
+            "[image omitted: image/png, 0 KB of base64; the image has no whole header for its type"
+        ) && turn.contains("re-encode it in ipython"),
+        "{turn}"
+    );
     Ok(())
 }
 
@@ -379,7 +411,7 @@ fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
                     text_signature: None,
                 },
                 Content::Image {
-                    data: "iVBORw0KGgo=".to_owned(),
+                    data: crate::images::PNG.to_owned(),
                     mime_type: "image/png".to_owned(),
                 },
             ],
@@ -410,7 +442,7 @@ fn a_tool_result_image_rides_inside_the_tool_result_block() -> Result<(), Box<dy
         last,
         json!([{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": false, "content": [
             {"type": "text", "text": "attached"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": crate::images::PNG}},
         ]}])
     );
     Ok(())
