@@ -424,18 +424,13 @@ impl Resolver {
         store: crate::goal::StoreHandle,
         broker: Option<&crate::permission::PermissionBroker>,
     ) -> Self {
-        let stores = crate::tools::session_stores(broker);
-        if wall.is_empty() {
-            return Self::new(workspace, wall)
-                .with_session_stores(stores)
-                .with_session_handle(agent, store);
-        }
-        let spill_root = crate::tools::default_spill_root();
+        let stores = if wall.is_empty() {
+            crate::tools::session_stores(broker)
+        } else {
+            crate::tools::walled_roots(&wall, broker)
+        };
         Self::new(workspace, wall)
-            .with_session_stores(crate::tools::spill_roots_and_stores(
-                spill_root.as_deref(),
-                broker,
-            ))
+            .with_session_stores(stores)
             .with_session_handle(agent, store)
     }
 

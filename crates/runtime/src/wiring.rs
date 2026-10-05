@@ -241,10 +241,10 @@ impl RuntimeWiring {
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         if !self.wall.is_empty() {
-            let spills = crate::tools::default_spill_root();
             let broker = self.broker.as_deref();
-            let roots = crate::tools::spill_roots_and_stores(spills.as_deref(), broker);
-            sandbox.deny_read.extend(roots);
+            sandbox
+                .deny_read
+                .extend(crate::tools::walled_roots(&self.wall, broker));
             let board =
                 Some(self.family_dir()).filter(|dir| crate::tools::unwalled(&self.wall, dir));
             sandbox.spared.extend(board);
@@ -387,7 +387,7 @@ fn wire_goal(
 fn wire_fetch(
     session: &AgentSession,
     wiring: &RuntimeWiring,
-    _plans_dir: &Path,
+    plans_dir: &Path,
     host: &Arc<SubagentHost>,
     registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
@@ -409,6 +409,7 @@ fn wire_fetch(
         session.store_handle(),
         wiring.broker.as_deref(),
     )
+    .with_plans_dir(plans_dir.to_path_buf())
     .with_log(log)
     .with_kernel_variables(kernels)
     .with_transcripts(transcripts)

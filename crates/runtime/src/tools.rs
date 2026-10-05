@@ -110,9 +110,7 @@ pub(crate) fn heartbeat_gate(
 ) -> Arc<crate::schedule::GateFn> {
     let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
     let (wall, cwd) = (wiring.wall.clone(), wiring.cwd.clone());
-    let spills = default_spill_root();
-    let roots = spill_roots_and_stores(spills.as_deref(), broker.as_deref());
-    let roots: Vec<PathBuf> = roots.into_iter().filter(|_| !wall.is_empty()).collect();
+    let roots = walled_roots(&wall, broker.as_deref());
     Arc::new(move |command: &str| {
         let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
         let rules = rules();
@@ -279,6 +277,17 @@ pub(crate) fn spill_roots_and_stores(
         .chain(flat)
         .chain(session_stores(broker))
         .collect()
+}
+
+/// The roots a walled session reads only where a later rule spares it; none for an unwalled one.
+pub(crate) fn walled_roots(
+    wall: &crate::wall::Wall,
+    broker: Option<&PermissionBroker>,
+) -> Vec<PathBuf> {
+    if wall.is_empty() {
+        return Vec::new();
+    }
+    spill_roots_and_stores(default_spill_root().as_deref(), broker)
 }
 
 /// Invariant: a spare, a kernel's or a tool's, never reopens a path the wall's own `deny_read`
