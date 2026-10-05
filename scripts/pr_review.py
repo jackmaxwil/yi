@@ -14,6 +14,7 @@ accept. Nothing here merges.
 Transport and the model are parameters where the decisions are, so the selfcheck walks them
 without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
+import argparse
 import fcntl
 import fnmatch
 import functools
@@ -26,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -712,12 +714,7 @@ def cmd_review(args):
         if not (answer or {}).get("id"):
             print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}")
             return 1
-        title = pr.get("title", "")
-        if title.startswith(forge_pr.DRAFT) and promotes(rounds_of(comments(repo, number), allowed, number), sha,
-                                                         holds_for(number, pr["base"]["ref"])):
-            ready = forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{number}", {"title": title.removeprefix(forge_pr.DRAFT)})
-            print(f"#{number}: " + ("out of draft, two clean rounds and nothing above low left" if (ready or {}).get("number")
-                                    else f"stays a draft, the forge refused: {(ready or {}).get('message')}"))
+        promote(repo, pr, rounds_of(comments(repo, number), allowed, number))
     said = verdict(findings, None)
     print(f"#{number} round {n}: {said} ({len(findings)} finding(s), {dropped} dropped)")
     print(status)
@@ -774,21 +771,45 @@ def walled(paths):
     return [p for p in paths if p.startswith(WALL)]
 
 
+def promote(repo, pr, rounds):
+    """Take a draft that `promotes` out of draft; True when it left."""
+    title, number = pr.get("title", ""), pr["number"]
+    if not (title.startswith(DRAFT) and promotes(rounds, pr["head"]["sha"], holds_for(number, pr["base"]["ref"]))):
+        return False
+    ready = forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
+    print(f"#{number}: " + ("out of draft, two clean rounds and nothing above low left" if (ready or {}).get("number")
+                            else f"stays a draft, the forge refused: {(ready or {}).get('message')}"))
+    return bool((ready or {}).get("number"))
+
+
+# Incident: the runner kills a job at 45 minutes; a round can take ten, so a sweep starts no new
+# one past 25 and reads at most three heads, and the next sweep takes the rest.
+SWEEP_SECS, SWEEP_HEADS = 25 * 60, 3
+
+
 def cmd_sweep(args):
-    """One pass over the open drafts: review a head no round has read; the autofixer answers a blocked one."""
+    """One pass over the open drafts: promote one already clean, review a head no round has read
+    (a push whose job died, or a draft opened before the job ran); the autofixer answers a blocked one."""
     repo, allowed = forge_pr.repo(), authors()
     pulls = forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50")
     # Incident: an unsigned fgj answered the list with an error object and the loop died indexing it.
     if not isinstance(pulls, list):
         print(f"sweep: the forge did not list the pull requests: {(pulls or {}).get('message')}")
         return 1
-    for pr in pulls:
-        if not pr["title"].startswith(DRAFT):
+    started, read = time.monotonic(), 0
+    for pr in sorted(pulls, key=lambda p: p["number"]):
+        if not pr["title"].startswith(DRAFT) or pr["head"]["repo"]["full_name"] != repo:
             continue
         rounds = rounds_of(comments(repo, pr["number"]), allowed, pr["number"])
+        if promote(repo, pr, rounds):
+            continue
         on_head = rounds and pr["head"]["sha"].startswith(rounds[-1]["sha"])
         if not on_head or len(rounds) < 2 and rounds[-1]["verdict"] != "blocked":
-            cmd_review(type(args)(number=pr["number"], dry_run=False))
+            if read >= SWEEP_HEADS or time.monotonic() - started > SWEEP_SECS:
+                print(f"sweep: {read} head(s) read in {int(time.monotonic() - started)}s; the rest wait for the next sweep")
+                break
+            cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False))
+            read += 1
     return 0
 
 
@@ -1155,6 +1176,25 @@ def selfcheck():
             os.environ["PATH"] = real_path
     finally:
         shutil.rmtree(fakes)
+    # A sweep: promotes a draft already clean, reads heads no round has read, skips a fork, and
+    # stops at its cap.
+    clean_round = lambda n, sha: {"user": {"login": BOT}, "id": n, "body": render(n, 1, sha, "base000", [], 0, None, "blocking")}
+    drafts = [{"number": n, "title": DRAFT + "t", "head": {"sha": sha, "repo": {"full_name": owner}}, "base": {"ref": "main"}}
+              for n, sha, owner in ((1, "aaaaaaa1", "o/r"), (2, "bbbbbbb2", "o/r"), (3, "ccccccc3", "x/fork"),
+                                    (4, "ddddddd4", "o/r"), (5, "eeeeeee5", "o/r"), (6, "fffffff6", "o/r"))]
+    notes = {1: [clean_round(11, "aaaaaaa1"), clean_round(12, "aaaaaaa1")]}
+    patched, reviewed, saved = [], [], (forge_pr.fgj_api, forge_pr.repo, comments, holds_for, cmd_review, authors)
+    try:
+        forge_pr.fgj_api = lambda method, url, body=None: drafts if method == "GET" else patched.append(url) or {"number": 1}
+        forge_pr.repo = lambda: "o/r"
+        globals().update(comments=lambda repo, n: notes.get(n, []), holds_for=lambda n, base: on_head,
+                         cmd_review=lambda a: reviewed.append(a.number), authors=lambda: {BOT})
+        cmd_sweep(None)
+    finally:
+        forge_pr.fgj_api, forge_pr.repo = saved[0], saved[1]
+        globals().update(comments=saved[2], holds_for=saved[3], cmd_review=saved[4], authors=saved[5])
+    assert patched == ["repos/o/r/pulls/1"], f"the clean draft is promoted, nothing else: {patched}"
+    assert reviewed == [2, 4, 5], f"heads with no round are read, the fork skipped, three at most: {reviewed}"
     flaky = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-ask-"))
     try:
         (flaky / "yi").write_text(f'#!/bin/sh\ncat >/dev/null\nif [ -e {flaky}/tried ]; then echo \'{{"ok": true}}\'; exit 0; fi\n'
