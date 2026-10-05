@@ -612,33 +612,9 @@ impl SubagentHost {
     }
 
     // Incident: nine of twelve F0e "text, not JSON" refusals were a valid object inside a
-    // fenced block, so one fence line and any trailer are framing, not the answer (#475).
+    // fenced block (#475), and a reader put its fence after a paragraph (#989).
     pub(crate) fn json_answer(text: &str) -> Option<Value> {
-        let body = text.trim();
-        let body = match body.strip_prefix("```") {
-            Some(rest) => rest
-                .split_once('\n')
-                .map_or(rest, |(_, body)| body)
-                .trim_end()
-                .trim_end_matches("```")
-                .trim(),
-            None => body,
-        };
-        let first = |body: &str| {
-            serde_json::Deserializer::from_str(body)
-                .into_iter::<Value>()
-                .next()?
-                .ok()
-        };
-        // Incident: a reader put its object in a fence after a paragraph (#989); the last
-        // fence that parses wins, as a model's final block is its answer.
-        first(body).or_else(|| {
-            text.split("```")
-                .skip(1)
-                .step_by(2)
-                .filter_map(|fence| first(fence.split_once('\n').map_or(fence, |(_, rest)| rest)))
-                .last()
-        })
+        crate::schema::extract(text).ok()
     }
 
     /// The mailbox interrupt: ends the run and keeps the record, unlike delete.
