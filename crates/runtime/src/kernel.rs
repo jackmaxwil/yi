@@ -6,8 +6,7 @@ use serde_json::{Map, Value};
 use yi_kernel::client::{
     AbortFlag, ExecuteError, ExecuteOptions, HostFuture, HostHandlers, KernelManager, KernelOptions,
 };
-use yi_tools::ToolOutput;
-use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
+use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome, ToolOutput};
 
 use crate::args::Args;
 pub use crate::kernel_bootstrap::{
@@ -695,6 +694,8 @@ impl KernelService {
                     {
                         notes.push(crate::kernel_bootstrap::surface_note(&table));
                     }
+                    let (sandbox, cwd) = (self.options.sandbox.as_ref(), &self.options.cwd);
+                    notes.extend(yi_tools::kernel_cell_note(sandbox, cwd, code, &result));
                     return Ok(KernelCellOutcome {
                         result,
                         kernel_restarted,

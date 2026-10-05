@@ -39,14 +39,9 @@ pub struct Resolved {
 }
 
 fn env_var(provider: &str) -> Option<&'static str> {
-    Some(match provider {
-        "anthropic" => "ANTHROPIC_API_KEY",
-        "openai" => "OPENAI_API_KEY",
-        "openrouter" => "OPENROUTER_API_KEY",
-        "google" => "GEMINI_API_KEY",
-        "laya" => "LAYA_API_KEY",
-        _ => return None,
-    })
+    (yi_types::PROVIDER_KEY_VARS.iter())
+        .find(|(name, _)| *name == provider)
+        .map(|(_, variable)| *variable)
 }
 
 fn env_key(provider: &str) -> Option<Secret> {
