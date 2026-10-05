@@ -104,7 +104,7 @@ impl AgentSession {
                 run::enqueue(&parts, Queued::new(message, true, None));
             }
             yi_types::schedule::DeliveryMode::FollowUp => {
-                run::follow(&parts, message);
+                run::follow(&parts, message, None);
             }
         })
     }
@@ -295,16 +295,45 @@ impl AgentSession {
         })
     }
 
-    /// A job's report (§4.3), taken after a running turn's answer or the next one's, never waking;
-    /// `news` false when the queue is read drops it unread.
-    pub fn follow_up_hook(&self) -> Arc<super::FollowUpFn> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str, news| {
-            if let Ok(mut queue) = shared.follow_up.lock() {
-                let message = host_text(yi_types::message::HostSource::Job, text);
-                queue.push(Queued::new(message, false, news));
+    /// Job reports (§4.3) start a turn on an idle session; false once retired, ending the loop.
+    /// Each carries its `news`: a report already read by a wait on the job is dropped unread.
+    pub fn job_report_hook(&self) -> Arc<super::run::JobReportFn> {
+        let parts = self.parts();
+        Arc::new(move |reports: Vec<(String, StillNews)>| {
+            if parts
+                .shared
+                .retired
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return false;
             }
+            for (text, news) in reports {
+                run::follow(
+                    &parts,
+                    host_text(yi_types::message::HostSource::Job, &text),
+                    Some(news),
+                );
+            }
+            true
         })
+    }
+
+    /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session
+    /// leaks its IPython process. Every path that retires a session calls this.
+    pub fn retire(&self) {
+        self.shared
+            .retired
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let Some(kernel) = self.kernel_service() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(async move { kernel.dispose().await });
+        }
+    }
+
+    pub fn job_owner(&self) -> yi_tools::jobs::JobOwner {
+        self.shared.job_owner
     }
 
     pub fn wait_hook(&self) -> Arc<crate::compaction::WaitFn> {

@@ -11,6 +11,7 @@ mod cards;
 mod diffview;
 mod highlight;
 mod hud_todos;
+mod input;
 mod logos;
 mod markdown_render;
 mod model_picker;

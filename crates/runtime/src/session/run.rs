@@ -4,7 +4,7 @@ use std::sync::Arc;
 use yi_loop::{LoopConfig, LoopContext, run_loop};
 use yi_types::event::AgentEvent;
 use yi_types::mail::Delivery;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Attribution, StopReason};
 
 use super::{
     RunParts, SessionError, Shared, Status, dispatch_ext, extensions_of, hooks, persist_message,
@@ -17,7 +17,7 @@ const LAST_WORD: &str = "[deadline] Time is up: no more tool calls. Write your f
 /// Invariant: asked under the session's status lock when a turn would present the message, so
 /// it may lock a host's roster but nothing that waits on this session; false drops it unread.
 pub type StillNews = Arc<dyn Fn() -> bool + Send + Sync>;
-pub type FollowUpFn = dyn Fn(&str, Option<StillNews>) + Send + Sync;
+pub type JobReportFn = dyn Fn(Vec<(String, StillNews)>) -> bool + Send + Sync;
 
 pub(super) struct Queued {
     pub(super) message: AgentMessage,
@@ -89,13 +89,18 @@ fn with_pointers(shared: &Shared, messages: Vec<AgentMessage>) -> Vec<AgentMessa
 }
 
 /// The prompt a waking entry or a follow-up is owed, taken under the status lock enqueue takes.
-fn owed(shared: &Shared, follow_ups: bool) -> Option<AgentMessage> {
+/// `ended_clean` is true only where a run settles undisturbed: only then is a user steer owed a turn.
+fn owed(shared: &Shared, follow_ups: bool, ended_clean: bool) -> Option<AgentMessage> {
     if shared.winding_down() || shared.held.load(std::sync::atomic::Ordering::SeqCst) {
         return None;
     }
     if let Ok(mut queue) = shared.steer.lock() {
         queue.retain(Queued::current);
-        if queue.iter().any(|queued| queued.wakes) {
+        // Incident: a user steer sent after the loop's last read waited behind the next prompt.
+        let waking = |queued: &Queued| {
+            queued.wakes || (ended_clean && queued.message.attribution() == Attribution::User)
+        };
+        if queue.iter().any(waking) {
             return queue.pop_front().map(|queued| queued.message);
         }
     }
@@ -117,7 +122,7 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     if *status == Status::Running {
         return Delivery::Queued;
     }
-    let Some(prompt) = wakes.then(|| owed(&parts.shared, false)).flatten() else {
+    let Some(prompt) = wakes.then(|| owed(&parts.shared, false, false)).flatten() else {
         return Delivery::Inboxed;
     };
     admit(&parts.shared, &mut status);
@@ -133,7 +138,7 @@ pub(super) fn kick(parts: &RunParts) {
     if *status == Status::Running {
         return;
     }
-    if let Some(prompt) = owed(&parts.shared, true) {
+    if let Some(prompt) = owed(&parts.shared, true, false) {
         admit(&parts.shared, &mut status);
         drop(status);
         launch(parts.clone(), prompt, None);
@@ -160,17 +165,17 @@ fn compaction_notice(message: &AgentMessage) -> bool {
     matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == crate::compaction::COMPACTION_NOTICE)
 }
 
-pub(super) fn follow(parts: &RunParts, message: AgentMessage) -> bool {
+pub(super) fn follow(parts: &RunParts, message: AgentMessage, news: Option<StillNews>) -> bool {
     let Ok(mut status) = parts.shared.status.lock() else {
         return false;
     };
     if let Ok(mut queue) = parts.shared.follow_up.lock() {
-        queue.push(Queued::new(message, false, None));
+        queue.push(Queued::new(message, false, news));
     }
     if *status == Status::Running {
         return true;
     }
-    if let Some(prompt) = owed(&parts.shared, true) {
+    if let Some(prompt) = owed(&parts.shared, true, false) {
         admit(&parts.shared, &mut status);
         drop(status);
         launch(parts.clone(), prompt, None);
@@ -209,18 +214,19 @@ fn launch(parts: RunParts, prompt: AgentMessage, requested: Option<u64>) {
     // later turn. Reading the epoch at admission still stops one hit before the spawn.
     let admitted_epoch = requested.unwrap_or_else(|| parts.shared.signal.epoch());
     tokio::spawn(async move {
-        run_once(&parts, prompt, admitted_epoch).await;
-        settle(parts).await;
+        let ended_clean = run_once(&parts, prompt, admitted_epoch).await;
+        settle(parts, ended_clean).await;
     });
 }
 
 /// Every way a run ends comes here: an early stop, an error, an abort or the loop's own end.
-async fn settle(parts: RunParts) {
+async fn settle(parts: RunParts, ended_clean: bool) {
     let shared = Arc::clone(&parts.shared);
     let next = match shared.status.lock() {
         Ok(mut status) => {
             // An abort keeps what was queued for after the answer until the user's next turn.
-            let next = owed(&shared, !shared.signal.is_fired());
+            let undisturbed = !shared.signal.is_fired();
+            let next = owed(&shared, undisturbed, undisturbed && ended_clean);
             match next {
                 Some(_) => admit(&shared, &mut status),
                 None => *status = Status::Idle,
@@ -243,7 +249,7 @@ async fn settle(parts: RunParts) {
     }
 }
 
-async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
+async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -> bool {
     let RunParts {
         shared,
         provider,
@@ -332,40 +338,13 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     let gate = Arc::clone(&capture);
     config.side_work = Some(Box::new(move || Box::pin(settled(Arc::clone(&gate)))));
     wire_last_word(&mut config, &shared);
-    let emit_shared = Arc::clone(&shared);
-    let mut emit = move |event: AgentEvent| {
-        emit_shared.time_turn(&event);
-        if let AgentEvent::MessageEnd { message } = &event {
-            if let AgentMessage::Assistant { usage, .. } = message {
-                if let Ok(mut last) = emit_shared.last_usage.lock() {
-                    *last = Some(usage.clone());
-                }
-                dispatch_ext(
-                    &emit_shared,
-                    &crate::ext::Event::Usage {
-                        input: usage.input,
-                        cache_read: usage.cache_read,
-                        cache_write: usage.cache_write,
-                    },
-                );
-            }
-            let _span = yi_types::trace::span("turn.persist");
-            persist_message(&emit_shared, message);
-        }
-        if let Some(telemetry) = emit_shared
-            .telemetry
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
-        {
-            telemetry.on_event(&event);
-        }
-        let _ = emit_shared.events.send(event);
-    };
+    let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut emit = emit_event(&shared, &failed);
     if cfg!(debug_assertions)
         && let Some(errored) = first_system_prompt_broken(&shared, &context.system_prompt, &model)
     {
-        return failed_turn(&shared, prompt, errored, &mut emit);
+        failed_turn(&shared, prompt, errored, &mut emit);
+        return false;
     }
     shared.signal.reset_if_epoch(admitted_epoch);
     run_loop(
@@ -387,6 +366,46 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         if let Some(event) = event {
             dispatch_ext(&shared, &event);
         }
+    }
+    !failed.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn emit_event(
+    shared: &Arc<Shared>,
+    failed: &Arc<std::sync::atomic::AtomicBool>,
+) -> impl FnMut(AgentEvent) {
+    let shared = Arc::clone(shared);
+    let failed = Arc::clone(failed);
+    move |event: AgentEvent| {
+        shared.time_turn(&event);
+        if let AgentEvent::MessageEnd { message } = &event {
+            if let AgentMessage::Assistant {
+                stop_reason: StopReason::Error,
+                ..
+            } = message
+            {
+                failed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let AgentMessage::Assistant { usage, .. } = message {
+                if let Ok(mut last) = shared.last_usage.lock() {
+                    *last = Some(usage.clone());
+                }
+                dispatch_ext(
+                    &shared,
+                    &crate::ext::Event::Usage {
+                        input: usage.input,
+                        cache_read: usage.cache_read,
+                        cache_write: usage.cache_write,
+                    },
+                );
+            }
+            let _span = yi_types::trace::span("turn.persist");
+            persist_message(&shared, message);
+        }
+        if let Some(telemetry) = shared.telemetry.lock().ok().and_then(|slot| slot.clone()) {
+            telemetry.on_event(&event);
+        }
+        let _ = shared.events.send(event);
     }
 }
 
@@ -556,4 +575,112 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         config.intercept_stop = Some(Box::new(move |snapshot| intercept(snapshot)));
     }
     config.waiting = shared.waits.lock().ok().and_then(|slot| slot.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::dispatch::tests::faux_model;
+    use crate::provider::ProviderStream;
+    use crate::session::{AgentSession, SessionConfig, user_input};
+    use yi_ai::faux::{faux_assistant_message, faux_text};
+    use yi_types::message::{StopReason, UserContent};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn session(replies: usize) -> AgentSession {
+        let provider = Arc::new(ProviderStream::new(None));
+        provider.queue_faux(
+            (0..replies)
+                .map(|_| faux_assistant_message(vec![faux_text("on it")], StopReason::Stop))
+                .collect(),
+        );
+        AgentSession::new(
+            SessionConfig {
+                system_prompt: String::new(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            provider,
+        )
+    }
+
+    fn running_with_a_steer(session: &AgentSession) -> Result<RunParts, &'static str> {
+        let parts = session.parts();
+        *parts.shared.status.lock().map_err(|_| "status poisoned")? = Status::Running;
+        let held = Queued::new(user_input("one more thing"), false, None);
+        parts
+            .shared
+            .steer
+            .lock()
+            .map_err(|_| "queue poisoned")?
+            .push_back(held);
+        Ok(parts)
+    }
+
+    fn user_texts(session: &AgentSession) -> Vec<String> {
+        session
+            .messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                AgentMessage::User {
+                    content: UserContent::Text(text),
+                    ..
+                } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Dies with a user steer that landed after the loop's last read: the run settled idle, the
+    /// UI forgot the row, and the text waited for the next prompt to arrive behind it.
+    #[tokio::test]
+    async fn a_steer_the_loop_never_read_runs_as_the_next_prompt() -> TestResult {
+        let session = session(1);
+        settle(running_with_a_steer(&session)?, true).await;
+        session.wait_idle().await;
+        assert_eq!(user_texts(&session), ["one more thing"]);
+        Ok(())
+    }
+
+    /// Dies with an abort that restarts the run: the queue keeps what was steered for the user's
+    /// next turn, so a settle after a fired signal leaves it there and goes idle.
+    #[tokio::test]
+    async fn a_steer_left_by_an_abort_waits_for_the_next_turn() -> TestResult {
+        let session = session(1);
+        let parts = running_with_a_steer(&session)?;
+        parts.shared.signal.fire();
+        let shared = Arc::clone(&parts.shared);
+        settle(parts, true).await;
+        assert_eq!(session.status(), Status::Idle);
+        assert_eq!(shared.steer.lock().map_err(|_| "queue poisoned")?.len(), 1);
+        Ok(())
+    }
+
+    /// Dies with an errored settle waking the steer: a run that ended in error owes the steer
+    /// nothing, so a queued steer stays for the user's next turn instead of billing a prompt.
+    #[tokio::test]
+    async fn an_errored_settle_leaves_a_queued_steer_for_the_next_turn() -> TestResult {
+        let session = session(1);
+        let parts = running_with_a_steer(&session)?;
+        let shared = Arc::clone(&parts.shared);
+        settle(parts, false).await;
+        assert_eq!(session.status(), Status::Idle);
+        assert_eq!(shared.steer.lock().map_err(|_| "queue poisoned")?.len(), 1);
+        assert_eq!(user_texts(&session), Vec::<String>::new());
+        Ok(())
+    }
+
+    /// Dies with a follow-up to an idle session starting the steer it found inboxed as the
+    /// prompt: only the end of a run owes a stranded steer a turn, so the follow-up is the prompt.
+    #[tokio::test]
+    async fn a_follow_up_does_not_start_a_steer_inboxed_while_idle() -> TestResult {
+        let session = session(2);
+        session.steer_message(user_input("one more thing"));
+        session.follow_up("later");
+        session.wait_idle().await;
+        assert_eq!(user_texts(&session), ["later", "one more thing"]);
+        Ok(())
+    }
 }
