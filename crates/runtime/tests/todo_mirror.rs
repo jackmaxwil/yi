@@ -303,6 +303,28 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
     Ok(())
 }
 
+/// The store's own refusal speaks to the model ("the plan tool changes it"); a person who typed
+/// `/todo clear` is told which plan holds the list.
+#[test]
+fn todo_clear_on_a_plans_list_refuses_in_user_words() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-clear")?;
+    let (session, todos, _engine) = mirrored(&dir)?;
+    session.set_todos(Arc::clone(&todos));
+    let before = ids(&todos);
+    let said = yi_runtime::slash::run(&session, "todo", "clear").ok_or("/todo is not a verb")?;
+    let plan = plan_of(&todos.list())
+        .ok_or("the list mirrors a plan")?
+        .to_owned();
+    assert_eq!(
+        said,
+        format!(
+            "/todo clear: the list is plan {plan}'s view and stays until the plan closes (/plan shows it)"
+        )
+    );
+    assert_eq!(ids(&todos), before, "a refusal moves nothing");
+    Ok(())
+}
+
 #[test]
 fn a_mirrored_item_refuses_start_with_the_plan_road() -> TestResult {
     let dir = Scratch::new("yi-todo-mirror-refuse")?;
