@@ -3,7 +3,7 @@
 use crate::{AgentSession, PermissionMode};
 
 /// The verbs a host advertises; `/pr` and `/base` still answer, as pointers to `/land`.
-pub const SESSION_VERBS: [&str; 9] = [
+pub const SESSION_VERBS: [&str; 10] = [
     "advisor",
     "plan",
     "goal",
@@ -13,6 +13,7 @@ pub const SESSION_VERBS: [&str; 9] = [
     "land",
     "discard",
     "heartbeat",
+    "todo",
 ];
 
 pub fn split(line: &str) -> (&str, &str) {
@@ -76,8 +77,43 @@ pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> 
         "base" => lane_verb(session, "base", args),
         "discard" => lane_verb(session, "discard", args),
         "heartbeat" => heartbeat(session, args),
+        "todo" => todo(session, args),
         _ => return None,
     })
+}
+
+fn todo(session: &AgentSession, args: &str) -> String {
+    use crate::todo::{Op, Target, TodoError, text};
+    let Some(todos) = session.todos() else {
+        return "/todo: no todo list is attached to this session".to_owned();
+    };
+    match args {
+        "" => {
+            todos.resync();
+            text::render(&todos.list())
+        }
+        "clear" => {
+            todos.resync();
+            let total = todos.list().progress().total;
+            if total == 0 {
+                return "no todos to clear".to_owned();
+            }
+            match todos.apply_as(
+                Op::Rm {
+                    target: Target::All,
+                },
+                None,
+                "user",
+            ) {
+                Ok(_) => format!("cleared {total} todos"),
+                Err(TodoError::Mirrored { plan }) => format!(
+                    "/todo clear: the list is plan {plan}'s view and stays until the plan closes (/plan shows it)"
+                ),
+                Err(error) => format!("/todo clear: {error}"),
+            }
+        }
+        _ => "/todo [clear]".to_owned(),
+    }
 }
 
 fn heartbeat(session: &AgentSession, args: &str) -> String {
