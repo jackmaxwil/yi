@@ -8,11 +8,16 @@ name: review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
+  # The sweep: a draft whose push job died, or one opened before this job ran, had no round and
+  # nothing read it again; a draft already clean never left draft.
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
 
 # A newer head supersedes the rounds on the old one. The group is this event's own: a branch that
 # never merged main still runs its `pull_request` copy, and a shared group let it cancel this run.
 concurrency:
-  group: review-target-${{ github.event.pull_request.number }}
+  group: review-target-${{ github.event.pull_request.number || 'sweep' }}
   cancel-in-progress: true
 
 env:
@@ -22,7 +27,7 @@ jobs:
   review:
     # Every same-repo PR, draft or not: a PR opened without `just pr open` skipped review entirely.
     # A fork's head never runs with the bot's key.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # One round on a 293-line change took 510 s; two rounds and a warm build fit.
     timeout-minutes: 60
@@ -63,6 +68,10 @@ jobs:
           fi
           login=$(fgj api --hostname git.example.invalid user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login", ""))')
           [ "$login" = yi-bot ] || { echo "review: fgj is signed in as '$login', not yi-bot"; exit 1; }
+          if [ "${{ github.event_name }}" != pull_request_target ]; then
+            just pr sweep
+            exit 0
+          fi
           # The second call reads a clean head again for round two and says why when it does not.
           just pr review ${{ github.event.pull_request.number }}
           just pr review ${{ github.event.pull_request.number }}
