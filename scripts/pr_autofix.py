@@ -45,8 +45,9 @@ PER_RUN = 3
 # model gets 20 minutes and its hook repair 10, and a new PR starts only while both still fit.
 FIX_SECS, REPAIR_SECS, PASS_SECS = 1200, 600, 40 * 60
 CAP_DAY, CAP_PR = 25.0, 8.0
-# The owner's tiers (2026-10-01), meant for roughly 60/30/10 of fixes: (model, thinking), cheapest first.
-TIERS = (("openrouter/z-ai/glm-5.3-flash", "high"), ("openrouter/openai/gpt-6.1-sol", "medium"),
+# The owner's tiers (2026-10-01; GLM 5.3 replaced Sol 2026-10-05, whose host kept answering 429),
+# meant for roughly 60/30/10 of fixes: (model, thinking), cheapest first.
+TIERS = (("openrouter/z-ai/glm-5.3-flash", "high"), ("openrouter/z-ai/glm-5.3", "medium"),
          ("openrouter/anthropic/claude-opus-5.5", "high"))
 TIER_NAMES = ("low", "medium", "high")
 # Points that move a fix up a tier: cut where 61/30/9 of the 44 fixable blocked rounds of
