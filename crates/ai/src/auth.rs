@@ -60,11 +60,12 @@ fn env_key(provider: &str) -> Option<Secret> {
 /// A stored OAuth credential is refreshed before it is handed out, through the
 /// session's proxy; a failed refresh falls back to the disk copy (the 401 names `yi login`).
 fn stored(
+    root: std::path::PathBuf,
     provider: &str,
     proxy: Option<&crate::request::ProxyConfig>,
 ) -> Option<(yi_oauth::store::Credential, Vec<(String, String)>)> {
-    let store = Store::user();
-    let current = stored_credential(Store::default_root(), provider)?;
+    let store = Store::open(root);
+    let current = store.load(provider)?;
     let spec = match registry::lookup(provider) {
         Ok(Some(registry::Kind::OauthCode(spec))) => spec,
         Ok(_) => return Some((current, Vec::new())),
@@ -82,27 +83,14 @@ fn stored(
     Some((live, headers))
 }
 
-fn providers_root(home: &std::path::Path) -> std::path::PathBuf {
-    home.join(".yi").join("providers")
-}
-
-fn stored_credential(
-    root: std::path::PathBuf,
-    provider: &str,
-) -> Option<yi_oauth::store::Credential> {
-    Store::open(root).load(provider)
-}
-
 /// The provider's key from the environment or the store at `root`; only [`key_in`] mints.
 fn key_at(root: std::path::PathBuf, provider: &str) -> Option<Secret> {
-    env_key(provider).or_else(|| {
-        stored_credential(root, provider).map(|credential| Secret::new(credential.access))
-    })
+    resolve_at(root, provider, None).map(|resolved| resolved.secret)
 }
 
 /// [`key_in`] without the mint: a session that opted out reads a sidecar key it never made.
 pub fn stored_key(home: &std::path::Path, provider: &str) -> Option<Secret> {
-    key_at(providers_root(home), provider)
+    key_at(Store::root_under(home), provider)
 }
 
 pub fn resolve(provider: &str) -> Option<Resolved> {
@@ -110,6 +98,14 @@ pub fn resolve(provider: &str) -> Option<Resolved> {
 }
 
 pub fn resolve_with_proxy(
+    provider: &str,
+    proxy: Option<&crate::request::ProxyConfig>,
+) -> Option<Resolved> {
+    resolve_at(Store::default_root(), provider, proxy)
+}
+
+fn resolve_at(
+    root: std::path::PathBuf,
     provider: &str,
     proxy: Option<&crate::request::ProxyConfig>,
 ) -> Option<Resolved> {
@@ -122,7 +118,7 @@ pub fn resolve_with_proxy(
             headers: Vec::new(),
         });
     }
-    let (credential, headers) = stored(provider, proxy)?;
+    let (credential, headers) = stored(root, provider, proxy)?;
     Some(Resolved {
         secret: Secret::new(credential.access),
         kind: match credential.kind {
@@ -142,10 +138,10 @@ pub fn api_key(provider: &str) -> Option<Secret> {
 /// The provider's key from the environment or the `yi login` store under `home`, minted there
 /// when neither has one: for a bearer Yi shares only with a process it starts itself.
 pub fn key_in(home: &std::path::Path, provider: &str) -> Result<Secret, String> {
-    if let Some(secret) = key_at(providers_root(home), provider) {
+    if let Some(secret) = key_at(Store::root_under(home), provider) {
         return Ok(secret);
     }
-    let store = Store::open(providers_root(home));
+    let store = Store::open(Store::root_under(home));
     let access = yi_oauth::pkce::hex(&yi_oauth::pkce::random_bytes(32)?);
     let credential = yi_oauth::store::Credential {
         kind: Kind::Key,

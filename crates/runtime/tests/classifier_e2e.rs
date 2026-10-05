@@ -721,20 +721,61 @@ fn a_refusal_given_while_the_classifier_judges_stands() -> TestResult {
     Ok(())
 }
 
-/// `instant` never times an ask out: one the classifier was unsure about waits for the person.
+/// `instant` never times an ask out: one the classifier was unsure about stays open for a person
+/// who has not answered, unsettled, until they do. Dies with a timed denial back on the instant path.
 #[test]
 fn an_instant_ask_the_classifier_was_unsure_about_waits_for_the_person() -> TestResult {
+    use yi_runtime::classifier::{Approver, Thresholds};
     let (port, _served) = sidecar(vec![safe(0.5)])?;
-    let gate = gate_in(
-        port,
+    let (release, answer) = channel::<()>();
+    let answer = Mutex::new(answer);
+    let asker: yi_runtime::Asker = Arc::new(move |_| {
+        let _released = answer.lock().map(|answer| answer.recv());
+        yi_runtime::AskOutcome::AllowOnce
+    });
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let broker = yi_runtime::PermissionBroker::new(
         yi_runtime::PermissionMode::Auto,
-        Some(yi_runtime::AskOutcome::AllowOnce),
-        Duration::from_millis(700),
-        Timing::Instant,
+        std::env::temp_dir(),
+        Vec::new(),
+        Some(asker),
+        events,
     );
-    let outcome = run(&gate, "make build");
-    assert_eq!(outcome.reason, "allowed by user");
-    Ok(())
+    broker.prompts_close_on_settle();
+    let sidecar = Sidecar {
+        url: format!("http://127.0.0.1:{port}"),
+        key: Some("k".to_owned()),
+        model: "english".to_owned(),
+        timeout: Duration::from_secs(2),
+        threshold: None,
+    };
+    let thresholds = Thresholds {
+        allow_at: 0.9,
+        allow_destructive_at: 0.98,
+        ask_at: 0.2,
+    };
+    broker.set_approver(Arc::new(Approver::new(
+        sidecar,
+        thresholds,
+        Timing::Instant,
+        Arc::new(|_| {}),
+    )));
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("make build"));
+    std::thread::scope(|scope| -> TestResult {
+        let asked = scope.spawn(|| {
+            broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None)
+        });
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !asked.is_finished(),
+            "the ask was settled before the person answered"
+        );
+        release.send(())?;
+        let outcome = asked.join().map_err(|_| "the ask panicked")?;
+        assert_eq!(outcome.reason, "allowed by user");
+        Ok(())
+    })
 }
 
 /// A command Yi cannot read (an expansion, a redirect) is not proven ordinary, so it needs the
@@ -907,15 +948,22 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
     Ok(())
 }
 
-/// The default keeps the person in the loop; an explicit `approval` (or the legacy
-/// `approve: true`) is what hands the classifier the answer.
+/// The default hands the classifier the answer before the person; `wait-for-user`, or the legacy
+/// `approve: false` (or `approve: true` with `askTimeoutSecs: 0`), keeps the person deciding.
 #[test]
-fn approval_is_opt_in_unless_the_config_says_otherwise() -> TestResult {
+fn approval_is_instant_unless_the_config_says_otherwise() -> TestResult {
     use yi_runtime::classifier::timing;
     use yi_types::config::ClassifierConfig;
     let read = |json: serde_json::Value| serde_json::from_value::<ClassifierConfig>(json);
-    assert_eq!(timing(&read(serde_json::json!({}))?), None);
+    assert_eq!(timing(&read(serde_json::json!({}))?), Some(Timing::Instant));
     assert_eq!(timing(&read(serde_json::json!({"approve": false}))?), None);
+    assert_eq!(
+        timing(&read(
+            serde_json::json!({"approve": true, "askTimeoutSecs": 0})
+        )?),
+        None,
+        "the legacy 0 kept its old meaning: the person decides"
+    );
     assert_eq!(
         timing(&read(serde_json::json!({"approve": true}))?),
         Some(Timing::Instant)
