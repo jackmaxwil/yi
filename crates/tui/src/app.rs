@@ -765,6 +765,9 @@ impl App {
                         }
                     }
                     Attribution::User | Attribution::Task => {
+                        if let Some(at) = self.steering.iter().position(|queued| *queued == text) {
+                            self.steering.remove(at);
+                        }
                         self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         if focus.chars().count() > 40 {

@@ -1,8 +1,11 @@
 use crate::common;
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use serde_json::json;
+use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
-use yi_tui::keymap::{KeyCodeValue, SingleKey};
+use yi_tui::input::handle_terminal_event;
+use yi_tui::keymap::{KeyCodeValue, SingleKey, default_keymap};
 use yi_tui::model::{ModelPopup, advanced_hint, cycle_efforts, step_effort};
 use yi_tui::popup::{BottomView, PopupResult};
 use yi_types::model::{Effort, Model};
@@ -186,4 +189,54 @@ fn the_slot_reads_the_glyph_where_no_image_can_be_drawn() {
         "a placeholder lab keeps its glyph: {shown}"
     );
     assert_eq!(kitty.visible_keys(), vec!["faux", "openai", "z-ai"]);
+}
+
+fn ctrl(code: KeyCodeValue) -> SingleKey {
+    SingleKey {
+        ctrl: true,
+        ..key(code)
+    }
+}
+
+/// Dies with ctrl+c typed as a literal `c` into the filter and the picker left open: other ctrl
+/// keys must not be typed, and the key that means "stop" must close the picker.
+#[test]
+fn ctrl_c_closes_the_model_picker_and_other_ctrl_keys_are_not_typed() {
+    let model = reasoning("m", None);
+    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[], false);
+    assert!(matches!(
+        popup.handle_key(&ctrl(KeyCodeValue::Char('x'))),
+        PopupResult::Open
+    ));
+    assert!(!text(&popup).contains("model x"), "{}", text(&popup));
+
+    let mut app = App::new(
+        TuiOptions {
+            model: model.clone(),
+            session_name: "model-picker".to_owned(),
+            cwd: "/tmp".to_owned(),
+            lane: None,
+            context_window: 128_000,
+            session_dir: String::new(),
+            keys: Vec::new(),
+            initial_prompt: None,
+            pace: 0,
+        },
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        80,
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    handle_terminal_event(
+        &mut app,
+        &tx,
+        Event::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::ALT)),
+    );
+    assert!(app.bottom_open(), "alt-m opened no picker");
+    handle_terminal_event(
+        &mut app,
+        &tx,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    assert!(!app.bottom_open(), "the picker stays after ctrl-c");
 }
