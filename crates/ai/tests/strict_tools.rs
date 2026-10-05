@@ -115,6 +115,49 @@ fn openai_gets_strict_only_for_tools_with_nothing_optional() -> TestResult {
     Ok(())
 }
 
+fn responses_strict(model: &Model, tools: Vec<ToolDef>) -> Vec<(String, bool)> {
+    let params =
+        yi_ai::openai_responses::build_params(model, &asking(tools), &OpenAiOptions::default())
+            .into_value();
+    (params["tools"].as_array().into_iter().flatten())
+        .map(|tool| {
+            (
+                tool["name"].as_str().unwrap_or_default().to_owned(),
+                tool["strict"] == json!(true),
+            )
+        })
+        .collect()
+}
+
+/// Dies with the Responses route strict where Chat Completions is not (or loose where it is):
+/// the same ten tools go over both OpenAI routes and must mark the same three.
+#[test]
+fn responses_marks_the_same_tools_strict_as_chat_completions() -> TestResult {
+    let openai = model("gpt-5.5", "https://api.openai.com/v1", None);
+    let tools = yi_tools()?;
+    assert_eq!(
+        responses_strict(&openai, tools.clone()),
+        chat_strict(&openai, tools)
+    );
+    let params = yi_ai::openai_responses::build_params(
+        &openai,
+        &asking(yi_tools()?),
+        &OpenAiOptions::default(),
+    )
+    .into_value();
+    for tool in params["tools"].as_array().into_iter().flatten() {
+        if tool["strict"] == json!(true) {
+            assert_eq!(
+                tool["parameters"]["additionalProperties"],
+                json!(false),
+                "{}",
+                tool["name"]
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Dies with a free-form object marked strict: there is no shape to close.
 #[test]
 fn a_free_form_object_is_never_strict() {
@@ -222,4 +265,32 @@ fn the_session_tools_fit_anthropic_caps_in_order() -> TestResult {
     let strict: Vec<String> = marked.filter(|(_, on)| *on).map(|(name, _)| name).collect();
     assert_eq!(strict, ["read", "edit", "write", "grep", "bash", "ipython"]);
     Ok(())
+}
+
+/// Dies with a tool whose $defs hold the optional properties weight() used to skip: the caps
+/// count them once the schema is closed, and past the cap Anthropic refuses the whole request.
+#[test]
+fn the_caps_count_properties_hidden_in_defs() {
+    let optional: Map<String, Value> = (0..30)
+        .map(|index| (format!("p{index}"), json!({"type": "string"})))
+        .collect();
+    let parameters = json!({
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "required": ["x"],
+        "$defs": {
+            "big": {
+                "type": "object",
+                "properties": optional,
+                "required": [],
+            }
+        },
+    });
+    let tools = vec![ToolDef {
+        name: "big".to_owned(),
+        description: String::new(),
+        parameters,
+        freeform: None,
+    }];
+    assert_eq!(claude_strict("claude-opus-5-5", tools), [false]);
 }

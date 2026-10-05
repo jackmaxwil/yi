@@ -142,6 +142,16 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
     Some(Value::Object(out))
 }
 
+/// The tool schema both OpenAI routes send: closed where strict mode can enforce it, the
+/// original where it cannot. `(None, false)` is a loose tool.
+pub fn strict_tool_json(schema: &Value, strict: bool) -> (Option<Value>, bool) {
+    let closed = (strict.then(|| strict_tool(schema)))
+        .flatten()
+        .filter(crate::schema::strict);
+    let on = closed.is_some();
+    (closed, on)
+}
+
 /// Optional and union-typed properties in a schema, nested ones included: what Anthropic's
 /// per-request strict caps count.
 pub fn weight(schema: &Value) -> (usize, usize) {
@@ -167,6 +177,13 @@ pub fn weight(schema: &Value) -> (usize, usize) {
     }
     if let Some(item) = map.get("items") {
         add(weight(item));
+    }
+    for key in ["$defs", "definitions"] {
+        if let Some(Value::Object(defs)) = map.get(key) {
+            for def in defs.values() {
+                add(weight(def));
+            }
+        }
     }
     for option in map
         .get("anyOf")
