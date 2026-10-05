@@ -98,9 +98,10 @@ def tier_for(score, tried=0):
 
 
 def misses(notes):
-    """Autofix attempts on this PR that failed since its last pushed fix."""
+    """Autofix attempts on this PR that failed or were deferred since its last pushed fix.
+    Incident: #1025 sat on a tier whose model its provider rate-limited three passes running."""
     verdicts = [row.get("verdict") for row in bot_meter.rows(notes) if row["kind"] == "yi-autofix"]
-    return sum(v == "failed" for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
+    return sum(v in ("failed", "deferred") for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
 
 
 def fix_spend(comments):
@@ -255,6 +256,15 @@ def reprice(clone, base="MERGE_HEAD"):
         head = re.sub(r"^growth: \+\d+ ", f"growth: +{int(growth.group(1))} ", head, flags=re.M)
     path.write_text("---\n" + head + sep + body)
     sh(clone, "git", "add", str(path.relative_to(clone)))
+
+
+def formatted(clone):
+    """`cargo fmt` over what is staged, before the hook judges it. Incident: #1057's fix and its
+    repair turn both left unformatted Rust, and fmt-check refused the commit twice."""
+    if not (clone / "Cargo.toml").is_file():
+        return
+    sh(clone, "cargo", "fmt", "--all", env=scrubbed(), check=False)
+    sh(clone, "git", "add", "-u")
 
 
 def failures(output):
@@ -420,6 +430,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
                for what, value in (("NAME", pr_review.BOT), ("EMAIL", "yi-bot@noreply.example.invalid"))}
         commit = lambda text: sh(clone, "git", "-c", "core.hooksPath=scripts/hooks", "commit", "-q", "-F", "-",
                                  input=text, env={**scrubbed(), **bot}, check=False)
+        formatted(clone)
         committed = commit(message())
         if committed.returncode:
             # Incident: #970's merge resolved cleanly and left session.rs one line past the 1,200
@@ -435,6 +446,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
             reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
             summary += ("\n\nThe commit hook refused the first attempt; one more turn: "
                         + ((said.get("summary") or "").strip() or "no summary") + note)
+            formatted(clone)
             committed = commit(message())
             if committed.returncode:
                 raise RuntimeError("the commit hook refused the fix, and again after one repair turn:\n"
@@ -644,6 +656,8 @@ def selfcheck():
              {"user": {"login": "someone"}, "body": "<!-- yi-autofix-meta pr=1 cost=99 verdict=pushed -->"}]
     tries = notes + [dict(bot, body=f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 verdict={v} -->\n")
                      for v in ("failed", "capped", "failed")]
+    if misses(notes + [dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 verdict=deferred -->\n")]) != 1:
+        errs.append("a deferred attempt does not step the next one up a tier")
     if (misses(notes), misses(tries), misses(tries + notes[:1])) != (0, 2, 0):
         errs.append(f"the misses since the last push read {misses(notes), misses(tries), misses(tries + notes[:1])}")
     if fix_spend(notes) != 0.5:
@@ -890,6 +904,18 @@ def selfcheck():
             setattr(mod, name, value)
         for name, value in kept.items():
             setattr(module, name, value)
+    crate = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-fmt-"))
+    try:
+        sh(crate, "git", "init", "-q")
+        (crate / "Cargo.toml").write_text('[package]\nname = "f"\nversion = "0.1.0"\nedition = "2021"\n')
+        (crate / "src").mkdir()
+        (crate / "src/lib.rs").write_text("pub fn f( )->u8{1}\n")
+        sh(crate, "git", "add", "-A")
+        formatted(crate)
+        if sh(crate, "git", "show", ":src/lib.rs").stdout != "pub fn f() -> u8 {\n    1\n}\n":
+            errs.append("an unformatted fix reaches the commit hook unformatted")
+    finally:
+        shutil.rmtree(crate)
     hook = "noise\nFAIL codespell\n  ./x.d:1: a misspelling\nok   panic\nFAIL file_size\n  a.rs: 1203 lines > 1200\nguardrails: 2 failing\n"
     if failures(hook) != "FAIL codespell\n  ./x.d:1: a misspelling\nFAIL file_size\n  a.rs: 1203 lines > 1200":
         errs.append(f"a hook's failure reads {failures(hook)!r}, not its FAIL blocks")
