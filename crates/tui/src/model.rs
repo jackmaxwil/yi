@@ -259,7 +259,6 @@ impl BottomView for ModelPopup {
         let typing = self.stage.is_none();
         match key.code {
             KeyCodeValue::Esc => return PopupResult::Close,
-            KeyCodeValue::Char('c') if key.ctrl => return PopupResult::Close,
             KeyCodeValue::Enter => return self.enter(),
             KeyCodeValue::Up => self.selected = self.selected.saturating_sub(1),
             KeyCodeValue::Down => self.selected = self.selected.saturating_add(1).min(last),

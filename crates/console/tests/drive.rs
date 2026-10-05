@@ -2098,8 +2098,8 @@ fn ctrl_c_off_the_chat_arms_the_quit_and_keeps_the_draft() -> TestResult {
     )
 }
 
-/// Dies with ctrl+c forwarded into a pending approval, which ignores it: the press armed no
-/// quit, so a second one could not stop the daemon while the approval waited.
+/// Dies with ctrl+c forwarded into a pending approval while a draft sits in the box: the
+/// forwarded key was ignored, so a second one could not stop the daemon while it waited.
 #[test]
 fn ctrl_c_over_a_pending_approval_still_stops_the_daemon() -> TestResult {
     let mut fixture = session_fixture();
@@ -2111,6 +2111,7 @@ fn ctrl_c_over_a_pending_approval_still_stops_the_daemon() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
+         type draft text\n\
          wait-frame 5000 rm -rf target\n\
          key ctrl-c\n\
          wait-frame 3000 stops the daemon\n\
