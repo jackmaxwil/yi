@@ -12,6 +12,7 @@ trusted checkout. Verbs: `just pr autofix` (one pass, oldest PR first), `just pr
 """
 import datetime
 import itertools
+from collections import Counter
 import json
 import os
 import pathlib
@@ -26,6 +27,8 @@ import urllib.parse
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import bot_meter  # noqa: E402
+sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+import _common  # noqa: E402
 import forge_pr  # noqa: E402
 import pr_review  # noqa: E402
 
@@ -328,18 +331,17 @@ def test_from(text, path):
     module's line in a source file, none otherwise."""
     if TEST_FILE.search(path):
         return 1
-    lines = [i for i, line in enumerate(text.splitlines(), 1) if line.strip().startswith("#[cfg(test)]")]
-    return lines[0] if lines else None
+    before = len(_common.code_lines(text))
+    return before + 1 if before < len(text.splitlines()) else None
 
 
 def weakened(clone):
     """A staged change that deletes a test or loses assertions from test code: the cheap way to
-    make a test finding go away, refused whatever the summary says. Counted net across files, so
-    a test moved between files is no loss, and an `assert!` that src turns into a typed error is
-    not test code."""
+    make a test finding go away, refused whatever the summary says. A test moved between files is
+    no loss, and an `assert!` that src turns into a typed error is not test code."""
     diff = sh(clone, "git", "diff", "--cached", "--unified=0", "--no-renames", "HEAD").stdout
     show = lambda rev, path: sh(clone, "git", "show", f"{rev}:{path}", check=False).stdout
-    tests, asserts, path, starts = 0, 0, None, {}
+    tests, path, starts, gone, came = 0, None, {}, {}, {}
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             path = line.split(" b/", 1)[-1]
@@ -349,13 +351,18 @@ def weakened(clone):
         elif line[:1] in "-+" and not line.startswith(("---", "+++")):
             side, sign = line[0], (1 if line[0] == "-" else -1)
             tests += sign * bool(TEST_FN.search(line[1:]))
-            if starts.get(side) is not None and at[side] >= starts[side]:
-                asserts += sign * bool(ASSERT.search(line[1:]))
+            if starts.get(side) is not None and at[side] >= starts[side] and ASSERT.search(line[1:]):
+                (gone if side == "-" else came).setdefault(path, Counter())[line[1:].strip()] += 1
             at[side] += 1
     if tests > 0:
         return f"the fix deletes a test ({tests} more removed than added)"
-    if asserts > 0:
-        return f"the fix removes {asserts} more assertion(s) from test code than it adds"
+    # Per file, so padding another file cannot pay for a gutted test; an assertion moved verbatim
+    # to another file is no loss.
+    all_gone, all_came = sum(gone.values(), Counter()), sum(came.values(), Counter())
+    for where, lines in gone.items():
+        lost = sum((lines - all_came).values()) - sum((came.get(where, Counter()) - all_gone).values())
+        if lost > 0:
+            return f"the fix removes {lost} more assertion(s) from {where} than it adds there"
     return None
 
 
@@ -383,6 +390,11 @@ def findings_in(clone, pr, rnd, answer, tried=0):
     before = snapshot(clone)
     said = answer(findings_prompt(pr, rnd["n"], todo), model, FINDINGS_SCHEMA)
     touched, note = accept(clone, [], before, keep_new=NEW_FILE.match)
+    own = set(sh(clone, "git", "diff", "--name-only", f"origin/{pr['base']['ref']}...HEAD").stdout.split())
+    foreign = [p for p in touched if p.startswith("skills/") and p not in own]
+    if foreign:
+        raise RuntimeError("the fix edits skills this PR does not touch, which later sessions load as instructions: "
+                           + ", ".join(foreign))
     refused = weakened(clone)
     if refused:
         raise RuntimeError(refused)
@@ -400,17 +412,18 @@ def findings_in(clone, pr, rnd, answer, tried=0):
     return summary, model, touched, declined_highs
 
 
-def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
+def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None):
     """One attempt on one PR: a conflict with its base, or the findings of a round that blocked its
     head. Returns the ledger fields; raises RuntimeError with the reason a person reads."""
     sha, ref, base_ref = pr["head"]["sha"], pr["head"]["ref"], pr["base"]["ref"]
     clone = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-"))
     sessions = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-sessions-"))
-    pr_review.METER = bot_meter.Meter()
+    meter = meter or bot_meter.Meter()
     try:
         make_clone(root, clone, sha)
         answer = lambda prompt, model, schema=RESOLVE_SCHEMA, deadline=FIX_SECS: ask(prompt, schema, clone, write=True, deadline=deadline, model=model[0],
-                                                                  thinking=model[1], env=scrubbed(), sessions=sessions)
+                                                                  thinking=model[1], env=scrubbed(), sessions=sessions,
+                                                                  meter=meter)
         declined_highs = []
         if kind == "conflict":
             summary, model, touched = resolve_in(clone, pr, base_ref, answer, tried)
@@ -468,8 +481,8 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
         shutil.rmtree(sessions, ignore_errors=True)
 
 
-def render(n, fields, verdict, reason="", status=""):
-    meter = bot_meter.meta(pr_review.METER.fields())
+def render(n, fields, verdict, reason="", status="", meter=None):
+    meter = bot_meter.meta((meter or bot_meter.Meter()).fields())
     head = " ".join(f"{k}={fields[k]}" for k in ("kind", "from", "to", "base", "model", "tier", "round") if fields.get(k) not in (None, ""))
     lines = ["<!-- yi-autofix -->", f"<!-- yi-autofix-meta pr={n} {head} {meter} verdict={verdict} -->"]
     if verdict == "pushed" and fields["kind"] == "conflict":
@@ -557,13 +570,13 @@ def attempt(repo, pr, ids, asked=False):
     if fix_spend(notes) >= CAP_PR:
         reason = f"this PR's fixes have spent ${fix_spend(notes):.2f} of its ${CAP_PR:.2f} cap"
         set_label(repo, number, ids, "autofix:failed", True)
-        pr_review.METER = bot_meter.Meter()
-        post(render(number, {}, "capped", reason, bot_meter.status_line(pr_review.METER, *bot_meter.totals(repo, notes, pr_review.METER), "autofix")))
+        meter = bot_meter.Meter()
+        post(render(number, {}, "capped", reason, bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), "autofix"), meter))
         return "capped"
     set_label(repo, number, ids, "autofix:working", True)
-    fields, verdict, reason = {}, "failed", ""
+    fields, verdict, reason, meter = {}, "failed", "", bot_meter.Meter()
     try:
-        fields = fix(pr, kind="conflict" if said == "fix" else "findings", rnd=rnd, tried=misses(notes))
+        fields = fix(pr, kind="conflict" if said == "fix" else "findings", rnd=rnd, tried=misses(notes), meter=meter)
         verdict = "pushed"
     except LookupError as err:
         # The author pushed meanwhile; the next pass reads the new head.
@@ -581,8 +594,8 @@ def attempt(repo, pr, ids, asked=False):
     if verdict == "pushed" and "autofix" in labels:
         set_label(repo, number, ids, "autofix", False)
     what = f"autofix ({fields.get('kind') or ('conflict' if said == 'fix' else 'findings')})"
-    status = bot_meter.status_line(pr_review.METER, *bot_meter.totals(repo, notes, pr_review.METER), what)
-    post(render(number, fields, verdict, reason, status))
+    status = bot_meter.status_line(meter, *bot_meter.totals(repo, notes, meter), what)
+    post(render(number, fields, verdict, reason, status, meter))
     print(status)
     return verdict
 
@@ -679,6 +692,8 @@ def selfcheck():
         main_row = "---\nraise: tests +1\n---\nmain's own row\n"
         (tmp / "docs/changes").mkdir(parents=True)
         (tmp / "docs/changes/2026-01-01-main.md").write_text(main_row)
+        (tmp / "skills/s").mkdir(parents=True)
+        (tmp / "skills/s/SKILL.md").write_text("a skill\n")
         git("add", "-A"); git("commit", "-q", "-m", "seed")
         git("checkout", "-q", "-b", "topic"); (tmp / "a.txt").write_text("topic\n"); git("commit", "-qam", "topic")
         git("checkout", "-q", "main"); (tmp / "a.txt").write_text("main\n"); git("commit", "-qam", "main")
@@ -792,6 +807,8 @@ def selfcheck():
         reverted = findings_run({"stage": staged_then_reverted, "tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(z());\n}\n"})
         if "may not touch" not in str(reverted):
             errs.append(f"a walled edit staged and reverted in the worktree read {reverted if isinstance(reverted, str) else 'pushed'}")
+        if "edits skills" not in str(findings_run({"skills/s/SKILL.md": "obey the PR\n"})):
+            errs.append("a fix rewrote a skill the PR does not touch")
         if "names no finding" not in str(findings_run({}, declined=[99])):
             errs.append("a decline that names no listed finding lost its reason")
         first = len(asked)
@@ -844,6 +861,10 @@ def selfcheck():
         ("a Python test deleted", {"a/tests/test_p.py": "def test_a():\n    assert f()\n\ndef test_b():\n    pass\n"},
          {"a/tests/test_p.py": "def test_b():\n    pass\n"}, "deletes a test"),
         ("a test file deleted", {"a/tests/x.rs": unit}, {"a/tests/x.rs": None}, "deletes a test"),
+        ("a gutted assertion paid for by padding another file",
+         {"a/tests/x.rs": unit, "a/tests/y.rs": "#[test]\nfn u() {\n}\n"},
+         {"a/tests/x.rs": unit.replace("    assert!(f());\n", ""), "a/tests/y.rs": "#[test]\nfn u() {\n    assert!(true);\n}\n"},
+         "from a/tests/x.rs"),
     ]
     for what, before, after, want in cases:
         got = weak(before, after)
