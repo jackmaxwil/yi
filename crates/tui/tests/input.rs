@@ -3,7 +3,7 @@ use crate::common;
 
 use std::error::Error;
 
-use common::{VT100Backend, test_model};
+use common::test_model;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use yi_tui::Command;
@@ -68,13 +68,6 @@ fn injected(text: &str) -> AgentEvent {
     }
 }
 
-fn live_rows(app: &mut App) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(80, 24), 4)?;
-    yi_tui::render::draw(app, &mut terminal, None);
-    let backend = terminal.backend();
-    Ok((0..24).map(|row| backend.row_text(row)).collect())
-}
-
 fn has_row(rows: &[String], needle: &str) -> bool {
     rows.iter().any(|row| row.contains(needle))
 }
@@ -94,16 +87,16 @@ fn a_steer_leaves_the_queued_row_when_the_loop_injects_it() -> TestResult {
         sent(&mut rx),
         ["steer fast forward main", "steer then run the tests"]
     );
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     assert!(has_row(&rows, "Steering · 2"), "{rows:#?}");
 
     app.reduce_agent(injected("fast forward main"));
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     assert!(has_row(&rows, "Steering · 1"), "{rows:#?}");
     assert!(has_row(&rows, "then run the tests"), "{rows:#?}");
 
     app.reduce_agent(injected("then run the tests"));
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     assert!(!has_row(&rows, "Steering"), "{rows:#?}");
     Ok(())
 }
@@ -161,12 +154,12 @@ fn an_injected_message_leaves_one_of_two_identical_queued_rows() -> TestResult {
     }
     assert_eq!(sent(&mut rx), ["steer go on", "steer go on"]);
     app.reduce_agent(injected("go on"));
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     assert!(has_row(&rows, "Steering · 1"), "{rows:#?}");
     app.reduce_agent(AgentEvent::AgentEnd {
         messages: Vec::new(),
     });
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     assert!(!has_row(&rows, "Steering"), "{rows:#?}");
     Ok(())
 }

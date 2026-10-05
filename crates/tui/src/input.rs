@@ -119,6 +119,13 @@ pub(crate) fn handle_plan_tree_key(app: &mut App, key: &SingleKey) {
 }
 
 pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
+    if key.code == KeyCodeValue::Char('c')
+        && key.ctrl
+        && !matches!(app.bottom, Some(Bottom::Approval(..)))
+    {
+        app.bottom = None;
+        return;
+    }
     let Some(mut bottom) = app.bottom.take() else {
         return;
     };
