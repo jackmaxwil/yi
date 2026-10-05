@@ -33,7 +33,10 @@ pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
 impl AgentSession {
     /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
     /// `fold` reads each store attached after this call (id, branch, totals) before a request.
-    pub fn on_attach(&self, fold: impl FnMut(&str, &[Entry], &SessionStats) + Send + 'static) {
+    pub(crate) fn on_attach(
+        &self,
+        fold: impl FnMut(&str, &[Entry], &SessionStats) + Send + 'static,
+    ) {
         let mut folds = self
             .on_attach
             .lock()

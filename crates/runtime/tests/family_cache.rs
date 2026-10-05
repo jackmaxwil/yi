@@ -415,6 +415,47 @@ async fn a_resumed_root_holds_its_history_an_hour_from_its_first_request() -> Te
     Ok(())
 }
 
+/// Dies with a session muted for good: a ledger that once raised the cache tripwire folded its
+/// `announced` flag into every later process, so two fresh total misses there said nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_session_raises_the_tripwire_on_its_own_misses() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let scratch = Scratch::new("yi-family-tripwire-resume")?;
+    let (model, port, _from) = ttl_route()?;
+    let miss = || -> Result<AgentMessage, Box<dyn Error>> {
+        Ok(serde_json::from_value(json!({
+            "role": "assistant", "content": [], "api": model.api, "provider": model.provider,
+            "model": model.id, "stopReason": "stop", "timestamp": 0,
+            "usage": {"input": 40_000, "output": 10, "cacheRead": 0, "cacheWrite": 0,
+                "totalTokens": 40_010,
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+        }))?)
+    };
+    let store = JsonlRepo::new(scratch.join("sessions"), "/tmp".to_owned())
+        .create(CreateOptions::default())?;
+    for _ in 0..3 {
+        lock_session(&store).append_message("main", miss()?)?;
+    }
+    let (session, _host) = root(&scratch, model.clone(), port, false)?;
+    yi_runtime::cache_miss::attach(&session);
+    session.attach_store(store)?;
+    for _ in 0..2 {
+        session
+            .events_sender()
+            .send(yi_types::event::AgentEvent::MessageEnd { message: miss()? })?;
+    }
+    let mut alerted = false;
+    for _ in 0..100 {
+        alerted = session.pending_count() > 0;
+        if alerted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(alerted, "two fresh total misses raised no notice");
+    Ok(())
+}
+
 /// A fan-out's first reader writes the partition entry its siblings read: both mark it, and
 /// the second's partition message is the first's, byte for byte.
 #[tokio::test(flavor = "multi_thread")]
