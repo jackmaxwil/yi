@@ -214,11 +214,17 @@ pub fn session(
         .into_iter()
         .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
         .collect();
-    let mut resolver = crate::fetch::Resolver::new(cwd.clone(), wall)
-        .with_session_handle(build.link.child_name.clone(), child.store_handle());
-    if let Some(host) = build.link.host.upgrade() {
-        resolver = resolver.with_plans_dir(host.options.plans_dir.clone());
-    }
+    let resolver = crate::fetch::Resolver::for_child(
+        cwd.clone(),
+        wall,
+        build.link.child_name.clone(),
+        child.store_handle(),
+        broker.as_deref(),
+    );
+    let resolver = match build.link.host.upgrade() {
+        Some(host) => resolver.with_plans_dir(host.options.plans_dir.clone()),
+        None => resolver,
+    };
     crate::fetch::route_urls(&mut named, &Arc::new(resolver));
     if named.iter().any(|tool| tool.name() == "bash") {
         crate::wiring::wire_job_completions(&child);
