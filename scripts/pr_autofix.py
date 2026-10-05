@@ -64,6 +64,9 @@ INTAKE = ("template", "duplicate")
 # Not skills/: a skill is instructions later sessions load, never a file a fixer model writes.
 NEW_FILE = re.compile(r"^(crates|python|docs|evals)/(?!.*(^|/)target[^/]*/).+\.(rs|py|md|toml|txt)$")
 SIGNED = "The fixer's answer to review round"
+# Incident: #1025's retry died on an upstream 429 and was labelled failed and counted as a miss,
+# though a busy provider says nothing about the PR; such an attempt waits for the next pass.
+TRANSIENT = re.compile(r"\b(429|502|503|rate.limit\w*|overloaded|temporarily)\b", re.I)
 
 
 def decide(labels, conflicted, quiet_for, asked=False, blocked=False):
@@ -463,6 +466,8 @@ def render(n, fields, verdict, reason="", status=""):
         lines += [f"**Autofix** answered review round {fields['round']}: `{fields['from'][:8]}` → `{fields['to'][:8]}`, "
                   f"{fields['files']} file(s) changed by `{fields['model']}` ({fields['tier']} tier). The review bot reads it like any push.", "",
                   fields["summary"]]
+    elif verdict == "deferred":
+        lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
     else:
         lines += ["**Autofix failed**; `autofix:failed` stops it until the label is removed.", "", "```", reason.strip(), "```"]
     if fields.get("touched"):
@@ -553,6 +558,8 @@ def attempt(repo, pr, ids, asked=False):
         reason = str(err)
     finally:
         set_label(repo, number, ids, "autofix:working", False)
+    if verdict == "failed" and TRANSIENT.search(reason):
+        verdict = "deferred"
     # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
     if verdict == "failed" or fields.get("declined"):
         set_label(repo, number, ids, "autofix:failed", True)
@@ -853,8 +860,16 @@ def selfcheck():
                             "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
             if passed.get("kind") != want:
                 errs.append(f"a blocked round on {title!r} reached fix() as {passed.get('kind')}, not {want}")
-        if False:
-            errs.append(f"attempt handed fix() tried={passed.get('tried')}, not the 1 failed try since the last push")
+        # A provider's 429 defers: no failed label, and the next try is no tier step.
+        labelled = []
+        module.set_label = lambda repo, n, ids, name, on: labelled.append((name, on))
+        def busy(pr, **kw):
+            raise pr_review.Unanswered("yi ask exited 1: openai/gpt-6.1-sol is temporarily rate-limited upstream (code 429)")
+        module.fix = busy
+        said = attempt("o/r", {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
+                               "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
+        if said != "deferred" or ("autofix:failed", True) in labelled:
+            errs.append(f"a provider 429 read {said} with labels {labelled}, not deferred and unlabelled")
     finally:
         for (mod, name), value in zip(((forge_pr, "git"), (forge_pr, "fgj_api"), (pr_review, "comments"),
                                        (pr_review, "authors"), (bot_meter, "since"), (pr_review, "rounds_of")), saved.values()):
