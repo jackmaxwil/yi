@@ -207,7 +207,7 @@ impl Drop for SessionHandle {
         self.forwarder.abort();
         // Each running child is revoked under its own `parent_close`, its work kept.
         let _revoked = self.host.close();
-        self.session.dispose_kernel();
+        self.session.retire();
     }
 }
 

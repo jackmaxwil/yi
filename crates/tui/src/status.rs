@@ -1,6 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::cell::spinner_frame;
 use crate::colors::{Theme, name_accent};
@@ -337,17 +337,18 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-/// `text` less at least `over` cells, whole characters only, ending in `…`.
+/// `text` less at least `over` cells, whole characters only, ending in `…`. Measures the
+/// string, not the characters: `⚠️` is 1 + 0 cells apart and 2 together.
 fn clip_cells(text: &str, over: usize) -> String {
     let keep = text.width().saturating_sub(over + 1);
-    let mut used = 0;
-    let mut out: String = text
-        .chars()
-        .take_while(|ch| {
-            used += ch.width().unwrap_or(0);
-            used <= keep
-        })
-        .collect();
+    let mut out = String::new();
+    for ch in text.chars() {
+        out.push(ch);
+        if out.width() > keep {
+            out.pop();
+            break;
+        }
+    }
     out.push('…');
     out
 }
