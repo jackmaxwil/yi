@@ -38,6 +38,9 @@ LABELS = {
 # The owner's numbers (2026-09-30): a person gets two quiet hours to fix their own branch first.
 QUIET = 2 * 3600
 PER_RUN = 3
+# Incident: the runner killed a 45-minute pass ("exceeds the maximum run time") mid-fix. A fix's
+# model gets 20 minutes and its hook repair 10, and a new PR starts only while both still fit.
+FIX_SECS, REPAIR_SECS, PASS_SECS = 1200, 600, 40 * 60
 CAP_DAY, CAP_PR = 25.0, 8.0
 # The owner's tiers (2026-10-01), meant for roughly 60/30/10 of fixes: (model, thinking), cheapest first.
 TIERS = (("openrouter/z-ai/glm-5.3-flash", "high"), ("openrouter/openai/gpt-6.1-sol", "medium"),
@@ -396,7 +399,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
     pr_review.METER = bot_meter.Meter()
     try:
         make_clone(root, clone, sha)
-        answer = lambda prompt, model, schema=RESOLVE_SCHEMA: ask(prompt, schema, clone, write=True, deadline=1800, model=model[0],
+        answer = lambda prompt, model, schema=RESOLVE_SCHEMA, deadline=FIX_SECS: ask(prompt, schema, clone, write=True, deadline=deadline, model=model[0],
                                                                   thinking=model[1], env=scrubbed(), sessions=sessions)
         declined_highs = []
         if kind == "conflict":
@@ -423,7 +426,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
             # cap; a hook's FAIL lines are a task the model can do, so it gets one turn at them.
             refused = failures(committed.stdout + committed.stderr)
             before = snapshot(clone)
-            said = answer(hook_prompt(pr, refused), model or TIERS[0])
+            said = answer(hook_prompt(pr, refused), model or TIERS[0], deadline=REPAIR_SECS)
             more, note = accept(clone, [], before, keep_new=NEW_FILE.match if kind == "findings" else lambda path: False)
             touched = sorted(set(touched) | set(more))
             refused = weakened(clone) if kind == "findings" else None
@@ -572,6 +575,11 @@ def attempt(repo, pr, ids, asked=False):
     return verdict
 
 
+def room(elapsed):
+    """Whether one more fix, its model time, its hook repair and git at both ends, fits the pass."""
+    return elapsed + FIX_SECS + REPAIR_SECS + 120 <= PASS_SECS
+
+
 def cmd_autofix(args):
     repo = forge_pr.repo()
     ids = label_ids(repo)
@@ -589,7 +597,11 @@ def cmd_autofix(args):
         if any(label["name"] == "autofix:working" for label in pr.get("labels") or []):
             set_label(repo, pr["number"], ids, "autofix:working", False)
     fixed = 0
+    started = time.monotonic()
     for pr in ours:
+        if not room(time.monotonic() - started):
+            print(f"autofix: {int(time.monotonic() - started)}s into the pass, a fix no longer fits the runner's limit; the rest wait")
+            break
         if fixed >= PER_RUN:
             print(f"autofix: {PER_RUN} fixes this pass; the rest wait for the next")
             break
@@ -618,6 +630,8 @@ def selfcheck():
         (({"autofix:failed"}, [], QUIET, False, True), "failed"),
     ]
     errs += [f"decide{args} said {decide(*args)}, not {want}" for args, want in table if decide(*args) != want]
+    if not room(0) or room(PASS_SECS - FIX_SECS - REPAIR_SECS - 119) or not room(PASS_SECS - FIX_SECS - REPAIR_SECS - 120):
+        errs.append("a pass starts a fix that cannot finish before the runner's limit, or refuses one that fits")
     if decide(set(), ["a.rs"], 60, asked=True) != "fix":
         errs.append("a fix asked for by number waits out the quiet hours")
     tiers = [(points(3, 0), 0, 0), (points(2, 4), 0, 1), (points(4, 2), 0, 1), (points(4, 3), 0, 2), (points(1, 2), 1, 1),
