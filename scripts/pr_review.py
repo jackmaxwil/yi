@@ -466,7 +466,7 @@ def repair_prompt(schema):
             f"before or after it, matching this schema: {json.dumps(schema)}")
 
 
-def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None):
+def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None, meter=None):
     """One `yi ask` answering `schema`; raises Unanswered. A reader runs under --confirm
     with no terminal, so every write and command that would ask is refused; the fixer runs
     --yolo (owner, 2026-10-04): --auto asked about a network or install command, which a
@@ -510,12 +510,12 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
             out = run(["--continue"], repair_prompt(schema))
         if out.returncode == 0:
             if is_json(out.stdout):
-                METER.add_sessions(sessions)
+                (meter or METER).add_sessions(sessions)
                 return json.loads(out.stdout)
             out.returncode, out.stderr = 3, f"answer is not valid JSON: {out.stdout[-200:]!r}"
         if out.returncode not in (1, 3, 124):
             break
-    METER.add_sessions(sessions)
+    (meter or METER).add_sessions(sessions)
     raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-600:]}")
 
 
