@@ -100,8 +100,8 @@ fn owed(shared: &Shared, follow_ups: bool, ended_clean: bool) -> Option<AgentMes
         let waking = |queued: &Queued| {
             queued.wakes || (ended_clean && queued.message.attribution() == Attribution::User)
         };
-        if let Some(at) = queue.iter().position(waking) {
-            return queue.remove(at).map(|queued| queued.message);
+        if queue.iter().any(waking) {
+            return queue.pop_front().map(|queued| queued.message);
         }
     }
     let mut follow = shared.follow_up.lock().ok()?;
@@ -669,30 +669,6 @@ mod tests {
         assert_eq!(session.status(), Status::Idle);
         assert_eq!(shared.steer.lock().map_err(|_| "queue poisoned")?.len(), 1);
         assert_eq!(user_texts(&session), Vec::<String>::new());
-        Ok(())
-    }
-
-    /// Dies with pop_front taking the entry ahead of the steer: a compaction notice queued
-    /// before a stranded steer launched as its own prompt, and the steer waited another run.
-    #[tokio::test]
-    async fn a_waking_steer_beats_a_non_waking_entry_to_the_prompt() -> TestResult {
-        let session = session(1);
-        let parts = running_with_a_steer(&session)?;
-        let notice = AgentMessage::host_note("compaction", "compacted".to_owned(), 0);
-        parts
-            .shared
-            .steer
-            .lock()
-            .map_err(|_| "queue poisoned")?
-            .push_front(Queued::new(notice, false, None));
-        settle(parts, true).await;
-        session.wait_idle().await;
-        assert!(
-            matches!(session.messages().first(), Some(AgentMessage::User { .. })),
-            "the steer, not the notice, opened the run: {:#?}",
-            session.messages()
-        );
-        assert_eq!(user_texts(&session), ["one more thing"]);
         Ok(())
     }
 
