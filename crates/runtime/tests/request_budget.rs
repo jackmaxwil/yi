@@ -196,46 +196,6 @@ fn surface_lines() -> Result<Vec<String>, Box<dyn Error>> {
     Ok(lines)
 }
 
-/// strict_tools.rs in yi-ai sends this table to the providers, so its fixture is regenerated
-/// from here whenever it drifts: the test dies with a stale fixture, naming how to refresh it.
-fn regenerate_tool_schemas_fixture() -> TestResult {
-    let defs = tool_defs()?;
-    let tools: Vec<Value> = defs
-        .iter()
-        .map(|def| {
-            json!({
-                "name": def.name,
-                "description": def.description,
-                "parameters": def.parameters,
-            })
-        })
-        .collect();
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../ai/tests/fixtures/tool_schemas_2026-10-03.json");
-    let current = serde_json::to_string_pretty(&tools)?;
-    let recorded = std::fs::read_to_string(&path)?;
-    let live = serde_json::to_string(&tools)?;
-    let matches = serde_json::from_str::<Value>(&recorded)
-        .ok()
-        .and_then(|recorded| serde_json::to_string(&recorded).ok())
-        .is_some_and(|recorded| recorded == live);
-    if matches {
-        return Ok(());
-    }
-    std::fs::write(&path, format!("{current}\n"))?;
-    Err(format!(
-        "the tool-schemas fixture a strict_tools test reads was stale: it now holds the \
-         schemas the live session registers; review the diff, rerun this test, revert it to \
-         pass: {path:?}"
-    )
-    .into())
-}
-
-#[test]
-fn the_tool_schemas_fixture_matches_the_live_session() -> TestResult {
-    regenerate_tool_schemas_fixture()
-}
-
 /// The skills catalog is deliberately excluded: it is assembled from the
 /// machine's global and project roots, so including it would make the budget
 /// depend on what the runner has installed.

@@ -1,3 +1,5 @@
+use crate::common;
+
 use serde_json::{Value, json};
 use std::error::Error;
 use yi_ai::anthropic::{self, AnthropicOptions};
@@ -5,34 +7,13 @@ use yi_ai::openai::{self, OpenAiOptions};
 use yi_ai::openai_responses;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::{
-    ForcedTool, FreeformFormat, LlmContext, Model, ModelCost, ToolChoice, ToolChoiceError, ToolDef,
+    ForcedTool, FreeformFormat, LlmContext, ToolChoice, ToolChoiceError, ToolDef,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn model() -> Model {
-    let zero = || serde_json::Number::from(0);
-    Model {
-        id: "m".to_owned(),
-        name: "m".to_owned(),
-        api: "a".to_owned(),
-        provider: "p".to_owned(),
-        base_url: "https://example.invalid".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
-        context_window: 1_000,
-        max_tokens: 100,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
-    }
+fn model() -> yi_types::model::Model {
+    common::model("m", "a", "p", "https://example.invalid", None)
 }
 
 fn tool(name: &str, freeform: Option<FreeformFormat>) -> ToolDef {
