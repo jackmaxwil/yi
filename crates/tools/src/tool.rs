@@ -37,6 +37,7 @@ pub struct ToolContext {
     /// The id of the call being executed, so a tool that asks the user in its
     /// own right can name the cell that is waiting. Empty when no id exists.
     pub call_id: String,
+    pub job_owner: Option<crate::jobs::JobOwner>,
 }
 
 impl ToolContext {
@@ -70,6 +71,7 @@ impl ToolContext {
             deny_write: Vec::new(),
             container: None,
             call_id: String::new(),
+            job_owner: None,
         }
     }
 }

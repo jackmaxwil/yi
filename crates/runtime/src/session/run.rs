@@ -17,7 +17,7 @@ const LAST_WORD: &str = "[deadline] Time is up: no more tool calls. Write your f
 /// Invariant: asked under the session's status lock when a turn would present the message, so
 /// it may lock a host's roster but nothing that waits on this session; false drops it unread.
 pub type StillNews = Arc<dyn Fn() -> bool + Send + Sync>;
-pub type FollowUpFn = dyn Fn(&str, Option<StillNews>) + Send + Sync;
+pub type JobReportFn = dyn Fn(Vec<(String, StillNews)>) -> bool + Send + Sync;
 
 pub(super) struct Queued {
     pub(super) message: AgentMessage,
@@ -160,12 +160,12 @@ fn compaction_notice(message: &AgentMessage) -> bool {
     matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == crate::compaction::COMPACTION_NOTICE)
 }
 
-pub(super) fn follow(parts: &RunParts, message: AgentMessage) -> bool {
+pub(super) fn follow(parts: &RunParts, message: AgentMessage, news: Option<StillNews>) -> bool {
     let Ok(mut status) = parts.shared.status.lock() else {
         return false;
     };
     if let Ok(mut queue) = parts.shared.follow_up.lock() {
-        queue.push(Queued::new(message, false, None));
+        queue.push(Queued::new(message, false, news));
     }
     if *status == Status::Running {
         return true;
