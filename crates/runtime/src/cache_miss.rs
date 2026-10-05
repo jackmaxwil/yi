@@ -324,8 +324,8 @@ pub fn attach(session: &AgentSession) {
         for entry in entries {
             folded.observe_entry(entry);
         }
-        // A notice the ledger earned was shown by the process that wrote it.
-        folded.notice = None;
+        // The process that wrote the ledger showed its notice; this one alerts on its own misses.
+        (folded.notice, folded.announced, folded.total_misses) = (None, false, 0);
         seeded.set_ttl_estimate(folded.estimate());
         *resumed.lock().unwrap_or_else(PoisonError::into_inner) = folded;
     });
