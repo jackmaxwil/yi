@@ -291,13 +291,17 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
                 },
             }),
             None => {
-                let (closed, on) = crate::schema::strict_tool_json(&tool.parameters, strict);
+                let closed = crate::schema::strict_tool_json(
+                    &tool.parameters,
+                    strict,
+                    crate::schema::strict,
+                );
                 json!({
                     "type": "function",
                     "name": tool.name,
                     "description": tool.description,
                     "parameters": closed.as_ref().unwrap_or(&tool.parameters),
-                    "strict": on,
+                    "strict": closed.is_some(),
                 })
             }
         })

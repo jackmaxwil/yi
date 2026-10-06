@@ -5,6 +5,7 @@
 mod scratch;
 
 mod anthropic_mapper;
+#[path = "../../types/tests/support/model.rs"]
 mod common;
 mod compat;
 mod decide;
