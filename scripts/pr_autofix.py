@@ -623,6 +623,8 @@ def room(elapsed):
 
 
 def cmd_autofix(args):
+    # Incident: a pass the runner killed had buffered every line it printed, so its log was empty.
+    sys.stdout.reconfigure(line_buffering=True)
     repo = forge_pr.repo()
     ids = label_ids(repo)
     if args.number:
