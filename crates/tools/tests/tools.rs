@@ -2885,7 +2885,12 @@ fn an_edit_runs_the_syntax_check_beside_the_ripwire_check() -> TestResult {
     fs::write(dir.join("a.rs"), "fn a() {}\n")?;
     let text = output_text(&edit_with(&dir, "a.rs", "PUT 1.=1:\n+fn b() {}\n"));
     assert!(text.contains("syntax: ok"), "{text}");
-    assert!(text.contains("[ripwire check: clean]"), "{text}");
+    assert!(
+        text.contains(
+            "[ripwire check]\na removed from a.rs: its callers still call it — grep: \\ba\\b"
+        ),
+        "{text}"
+    );
     assert!(
         dir.join("rw-saw").exists() && dir.join("fmt-saw").exists(),
         "{text}"
@@ -2937,6 +2942,34 @@ fn a_changed_contract_names_the_callers_that_still_call_the_old_one() -> TestRes
     assert_eq!(edit.result.details["ripwire"], json!("findings"));
     let asked = fs::read_to_string(dir.join("args"))?;
     assert_eq!(asked.trim(), ". --edit-check=@m.py:1");
+    Ok(())
+}
+
+/// A deleted definition is still reported when a region of the same file answers about a
+/// surviving symbol: the answer names that symbol, not the deleted one, so the row stays.
+#[cfg(unix)]
+#[test]
+fn a_deleted_definition_stays_reported_beside_a_surviving_one() -> TestResult {
+    let Some(dir) = fake_path("ripwire-removed-beside-answered") else {
+        let dir = temp_dir("ripwire-removed-beside-answered")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-unchanged.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path(
+            "a_deleted_definition_stays_reported_beside_a_surviving_one",
+            &dir,
+        );
+    };
+    fs::write(dir.join("a.py"), "def f(a): pass\ndef g(a): pass\n")?;
+    let edit = edit_with(&dir, "a.py", "PUT 1.=1:\n+def g(a): pass\n");
+    let text = output_text(&edit);
+    assert!(
+        text.contains("f removed from a.py: its callers still call it — grep: \\bf\\b"),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["ripwire"], json!("findings"));
     Ok(())
 }
 

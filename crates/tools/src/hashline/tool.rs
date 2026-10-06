@@ -1009,26 +1009,31 @@ fn post_edit_checks(
     results: &[PatchSectionResult],
     context: &ToolContext,
 ) -> (Vec<Option<String>>, Option<CheckLayer>) {
+    let installed = crate::ripwire::installed();
+    let top = {
+        let root = crate::ripwire::root(&context.cwd);
+        root.canonicalize().unwrap_or(root)
+    };
     let updates: Vec<&PatchSectionResult> = (results.iter())
-        .filter(|result| result.op == SectionOp::Update && crate::ripwire::installed())
+        .filter(|result| result.op == SectionOp::Update && installed)
         .collect();
     let regions: Vec<(String, u64)> = (updates.iter())
         .flat_map(|result| {
             let (path, before) = (&result.canonical_path, &result.before);
-            crate::ripwire::regions(context, path, before, &result.after)
+            crate::ripwire::regions(&top, path, before, &result.after)
         })
         .collect();
     let removed: Vec<(String, String)> = (updates.iter())
         .flat_map(|result| {
             let (path, before) = (&result.canonical_path, &result.before);
-            crate::ripwire::removed(context, path, before, &result.after)
+            crate::ripwire::removed(&top, path, before, &result.after)
         })
         .collect();
     std::thread::scope(|scope| {
         let ripwire = (!regions.is_empty() || !removed.is_empty()).then(|| {
             scope.spawn(|| {
                 let _span = yi_types::trace::span("edit.ripwire");
-                crate::ripwire::check(context, regions, removed)
+                crate::ripwire::check(context, &top, regions, removed)
             })
         });
         let verdicts = paths

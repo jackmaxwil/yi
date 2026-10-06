@@ -191,10 +191,10 @@ fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     let ask = |verb: &str| -> Result<(String, bool), String> {
         let flag = format!("--{verb}={symbol}");
         let answer = crate::ripwire::json(root, &[&flag], &context.cancelled)?;
-        let rows = answer
-            .get(verb)
-            .and_then(Value::as_array)
-            .map_or(&[][..], Vec::as_slice);
+        let rows: &[Value] = match answer.get(verb) {
+            Some(Value::Array(rows)) => rows,
+            _ => return Err(format!("the answer named no {verb} rows")),
+        };
         let count = field(&answer, "count");
         let mut out = vec![format!(
             "{verb} of {symbol}: {count}, matched by name: a row can be a same-named function elsewhere, and calls ripwire could not resolve are missing"

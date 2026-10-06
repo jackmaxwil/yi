@@ -242,8 +242,9 @@ fn walk_capped(
     // Rules above the root bind it, from the nearest repository top down; a root that is one
     // takes none from above.
     let above: Vec<&Path> = root.ancestors().collect();
-    if let Some(top) = above.iter().position(|dir| dir.join(".git").exists()) {
-        (above.iter().take(top.saturating_add(1)).skip(1).rev())
+    let top = crate::ripwire::git_root(&root);
+    if let Some(at) = above.iter().position(|dir| top.as_deref() == Some(*dir)) {
+        (above.iter().take(at.saturating_add(1)).skip(1).rev())
             .for_each(|dir| ignore.push_dir(dir));
     }
     let mut seen = 0_usize;
