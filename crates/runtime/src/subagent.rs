@@ -63,6 +63,7 @@ pub(crate) struct ChildRecord {
     pub(crate) billed_from: usize,
     tool_use_count: u64,
     token_count: u64,
+    cost: f64,
     answer_preview: Option<String>,
     pub(crate) error: Option<String>,
     /// L3: set makes this a protocol child — its answer must decode as a
@@ -747,6 +748,7 @@ impl SubagentHost {
                     billed_from: 0,
                     tool_use_count: 0,
                     token_count: 0,
+                    cost: 0.0,
                     answer_preview: None,
                     error: None,
                     check,
@@ -836,6 +838,7 @@ impl SubagentHost {
                             note,
                             tools: record.tool_use_count,
                             tokens: record.token_count,
+                            cost: record.cost,
                             idle_s,
                             worktree: record
                                 .worktree
@@ -896,6 +899,7 @@ impl SubagentHost {
                     "note": view.note,
                     "tools": view.tools,
                     "tokens": view.tokens,
+                    "cost": view.cost,
                     "idle_s": view.idle_s,
                     "worktree": view.worktree,
                 })
@@ -924,8 +928,8 @@ impl SubagentHost {
         reply
     }
 
-    pub(crate) fn dispose_child_kernel(session: &AgentSession) {
-        session.dispose_kernel();
+    pub(crate) fn retire_child(session: &AgentSession) {
+        session.retire();
     }
 
     pub(crate) fn key_of(

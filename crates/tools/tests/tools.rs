@@ -884,6 +884,79 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
     Ok(())
 }
 
+fn reduce_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/reduce/{name}"))
+}
+
+/// Incident: a two-crate build printed its one error at byte 23920 of 48279, the middle that
+/// the capture cut and the red path's line cap both dropped, under either exit status.
+#[test]
+fn a_red_workspace_build_keeps_its_error_through_the_reducer() -> TestResult {
+    let dir = temp_dir("reduce-red-workspace")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let build = reduce_fixture("red-workspace-build.txt");
+    let streamed = usize::try_from(fs::metadata(&build)?.len())?;
+    let cases = [
+        (format!("cat '{}'; exit 101", build.display()), 0),
+        (
+            format!("cat '{}'; echo EXIT=$?", build.display()),
+            "EXIT=0\n".len(),
+        ),
+    ];
+    for (command, extra) in cases {
+        let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
+        let text = output_text(&output);
+        assert!(text.contains("error[E0308]"), "{command}: {text}");
+        assert!(text.contains("b/src/main.rs:121:36"), "{command}: {text}");
+        let cap = yi_tools::OUTPUT_CAP;
+        let row = format!(
+            "[capture cut: kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream); every byte: ",
+            streamed + extra
+        );
+        assert!(
+            text.lines().any(|line| line.starts_with(&row)),
+            "{command}: no {row}: {text}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_omitted_lines_notice_names_lines_of_the_file_it_points_at() -> TestResult {
+    let dir = temp_dir("reduce-notice-lines")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let output = BashTool::default().execute(args(&[("command", json!("seq 1 20000"))]), &context);
+    let text = output_text(&output);
+    let range = (text.lines())
+        .find_map(|line| line.split_once(" lines omitted: ")?.1.strip_suffix(']'))
+        .and_then(|range| range.split_once('-'))
+        .ok_or_else(|| format!("no notice: {text}"))?;
+    let (from, to): (usize, usize) = (range.0.parse()?, range.1.parse()?);
+    let path = (text.lines())
+        .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .ok_or_else(|| format!("no pointer: {text}"))?;
+    let whole = fs::read_to_string(path)?;
+    let spill: Vec<&str> = whole.lines().collect();
+    let shown: std::collections::HashSet<&str> = text.lines().collect();
+    let at = |n: usize| {
+        spill
+            .get(n.wrapping_sub(1))
+            .copied()
+            .unwrap_or("<past the file>")
+    };
+    assert!(
+        shown.contains(at(from - 1)),
+        "line {} is not shown",
+        from - 1
+    );
+    assert!(shown.contains(at(to + 1)), "line {} is not shown", to + 1);
+    let named_but_shown: Vec<usize> = (from..=to).filter(|n| shown.contains(at(*n))).collect();
+    assert!(named_but_shown.is_empty(), "shown: {named_but_shown:?}");
+    Ok(())
+}
+
 #[test]
 fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let dir = temp_dir("background")?;
@@ -973,7 +1046,7 @@ fn a_wait_backgrounds_a_command_still_running() -> TestResult {
     let job = details["job"].as_u64().ok_or("no job id")?;
     assert!(
         text.contains(&format!(
-            "before you end the turn, wait for it with bash job={job} wait="
+            "only if it exits while this turn is still running; bash job={job} wait=<s> waits for it now"
         )),
         "{text}"
     );
@@ -1127,23 +1200,23 @@ fn an_interrupt_ends_a_poll_within_a_second() -> TestResult {
 #[test]
 fn a_command_that_finishes_in_the_turn_is_never_announced() -> TestResult {
     let dir = temp_dir("bash-inline")?;
+    let owner = yi_tools::jobs::JobOwner::mint();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let listener = {
-        let (dir, stop) = (dir.to_path_buf(), Arc::clone(&stop));
+        let stop = Arc::clone(&stop);
         std::thread::spawn(move || {
             let (mut seen, mut taken) = (0, Vec::new());
             while !stop.load(std::sync::atomic::Ordering::SeqCst) {
                 seen = yi_tools::jobs::registry().wait_settle(seen);
-                taken.extend(yi_tools::jobs::registry().take_finished(&dir));
+                taken.extend(yi_tools::jobs::registry().take_finished(owner));
             }
             taken
         })
     };
     let tool = BashTool::default();
-    let output = tool.execute(
-        args(&[("command", json!("echo inline"))]),
-        &ToolContext::new(dir.to_path_buf()),
-    );
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.job_owner = Some(owner);
+    let output = tool.execute(args(&[("command", json!("echo inline"))]), &context);
     assert!(text_of(&output.result.content).contains("inline"));
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let elsewhere = temp_dir("bash-inline-wake")?;
@@ -1161,7 +1234,9 @@ fn a_command_that_finishes_in_the_turn_is_never_announced() -> TestResult {
 #[test]
 fn a_polled_job_is_not_reported_again() -> TestResult {
     let dir = temp_dir("bash-wait-polled")?;
-    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let (tool, mut context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let owner = yi_tools::jobs::JobOwner::mint();
+    context.job_owner = Some(owner);
     let started = tool.execute(
         args(&[("command", json!("sleep 6")), ("wait", json!(5))]),
         &context,
@@ -1169,17 +1244,19 @@ fn a_polled_job_is_not_reported_again() -> TestResult {
     let job = started.result.details["job"].as_u64().ok_or("no job id")?;
     let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
     assert!(text_of(&polled.result.content).contains("finished (exit 0)"));
-    let reported = yi_tools::jobs::registry().take_finished(&dir);
+    let reported = yi_tools::jobs::registry().take_finished(owner);
     assert!(reported.is_empty(), "{reported:?}");
     Ok(())
 }
 
 /// A poll that gives up hands the job back, so its result is still reported when it exits, and
-/// only to a session in the cwd that started it.
+/// only to the session that started it.
 #[test]
 fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
     let dir = temp_dir("bash-wait-gives-up")?;
-    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let (tool, mut context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let owner = yi_tools::jobs::JobOwner::mint();
+    context.job_owner = Some(owner);
     let started = tool.execute(
         args(&[("command", json!("sleep 11")), ("wait", json!(5))]),
         &context,
@@ -1189,14 +1266,14 @@ fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
     assert!(text_of(&polled.result.content).contains("still running"));
     let id = yi_tools::jobs::JobId(job);
     yi_tools::jobs::registry().wait_settled(Some(id), std::time::Duration::from_secs(10));
-    let elsewhere = temp_dir("bash-wait-gives-up-elsewhere")?;
-    let taken_elsewhere = yi_tools::jobs::registry().take_finished(&elsewhere);
+    let other = yi_tools::jobs::JobOwner::mint();
+    let taken_elsewhere = yi_tools::jobs::registry().take_finished(other);
     assert!(
         taken_elsewhere.is_empty(),
-        "another cwd's loop took it: {taken_elsewhere:?}"
+        "another session's loop took it: {taken_elsewhere:?}"
     );
     let reported: Vec<u64> = yi_tools::jobs::registry()
-        .take_finished(&dir)
+        .take_finished(owner)
         .iter()
         .map(|r| r.id.0)
         .collect();
@@ -2360,6 +2437,47 @@ fn a_stopped_chain_says_so_beside_the_exit_code() -> TestResult {
     Ok(())
 }
 
+fn chain_notice_for(command: &str) -> String {
+    let output = BashTool::default().execute(
+        args(&[("command", json!(command))]),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    output_text(&output)
+}
+
+const CHAIN_NOTICE: &str = "inside a && chain";
+
+#[test]
+fn chain_notice_absent_when_the_list_ends_after_a_semicolon() -> TestResult {
+    let text = chain_notice_for("true && true; false");
+    assert!(text.contains("exit code: 1"), "{text}");
+    assert!(!text.contains(CHAIN_NOTICE), "{text}");
+    Ok(())
+}
+
+#[test]
+fn chain_notice_present_when_the_last_operator_is_and() -> TestResult {
+    let text = chain_notice_for("false && echo x");
+    assert_eq!(text.matches(CHAIN_NOTICE).count(), 1, "{text}");
+    Ok(())
+}
+
+#[test]
+fn chain_notice_ignores_a_quoted_and() -> TestResult {
+    let text = chain_notice_for("echo 'a && b'; false");
+    assert!(text.contains("exit code: 1"), "{text}");
+    assert!(!text.contains(CHAIN_NOTICE), "{text}");
+    Ok(())
+}
+
+#[test]
+fn chain_notice_present_after_a_failed_redirect() -> TestResult {
+    let text = chain_notice_for("echo x > /nonexistent-dir/f && echo y");
+    assert_eq!(text.matches(CHAIN_NOTICE).count(), 1, "{text}");
+    assert!(!text.contains("\ny\n"), "{text}");
+    Ok(())
+}
+
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
@@ -3201,5 +3319,34 @@ fn a_rustup_proxy_is_asked_once_and_its_binary_runs_directly() -> TestResult {
         let text = output_text(&written);
         assert!(text.contains("syntax: ok"), "{text}");
     }
+    Ok(())
+}
+
+/// #906: yi's provider keys reached every uncontained bash call (yolo, an approved run outside
+/// the sandbox, any host with no sandbox), where `printenv` passes as read-only.
+#[test]
+fn bash_inherits_no_provider_key() -> TestResult {
+    let keys = [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "LAYA_API_KEY",
+    ];
+    for name in keys.iter().chain(&["YI_906_ORDINARY"]) {
+        // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+        unsafe { std::env::set_var(name, format!("ENV-906-{name}")) };
+    }
+    let dir = temp_dir("bash-keys")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let shown = BashTool::default().execute(args(&[("command", json!("env"))]), &context);
+    let text = output_text(&shown);
+    let leaked: Vec<&str> = (keys.into_iter())
+        .filter(|name| text.contains(&format!("ENV-906-{name}")))
+        .collect();
+    assert!(
+        !shown.is_error && text.contains("ENV-906-YI_906_ORDINARY") && leaked.is_empty(),
+        "bash `env` saw {leaked:?} or lost an ordinary variable"
+    );
     Ok(())
 }

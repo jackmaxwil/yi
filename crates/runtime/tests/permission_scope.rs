@@ -532,7 +532,9 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
             }
             None => {
                 assert_eq!(outcome.containment, Containment::Uncontained, "{text}");
-                assert!(text.contains("is protected"), "{text}");
+                // The session store is a key file now (#906), so the belt names it first.
+                let said = "approving runs this one call outside the sandbox";
+                assert!(text.contains(said), "{text}");
             }
         }
     }
@@ -632,6 +634,8 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
     std::fs::write(home.join(".ssh/id_rsa"), secret)?;
     std::fs::write(home.join(".yi/providers/tokens/openai.json"), secret)?;
     std::fs::write(home.join(".yi/mcp/tokens/default_mcp.json"), secret)?;
+    std::fs::write(home.join(".yi/mcp/sessions.json"), secret)?;
+    std::fs::write(home.join(".yi/mcp.json"), secret)?;
     std::fs::write(home.join("notes.md"), "ordinary\n")?;
     symlink(home.join(".ssh"), elsewhere.join("link"))?;
     symlink(&home, elsewhere.join("h"))?;
@@ -664,6 +668,9 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
         "~/.yi/providers/tokens/openai.json",
         "~/.yi/providers/tokens",
         "~/.yi/mcp/tokens/default_mcp.json",
+        "~/.yi/mcp/sessions.json",
+        "h/.yi/mcp/sessions.json",
+        "~/.yi/mcp.json",
         "link/id_rsa",
         "link",
         "h/.ssh/id_rsa",
@@ -1020,5 +1027,42 @@ fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
     };
     let tried = race("grep", Swap::Parent, "ordinary\n", &args, &changes_key)?;
     assert_no_leak("grep apply", Swap::Parent, tried);
+    Ok(())
+}
+
+/// The remedy the ping hint names: after the sandbox refuses a real `ping`, the next `ping` asks,
+/// and approving it runs that call outside the sandbox. The refusal is the bash tool's own, read
+/// off a contained run of `ping`.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_refused_ping_asks_and_approving_runs_it_outside() -> TestResult {
+    let command = "ping -c1 -W1 1.1.1.1";
+    let scratch = Scratch::new("yi-ping-remedy")?;
+    let home = scratch.join("home");
+    std::fs::create_dir_all(&home)?;
+    let sandbox = yi_tools::Sandbox::for_workspace(&scratch, &home, None);
+    let context = yi_tools::ToolContext::new(scratch.to_path_buf());
+    let timeout = std::time::Duration::from_secs(60);
+    let yi_tools::Run::Finished(capture) =
+        yi_tools::run_or_background(command, &context, None, timeout, Some(&sandbox), None)?
+    else {
+        return Err("ping did not finish".into());
+    };
+    let output = format!("{}{}", capture.stdout, capture.stderr);
+    let refusal =
+        yi_tools::sandbox_refusal(&sandbox, &scratch, capture.exit_code, &output, command)
+            .ok_or_else(|| format!("no refusal read from: {output}"))?;
+    let (broker, asks) = counted(Vec::new(), |_| AskOutcome::AllowOnce);
+    let decide =
+        |id: &str| broker.decide_call("bash", ToolKind::Exec, true, id, &bash_args(command), None);
+    assert!(matches!(
+        decide("c1").containment,
+        Containment::Contained { .. }
+    ));
+    broker.note_containment_failure(refusal);
+    let retry = decide("c2");
+    assert!(retry.allowed, "{}", retry.reason);
+    assert_eq!(retry.containment, Containment::Uncontained);
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 1, "the retry asks");
     Ok(())
 }
