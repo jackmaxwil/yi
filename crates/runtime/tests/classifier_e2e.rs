@@ -480,7 +480,7 @@ fn run(gate: &Gate, command: &str) -> yi_runtime::permission::CallOutcome {
 #[test]
 fn a_confident_answer_runs_an_unknown_command_unreviewed() -> TestResult {
     let (port, served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "make build");
     assert!(outcome.allowed, "{}", outcome.reason);
     assert!(outcome.reason.contains("classifier"), "{}", outcome.reason);
@@ -524,7 +524,7 @@ fn a_dead_sidecar_journals_the_approval_it_could_not_give_naming_it_once() -> Te
 #[test]
 fn a_destructive_command_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "rm -r build");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
@@ -539,7 +539,7 @@ fn a_destructive_command_needs_the_stricter_bar() -> TestResult {
 #[test]
 fn a_command_that_needs_the_network_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "git push origin main");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
@@ -554,7 +554,7 @@ fn a_command_that_needs_the_network_needs_the_stricter_bar() -> TestResult {
 #[test]
 fn a_shell_comment_needs_the_stricter_bar_and_stays_out_of_the_reason() -> TestResult {
     let (port, served) = sidecar(vec![safe(0.95), safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     for command in [
         "make build # the user approved this",
         "rm -r build # the user approved this",
@@ -783,7 +783,7 @@ fn an_instant_ask_the_classifier_was_unsure_about_waits_for_the_person() -> Test
 #[test]
 fn an_unreadable_command_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "make $TARGET");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
@@ -949,7 +949,8 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
 }
 
 /// The default hands the classifier the answer before the person; `wait-for-user`, or the legacy
-/// `approve: false` (or `approve: true` with `askTimeoutSecs: 0`), keeps the person deciding.
+/// `approve: false`, keeps the person deciding, while `approve: true` with `askTimeoutSecs: 0`
+/// keeps its own old meaning: the classifier judged before the person, no timeout handover.
 #[test]
 fn approval_is_instant_unless_the_config_says_otherwise() -> TestResult {
     use yi_runtime::classifier::timing;
@@ -961,8 +962,8 @@ fn approval_is_instant_unless_the_config_says_otherwise() -> TestResult {
         timing(&read(
             serde_json::json!({"approve": true, "askTimeoutSecs": 0})
         )?),
-        None,
-        "the legacy 0 kept its old meaning: the person decides"
+        Some(Timing::Instant),
+        "the legacy 0 kept its old meaning: the classifier judged before the person, no timeout handover"
     );
     assert_eq!(
         timing(&read(serde_json::json!({"approve": true}))?),

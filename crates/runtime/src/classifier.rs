@@ -467,7 +467,7 @@ pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
 pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
     let mode = match (block.approval, block.approve, block.ask_timeout_secs) {
         (Some(mode), _, _) => mode,
-        (None, Some(false), _) | (None, Some(true), Some(0)) => ApprovalMode::WaitForUser,
+        (None, Some(false), _) => ApprovalMode::WaitForUser,
         (None, _, _) => ApprovalMode::Instant,
     };
     match mode {
@@ -503,6 +503,15 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
     let timing = timing(&block);
     let broker = session.permission_broker();
     let mut warnings = Vec::new();
+    if let (Some(Timing::AfterDelay(_)), Some(broker)) = (&timing, broker.as_ref())
+        && !broker.asks_close_on_settle()
+    {
+        warnings.push(
+            "classifier.approval is after-delay, but this surface's prompts never close on \
+             settle, so approval acts as wait-for-user here"
+                .to_owned(),
+        );
+    }
     let key = sidecar_key(
         home,
         "laya",
@@ -577,24 +586,17 @@ fn journal(session: &AgentSession) -> Record {
 #[cfg(test)]
 mod tests {
     use super::sidecar_key;
-    use std::path::PathBuf;
-
-    fn temp_home(tag: &str) -> PathBuf {
-        let home = std::env::temp_dir().join(format!("yi-classifier-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).unwrap_or_default();
-        home
-    }
+    use crate::scratch::Scratch;
 
     #[test]
-    fn an_opt_out_session_mints_no_key_and_an_armed_one_does() {
-        let home = temp_home("opt-out");
+    fn an_opt_out_session_mints_no_key_and_an_armed_one_does() -> std::io::Result<()> {
+        let home = Scratch::new("yi-classifier-opt-out")?;
         let token = home.join(".yi/providers/tokens/yi-key-test.json");
         let mut warnings = Vec::new();
         assert!(sidecar_key(&home, "yi-key-test", false, &mut warnings).is_none());
         assert!(warnings.is_empty());
         assert!(!token.exists(), "an opt-out session never mints a key");
-        let home = temp_home("armed");
+        let home = Scratch::new("yi-classifier-armed")?;
         let token = home.join(".yi/providers/tokens/yi-key-test.json");
         let mut warnings = Vec::new();
         assert!(sidecar_key(&home, "yi-key-test", true, &mut warnings).is_some());
@@ -602,6 +604,6 @@ mod tests {
             token.exists(),
             "an armed session mints the key it arms with"
         );
-        let _ = std::fs::remove_dir_all(home);
+        Ok(())
     }
 }

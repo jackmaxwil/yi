@@ -54,17 +54,14 @@ pub(super) enum Answered {
 }
 
 /// Invariant: only a confident allow answers for the person; anything else keeps the ask open
-/// until they answer. With no person to ask, the classifier answers at once.
+/// until they answer. With no person to ask, nobody answers for them.
 pub(super) fn ask_or_judge(
     asker: Option<&Asker>,
     ask: &PermissionAsk<'_>,
     late: &Late<'_>,
 ) -> Answered {
     let Some(asker) = asker else {
-        return match late.approver.judge(late.call) {
-            crate::classifier::Judgement::Allow(safe) => Answered::Classifier(safe),
-            _ => Answered::Person(AskOutcome::Reject),
-        };
+        return Answered::Person(AskOutcome::Reject);
     };
     let (owned, asker) = (OwnedAsk::of(ask), Arc::clone(asker));
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -115,7 +112,7 @@ impl PermissionBroker {
             .approver
             .get()
             .filter(|_| self.mode() == PermissionMode::Auto);
-        let answered = match (approver, call) {
+        let answered = match (approver.filter(|_| self.asker.is_some()), call) {
             (Some(approver), Some(call)) => match approver.timing() {
                 crate::classifier::Timing::Instant => match approver.judge(call) {
                     crate::classifier::Judgement::Allow(safe) => Some(Answered::Classifier(safe)),

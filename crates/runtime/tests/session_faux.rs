@@ -780,10 +780,11 @@ async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error
 }
 
 /// The owner: approval "should be on by default". A session attached with a classifier and no
-/// `approval` key arms it, minting the key under the session's HOME, and an auto-mode ask the
-/// classifier is sure of runs unasked. Dies with the default left off, the incident's state.
+/// `approval` key arms it, minting the key under the session's HOME. Headless, with nobody
+/// wired to answer, an auto-mode ask the classifier is sure of still fails closed. Dies with
+/// an unattended classifier allow.
 #[tokio::test]
-async fn a_classifier_with_no_mode_set_approves_by_default() -> Result<(), Box<dyn Error>> {
+async fn a_headless_session_with_no_asker_fails_closed() -> Result<(), Box<dyn Error>> {
     let root = scratch("approve-default")?;
     let home = root.join("home");
     std::fs::create_dir_all(&home)?;
@@ -837,8 +838,8 @@ async fn a_classifier_with_no_mode_set_approves_by_default() -> Result<(), Box<d
     args.insert("command".to_owned(), serde_json::json!("make build"));
     let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
     assert!(
-        outcome.allowed && outcome.reason.starts_with("allowed by the classifier"),
-        "{}",
+        !outcome.allowed,
+        "headless, nobody answers for the person, so the ask degrades to a denial: {}",
         outcome.reason
     );
     Ok(())
