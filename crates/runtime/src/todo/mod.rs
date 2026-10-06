@@ -224,6 +224,8 @@ pub struct Applied {
     pub list: TodoList,
     pub touched: u64,
     pub changed: bool,
+    /// What the call could not do as sent and what was done instead, one line each.
+    pub notes: Vec<String>,
 }
 
 impl TodoStore {
@@ -427,20 +429,19 @@ impl TodoStore {
     ) -> Result<Applied, TodoError> {
         self.resync();
         let mut state = self.state.lock().map_err(|_| TodoError::Empty)?;
-        if let Some(sent) = expected_touched
-            && sent != state.touched
-        {
-            return Err(TodoError::Stale {
-                now: state.touched,
-                sent,
-            });
-        }
+        // Invariant: a stale view is merged, never refused, and never deletes a row the model did
+        // not see: a set from it keeps every row it left out.
+        let stale = expected_touched.filter(|sent| *sent != state.touched);
+        let mut notes: Vec<String> = (stale.iter())
+            .map(|sent| format!("the list changed since you last saw it (touched {}, you sent {sent}); the call was applied to the list as it is now", state.touched))
+            .collect();
         if matches!(op, Op::View) {
             return Ok(Applied {
                 before: state.list.clone(),
                 list: state.list.clone(),
                 touched: state.touched,
                 changed: false,
+                notes,
             });
         }
         let before = state.list.clone();
@@ -465,7 +466,17 @@ impl TodoStore {
         };
         let label = op.label().cloned();
         let name = op.name();
-        step(&mut list, op)?;
+        let (prior, whole_set) = (list.clone(), matches!(op, Op::Set { .. }));
+        step(&mut list, op, &mut notes)?;
+        if stale.is_some() && whole_set {
+            let kept = keep_omitted(&prior, &mut list);
+            if !kept.is_empty() {
+                notes.push(format!(
+                    "rows your set left out were kept: {}",
+                    kept.join(", ")
+                ));
+            }
+        }
         if mirrored.is_some() {
             let planned: Vec<TodoId> = before
                 .items()
@@ -521,6 +532,7 @@ impl TodoStore {
             list,
             touched,
             changed: true,
+            notes,
         })
     }
 
@@ -873,7 +885,30 @@ fn init_list(phases: Vec<(PhaseName, Vec<Todo>)>) -> Result<TodoList, TodoError>
     Ok(fresh)
 }
 
-fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
+/// Rows of `prior` the new list lost, put back in their own phase; their labels, quoted.
+fn keep_omitted(prior: &TodoList, list: &mut TodoList) -> Vec<String> {
+    let mut kept = Vec::new();
+    for phase in &prior.phases {
+        let lost: Vec<Todo> = (phase.items.iter())
+            .filter(|item| !list.items().any(|now| now.label == item.label))
+            .cloned()
+            .collect();
+        if lost.is_empty() {
+            continue;
+        }
+        kept.extend(lost.iter().map(|item| format!("{:?}", item.label.as_str())));
+        match list.phases.iter_mut().find(|now| now.name == phase.name) {
+            Some(now) => now.items.extend(lost),
+            None => list.phases.push(TodoPhase {
+                items: lost,
+                ..phase.clone()
+            }),
+        }
+    }
+    kept
+}
+
+fn step(list: &mut TodoList, op: Op, notes: &mut Vec<String>) -> Result<(), TodoError> {
     let done = |item: &Todo| matches!(item.state, TodoState::Done { .. });
     match op {
         Op::View => Ok(()),
@@ -890,10 +925,17 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                 })
                 .map(|item| format!("{:?}", item.label.as_str()))
                 .collect();
+            let mut merged = merged;
             if !closed.is_empty() {
-                return Err(TodoError::SetClosed {
-                    labels: closed.join(", "),
+                merged.for_each_mut(|item| {
+                    let prior = list
+                        .items()
+                        .find(|prior| prior.label == item.label && !done(prior));
+                    if let (true, Some(prior)) = (done(item), prior) {
+                        item.state = prior.state.clone();
+                    }
                 });
+                notes.push(format!("{} kept open: done needs evidence, so `done <label>` with the command and its output line closes a row", closed.join(", ")));
             }
             // A list that kept no label is a new list: its ids start at t1 like an init's.
             let survived = merged.items().any(|item| item.id.is_some());
