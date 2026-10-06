@@ -82,7 +82,7 @@ def decide(labels, conflicted, quiet_for, asked=False, blocked=False):
     if "autofix:hold" in labels:
         return "hold"
     if "autofix:failed" in labels:
-        return "failed"
+        return "stopped"
     if not conflicted and not blocked:
         return "clean"
     if not (asked or "autofix" in labels or quiet_for >= QUIET):
@@ -643,6 +643,8 @@ def cmd_autofix(args):
             print(f"autofix: today's fixes spent the ${CAP_DAY:.2f} cap; the rest wait for tomorrow")
             break
         said = attempt(repo, pr, ids)
+        # Incident: a PR already labelled failed answered "failed" here too, so three of them
+        # filled every pass's quota with skips and no other PR was tried for a day.
         fixed += said in ("pushed", "failed", "moved")
         print(f"#{pr['number']}: {said}")
     return 0
@@ -652,7 +654,7 @@ def selfcheck():
     errs = []
     table = [
         (({"autofix:hold", "autofix"}, ["a.rs"], 9e9), "hold"),
-        (({"autofix:failed"}, ["a.rs"], 9e9), "failed"),
+        (({"autofix:failed"}, ["a.rs"], 9e9), "stopped"),
         ((set(), [], 9e9), "clean"),
         ((set(), ["a.rs"], 60), "wait"),
         (({"autofix"}, ["a.rs"], 60), "fix"),
@@ -661,7 +663,7 @@ def selfcheck():
         ((set(), [], 60, False, True), "wait"),
         (({"autofix"}, [], 60, False, True), "findings"),
         ((set(), ["a.rs"], QUIET, False, True), "fix"),
-        (({"autofix:failed"}, [], QUIET, False, True), "failed"),
+        (({"autofix:failed"}, [], QUIET, False, True), "stopped"),
     ]
     errs += [f"decide{args} said {decide(*args)}, not {want}" for args, want in table if decide(*args) != want]
     if not room(0) or room(PASS_SECS - FIX_SECS - REPAIR_SECS - 119) or not room(PASS_SECS - FIX_SECS - REPAIR_SECS - 120):
@@ -966,6 +968,24 @@ def selfcheck():
                 errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
     finally:
         shutil.rmtree(bare)
+    # A pass: PRs already labelled failed are skipped without spending its quota of fixes.
+    module, tried_prs = sys.modules[__name__], []
+    keep = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today")}
+    keep_api, keep_repo = forge_pr.fgj_api, forge_pr.repo
+    try:
+        stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}} for n in (1, 2, 3)]
+        fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}}
+        forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh]), (lambda: "o/r")
+        module.label_ids, module.spent_today = (lambda repo: {}), (lambda repo: 0.0)
+        module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
+                                                              decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
+        cmd_autofix(type("A", (), {"number": None})())
+    finally:
+        forge_pr.fgj_api, forge_pr.repo = keep_api, keep_repo
+        for name, value in keep.items():
+            setattr(module, name, value)
+    if 4 not in tried_prs:
+        errs.append(f"three PRs labelled failed used up the pass; it tried {tried_prs}")
     crate = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-fmt-"))
     try:
         sh(crate, "git", "init", "-q")
