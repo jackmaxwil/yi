@@ -45,6 +45,8 @@ SEVERITIES = ("high", "medium", "low")
 # Measured over 194 rounds to 2026-10-01: half of 1,520 findings were low, and none of them blocked
 # or got fixed. The host keeps these two; a lens that still answers `low` loses the finding, not the round.
 REPORTED = ("high", "medium")
+# The intake checks' lenses: the PR body's sections and a twin, a person's call and read afresh each round.
+INTAKE = ("template", "duplicate")
 DIFF_MAX = 150_000
 # The fixer may not touch what judges it: the gates, the workflows and the baselines.
 # Incident: round 3 on #765 found the hooks outside the wall, and the commit hook is the
@@ -226,18 +228,32 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     return None
 
 
+def carried(rounds):
+    """The last round's findings a new round re-checks at its head before trusting its own,
+    narrower read: only a refuter that finds a finding gone clears it. A high the owner overrode
+    is settled, and the intake checks run fresh every round."""
+    if not rounds:
+        return []
+    last = rounds[-1]
+    return [{**f, "since": f.get("since") or last["n"]} for f in last["findings"]
+            if f.get("severity") in REPORTED and f.get("lens") not in INTAKE
+            and not (f["severity"] == "high" and last["verdict"] == "override")]
+
+
 def silent(r):
     """A round that lost a lens or refuter did not read the whole PR, whatever its verdict says."""
     return r.get("skipped", "0") != "0"
 
 
 def delta_base(rounds, merge_base, is_ancestor, head):
-    """Round one reads the whole PR; later rounds read from the newest clean head still in
-    the history, so a push after a clean round is reviewed on its own. A second read of an
+    """Round one reads the whole PR; later rounds read from the newest head a round read that is
+    still in the history, so a fix is reviewed on its own and `carried` re-checks what the round
+    before it found. Incident: a blocked round was no base, so each fix after one was a fresh read
+    of the whole PR that found fresh mediums, and no draft ever converged. A second read of an
     unchanged head reads what the first one read, not an empty diff. The range may carry commits
     the base branch merged in since; `review_diff` keeps only the PR's own change inside it."""
     for r in reversed(rounds):
-        if r["verdict"] not in ("clean", "override") or silent(r):
+        if silent(r):
             continue
         if head.startswith(r["sha"]):
             return r.get("base") or merge_base
@@ -262,7 +278,7 @@ def review_diff(git, merge_base, base, sha):
     return "\n".join(git("diff", own, "--", *[f":(literal){p}" for p in paths[i:i + 200]]) for i in range(0, len(paths), 200)), base
 
 
-def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=(), meter=None, status=""):
+def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=(), meter=None, status="", cleared=0):
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     said = verdict(findings, overridden)
     meta = " ".join([f"pr={pr}", f"sha={sha}", f"base={base}", f"verdict={said}", f"mode={mode}"]
@@ -281,13 +297,16 @@ def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, una
         lines += ["| # | lens | severity | finding | where | fix |", "|---|---|---|---|---|---|"]
         for i, f in enumerate(findings, 1):
             cell = lambda text: (text or "").replace("|", "\\|").replace("\n", " ")
-            lines.append(f"| {i} | {f['lens']} | {f['severity']} | {cell(f['claim'])} | `{f.get('path', '')}:{f.get('line', '')}` | {cell(f.get('fix'))} |")
+            since = f"(open since round {f['since']}) " if f.get("since") else ""
+            lines.append(f"| {i} | {f['lens']} | {f['severity']} | {since}{cell(f['claim'])} | `{f.get('path', '')}:{f.get('line', '')}` | {cell(f.get('fix'))} |")
     else:
         lines.append("No finding survived.")
     if unanswered:
         lines += ["", f"No answer after retries from: {', '.join(unanswered)}. This round blocks on what it read, but counts as unread for the delta and for ready."]
     if dropped:
         lines += ["", f"Dropped before this table: {dropped} finding(s) whose quote was not on its line, or that a refuter broke."]
+    if cleared:
+        lines += ["", f"Cleared: {cleared} finding(s) the last round left open no longer hold at `{sha[:8]}`."]
     if outside:
         lines += ["", f"Out of scope: {outside} finding(s) on lines this PR's own change (its fork to `{sha[:8]}`) does not add were dropped before any refuter."]
     if status:
@@ -376,7 +395,7 @@ def lens_prompt(probe, pr, diff, base, sha, full_read):
         f"You review pull request #{pr['number']} ({pr['title']!r}) as its {lens} lens. {brief}\n"
         f"Severity: {scale}\n"
         f"Your working directory is a checkout of the PR's head {sha[:8]}; the diff is the PR's own change {base[:8]}..{sha[:8]}"
-        f"{', limited to the files changed since the last clean round' if not full_read else ''}. "
+        f"{', limited to the files changed since the last round' if not full_read else ''}. "
         "Read any file to confirm a finding. Only reading works here: commands, code cells and edits are "
         "refused, so do not spend a turn on them.\n"
         "Only lines this diff adds or changes are in scope: a defect in code the diff does not touch is "
@@ -398,8 +417,10 @@ def lens_prompt(probe, pr, diff, base, sha, full_read):
 
 
 def refute_prompt(finding):
+    earlier = ("It was made at an earlier head of this PR, which has changed since, so its line may have moved: "
+               "judge it at this head, and refute it when the code here no longer has the defect. ") if finding.get("since") else ""
     return (
-        "A reviewer claims this about the code in your working directory. Try to break the claim: read the "
+        "A reviewer claims this about the code in your working directory. " + earlier + "Try to break the claim: read the "
         "code around it and anything it calls (only reading works here; commands are refused). Default to refuted: "
         "set `refuted` to false only when you have confirmed the claim holds as stated. A claim that names no "
         "defect (it praises the change, or reports a test or check that passed) is refuted however true it is.\n"
@@ -521,11 +542,12 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-600:]}")
 
 
-def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None):
+def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None, carry=()):
     """Every probe that applies, then the host's quote and scope checks, then the refuters, each
-    stage's calls at once. `own` is the PR's own patch (fork to head) by added line, the read
-    diff when absent. Returns (kept, dropped, outside, unanswered). A lens or refuter that stays
-    silent is named in `unanswered` and the round goes on; only every lens silent raises, no round."""
+    stage's calls at once; `carry` (see `carried`) meets refuters beside the new findings. `own` is
+    the PR's own patch (fork to head) by added line, the read diff when absent. Returns (kept,
+    dropped, outside, unanswered, cleared). A lens or refuter that stays silent is named in
+    `unanswered` and the round goes on; only every lens silent raises, no round."""
     added = added_at(diff)
     own = added if own is None else own
     chosen = [p for p in probes.values() if applies(p, added, full_read)]
@@ -547,16 +569,19 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
         candidates = [{**f, "lens": probe["id"]} for probe, answer_ in zip(chosen, said) if answer_
                       for f in answer_.get("findings", []) if f.get("severity") in REPORTED]
         quoted_ = [f for f in candidates if quoted(f, tree)]
-        checked = [f for f in quoted_ if in_scope(f, own)]
+        fresh = [f for f in quoted_ if in_scope(f, own)]
+        checked = fresh + list(carry)
         seats_ = [(i, f) for i, f in enumerate(checked) for _ in range(seats(f, probes))]
         votes = list(pool.map(lambda seat: tried(f"refuter on {seat[1]['lens']} finding at {seat[1]['path']}:{seat[1]['line']}",
                                                  refute_prompt(seat[1]), REFUTE_SCHEMA, tree), seats_))
     # A silent refuter casts no vote. With none cast the finding is kept and says so: silence is not a refutation.
     heard = [[v for (j, _), v in zip(seats_, votes) if j == i and v] for i in range(len(checked))]
-    kept = [f if h else {**f, "claim": f"(unverified: no refuter answered) {f['claim']}"}
+    unverified = "(unverified: no refuter answered) "
+    kept = [f if h or f["claim"].startswith(unverified) else {**f, "claim": unverified + f["claim"]}
             for f, h in zip(checked, heard) if survives(h) or not h]
-    outside = len(quoted_) - len(checked)
-    return kept, len(candidates) - len(kept) - outside, outside, unanswered
+    held_over = sum(1 for f in kept if f.get("since"))
+    outside = len(quoted_) - len(fresh)
+    return kept, len(candidates) - (len(kept) - held_over) - outside, outside, unanswered, len(carry) - held_over
 
 
 # --- the verbs ------------------------------------------------------------------------
@@ -641,14 +666,14 @@ def read_pr(repo, number, allowed):
         others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
                  (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=30") or [])
         found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo, stacked)
-        kept, dropped, outside, unanswered = read_round(pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd),
-                                            load_probes(), full_read=base == merge_base, own=own)
+        kept, dropped, outside, unanswered, cleared = read_round(pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd),
+                                                     load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds))
     finally:
         discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
     return {"pr": pr, "n": rounds[-1]["n"] + 1 if rounds else 1, "sha": sha, "base": base,
             "intake": found, "kept": kept, "dropped": dropped, "outside": outside,
-            "unanswered": unanswered}
+            "unanswered": unanswered, "cleared": cleared}
 
 
 class held:
@@ -703,7 +728,8 @@ def cmd_review(args):
         n, sha, base, findings, dropped = read["n"], read["sha"], read["base"], read["intake"] + read["kept"], read["dropped"]
         pr_total, day_total = bot_meter.totals(repo, notes, METER) if not args.dry_run else (METER.cost, METER.cost)
         status = bot_meter.status_line(METER, pr_total, day_total, f"review round {n}")
-        body = render(n, number, sha, base, findings, dropped, None, MODE, read["outside"], read["unanswered"], METER, status)
+        body = render(n, number, sha, base, findings, dropped, None, MODE, read["outside"], read["unanswered"], METER, status,
+                      read["cleared"])
         if args.dry_run:
             print(body)
             return 0
@@ -872,10 +898,14 @@ def selfcheck():
     assert delta_base([], "mb", lambda rev: True, "ffff") == "mb", "round one reads the whole PR"
     assert delta_base(clean, "mb", lambda rev: True, "ffff") == "4f1c2e9a"
     assert delta_base(clean, "mb", lambda rev: rev == "abcdef1", "ffff") == "abcdef1", "a clean head rewritten away is skipped"
-    assert delta_base(rounds[1:], "mb", lambda rev: True, "ffff") == "mb", "a blocked round is not a base"
+    assert delta_base(rounds[1:], "mb", lambda rev: True, "ffff") == rounds[1]["sha"], "the fix after a blocked round is read on its own"
     assert delta_base(clean, "mb", lambda rev: True, "4f1c2e9a00") == "3503ed74", "a second read of one head reads its first read's range"
     assert delta_base(clean[:1], "mb", lambda rev: True, "abcdef1") == "mb", "a hand round with no base reads the whole PR"
     assert delta_base([dict(clean[0], skipped="1")], "mb", lambda rev: True, "ffff") == "mb", "a round that lost a lens is no base"
+    low, twin, med = dict(finding, severity="low"), dict(finding, lens="duplicate"), dict(finding, severity="medium")
+    assert carried([{"n": 4, "verdict": "blocked", "findings": [finding, low, twin, med]}]) == [dict(finding, since=4), dict(med, since=4)]
+    assert carried([{"n": 5, "verdict": "override", "findings": [finding, dict(med, since=2)]}]) == [dict(med, since=2)], \
+        "an overridden high is settled, and a carried finding keeps the round it was first raised in"
     assert ready_problems([{"n": 1, "sha": "abc1234", "verdict": "clean"}, {"n": 2, "sha": "abc1234", "verdict": "clean", "skipped": "1"}], "abc1234ff"), \
         "a last round that lost a lens is not ready"
     lost = render(1, 1, "abcdef1", "abcdef0", [], 0, None, "blocking", 0, ["x lens"])
@@ -930,12 +960,12 @@ def selfcheck():
             return {"refuted": False, "reason": "holds"}
 
         change = "+++ b/a.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    let x = 1;\n }\n"
-        kept, dropped, outside, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes)
+        kept, dropped, outside, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes)
         assert kept == [finding] and dropped == 1 and outside == 0, (kept, dropped, outside)
         assert seen.count(REFUTE_SCHEMA) == 3, "a high finding meets three refuters; a dropped or low one none"
         # Incident: rounds after a merge from main posted findings on the code main brought in.
         seen.clear()
-        kept, dropped, outside, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
+        kept, dropped, outside, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
                                             answer, probes, own={"a.rs": {9}})
         assert kept == [] and outside == 1 and dropped == 1, (kept, dropped, outside)
         assert REFUTE_SCHEMA not in seen, "a finding outside the PR's own change meets no refuter"
@@ -952,7 +982,7 @@ def selfcheck():
             if schema is LENS_SCHEMA and " as its correctness lens" in prompt:
                 raise Unanswered("yi ask exited 3: error: answer is not valid JSON")
             return answer(prompt, schema, cwd)
-        kept, dropped, outside, skipped = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, one_silent, probes)
+        kept, dropped, outside, skipped, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, one_silent, probes)
         assert skipped == ["correctness lens"] and kept == [], (kept, skipped)
         assert "correctness lens" in render(1, 1, "abcdef1", "abcdef0", [], 0, None, "blocking", 0, skipped), "the round says which lens it lost"
 
@@ -960,7 +990,7 @@ def selfcheck():
             if schema is REFUTE_SCHEMA:
                 raise Unanswered("exit 3")
             return answer(prompt, schema, cwd)
-        kept, dropped, outside, skipped = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, no_refuter, probes)
+        kept, dropped, outside, skipped, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, no_refuter, probes)
         assert [f["claim"] for f in kept] == ["(unverified: no refuter answered) " + finding["claim"]] and len(skipped) == 3, (kept, skipped)
         lone = [{"refuted": False, "reason": "holds"}, {"refuted": True, "reason": "no"}]
 
@@ -973,15 +1003,26 @@ def selfcheck():
                 raise Unanswered("exit 3")
             return say
         lone[:] = [{"refuted": True, "reason": "no"}]
-        kept, dropped, _, skipped = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, partial(lambda v: v), probes)
+        kept, dropped, _, skipped, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, partial(lambda v: v), probes)
         assert kept == [] and dropped == 2 and len(skipped) == 2, "an answered refutation still drops the finding"
         lone[:] = [{"refuted": False, "reason": "holds"}]
-        kept, _, _, skipped = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, partial(lambda v: v), probes)
+        kept, _, _, skipped, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, partial(lambda v: v), probes)
         assert [f["claim"] for f in kept] == [finding["claim"]], "one holding vote with two silent seats confirms it"
         prompts = []
         read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
                    lambda p, sch, cwd: (prompts.append(p), answer(p, sch, cwd))[1], probes, full_read=False)
         assert any("limited to the files changed since" in p for p in prompts), "a narrowed round tells its lens the range"
+        # Incident: a fix after a blocked round was read afresh and found new mediums, so no draft converged;
+        # a narrowed round still owes what the last round found, until a refuter finds it gone.
+        held = dict(finding, since=2)
+        kept, dropped, _, _, cleared = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes,
+                                                  own={"a.rs": {9}}, carry=[held])
+        assert kept == [held] and cleared == 0 and dropped == 1, (kept, dropped, cleared)
+        gone = lambda p, sch, cwd: {"refuted": "earlier head" in p, "reason": "fixed"} if sch is REFUTE_SCHEMA else answer(p, sch, cwd)
+        kept, _, _, _, cleared = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, gone, probes,
+                                            own={"a.rs": {9}}, carry=[held])
+        assert kept == [] and cleared == 1, "a refuter that finds a carried finding gone at the new head clears it"
+        assert "Cleared: 1" in render(3, 1, "abcdef1", "abcdef0", [], 0, None, "blocking", cleared=1)
         once = pathlib.Path(tree) / "yi"
         once.write_text(f"#!/bin/sh\ncat >/dev/null\nif [ ! -e {tree}/hung ]; then touch {tree}/hung; exec sleep 30; fi\n"
                         "echo '{\"findings\": []}'\n")
