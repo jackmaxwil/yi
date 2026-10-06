@@ -669,6 +669,8 @@ def extract_session(path, header, entries, census):
                 if index is not None:
                     calls[index]["error"] = body
                     calls[index]["errorClass"] = blame
+                    details = message.get("details")
+                    calls[index]["errorKind"] = (details or {}).get("errorKind") if isinstance(details, dict) else None
             else:
                 streak = 0
 
@@ -761,6 +763,7 @@ def failure_events(sid, calls, ts):
             {
                 "tool": call["tool"],
                 "errorClass": call["errorClass"],
+                "errorKind": call.get("errorKind"),
                 "fingerprint": fingerprint(call["tool"], first),
                 "argsHash": call["key"][1],
                 "resolvedInSession": action != "unresolved",
@@ -815,6 +818,7 @@ def build_board(events, marks):
                 "fingerprint": fp,
                 "tool": rows[0]["tool"],
                 "errorClass": rows[0]["errorClass"],
+                "errorKind": rows[0].get("errorKind"),
                 "count": len(rows),
                 "sessions": sorted({r["sessionId"] for r in rows}),
                 "firstSeen": min(stamps),

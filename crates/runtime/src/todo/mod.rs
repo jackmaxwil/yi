@@ -161,6 +161,32 @@ pub enum TodoError {
     Unanswered(#[from] yi_types::plan::doc::PlanIssue),
 }
 
+impl TodoError {
+    /// What the call met, for `details.errorKind`, by the plan tool's classes.
+    pub fn kind(&self) -> yi_types::event::ToolErrorKind {
+        use yi_types::event::ToolErrorKind;
+        match self {
+            Self::NoSuchLabel { .. }
+            | Self::NoSuchPhase { .. }
+            | Self::Illegal { .. }
+            | Self::Empty
+            | Self::Stale { .. } => ToolErrorKind::Stale,
+            Self::Duplicate { .. }
+            | Self::DuplicateOfPlanRow { .. }
+            | Self::ParentOpen { .. }
+            | Self::SetClosed { .. }
+            | Self::Doc(_)
+            | Self::Unanswered(_) => ToolErrorKind::Verdict,
+            Self::Ambiguous { .. }
+            | Self::ManyRunning { .. }
+            | Self::NoEvidence { .. }
+            | Self::Checklist { .. }
+            | Self::TooDeep { .. }
+            | Self::Mirrored { .. } => ToolErrorKind::InvalidArgs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct State {
     list: TodoList,
