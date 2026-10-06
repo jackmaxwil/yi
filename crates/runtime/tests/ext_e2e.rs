@@ -242,6 +242,7 @@ fn a_signal_after_the_first_request_delivers_the_protocol_as_one_message() -> Te
     let signal = Event::ToolResult {
         name: "grep".to_owned(),
         exit: Some(0),
+        check: false,
         files_matched: 40,
     };
     host.dispatch(&signal, None);
@@ -389,6 +390,7 @@ fn a_search_over_many_files_escalates_without_a_nudge() -> TestResult {
         &Event::ToolResult {
             name: "grep".to_owned(),
             exit: Some(0),
+            check: false,
             files_matched: 9,
         },
         None,
@@ -398,6 +400,57 @@ fn a_search_over_many_files_escalates_without_a_nudge() -> TestResult {
     assert!(
         every.iter().all(|text| !text.contains("outgrown")),
         "a read-only signal loads the protocol quietly: {every:?}"
+    );
+    Ok(())
+}
+
+fn failed_bash_after_edit(check: bool) -> Result<usize, Box<dyn Error>> {
+    let dir = Scratch::new("yi-ext-failed-check")?;
+    let mut host = started(&dir, &dir);
+    let seen = deliveries(&mut host);
+    host.dispatch(
+        &Event::ToolCall {
+            name: "read".to_owned(),
+            target: Some(dir.join("lib.rs")),
+        },
+        None,
+    );
+    host.dispatch(
+        &Event::ToolCall {
+            name: "edit".to_owned(),
+            target: Some(dir.join("lib.rs")),
+        },
+        None,
+    );
+    host.dispatch(
+        &Event::ToolResult {
+            name: "bash".to_owned(),
+            exit: Some(1),
+            check,
+            files_matched: 0,
+        },
+        None,
+    );
+    assert!(host.system_prompt().contains("# Orchestrate") || !fragments(&seen).is_empty());
+    Ok(reminders(&seen)
+        .iter()
+        .filter(|line| line.contains("outgrown"))
+        .count())
+}
+
+/// Dies with "write the plan now" after a failed `pwd`: any failing command after an edit
+/// told the model to plan, though only a failed build or test says the task outgrew one shot.
+#[test]
+fn only_a_failed_check_after_an_edit_reminds() -> TestResult {
+    assert_eq!(
+        failed_bash_after_edit(false)?,
+        0,
+        "a failed non-check command attaches the protocol silently"
+    );
+    assert_eq!(
+        failed_bash_after_edit(true)?,
+        1,
+        "a failed check after an edit reminds"
     );
     Ok(())
 }
@@ -1046,6 +1099,7 @@ fn a_compaction_delivers_every_late_fragment_again() -> TestResult {
         &Event::ToolResult {
             name: "grep".to_owned(),
             exit: Some(0),
+            check: false,
             files_matched: 40,
         },
         None,

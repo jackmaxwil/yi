@@ -87,9 +87,9 @@ pub struct TuiOptions {
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
 pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
-pub(crate) const ORB_COLS: u16 = 6;
-pub(crate) const ORB_ROWS: u16 = 3;
-pub(crate) const ORB_PX: usize = 192;
+pub(crate) const ORB_COLS: u16 = 10;
+pub(crate) const ORB_ROWS: u16 = 5;
+pub(crate) const ORB_PX: usize = 320;
 pub struct TaskState {
     pub(crate) cell: TaskCell,
     pub(crate) streaming: Option<AgentMessage>,
@@ -765,6 +765,9 @@ impl App {
                         }
                     }
                     Attribution::User | Attribution::Task => {
+                        if let Some(at) = self.steering.iter().position(|queued| *queued == text) {
+                            self.steering.remove(at);
+                        }
                         self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         if focus.chars().count() > 40 {
@@ -915,7 +918,7 @@ impl App {
             && let Some(state) = self.tasks.get_mut(child_id)
         {
             let summary = arg_summary(tool_name, args);
-            state.cell.last_tool = Some(if summary.is_empty() {
+            state.cell.step(if summary.is_empty() {
                 tool_name.clone()
             } else {
                 format!("{tool_name} {summary}")

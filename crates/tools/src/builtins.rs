@@ -266,8 +266,8 @@ fn walk_capped(
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            // Every guarded identity is a directory's but a linked worktree's `.git` file, which
-            // the ignore rules drop by name, so a file's is read only under a wall.
+            // A guarded file (a key file, a linked worktree's `.git`) is refused where a visit
+            // opens it, through the gate, so a file's identity is read here only under a wall.
             let meta = (file_type.is_dir() || !ids.is_empty())
                 .then(|| entry.metadata().ok())
                 .flatten();
@@ -298,61 +298,21 @@ const READ_ONLY_VERBS: [&str; 24] = [
     "du", "df", "date", "env", "printenv", "grep", "rg", "ag", "find", "fd", "diff", "true",
 ];
 
-/// `git` is half a read tool: only the reporting subcommands qualify.
+#[rustfmt::skip]
 const READ_ONLY_GIT: [&str; 10] = [
-    "log",
-    "status",
-    "diff",
-    "show",
-    "blame",
-    "branch",
-    "describe",
-    "rev-parse",
-    "ls-files",
+    "log", "status", "diff", "show", "blame", "branch", "describe", "rev-parse", "ls-files",
     "shortlog",
 ];
 
 /// Ripwire's query flags read the tree; its edit, baseline, note, export, server and run-trace
 /// flags write or execute, so a command carrying any flag outside this set stays `Exec`.
+#[rustfmt::skip]
 const READ_ONLY_RIPWIRE: [&str; 38] = [
-    "for",
-    "pack-task",
-    "callers",
-    "callees",
-    "uses",
-    "around",
-    "expand",
-    "outline",
-    "path",
-    "connect",
-    "impact",
-    "verify",
-    "mentions",
-    "affected",
-    "exercises",
-    "situ",
-    "test-gate",
-    "edit-check",
-    "safe-delete",
-    "slice",
-    "at",
-    "from-trace",
-    "cochange",
-    "whereis",
-    "tree",
-    "recall",
-    "lego",
-    "json",
-    "limit",
-    "offset",
-    "detail",
-    "signatures-only",
-    "pack-signatures",
-    "token-budget",
-    "max-tokens",
-    "compress",
-    "help",
-    "version",
+    "for", "pack-task", "callers", "callees", "uses", "around", "expand", "outline", "path",
+    "connect", "impact", "verify", "mentions", "affected", "exercises", "situ", "test-gate",
+    "edit-check", "safe-delete", "slice", "at", "from-trace", "cochange", "whereis", "tree",
+    "recall", "lego", "json", "limit", "offset", "detail", "signatures-only", "pack-signatures",
+    "token-budget", "max-tokens", "compress", "help", "version",
 ];
 
 /// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
@@ -688,6 +648,36 @@ fn timeout_limit(segment: &str) -> Option<std::time::Duration> {
     std::time::Duration::try_from_secs_f64(seconds * scale).ok()
 }
 
+/// Invariant: a list's status is its last command's, so only a final top-level `&&` can
+/// mean a later segment was skipped.
+fn ends_in_and_chain(command: &str) -> bool {
+    let mut chars = command.trim_end().chars().peekable();
+    let (mut quote, mut depth, mut prev, mut and_last) = (None, 0usize, ' ', false);
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => {
+                chars.next();
+            }
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(') => depth = depth.saturating_add(1),
+            (None, ')') => depth = depth.saturating_sub(1),
+            (None, '&') if matches!(prev, '>' | '<' | '|') || chars.peek() == Some(&'>') => {}
+            (None, '&' | '|' | ';' | '\n') if depth == 0 => {
+                and_last = c == '&' && chars.next_if_eq(&'&').is_some();
+                if c == '|' {
+                    chars.next_if_eq(&'|');
+                }
+            }
+            (None, _) => {}
+        }
+        prev = c;
+    }
+    and_last
+}
+
 /// Where no `bash` is on PATH the tool falls back to POSIX `sh`, so a bashism is a shell
 /// refusal the model cannot see in the output; named only when the shape matches (#476).
 fn posix_shell_hint(command: &str, exit_code: i32, stderr: &str) -> Option<String> {
@@ -802,7 +792,8 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
                 let after = background_after.unwrap_or_default();
-                return backgrounded_output(sections, id, after, timeout);
+                let owned = context.job_owner.is_some();
+                return backgrounded_output(sections, id, after, timeout, owned);
             }
             Err(message) => return error_output(message),
         };
@@ -827,10 +818,16 @@ impl Tool for BashTool {
                 .filter(|_| !capture.truncated),
             max_lines,
         );
-        if !reduced.text.is_empty() {
-            sections.push(reduced.text.clone());
+        let body = match (&reduced.recovery, capture.truncated) {
+            (Some(note), true) => (reduced.text.strip_suffix(note.as_str()))
+                .map_or(reduced.text.as_str(), str::trim_end),
+            _ => reduced.text.as_str(),
+        };
+        if !body.is_empty() {
+            sections.push(body.to_owned());
         }
-        sections.extend(capture.cut_note().filter(|_| reduced.recovery.is_none()));
+        sections.extend(capture.cut_row());
+        sections.extend(capture.cut_note());
         if timed_out {
             sections.extend(timed_out_notes(timeout, nudge.is_some(), asked_wait));
         } else if capture.cancelled {
@@ -842,7 +839,7 @@ impl Tool for BashTool {
         let exit_code = capture.exit_code.unwrap_or(-1);
         if exit_code != 0 {
             sections.push(format!("exit code: {exit_code}"));
-            if command.contains("&&") {
+            if ends_in_and_chain(command) {
                 sections.push(format!(
                     "[exit {exit_code} inside a && chain: any segment after the failing one did not run]"
                 ));
@@ -860,11 +857,14 @@ impl Tool for BashTool {
             sections.push(hint);
         }
         // The raw output, not the reduced text: a refusal line the reducer cut still counts.
+        let raw = format!("{}{}", capture.stdout, capture.stderr);
         let refusal = context.sandbox.as_ref().and_then(|sandbox| {
-            let raw = format!("{}{}", capture.stdout, capture.stderr);
             crate::sandbox::sandbox_refusal(sandbox, &context.cwd, capture.exit_code, &raw, command)
         });
         sections.extend(refusal.as_ref().map(crate::sandbox::denial_hint));
+        let note = (context.sandbox.as_ref())
+            .and_then(|_| crate::sandbox::outcome_note(&raw, command, exit_code));
+        sections.extend(note);
         let mut text = if sections.is_empty() {
             "(no output)".to_owned()
         } else {
@@ -911,12 +911,18 @@ fn backgrounded_output(
     id: crate::jobs::JobId,
     after: std::time::Duration,
     timeout: std::time::Duration,
+    owned: bool,
 ) -> ToolOutput {
     const TAIL_LINES: usize = 20;
     const TAIL_BYTES: usize = 2_048;
     let timeout = timeout.as_secs();
+    let arrival = if owned {
+        "when it exits, starting your next turn: end the turn rather than sleep or poll"
+    } else {
+        "only if it exits while this turn is still running"
+    };
     sections.push(format!(
-        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own only if it exits while this turn is still running; before you end the turn, wait for it with bash job={id} wait=<s>.]"
+        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own {arrival}; bash job={id} wait=<s> waits for it now.]"
     ));
     let chunk = crate::jobs::registry().output_since(id, 0);
     let (so_far, printed) = chunk.map_or((String::new(), 0), |chunk| (chunk.text, chunk.next));
@@ -993,6 +999,7 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
             return error_output("no background job to check on".to_owned());
         };
         if report.finished {
+            jobs.mark_delivered(id);
             let exit_code = report.exit_code.unwrap_or(-1);
             let mut output = text_output(format!("{}\n{}", report.headline(), report.output));
             output.result.details = json!({ "job": id.0, "exitCode": exit_code });

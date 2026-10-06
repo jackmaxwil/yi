@@ -2060,6 +2060,65 @@ fn ctrl_c_clears_the_draft_then_warns_then_stops_the_daemon() -> TestResult {
     )
 }
 
+/// Dies with ctrl+c on an open `/` popup arming the daemon-stop note while the popup stayed:
+/// the popup took the key and ignored it, and the console counted it as the first of two.
+#[test]
+fn ctrl_c_closes_an_open_popup_without_arming_the_quit() -> TestResult {
+    run(
+        "ctrl-c-popup",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type /\n\
+         wait-frame 3000 plantree\n\
+         key ctrl-c\n\
+         wait-frame 3000 !plantree\n\
+         wait-frame 3000 !stops the daemon\n\
+         quit\n",
+    )
+}
+
+/// With focus off the chat a drafted box is not this key's business: the draft stays and the
+/// press is the first of the two that stop the daemon.
+#[test]
+fn ctrl_c_off_the_chat_arms_the_quit_and_keeps_the_draft() -> TestResult {
+    run(
+        "ctrl-c-sidebar",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type draft text\n\
+         key tab\n\
+         key ctrl-c\n\
+         wait-frame 3000 stops the daemon\n\
+         wait-frame 3000 draft text\n\
+         quit\n",
+    )
+}
+
+/// Dies with ctrl+c forwarded into a pending approval, which ignores it: the press armed no
+/// quit, so a second one could not stop the daemon while the approval waited.
+#[test]
+fn ctrl_c_over_a_pending_approval_still_stops_the_daemon() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Expect("_yi/shutdown", seen_ok));
+    run(
+        "ctrl-c-approval",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 rm -rf target\n\
+         key ctrl-c\n\
+         wait-frame 3000 stops the daemon\n\
+         key ctrl-c\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
 /// ⌥q leaves: the console exits and no `_yi/shutdown` reaches the daemon.
 #[test]
 fn alt_q_detaches_and_leaves_the_daemon_running() -> TestResult {

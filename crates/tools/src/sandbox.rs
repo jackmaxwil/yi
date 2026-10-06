@@ -576,6 +576,10 @@ fn absolute_path(raw: &str, cwd: &Path) -> PathBuf {
 /// The path of a line in the errno shape a refused write prints, `<prog>: <path>: Operation not
 /// permitted` (Rust adds ` (os error 1)`), Python's `[Errno 1] …: '<path>'` or node's `EPERM`.
 fn errno_path(line: &str) -> Option<&str> {
+    // `sandbox-exec` speaking is no program naming a path.
+    if line.starts_with("sandbox-exec: ") {
+        return None;
+    }
     let line = line.trim_end();
     let line = line.strip_suffix(" (os error 1)").unwrap_or(line);
     let raw = match line.strip_suffix(": Operation not permitted") {
@@ -625,8 +629,17 @@ fn refused_path(
         .find(|path| sandbox.denies_write(path))
 }
 
-/// Seatbelt denies with a plain errno, or at the resolver. A denied write target counts at any
-/// exit (`touch x | tail -1` is 0); else a non-zero exit, no known shell failure, naming a denial.
+const NETWORK_DENIALS: [&str; 3] = [
+    // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
+    "resolve host",
+    // getaddrinfo's EAI_NONAME, as Python and ssh print it.
+    "nodename nor servname",
+    // `ping` to a host past loopback, which exits 2.
+    "sendto: operation not permitted",
+];
+
+/// A denied write target counts at any exit; else a non-zero exit naming a denial, a network
+/// denial also past a shell-failure exit. Exit 0 never records a scope: see [`exit_zero_note`].
 pub fn sandbox_refusal(
     sandbox: &Sandbox,
     cwd: &Path,
@@ -635,29 +648,118 @@ pub fn sandbox_refusal(
     command: &str,
 ) -> Option<SandboxRefusal> {
     const QUICK_REJECT: [i32; 3] = [2, 126, 127];
-    const DENIALS: [&str; 7] = [
+    const DENIALS: [&str; 5] = [
         "operation not permitted",
         "permission denied",
         "read-only file system",
         "sandbox",
         "deny file-write",
-        // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
-        "resolve host",
-        // getaddrinfo's EAI_NONAME, as Python and ssh print it.
-        "nodename nor servname",
     ];
     if let Some(path) = refused_path(sandbox, cwd, exit_code, output, command) {
         return Some(SandboxRefusal::Path(path));
     }
     let code = exit_code?;
     let lower = output.to_lowercase();
-    let named = DENIALS.iter().any(|needle| lower.contains(needle));
-    (code != 0 && !QUICK_REJECT.contains(&code) && named)
-        .then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
+    let contains = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
+    let refused = code != 0
+        && (contains(&NETWORK_DENIALS) || (!QUICK_REJECT.contains(&code) && contains(&DENIALS)));
+    refused.then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
 }
 
+/// A refusal hidden behind exit 0 is a note, never recorded: fetched text can quote the phrase.
+/// The line must read `<program>: ...` for a network program the command names (`fatal:` for git).
+pub fn exit_zero_note(output: &str, command: &str) -> Option<String> {
+    const PROGRAMS: [&str; 9] = [
+        "curl",
+        "wget",
+        "git",
+        "ssh",
+        "scp",
+        "rsync",
+        "ping",
+        "ping6",
+        "traceroute",
+    ];
+    let diagnostic = output.lines().any(|line| {
+        let lower = line.to_lowercase();
+        let at = NETWORK_DENIALS
+            .iter()
+            .filter_map(|needle| lower.find(needle))
+            .min();
+        let before = at.and_then(|at| line.get(..at)).unwrap_or_default();
+        PROGRAMS.iter().any(|program| {
+            let head = match *program {
+                "git" => "fatal: ".to_owned(),
+                other => format!("{other}: "),
+            };
+            before.contains(&head) && command.contains(program)
+        })
+    });
+    diagnostic.then(|| {
+        format!("[this output shows the sandbox refusing the network ({CONTAINED}) though the command exited 0; nothing is recorded and no call will ask]")
+    })
+}
+
+/// The note under a bash result that has no refusal to record: a nested apply failure, or a
+/// network refusal behind exit 0.
+pub fn outcome_note(output: &str, command: &str, exit_code: i32) -> Option<String> {
+    nested_sandbox_note(output).or_else(|| {
+        (exit_code == 0)
+            .then(|| exit_zero_note(output, command))
+            .flatten()
+    })
+}
+
+/// Incident: `sandbox-exec: sandbox_apply: Operation not permitted` read as a refused write to
+/// `<cwd>/sandbox_apply` once the profile denied the cwd, an ask no approval answers.
+pub fn nested_sandbox_note(output: &str) -> Option<String> {
+    let line = output
+        .lines()
+        .find(|line| line.starts_with("sandbox-exec: sandbox_apply:"))?;
+    Some(format!(
+        "[`{line}`: a sandbox-exec run inside the sandbox could not apply its profile; this is no refused write, and the sandbox applies its own profile to nothing it runs]"
+    ))
+}
+
+const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond 127.0.0.1 and ::1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
+
+/// The note under a kernel cell the sandbox refused, read off its streams and traceback (a
+/// `bash()` job's output too); the kernel has no retry outside, so it promises no question.
+pub fn kernel_cell_note(
+    sandbox: Option<&Sandbox>,
+    cwd: &Path,
+    code: &str,
+    result: &yi_types::kernel::ExecuteResult,
+) -> Option<String> {
+    const OS_ERRORS: [&str; 4] = ["PermissionError", "OSError", "gaierror", "URLError"];
+    let sandbox = sandbox.filter(|_| Sandbox::available())?;
+    // A traceback echoes the cell's source, so only an OS error's own name and text count.
+    let error = (result.error.as_ref())
+        .filter(|error| OS_ERRORS.contains(&error.ename.as_str()))
+        .map(|error| format!("{}: {}", error.ename, error.evalue));
+    let raw = format!(
+        "{}{}{}",
+        result.stdout,
+        result.stderr,
+        error.unwrap_or_default()
+    );
+    if result.status == yi_types::kernel::ExecuteStatus::Ok {
+        return exit_zero_note(&raw, code);
+    }
+    let refusal = sandbox_refusal(sandbox, cwd, Some(1), &raw, code)?;
+    let what = match &refusal {
+        SandboxRefusal::Path(path) => format!("writing `{}`", path.display()),
+        SandboxRefusal::Scopes(_) => "this".to_owned(),
+    };
+    Some(format!(
+        "next: the sandbox refused {what} ({CONTAINED}); the kernel and its bash() jobs run inside it and cannot leave it, so do not retry; say what needs the network or that path and ask the user"
+    ))
+}
+
+/// Programs whose whole job is a raw ICMP socket.
+const RAW_SOCKET: [&str; 4] = ["ping", "ping6", "traceroute", "traceroute6"];
+
 pub fn denial_hint(refusal: &SandboxRefusal) -> String {
-    const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond 127.0.0.1 and ::1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
     match refusal {
         SandboxRefusal::Path(path) => {
             let dir = path.parent().unwrap_or(path);
@@ -670,6 +772,17 @@ pub fn denial_hint(refusal: &SandboxRefusal) -> String {
                 "next: the sandbox refused writing `{}` ({CONTAINED}); the next call {rule} under `{}` outside those asks: approving widens that run by that directory, or runs it outside the sandbox where the directory is protected; nobody to answer refuses it",
                 path.display(),
                 dir.display()
+            )
+        }
+        SandboxRefusal::Scopes(scopes)
+            if scopes
+                .iter()
+                .all(|scope| RAW_SOCKET.contains(&scope.as_str())) =>
+        {
+            let programs: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
+            format!(
+                "next: the sandbox refused this: {} sends ICMP, and a contained run may send it only to 127.0.0.1 and ::1 ({CONTAINED}); the next call using it asks, and approving runs that one call outside the sandbox; nobody to answer refuses it",
+                programs.join(", ")
             )
         }
         SandboxRefusal::Scopes(scopes) => {

@@ -60,7 +60,7 @@ struct Shared {
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<VecDeque<Queued>>,
     mail: Arc<tokio::sync::Notify>,
-    follow_up: Mutex<Vec<AgentMessage>>,
+    follow_up: Mutex<Vec<Queued>>,
     tools: Mutex<Vec<Arc<dyn yi_loop::AgentTool>>>,
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
@@ -89,6 +89,8 @@ struct Shared {
     /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
     held: std::sync::atomic::AtomicBool,
     runs: std::sync::atomic::AtomicU64,
+    job_owner: yi_tools::jobs::JobOwner,
+    retired: std::sync::atomic::AtomicBool,
 }
 
 pub type PromptChoiceFn =
@@ -202,6 +204,8 @@ impl AgentSession {
                 cancelled: false.into(),
                 held: false.into(),
                 runs: 0.into(),
+                job_owner: yi_tools::jobs::JobOwner::mint(),
+                retired: false.into(),
             }),
             config,
             provider,
@@ -221,17 +225,6 @@ impl AgentSession {
     pub fn set_kernel_service(&self, service: Arc<crate::kernel::KernelService>) {
         if let Ok(mut slot) = self.kernel.lock() {
             *slot = Some(service);
-        }
-    }
-
-    /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session
-    /// leaks its IPython process. Every path that retires a session calls this.
-    pub fn dispose_kernel(&self) {
-        let Some(kernel) = self.kernel_service() else {
-            return;
-        };
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::spawn(async move { kernel.dispose().await });
         }
     }
 
@@ -614,6 +607,7 @@ impl AgentSession {
                     .with_wall(self.wall())
                     .with_spill_key(Arc::clone(&spill_key))
                     .with_transcript(self.store_handle())
+                    .with_job_owner(self.shared.job_owner)
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
@@ -676,9 +670,7 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
-        if let Some(todos) = self.todos() {
-            todos.rehydrate();
-        }
+        self.todos().iter().for_each(|todos| todos.rehydrate());
         // Invariant: bound last, so a tick owed since the last process finds the ledger and list.
         if let Some(service) = self.heartbeat_service() {
             service.bind_session(id);
@@ -690,6 +682,7 @@ impl AgentSession {
             telemetry.bind(&file, &id);
         }
         self.restore_settings(&entries);
+        self.compactor.iter().for_each(|c| c.resume(&entries));
         Ok(count)
     }
 
@@ -874,7 +867,7 @@ impl AgentSession {
 
     /// Taken after a running turn's answer, or it starts an idle session's turn.
     pub fn follow_up_message(&self, message: AgentMessage) -> bool {
-        run::follow(&self.parts(), message)
+        run::follow(&self.parts(), message, None)
     }
 
     /// Presented in arrival order at the next boundary; `wakes` starts an idle session's turn.
@@ -1124,22 +1117,11 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
     }
     let store = shared.store.lock().ok().and_then(|slot| slot.clone());
     if let Some(store) = store {
-        let mut session = yi_session::lock_session(&store);
-        let id = session.next_id();
-        let recorded = session.append_record(yi_types::record::LaneRecord::Usage {
-            id,
-            lane: "main".to_owned(),
-            usage: child.clone(),
-            cause: yi_context::attribution::CHILD_USAGE_CAUSE.to_owned(),
-            run_id: None,
-            entry_id: None,
-            attempt: None,
-            stop_reason: None,
-            tool_call_id: None,
-            details: None,
-            seq: 0,
-            timestamp: 0,
-        });
+        let recorded = crate::spend::append_main_usage(
+            &store,
+            yi_context::attribution::CHILD_USAGE_CAUSE.to_owned(),
+            child.clone(),
+        );
         if let Err(error) = recorded {
             record_store_error(shared, &error);
         }

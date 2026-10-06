@@ -160,6 +160,31 @@ pub fn render(lines: &[String]) -> String {
     format!("{ENVIRONMENT_TAG}\n{}\n</environment>", lines.join("\n"))
 }
 
+/// The block's time, model id, cwd and branch: never its counts, context or cost, which the
+/// model still has to source.
+pub fn printed_facts(block: &str) -> String {
+    let mut facts = String::new();
+    for line in block.lines() {
+        let fact = if let Some(time) = line.strip_prefix("time: ") {
+            Some(time)
+        } else if let Some(model) = line.strip_prefix("model: ") {
+            model.split(" · ").next()
+        } else if let Some(cwd) = line.strip_prefix("cwd: ") {
+            let (path, git) = cwd.split_once(" (git: ").unwrap_or((cwd, ""));
+            facts.push_str(path);
+            facts.push('\n');
+            git.split(',').next()
+        } else {
+            None
+        };
+        if let Some(fact) = fact {
+            facts.push_str(fact);
+            facts.push('\n');
+        }
+    }
+    facts
+}
+
 pub fn message(block: String) -> AgentMessage {
     yi_context::wrap_internal("environment", &block, 0)
 }

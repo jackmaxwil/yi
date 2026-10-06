@@ -64,6 +64,7 @@ run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
 # The hard cap is checked independent of the baseline file, so nothing here reads
 # target/dist/yi; only this flag proves the cap fires on its own reason (D249).
 run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
+run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
@@ -96,6 +97,8 @@ run "$PY" scripts/pr_review.py --selfcheck
 # The autofixer pushes to people's branches, so its table, its wall and its marker check are
 # proved here on a scratch merge with a stand-in model, never a forge.
 run "$PY" scripts/pr_autofix.py --selfcheck
+# Every bot comment's spend is read back from its meta line, so the parse and the totals are proved here.
+run "$PY" scripts/bot_meter.py --selfcheck
 # The orphan scans are heuristics over text, so the flag is where they are proved to
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).
