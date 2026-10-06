@@ -270,6 +270,12 @@ fn work_is_changes_landed_not_calls_made() -> TestResult {
     assert_eq!(landed(&message, &results), (2, false));
     let results = vec![result("c7", "todo", false)];
     assert_eq!(landed(&message, &results), (0, true));
+    // A mutating command that ran and failed is unflagged now; its exit still says nothing landed.
+    let mut failed = result("c2", "bash", false);
+    if let AgentMessage::ToolResult { details, .. } = &mut failed {
+        *details = Some(json!({ "exitCode": 1 }));
+    }
+    assert_eq!(landed(&message, &[failed]), (0, false));
     Ok(())
 }
 

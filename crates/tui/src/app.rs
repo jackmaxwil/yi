@@ -960,7 +960,11 @@ impl App {
                     intent: None,
                     status: ToolStatus::Done,
                     summary: ToolCell::summary_of(&tool_name, ""),
-                    digest: ToolCell::digest_of(&tool_name, &text, is_error),
+                    digest: ToolCell::digest_of(
+                        &tool_name,
+                        &text,
+                        yi_types::event::shown_failed(is_error, &result.details),
+                    ),
                     preview: preview_lines(&text, 12, 6),
                     elapsed_ms: 0,
                     calls: 1,

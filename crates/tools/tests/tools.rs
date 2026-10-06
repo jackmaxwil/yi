@@ -188,7 +188,13 @@ fn bash_reports_output_exit_code_and_stderr() -> TestResult {
         args(&[("command", json!("echo oops >&2; exit 3"))]),
         &context,
     );
-    assert!(failed.is_error);
+    // A command that ran and exited non-zero is a result: the model reads the exit, unflagged.
+    assert!(!failed.is_error);
+    assert_eq!(failed.result.details["exitCode"], json!(3));
+    assert!(yi_types::event::shown_failed(
+        failed.is_error,
+        &failed.result.details
+    ));
     let text = output_text(&failed);
     assert!(text.contains("oops"));
     assert!(text.contains("exit code: 3"));

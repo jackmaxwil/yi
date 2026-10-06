@@ -145,6 +145,15 @@ pub fn error_output(message: impl Into<String>) -> ToolOutput {
     output
 }
 
+/// Invariant: a command that ran and exited non-zero is a result the model reads; only one Yi
+/// could not finish, or the sandbox refused, is an error.
+pub(crate) fn ran_output(text: String, details: Value, unfinished: bool) -> ToolOutput {
+    let mut output = text_output(text);
+    output.result.details = details;
+    output.is_error = unfinished;
+    output
+}
+
 /// The machine-readable half of a failure; the prose stays the model's view.
 pub fn error_output_kind(
     message: impl Into<String>,

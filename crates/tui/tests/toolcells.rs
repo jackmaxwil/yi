@@ -307,6 +307,39 @@ fn a_nonzero_exit_and_a_masked_not_found_are_the_chips() -> TestResult {
     Ok(())
 }
 
+/// Dies with a command that ran and failed drawn as done: the model's flag no longer marks a
+/// non-zero exit or a rule's verdict, so the card reads them from `details` instead.
+#[test]
+fn a_nonzero_exit_and_a_verdict_still_open_with_a_cross() -> TestResult {
+    let mut app = app();
+    started(&mut app, "b0", "bash", "python3 -m unittest -q");
+    ended_with(
+        &mut app,
+        "b0",
+        "bash",
+        "FAILED (failures=1)",
+        false,
+        json!({ "exitCode": 1 }),
+    );
+    let rows = flat(&app.take_commits());
+    assert!(
+        rows.iter().any(|row| row.contains("✕ $ python3")),
+        "{rows:?}"
+    );
+    started(&mut app, "p0", "plan", "add_edge");
+    ended_with(
+        &mut app,
+        "p0",
+        "plan",
+        "plan update refused: ordering cycle through [\"a\", \"b\"]",
+        false,
+        json!({ "outcome": "verdict" }),
+    );
+    let rows = flat(&app.take_commits());
+    assert!(rows.iter().any(|row| row.contains('✕')), "{rows:?}");
+    Ok(())
+}
+
 #[test]
 fn a_failed_card_opens_with_a_cross_and_keeps_its_reason() -> TestResult {
     let mut app = app();
