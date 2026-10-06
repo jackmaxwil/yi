@@ -16,7 +16,9 @@ use yi_runtime::plan::tool::PlanTool;
 use yi_tools::{Tool, ToolContext};
 use yi_types::plan::canonical::Digest;
 use yi_types::plan::contract::{CheckerManifest, Decider};
-use yi_types::plan::doc::{AgentId, Delegation, Isolation, Plan, TodoAddr, TodoLabel, TodoState};
+use yi_types::plan::doc::{
+    AgentId, Delegation, Isolation, Plan, TodoAddr, TodoLabel, TodoState, TodoStateName,
+};
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -573,15 +575,21 @@ fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
 /// Dies on a set whose todo rows carry a contract: each row became a checklist line, so the
 /// contract was dropped without a word and the todo would land unverified.
 #[test]
-fn a_set_row_with_a_contract_is_refused_and_bare_rows_land() -> TestResult {
+fn a_set_row_with_a_contract_keeps_it_and_bare_rows_land() -> TestResult {
     let rig = rig("set-rows")?;
     let contract = json!({"class": "inline", "items": [
         {"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
     let (refused, text) = call(
         &rig,
-        json!({"op": "set", "todos": [{"label": "a"}, {"label": "b", "contract": contract}]}),
+        json!({"op": "set", "goal": "g", "todos": [{"label": "a"}, {"label": "b", "contract": contract}]}),
     );
-    assert!(refused && text.contains("a todo is {label"), "{text}");
+    assert!(!refused, "{text}");
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let plan = rig.store.read(&id)?;
+    assert!(
+        todo_of(&plan, "b")?.contract.is_some(),
+        "the row's contract is kept"
+    );
     let (refused, text) = call(&rig, json!({"op": "set", "todos": []}));
     assert!(refused, "an empty set is no checklist: {text}");
     let (refused, text) = call(&rig, json!({"op": "set", "todos": [{"label": "a"}, "b"]}));
@@ -653,5 +661,74 @@ async fn a_verdict_reaches_the_model_as_a_result_and_a_misread_as_an_error() -> 
         yi_loop::AgentTool::execute(&adapter, "c2", input(json!({"op": "frobnicate"})), &signal)
             .await;
     assert!(misread.is_error, "a misread stays an error");
+    Ok(())
+}
+
+/// The engine's state of one row in the open plan.
+fn state_of(rig: &Rig, label: &str) -> Result<String, Box<dyn Error>> {
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let plan = rig.store.read(&id)?;
+    Ok(format!(
+        "{:?}",
+        TodoStateName::of(&todo_of(&plan, label)?.state)
+    ))
+}
+
+/// Dies with a whole-plan set refused for one row the engine cannot reach: the dogfood's prompt
+/// 03 closes a cycle, prompt 11 asks done before the fix, prompt 04 blocks on the user, and each
+/// refusal sent the model to rebuild the whole call. The call lands; the row carries the answer.
+#[test]
+fn a_whole_plan_set_lands_and_each_unreachable_row_says_why() -> TestResult {
+    let rig = rig("apply")?;
+    let failing = json!({"class": "inline", "items": [
+        {"id": "tests", "critical": true, "weight": 1, "decider": {"cmd": "false"}}]});
+    let options = json!([{"id": "raise", "label": "Raise ValueError"},
+        {"id": "none", "label": "Return None"}, {"id": "inf", "label": "Return inf"}]);
+    let rows = json!([
+        {"label": "Add power(a, b)", "after": ["Add tests for power"]},
+        {"label": "Add tests for power", "after": ["Add power(a, b)"]},
+        {"label": "Fix calc.divide", "state": "done", "contract": failing},
+        {"label": "Decide divide-by-zero behavior", "state": "blocked", "options": options},
+        {"label": "Document it", "after": ["no such todo"]},
+        {"label": "Document it"},
+        {"label": "x".repeat(81)},
+    ]);
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "harden calc.py", "todos": rows}),
+    );
+    assert!(!refused, "{text}");
+    assert!(text.contains("left out: it would close a cycle"), "{text}");
+    assert!(text.contains("Fix calc.divide: done refused"), "{text}");
+    assert!(
+        text.contains("\"no such todo\" left out: no todo has that label"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Document it: a second row with this name was left out"),
+        "{text}"
+    );
+    assert!(text.contains("label is 81 chars, the cap is 80"), "{text}");
+    assert_eq!(
+        state_of(&rig, "Fix calc.divide")?,
+        "Running",
+        "the failed check leaves it open"
+    );
+    assert_eq!(state_of(&rig, "Decide divide-by-zero behavior")?, "Blocked");
+    Ok(())
+}
+
+/// Dies with a stale-view refusal on a repeated set: the same whole plan sent twice is the same
+/// plan, so the second call lands with nothing to say.
+#[test]
+fn the_same_whole_plan_set_twice_lands_twice() -> TestResult {
+    let rig = rig("apply-twice")?;
+    let set = json!({"op": "set", "goal": "g", "todos": [
+        {"label": "a", "state": "done"}, {"label": "b", "after": ["a"]}]});
+    let (refused, first) = call(&rig, set.clone());
+    assert!(!refused, "{first}");
+    let (refused, second) = call(&rig, set);
+    assert!(!refused && !second.contains("note:"), "{second}");
+    assert_eq!(state_of(&rig, "a")?, "Done");
     Ok(())
 }

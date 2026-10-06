@@ -22,6 +22,7 @@ A todo's fields, rendered from the plan tool's schema:
 
 <!-- yi:schema plan /properties/todos/items -->
 - `label` (string, required): the todo's name, imperative, at most 80 chars
+- `state` (string, one of `pending`, `running`, `done`, `blocked`): set: the state the row should reach; done runs its contract first, blocked asks the user (on, note, options as in block); a row the engine cannot move says why in the reply
 - `after` (list of string): labels of the todos this one waits on
 - `intent` (list of string): user://<n> of each user message it serves; default the latest
 - `waived` (list of object): [{address, reason}]: a user message the plan leaves unserved

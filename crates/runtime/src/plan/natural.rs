@@ -5,7 +5,8 @@ use serde_json::{Map, Value, json};
 
 use yi_types::plan::op::{ALL_OPS, MODEL_OPS, op_name};
 
-use super::tool::{TODO_SPEC_KEYS, field_hint, known_keys, misplaced};
+use super::table::OpKind;
+use super::tool::{ArgError, PlanToolError, TODO_SPEC_KEYS, field_hint, known_keys, misplaced};
 
 /// Keys an op does not record that models attach to explain themselves; the call's arguments in
 /// the transcript keep them, and the reply says so.
@@ -129,9 +130,10 @@ fn unknown(op: &str, args: &mut Map<String, Value>, left: &mut Vec<String>) {
         .copied()
         .chain(TODO_SPEC_KEYS)
         .collect();
+    let set_state = |key: &str, in_todo: bool| in_todo && key == "state" && kind == OpKind::Set;
     let loose = |key: &str, legal: &[&str], in_todo: bool| {
-        !legal.contains(&key)
-            && !["actor", "labels"].contains(&key)
+        let kept = legal.contains(&key) || ["actor", "labels"].contains(&key);
+        !(kept || set_state(key, in_todo))
             && misplaced(kind, in_todo, key).is_none()
             && field_hint(key).is_empty()
             && (every.contains(&key)
@@ -431,6 +433,38 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<String>) {
                 "contract weights past 100 were rescaled to 1..100, keeping their ratios"
                     .to_owned(),
             );
+        }
+    }
+}
+
+impl super::tool::PlanTool {
+    /// One call per label, in order; a refusal among them makes the whole reply an error.
+    pub(super) fn each(
+        &self,
+        args: &Map<String, Value>,
+        labels: &[Value],
+        mut said: Vec<String>,
+    ) -> Result<String, PlanToolError> {
+        let (mut text, mut refused) = (String::new(), false);
+        for label in labels {
+            let mut one = args.clone();
+            one.remove("labels");
+            one.insert("todo".to_owned(), label.clone());
+            let reply = self.run(&one).unwrap_or_else(|err| {
+                refused = true;
+                format!("{label}: refused: {err}")
+            });
+            text.push_str(&format!("{reply}\n"));
+        }
+        said.push("labels named several todos, so each ran as its own call, in order".to_owned());
+        for line in said {
+            text.push_str(&format!("note: {line}\n"));
+        }
+        let text = text.trim_end().to_owned();
+        if refused {
+            Err(ArgError::Declared(text).into())
+        } else {
+            Ok(text)
         }
     }
 }

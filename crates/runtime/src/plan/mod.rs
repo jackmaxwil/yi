@@ -12,6 +12,7 @@ use yi_types::schedule::DeliveryMode;
 use crate::goal::{DeliverFn, StoreHandle};
 
 pub mod acceptance;
+mod apply;
 pub mod artifact;
 pub(crate) mod ask;
 pub mod authority;
