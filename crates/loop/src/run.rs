@@ -496,20 +496,17 @@ fn nothing_delivered(message: &AgentMessage) -> bool {
     // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
     let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
     (generating || wire || in_band)
-        && !content.iter().any(|block| match block {
-            Content::Text { text, .. } => !text.trim().is_empty(),
-            Content::ToolCall { .. } => true,
-            _ => false,
-        })
+        && !(yi_types::message::has_text(content)
+            || content
+                .iter()
+                .any(|block| matches!(block, Content::ToolCall { .. })))
 }
 
 fn answered(message: &AgentMessage) -> bool {
     let AgentMessage::Assistant { content, .. } = message else {
         return false;
     };
-    content
-        .iter()
-        .any(|block| matches!(block, Content::Text { text, .. } if !text.trim().is_empty()))
+    yi_types::message::has_text(content)
 }
 
 /// A dropped stream that showed nothing is the one error a rerun cannot duplicate.
@@ -1034,7 +1031,14 @@ pub async fn run_loop<S: StreamFn>(
 
             // Incident: two capped readers called a tool on the last word and ended with no answer.
             // One more request forces none; a route refusing that (glm-5.3-flash) retries tool-less.
-            if refused_last_word && !followed_up && !answered(&message) {
+            if refused_last_word
+                && !followed_up
+                && !answered(&message)
+                && config
+                    .last_word_capped
+                    .as_ref()
+                    .is_some_and(|capped| capped())
+            {
                 followed_up = true;
                 tool_choice = Some(ToolChoice::None);
                 has_more_tool_calls = true;

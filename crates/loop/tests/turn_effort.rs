@@ -291,8 +291,8 @@ async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
     );
     assert_eq!(
         choices,
-        vec![None, None, None, Some(ToolChoice::None)],
-        "only the follow-up to a refused call forces a choice"
+        vec![None, None, None],
+        "no forced choice, the retry included"
     );
     assert_eq!(
         runs.lock().map(|runs| *runs).ok(),
@@ -300,13 +300,10 @@ async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
         "only the turn before the last word ran"
     );
     assert!(ended, "the run ends");
-    let refused = messages.iter().rev().nth(1);
+    let last = messages.last();
     assert!(
-        matches!(
-            refused,
-            Some(AgentMessage::ToolResult { is_error: true, .. })
-        ),
-        "the last word's call is answered as not run: {refused:?}"
+        matches!(last, Some(AgentMessage::ToolResult { is_error: true, .. })),
+        "the last word's call is answered as not run: {last:?}"
     );
 }
 
@@ -345,6 +342,7 @@ async fn insist(responses: Vec<AgentMessage>) -> Vec<Shown> {
     let mut config = LoopConfig::new(faux_model());
     config.schema = Some(serde_json::json!({"type": "object"}));
     config.should_stop_after_turn = Some(Box::new(|_| true));
+    config.last_word_capped = Some(Box::new(|| true));
     config.last_word = Some(Box::new(|_| {
         Some(AgentMessage::user_input(
             yi_types::message::UserContent::Text("[turns] No more tool calls".to_owned()),
