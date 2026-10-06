@@ -210,27 +210,10 @@ impl Backend for VT100Backend {
 /// A minimal catalog-free model for `TuiOptions`.
 #[allow(dead_code, reason = "the shared harness serves several test binaries")]
 pub fn test_model(id: &str) -> yi_types::model::Model {
-    let zero = || serde_json::Number::from(0u64);
     yi_types::model::Model {
-        id: id.to_owned(),
-        name: id.to_owned(),
-        api: "faux".to_owned(),
-        provider: "faux".to_owned(),
-        base_url: "http://localhost:0".to_owned(),
-        reasoning: false,
-        input: vec!["text".to_owned()],
-        cost: yi_types::model::ModelCost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            tiers: None,
-        },
         context_window: 128_000,
         max_tokens: 16_384,
-        compat: None,
-        thinking_level_map: None,
-        headers: None,
+        ..crate::fixture_model::model(id, "faux", "faux", "http://localhost:0", None)
     }
 }
 

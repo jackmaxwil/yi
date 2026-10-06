@@ -226,9 +226,7 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
         .iter()
         .map(|tool| {
             let schema = &tool.parameters;
-            let closed = (strict.then(|| crate::schema::strict_tool(schema)))
-                .flatten()
-                .filter(|closed| {
+            let closed = crate::schema::strict_tool_json(schema, strict, |closed| {
                     let (optional, unions) = crate::schema::weight(closed);
                     let next = (
                         spent.0.saturating_add(1),
@@ -240,7 +238,7 @@ fn convert_tools(tools: &[ToolDef], strict: bool) -> Vec<Value> {
                         spent = next;
                     }
                     fits
-                });
+            });
             match closed {
                 Some(closed) => json!({
                     "name": tool.name,

@@ -51,12 +51,16 @@ fn asking(tools: Vec<ToolDef>) -> LlmContext {
 fn chat_strict(model: &Model, tools: Vec<ToolDef>) -> Vec<(String, bool)> {
     let params =
         openai::build_params(model, &asking(tools), &OpenAiOptions::default()).into_value();
+    marked(&params, |tool| &tool["function"])
+}
+
+fn marked(params: &Value, entry: impl Fn(&Value) -> &Value) -> Vec<(String, bool)> {
     (params["tools"].as_array().into_iter().flatten())
         .map(|tool| {
-            let function = &tool["function"];
+            let tool = entry(tool);
             (
-                function["name"].as_str().unwrap_or_default().to_owned(),
-                function["strict"] == json!(true),
+                tool["name"].as_str().unwrap_or_default().to_owned(),
+                tool["strict"] == json!(true),
             )
         })
         .collect()
@@ -100,26 +104,22 @@ fn responses_strict(model: &Model, tools: Vec<ToolDef>) -> Vec<(String, bool)> {
     let params =
         yi_ai::openai_responses::build_params(model, &asking(tools), &OpenAiOptions::default())
             .into_value();
-    (params["tools"].as_array().into_iter().flatten())
-        .map(|tool| {
-            (
-                tool["name"].as_str().unwrap_or_default().to_owned(),
-                tool["strict"] == json!(true),
-            )
-        })
-        .collect()
+    marked(&params, |tool| tool)
 }
 
-/// Dies with the Responses route strict where Chat Completions is not (or loose where it is):
-/// the same ten tools go over both OpenAI routes and must mark the same three.
+/// Dies with the Responses route marking a different set strict than Chat Completions, or
+/// none at all: the same ten tools go over both OpenAI routes and must mark the same three.
 #[test]
 fn responses_marks_the_same_tools_strict_as_chat_completions() -> TestResult {
     let openai = model("gpt-5.5", "https://api.openai.com/v1", None);
     let tools = yi_tools()?;
-    assert_eq!(
-        responses_strict(&openai, tools.clone()),
-        chat_strict(&openai, tools)
-    );
+    let responses = responses_strict(&openai, tools.clone());
+    let strict: Vec<&str> = (responses.iter())
+        .filter(|(_, on)| *on)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(strict, ["edit", "write", "ipython"]);
+    assert_eq!(responses, chat_strict(&openai, tools));
     let params = yi_ai::openai_responses::build_params(
         &openai,
         &asking(yi_tools()?),
@@ -287,7 +287,10 @@ fn strict_tool_refuses_what_strict_mode_refuses() {
         "properties": {"tags": {"type": "array"}},
         "required": ["tags"],
     });
-    assert_eq!(schema::strict_tool_json(&bare_array, true), (None, false));
+    assert_eq!(
+        schema::strict_tool_json(&bare_array, true, schema::strict),
+        None
+    );
     let unknown_keyword = json!({
         "type": "object",
         "properties": {"x": {"type": "string"}},
@@ -295,8 +298,8 @@ fn strict_tool_refuses_what_strict_mode_refuses() {
         "examples": [{"x": "a"}],
     });
     assert_eq!(
-        schema::strict_tool_json(&unknown_keyword, true),
-        (None, false)
+        schema::strict_tool_json(&unknown_keyword, true, schema::strict),
+        None
     );
     let refused_combinator = json!({
         "type": "object",
@@ -305,8 +308,8 @@ fn strict_tool_refuses_what_strict_mode_refuses() {
         "discriminator": {"propertyName": "x"},
     });
     assert_eq!(
-        schema::strict_tool_json(&refused_combinator, true),
-        (None, false)
+        schema::strict_tool_json(&refused_combinator, true, schema::strict),
+        None
     );
 }
 
@@ -320,13 +323,51 @@ fn a_malformed_anyof_or_enum_loosens_the_tool() {
         "properties": {"x": {"anyOf": 5}},
         "required": ["x"],
     });
-    assert_eq!(schema::strict_tool_json(&anyof, true), (None, false));
+    assert_eq!(schema::strict_tool_json(&anyof, true, schema::strict), None);
     let enumm = json!({
         "type": "object",
         "properties": {"x": {"enum": "red"}},
         "required": ["x"],
     });
-    assert_eq!(schema::strict_tool_json(&enumm, true), (None, false));
+    assert_eq!(schema::strict_tool_json(&enumm, true, schema::strict), None);
+}
+
+/// Dies with a malformed `required`, `properties` or `$defs` (third-party MCP input) cloned
+/// through to Anthropic under `strict: true`, which refuses the schema and 400s the request.
+#[test]
+fn a_malformed_required_or_defs_loosens_the_tool_on_anthropic() {
+    let x = json!({"x": {"type": "string"}});
+    let schemas = [
+        json!({"type": "object", "properties": x, "required": "x"}),
+        json!({"type": "object", "properties": x, "required": [1]}),
+        json!({"type": "object", "properties": x, "required": ["x"], "$defs": 5}),
+        json!({"type": "object", "properties": x, "required": ["x"], "definitions": "d"}),
+    ];
+    for parameters in schemas {
+        assert_eq!(schema::strict_tool(&parameters), None, "{parameters}");
+        let tool = ToolDef {
+            name: "mcp".to_owned(),
+            description: String::new(),
+            parameters,
+            freeform: None,
+        };
+        assert_eq!(claude_strict("claude-opus-5-5", vec![tool]), [false]);
+    }
+}
+
+/// Dies with a root schema that omits `"type": "object"` sent strict: strict routes want the
+/// explicit type, so a typeless node with properties goes loose as it did before.
+#[test]
+fn a_typeless_root_with_properties_goes_loose() {
+    let typeless = json!({"properties": {"x": {"type": "string"}}, "required": ["x"]});
+    assert_eq!(schema::strict_tool(&typeless), None);
+    let tool = ToolDef {
+        name: "mcp".to_owned(),
+        description: String::new(),
+        parameters: typeless,
+        freeform: None,
+    };
+    assert_eq!(claude_strict("claude-opus-5-5", vec![tool]), [false]);
 }
 
 /// Dies with the open-map pattern (`"additionalProperties": {"type": "string"}`) coerced to
@@ -340,5 +381,8 @@ fn a_schema_valued_additional_properties_loosens_the_tool() {
         "required": ["name"],
         "additionalProperties": {"type": "string"},
     });
-    assert_eq!(schema::strict_tool_json(&open_map, true), (None, false));
+    assert_eq!(
+        schema::strict_tool_json(&open_map, true, schema::strict),
+        None
+    );
 }

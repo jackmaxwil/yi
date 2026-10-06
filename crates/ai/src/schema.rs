@@ -54,12 +54,15 @@ pub fn strict(schema: &Value) -> bool {
 }
 
 fn is_object(schema: &Value) -> bool {
-    schema.get("properties").is_some()
-        || match schema.get("type") {
-            Some(Value::String(kind)) => kind == "object",
-            Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "object"),
-            _ => false,
-        }
+    schema.get("properties").is_some() || typed(schema, "object")
+}
+
+fn typed(schema: &Value, kind: &str) -> bool {
+    match schema.get("type") {
+        Some(Value::String(named)) => named == kind,
+        Some(Value::Array(kinds)) => kinds.iter().any(|named| named == kind),
+        _ => false,
+    }
 }
 
 fn node(schema: &Value) -> bool {
@@ -119,12 +122,7 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
     let Value::Object(map) = schema else {
         return None;
     };
-    let array = matches!(map.get("type"), Some(Value::String(kind)) if kind == "array")
-        || matches!(
-            map.get("type"),
-            Some(Value::Array(kinds)) if kinds.iter().any(|kind| kind == "array")
-        );
-    if array && !map.contains_key("items") {
+    if typed(schema, "array") && !map.contains_key("items") {
         return None;
     }
     let mut out = Map::new();
@@ -139,10 +137,14 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
         if !STRICT_KEYS.contains(&key) {
             return None;
         }
-        if key == "additionalProperties" && value != &Value::Bool(false) {
-            return None;
-        }
-        if (key == "anyOf" || key == "enum") && !matches!(value, Value::Array(_)) {
+        let malformed = match key {
+            "additionalProperties" => value != &Value::Bool(false),
+            "anyOf" | "enum" => !value.is_array(),
+            "required" => !(value.as_array()).is_some_and(|keys| keys.iter().all(Value::is_string)),
+            "properties" | "$defs" | "definitions" => !value.is_object(),
+            _ => false,
+        };
+        if malformed {
             return None;
         }
         let each = |values: &Map<String, Value>| {
@@ -164,7 +166,7 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
         };
         out.insert(key.to_owned(), value);
     }
-    if is_object(schema) {
+    if typed(schema, "object") {
         if !matches!(out.get("properties"), Some(Value::Object(_))) {
             return None;
         }
@@ -178,14 +180,14 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
     Some(Value::Object(out))
 }
 
-/// The tool schema both OpenAI routes send: closed where strict mode can enforce it, the
-/// original where it cannot. `(None, false)` is a loose tool.
-pub fn strict_tool_json(schema: &Value, strict: bool) -> (Option<Value>, bool) {
-    let closed = (strict.then(|| strict_tool(schema)))
-        .flatten()
-        .filter(crate::schema::strict);
-    let on = closed.is_some();
-    (closed, on)
+/// The tool schema a strict route sends closed: None, the original goes loose. `keep` is the
+/// route's own gate on the closed schema (OpenAI's nothing-optional, Anthropic's caps).
+pub fn strict_tool_json(
+    schema: &Value,
+    strict: bool,
+    keep: impl FnOnce(&Value) -> bool,
+) -> Option<Value> {
+    (strict.then(|| strict_tool(schema))).flatten().filter(keep)
 }
 
 /// Optional and union-typed properties in a schema, nested ones included: what Anthropic's

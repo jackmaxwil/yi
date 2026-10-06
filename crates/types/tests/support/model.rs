@@ -1,7 +1,7 @@
 use serde_json::Value;
 use yi_types::model::{Model, ModelCost};
 
-/// The zero-cost fixture model every test in this crate builds its provider calls on.
+/// The zero-cost fixture model the test binaries of several crates build on.
 pub fn model(id: &str, api: &str, provider: &str, base_url: &str, compat: Option<Value>) -> Model {
     let zero = || serde_json::Number::from(0);
     Model {
