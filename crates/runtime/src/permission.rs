@@ -239,6 +239,10 @@ impl PermissionBroker {
         self.prompts_close_on_settle.store(true, Ordering::Relaxed);
     }
 
+    pub fn asks_close_on_settle(&self) -> bool {
+        self.prompts_close_on_settle.load(Ordering::Relaxed)
+    }
+
     fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
         self.resolved(tool_call_id, allowed);
         if let Some(journal) = self.journal.get() {
@@ -702,7 +706,10 @@ impl PermissionBroker {
             cwd: &cwd,
         };
         let approver = (self.approver.get()).filter(|_| {
-            reviewed.reviewable && !self.answered(canonical) && self.mode() == PermissionMode::Auto
+            reviewed.reviewable
+                && !self.answered(canonical)
+                && self.mode() == PermissionMode::Auto
+                && self.asker.is_some()
         });
         let mut prior = None;
         if let Some(approver) =

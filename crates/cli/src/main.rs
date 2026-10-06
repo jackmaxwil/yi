@@ -541,6 +541,9 @@ fn build_session(
         .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
         .with_session_store(&default_session_dir(args)),
     );
+    if args.command == "tui" {
+        broker.prompts_close_on_settle();
+    }
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");
     session.install_extensions(shells::session_extensions(
