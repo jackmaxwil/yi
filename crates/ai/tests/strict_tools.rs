@@ -310,6 +310,25 @@ fn strict_tool_refuses_what_strict_mode_refuses() {
     );
 }
 
+/// Dies with a malformed `anyOf` or `enum` (an MCP tool's schema is third-party input) passed
+/// through verbatim under `strict: true`, which 400s every request on that route: the anyOf
+/// arm only matched arrays and `enum` was never checked, so both fell to the clone arm.
+#[test]
+fn a_malformed_anyof_or_enum_loosens_the_tool() {
+    let anyof = json!({
+        "type": "object",
+        "properties": {"x": {"anyOf": 5}},
+        "required": ["x"],
+    });
+    assert_eq!(schema::strict_tool_json(&anyof, true), (None, false));
+    let enumm = json!({
+        "type": "object",
+        "properties": {"x": {"enum": "red"}},
+        "required": ["x"],
+    });
+    assert_eq!(schema::strict_tool_json(&enumm, true), (None, false));
+}
+
 /// Dies with the open-map pattern (`"additionalProperties": {"type": "string"}`) coerced to
 /// `false`: strict mode can only express the closed form, so the tool loosens and keeps its
 /// contract (extra keys allowed, must be strings) rather than silently forbidding them.

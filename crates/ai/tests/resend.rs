@@ -1,8 +1,6 @@
 //! Issue #256: a stream that died before its first byte is sent once more, and the
 //! resend rides the message as a diagnostic.
 
-use crate::common;
-
 use yi_ai::request::{empty_assistant, note_resend, resend_dead_stream};
 use yi_types::message::AgentMessage;
 
@@ -23,13 +21,28 @@ fn only_a_stream_that_showed_nothing_is_resent_and_only_once() {
 }
 
 fn model() -> yi_types::model::Model {
-    common::model(
-        "m",
-        "openai-completions",
-        "openrouter",
-        "https://example.invalid",
-        None,
-    )
+    let n = |v: u64| serde_json::Number::from(v);
+    yi_types::model::Model {
+        id: "m".to_owned(),
+        name: "m".to_owned(),
+        api: "openai-completions".to_owned(),
+        provider: "openrouter".to_owned(),
+        base_url: "https://example.invalid".to_owned(),
+        reasoning: false,
+        input: vec!["text".to_owned()],
+        cost: yi_types::model::ModelCost {
+            input: n(0),
+            output: n(0),
+            cache_read: n(0),
+            cache_write: n(0),
+            tiers: None,
+        },
+        context_window: 1000,
+        max_tokens: 100,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
+    }
 }
 
 #[test]
