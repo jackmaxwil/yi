@@ -529,6 +529,28 @@ fn a_type_with_no_calls_points_at_grep() -> TestResult {
     Ok(())
 }
 
+/// An exit-0 answer the seam cannot read is named absent per layer, never zero rows: shape drift
+/// is not proof that no call exists.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_neighborhood_answer_is_absent_not_clean() -> TestResult {
+    const NAME: &str = "an_unreadable_neighborhood_answer_is_absent_not_clean";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--callers=", "callers-shape.json"),
+            ("--callees=", "callers-shape.json"),
+        ];
+        return with_fake_ripwire(NAME, false, &answers);
+    };
+    let near = ask(Path::new(&dir), "symbol", "alpha");
+    assert!(
+        near.contains("absent: the answer named no callers rows"),
+        "{near}"
+    );
+    assert!(!near.contains("no call found either way"), "{near}");
+    Ok(())
+}
+
 /// `justfile` and `Justfile` are one file on APFS and two on Linux; either way one gate.
 #[test]
 fn a_gate_command_is_listed_once() -> TestResult {

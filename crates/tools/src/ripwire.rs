@@ -1,7 +1,8 @@
 //! Every `ripwire` spawn. Ripwire indexes the tree it is pointed at, so each runs at the repository's top.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -99,24 +100,17 @@ pub(crate) fn root(cwd: &Path) -> PathBuf {
     git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
-fn relative(context: &ToolContext, path: &Path) -> Option<String> {
+fn relative(top: &Path, path: &Path) -> Option<String> {
     let code = path
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| CODE_EXTS.contains(&extension));
-    let top = root(&context.cwd);
-    let top = top.canonicalize().unwrap_or(top);
-    let relative = path.strip_prefix(&top).ok().filter(|_| code)?;
+    let relative = path.strip_prefix(top).ok().filter(|_| code)?;
     Some(relative.to_string_lossy().into_owned())
 }
 
-pub(crate) fn regions(
-    context: &ToolContext,
-    path: &str,
-    before: &str,
-    after: &str,
-) -> Vec<(String, u64)> {
-    let Some(relative) = relative(context, Path::new(path)) else {
+pub(crate) fn regions(top: &Path, path: &str, before: &str, after: &str) -> Vec<(String, u64)> {
+    let Some(relative) = relative(top, Path::new(path)) else {
         return Vec::new();
     };
     let lines: Vec<&str> = after.split('\n').collect();
@@ -135,13 +129,8 @@ pub(crate) fn regions(
 
 /// Incident: ripwire answers for the definition a line holds now, so a deleted one had none to ask
 /// about and read as clean while its callers broke.
-pub(crate) fn removed(
-    context: &ToolContext,
-    path: &str,
-    before: &str,
-    after: &str,
-) -> Vec<(String, String)> {
-    let Some(relative) = relative(context, Path::new(path)) else {
+pub(crate) fn removed(top: &Path, path: &str, before: &str, after: &str) -> Vec<(String, String)> {
+    let Some(relative) = relative(top, Path::new(path)) else {
         return Vec::new();
     };
     let defined = |text: &str| -> Vec<String> {
@@ -155,29 +144,79 @@ pub(crate) fn removed(
     gone.sort();
     gone.dedup();
     (gone.iter())
-        .map(|name| {
-            let row = format!(
-                "{name} removed from {relative}: its callers still call it — grep: \\b{name}\\b"
-            );
-            (relative.clone(), row)
-        })
+        .map(|name| (relative.clone(), name.clone()))
         .collect()
 }
 
 /// Incident: a cold index took 8 to 18 s on Yi, and killing it at the deadline meant none ever built.
+/// Incident: the runs a deadline abandons keep building that index, so one batch runs per repository:
+/// a second edit's check waits out the first instead of stacking indexers on the same tree.
+static IN_FLIGHT: Mutex<Option<HashMap<PathBuf, usize>>> = Mutex::new(None);
+
+struct Flight(PathBuf);
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = IN_FLIGHT.lock()
+            && let Some(map) = guard.as_mut()
+            && let Some(count) = map.get_mut(&self.0)
+        {
+            *count = count.saturating_sub(1);
+        }
+    }
+}
+
 pub(crate) fn check(
     context: &ToolContext,
+    top: &Path,
     regions: Vec<(String, u64)>,
     removed: Vec<(String, String)>,
 ) -> CheckLayer {
     let deadline = Instant::now() + Duration::from_millis(CHECK_TIMEOUT_MS);
-    let top = root(&context.cwd);
     let asked = regions.len().min(CHECK_REGIONS);
+    let busy = IN_FLIGHT
+        .lock()
+        .map(|mut guard| {
+            let map = guard.get_or_insert_with(HashMap::new);
+            match map.get_mut(top) {
+                Some(count) if *count > 0 => true,
+                Some(count) => {
+                    *count = asked;
+                    false
+                }
+                None => {
+                    map.insert(top.to_path_buf(), asked);
+                    false
+                }
+            }
+        })
+        .unwrap_or(false);
+    if busy {
+        let rows: Vec<String> = (removed.iter())
+            .map(|(file, name)| removed_row(file, name))
+            .collect();
+        let missed = vec![
+            "[ripwire check: unavailable — an earlier edit's check on this repository is still \
+             running, so this one was not started; a later edit is checked]"
+                .to_owned(),
+        ];
+        return CheckLayer {
+            rows,
+            missed,
+            asked: 0,
+            regions: Vec::new(),
+        };
+    }
     let (send, answers) = std::sync::mpsc::channel();
     for (index, (file, line)) in regions.iter().take(asked).enumerate() {
-        let (send, top, cancelled) = (send.clone(), top.clone(), Arc::clone(&context.cancelled));
+        let (send, top, cancelled) = (
+            send.clone(),
+            top.to_path_buf(),
+            Arc::clone(&context.cancelled),
+        );
         let selector = format!("--edit-check=@{file}:{line}");
         std::thread::spawn(move || {
+            let _flight = Flight(top.clone());
             let capture = spawn(&top, &[&selector], &cancelled, CHECK_CAP);
             send.send((index, capture)).ok();
         });
@@ -193,7 +232,7 @@ pub(crate) fn check(
         }
     }
     let (mut rows, mut missed, mut seen) = (Vec::new(), Vec::new(), Vec::new());
-    let mut unfound: Vec<&str> = Vec::new();
+    let mut answered: Vec<(String, String)> = Vec::new();
     for ((file, line), outcome) in regions.iter().zip(outcomes) {
         let reason = match outcome {
             None => format!(
@@ -202,17 +241,15 @@ pub(crate) fn check(
             Some(Err(error)) => format!("not runnable: {error}"),
             Some(Ok(capture)) => match capture.exit_code {
                 Some(0) => match finding(&uncommented(&capture.stdout), &mut seen) {
-                    Ok(found) => {
+                    Ok((sym, found)) => {
+                        answered.push((file.clone(), sym));
                         rows.extend(found);
                         continue;
                     }
                     Err(reason) => reason,
                 },
                 // A changed line inside no definition (a comment, an import) has no contract.
-                Some(1) if capture.stderr.contains("symbol not found") => {
-                    unfound.push(file);
-                    continue;
-                }
+                Some(1) if capture.stderr.contains("symbol not found") => continue,
                 Some(code) => format!("exit {code}"),
                 None => "killed before it exited".to_owned(),
             },
@@ -221,10 +258,13 @@ pub(crate) fn check(
             "[ripwire check: {file}:{line} unavailable — {reason}; bash: ripwire . --edit-check=@{file}:{line}]"
         ));
     }
-    let answered = |file: &str| regions.iter().any(|(asked, _)| asked == file);
-    let deleted = (removed.into_iter())
-        .filter(|(file, _)| unfound.contains(&file.as_str()) || !answered(file))
-        .map(|(_, row)| row);
+    let deleted = (removed.iter())
+        .filter(|(file, name)| {
+            !answered
+                .iter()
+                .any(|(asked_file, sym)| asked_file == file && sym == name)
+        })
+        .map(|(file, name)| removed_row(file, name));
     rows.splice(0..0, deleted);
     CheckLayer {
         rows,
@@ -234,13 +274,18 @@ pub(crate) fn check(
     }
 }
 
-fn finding(xml: &str, seen: &mut Vec<String>) -> Result<Vec<String>, String> {
+fn removed_row(file: &str, name: &str) -> String {
+    format!("{name} removed from {file}: its callers still call it — grep: \\b{name}\\b")
+}
+
+fn finding(xml: &str, seen: &mut Vec<String>) -> Result<(String, Vec<String>), String> {
     let Some(head) = tags(xml, "edit-check").first().copied() else {
         return Err("the answer was not ripwire's edit-check".to_owned());
     };
     let at = attr(head, "p");
+    let sym = attr(head, "sym");
     if seen.contains(&at) {
-        return Ok(Vec::new());
+        return Ok((sym, Vec::new()));
     }
     seen.push(at.clone());
     let extension = at
@@ -277,7 +322,7 @@ fn finding(xml: &str, seen: &mut Vec<String>) -> Result<Vec<String>, String> {
         "unchanged" | "new-symbol" if proven && incompatible != "0" => {
             format!("{lead}: {incompatible} callers do not fit it now")
         }
-        "unchanged" | "new-symbol" => return Ok(Vec::new()),
+        "unchanged" | "new-symbol" => return Ok((sym, Vec::new())),
         _ => return Err(format!("the answer named an unknown status ({status})")),
     };
     let mut out = vec![row];
@@ -292,7 +337,7 @@ fn finding(xml: &str, seen: &mut Vec<String>) -> Result<Vec<String>, String> {
             attr(caller, "p")
         ));
     }
-    Ok(out)
+    Ok((sym, out))
 }
 
 /// Incident: ripwire's legend comment spells its own rows (`<c n= p=>`), which read as a caller.
