@@ -498,8 +498,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     # refuter read and answered is found in one place rather than under a temp checkout's name.
     # One directory per call, so `--continue` below resumes this call's session and no parallel one.
     sessions = pathlib.Path(sessions or pathlib.Path.home() / ".yi/sessions/pr-rounds") / os.urandom(6).hex()
-    command = [yi_bin(), "ask", "--here", "--cwd", str(cwd), "--session-dir", str(sessions),
-               "--schema", json.dumps(schema), "--deadline", str(deadline)]
+    command = [yi_bin(), "ask", "--here", "--cwd", str(cwd), "--session-dir", str(sessions), "--schema", json.dumps(schema)]
     command += ["--yolo"] if write else ["--confirm"]
     model = model or os.environ.get("YI_REVIEW_MODEL")
     if model:
@@ -510,11 +509,20 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     # and a forge round lost one to a host that closed mid-answer (exit 1, 503 provider_overloaded).
     # A lens reads PR text; the forge token it never needs stays out of its reach.
     token_free = {k: v for k, v in os.environ.items() if k not in ("FGJ_TOKEN", "GITEA_TOKEN")}
+    # Incident: a fix that timed out was retried with a fresh window, and the runner killed the
+    # pass at 45 minutes before it posted anything; a writer's retries share one budget.
+    ends = time.monotonic() + deadline + 120
+
     # A whole diff passes Linux's 128 KiB cap on one argument, so the prompt goes on stdin.
     def run(extra, text):
+        left = ends - time.monotonic() if write else deadline + 120
+        # Under a tenth of the budget is no attempt: it could only time out.
+        if left < (deadline + 120) / 10:
+            return subprocess.CompletedProcess(command, 124, "", f"the fix's {deadline}s budget is spent")
         try:
-            return subprocess.run(command + extra + ["-"], input=text, capture_output=True, text=True, timeout=deadline + 120,
-                                  check=False, env=env if env is not None else token_free)
+            return subprocess.run(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], input=text,
+                                  capture_output=True, text=True, timeout=left, check=False,
+                                  env=env if env is not None else token_free)
         except subprocess.TimeoutExpired as err:
             return subprocess.CompletedProcess(command, 124, "", f"timed out after {err.timeout:.0f}s")
 
@@ -1030,6 +1038,14 @@ def selfcheck():
         os.environ["YI_BIN"] = str(once)
         try:
             assert ask("p", LENS_SCHEMA, tree, sessions=tree / "s", deadline=-114) == {"findings": []}, "a hung attempt is retried"
+            (tree / "hung").unlink()
+            once.write_text("#!/bin/sh\ncat >/dev/null\nexec sleep 30\n")
+            began = time.monotonic()
+            try:
+                ask("p", LENS_SCHEMA, tree, sessions=tree / "s", deadline=-115, write=True)
+                raise AssertionError("a writer that never answers returned")
+            except Unanswered as err:
+                assert time.monotonic() - began < 9 and "budget is spent" in str(err), (time.monotonic() - began, err)
         finally:
             del os.environ["YI_BIN"]
         repair = pathlib.Path(tree) / "yi"
