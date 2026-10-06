@@ -576,12 +576,16 @@ pub fn landed(message: &AgentMessage, results: &[AgentMessage]) -> (u32, bool) {
             tool_call_id,
             tool_name,
             is_error,
+            details,
             ..
         } = result
         else {
             continue;
         };
-        if *is_error {
+        if yi_types::event::shown_failed(
+            *is_error,
+            details.as_ref().unwrap_or(&serde_json::Value::Null),
+        ) {
             continue;
         }
         match tool_name.as_str() {

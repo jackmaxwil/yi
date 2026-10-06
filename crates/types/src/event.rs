@@ -199,6 +199,18 @@ pub enum ToolErrorKind {
     ToolError,
 }
 
+/// What a person is shown: a call that ran and fell short (a non-zero exit, a rule's verdict in
+/// `details.outcome`) reads as failed, though `is_error` tells the model the call ran.
+pub fn shown_failed(is_error: bool, details: &serde_json::Value) -> bool {
+    is_error
+        || details
+            .get("exitCode")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|code| code != 0)
+        || details.get("outcome").and_then(serde_json::Value::as_str)
+            == Some(ToolErrorKind::Verdict.as_str())
+}
+
 impl ToolErrorKind {
     pub fn as_str(self) -> &'static str {
         match self {

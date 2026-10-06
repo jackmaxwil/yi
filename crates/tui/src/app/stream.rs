@@ -734,6 +734,7 @@ impl App {
         is_error: bool,
         details: Value,
     ) {
+        let is_error = yi_types::event::shown_failed(is_error, &details);
         cell.status = if is_error {
             ToolStatus::Failed
         } else {
