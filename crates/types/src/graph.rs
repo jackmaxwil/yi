@@ -32,7 +32,7 @@ pub const PREDICATES: &[(&str, &str)] = &[
     (RESULT_OK, ""),
     (
         RESULT_ERROR,
-        "denied not_found invalid_args aborted stale_tag noop_loop tool_error",
+        "denied not_found invalid_args aborted stale_tag noop_loop stale verdict tool_error",
     ),
     ("output_capped", ""),
     ("todo_open", ""),

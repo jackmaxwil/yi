@@ -196,24 +196,50 @@ def _read(store, name):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+# The tool's own `errorKind` names the class; a command's exit is the extractor's `command` blame.
+# Only misread and stale count toward the zero target; `untagged` is a tool not yet saying.
+CLASS_OF_KIND = {
+    "invalid_args": "misread", "noop_loop": "misread",
+    "stale": "stale", "stale_tag": "stale", "not_found": "stale",
+    "verdict": "verdict", "denied": "safety", "aborted": "tool", "tool_error": "tool",
+}
+CLASSES = ("misread", "stale", "verdict", "exit", "safety", "tool", "untagged")
+
+
+def class_of(issue):
+    if issue.get("errorClass") in ("command", "api_misuse"):
+        return "exit"
+    return CLASS_OF_KIND.get(issue.get("errorKind") or "", "untagged")
+
+
 def census(store):
     """Per-tool calls and refusals, both from the extractor's own store: `mu.jsonl`
     carries `toolCalls.byTool` and `issues.jsonl` groups every refusal by tool."""
-    calls, refusals = {}, {}
+    calls, refusals, classes = {}, {}, dict.fromkeys(CLASSES, 0)
     for row in _read(store, "mu.jsonl"):
         for tool, count in (row.get("toolCalls") or {}).get("byTool", {}).items():
             calls[tool] = calls.get(tool, 0) + count
     for issue in _read(store, "issues.jsonl"):
         tool = issue.get("tool") or "?"
         refusals[tool] = refusals.get(tool, 0) + issue.get("count", 0)
+        classes[class_of(issue)] += issue.get("count", 0)
     return {
         "calls": dict(sorted(calls.items())),
         "refusals": dict(sorted(refusals.items())),
+        "classes": classes,
         "rate": {
             tool: round(refusals.get(tool, 0) / count, 4)
             for tool, count in sorted(calls.items()) if count
         },
     }
+
+
+def ledger_cell(counts):
+    """The eval ledger's tool-failures cell: the two counted classes, then the rest, of all calls."""
+    classes = counts["classes"]
+    rest = ", ".join(f"{name} {classes[name]}" for name in CLASSES[2:])
+    return (f"tool failures: misread {classes['misread']}, stale {classes['stale']}"
+            f"; {rest} of {sum(counts['calls'].values())} calls")
 
 
 def frictions(corpus, store, sessions, limit=2):
@@ -249,7 +275,7 @@ def frictions(corpus, store, sessions, limit=2):
 def report(rows, store, corpus):
     """What a human reads: refusals grouped by tool, with the evidence and a blank
     verdict. Which ones were the caller's fault is the reading pass, not this."""
-    lines = ["", "refusals by tool (judge each: caller's mistake, or the tool's)"]
+    lines = ["", ledger_cell(census(store)), "", "refusals by tool (judge each: caller's mistake, or the tool's)"]
     issues = sorted(_read(store, "issues.jsonl"), key=lambda issue: -issue.get("count", 0))
     if not issues:
         lines.append("  none")
@@ -321,7 +347,7 @@ def main(argv=None):
     parser.add_argument("--binary", default=str(ROOT.parent / "target/debug/yi"))
     parser.add_argument("--model", required=True)
     parser.add_argument("--out", default=None, help="where rollouts are kept; a temp dir otherwise")
-    parser.add_argument("--only", action="append", help="scenario id; repeatable")
+    parser.add_argument("--only", action="append", help="scenario id, or a prefix ending in *; repeatable")
     parser.add_argument("--cap-usd", type=float, default=None, help="stop before a rollout that would pass it")
     parser.add_argument("--dry", action="store_true", help="faux only: plumbing and schema, no key, no spend")
     parser.add_argument("--selfcheck", action="store_true", help="schema and census, no binary")
@@ -351,7 +377,9 @@ def main(argv=None):
         print(f"refused: no binary at {args.binary} (cargo build -p yi-cli)", file=sys.stderr)
         return 2
 
-    chosen = [s for s in scenarios if not args.only or s["id"] in args.only]
+    picked = lambda s: s["id"] in args.only or any(
+        s["id"].startswith(prefix[:-1]) for prefix in args.only if prefix.endswith("*"))
+    chosen = [s for s in scenarios if not args.only or picked(s)]
     if not chosen:
         print(f"refused: no scenario matches {args.only}", file=sys.stderr)
         return 2

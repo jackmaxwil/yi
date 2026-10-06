@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
+use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, text_output};
 use yi_types::plan::doc::{
     BlockedOn, Cites, Delegation, GoalText, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState,
     TodoStateName, Waiver,
@@ -819,7 +819,7 @@ impl Tool for PlanTool {
     fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
         match self.run(&input) {
             Ok(text) => text_output(text),
-            Err(error) => error_output(error.to_string()),
+            Err(error) => error_output_kind(error.to_string(), error.kind()),
         }
     }
 }
