@@ -65,8 +65,6 @@ FINDINGS_SCHEMA = {
                                                 "properties": {"n": {"type": "integer"}, "reason": {"type": "string"}}}},
     },
 }
-# Findings a model cannot fix: the PR body's sections and a twin are a person's call.
-INTAKE = ("template", "duplicate")
 # A file the findings fixer creates is kept when it is source or a test, never a build dir's output.
 # Not skills/: a skill is instructions later sessions load, never a file a fixer model writes.
 NEW_FILE = re.compile(r"^(crates|python|docs|evals)/(?!.*(^|/)target[^/]*/).+\.(rs|py|md|toml|txt)$")
@@ -106,6 +104,12 @@ def misses(notes):
     Incident: #1025 sat on a tier whose model its provider rate-limited three passes running."""
     verdicts = [row.get("verdict") for row in bot_meter.rows(notes) if row["kind"] == "yi-autofix"]
     return sum(v in ("failed", "deferred") for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
+
+
+def last_stop(notes):
+    """When the fixer last stopped on this PR (a Unix time, 0 for never): its newest failed attempt."""
+    return max((datetime.datetime.fromisoformat(row["at"].replace("Z", "+00:00")).timestamp() for row in bot_meter.rows(notes)
+                if row["kind"] == "yi-autofix" and row.get("verdict") == "failed" and row.get("at")), default=0.0)
 
 
 def fix_spend(comments):
@@ -305,6 +309,7 @@ def fenced(text):
 
 def findings_prompt(pr, n, todo):
     listed = "\n".join(fenced(f"{i}. [{f['lens']}, {f['severity']}] {f['claim']} at {f.get('path')}:{f.get('line')}"
+                               + (f" (open since round {f['since']}; its line may have moved)" if f.get("since") else "")
                                + (f" — suggested: {f['fix']}" if f.get("fix") else "")) for i, f in enumerate(todo, 1))
     return (
         f"Your working directory is pull request #{pr['number']} ({fenced(pr['title'])!r}). Review round {n} left it "
@@ -367,13 +372,15 @@ def weakened(clone):
     return None
 
 
-def prior_fixes(repo, sha):
-    """How many fix commits in a row the bot already made at the head of this branch."""
-    log = sh(repo, "git", "log", "--first-parent", "-n", "4", "--format=%an%x00%B%x1e", sha, check=False).stdout
+def prior_fixes(repo, sha, stopped=0.0):
+    """How many fix commits in a row the bot already made at the head of this branch, since the
+    last stop (a Unix time): a person removing `autofix:failed` restarts the count. Incident: four
+    PRs stopped at two fixes, and lifting the label would have stopped them again at once."""
+    log = sh(repo, "git", "log", "--first-parent", "-n", "4", "--format=%ct%x00%an%x00%B%x1e", sha, check=False).stdout
     count = 0
     for record in filter(str.strip, log.split("\x1e")):
-        author, _, body = record.strip("\n").partition("\x00")
-        if author != pr_review.BOT or SIGNED not in body:
+        when, author, body = (record.strip("\n").split("\x00", 2) + ["", ""])[:3]
+        if author != pr_review.BOT or SIGNED not in body or float(when or 0) <= stopped:
             break
         count += 1
     return count
@@ -381,13 +388,13 @@ def prior_fixes(repo, sha):
 
 def owed_mediums(rnd):
     """A clean round's medium findings the fixer answers: every one but the intake checks'."""
-    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and f["lens"] not in INTAKE for f in rnd["findings"])
+    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and f["lens"] not in pr_review.INTAKE for f in rnd["findings"])
 
 
 def findings_in(clone, pr, rnd, answer, tried=0):
     """Answer a round's high and medium findings in the clone: a blocked round's, or a clean one's
     mediums. Returns (summary, model, touched, declined highs)."""
-    todo = [f for f in rnd["findings"] if f["severity"] in ("high", "medium") and f["lens"] not in INTAKE]
+    todo = [f for f in rnd["findings"] if f["severity"] in ("high", "medium") and f["lens"] not in pr_review.INTAKE]
     highs = [f for f in todo if f["severity"] == "high"]
     if not highs and not owed_mediums(rnd):
         lenses = sorted({f["lens"] for f in rnd["findings"] if f["severity"] == "high"})
@@ -419,7 +426,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
     return summary, model, touched, declined_highs
 
 
-def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None):
+def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, meter=None, stopped=0.0):
     """One attempt on one PR: a conflict with its base, or the findings of a round that blocked its
     head. Returns the ledger fields; raises RuntimeError with the reason a person reads."""
     sha, ref, base_ref = pr["head"]["sha"], pr["head"]["ref"], pr["base"]["ref"]
@@ -436,7 +443,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             summary, model, touched = resolve_in(clone, pr, base_ref, answer, tried)
             subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
         else:
-            before = prior_fixes(root, sha)
+            before = prior_fixes(root, sha, stopped)
             if before >= 2:
                 raise RuntimeError("two fixes in a row did not clear the review; a person is next")
             summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before)
@@ -585,7 +592,8 @@ def attempt(repo, pr, ids, asked=False):
     set_label(repo, number, ids, "autofix:working", True)
     fields, verdict, reason, meter = {}, "failed", "", bot_meter.Meter()
     try:
-        fields = fix(pr, kind="conflict" if said == "fix" else "findings", rnd=rnd, tried=misses(notes), meter=meter)
+        fields = fix(pr, kind="conflict" if said == "fix" else "findings", rnd=rnd, tried=misses(notes), meter=meter,
+                     stopped=last_stop(notes))
         verdict = "pushed"
     except LookupError as err:
         # The author pushed meanwhile; the next pass reads the new head.
@@ -832,6 +840,10 @@ def selfcheck():
             errs.append("a findings fix rewrote a change file main holds")
         if prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
             errs.append("the fixer's own commit at the head is not counted as one prior fix")
+        head_now = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
+        stop = [dict(bot, created_at="2099-01-01T00:00:00Z", body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=7 verdict=failed -->\n")]
+        if prior_fixes(tmp, head_now, last_stop(stop)) != 0 or last_stop(notes) != 0.0:
+            errs.append("a fix made before the last stop still counts after a person lifted the label")
         only_intake = dict(rnd, findings=rnd["findings"][2:])
         rnd_saved, rnd = rnd, only_intake
         if "does not answer" not in str(findings_run({"tests/t.rs": "x\n"})):
