@@ -142,6 +142,9 @@ pub fn strict_tool(schema: &Value) -> Option<Value> {
         if key == "additionalProperties" && value != &Value::Bool(false) {
             return None;
         }
+        if (key == "anyOf" || key == "enum") && !matches!(value, Value::Array(_)) {
+            return None;
+        }
         let each = |values: &Map<String, Value>| {
             (values.iter())
                 .map(|(name, value)| Some((name.clone(), strict_tool(value)?)))
