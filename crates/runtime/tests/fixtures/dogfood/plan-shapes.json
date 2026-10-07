@@ -2599,7 +2599,7 @@
     ]
    },
    "lands": true,
-   "says": "1 todos: 1 pending"
+   "says": "2 todos: 1 pending, 1 done"
   },
   {
    "name": "rows with no op and block fields beside the one row",

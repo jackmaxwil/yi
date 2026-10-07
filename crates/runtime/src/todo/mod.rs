@@ -897,8 +897,8 @@ fn init_list(phases: Vec<(PhaseName, Vec<Todo>)>) -> Result<TodoList, TodoError>
     Ok(fresh)
 }
 
-/// Rows of `prior` the new list lost, put back under their parent or in their own phase; their
-/// labels, quoted.
+/// Invariant: a `set` from a stale view never deletes a row it left out, the same rule the plan
+/// engine keeps for plan rows. Lost rows return under their parent or in their own phase, labels quoted.
 fn keep_omitted(prior: &TodoList, list: &mut TodoList) -> Vec<String> {
     let mut kept = Vec::new();
     for phase in &prior.phases {
