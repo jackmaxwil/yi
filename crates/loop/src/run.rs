@@ -496,11 +496,17 @@ fn nothing_delivered(message: &AgentMessage) -> bool {
     // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
     let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
     (generating || wire || in_band)
-        && !content.iter().any(|block| match block {
-            Content::Text { text, .. } => !text.trim().is_empty(),
-            Content::ToolCall { .. } => true,
-            _ => false,
-        })
+        && !(yi_types::message::has_text(content)
+            || content
+                .iter()
+                .any(|block| matches!(block, Content::ToolCall { .. })))
+}
+
+fn answered(message: &AgentMessage) -> bool {
+    let AgentMessage::Assistant { content, .. } = message else {
+        return false;
+    };
+    yi_types::message::has_text(content)
 }
 
 /// A dropped stream that showed nothing is the one error a rerun cannot duplicate.
@@ -565,6 +571,7 @@ struct TurnRequest<'a> {
     effort: Effort,
     tool_choice: Option<ToolChoice>,
     watch: bool,
+    tools: bool,
 }
 
 async fn due_now(due: Option<&(dyn Fn() -> bool + Send + Sync)>, watch: bool) {
@@ -589,6 +596,7 @@ async fn stream_assistant_response<S: StreamFn>(
         effort,
         tool_choice,
         watch,
+        tools,
     } = turn;
     let preparing =
         yi_types::trace::span("loop.prepare_request").arg("messages", context.messages.len());
@@ -606,9 +614,10 @@ async fn stream_assistant_response<S: StreamFn>(
             (config.convert_to_llm)(&tail),
         )
     };
-    let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
+    let offered = context.tools.iter().filter(|_| tools);
+    let tool_defs: Vec<ToolDef> = offered.map(|tool| tool.definition()).collect();
     // The loop says whether its tail is read again: the forced-none last word is the end.
-    let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) {
+    let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) || !tools {
         yi_types::model::Reuse::LastTurn
     } else {
         config.reuse
@@ -868,6 +877,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut repeating: u32 = 0;
     let mut steered = false;
     let mut last_word_said = false;
+    let mut followed_up = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending = read_steering(config);
 
@@ -904,6 +914,7 @@ pub async fn run_loop<S: StreamFn>(
                     effort: current_effort,
                     tool_choice: tool_choice.take(),
                     watch: !last_word_said,
+                    tools: !(followed_up && stream_retries > 0),
                 },
                 signal,
                 emit,
@@ -961,6 +972,7 @@ pub async fn run_loop<S: StreamFn>(
             let calls = extract_tool_calls(&message);
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
+            let refused_last_word = last_word_said && !calls.is_empty();
             if !calls.is_empty() {
                 let (finalized, terminate) = if reason == StopReason::Length {
                     length_stops = length_stops.saturating_add(1);
@@ -1017,6 +1029,21 @@ pub async fn run_loop<S: StreamFn>(
                 tool_results: tool_results.clone(),
             });
 
+            // Incident: two capped readers called a tool on the last word and ended with no answer.
+            // One more request forces none; a route refusing that (glm-5.3-flash) retries tool-less.
+            if refused_last_word
+                && !followed_up
+                && !answered(&message)
+                && config
+                    .last_word_capped
+                    .as_ref()
+                    .is_some_and(|capped| capped())
+            {
+                followed_up = true;
+                tool_choice = Some(ToolChoice::None);
+                has_more_tool_calls = true;
+                continue;
+            }
             let snapshot = TurnSnapshot {
                 message: &message,
                 tool_results: &tool_results,
