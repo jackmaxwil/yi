@@ -224,6 +224,42 @@ fn tool_execution_maps_to_tool_call_updates_and_bash_to_terminals() -> TestResul
     Ok(())
 }
 
+/// Dies with a failing command drawn as completed to an ACP client: the flag no longer marks a
+/// non-zero exit or a rule's verdict, so the status reads them from `details`.
+#[test]
+fn a_nonzero_exit_and_a_verdict_end_as_failed_tool_calls() -> TestResult {
+    let mut ids = IdMap::new(1000);
+    for (tool, details) in [
+        ("bash", json!({"exitCode": 1})),
+        ("plan", json!({"errorKind": "verdict"})),
+    ] {
+        let end = to_updates(
+            &AgentEvent::ToolExecutionEnd {
+                tool_call_id: format!("{tool}-1"),
+                tool_name: tool.to_owned(),
+                result: ToolResult {
+                    content: vec![Content::Text {
+                        text: "refused".to_owned(),
+                        text_signature: None,
+                    }],
+                    details,
+                    usage: None,
+                    added_tool_names: None,
+                    terminate: None,
+                },
+                is_error: false,
+            },
+            &mut ids,
+        );
+        let status = end.iter().find_map(|update| match update {
+            AcpSessionUpdate::ToolCallUpdate(update) => update.status.clone(),
+            _ => None,
+        });
+        assert_eq!(status, Some(AcpToolCallStatus::Failed), "{tool}: {end:?}");
+    }
+    Ok(())
+}
+
 #[test]
 fn custom_messages_become_yi_extension_updates() -> TestResult {
     let mut ids = IdMap::new(1000);

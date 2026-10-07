@@ -889,8 +889,7 @@ impl Tool for BashTool {
             }
             Some(_) | None => SkipReason::NotAView.name(),
         };
-        let mut output = text_output(text);
-        output.result.details = json!({
+        let details = json!({
             "exitCode": exit_code,
             "truncated": capture.truncated,
             "cancelled": capture.cancelled,
@@ -901,8 +900,8 @@ impl Tool for BashTool {
             "bridge": bridge,
             "sandboxRefusal": refusal.as_ref().map(crate::sandbox::SandboxRefusal::to_json),
         });
-        output.is_error = exit_code != 0 || capture.cancelled;
-        output
+        let unfinished = capture.cancelled || timed_out || refusal.is_some();
+        crate::tool::ran_output(text, details, unfinished)
     }
 }
 
@@ -1002,10 +1001,11 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
         if report.finished {
             jobs.mark_delivered(id);
             let exit_code = report.exit_code.unwrap_or(-1);
-            let mut output = text_output(format!("{}\n{}", report.headline(), report.output));
-            output.result.details = json!({ "job": id.0, "exitCode": exit_code });
-            output.is_error = exit_code != 0;
-            return output;
+            let text = format!("{}\n{}", report.headline(), report.output);
+            let killed =
+                report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
+            let details = json!({ "job": id.0, "exitCode": exit_code });
+            return crate::tool::ran_output(text, details, killed);
         }
         match deadline {
             // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.

@@ -632,3 +632,36 @@ fn every_plan_refusal_names_its_class() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a rule's answer flagged as a failure: a refused cycle reached the model as an error,
+/// which it treats as a fault to repair rather than the answer the call asked for.
+#[tokio::test]
+async fn a_verdict_reaches_the_model_as_a_result_and_a_misread_as_an_error() -> TestResult {
+    let rig = rig("verdict-result")?;
+    let todos = json!([{"label": "a"}, {"label": "b", "after": ["a"]}]);
+    let (refused, text) = call(&rig, json!({"op": "init", "goal": "g", "todos": todos}));
+    assert!(!refused, "{text}");
+    let adapter = yi_runtime::tools::ToolAdapter::new(
+        Arc::new(PlanTool::new(Arc::clone(&rig.engine), Actor::Owner)),
+        rig.temp.to_path_buf(),
+        Arc::new(|| false),
+        None,
+    );
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let input = |args: Value| args.as_object().cloned().unwrap_or_default();
+    let cycle = yi_loop::AgentTool::execute(
+        &adapter,
+        "c1",
+        input(json!({"op": "add_edge", "todo": "a", "after": "b"})),
+        &signal,
+    )
+    .await;
+    assert!(!cycle.is_error, "{:?}", cycle.result.content);
+    assert_eq!(cycle.result.details["errorKind"], json!("verdict"));
+    assert!(serde_json::to_string(&cycle.result.content)?.contains("cycle"));
+    let misread =
+        yi_loop::AgentTool::execute(&adapter, "c2", input(json!({"op": "frobnicate"})), &signal)
+            .await;
+    assert!(misread.is_error, "a misread stays an error");
+    Ok(())
+}
