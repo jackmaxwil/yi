@@ -241,15 +241,29 @@ pub(crate) fn capture(
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
-    capture_capped(cwd, program, args, deadline, 30_000).map(|capture| capture.stdout)
+    let label = format!("{program} {}", args.join(" "));
+    capture_named(
+        cwd,
+        &label,
+        program,
+        args,
+        deadline,
+        yi_tools::OUTPUT_CAP,
+        None,
+    )
+    .map(|capture| capture.stdout)
 }
 
-pub(crate) fn capture_capped(
+/// Incident: the lane sync ran under the sandbox wrapper and its refusal quoted the wrapper's
+/// whole argv, 17 KB of profile before the one line saying why; `label` is what the caller meant.
+pub(crate) fn capture_named(
     cwd: &Path,
+    label: &str,
     program: &str,
     args: &[&str],
     deadline: std::time::Duration,
     cap: usize,
+    sandbox: Option<&yi_tools::Sandbox>,
 ) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::keyless_command(program);
@@ -259,16 +273,18 @@ pub(crate) fn capture_capped(
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
     let capture = yi_tools::run_captured(command, None, &cancelled, cap)
-        .map_err(|error| format!("{program} {}: {error}", args.join(" ")))?;
+        .map_err(|error| format!("{label}: {error}"))?;
     if capture.exit_code == Some(0) {
         return Ok(capture);
     }
-    Err(format!(
-        "{program} {} failed:\n{}{}",
-        args.join(" "),
-        capture.stdout,
-        capture.stderr
-    ))
+    let output = format!("{}{}", capture.stdout, capture.stderr);
+    let denied = sandbox
+        .and_then(|sandbox| {
+            yi_tools::sandbox_refusal(sandbox, cwd, capture.exit_code, &output, label)
+        })
+        .map(|refusal| format!("\n{}\n", yi_tools::denial_hint(&refusal)))
+        .unwrap_or_default();
+    Err(format!("{label} failed:\n{output}{denied}"))
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
@@ -280,13 +296,13 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
     let owned: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000).map_err(|error| {
-        LaneError::Git {
+    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP).map_err(
+        |error| LaneError::Git {
             args: owned.clone(),
             exit_code: None,
             output: error,
-        }
-    })?;
+        },
+    )?;
     if capture.exit_code == Some(0) {
         return Ok(capture.stdout);
     }
@@ -1082,5 +1098,37 @@ impl Lane {
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_denied_sync_names_the_toolchains_write_target_not_the_wrapper() -> Result<(), String> {
+        let cwd = std::env::temp_dir().join("yi-lane-refusal-hint");
+        std::fs::create_dir_all(&cwd).map_err(|error| error.to_string())?;
+        let home = std::env::temp_dir();
+        let sandbox = yi_tools::Sandbox::for_workspace(&cwd, &home, None);
+        let script = "echo x > /denied-target/a; \
+                      printf 'sh: /etc/hosts: Operation not permitted\\n' >&2; exit 3";
+        let label = format!("sh -c {script}");
+        let Err(error) = capture_named(
+            &cwd,
+            &label,
+            "sh",
+            &["-c", script],
+            std::time::Duration::from_secs(10),
+            yi_tools::OUTPUT_CAP,
+            Some(&sandbox),
+        ) else {
+            return Err("the denied sync succeeded".to_owned());
+        };
+        assert!(
+            error.contains("next: the sandbox refused writing `/denied-target/a"),
+            "the hint names the toolchain command's write target, not the wrapper: {error}"
+        );
+        Ok(())
     }
 }

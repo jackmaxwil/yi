@@ -581,6 +581,8 @@ impl PlanTool {
     }
 
     pub(super) fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+        let unstrung = super::natural::unstring_todos(args);
+        let args = unstrung.as_ref();
         if super::apply::wants(args) {
             return super::apply::apply(self, args);
         }
@@ -715,10 +717,7 @@ impl PlanTool {
                     }
                     .into());
                 };
-                let view = OpRequest {
-                    op: Op::View { full: true },
-                    ..request.clone()
-                };
+                let view = view_request(&request.actor, request.plan.clone());
                 let mut order = labels.clone();
                 let rest: Vec<TodoLabel> = (self.engine.apply(view)?.plan.todos.iter())
                     .map(|todo| todo.label.clone())
@@ -746,16 +745,25 @@ impl PlanTool {
 
     /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.
     fn runs_itself(&self, request: &OpRequest, label: &TodoLabel) -> bool {
-        let view = OpRequest {
-            op: Op::View { full: true },
-            ..request.clone()
-        };
+        let view = view_request(&request.actor, request.plan.clone());
         self.actor == Actor::Owner
             && (self.engine.apply(view).ok()).is_some_and(|seen| {
                 seen.plan
                     .todo(label)
                     .is_some_and(|t| t.delegation.is_none())
             })
+    }
+}
+
+/// Invariant: a view never pins a request id or a revision, so every reader of the open plan
+/// builds it from actor and plan alone.
+pub(super) fn view_request(actor: &Actor, plan: Option<PlanId>) -> OpRequest {
+    OpRequest {
+        plan,
+        actor: actor.clone(),
+        op: Op::View { full: true },
+        request_id: None,
+        expected_revision: None,
     }
 }
 

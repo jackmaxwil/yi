@@ -1,16 +1,20 @@
 //! The session's handle vocabulary: every closure the runtime hands a subsystem so it can
 //! steer, notice or read this session without holding it. The run loop stays out.
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
+use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::{Effort, Model};
+use yi_types::wire::SessionStats;
 
 use super::run::{self, Queued};
 use super::{
     AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, host_text,
-    store_of,
+    record_store_error, store_of,
 };
+
+pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
 
 pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
     let model = shared
@@ -27,6 +31,73 @@ pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
 }
 
 impl AgentSession {
+    /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
+    /// `fold` reads each store attached after this call (id, branch, totals) before a request.
+    pub(crate) fn on_attach(
+        &self,
+        fold: impl FnMut(&str, &[Entry], &SessionStats) + Send + 'static,
+    ) {
+        let mut folds = self
+            .on_attach
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        folds.push(Box::new(fold));
+    }
+
+    pub(super) fn restore_from_ledger(&self, entries: &[Entry]) {
+        let mut effort = None;
+        for entry in entries {
+            match entry {
+                Entry::ModelChange {
+                    provider, model_id, ..
+                } => {
+                    let Some(model) = crate::provider::resolve_model(provider, model_id) else {
+                        record_store_error(
+                            &self.shared,
+                            &yi_session::SessionError::InvalidPayload(format!(
+                                "the ledger switched to {provider}/{model_id}, which the catalog no longer resolves"
+                            )),
+                        );
+                        continue;
+                    };
+                    if let Ok(mut slot) = self.shared.model.lock() {
+                        *slot = model;
+                    }
+                }
+                Entry::ThinkingLevelChange { thinking_level, .. } => {
+                    match thinking_level.parse::<Effort>() {
+                        Ok(level) => effort = Some(level),
+                        Err(_) => record_store_error(
+                            &self.shared,
+                            &yi_session::SessionError::InvalidPayload(format!(
+                                "the ledger's thinking level {thinking_level} did not parse"
+                            )),
+                        ),
+                    }
+                }
+                _ => {}
+            }
+        }
+        let restored = self.model().clamp_effort(effort.unwrap_or(self.effort()));
+        if let Ok(mut slot) = self.shared.effort.lock() {
+            *slot = restored;
+        }
+        let (id, stats) = store_of(&self.shared).map_or_else(
+            || (String::new(), SessionStats::zero()),
+            |store| {
+                let session = yi_session::lock_session(&store);
+                (session.metadata().id.clone(), session.stats())
+            },
+        );
+        let mut folds = self
+            .on_attach
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for fold in folds.iter_mut() {
+            fold(&id, entries, &stats);
+        }
+    }
+
     pub fn abort(&self) {
         self.shared.signal.fire();
     }
@@ -158,10 +229,18 @@ impl AgentSession {
         Arc::clone(&self.shared.mail)
     }
 
+    /// Incident: under a client's cell every finished child woke the idle root, a paid model
+    /// turn for news the cell was about to read itself; while one runs, the notice only queues.
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage, Option<StillNews>) + Send + Sync> {
         let parts = self.parts();
+        let kernel = Arc::clone(&self.kernel);
         Arc::new(move |message, news| {
-            run::enqueue(&parts, Queued::new(message, true, news));
+            let cell = kernel
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .is_some_and(|service| service.user_cell_running());
+            run::enqueue(&parts, Queued::new(message, !cell, news));
         })
     }
 

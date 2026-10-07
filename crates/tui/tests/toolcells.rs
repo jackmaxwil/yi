@@ -333,7 +333,7 @@ fn a_nonzero_exit_and_a_verdict_still_open_with_a_cross() -> TestResult {
         "plan",
         "plan update refused: ordering cycle through [\"a\", \"b\"]",
         false,
-        json!({ "outcome": "verdict" }),
+        json!({ "errorKind": "verdict" }),
     );
     let rows = flat(&app.take_commits());
     assert!(rows.iter().any(|row| row.contains('✕')), "{rows:?}");

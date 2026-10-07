@@ -882,12 +882,13 @@ def check_surface():
             {"tool": "plan", "count": 3, "errorClass": "tool", "errorKind": "verdict"},
             {"tool": "plan", "count": 1, "errorClass": "tool", "errorKind": "denied"},
             {"tool": "bash", "count": 4, "errorClass": "command"},
+            {"tool": "ipython", "count": 2, "errorClass": "api_misuse"},
             {"tool": "read", "count": 1, "errorClass": "tool"},
         ]
         (store / "issues.jsonl").write_text("".join(json.dumps(issue) + "\n" for issue in issues))
         classes = surface.census(store)["classes"]
-        assert classes == {"misread": 2, "stale": 1, "verdict": 3, "exit": 4, "safety": 1,
-                           "tool": 0, "untagged": 1}, classes
+        assert classes == {"misread": 2, "stale": 1, "verdict": 3, "exit": 4, "api_misuse": 2,
+                           "safety": 1, "tool": 0, "untagged": 1}, classes
         cell = surface.ledger_cell(surface.census(store))
         assert cell.startswith("tool failures: misread 2, stale 1; verdict 3"), cell
 

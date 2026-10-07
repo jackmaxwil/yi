@@ -242,8 +242,9 @@ fn walk_capped(
     // Rules above the root bind it, from the nearest repository top down; a root that is one
     // takes none from above.
     let above: Vec<&Path> = root.ancestors().collect();
-    if let Some(top) = above.iter().position(|dir| dir.join(".git").exists()) {
-        (above.iter().take(top.saturating_add(1)).skip(1).rev())
+    let top = crate::process::git_root(&root);
+    if let Some(at) = above.iter().position(|dir| top.as_deref() == Some(*dir)) {
+        (above.iter().take(at.saturating_add(1)).skip(1).rev())
             .for_each(|dir| ignore.push_dir(dir));
     }
     let mut seen = 0_usize;
@@ -298,24 +299,21 @@ const READ_ONLY_VERBS: [&str; 24] = [
     "du", "df", "date", "env", "printenv", "grep", "rg", "ag", "find", "fd", "diff", "true",
 ];
 
-/// `git` is half a read tool: only the reporting subcommands qualify.
+#[rustfmt::skip]
 const READ_ONLY_GIT: [&str; 10] = [
-    "log",
-    "status",
-    "diff",
-    "show",
-    "blame",
-    "branch",
-    "describe",
-    "rev-parse",
-    "ls-files",
+    "log", "status", "diff", "show", "blame", "branch", "describe", "rev-parse", "ls-files",
     "shortlog",
 ];
 
-/// Grid's query verbs read the chart; `survey` and `edit` write.
-const READ_ONLY_GRID: [&str; 14] = [
-    "resolve", "uses", "scope", "todo", "roots", "explain", "version", "orphans", "hotspots",
-    "log", "diff", "drift", "check", "help",
+/// Ripwire's query flags read the tree; its edit, baseline, note, export, server and run-trace
+/// flags write or execute, so a command carrying any flag outside this set stays `Exec`.
+#[rustfmt::skip]
+const READ_ONLY_RIPWIRE: [&str; 38] = [
+    "for", "pack-task", "callers", "callees", "uses", "around", "expand", "outline", "path",
+    "connect", "impact", "verify", "mentions", "affected", "exercises", "situ", "test-gate",
+    "edit-check", "safe-delete", "slice", "at", "from-trace", "cochange", "whereis", "tree",
+    "recall", "lego", "json", "limit", "offset", "detail", "signatures-only", "pack-signatures",
+    "token-budget", "max-tokens", "compress", "help", "version",
 ];
 
 /// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
@@ -346,7 +344,11 @@ fn read_only_segment(segment: &str) -> bool {
     let verb = verb.rsplit('/').next().unwrap_or(verb);
     match verb {
         "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub)),
-        "grid" => words.next().is_some_and(|sub| READ_ONLY_GRID.contains(sub)),
+        // Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write.
+        "ripwire" => words.all(|word| match word.strip_prefix("--") {
+            Some(flag) => READ_ONLY_RIPWIRE.contains(&flag.split('=').next().unwrap_or(flag)),
+            None => !(word.starts_with('-') || word.contains(':') || word.contains('@')),
+        }),
         _ => READ_ONLY_VERBS.contains(&verb),
     }
 }
@@ -718,7 +720,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you when it exits, starting your next turn if this one ended: end the turn, never sleep or poll; bash with job=N, wait and no command waits now, returning once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -1000,11 +1002,10 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
             jobs.mark_delivered(id);
             let exit_code = report.exit_code.unwrap_or(-1);
             let text = format!("{}\n{}", report.headline(), report.output);
-            return crate::tool::ran_output(
-                text,
-                json!({ "job": id.0, "exitCode": exit_code }),
-                false,
-            );
+            let killed =
+                report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
+            let details = json!({ "job": id.0, "exitCode": exit_code });
+            return crate::tool::ran_output(text, details, killed);
         }
         match deadline {
             // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
