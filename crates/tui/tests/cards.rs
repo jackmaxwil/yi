@@ -92,6 +92,7 @@ fn task(status: TaskStatus, answer: &str) -> TaskCell {
         description: "reply-with-the-single-sub-c4bc6302".to_owned(),
         status,
         last_tool: Some("bash ls".to_owned()),
+        prev_tool: None,
         toolcalls: 2,
         tokens: 1500,
         elapsed_ms: 3000,
@@ -688,4 +689,41 @@ fn a_retried_stream_error_draws_one_notice() {
     let rows = flat(&app.reflowed(80));
     let said = rows.iter().filter(|r| r.contains("HTTP 402")).count();
     assert_eq!(said, 1, "{rows:?}");
+}
+
+/// A first step has no previous one: its slot stays blank so the box does not grow a row when
+/// the second call starts, and a box too narrow for its frame keeps both rows of steps.
+#[test]
+fn a_first_step_keeps_the_box_height_and_a_narrow_box_keeps_both_steps() -> TestResult {
+    let mut cell = task(TaskStatus::Running, "");
+    cell.description = "lecteur-é".to_owned();
+    cell.last_tool = None;
+    cell.step("read café.rs".to_owned());
+    let first = flat(&cell.lines(60, &theme(), TranscriptMode::Normal, 0));
+    let slot = format!("  │ {} │", " ".repeat(54));
+    assert_eq!(first.get(2), Some(&slot), "{first:#?}");
+    assert!(
+        first
+            .get(3)
+            .is_some_and(|r| r.contains("⚙ read café.rs · 1K")),
+        "{first:#?}"
+    );
+    cell.step("grep naïve".to_owned());
+    let second = flat(&cell.lines(60, &theme(), TranscriptMode::Normal, 0));
+    assert_eq!(first.len(), second.len(), "{first:#?}\n{second:#?}");
+    let narrow = flat(&cell.lines(12, &theme(), TranscriptMode::Normal, 0));
+    assert_eq!(
+        narrow.len(),
+        5,
+        "blank, title, previous, current, blank: {narrow:#?}"
+    );
+    assert!(
+        narrow.get(2).is_some_and(|r| r.contains("⚙ read café.rs")),
+        "{narrow:#?}"
+    );
+    assert!(
+        narrow.get(3).is_some_and(|r| r.contains("⚙ grep naïve")),
+        "{narrow:#?}"
+    );
+    Ok(())
 }

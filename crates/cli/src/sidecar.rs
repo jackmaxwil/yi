@@ -15,17 +15,27 @@ pub(crate) fn start(home: &Path) {
             ),
         );
     };
+    // Minted once here; the sidecar daemon reuses this same key.
+    let key = yi_runtime::auth::key_in(home, "laya");
+    if let Err(error) = &key {
+        note(
+            home,
+            &format!("no laya key, so classifier approval stays off: {error}"),
+        );
+    }
     let home = home.to_path_buf();
-    std::thread::spawn(move || match own(&home, &checkpoint, host, port) {
-        Ok(Some(_child)) => loop {
-            std::thread::park();
+    std::thread::spawn(
+        move || match own(&home, &checkpoint, host, port, key.ok()) {
+            Ok(Some(_child)) => loop {
+                std::thread::park();
+            },
+            Ok(None) => {}
+            Err(error) => note(
+                &home,
+                &format!("the classifier sidecar did not start: {error}"),
+            ),
         },
-        Ok(None) => {}
-        Err(error) => note(
-            &home,
-            &format!("the classifier sidecar did not start: {error}"),
-        ),
-    });
+    );
 }
 
 /// A note made off the lock, so a daemon with no sidecar to start never waits on another's.
@@ -51,6 +61,7 @@ fn own(
     checkpoint: &str,
     host: &str,
     port: u16,
+    minted: Option<yi_runtime::auth::Secret>,
 ) -> std::io::Result<Option<std::process::Child>> {
     let mut log = yi_runtime::session_store::lock_file(&home.join(".yi/laya-serve.log"))?;
     log.seek(std::io::SeekFrom::End(0))?;
@@ -87,7 +98,8 @@ fn own(
         .stdin(std::process::Stdio::piped())
         .stdout(log)
         .stderr(stderr);
-    if let Some(key) = yi_runtime::auth::api_key("laya") {
+    let key = minted.or_else(|| yi_runtime::auth::key_in(home, "laya").ok());
+    if let Some(key) = key {
         command.env("LAYA_API_KEY", key.expose());
     }
     command.spawn().map(Some)
