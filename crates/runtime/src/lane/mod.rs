@@ -241,25 +241,17 @@ pub(crate) fn capture(
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
-    capture_capped(cwd, program, args, deadline, yi_tools::OUTPUT_CAP).map(|capture| capture.stdout)
-}
-
-pub(crate) fn capture_capped(
-    cwd: &Path,
-    program: &str,
-    args: &[&str],
-    deadline: std::time::Duration,
-    cap: usize,
-) -> Result<yi_tools::CommandCapture, String> {
+    let label = format!("{program} {}", args.join(" "));
     capture_named(
         cwd,
-        &format!("{program} {}", args.join(" ")),
+        &label,
         program,
         args,
         deadline,
-        cap,
+        yi_tools::OUTPUT_CAP,
         None,
     )
+    .map(|capture| capture.stdout)
 }
 
 /// Incident: the lane sync ran under the sandbox wrapper and its refusal quoted the wrapper's
