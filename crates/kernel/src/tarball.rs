@@ -140,6 +140,9 @@ impl Aside {
         let Some(old) = self.old else {
             return Ok(());
         };
+        if std::fs::symlink_metadata(&self.target).is_ok_and(|meta| meta.is_dir()) {
+            let _ = std::fs::remove_dir_all(&self.target);
+        }
         std::fs::rename(&old, &self.target).map_err(|error| {
             let (target, old) = (self.target.display(), old.display());
             format!("{target} was not restored ({error}); the previous one is at {old}")
@@ -147,9 +150,18 @@ impl Aside {
     }
 }
 
-/// Invariant: a reader sees the old target or the whole new one; a file is replaced by one rename
-/// over a hard link of it (a copy where links fail), a directory by a rename aside; no symlink.
+/// Invariant: a reader sees the old target or the whole new one; a file replaced by a file is one
+/// rename over a hard link of it (a copy where links fail), anything else a rename aside.
 pub fn swap_in(staging: &Path, target: &Path) -> Result<Aside, String> {
+    swap_in_with(staging, target, |from, to| std::fs::hard_link(from, to))
+}
+
+fn swap_in_with(
+    staging: &Path,
+    target: &Path,
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<Aside, String> {
+    let staged_file = std::fs::symlink_metadata(staging).is_ok_and(|meta| meta.is_file());
     let describe = |error: std::io::Error| format!("{}: {error}", target.display());
     let old = target.with_extension(format!("old-{}", std::process::id()));
     let old = match std::fs::symlink_metadata(target) {
@@ -159,8 +171,10 @@ pub fn swap_in(staging: &Path, target: &Path) -> Result<Aside, String> {
                 target.display()
             ));
         }
-        Ok(meta) if meta.is_dir() => std::fs::rename(target, &old).map(|()| Some(old)),
-        Ok(_) => match std::fs::hard_link(target, &old) {
+        Ok(meta) if meta.is_dir() || !staged_file => {
+            std::fs::rename(target, &old).map(|()| Some(old))
+        }
+        Ok(_) => match link(target, &old) {
             Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
                 std::fs::copy(target, &old).map(|_| ())
             }
@@ -191,19 +205,48 @@ mod tests {
     #[test]
     fn a_failed_restore_names_where_the_old_one_is() -> Result<(), Box<dyn std::error::Error>> {
         let scratch = crate::scratch::Scratch::new("tarball-restore")?;
-        let (target, staging) = (scratch.join("yi"), scratch.join("yi.new"));
-        std::fs::write(&target, b"old")?;
-        std::fs::write(&staging, b"new")?;
+        let (target, staging) = (scratch.join("skills"), scratch.join("skills.new"));
+        std::fs::create_dir_all(&target)?;
+        std::fs::write(target.join("keep"), b"old")?;
+        std::fs::create_dir_all(&staging)?;
         let aside = swap_in(&staging, &target)?;
-        std::fs::remove_file(&target)?;
-        std::fs::create_dir_all(target.join("held"))?;
+        std::fs::remove_dir_all(&target)?;
+        std::fs::write(&target, b"in the way")?;
         let error = match aside.restore() {
-            Ok(()) => return Err("restored over a non-empty directory".into()),
+            Ok(()) => return Err("restored a directory over a file".into()),
             Err(error) => error,
         };
         let old = target.with_extension(format!("old-{}", std::process::id()));
         assert!(error.contains(&old.display().to_string()), "{error}");
-        assert_eq!(std::fs::read(&old)?, b"old");
+        assert_eq!(std::fs::read(old.join("keep"))?, b"old");
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_is_replaced_by_a_directory_and_restored() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = crate::scratch::Scratch::new("tarball-file-to-dir")?;
+        let (target, staging) = (scratch.join("python"), scratch.join("python.new"));
+        std::fs::write(&target, b"stale")?;
+        std::fs::create_dir_all(&staging)?;
+        std::fs::write(staging.join("stamp"), b"new")?;
+        let aside = swap_in(&staging, &target)?;
+        assert_eq!(std::fs::read(target.join("stamp"))?, b"new");
+        aside.restore()?;
+        assert_eq!(std::fs::read(&target)?, b"stale");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_link_falls_back_to_a_copy() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = crate::scratch::Scratch::new("tarball-copy")?;
+        let (target, staging) = (scratch.join("yi"), scratch.join("yi.new"));
+        std::fs::write(&target, b"old")?;
+        std::fs::write(&staging, b"new")?;
+        let cross_device = |_: &Path, _: &Path| Err(std::io::Error::other("cross-device link"));
+        let aside = swap_in_with(&staging, &target, cross_device)?;
+        assert_eq!(std::fs::read(&target)?, b"new");
+        aside.restore()?;
+        assert_eq!(std::fs::read(&target)?, b"old");
         Ok(())
     }
 }
