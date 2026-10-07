@@ -48,6 +48,8 @@ REPORTED = ("high", "medium")
 # The intake checks' lenses: the PR body's sections and a twin, a person's call and read afresh each round.
 INTAKE = ("template", "duplicate")
 DIFF_MAX = 150_000
+# The owner (2026-10-07): "increase glm 5.3 flash reasoning effort for yi review bot"; the default is medium.
+REVIEW_THINKING = "high"
 # The fixer may not touch what judges it: the gates, the workflows and the baselines.
 # Incident: round 3 on #765 found the hooks outside the wall, and the commit hook is the
 # fixer's accept, so a fixer could weaken its own judge before the host committed.
@@ -339,37 +341,50 @@ def windows(diff):
     return hashes
 
 
-def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: False):
-    """The same issue closed twice, or added text another PR already adds. A stack's own
-    neighbours are not twins: one is the other's base, or one head carries the other's.
-    Incident: #765, stacked on #733 and opened against main, was read as #733's twin."""
+def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: False, issue_of=lambda n: None):
+    """The same issue closed twice (by an open or a merged PR, or already closed), or added text
+    another open PR already adds. A stack's own neighbours are not twins: one is the other's
+    base, or one head carries the other's. Incident: #765, stacked on #733 and opened against
+    main, was read as #733's twin."""
     mine, closes = windows(diff), {int(n) for kind, _, n in CITE.findall(pr.get("body") or "") if kind.lower() == "closes"}
-    out = []
+    out, reported = [], set()
     for other in others:
         if other["number"] == pr["number"] or other["head"]["ref"] in (pr["base"]["ref"],) or other["base"]["ref"] == pr["head"]["ref"]:
             continue
-        # Incident: #909 moved code #902 had merged and was blocked as its twin; merged text is main's.
-        if other.get("merged"):
-            continue
         theirs = {int(n) for kind, named, n in CITE.findall(other.get("body") or "") if kind.lower() == "closes" and named in ("", repo)}
-        shared = mine & windows(diff_of(other["number"])) if mine else set()
+        # Incident: #909 moved code #902 had merged and was blocked as its twin; merged text is
+        # main's, so a merged PR is a twin only by the issue it already closed.
+        shared = mine & windows(diff_of(other["number"])) if mine and not other.get("merged") else set()
         if (closes & theirs or len(shared) >= DUP_SHARED) and stacked(pr, other):
             continue
         if closes & theirs:
-            claim = f"#{other['number']} ({other['state']}) also closes " + ", ".join(f"#{n}" for n in sorted(closes & theirs))
+            state = "merged" if other.get("merged") else other["state"]
+            claim = f"#{other['number']} ({state}) also closes " + ", ".join(f"#{n}" for n in sorted(closes & theirs))
+            reported |= closes & theirs
         elif len(shared) >= DUP_SHARED:
             claim = f"#{other['number']} ({other['state']}) adds {len(shared)} of the same {DUP_WINDOW}-line windows"
         else:
             continue
         out.append({"lens": "duplicate", "severity": "high", "claim": claim + f": {other['title']}",
                     "path": "", "line": 0, "quote": "", "fix": "close one, or /override with why both land"})
+    for n in sorted(closes - reported):
+        issue = issue_of(n) or {}
+        if issue.get("state") == "closed":
+            out.append({"lens": "duplicate", "severity": "high", "path": "", "line": 0, "quote": "",
+                        "claim": f"Closes #{n}, which is already closed: {issue.get('title', '')}",
+                        "fix": "cite the open issue this work finishes, or /override with why it lands"})
     return out
 
 
-def intake(pr, diff, others, diff_of, repo, stacked=lambda a, b: False):
+def has_twin(found):
+    """Whether intake found a duplicate, which the round posts before any lens runs."""
+    return any(f["lens"] == "duplicate" for f in found)
+
+
+def intake(pr, diff, others, diff_of, repo, stacked=lambda a, b: False, issue_of=lambda n: None):
     found = [{"lens": "template", "severity": "high", "claim": err, "path": "", "line": 0, "quote": "", "fix": "edit the PR body"}
              for err in template_problems(pr.get("body") or "")]
-    return found + duplicate_findings(pr, diff, others, diff_of, repo, stacked)
+    return found + duplicate_findings(pr, diff, others, diff_of, repo, stacked, issue_of)
 
 
 def stacked(pr, other):
@@ -690,13 +705,18 @@ def read_pr(repo, number, allowed):
             since = added_at(diff)
             own = {path: lines & since.get(path, set()) for path, lines in own.items()}
         others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
-                 (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=30") or [])
-        found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo, stacked)
+                 (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=50") or [])
+        found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo, stacked,
+                       lambda n: forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}"))
         message = forge_pr.git("log", "-1", "--format=%B", sha)
         fix_note = message if rounds and answered(message, rounds[-1]["n"], number) else ""
-        kept, dropped, outside, unanswered, cleared = read_round(pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd),
-                                                     load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds),
-                                                     fix_note=fix_note)
+        # The owner (2026-10-07): duplicates are checked first; a twin is the owner's call, so no lens is paid for.
+        if has_twin(found):
+            kept, dropped, outside, unanswered, cleared = [], 0, 0, [], 0
+        else:
+            kept, dropped, outside, unanswered, cleared = read_round(
+                pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING),
+                load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds), fix_note=fix_note)
     finally:
         discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
@@ -1201,6 +1221,14 @@ def selfcheck():
     assert duplicate_findings(pr, diff, [successor], {10: other}.get, "apex/yi", lambda a, b: b["number"] == 10) == [], \
         "a successor opened against main that carries this head is a stack, not a twin"
     assert "15 of the same" in found[0]["claim"] and "also closes #4" in found[1]["claim"]
+    merged_twin = dict(same_issue, number=12, state="closed", merged=True)
+    assert [f["claim"].split(":")[0] for f in duplicate_findings(pr, "", [merged_twin], {}.get, "apex/yi")] == ["#12 (merged) also closes #4"], \
+        "a merged PR that already closed this issue is a twin"
+    done = lambda n: {"state": "closed", "title": "landed"} if n == 4 else {"state": "open"}
+    gone = duplicate_findings(pr, "", [], {}.get, "apex/yi", issue_of=done)
+    assert [f["claim"] for f in gone] == ["Closes #4, which is already closed: landed"], gone
+    assert len(duplicate_findings(pr, "", [merged_twin], {}.get, "apex/yi", issue_of=done)) == 1, "one issue is one finding"
+    assert has_twin(gone) and not has_twin(intake(dict(pr, body=""), "", [], diffs.get, "apex/yi")), "only a twin skips the lenses"
     assert intake(dict(pr, body=""), "", [], diffs.get, "apex/yi")[0]["lens"] == "template"
 
     read = {"pr": {"number": 340}, "sha": "abc", "intake": [{"lens": "template", "severity": "high"}],
