@@ -926,8 +926,12 @@ pub(crate) mod tests {
         let object = "```json\n{\"outcome\": \"the quota parser lands\"}\n```";
         // The #989 cases: a reader's fence after a non-ASCII paragraph, and a fence after
         // prose that is not JSON, which stays refused with its text attached.
-        let cases: [(&'static str, Result<&str, &str>); 5] = [
+        let cases: [(&'static str, Result<&str, &str>); 6] = [
             (object, Ok("the quota parser lands")),
+            (
+                "the prose quotes {\"outcome\": \"the quoted one\"} before [pkg/more.py#F0C2]\n\n```json\n{\"outcome\": \"the quota parser lands\"}\n```",
+                Ok("the quota parser lands"),
+            ),
             ("the quota parser lands", Err("text, not JSON")),
             (
                 "Voil\u{e0} la r\u{e9}ponse:\n\n```json\n{\"outcome\": \"the quota parser lands\"}\n```\n",
