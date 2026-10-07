@@ -192,14 +192,17 @@ fn strict_follows_the_route_and_an_entry_can_opt_in() -> TestResult {
     Ok(())
 }
 
-fn optional(name: &str, count: usize) -> ToolDef {
-    let properties: Map<String, Value> = (0..count)
+fn properties(count: usize) -> Map<String, Value> {
+    (0..count)
         .map(|index| (format!("p{index}"), json!({"type": "string"})))
-        .collect();
+        .collect()
+}
+
+fn optional(name: &str, count: usize) -> ToolDef {
     ToolDef {
         name: name.to_owned(),
         description: String::new(),
-        parameters: json!({"type": "object", "properties": properties}),
+        parameters: json!({"type": "object", "properties": properties(count)}),
         freeform: None,
     }
 }
@@ -254,9 +257,6 @@ fn the_session_tools_fit_anthropic_caps_in_order() -> TestResult {
 #[test]
 fn the_caps_count_properties_hidden_in_defs() {
     let defs = |count: usize| {
-        let optional: Map<String, Value> = (0..count)
-            .map(|index| (format!("p{index}"), json!({"type": "string"})))
-            .collect();
         json!({
             "type": "object",
             "properties": {"x": {"type": "string"}},
@@ -264,7 +264,7 @@ fn the_caps_count_properties_hidden_in_defs() {
             "$defs": {
                 "big": {
                     "type": "object",
-                    "properties": optional,
+                    "properties": properties(count),
                     "required": [],
                 }
             },
