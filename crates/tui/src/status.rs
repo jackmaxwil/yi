@@ -324,14 +324,9 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
 /// string, not the characters: `⚠️` is 1 + 0 cells apart and 2 together.
 fn clip_cells(text: &str, over: usize) -> String {
     let keep = text.width().saturating_sub(over + 1);
-    let mut out = String::new();
-    for ch in text.chars() {
-        out.push(ch);
-        if out.width() > keep {
-            out.pop();
-            break;
-        }
-    }
+    let cells = crate::wrap::flatten_spans(&[Span::raw(text)]);
+    let kept = crate::wrap::take_cells(&cells, keep);
+    let mut out: String = kept.iter().map(|cell| cell.ch).collect();
     out.push('…');
     out
 }

@@ -3423,6 +3423,9 @@ mod contracts {
         Ok(Confirmer { broker, store })
     }
 
+    /// Each prompt's description, in the order the person was asked.
+    type Asked = Arc<Mutex<Vec<String>>>;
+
     /// The owner's plan tool over `rig`, confirming through a broker in `mode` that answers
     /// `answer` and counts each time it asks, judged by a sidecar answering `safe` when given.
     fn asking_tool(
@@ -3430,12 +3433,14 @@ mod contracts {
         mode: PermissionMode,
         answer: AskOutcome,
         safe: Option<f64>,
-    ) -> Result<(PlanTool, Arc<std::sync::atomic::AtomicU32>), Box<dyn Error>> {
+    ) -> Result<(PlanTool, Asked), Box<dyn Error>> {
         let Confirmer { store, .. } = confirmer(rig, answer)?;
-        let asked = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let counted = Arc::clone(&asked);
-        let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let asked: Asked = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&asked);
+        let asker: Asker = Arc::new(move |ask: &PermissionAsk<'_>| {
+            if let Ok(mut asked) = recorded.lock() {
+                asked.push(ask.description.to_owned());
+            }
             answer
         });
         let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
@@ -3509,7 +3514,16 @@ mod contracts {
         let (tool, asked) = asking_tool(&rig, PermissionMode::Ask, AskOutcome::AllowOnce, None)?;
         let (plan, refused, text) = accept_through(&tool, &rig)?;
         assert!(!refused, "{text}");
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(asked.lock().map_or(0, |asked| asked.len()), 1);
+        let description = asked
+            .lock()
+            .map(|asked| asked.concat())
+            .map_err(|_| "poisoned")?;
+        assert!(
+            description
+                .starts_with("ship it: just check exit 0 by hand · accepted_by_user on plan "),
+            "the prompt shows two rows of this line, so the todo and why lead it: {description}"
+        );
         assert!(matches!(
             todo_of(&rig.store, &plan, "ship it")?.state,
             TodoState::Done {
@@ -3612,7 +3626,7 @@ mod contracts {
         let (plan, refused, text) = accept_through(&tool, &allowed)?;
         assert!(!refused, "{text}");
         assert_eq!(
-            asked.load(std::sync::atomic::Ordering::SeqCst),
+            asked.lock().map_or(0, |asked| asked.len()),
             0,
             "no person was asked"
         );
@@ -3638,7 +3652,7 @@ mod contracts {
         let (plan, refused, text) = accept_through(&tool, &unsure)?;
         assert!(!refused, "{text}");
         assert_eq!(
-            asked.load(std::sync::atomic::Ordering::SeqCst),
+            asked.lock().map_or(0, |asked| asked.len()),
             1,
             "an unsure classifier asks"
         );
