@@ -3,6 +3,7 @@ mod wire;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use yi_types::event::AssistantMessageEvent;
@@ -15,6 +16,7 @@ pub use proto::{CLIENT_VERSION, NAMESPACE};
 
 pub type ToolFuture = Pin<Box<dyn Future<Output = String> + Send>>;
 pub type ToolFn = Box<dyn Fn(String, String, Map<String, Value>) -> ToolFuture + Send + Sync>;
+pub type StopFn = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub struct Applied {
     pub events: Vec<AssistantMessageEvent>,
@@ -36,22 +38,34 @@ pub fn apply_message(
             content_index: 0,
             delta: text,
         }),
-        Ok(proto::Inbound::TurnEnded) | Ok(proto::Inbound::Ignore) => {}
+        Ok(proto::Inbound::TurnEnded)
+        | Ok(proto::Inbound::Ignore)
+        | Ok(proto::Inbound::Context { .. })
+        | Ok(proto::Inbound::KvGet { .. })
+        | Ok(proto::Inbound::KvSet { .. }) => {}
         Ok(proto::Inbound::Tool {
             id,
             name,
             call_id,
+            exec_id,
             args,
+            route,
+            command,
+            cwd,
         }) => {
             let output = tool(&name, &args);
             events.push(tool_event(&call_id, &name, args));
-            replies.push(proto::tool_reply(id, &output));
+            replies.extend(proto::tool_frames(
+                route, id, &exec_id, &command, &cwd, &output,
+            ));
         }
         Ok(proto::Inbound::Reject { id }) => {
             replies.push(proto::throw_reply(id, "yi does not run this cursor tool"));
+            replies.push(proto::stream_close(id));
         }
         Err(error) => {
             replies.push(proto::throw_reply(0, &error));
+            replies.push(proto::stream_close(0));
         }
     }
     Applied { events, replies }
@@ -174,26 +188,48 @@ pub fn stream(
     context: &LlmContext,
     token: &str,
     tool: ToolFn,
+    stop: StopFn,
 ) -> tokio::sync::mpsc::Receiver<AssistantMessageEvent> {
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
     let model = model.clone();
+    let tools = tools_of(context);
+    let workspace = std::env::current_dir()
+        .map(|path| format!("file://{}", path.display()))
+        .unwrap_or_else(|_| "file:///".to_owned());
     let body = proto::frame(&proto::run_request(
         &prompt_of(context),
         &model.id,
         &uuid(),
-        &tools_of(context),
+        &tools,
+        &workspace,
     ));
     let base = model.base_url.clone();
     let token = token.to_owned();
     drop(tokio::spawn(async move {
-        match wire::run(&base, &token, body, &tool).await {
-            Ok(events) => {
-                for event in text_events(&events) {
-                    if sender.send(event).await.is_err() {
-                        return;
-                    }
+        if sender
+            .send(AssistantMessageEvent::Start {
+                partial: empty_assistant(&model),
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let mut blocks = Blocks::default();
+        let ran = {
+            let mut out = Out {
+                sink: &sender,
+                blocks: &mut blocks,
+                stop: &stop,
+            };
+            wire::run(&base, &token, body, &tool, &tools, &workspace, &mut out).await
+        };
+        match ran {
+            Ok(()) => {
+                if !blocks.close(&sender).await {
+                    return;
                 }
-                let done = finish(&model, &events);
+                let done = finish(&model, blocks.raw());
                 let _ = sender
                     .send(AssistantMessageEvent::Done {
                         reason: stop_of(&done),
@@ -217,45 +253,105 @@ fn stop_of(message: &AgentMessage) -> StopReason {
     }
 }
 
-fn text_events(events: &[AssistantMessageEvent]) -> Vec<AssistantMessageEvent> {
-    let mut out = Vec::new();
-    let mut text = String::new();
-    let mut thinking = String::new();
-    let mut text_open = false;
-    let mut thinking_open = false;
-    for event in events {
+pub(super) struct Out<'a> {
+    sink: &'a tokio::sync::mpsc::Sender<AssistantMessageEvent>,
+    blocks: &'a mut Blocks,
+    stop: &'a StopFn,
+}
+
+#[derive(Default)]
+pub(super) struct Blocks {
+    text_open: bool,
+    thinking_open: bool,
+    text: String,
+    thinking: String,
+    raw: Vec<AssistantMessageEvent>,
+}
+
+impl Blocks {
+    fn stage(&mut self, event: &AssistantMessageEvent) -> Vec<AssistantMessageEvent> {
+        let mut out = Vec::new();
         match event {
             AssistantMessageEvent::TextDelta { delta, .. } => {
-                if !text_open {
-                    text_open = true;
-                    out.push(AssistantMessageEvent::TextStart { content_index: 0 });
+                if !self.text_open {
+                    self.text_open = true;
+                    out.push(AssistantMessageEvent::TextStart { content_index: 1 });
                 }
-                text.push_str(delta);
-                out.push(event.clone());
+                self.text.push_str(delta);
+                out.push(AssistantMessageEvent::TextDelta {
+                    content_index: 1,
+                    delta: delta.clone(),
+                });
             }
             AssistantMessageEvent::ThinkingDelta { delta, .. } => {
-                if !thinking_open {
-                    thinking_open = true;
+                if !self.thinking_open {
+                    self.thinking_open = true;
                     out.push(AssistantMessageEvent::ThinkingStart { content_index: 0 });
                 }
-                thinking.push_str(delta);
+                self.thinking.push_str(delta);
                 out.push(event.clone());
             }
             other => out.push(other.clone()),
         }
+        out
     }
-    if thinking_open {
-        out.push(AssistantMessageEvent::ThinkingEnd {
-            content_index: 0,
-            content: thinking,
-        });
+
+    async fn push(
+        &mut self,
+        sender: &tokio::sync::mpsc::Sender<AssistantMessageEvent>,
+        event: AssistantMessageEvent,
+    ) -> bool {
+        let staged = self.stage(&event);
+        self.raw.push(event);
+        for event in staged {
+            if sender.send(event).await.is_err() {
+                return false;
+            }
+        }
+        true
     }
-    if text_open {
-        out.push(AssistantMessageEvent::TextEnd {
-            content_index: 0,
-            content: text,
-        });
+
+    async fn close(&mut self, sender: &tokio::sync::mpsc::Sender<AssistantMessageEvent>) -> bool {
+        for event in self.closing() {
+            if sender.send(event).await.is_err() {
+                return false;
+            }
+        }
+        true
     }
+
+    fn closing(&mut self) -> Vec<AssistantMessageEvent> {
+        let mut out = Vec::new();
+        if self.thinking_open {
+            self.thinking_open = false;
+            out.push(AssistantMessageEvent::ThinkingEnd {
+                content_index: 0,
+                content: std::mem::take(&mut self.thinking),
+            });
+        }
+        if self.text_open {
+            self.text_open = false;
+            out.push(AssistantMessageEvent::TextEnd {
+                content_index: 1,
+                content: std::mem::take(&mut self.text),
+            });
+        }
+        out
+    }
+
+    fn raw(&self) -> &[AssistantMessageEvent] {
+        &self.raw
+    }
+}
+
+#[cfg(test)]
+fn text_events(events: &[AssistantMessageEvent]) -> Vec<AssistantMessageEvent> {
+    let mut blocks = Blocks::default();
+    let mut out = Vec::new();
+    for event in events {
+        out.extend(blocks.stage(event));
+    }
+    out.extend(blocks.closing());
     out
 }
 
@@ -264,4 +360,35 @@ fn uuid() -> String {
         return "cursor-turn".to_owned();
     };
     yi_oauth::pkce::hex(&bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AssistantMessageEvent, text_events};
+
+    #[test]
+    fn a_delta_leaves_before_the_turn_closes() {
+        let staged = text_events(&[
+            AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "Hi".to_owned(),
+            },
+            AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: " there".to_owned(),
+            },
+        ]);
+        assert!(matches!(
+            staged.first(),
+            Some(AssistantMessageEvent::TextStart { content_index: 1 })
+        ));
+        assert!(matches!(
+            staged.get(1),
+            Some(AssistantMessageEvent::TextDelta { delta, .. }) if delta == "Hi"
+        ));
+        assert!(matches!(
+            staged.last(),
+            Some(AssistantMessageEvent::TextEnd { content, .. }) if content == "Hi there"
+        ));
+    }
 }
