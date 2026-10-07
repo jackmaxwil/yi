@@ -1501,8 +1501,8 @@ fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         kind(json!({"op": "set", "list": format!("# {}\n- [ ] a", "p".repeat(100))})),
-        "invalid_args",
-        "a phase name past its cap is a misread of the call, not a rule saying no"
+        "verdict",
+        "a phase name past its cap is a cap saying no, as the plan tool's label cap is"
     );
     Ok(())
 }
