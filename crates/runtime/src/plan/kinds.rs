@@ -72,8 +72,8 @@ impl ArgError {
     pub(super) fn kind(&self) -> ToolErrorKind {
         match self {
             Self::ChildViews { .. } => ToolErrorKind::Denied,
-            Self::LabelTooLong { .. }
-            | Self::ActorArg
+            Self::LabelTooLong { .. } => ToolErrorKind::Verdict,
+            Self::ActorArg
             | Self::NoOp
             | Self::UnknownOp { .. }
             | Self::Missing { .. }
