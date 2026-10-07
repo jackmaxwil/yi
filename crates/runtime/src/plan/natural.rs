@@ -49,19 +49,6 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<Str
     fold_row(&mut args, &mut said);
     labels(&op, &mut args);
     cut_labels(&mut args, &mut said);
-    let rowless = ["set", "supersede", "decompose", "append"].contains(&op.as_str())
-        && !args.contains_key("list")
-        && !args.contains_key("todos");
-    let op = if rowless {
-        args.retain(|key, _| ["plan", "full"].contains(&key.as_str()));
-        args.insert("op".to_owned(), json!("view"));
-        said.push(format!(
-            "{op} takes its rows in todos and none came, so nothing changed; this is the plan as it stands"
-        ));
-        "view".to_owned()
-    } else {
-        op
-    };
     if let ("init" | "append", Some(shared)) = (op.as_str(), args.remove("delegation"))
         && let Some(Value::Array(todos)) = args.get_mut("todos")
     {
@@ -119,6 +106,19 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<Str
             }
         }
         _ => {}
+    }
+    if op == "accepted_by_user"
+        && let Some(Value::Array(rows)) = args.remove("todos")
+    {
+        args.remove("state");
+        if let ([row], false) = (rows.as_slice(), args.contains_key("label"))
+            && let Some(label) = row.get("label")
+        {
+            args.insert("label".to_owned(), label.clone());
+        }
+        said.push(
+            "accepted_by_user reads the todo's label and a note; its rows were left out".to_owned(),
+        );
     }
     let kept: &[&str] = match op.as_str() {
         "block" | "accepted_by_user" | "accept" => &["note"],
@@ -398,11 +398,8 @@ fn infer_op(args: &mut Map<String, Value>) {
             name
         }
         None if args.contains_key("list") => "set".to_owned(),
-        None if args.contains_key("goal")
-            && (args.contains_key("todos") || args.contains_key("label")) =>
-        {
-            "init".to_owned()
-        }
+        None if args.contains_key("goal") && args.contains_key("todos") => "set".to_owned(),
+        None if args.contains_key("goal") && args.contains_key("label") => "init".to_owned(),
         None if args.contains_key("todos") => "append".to_owned(),
         None if args.keys().all(|key| key == "plan") => "view".to_owned(),
         None => return,
@@ -415,6 +412,7 @@ fn infer_op(args: &mut Map<String, Value>) {
 fn labels(op: &str, args: &mut Map<String, Value>) {
     let rows = ["init", "append", "set", "supersede"].contains(&op);
     if rows
+        && op != "set"
         && !args.contains_key("todos")
         && let Some(label @ Value::String(_)) = args.remove("label")
     {
@@ -440,7 +438,7 @@ fn labels(op: &str, args: &mut Map<String, Value>) {
 }
 
 /// `set` takes rows as `todos` or `list`; `supersede` takes them as `list`. A line that is not a
-/// row leaves the list, as a struck row (`- [-]`, `- [~]`) does; a box set cannot read is unchecked.
+/// row leaves the list, a struck row (`- [-]`, `- [~]`) is dropped, a box set cannot read is unchecked.
 fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<String>) {
     let rows: Vec<String> = match (op, args.remove("list"), args.remove("todos")) {
         ("set", Some(Value::String(list)), todos) => {
@@ -482,16 +480,8 @@ fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<String>) {
             return;
         }
     };
-    let struck = |line: &str| {
-        ["- [-]", "- [~]"]
-            .iter()
-            .any(|mark| line.trim_start().starts_with(mark))
-    };
-    if rows.iter().any(|line| struck(line)) {
-        said.push("struck rows (- [-]) leave the list, as an omitted row does".to_owned());
-    }
     let mut list = Vec::new();
-    for line in rows.iter().filter(|line| !struck(line)) {
+    for line in &rows {
         let body = line.trim_start();
         let indent = line
             .get(..line.len().saturating_sub(body.len()))
@@ -501,6 +491,10 @@ fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<String>) {
             .and_then(|rest| rest.split_at_checked(1))
         {
             Some((" " | ">" | "x" | "X", _)) => list.push(line.clone()),
+            Some(("-" | "~", rest)) if indent.is_empty() => list.push(format!("- [-{rest}")),
+            Some(("-" | "~", _)) => {
+                said.push("a struck sub-row leaves its parent's list".to_owned());
+            }
             Some((_, rest)) if rest.starts_with(']') => {
                 said.push("a box set does not read, such as [!], was kept unchecked".to_owned());
                 list.push(format!("{indent}- [ {rest}"));
@@ -573,6 +567,15 @@ fn fold_row(args: &mut Map<String, Value>, said: &mut Vec<String>) {
     }
 }
 
+/// The command of the row's first critical `cmd` item, as written or as its checker.
+fn contract_check(todo: &Map<String, Value>) -> Option<Value> {
+    let items = todo.get("contract")?.get("items")?.as_array()?;
+    let critical = |item: &&Value| item.get("critical").and_then(Value::as_bool) == Some(true);
+    let cmd = items.iter().find(critical)?.get("decider")?.get("cmd")?;
+    let command = cmd.as_str().or_else(|| cmd.get("checker")?.as_str())?;
+    Some(json!(command))
+}
+
 /// The delegation shapes models send: a context path is a `local://` address, `stated: true`
 /// states the todo's label, and an inline output schema has no url, so it is left out.
 fn delegation_shape(
@@ -618,8 +621,13 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<String>) {
     };
     for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
         let label = todo.get("label").and_then(Value::as_str).map(str::to_owned);
+        let check = contract_check(todo);
         if let Some(Value::Object(delegation)) = todo.get_mut("delegation") {
             delegation_shape(delegation, label.as_deref(), said);
+            if let (false, Some(command)) = (delegation.contains_key("accept"), check) {
+                delegation.insert("accept".to_owned(), json!({"command": command}));
+                said.push("a delegation with no accept takes its contract's check".to_owned());
+            }
         }
         if let Some(Value::Array(items)) = todo.get_mut("contract").and_then(|c| c.get_mut("items"))
         {
