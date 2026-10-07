@@ -140,13 +140,7 @@ impl PermissionBroker {
             },
             _ => None,
         };
-        let answered = answered.unwrap_or_else(|| {
-            Answered::Person(
-                self.asker
-                    .as_ref()
-                    .map_or(AskOutcome::Reject, |asker| asker(ask)),
-            )
-        });
+        let answered = self.answered_or_person(ask, answered);
         let (outcome, classified) = self.settle_answered(&tool_call_id, ask, answered);
         (outcome, classified.is_some())
     }

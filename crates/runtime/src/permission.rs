@@ -1018,9 +1018,9 @@ impl PermissionBroker {
             description: rendered.clone(),
         });
         let outcome = match &self.asker {
-            Some(asker) => {
+            Some(_) => {
                 let answered = late.and_then(|late| self.late(ask, &late));
-                let answered = answered.unwrap_or_else(|| Answered::Person(asker(ask)));
+                let answered = self.answered_or_person(ask, answered);
                 let (outcome, safe) = self.settle_answered(tool_call_id, ask, answered);
                 if let Some(safe) = safe {
                     return CallOutcome {
@@ -1077,6 +1077,12 @@ impl PermissionBroker {
                 containment: Containment::Uncontained,
             }
         }
+    }
+
+    fn answered_or_person(&self, ask: &PermissionAsk<'_>, answered: Option<Answered>) -> Answered {
+        answered.unwrap_or_else(|| {
+            Answered::Person(self.asker.as_ref().map_or(AskOutcome::Reject, |a| a(ask)))
+        })
     }
 }
 
