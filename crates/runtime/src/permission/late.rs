@@ -137,10 +137,22 @@ impl PermissionBroker {
                     .map_or(AskOutcome::Reject, |asker| asker(ask)),
             )
         });
+        let (outcome, classified) = self.settle_answered(&tool_call_id, ask, answered);
+        (outcome, classified.is_some())
+    }
+
+    /// Settle an answered reviewable ask: a classifier allow is recorded as the
+    /// classifier's and allows; a person's outcome settles as theirs and is returned.
+    pub(super) fn settle_answered(
+        &self,
+        tool_call_id: &str,
+        ask: &PermissionAsk<'_>,
+        answered: Answered,
+    ) -> (AskOutcome, Option<f64>) {
         match answered {
-            Answered::Classifier(_) => {
-                self.settle(&tool_call_id, ask, true, Answerer::Classifier);
-                (AskOutcome::AllowOnce, true)
+            Answered::Classifier(safe) => {
+                self.settle(tool_call_id, ask, true, Answerer::Classifier);
+                (AskOutcome::AllowOnce, Some(safe))
             }
             Answered::Person(outcome) => {
                 let by = if self.asker.is_some() {
@@ -149,8 +161,8 @@ impl PermissionBroker {
                     Answerer::Nobody
                 };
                 let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-                self.settle(&tool_call_id, ask, allowed, by);
-                (outcome, false)
+                self.settle(tool_call_id, ask, allowed, by);
+                (outcome, None)
             }
         }
     }
