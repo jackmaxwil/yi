@@ -1,0 +1,1 @@
+{"of":"caller","defs":1,"count":1,"root":".","hop_tested":0,"hop_untested":1,"graph_ambiguous":0,"graph_unresolved":0,"counts_floor":true,"callees":[{"t":"fn","n":"alpha","p":"src/lib.rs:1"}]}

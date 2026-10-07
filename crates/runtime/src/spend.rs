@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Usage};
@@ -49,11 +50,13 @@ pub(crate) fn book_side_call(
 pub const SPEND_ALERT_TYPE: &str = "spend_alert";
 
 /// Invariant: arithmetic alone decides an alert, never a model: the session's own turns plus
-/// each child's count, both in `total_tokens`, announced once per multiple of `every` crossed.
+/// each child's growth, both in `total_tokens`, announced once per multiple of `every` crossed.
 pub struct SpendAlarm {
     every: NonZeroU64,
-    own: u64,
-    children: HashMap<String, u64>,
+    total: u64,
+    /// Each child's owning session and last count: a re-published count adds nothing.
+    children: HashMap<String, (String, u64)>,
+    session: String,
     announced: u64,
 }
 
@@ -61,38 +64,39 @@ impl SpendAlarm {
     pub fn new(every: NonZeroU64) -> Self {
         Self {
             every,
-            own: 0,
+            total: 0,
             children: HashMap::new(),
+            session: String::new(),
             announced: 0,
         }
     }
 
-    pub fn total(&self) -> u64 {
-        self.children
-            .values()
-            .fold(self.own, |sum, spent| sum.saturating_add(*spent))
-    }
-
     /// The alert when this event carries the total past a multiple not yet announced.
     pub fn observe(&mut self, event: &AgentEvent) -> Option<String> {
-        match event {
+        let grown = match event {
             AgentEvent::MessageEnd {
                 message: AgentMessage::Assistant { usage, .. },
-            } => {
-                let spent = u64::try_from(usage.total_tokens).unwrap_or(0);
-                self.own = self.own.saturating_add(spent);
-            }
+            } => u64::try_from(usage.total_tokens).unwrap_or(0),
             AgentEvent::ChildUpdate { update } => {
-                let id = update.id.as_str().to_owned();
-                let before = self.children.insert(id, update.token_count).unwrap_or(0);
-                // A respawn restarts the child's count; what the last incarnation spent stays spent.
-                if update.token_count < before {
-                    self.own = self.own.saturating_add(before);
+                let (owner, last) = self
+                    .children
+                    .entry(update.id.as_str().to_owned())
+                    .or_insert_with(|| (self.session.clone(), 0));
+                if *owner != self.session {
+                    return None;
                 }
+                // A respawn restarts the child's count; the last incarnation's spend stays spent.
+                let grown = update
+                    .token_count
+                    .checked_sub(*last)
+                    .unwrap_or(update.token_count);
+                *last = update.token_count;
+                grown
             }
             _ => return None,
-        }
-        let total = self.total();
+        };
+        self.total = self.total.saturating_add(grown);
+        let total = self.total;
         let every = self.every.get();
         let reached = total / self.every;
         if reached <= self.announced {
@@ -105,10 +109,30 @@ impl SpendAlarm {
             reached.saturating_add(1).saturating_mul(every),
         ))
     }
+
+    /// Invariant: late, never early, but for one window: a child ending after a switch or failing
+    /// reaches no ledger a re-attach reads; one recorded mid-re-attach counts its last step twice.
+    pub fn seed(&mut self, session: &str, total: u64) {
+        let floor = if self.session == session {
+            self.announced
+        } else {
+            0
+        };
+        (self.total, self.announced) = (total, floor.max(total / self.every));
+        self.session = session.to_owned();
+    }
 }
 
 /// Queues each alert as a shown notice, never a wake: an alert must not buy another turn.
 pub fn attach(session: &AgentSession, every: NonZeroU64) {
-    let mut alarm = SpendAlarm::new(every);
-    session.show_notices(SPEND_ALERT_TYPE, move |event| alarm.observe(event));
+    let alarm = Arc::new(Mutex::new(SpendAlarm::new(every)));
+    let resumed = Arc::clone(&alarm);
+    session.on_attach(move |id, _, stats| {
+        let mut alarm = resumed.lock().unwrap_or_else(PoisonError::into_inner);
+        alarm.seed(id, u64::try_from(stats.total_tokens).unwrap_or(0));
+    });
+    session.show_notices(SPEND_ALERT_TYPE, move |event| {
+        let mut alarm = alarm.lock().unwrap_or_else(PoisonError::into_inner);
+        alarm.observe(event)
+    });
 }

@@ -11,6 +11,17 @@ use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
 
+pub(crate) fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// The repository's top; a worktree never borrows the main checkout's.
+pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    (cwd.ancestors())
+        .find(|dir| dir.join(".git").exists())
+        .map(std::path::Path::to_path_buf)
+}
+
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
         clippy::disallowed_methods,

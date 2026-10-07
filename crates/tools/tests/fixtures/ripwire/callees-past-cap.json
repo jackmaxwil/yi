@@ -1,0 +1,1 @@
+{"of":"journal_path","defs":1,"count":2,"root":".","hop_tested":2,"hop_untested":0,"graph_ambiguous":2334,"graph_unresolved":3065,"graph_unindexed":184,"counts_floor":true,"callees":[{"t":"method","n":"plan_dir","p":"crates/runtime/src/plan/store.rs:228","tested":true},{"t":"fn","n":"join","p":"crates/tui/src/history.rs:94","tested":true}]}

@@ -590,6 +590,8 @@ impl PlanTool {
     }
 
     pub(super) fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+        let unstrung = super::natural::unstring_todos(args);
+        let args = unstrung.as_ref();
         if let Some((set, said)) = super::apply::whole(args) {
             let mut text = super::apply::apply(self, &set)?;
             for line in said {
@@ -623,11 +625,7 @@ impl PlanTool {
     }
 
     /// One op through the natural reading and its retries, without the whole-plan apply.
-    pub(super) fn apply_one(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        self.apply(args)
-    }
-
-    fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+    pub(super) fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let (mut args, mut said) = super::natural::natural(args);
         super::apply::targeted(self, &mut args, &mut said)?;
         if let Some(Value::Array(labels)) = args.get("labels")
@@ -756,6 +754,18 @@ impl PlanTool {
         };
         let outcome = super::apply::drop_struck(self, outcome, struck, &mut said);
         Ok(super::apply::noted(render_outcome(&op, &outcome), said))
+    }
+}
+
+/// Invariant: a view never pins a request id or a revision, so every reader of the open plan
+/// builds it from actor and plan alone.
+pub(super) fn view_request(actor: &Actor, plan: Option<PlanId>) -> OpRequest {
+    OpRequest {
+        plan,
+        actor: actor.clone(),
+        op: Op::View { full: true },
+        request_id: None,
+        expected_revision: None,
     }
 }
 
@@ -1157,16 +1167,11 @@ mod tests {
                 "{op}: {refusal:?}"
             );
         }
-        let mut args = Map::new();
-        args.insert("op".to_owned(), Value::String("append".to_owned()));
-        args.insert(
-            "todos".to_owned(),
-            json!([{"label": "build it here", "delegation": {
-                "spec": {"role": "writer"}, "accept": {"stated": "the contract decides"}
-            }}]),
-        );
+        let args = json!({"op": "append", "todos": [{"label": "build it here", "delegation": {
+            "spec": {"role": "writer"}, "accept": {"stated": "the contract decides"}
+        }}]});
         assert!(
-            parse_op(&args).is_ok(),
+            parse_op(args.as_object().ok_or("args is not an object")?).is_ok(),
             "an inline delegation needs no contract"
         );
         Ok(())

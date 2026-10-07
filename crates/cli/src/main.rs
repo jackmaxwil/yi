@@ -16,6 +16,7 @@ mod sidecar;
 mod stats;
 mod todo;
 mod tty;
+mod update;
 mod why;
 
 use std::sync::Arc;
@@ -417,6 +418,7 @@ fn build_session(
     args: &Args,
     asker: Option<yi_runtime::Asker>,
     session_id: Option<&str>,
+    prompts_close: bool,
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     // Invariant: the first statement here, so no lever is read on both sides of the
     // override and a refused file stops the run before the session, and any model call.
@@ -541,6 +543,9 @@ fn build_session(
         .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
         .with_session_store(&default_session_dir(args)),
     );
+    if prompts_close {
+        broker.prompts_close_on_settle();
+    }
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");
     session.install_extensions(shells::session_extensions(
@@ -1030,6 +1035,7 @@ fn mcp_fast_path() {
 
 fn main() {
     doctor::early();
+    update::early();
     if let Err(error) = load_config() {
         eprintln!("error: {error}");
         std::process::exit(2);
@@ -1043,6 +1049,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+    dispatch(args);
+}
+
+fn dispatch(args: Args) {
     let version = env!("ARCHITECTURE_VERSION");
     match args.command.as_str() {
         "version" => println!("yi {version}"),
@@ -1068,7 +1078,7 @@ fn main() {
             };
             let session = {
                 let _guard = runtime.enter();
-                match build_session(&args, None, None) {
+                match build_session(&args, None, None, false) {
                     Ok((session, _host)) => session,
                     Err(refused) => std::process::exit(exit_refused(refused)),
                 }
@@ -1098,7 +1108,7 @@ fn main() {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker, session| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker, session)
+                    build_session(&build_args, asker, session, false)
                         .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
                 })
             };

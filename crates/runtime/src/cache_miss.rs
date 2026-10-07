@@ -8,7 +8,7 @@
 //! entry would pay, the chance of that rewrite being the session's own share of pauses between
 //! five minutes and an hour.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_ai::breakpoints::{Engine, Ttl};
 use yi_types::entry::Entry;
@@ -315,12 +315,22 @@ impl TtlEstimate {
 
 /// Watches the session's own requests, shows the notice when the tripwire fires, and hands
 /// the fold's estimate to the session's provider for its next loop request.
-// ponytail: a resumed session's tracker starts empty, so it writes five minutes until it pauses
-// again between five minutes and an hour; fold the loaded entries here if that proves too slow.
 pub fn attach(session: &AgentSession) {
-    let mut tracker = MissTracker::default();
+    let tracker = Arc::new(Mutex::new(MissTracker::default()));
     let provider = Arc::clone(session.provider_arc());
+    let (resumed, seeded) = (Arc::clone(&tracker), Arc::clone(&provider));
+    session.on_attach(move |_, entries, _| {
+        let mut folded = MissTracker::default();
+        for entry in entries {
+            folded.observe_entry(entry);
+        }
+        // The process that wrote the ledger showed its notice; this one alerts on its own misses.
+        (folded.notice, folded.announced, folded.total_misses) = (None, false, 0);
+        seeded.set_ttl_estimate(folded.estimate());
+        *resumed.lock().unwrap_or_else(PoisonError::into_inner) = folded;
+    });
     session.show_notices(CACHE_ALERT_TYPE, move |event| {
+        let mut tracker = tracker.lock().unwrap_or_else(PoisonError::into_inner);
         match event {
             AgentEvent::MessageEnd { message } => {
                 tracker.observe(message, yi_session::now_ms());
