@@ -270,6 +270,9 @@ impl App {
             if replay.child.is_none() {
                 chat.port.absorb_replay(replay, entries.clone());
             }
+            if let Some(stats) = replay.stats.as_ref().filter(|_| replay.child.is_none()) {
+                chat.app.seed_ledger(stats);
+            }
             if let Some(name) = &replay.name {
                 chat.app.set_session_name(name.clone());
             }

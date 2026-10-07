@@ -377,10 +377,16 @@ pub(super) fn reorder_todos(plan: &mut Plan, labels: Vec<TodoLabel>) -> Result<(
     let expected = plan.todos.len();
     let have: HashSet<&TodoLabel> = plan.todos.iter().map(|todo| &todo.label).collect();
     let want: HashSet<&TodoLabel> = labels.iter().collect();
-    if labels.len() != expected || want.len() != labels.len() || have != want {
+    if labels.len() != expected || want.len() != labels.len() {
         return Err(PlanOpError::NotAPermutation {
             got: labels.len(),
             expected,
+        });
+    }
+    if let Some(label) = labels.iter().find(|label| !have.contains(label)) {
+        return Err(PlanOpError::UnknownLabel {
+            plan: plan.id.clone(),
+            label: label.clone(),
         });
     }
     let mut old = std::mem::take(&mut plan.todos);

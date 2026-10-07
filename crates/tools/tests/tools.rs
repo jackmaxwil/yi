@@ -91,6 +91,60 @@ fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
     Ok(())
 }
 
+/// Incident: grep prints hits under `[pkg/more.py#TAG]` and a reader passed that `path#TAG` to
+/// read, which answered "No such file or directory" (#993).
+#[test]
+fn read_takes_the_path_hash_tag_form_that_grep_prints() -> TestResult {
+    let dir = temp_dir("read-tagged")?;
+    fs::create_dir_all(dir.join("pkg"))?;
+    let body: String = (1..=80).map(|n| format!("café line {n}\n")).collect();
+    fs::write(dir.join("pkg/more.py"), &body)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let read = |path: &str| {
+        read_tool().execute(
+            args(&[
+                ("path", json!(path)),
+                ("offset", json!(60)),
+                ("limit", json!(5)),
+            ]),
+            &context,
+        )
+    };
+    let first = output_text(&read("pkg/more.py"));
+    let tag = first
+        .split("pkg/more.py#")
+        .nth(1)
+        .and_then(|rest| rest.get(..4))
+        .ok_or("the read prints no tag")?
+        .to_owned();
+
+    let current = read(&format!("pkg/more.py#{tag}"));
+    assert!(!current.is_error, "{}", output_text(&current));
+    let current = output_text(&current);
+    assert!(current.contains("café line 60"), "{current}");
+    assert!(!current.contains("not the current"), "{current}");
+
+    fs::write(
+        dir.join("pkg/more.py"),
+        body.replace("line 60", "line sixty"),
+    )?;
+    let stale = read(&format!("pkg/more.py#{tag}"));
+    assert!(!stale.is_error, "{}", output_text(&stale));
+    let stale = output_text(&stale);
+    assert!(
+        stale.contains(&format!("pkg/more.py#{tag} is not the current version")),
+        "{stale}"
+    );
+    assert!(stale.contains("line sixty"), "{stale}");
+
+    fs::write(dir.join("odd#ABCD"), "named with a hash\n".repeat(80))?;
+    let named = output_text(&read("odd#ABCD"));
+    assert!(named.contains("named with a hash"), "{named}");
+
+    assert!(read("absent.py#ABCD").is_error);
+    Ok(())
+}
+
 /// Incident: a read of `~/.ssh/id_rsa` failed on `<cwd>/~/.ssh/id_rsa`, so the permission
 /// check judged a path in the workspace while the model meant HOME's.
 #[test]
@@ -1089,8 +1143,32 @@ fn a_backgrounded_job_still_dies_at_timeout_secs() -> TestResult {
         )),
         "{killed}"
     );
+    assert!(
+        polled.is_error,
+        "a job Yi killed is a call it could not finish"
+    );
     let at = clock.elapsed();
     assert!(at < std::time::Duration::from_secs(11), "killed at {at:?}");
+    Ok(())
+}
+
+/// Dies with a finished failing job flagged as a tool fault: like a foreground command, a job
+/// that ran and exited non-zero is a result the model reads, and still shows as failed.
+#[test]
+fn a_polled_job_that_exited_nonzero_is_a_result() -> TestResult {
+    let dir = temp_dir("background-exit")?;
+    let tool = BashTool::default();
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let started = tool.execute(args(&[("command", json!("sleep 1; exit 3"))]), &context);
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    assert!(!polled.is_error, "{:?}", polled.result.content);
+    assert_eq!(polled.result.details["exitCode"], json!(3));
+    assert!(yi_types::event::shown_failed(
+        polled.is_error,
+        &polled.result.details
+    ));
     Ok(())
 }
 
@@ -1878,8 +1956,29 @@ fn a_read_only_command_is_a_read_kind_call() {
         ("cat f", ToolKind::Read),
         ("rg -n x crates", ToolKind::Read),
         ("ls -la && git log -3", ToolKind::Read),
-        ("grid uses X", ToolKind::Read),
-        ("grid survey", ToolKind::Exec),
+        ("ripwire . --callers=X --json", ToolKind::Read),
+        (
+            "ripwire . --for='fix the bold split' --json",
+            ToolKind::Read,
+        ),
+        // ripwire 0.6.5's own schema line: safe-delete is "a READ never a verdict"; the tree is untouched.
+        ("ripwire . --safe-delete=alpha", ToolKind::Read),
+        ("ripwire . --note-add='X: slow'", ToolKind::Exec),
+        ("ripwire . --run-trace='cargo test'", ToolKind::Exec),
+        (
+            "ripwire https://github.com/redhat-et/ripwire --tree",
+            ToolKind::Exec,
+        ),
+        (
+            "ripwire git@github.com:redhat-et/ripwire.git --tree",
+            ToolKind::Exec,
+        ),
+        (
+            "ripwire github.com:redhat-et/ripwire.git --tree",
+            ToolKind::Exec,
+        ),
+        ("ripwire user@host:repo --tree", ToolKind::Exec),
+        ("ripwire -o file", ToolKind::Exec),
         ("cat f > g", ToolKind::Exec),
         ("cargo test", ToolKind::Exec),
         ("rm f", ToolKind::Exec),
@@ -2793,73 +2892,41 @@ fn script(path: &std::path::Path, body: &str) -> TestResult {
     Ok(())
 }
 
-/// The syntax verdict and `grid check` read the same settled file, so an edit waits for the
-/// slower of the two, not their sum: each fake takes 1 s.
+/// Incident: a fresh script's first exec stalled past a second under load, which read as a
+/// serialized run and a missed deadline; one run at setup leaves only the run under test.
 #[cfg(unix)]
-#[test]
-fn an_edit_runs_the_syntax_check_beside_the_grid_check() -> TestResult {
-    let Some(dir) = fake_path("edit-overlap") else {
-        let dir = temp_dir("edit-overlap")?;
-        let clean = grid_fixture("check-clean.json");
-        script(
-            &dir.join("grid"),
-            &format!("/bin/sleep 1\n/bin/cat '{}'\n", clean.display()),
-        )?;
-        script(&dir.join("rustfmt"), "/bin/sleep 1\n")?;
-        return rerun_on_path("an_edit_runs_the_syntax_check_beside_the_grid_check", &dir);
-    };
-    fs::create_dir_all(dir.join(".grid"))?;
-    fs::write(dir.join("a.rs"), "fn a() {}\n")?;
-    let context = ToolContext::new(dir.clone());
-    let state = yi_tools::hashline::tool::shared_hashline_state();
-    yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
-        .execute(args(&[("path", json!("a.rs"))]), &context);
-    let started = std::time::Instant::now();
-    let edit = yi_tools::hashline::tool::HashlineEditTool {
-        state,
-        freeform_grammar: false,
+fn warmed(path: &std::path::Path) -> TestResult {
+    yi_tools::command(path).env("YI_WARM", "1").output()?;
+    for log in ["args", "cwd"] {
+        fs::remove_file(path.with_file_name(log)).ok();
     }
-    .execute(
-        args(&[("patch", json!("[a.rs]\nPUT 1.=1:\n+fn b() {}\n"))]),
-        &context,
-    );
-    let took = started.elapsed();
-    let text = output_text(&edit);
-    assert!(text.contains("syntax: ok"), "{text}");
-    assert!(text.contains("[grid check: clean]"), "{text}");
-    assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
     Ok(())
 }
 
 #[cfg(unix)]
-fn grid_fixture(name: &str) -> PathBuf {
+fn ripwire_fixture(name: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/grid")
+        .join("tests/fixtures/ripwire")
         .join(name)
 }
 
-/// A fake `grid` that answers `check` with the `check.json` beside it (to start, a real
-/// `grid check --quick --json` from a repo where `src/alpha.rs` and `src/beta.rs` both drifted),
-/// `resolve src/alpha.rs` with grid's own answer and any other file with grid's own miss, and
-/// leaves a `ran` marker beside itself.
+/// A fake `ripwire` that logs its cwd and arguments beside itself, then answers with the
+/// `answer`, `err` and `code` files there; each fixture is a real ripwire 0.6.5 answer.
 #[cfg(unix)]
-fn fake_grid(dir: &std::path::Path) -> TestResult {
-    fs::copy(grid_fixture("check-quick.json"), dir.join("check.json"))?;
+fn fake_ripwire(dir: &std::path::Path) -> TestResult {
     script(
-        &dir.join("grid"),
-        &format!(
-            "d=$(/usr/bin/dirname \"$0\")\n: > \"$d/ran\"\n\
-             [ \"$1\" = check ] && {{ /bin/cat \"$d/check.json\"; exit 3; }}\n\
-             [ \"$1 $2\" = 'resolve src/alpha.rs' ] && {{ /bin/cat '{}'; exit 0; }}\n\
-             /bin/cat '{}' >&2; exit 2\n",
-            grid_fixture("resolve-alpha.json").display(),
-            grid_fixture("resolve-miss.txt").display()
-        ),
-    )
+        &dir.join("ripwire"),
+        "d=$(/usr/bin/dirname \"$0\")\npwd >> \"$d/cwd\"\necho \"$@\" >> \"$d/args\"\n\
+         [ -f \"$d/slow\" ] && case \"$2\" in *\"$(/bin/cat \"$d/slow\")\") /bin/sleep 4; : > \"$d/finished\"; exit 0;; esac\n\
+         [ -f \"$d/err\" ] && /bin/cat \"$d/err\" >&2\n\
+         [ -f \"$d/answer\" ] && /bin/cat \"$d/answer\"\n\
+         exit $(/bin/cat \"$d/code\" 2>/dev/null || echo 0)\n",
+    )?;
+    warmed(&dir.join("ripwire"))
 }
 
 #[cfg(unix)]
-fn edit_at(dir: &std::path::Path, path: &str, line: &str) -> yi_tools::ToolOutput {
+fn edit_with(dir: &std::path::Path, path: &str, ops: &str) -> yi_tools::ToolOutput {
     let context = ToolContext::new(dir.to_path_buf());
     let state = yi_tools::hashline::tool::shared_hashline_state();
     yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
@@ -2869,167 +2936,461 @@ fn edit_at(dir: &std::path::Path, path: &str, line: &str) -> yi_tools::ToolOutpu
         freeform_grammar: false,
     }
     .execute(
-        args(&[("patch", json!(format!("[{path}]\nPUT 1.=1:\n+{line}\n")))]),
+        args(&[("patch", json!(format!("[{path}]\n{ops}")))]),
         &context,
     )
 }
 
-/// Dogfood 2026-09-27: every edit, even to a scratch file, printed the same unrelated drift,
-/// and in an uncharted tree `grid check` surveyed and wrote `.grid/` there.
+/// The syntax verdict and the ripwire check read the same settled file, so they run at once:
+/// each fake waits up to 5 s to see the other start, and says whether it did.
 #[cfg(unix)]
 #[test]
-fn an_edit_in_an_uncharted_tree_never_asks_grid() -> TestResult {
-    let Some(dir) = fake_path("grid-uncharted") else {
-        let dir = temp_dir("grid-uncharted")?;
-        fake_grid(&dir)?;
-        return rerun_on_path("an_edit_in_an_uncharted_tree_never_asks_grid", &dir);
+fn an_edit_runs_the_syntax_check_beside_the_ripwire_check() -> TestResult {
+    let Some(dir) = fake_path("edit-overlap") else {
+        let dir = temp_dir("edit-overlap")?;
+        let meet = |me: &str, other: &str, then: &str| {
+            format!(
+                "d=$(/usr/bin/dirname \"$0\")\n[ -n \"$YI_WARM\" ] && exit 0\n: > \"$d/{me}\"\n\
+                 i=0; while [ ! -f \"$d/{other}\" ] && [ $i -lt 50 ]; do /bin/sleep 0.1; i=$((i+1)); done\n\
+                 [ -f \"$d/{other}\" ] && : > \"$d/{me}-saw\"\n{then}"
+            )
+        };
+        let answer = ripwire_fixture("edit-check-unchanged.xml");
+        script(
+            &dir.join("ripwire"),
+            &meet("rw", "fmt", &format!("/bin/cat '{}'\n", answer.display())),
+        )?;
+        script(&dir.join("rustfmt"), &meet("fmt", "rw", ""))?;
+        warmed(&dir.join("ripwire"))?;
+        warmed(&dir.join("rustfmt"))?;
+        return rerun_on_path(
+            "an_edit_runs_the_syntax_check_beside_the_ripwire_check",
+            &dir,
+        );
     };
     fs::write(dir.join("a.rs"), "fn a() {}\n")?;
-    let edit = edit_at(&dir, "a.rs", "pub fn b() {}");
-    let text = output_text(&edit);
-    assert!(!dir.join("ran").exists(), "grid was spawned: {text}");
-    assert!(!text.contains("[grid check"), "{text}");
-    assert_eq!(edit.result.details["grid"], json!("skipped"));
+    let text = output_text(&edit_with(&dir, "a.rs", "PUT 1.=1:\n+fn b() {}\n"));
+    assert!(text.contains("syntax: ok"), "{text}");
+    assert!(
+        text.contains(
+            "[ripwire check]\na removed from a.rs: its callers still call it — grep: \\ba\\b"
+        ),
+        "{text}"
+    );
+    assert!(
+        dir.join("rw-saw").exists() && dir.join("fmt-saw").exists(),
+        "{text}"
+    );
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn a_charted_edit_shows_only_the_drift_of_what_it_edited() -> TestResult {
-    let Some(dir) = fake_path("grid-scoped") else {
-        let dir = temp_dir("grid-scoped")?;
-        fake_grid(&dir)?;
+fn an_edit_with_no_ripwire_installed_asks_nothing() -> TestResult {
+    let Some(dir) = fake_path("ripwire-absent") else {
+        let dir = temp_dir("ripwire-absent")?;
+        return rerun_on_path("an_edit_with_no_ripwire_installed_asks_nothing", &dir);
+    };
+    fs::write(dir.join("a.py"), "def a():\n    pass\n")?;
+    let edit = edit_with(&dir, "a.py", "PUT 1.=1:\n+def b():\n");
+    assert!(!output_text(&edit).contains("[ripwire check"));
+    assert_eq!(edit.result.details["ripwire"], json!("skipped"));
+    Ok(())
+}
+
+/// The real answer for `def alpha(a, b)` cut to `def alpha(a)` while two callers still pass two.
+#[cfg(unix)]
+#[test]
+fn a_changed_contract_names_the_callers_that_still_call_the_old_one() -> TestResult {
+    let Some(dir) = fake_path("ripwire-contract") else {
+        let dir = temp_dir("ripwire-contract")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-contract.xml"),
+            dir.join("answer"),
+        )?;
         return rerun_on_path(
-            "a_charted_edit_shows_only_the_drift_of_what_it_edited",
+            "a_changed_contract_names_the_callers_that_still_call_the_old_one",
             &dir,
         );
     };
-    fs::create_dir_all(dir.join(".grid"))?;
+    fs::write(dir.join("m.py"), "def alpha(a, b):\n    return a + b\n")?;
+    let edit = edit_with(&dir, "m.py", "PUT 1.=1:\n+def alpha(a):\n");
+    let text = output_text(&edit);
+    assert!(
+        text.contains(
+            "[ripwire check]\nalpha at m.py:1: params,broken-callers changed, params 2 -> 1; \
+             2 callers, 2 incompatible\n  caller m.py:4 — incompatible at line 5\n  \
+             other n.py:2 — incompatible at line 3"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["ripwire"], json!("findings"));
+    let asked = fs::read_to_string(dir.join("args"))?;
+    assert_eq!(asked.trim(), ". --edit-check=@m.py:1");
+    Ok(())
+}
+
+/// A deleted definition is still reported when a region of the same file answers about a
+/// surviving symbol: the answer names that symbol, not the deleted one, so the row stays.
+#[cfg(unix)]
+#[test]
+fn a_deleted_definition_stays_reported_beside_a_surviving_one() -> TestResult {
+    let Some(dir) = fake_path("ripwire-removed-beside-answered") else {
+        let dir = temp_dir("ripwire-removed-beside-answered")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-unchanged.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path(
+            "a_deleted_definition_stays_reported_beside_a_surviving_one",
+            &dir,
+        );
+    };
+    fs::write(dir.join("a.py"), "def f(a): pass\ndef g(a): pass\n")?;
+    let edit = edit_with(&dir, "a.py", "PUT 1.=1:\n+def g(a): pass\n");
+    let text = output_text(&edit);
+    assert!(
+        text.contains("f removed from a.py: its callers still call it — grep: \\bf\\b"),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["ripwire"], json!("findings"));
+    Ok(())
+}
+
+/// A changed line inside no definition has no contract to check; any other refusal, or an answer
+/// that is not ripwire's, is named rather than read as clean.
+#[cfg(unix)]
+#[test]
+fn a_line_outside_definitions_is_clean_and_a_failure_is_named() -> TestResult {
+    let Some(dir) = fake_path("ripwire-refusals") else {
+        let dir = temp_dir("ripwire-refusals")?;
+        fake_ripwire(&dir)?;
+        return rerun_on_path(
+            "a_line_outside_definitions_is_clean_and_a_failure_is_named",
+            &dir,
+        );
+    };
+    let cases = [
+        (
+            "1",
+            Some("edit-check-miss.txt"),
+            None,
+            "[ripwire check: clean]",
+            "clean",
+        ),
+        (
+            "2",
+            None,
+            None,
+            "[ripwire check: a.rs:1 unavailable — exit 2; bash: ripwire . --edit-check=@a.rs:1]",
+            "unavailable",
+        ),
+        (
+            "0",
+            None,
+            Some("ripwire: unknown flag"),
+            "[ripwire check: a.rs:1 unavailable — the answer was not ripwire's edit-check; bash: ripwire . --edit-check=@a.rs:1]",
+            "unavailable",
+        ),
+    ];
+    for (code, err, answer, line, name) in cases {
+        fs::write(dir.join("code"), code)?;
+        match err {
+            Some(fixture) => fs::copy(ripwire_fixture(fixture), dir.join("err")).map(drop)?,
+            None => fs::write(dir.join("err"), "")?,
+        }
+        fs::write(dir.join("answer"), answer.unwrap_or_default())?;
+        fs::write(dir.join("a.rs"), "// old\nfn a() {}\n")?;
+        let edit = edit_with(&dir, "a.rs", "PUT 1.=1:\n+// a note\n");
+        let text = output_text(&edit);
+        assert!(text.contains(line), "{text}");
+        assert_eq!(edit.result.details["ripwire"], json!(name));
+    }
+    Ok(())
+}
+
+/// Ripwire answers "symbol not found" for the comment left where a definition was deleted, so
+/// the deletion itself is named with its callers' search, never read as clean.
+#[cfg(unix)]
+#[test]
+fn a_deleted_definition_is_named_not_clean() -> TestResult {
+    let Some(dir) = fake_path("ripwire-deleted") else {
+        let dir = temp_dir("ripwire-deleted")?;
+        fake_ripwire(&dir)?;
+        fs::write(dir.join("code"), "1")?;
+        fs::copy(ripwire_fixture("edit-check-miss.txt"), dir.join("err"))?;
+        return rerun_on_path("a_deleted_definition_is_named_not_clean", &dir);
+    };
+    fs::write(dir.join("m.py"), "def alpha(a, b):\n    return a + b\n")?;
+    let edit = edit_with(&dir, "m.py", "PUT 1.=2:\n+# alpha moved\n");
+    let text = output_text(&edit);
+    assert!(
+        text.contains(
+            "[ripwire check]\nalpha removed from m.py: its callers still call it — grep: \\balpha\\b"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["ripwire"], json!("findings"));
+    Ok(())
+}
+
+/// Incident: a cold index took 8 to 18 s on Yi and the deadline killed it, so no edit was ever
+/// checked. A slow region is named, the answered one is kept, and the slow run still finishes.
+#[cfg(unix)]
+#[test]
+fn a_slow_region_is_named_while_the_others_answer_and_it_still_finishes() -> TestResult {
+    let Some(dir) = fake_path("ripwire-slow") else {
+        let dir = temp_dir("ripwire-slow")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-contract.xml"),
+            dir.join("answer"),
+        )?;
+        fs::write(dir.join("slow"), "m.py:9")?;
+        return rerun_on_path(
+            "a_slow_region_is_named_while_the_others_answer_and_it_still_finishes",
+            &dir,
+        );
+    };
+    let body: String = (1..=5)
+        .map(|n| format!("def f{n}(a, b):\n    pass\n"))
+        .collect();
+    fs::write(dir.join("m.py"), body)?;
+    let ops = "PUT 1.=1:\n+def alpha(a):\nPUT 9.=9:\n+def f5(a):\n";
+    let text = output_text(&edit_with(&dir, "m.py", ops));
+    assert!(
+        text.contains("alpha at m.py:1: params,broken-callers changed"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "[ripwire check: m.py:9 unavailable — no answer in 3000 ms; the run finishes in the \
+             background, so a later edit is checked; bash: ripwire . --edit-check=@m.py:9]"
+        ),
+        "{text}"
+    );
+    let finished = (0..60).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        dir.join("finished").exists()
+    });
+    assert!(finished, "the slow run was killed at the deadline");
+    Ok(())
+}
+
+/// Ripwire's real answer for a Rust `alpha(a, b)` cut to `alpha(a)`: both callers still pass two
+/// and it says `incompatible="0"`, so the row lists them without vouching for them.
+#[cfg(unix)]
+#[test]
+fn rust_callers_are_listed_but_their_arity_is_not_vouched_for() -> TestResult {
+    let Some(dir) = fake_path("ripwire-rust") else {
+        let dir = temp_dir("ripwire-rust")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-rust-contract.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path(
+            "rust_callers_are_listed_but_their_arity_is_not_vouched_for",
+            &dir,
+        );
+    };
     fs::create_dir_all(dir.join("src"))?;
     fs::write(
-        dir.join("src/alpha.rs"),
-        "pub fn scale(x: u8) -> u8 {\n    x\n}\n",
+        dir.join("src/lib.rs"),
+        "pub fn alpha(a: u32, b: u32) -> u32 {\n    a + b\n}\n",
     )?;
-    let edit = edit_at(&dir, "src/alpha.rs", "pub fn b() {}");
-    let text = output_text(&edit);
-    assert!(
-        text.contains("drift drift.user.total <-calls- drift.alpha.scale at src/user.rs:1"),
-        "{text}"
-    );
-    assert!(!text.contains("drift.beta.base"), "{text}");
+    let ops = "PUT 1.=1:\n+pub fn alpha(a: u32) -> u32 {\n";
+    let text = output_text(&edit_with(&dir, "src/lib.rs", ops));
     assert!(
         text.contains(
-            "[grid check: 1 suspect outside the edited files — bash: grid check --quick]"
+            "alpha at src/lib.rs:1: params changed, params 2 -> 1; 2 callers, arity not checked \
+             for .rs files — read each call\n  other src/beta.rs:2\n  caller src/lib.rs:5"
         ),
         "{text}"
     );
-    assert_eq!(edit.result.details["grid"], json!("findings"));
+    assert!(!text.contains("incompatible"), "{text}");
     Ok(())
 }
 
-/// A deleted definition that is still called is in no file's `grid resolve`, and an edited
-/// file left with no definitions makes `resolve` exit 2; the dependent still shows.
+/// Outside a git repository ripwire has no HEAD to compare, and its real answer still flags the
+/// caller the new signature breaks; neither reads as clean.
 #[cfg(unix)]
 #[test]
-fn an_edit_that_deletes_a_called_definition_shows_its_dependents() -> TestResult {
-    let Some(dir) = fake_path("grid-deleted") else {
-        let dir = temp_dir("grid-deleted")?;
-        fake_grid(&dir)?;
+fn an_edit_outside_git_names_the_unknown_contract_and_the_broken_caller() -> TestResult {
+    let Some(dir) = fake_path("ripwire-nogit") else {
+        let dir = temp_dir("ripwire-nogit")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-no-baseline.xml"),
+            dir.join("answer"),
+        )?;
         return rerun_on_path(
-            "an_edit_that_deletes_a_called_definition_shows_its_dependents",
+            "an_edit_outside_git_names_the_unknown_contract_and_the_broken_caller",
             &dir,
         );
     };
-    fs::create_dir_all(dir.join(".grid"))?;
-    fs::create_dir_all(dir.join("src"))?;
-    fs::copy(grid_fixture("check-deleted.json"), dir.join("check.json"))?;
-    fs::write(dir.join("src/beta.rs"), "pub fn gone() -> u8 { 1 }\n")?;
-    let edit = edit_at(&dir, "src/beta.rs", "// gone");
+    fs::write(dir.join("m.py"), "def alpha(a, b):\n    return a + b\n")?;
+    let edit = edit_with(&dir, "m.py", "PUT 1.=1:\n+def alpha(a):\n");
     let text = output_text(&edit);
     assert!(
         text.contains(
-            "[grid check]\ndrift drift.user.total <-calls- drift.beta.gone at src/user.rs:1"
+            "alpha at m.py:1: no git HEAD to compare, so a contract change is unknown; 1 callers, \
+             1 incompatible\n  caller m.py:4 — incompatible at line 5"
         ),
         "{text}"
     );
-    assert_eq!(edit.result.details["grid"], json!("findings"));
+    assert_eq!(edit.result.details["ripwire"], json!("findings"));
     Ok(())
 }
 
-/// From a crate directory the chart at the repository's top answers; a nested repository with
-/// no chart of its own never borrows it.
+/// A stub and a shell script are languages ripwire parses, so their edits are asked about too.
 #[cfg(unix)]
 #[test]
-fn a_subdirectory_uses_the_chart_above_it_within_its_repository() -> TestResult {
-    let Some(dir) = fake_path("grid-subdir") else {
-        let dir = temp_dir("grid-subdir")?;
-        fake_grid(&dir)?;
-        return rerun_on_path(
-            "a_subdirectory_uses_the_chart_above_it_within_its_repository",
-            &dir,
-        );
+fn stub_and_shell_edits_are_checked() -> TestResult {
+    let Some(dir) = fake_path("ripwire-exts") else {
+        let dir = temp_dir("ripwire-exts")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-unchanged.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path("stub_and_shell_edits_are_checked", &dir);
     };
-    fs::create_dir_all(dir.join(".grid"))?;
-    fs::create_dir_all(dir.join("nested/src"))?;
-    fs::write(dir.join("nested/.git"), "gitdir: elsewhere\n")?;
-    fs::write(dir.join("nested/src/alpha.rs"), "fn a() {}\n")?;
-    let nested = edit_at(&dir.join("nested"), "src/alpha.rs", "pub fn b() {}");
-    assert_eq!(nested.result.details["grid"], json!("skipped"));
-    assert!(!dir.join("ran").exists(), "{}", output_text(&nested));
-    fs::create_dir_all(dir.join("src"))?;
-    fs::write(dir.join("src/alpha.rs"), "fn a() {}\n")?;
-    let text = output_text(&edit_at(&dir.join("src"), "alpha.rs", "pub fn b() {}"));
-    assert!(
-        text.contains("drift drift.user.total <-calls- drift.alpha.scale at src/user.rs:1"),
-        "{text}"
-    );
-    assert!(!dir.join("src/.grid").exists());
-    Ok(())
-}
-
-/// A real drift runs about 600 bytes a suspect, past the 30 KB display capture at about 50; an
-/// answer that is not grid's JSON, or has no `drift.suspects`, is never read as clean.
-#[cfg(unix)]
-#[test]
-fn a_grid_answer_is_read_whole_or_named_unavailable() -> TestResult {
-    let Some(dir) = fake_path("grid-answer") else {
-        let dir = temp_dir("grid-answer")?;
-        fake_grid(&dir)?;
-        return rerun_on_path("a_grid_answer_is_read_whole_or_named_unavailable", &dir);
-    };
-    fs::create_dir_all(dir.join(".grid"))?;
-    fs::create_dir_all(dir.join("src"))?;
-    fs::write(dir.join("src/alpha.rs"), "fn a() {}\n")?;
-    let mut report: Value = serde_json::from_slice(&fs::read(dir.join("check.json"))?)?;
-    let suspects = report
-        .pointer_mut("/drift/suspects")
-        .and_then(Value::as_array_mut)
-        .ok_or("no suspects")?;
-    let other = suspects.get(1).cloned().ok_or("no second suspect")?;
-    suspects.extend(std::iter::repeat_n(other, 79));
-    let big = serde_json::to_string(&report)?;
-    assert!(big.len() > 40_000, "{}", big.len());
-    fs::write(dir.join("check.json"), big)?;
-    let text = output_text(&edit_at(&dir, "src/alpha.rs", "pub fn b() {}"));
-    assert!(
-        text.contains("<-calls- drift.alpha.scale at src/user.rs:1"),
-        "{text}"
-    );
-    assert!(
-        text.contains("[grid check: 80 suspects outside the edited files"),
-        "{text}"
-    );
-    for answer in ["grid: something this change did was not checked", "{}"] {
-        fs::write(dir.join("check.json"), answer)?;
-        fs::write(dir.join("src/alpha.rs"), "fn a() {}\n")?;
-        let edit = edit_at(&dir, "src/alpha.rs", "pub fn b() {}");
-        let text = output_text(&edit);
-        assert!(
-            text.contains("[grid check: unavailable — the answer was not grid's JSON]"),
-            "{text}"
-        );
-        assert_eq!(edit.result.details["grid"], json!("unparsed"));
+    for (path, line) in [("m.pyi", "def a() -> int: ..."), ("run.sh", "go() { :; }")] {
+        fs::write(dir.join(path), "x\n")?;
+        edit_with(&dir, path, &format!("PUT 1.=1:\n+{line}\n"));
     }
+    let asked = fs::read_to_string(dir.join("args"))?;
+    assert!(asked.contains("--edit-check=@m.pyi:1"), "{asked}");
+    assert!(asked.contains("--edit-check=@run.sh:1"), "{asked}");
+    Ok(())
+}
+
+/// Each separated run of changed lines is one question; four are asked, and the fifth is named
+/// with the call that asks it.
+#[cfg(unix)]
+#[test]
+fn the_fifth_changed_region_is_named_not_asked() -> TestResult {
+    let Some(dir) = fake_path("ripwire-regions") else {
+        let dir = temp_dir("ripwire-regions")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-unchanged.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path("the_fifth_changed_region_is_named_not_asked", &dir);
+    };
+    let body: String = (1..=10)
+        .map(|n| format!("def f{n}():\n    pass\n"))
+        .collect();
+    let ops = |count: usize| -> String {
+        (0..count)
+            .map(|n| format!("PUT {line}.={line}:\n+def g{n}():\n", line = n * 4 + 1))
+            .collect()
+    };
+    for (count, notice) in [
+        (4, None),
+        (
+            5,
+            Some(
+                "[ripwire check: 4 of 5 changed regions checked, cap 4 — bash: ripwire . --edit-check=@a.py:17]",
+            ),
+        ),
+    ] {
+        fs::write(dir.join("a.py"), &body)?;
+        fs::write(dir.join("args"), "")?;
+        let text = output_text(&edit_with(&dir, "a.py", &ops(count)));
+        let asked = fs::read_to_string(dir.join("args"))?.lines().count();
+        assert_eq!(asked, 4, "{text}");
+        match notice {
+            Some(notice) => assert!(text.contains(notice), "{text}"),
+            None => assert!(!text.contains("changed regions checked"), "{text}"),
+        }
+    }
+    Ok(())
+}
+
+/// Two adjacent definitions rewritten in one block are two contracts, so both are asked.
+#[cfg(unix)]
+#[test]
+fn adjacent_changed_definitions_are_each_asked() -> TestResult {
+    let Some(dir) = fake_path("ripwire-adjacent") else {
+        let dir = temp_dir("ripwire-adjacent")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-unchanged.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path("adjacent_changed_definitions_are_each_asked", &dir);
+    };
+    fs::write(dir.join("a.py"), "def f(a): pass\ndef g(a): pass\n")?;
+    edit_with(&dir, "a.py", "PUT 1.=2:\n+def f(): pass\n+def g(): pass\n");
+    let asked = fs::read_to_string(dir.join("args"))?;
+    assert!(asked.contains("--edit-check=@a.py:1"), "{asked}");
+    assert!(asked.contains("--edit-check=@a.py:2"), "{asked}");
+    Ok(())
+}
+
+/// A status this version does not know, with the `incompatible="0"` Rust answers carry, is named
+/// as unavailable, never read as clean.
+#[cfg(unix)]
+#[test]
+fn an_unknown_edit_check_status_is_named_not_clean() -> TestResult {
+    let Some(dir) = fake_path("ripwire-status") else {
+        let dir = temp_dir("ripwire-status")?;
+        fake_ripwire(&dir)?;
+        let real = fs::read_to_string(ripwire_fixture("edit-check-rust-contract.xml"))?;
+        let renamed = real.replace("status=\"contract-change\"", "status=\"symbol-removed\"");
+        fs::write(dir.join("answer"), renamed)?;
+        return rerun_on_path("an_unknown_edit_check_status_is_named_not_clean", &dir);
+    };
+    fs::create_dir_all(dir.join("src"))?;
+    fs::write(dir.join("src/lib.rs"), "pub fn alpha(a: u32, b: u32) {}\n")?;
+    let edit = edit_with(&dir, "src/lib.rs", "PUT 1.=1:\n+pub fn alpha(a: u32) {}\n");
+    let text = output_text(&edit);
+    assert!(
+        text.contains(
+            "[ripwire check: src/lib.rs:1 unavailable — the answer named an unknown status \
+             (symbol-removed); bash: ripwire . --edit-check=@src/lib.rs:1]"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["ripwire"], json!("unavailable"));
+    Ok(())
+}
+
+/// From a crate directory ripwire runs at the repository's top, with the path relative to it.
+#[cfg(unix)]
+#[test]
+fn a_subdirectory_edit_asks_ripwire_at_the_repository_top() -> TestResult {
+    let Some(dir) = fake_path("ripwire-subdir") else {
+        let dir = temp_dir("ripwire-subdir")?;
+        fake_ripwire(&dir)?;
+        fs::copy(
+            ripwire_fixture("edit-check-unchanged.xml"),
+            dir.join("answer"),
+        )?;
+        return rerun_on_path(
+            "a_subdirectory_edit_asks_ripwire_at_the_repository_top",
+            &dir,
+        );
+    };
+    let top = dir.join("repo");
+    fs::create_dir_all(top.join(".git"))?;
+    fs::create_dir_all(top.join("src"))?;
+    fs::write(top.join("src/alpha.rs"), "fn a() {}\n")?;
+    edit_with(&top.join("src"), "alpha.rs", "PUT 1.=1:\n+pub fn b() {}\n");
+    assert_eq!(
+        fs::read_to_string(dir.join("args"))?.trim(),
+        ". --edit-check=@src/alpha.rs:1"
+    );
+    let ran_in = fs::read_to_string(dir.join("cwd"))?;
+    assert_eq!(
+        std::path::Path::new(ran_in.trim()).canonicalize()?,
+        top.canonicalize()?
+    );
     Ok(())
 }
 

@@ -3,7 +3,6 @@
     "compaction-constraint-survival": "pass",
     "done-claim-red-check-refused": "pass",
     "edit-before-read-refused": "pass",
-    "mined-0000-grid-empty-affordance": "pass",
     "mined-0001-coroutine-leak-affordance": "pass",
     "mined-0002-read-directory-refused": "pass",
     "mined-0003-subagent-listing-name": "pass",
