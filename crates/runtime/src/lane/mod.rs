@@ -235,16 +235,13 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> LaneError + '_ {
     }
 }
 
-/// A lane command's captured output, past which the capture is cut.
-pub(crate) const CAPTURE_CAP: usize = 30_000;
-
 pub(crate) fn capture(
     cwd: &Path,
     program: &str,
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
-    capture_capped(cwd, program, args, deadline, CAPTURE_CAP).map(|capture| capture.stdout)
+    capture_capped(cwd, program, args, deadline, yi_tools::OUTPUT_CAP).map(|capture| capture.stdout)
 }
 
 pub(crate) fn capture_capped(
@@ -261,6 +258,7 @@ pub(crate) fn capture_capped(
         args,
         deadline,
         cap,
+        None,
     )
 }
 
@@ -273,6 +271,7 @@ pub(crate) fn capture_named(
     args: &[&str],
     deadline: std::time::Duration,
     cap: usize,
+    sandbox: Option<&yi_tools::Sandbox>,
 ) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::command(program);
@@ -287,11 +286,12 @@ pub(crate) fn capture_named(
         return Ok(capture);
     }
     let output = format!("{}{}", capture.stdout, capture.stderr);
-    let denied = if output.contains("Operation not permitted") {
-        "\n[the sandbox denied a write outside its writable roots; the path is in the error above]"
-    } else {
-        ""
-    };
+    let denied = sandbox
+        .and_then(|sandbox| {
+            yi_tools::sandbox_refusal(sandbox, cwd, capture.exit_code, &output, program)
+        })
+        .map(|refusal| format!("\n{}\n", yi_tools::denial_hint(&refusal)))
+        .unwrap_or_default();
     Err(format!("{label} failed:\n{output}{denied}"))
 }
 
@@ -304,13 +304,13 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
     let owned: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000).map_err(|error| {
-        LaneError::Git {
+    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP).map_err(
+        |error| LaneError::Git {
             args: owned.clone(),
             exit_code: None,
             output: error,
-        }
-    })?;
+        },
+    )?;
     if capture.exit_code == Some(0) {
         return Ok(capture.stdout);
     }
