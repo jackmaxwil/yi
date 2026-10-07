@@ -5,7 +5,8 @@ use std::error::Error;
 use std::process::Command;
 
 use serde_json::Value;
-use yi_runtime::faux::{faux_assistant_message, faux_text};
+use std::os::unix::fs::PermissionsExt;
+use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_types::message::StopReason;
 
 #[path = "../../types/tests/support/scratch.rs"]
@@ -35,6 +36,8 @@ fn run(program: &str, args: &[&str], dir: &std::path::Path) -> Result<String, Bo
     Ok(String::from_utf8(out.stdout)?)
 }
 
+const CLIENT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../python");
+
 const PROGRAM: &str = r#"
 import json, sys
 sys.path.insert(0, sys.argv[1])
@@ -50,6 +53,164 @@ with Yi(repo, model="faux/faux-1", yi=yi_bin, args=["--faux", script, "--session
         failed = str(error)
 print(json.dumps({"answers": answers, "big": len(big), "failed": failed}))
 "#;
+
+const CANCELLED_PROGRAM: &str = r#"
+import json, sys, threading, traceback
+sys.path.insert(0, sys.argv[1])
+from yi_client import Yi, YiError
+out = {}
+def work():
+    try:
+        with Yi(sys.argv[3], yi=sys.argv[2], mode="ask") as yi:
+            out["result"] = yi.run("1")
+    except YiError as error:
+        out["error"] = str(error)
+    except Exception:
+        out["error"] = traceback.format_exc()
+thread = threading.Thread(target=work, daemon=True)
+thread.start()
+thread.join(timeout=10)
+print(json.dumps({"finished": not thread.is_alive(), "error": out.get("error", ""), "result": out.get("result", "")}))
+"#;
+
+const CANCELLED_STUB: &str = r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("method") == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": frame["id"], "result": {"sessionId": "s1"}}), flush=True)
+    elif frame.get("method") == "_yi/kernel_execute":
+        print(json.dumps({"jsonrpc": "2.0", "id": frame["id"], "result": {"callId": "c1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"update": {
+            "toolCallId": "c1", "status": "cancelled",
+            "content": [{"type": "text", "content": {"type": "text", "text": "cell killed at the 600 s ceiling"}}]}}}), flush=True)
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": frame.get("id"), "result": {}}), flush=True)
+"#;
+
+#[test]
+fn a_cancelled_cell_update_raises_instead_of_hanging_the_client() -> TestResult {
+    let dir = Scratch::new("yi-python-client-cancelled")?;
+    dir.home()?;
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    let stub = dir.join("yi-stub.py");
+    std::fs::write(&stub, CANCELLED_STUB)?;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
+    let program = dir.join("program.py");
+    std::fs::write(&program, CANCELLED_PROGRAM)?;
+    let out = run(
+        "python3",
+        &[
+            &program.display().to_string(),
+            CLIENT_DIR,
+            &stub.display().to_string(),
+            &repo.display().to_string(),
+        ],
+        &dir,
+    )?;
+    let report: Value = serde_json::from_str(out.trim())?;
+    assert_eq!(
+        report["finished"], true,
+        "run() returned instead of waiting forever on a terminal status it does not list: {report}"
+    );
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("600 s ceiling")),
+        "the cancelled update's own text reached YiError: {report}"
+    );
+    Ok(())
+}
+
+const PERMISSION_PROGRAM: &str = r#"
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+from yi_client import Yi
+yi_bin, repo, script, sessions = sys.argv[2:6]
+with Yi(repo, model="faux/faux-1", yi=yi_bin, args=["--faux", script, "--session-dir", sessions], mode="confirm") as yi:
+    worker = yi.run("h = await rlm.run('write the note', role='worker')\n"
+                    "r = await h.result(timeout=25)\nprint(r.get('text', ''))")
+    after = yi.run("print('still here')")
+print(json.dumps({"wrote": os.path.exists(os.path.join(repo, "note.txt")),
+                  "worker": worker, "after": after}))
+"#;
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_permission_ask_is_refused_and_the_client_continues() -> TestResult {
+    let dir = Scratch::new("yi-python-client-permission")?;
+    dir.home()?;
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    std::fs::write(repo.join("README"), "probe\n")?;
+    for args in [
+        &["init", "-q"][..],
+        &["add", "README"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    ] {
+        run("git", args, &repo)?;
+    }
+    let script = dir.join("script.jsonl");
+    let turns = [
+        serde_json::to_string(&faux_assistant_message(
+            vec![faux_tool_call(
+                "c1",
+                "write",
+                serde_json::json!({"path": "note.txt", "content": "tidy\n"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            )],
+            StopReason::ToolUse,
+        ))?,
+        serde_json::to_string(&faux_assistant_message(
+            vec![faux_text("denied")],
+            StopReason::Stop,
+        ))?,
+    ];
+    std::fs::write(&script, turns.join("\n"))?;
+    let program = dir.join("program.py");
+    std::fs::write(&program, PERMISSION_PROGRAM)?;
+    let out = run(
+        "python3",
+        &[
+            &program.display().to_string(),
+            CLIENT_DIR,
+            env!("CARGO_BIN_EXE_yi"),
+            &repo.display().to_string(),
+            &script.display().to_string(),
+            &dir.join("sessions").display().to_string(),
+        ],
+        &dir,
+    )?;
+    let report: Value = serde_json::from_str(out.trim())?;
+    assert_eq!(
+        report["wrote"], false,
+        "a permission ask the nobody approves is a refusal, not a write: {report}"
+    );
+    assert!(
+        report["worker"]
+            .as_str()
+            .is_some_and(|text| text.contains("denied")),
+        "the worker turn continued past the refused ask to its next reply: {report}"
+    );
+    assert!(
+        report["after"]
+            .as_str()
+            .is_some_and(|text| text.contains("still here")),
+        "the client ran another cell after the refusal instead of hanging: {report}"
+    );
+    Ok(())
+}
 
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
