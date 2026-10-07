@@ -652,7 +652,7 @@ async fn a_verdict_reaches_the_model_as_a_result_and_a_misread_as_an_error() -> 
     )
     .await;
     assert!(!cycle.is_error, "{:?}", cycle.result.content);
-    assert_eq!(cycle.result.details["outcome"], json!("verdict"));
+    assert_eq!(cycle.result.details["errorKind"], json!("verdict"));
     assert!(serde_json::to_string(&cycle.result.content)?.contains("cycle"));
     let misread =
         yi_loop::AgentTool::execute(&adapter, "c2", input(json!({"op": "frobnicate"})), &signal)
