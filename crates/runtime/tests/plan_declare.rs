@@ -742,3 +742,50 @@ fn the_same_whole_plan_set_twice_lands_twice() -> TestResult {
     assert_eq!(state_of(&rig, "a")?, "Done");
     Ok(())
 }
+
+/// Dies with a left-out row's move still run after the set: the reply said the row was not
+/// taken, then answered its `done` against a plan that no longer holds it.
+#[test]
+fn a_row_left_out_of_a_whole_plan_set_does_not_move() -> TestResult {
+    let rig = rig("apply-left-out")?;
+    opened(&rig, json!([{"label": "a"}, {"label": "b"}]))?;
+    let rows = json!([{"label": "a", "state": "done", "contract": {"class": "inline",
+        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]},
+        "bogus": 1}, {"label": "b"}]);
+    let (refused, text) = call(&rig, json!({"op": "set", "goal": "ship it", "todos": rows}));
+    assert!(!refused && text.contains("note: a: left out"), "{text}");
+    assert_eq!(text.matches("note: a:").count(), 1, "{text}");
+    Ok(())
+}
+
+/// Dies with a sub-plan's whole set moving the root's row: the deferred `block` and the closing
+/// view went to the root plan, so a row named in both plans moved in the wrong one.
+#[test]
+fn a_whole_plan_set_on_a_sub_plan_moves_the_sub_plans_row() -> TestResult {
+    let rig = rig("apply-sub")?;
+    opened(&rig, json!([{"label": "parent"}, {"label": "shared"}]))?;
+    let (refused, text) = call(&rig, json!({"op": "start", "todo": "parent"}));
+    assert!(!refused, "{text}");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "decompose", "todo": "parent", "todos": [{"label": "shared"}]}),
+    );
+    assert!(!refused, "{text}");
+    let root = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let sub = (rig.store.list()?.into_iter())
+        .find(|id| *id != root)
+        .ok_or("no sub-plan")?;
+    let rows = json!([{"label": "shared", "state": "blocked", "note": "which one?"}]);
+    let (refused, text) = call(&rig, json!({"op": "set", "plan": sub, "todos": rows}));
+    assert!(!refused, "{text}");
+    let state = |id| -> Result<String, Box<dyn Error>> {
+        let plan = rig.store.read(id)?;
+        Ok(format!(
+            "{:?}",
+            TodoStateName::of(&todo_of(&plan, "shared")?.state)
+        ))
+    };
+    assert_eq!(state(&sub)?, "Blocked", "{text}");
+    assert_eq!(state(&root)?, "Pending", "{text}");
+    Ok(())
+}

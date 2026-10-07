@@ -75,6 +75,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                 "options": options.unwrap_or(Value::Null)})),
             _ => None,
         };
+        let mut moves = None;
         match now.get(&label) {
             Some(TodoStateName::Blocked) => {
                 conditions.push(format!("{label}: still blocked on the user; left as is"));
@@ -85,7 +86,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                     if let (Some(map), Some(plan)) = (op.as_object_mut(), args.get("plan")) {
                         map.insert("plan".to_owned(), plan.clone());
                     }
-                    deferred.push(op);
+                    moves = Some(op);
                     let state = match now.get(&label) {
                         Some(TodoStateName::Running) => "running",
                         Some(TodoStateName::Done) => "done",
@@ -97,7 +98,10 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
         }
         let alone = json!({"op": "set", "todos": [Value::Object(row.clone())]});
         match super::tool::declared(tool.actor(), alone.as_object().unwrap_or(&Map::new())) {
-            Ok(_) => rows.push(row),
+            Ok(_) => {
+                rows.push(row);
+                deferred.extend(moves);
+            }
             Err(error) => {
                 let error = error.to_string();
                 let error = error.strip_prefix("set todos[0]: ").unwrap_or(&error);
