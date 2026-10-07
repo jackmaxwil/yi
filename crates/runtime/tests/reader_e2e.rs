@@ -387,6 +387,9 @@ async fn a_reader_is_refused_what_a_reader_cannot_use() -> TestResult {
     let kernel = refused(json!({"role": "reader", "partition": ["kernel://main/x"]}))
         .ok_or("kernel partition admitted")?;
     assert!(kernel.contains("context_keys"), "{kernel}");
+    let family_entry = refused(json!({"role": "reader", "partition": ["family://answers"]}))
+        .ok_or("family partition admitted")?;
+    assert!(family_entry.contains("context_keys"), "{family_entry}");
     let turns =
         refused(json!({"role": "root", "turns": 2})).ok_or("turns without a reader admitted")?;
     assert!(turns.contains("role=\"reader\""), "{turns}");

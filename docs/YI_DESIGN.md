@@ -475,7 +475,7 @@ A persistent IPython process per session that reaches the host only through host
 ## 10. Url and fetch
 `Url` is the one reference type; `Resolver` turns one into text and logs every read.
 
-- `Url { scheme, path, fragment }` serializes as `scheme://path[#L<start>-<end>@<TAG>]`.
+- `Url { scheme, path, fragment }` serializes as `scheme://path[#L<start>-<end>[@<TAG>]]`.
   Whitespace or an empty scheme or path fails the parse; an unknown scheme parses as `External`
   and fetch refuses it. Only `local` and `checkpoint` take a fragment; `TAG` is the whole-file
   xxh32 in four uppercase hex digits, and a live file that differs is refused `Stale`.
