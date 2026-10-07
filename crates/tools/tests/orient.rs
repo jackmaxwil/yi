@@ -282,6 +282,13 @@ fn skeletons_rank_hot_files_ahead_of_the_alphabet() -> TestResult {
 /// Reruns `name` with PATH holding only a fake `ripwire` that answers each verb with the real
 /// ripwire 0.6.5 answer recorded under tests/fixtures/ripwire; `slow` makes each answer take 1 s.
 #[cfg(unix)]
+/// The task map's and the neighborhood's three answers, for the tests that time them.
+const LAYERS: [(&str, &str); 3] = [
+    ("--for=", "for.json"),
+    ("--callers=", "callers.json"),
+    ("--callees=", "callees.json"),
+];
+
 fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestResult {
     use std::os::unix::fs::PermissionsExt;
     let dir = Scratch::new(&format!("yi-orient-{name}"))?;
@@ -303,7 +310,7 @@ fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestRe
         true => {
             "d=$(/usr/bin/dirname \"$0\"); : > \"$d/running.$$\"\n\
                  for f in \"$d\"/running.*; do [ \"$f\" != \"$d/running.$$\" ] && echo overlap >> \"$d/args\"; done\n\
-                 /bin/sleep 1; /bin/rm -f \"$d/running.$$\"\n"
+                 /bin/sleep 1; /bin/rm -f \"$d/running.$$\"; echo \"done $2\" >> \"$d/args\"\n"
         }
         false => "",
     };
@@ -344,12 +351,7 @@ fn ask(dir: &Path, key: &str, value: &str) -> String {
 fn the_ripwire_layers_are_asked_at_once() -> TestResult {
     const NAME: &str = "the_ripwire_layers_are_asked_at_once";
     let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
-        let answers = [
-            ("--for=", "for.json"),
-            ("--callers=", "callers.json"),
-            ("--callees=", "callees.json"),
-        ];
-        return with_fake_ripwire(NAME, true, &answers);
+        return with_fake_ripwire(NAME, true, &LAYERS);
     };
     let dir = Path::new(&dir);
     ask(dir, "task", "warm the index");
@@ -388,12 +390,7 @@ fn the_ripwire_layers_are_asked_at_once() -> TestResult {
 fn a_cold_repositorys_ripwire_calls_take_turns() -> TestResult {
     const NAME: &str = "a_cold_repositorys_ripwire_calls_take_turns";
     let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
-        let answers = [
-            ("--for=", "for.json"),
-            ("--callers=", "callers.json"),
-            ("--callees=", "callees.json"),
-        ];
-        return with_fake_ripwire(NAME, true, &answers);
+        return with_fake_ripwire(NAME, true, &LAYERS);
     };
     let dir = Path::new(&dir);
     let mut input = Map::new();
@@ -402,12 +399,44 @@ fn a_cold_repositorys_ripwire_calls_take_turns() -> TestResult {
     let packet = run(dir, input);
     let args = fs::read_to_string(dir.join("args"))?;
     assert!(packet.contains("callees of alpha: 1"), "{packet}");
-    assert_eq!(
-        args.lines().filter(|line| line.starts_with("--")).count(),
-        3,
-        "{args}"
+    let lines: Vec<&str> = args.lines().collect();
+    let asked: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].starts_with("--"))
+        .collect();
+    assert_eq!(asked.len(), 3, "{args}");
+    let first = format!("done {}", lines[asked[0]]);
+    let done = lines.iter().position(|line| *line == first);
+    assert!(
+        done.is_some_and(|done| done < asked[1]),
+        "the first call had not answered when the next began:\n{args}"
     );
-    assert!(!args.contains("overlap"), "{args}");
+    Ok(())
+}
+
+/// A cold repository whose first answer is a refusal is warm after it: the two calls queued behind
+/// it run at once, rather than every later packet taking turns for the process's life.
+#[cfg(unix)]
+#[test]
+fn a_refused_first_answer_still_warms_the_repository() -> TestResult {
+    const NAME: &str = "a_refused_first_answer_still_warms_the_repository";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let refusals = [
+            ("--for=", "callers-miss.txt"),
+            ("--callers=", "callers-miss.txt"),
+            ("--callees=", "callers-miss.txt"),
+        ];
+        return with_fake_ripwire(NAME, true, &refusals);
+    };
+    let dir = Path::new(&dir);
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    run(dir, input);
+    let args = fs::read_to_string(dir.join("args"))?;
+    assert!(
+        args.contains("overlap"),
+        "the calls after a refused first one still took turns:\n{args}"
+    );
     Ok(())
 }
 

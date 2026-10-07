@@ -1,8 +1,8 @@
 //! Every `ripwire` spawn. Ripwire indexes the tree it is pointed at, so each runs at the repository's top.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -371,27 +371,38 @@ fn attr(element: &str, key: &str) -> String {
 }
 
 /// Incident: a first get_context on a cold repository asked its three layers at once and each built
-/// the same index; until one call on a repository has answered, the calls take turns.
-static WARM: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+/// the same index; until one call on a repository has answered, the others wait for it.
+static WARM: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 static COLD: Mutex<()> = Mutex::new(());
 
 fn warm(root: &Path) -> bool {
-    (WARM.lock()).is_ok_and(|guard| guard.as_ref().is_some_and(|tops| tops.contains(root)))
+    (WARM.lock()).is_ok_and(|tops| tops.contains(root))
+}
+
+/// The cold repository's one turn, or none once it is warm; a waiter still hears its cancel.
+fn turn(root: &Path, cancelled: &CancelFlag) -> Result<Option<MutexGuard<'static, ()>>, String> {
+    while !warm(root) {
+        match COLD.try_lock() {
+            Ok(guard) if !warm(root) => return Ok(Some(guard)),
+            Ok(_) | Err(TryLockError::Poisoned(_)) => return Ok(None),
+            Err(TryLockError::WouldBlock) if cancelled() => return Err("cancelled".to_owned()),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn json(root: &Path, args: &[&str], cancelled: &CancelFlag) -> Result<Value, String> {
     let mut args = args.to_vec();
     args.push("--json");
-    let _turn = (!warm(root)).then(|| COLD.lock().ok()).flatten();
+    let turn = turn(root, cancelled)?;
     let capture = spawn(root, &args, cancelled, OUTPUT_CAP)
         .map_err(|error| format!("ripwire binary not runnable: {error}"))?;
-    if capture.exit_code == Some(0)
-        && let Ok(mut guard) = WARM.lock()
-    {
-        guard
-            .get_or_insert_with(HashSet::new)
-            .insert(root.to_path_buf());
+    // An answer of any exit built what it could, so a repository ripwire refuses is not cold forever.
+    if let Ok(mut tops) = WARM.lock() {
+        tops.insert(root.to_path_buf());
     }
+    drop(turn);
     if capture.exit_code != Some(0) {
         return Err(format!(
             "ripwire {} exited {:?}: {}",
