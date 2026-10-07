@@ -802,7 +802,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `update` | the installed binary and `~/.yi/skills`, from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
+| `update` | the installed binary, and the release's skills written over `~/.yi/skills` (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
 - The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
@@ -952,13 +952,13 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `ureq` | `tls`, `native-certs` | ai, oauth, mcp-cli, kernel, cli | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download, the release tarball | `reqwest` (hyper stack), `native-tls` (openssl on Linux) |
 | `zeromq` | `tokio-runtime`, `tcp-transport` | kernel | Jupyter DEALER/SUB channels | `zmq`: libzmq FFI |
 | `hmac` | — | kernel | Jupyter message signing | — |
-| `sha2` | — | types, oauth, permission, runtime, kernel, cli | message signing, permission digests, PKCE, plan digests, the release digest | — |
+| `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests, the release digest | — |
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
 | `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools | the `grep` tool; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
-| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui, cli | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive and the release tarball | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
+| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive and the release tarball | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |

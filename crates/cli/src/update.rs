@@ -1,13 +1,12 @@
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use yi_runtime::tarball;
 use yi_types::install::InstallReceipt;
 
 const FORGE: &str = "https://git.example.invalid";
 const NAMESPACE: &str = "yi-release";
-const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_TAR_BYTES: usize = 256 * 1024 * 1024;
 const SIGNERS: &str = include_str!("../../../allowed_signers");
 
 static TICK: AtomicU64 = AtomicU64::new(0);
@@ -19,7 +18,7 @@ pub(crate) fn early() {
     std::process::exit(run());
 }
 
-pub(crate) fn run() -> i32 {
+fn run() -> i32 {
     if std::env::args().nth(2).is_some() {
         eprintln!("usage: yi update");
         return 2;
@@ -40,13 +39,6 @@ fn installed() -> Result<String, String> {
     let home = absolute_home()?;
     let prefix = prefix_dir(&home)?;
     let exe = std::env::current_exe().map_err(|error| format!("current exe: {error}"))?;
-    let receipt = read_receipt(&home)?;
-    let dest = installed_binary(&prefix, receipt.as_ref());
-    guard(&exe, &prefix, receipt.as_ref(), &dest)?;
-    let body = http_get(&format!("{FORGE}/api/v1/repos/apex/yi/releases/latest"))?;
-    let latest: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|error| error.to_string())?;
-    let release = release_from(&latest, env!("RELEASE_TRIPLE"))?;
     apply(Apply {
         home: &home,
         prefix: &prefix,
@@ -54,7 +46,6 @@ fn installed() -> Result<String, String> {
         current: env!("ARCHITECTURE_VERSION"),
         target: env!("RELEASE_TRIPLE"),
         signers: SIGNERS,
-        release: &release,
         get: &http_get,
     })
 }
@@ -66,7 +57,6 @@ struct Apply<'a, F> {
     current: &'a str,
     target: &'a str,
     signers: &'a str,
-    release: &'a Release,
     get: &'a F,
 }
 
@@ -84,18 +74,22 @@ where
     let receipt = read_receipt(job.home)?;
     let dest = installed_binary(job.prefix, receipt.as_ref());
     guard(job.exe, job.prefix, receipt.as_ref(), &dest)?;
-    if job.release.version == job.current {
+    let body = (job.get)(&format!("{FORGE}/api/v1/repos/apex/yi/releases/latest"))?;
+    let latest: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|error| error.to_string())?;
+    let release = release_from(&latest, job.target)?;
+    if release.version == job.current {
         return Ok(format!("already {}", job.current));
     }
-    let archive = (job.get)(&job.release.archive)?;
-    let digest = (job.get)(&job.release.digest)?;
-    let got = sha256_hex(&archive);
+    let archive = (job.get)(&release.archive)?;
+    let digest = (job.get)(&release.digest)?;
+    let got = tarball::sha256_hex(&archive);
     let want = digest_hex(&digest)?;
     if !got.eq_ignore_ascii_case(&want) {
         return Err("the release digest does not match".to_owned());
     }
-    let signature = (job.get)(&job.release.signature)?;
-    verify_signature(&archive, &signature, job.signers)?;
+    let signature = (job.get)(&release.signature)?;
+    verify_signature(job.home, &archive, &signature, job.signers)?;
     let unpacked = unpack(&archive)?;
     let mut next = receipt.unwrap_or(InstallReceipt {
         prefix: String::new(),
@@ -107,14 +101,14 @@ where
         .parent()
         .ok_or_else(|| format!("{} has no parent", dest.display()))?;
     next.prefix = prefix.display().to_string();
-    next.version.clone_from(&job.release.version);
+    next.version.clone_from(&release.version);
     next.target = job.target.to_owned();
     publish(&dest, &unpacked.binary, job.home, &unpacked.skills)?;
     write_receipt(job.home, &next)?;
     Ok(format!(
         "installed {} → {} at {}",
         job.current,
-        job.release.version,
+        release.version,
         prefix.display()
     ))
 }
@@ -249,16 +243,17 @@ fn http_get(url: &str) -> Result<Vec<u8>, String> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .try_proxy_from_env(true)
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
+    tarball::agent().build()
+}
+
+fn on_forge(url: &str) -> bool {
+    url.strip_prefix(FORGE)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn fetch(url: &str, agent: &ureq::Agent) -> Result<Vec<u8>, String> {
     let request = agent.get(url);
-    let request = match token_in(&fgj_config()).filter(|_| url.starts_with(FORGE)) {
+    let request = match token_in(&fgj_config()).filter(|_| on_forge(url)) {
         Some(token) => request.set("Authorization", &format!("token {token}")),
         None => request,
     };
@@ -269,16 +264,7 @@ fn fetch(url: &str, agent: &ureq::Agent) -> Result<Vec<u8>, String> {
         }
         Err(error) => return Err(error.to_string()),
     };
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_ARCHIVE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if u64::try_from(bytes.len()).map_or(true, |len| len > MAX_ARCHIVE_BYTES) {
-        return Err(format!("larger than {MAX_ARCHIVE_BYTES} bytes"));
-    }
-    Ok(bytes)
+    tarball::read_capped(response.into_reader())
 }
 
 #[cfg(target_os = "macos")]
@@ -335,10 +321,7 @@ fn login_agent() -> Result<ureq::Agent, String> {
     .map_err(|error| error.to_string())?
     .with_root_certificates(roots)
     .with_no_client_auth();
-    Ok(ureq::AgentBuilder::new()
-        .try_proxy_from_env(true)
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
+    Ok(tarball::agent()
         .tls_config(std::sync::Arc::new(config))
         .build())
 }
@@ -389,32 +372,39 @@ fn digest_hex(file: &[u8]) -> Result<String, String> {
     Ok(hex.to_ascii_lowercase())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .fold(String::new(), |mut hex, byte| {
-            hex.push_str(&format!("{byte:02x}"));
-            hex
-        })
-}
-
-fn verify_signature(archive: &[u8], signature: &[u8], signers: &str) -> Result<(), String> {
+fn verify_signature(
+    home: &Path,
+    archive: &[u8],
+    signature: &[u8],
+    signers: &str,
+) -> Result<(), String> {
     let principal = signers
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with('#'))
         .and_then(|line| line.split_whitespace().next())
         .ok_or("allowed_signers names no key")?;
-    let dir = std::env::temp_dir().join(format!(
-        "yi-verify-{}-{}",
+    let root = home.join(".yi");
+    std::fs::create_dir_all(&root).map_err(io(&root))?;
+    let dir = root.join(format!(
+        ".verify-{}-{}",
         std::process::id(),
         TICK.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).map_err(io(&dir))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    private_dir(&dir)?;
     let checked = check_signature(&dir, archive, signature, signers, principal);
     let _ = std::fs::remove_dir_all(&dir);
     checked
+}
+
+/// Invariant: the signers file ssh-keygen trusts is writable by this user alone, so its dir
+/// is made fresh and 0700 under `~/.yi`, never in a shared temp dir.
+fn private_dir(dir: &Path) -> Result<(), String> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir).map_err(io(dir))
 }
 
 #[expect(
@@ -463,30 +453,15 @@ struct Unpacked {
 }
 
 fn unpack(archive: &[u8]) -> Result<Unpacked, String> {
-    let inflated = gunzip(archive)?;
-    let mut tar = inflated.as_slice();
+    let tar = tarball::gunzip(archive).map_err(|error| format!("the release archive {error}"))?;
     let mut binary = None;
     let mut skills = Vec::new();
-    while !tar.is_empty() {
-        let header = take(&mut tar, 512)?.to_vec();
-        if header.iter().all(|byte| *byte == 0) {
-            break;
-        }
-        let name = entry_name(&header)?;
-        let size = octal(header.get(124..136).unwrap_or_default())
-            .ok_or_else(|| format!("archive entry {name} has no size"))?;
-        let padded = size
-            .div_ceil(512)
-            .checked_mul(512)
-            .ok_or_else(|| format!("archive entry {name} is too large"))?;
-        let body = take(&mut tar, padded)?;
-        let bytes = body
-            .get(..size)
-            .ok_or_else(|| format!("archive entry {name} is truncated"))?;
-        let regular = matches!(header.get(156), Some(b'0' | 0));
-        match classify(&name)? {
-            Member::Binary if regular => binary = Some(bytes.to_vec()),
-            Member::Skill(relative) if regular => skills.push((relative, bytes.to_vec())),
+    for entry in tarball::entries(&tar).map_err(|error| format!("the release archive: {error}"))? {
+        match classify(&entry.name)? {
+            Member::Binary if entry.regular => binary = Some(entry.bytes.to_vec()),
+            Member::Skill(relative) if entry.regular => {
+                skills.push((relative, entry.bytes.to_vec()))
+            }
             Member::Binary => return Err("the release bin/yi is not a file".to_owned()),
             Member::Skill(_) | Member::Skip => {}
         }
@@ -495,32 +470,6 @@ fn unpack(archive: &[u8]) -> Result<Unpacked, String> {
         binary: binary.ok_or("the release carries no bin/yi")?,
         skills,
     })
-}
-
-fn take<'a>(tar: &mut &'a [u8], len: usize) -> Result<&'a [u8], String> {
-    let bytes = tar.get(..len).ok_or("the release archive ended early")?;
-    *tar = tar.get(len..).unwrap_or_default();
-    Ok(bytes)
-}
-
-fn entry_name(header: &[u8]) -> Result<String, String> {
-    let name = header_text(header, 0, 100)?;
-    if header.get(257..262) != Some(b"ustar".as_slice()) {
-        return Ok(name);
-    }
-    let prefix = header_text(header, 345, 155)?;
-    if prefix.is_empty() {
-        Ok(name)
-    } else {
-        Ok(format!("{prefix}/{name}"))
-    }
-}
-
-fn header_text(header: &[u8], at: usize, len: usize) -> Result<String, String> {
-    let raw = header.get(at..at.saturating_add(len)).unwrap_or_default();
-    let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
-    let bytes = raw.get(..end).unwrap_or_default();
-    String::from_utf8(bytes.to_vec()).map_err(|_| "an archive entry name is not utf-8".to_owned())
 }
 
 enum Member {
@@ -559,50 +508,6 @@ fn classify(path: &str) -> Result<Member, String> {
     Ok(Member::Skill(relative.to_owned()))
 }
 
-fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    if bytes.first_chunk::<3>() != Some(&[0x1f, 0x8b, 8]) {
-        return Err("the release archive is not gzip".to_owned());
-    }
-    let flags = *bytes.get(3).ok_or("the release archive is not gzip")?;
-    let mut at = 10usize;
-    if flags & 0x04 != 0 {
-        let len = u16::from_le_bytes(
-            bytes
-                .get(at..at.saturating_add(2))
-                .and_then(|len| len.try_into().ok())
-                .ok_or("the release archive is not gzip")?,
-        );
-        at = at.saturating_add(2).saturating_add(usize::from(len));
-    }
-    at = skip_name(bytes, at, flags, 0x08)?;
-    at = skip_name(bytes, at, flags, 0x10)?;
-    if flags & 0x02 != 0 {
-        at = at.saturating_add(2);
-    }
-    let deflate = bytes
-        .get(at..bytes.len().saturating_sub(8))
-        .ok_or("the release archive is not gzip")?;
-    miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, MAX_TAR_BYTES)
-        .map_err(|_| "the release archive does not inflate".to_owned())
-}
-
-fn skip_name(bytes: &[u8], at: usize, flags: u8, flag: u8) -> Result<usize, String> {
-    if flags & flag == 0 {
-        return Ok(at);
-    }
-    let rest = bytes.get(at..).ok_or("the release archive is not gzip")?;
-    let end = rest
-        .iter()
-        .position(|byte| *byte == 0)
-        .ok_or("the release archive is not gzip")?;
-    Ok(at.saturating_add(end).saturating_add(1))
-}
-
-fn octal(field: &[u8]) -> Option<usize> {
-    let text = std::str::from_utf8(field).ok()?;
-    usize::from_str_radix(text.trim_matches(['\0', ' ']), 8).ok()
-}
-
 fn publish(
     dest: &Path,
     binary: &[u8],
@@ -612,22 +517,24 @@ fn publish(
     if std::fs::symlink_metadata(dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(format!("{} is a symlink", dest.display()));
     }
+    let target = home.join(".yi/skills");
+    if std::fs::symlink_metadata(&target).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!("{} is a symlink", target.display()));
+    }
     let parent = dest
         .parent()
         .ok_or_else(|| format!("{} has no parent", dest.display()))?;
     std::fs::create_dir_all(parent).map_err(io(parent))?;
     let staged_bin = parent.join(format!(".yi-new-{}", std::process::id()));
     write_exec(&staged_bin, binary)?;
-    if !skills.is_empty() {
-        let staged = stage_skills(home, skills)?;
-        if let Err(error) = replace_tree(&staged, &home.join(".yi/skills")) {
-            let _ = std::fs::remove_file(&staged_bin);
-            let _ = std::fs::remove_dir_all(&staged);
-            return Err(error);
-        }
-    }
-    std::fs::rename(&staged_bin, dest).map_err(io(dest))?;
-    Ok(())
+    let staged = home.join(format!(".yi/.skills-new-{}", std::process::id()));
+    // Invariant: skills move only after the binary rename lands, so a failed update leaves both.
+    let result = stage_skills(&staged, skills)
+        .and_then(|()| std::fs::rename(&staged_bin, dest).map_err(io(dest)))
+        .and_then(|()| merge_skills(&staged, skills, &target));
+    let _ = std::fs::remove_file(&staged_bin);
+    let _ = std::fs::remove_dir_all(&staged);
+    result
 }
 
 fn write_exec(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -640,19 +547,16 @@ fn write_exec(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn stage_skills(home: &Path, skills: &[(String, Vec<u8>)]) -> Result<PathBuf, String> {
-    let root = home.join(".yi");
-    std::fs::create_dir_all(&root).map_err(io(&root))?;
-    let staging = root.join(format!(".skills-new-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&staging);
+fn stage_skills(staging: &Path, skills: &[(String, Vec<u8>)]) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(staging);
     for (relative, bytes) in skills {
-        let path = skill_file(&staging, relative)?;
+        let path = skill_file(staging, relative)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(io(parent))?;
         }
         std::fs::write(&path, bytes).map_err(io(&path))?;
     }
-    Ok(staging)
+    Ok(())
 }
 
 fn skill_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -668,24 +572,15 @@ fn skill_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn replace_tree(staging: &Path, target: &Path) -> Result<(), String> {
-    if std::fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err(format!("{} is a symlink", target.display()));
+fn merge_skills(staged: &Path, skills: &[(String, Vec<u8>)], target: &Path) -> Result<(), String> {
+    for (relative, _) in skills {
+        let from = skill_file(staged, relative)?;
+        let to = skill_file(target, relative)?;
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(io(parent))?;
+        }
+        std::fs::rename(&from, &to).map_err(io(&to))?;
     }
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("{} has no parent", target.display()))?;
-    std::fs::create_dir_all(parent).map_err(io(parent))?;
-    if !target.exists() {
-        return std::fs::rename(staging, target).map_err(io(target));
-    }
-    let aside = parent.join(format!(".skills-old-{}", std::process::id()));
-    std::fs::rename(target, &aside).map_err(io(target))?;
-    if let Err(error) = std::fs::rename(staging, target) {
-        let _ = std::fs::rename(&aside, target);
-        return Err(io(target)(error));
-    }
-    let _ = std::fs::remove_dir_all(&aside);
     Ok(())
 }
 
@@ -713,6 +608,14 @@ mod tests {
             "hosts:\n    git.example.invalid:\n        token: abc\n    other:\n        token: no\n";
         assert_eq!(token_in(text).as_deref(), Some("abc"));
         assert_eq!(token_in("hosts:\n").as_deref(), None);
+    }
+
+    #[test]
+    fn the_token_goes_only_to_the_forge_host() {
+        assert!(on_forge("https://git.example.invalid/api/v1/repos"));
+        assert!(!on_forge("https://git.example.invalid.attacker.tld/x"));
+        assert!(!on_forge("https://git.example.invalid@attacker.tld/x"));
+        assert!(!on_forge("https://git.example.invalid"));
     }
 
     struct Tmp(PathBuf);
@@ -829,7 +732,7 @@ mod tests {
         let public = std::fs::read_to_string(dir.join("key.pub"))?;
         let signers = format!("yi-test {}\n", public.trim());
         Ok(Signed {
-            digest: format!("{}  release.tar.gz\n", sha256_hex(bytes)).into_bytes(),
+            digest: format!("{}  release.tar.gz\n", tarball::sha256_hex(bytes)).into_bytes(),
             signature: std::fs::read(format!("{}.sig", file.display()))?,
             signers,
         })
@@ -844,12 +747,17 @@ mod tests {
         version: &str,
         files: &[(&str, &[u8])],
     ) -> Result<String, String> {
-        let release = Release {
-            version: version.to_owned(),
-            archive: "archive".to_owned(),
-            digest: "digest".to_owned(),
-            signature: "signature".to_owned(),
-        };
+        let name = format!("yi-{version}-aarch64-apple-darwin.tar.gz");
+        let latest = serde_json::json!({
+            "tag_name": format!("v{version}"),
+            "assets": [
+                {"name": name, "browser_download_url": "archive"},
+                {"name": format!("{name}.sha256"), "browser_download_url": "digest"},
+                {"name": format!("{name}.sig"), "browser_download_url": "signature"},
+            ],
+        })
+        .to_string();
+        let latest_url = format!("{FORGE}/api/v1/repos/apex/yi/releases/latest");
         apply(Apply {
             home,
             prefix,
@@ -857,8 +765,10 @@ mod tests {
             current,
             target: "aarch64-apple-darwin",
             signers,
-            release: &release,
             get: &|url: &str| {
+                if url == latest_url {
+                    return Ok(latest.clone().into_bytes());
+                }
                 files
                     .iter()
                     .find(|(name, _)| *name == url)
@@ -950,7 +860,8 @@ mod tests {
         let tmp = Tmp::new()?;
         let (home, prefix, exe) = layout(&tmp.0)?;
         std::fs::create_dir_all(home.join(".yi/skills/yi"))?;
-        std::fs::write(home.join(".yi/skills/yi/gone.md"), b"gone")?;
+        std::fs::write(home.join(".yi/skills/yi/SKILL.md"), b"stale")?;
+        std::fs::write(home.join(".yi/skills/yi/mine.md"), b"mine")?;
         let prior = serde_json::json!({
             "prefix": prefix.display().to_string(),
             "version": "0.1.0",
@@ -986,7 +897,7 @@ mod tests {
             std::fs::read(home.join(".yi/skills/yi/SKILL.md"))?,
             b"skill body"
         );
-        assert!(!home.join(".yi/skills/yi/gone.md").exists());
+        assert_eq!(std::fs::read(home.join(".yi/skills/yi/mine.md"))?, b"mine");
         assert!(!home.join(".yi/python").exists());
         let saved: InstallReceipt =
             serde_json::from_slice(&std::fs::read(home.join(".yi/install.json"))?)?;
@@ -1045,6 +956,36 @@ mod tests {
         assert!(error.contains("leaves the archive"), "{error}");
         assert_eq!(std::fs::read(&exe)?, b"old");
         assert!(!tmp.0.join("escape").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_binary_rename_leaves_the_skills() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = Tmp::new()?;
+        let home = tmp.0.join("home");
+        std::fs::create_dir_all(home.join(".yi/skills/yi"))?;
+        std::fs::write(home.join(".yi/skills/yi/SKILL.md"), b"old skill")?;
+        std::fs::write(home.join(".yi/skills/yi/mine.md"), b"mine")?;
+        let dest = tmp.0.join("prefix/yi");
+        std::fs::create_dir_all(dest.join("busy"))?;
+        let skills = [("yi/SKILL.md".to_owned(), b"new skill".to_vec())];
+        let error = publish(&dest, b"new", &home, &skills).expect_err("rename");
+        assert!(error.contains(&dest.display().to_string()), "{error}");
+        assert_eq!(
+            std::fs::read(home.join(".yi/skills/yi/SKILL.md"))?,
+            b"old skill"
+        );
+        assert_eq!(std::fs::read(home.join(".yi/skills/yi/mine.md"))?, b"mine");
+        let mut left: Vec<_> = std::fs::read_dir(home.join(".yi"))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<_, _>>()?;
+        left.extend(
+            std::fs::read_dir(tmp.0.join("prefix"))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        left.sort();
+        assert_eq!(left, ["skills", "yi"], "no staging left behind");
         Ok(())
     }
 }

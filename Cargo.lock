@@ -2227,7 +2227,6 @@ dependencies = [
  "lexopt",
  "miniz_oxide",
  "serde_json",
- "sha2",
  "tokio",
  "ureq",
  "yi-acp",

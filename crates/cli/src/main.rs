@@ -1132,7 +1132,6 @@ fn dispatch(args: Args) {
         "fetch" => std::process::exit(fetch::run(&args)),
         "catalog" => std::process::exit(catalog::run(&args)),
         "doctor" => std::process::exit(doctor::run(&args)),
-        "update" => std::process::exit(update::run()),
         "debug" => std::process::exit(debug::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
