@@ -305,6 +305,16 @@ def selfcheck():
         named = {c["details"]["errorKind"] for c in labelled
                  if isinstance(c["details"], dict) and c["details"].get("errorKind")}
         assert {r["errorKind"] for r in blamed["board"] if r["errorKind"]} == named, blamed["board"]
+        # A command that ran and exited non-zero and a verdict reach the store unflagged, and still fail.
+        ran_in = error_class.session([
+            {"tool": "bash", "text": "FAILED (failures=1)\nexit code: 1", "details": {"exitCode": 1}},
+            {"tool": "plan", "text": "plan update refused: ordering cycle", "details": {"errorKind": "verdict"}},
+        ], Path(tmp) / "ran-in")
+        unflagged = (ran_in / "ec.jsonl").read_text().replace('"isError": true', '"isError": false')
+        (ran_in / "ec.jsonl").write_text(unflagged)
+        assert '"isError": true' not in unflagged, "the results must be planted unflagged"
+        ran = sweep(ran_in, Path(tmp) / "ran-out")["board"]
+        assert sorted(r["errorKind"] or r["errorClass"] for r in ran) == ["command", "verdict"], ran
     print(
         "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
         " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden, signals,"

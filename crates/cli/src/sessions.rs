@@ -140,9 +140,12 @@ fn entry_line(entry: &Entry) -> Option<(&'static str, String)> {
         AgentMessage::ToolResult {
             tool_name,
             is_error,
+            details,
             ..
         } => {
-            let status = if *is_error { "error" } else { "ok" };
+            let shown = details.as_ref().unwrap_or(&serde_json::Value::Null);
+            let failed = yi_types::event::shown_failed(*is_error, shown);
+            let status = if failed { "error" } else { "ok" };
             Some(("tool", format!("{tool_name} ({status})")))
         }
         _ => None,

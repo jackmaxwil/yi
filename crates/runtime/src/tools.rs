@@ -38,6 +38,21 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
     }
 }
 
+/// Invariant: a verdict is the tool's answer, not its failure: the call ran and a rule said no,
+/// so it reaches the model unflagged and keeps its `details.errorKind`.
+fn verdict_is_a_result(output: &mut yi_tools::ToolOutput) {
+    let verdict = Some(yi_types::event::ToolErrorKind::Verdict.as_str());
+    if output
+        .result
+        .details
+        .get("errorKind")
+        .and_then(Value::as_str)
+        == verdict
+    {
+        output.is_error = false;
+    }
+}
+
 fn result_text(result: &yi_types::event::ToolResult) -> String {
     yi_types::message::join_text(&result.content, "\n")
 }
@@ -595,6 +610,7 @@ impl AgentTool for ToolAdapter {
                     {
                         broker.note_containment_failure(refusal);
                     }
+                    verdict_is_a_result(&mut output);
                     let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
                         holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -617,7 +633,9 @@ impl AgentTool for ToolAdapter {
                     }
                     let text = result_text(&output.result);
                     if let Some(rules) = &rules {
-                        rules.check_result(&name, &args_json, &text, output.is_error);
+                        let failed =
+                            yi_types::event::shown_failed(output.is_error, &output.result.details);
+                        rules.check_result(&name, &args_json, &text, failed);
                     }
                     if let Some(ext) = &ext {
                         ext(crate::ext::Event::ToolResult {
