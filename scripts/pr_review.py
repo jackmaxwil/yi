@@ -212,10 +212,22 @@ def ready_problems(rounds, head, holds=on_head):
     return errs
 
 
+# The owner (2026-10-07), after #1110's rounds 2-4 each found 2-3 fresh mediums in the last fix's
+# own code: from this round on, only a medium an earlier round raised still holds a draft.
+SETTLE = 3
+
+
+def holding(rnd):
+    """The findings that keep a draft and that the fixer answers: every high, and every medium
+    through round 2; after that a medium only while it is carried (open since an earlier round)."""
+    return [f for f in rnd.get("findings") or [] if f.get("severity") == "high"
+            or (f.get("severity") == "medium" and (int(rnd["n"]) < SETTLE or f.get("since")))]
+
+
 def promotes(rounds, head, holds=on_head):
     """A draft leaves draft on its own (owner, 2026-10-03): two rounds, the last holding for the
-    head and not blocked, and no high or medium finding left in it."""
-    return not ready_problems(rounds, head, holds) and not any(f["severity"] in REPORTED for f in rounds[-1]["findings"])
+    head and not blocked, and nothing in it still holding the draft."""
+    return not ready_problems(rounds, head, holds) and not holding(rounds[-1])
 
 
 def skip_reason(rounds, head, wanted=2, holds=on_head):
@@ -856,7 +868,7 @@ def promote(repo, pr, rounds):
     if not (title.startswith(DRAFT) and promotes(rounds, pr["head"]["sha"], holds_for(number, pr["base"]["ref"]))):
         return False
     ready = forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
-    print(f"#{number}: " + ("out of draft, two clean rounds and nothing above low left" if (ready or {}).get("number")
+    print(f"#{number}: " + ("out of draft, two clean rounds and nothing left holding it" if (ready or {}).get("number")
                             else f"stays a draft, the forge refused: {(ready or {}).get('message')}"))
     return bool((ready or {}).get("number"))
 
@@ -988,6 +1000,9 @@ def selfcheck():
     clean = lambda n, found=(): {"n": n, "sha": "abc1234", "verdict": "clean", "findings": [{"severity": s} for s in found]}
     assert promotes([clean(1), clean(2, ["low"])], "abc1234ff"), "two clean rounds with only lows promote"
     assert not promotes([clean(1), clean(2, ["medium"])], "abc1234ff"), "a medium left keeps the draft"
+    assert promotes([clean(2), clean(3, ["medium", "low"])], "abc1234ff"), "a fresh medium from round 3 on lets the draft go"
+    late = dict(clean(3), findings=[{"severity": "medium", "since": 2}])
+    assert not promotes([clean(2), late], "abc1234ff"), "a medium carried from an earlier round still holds the draft"
     assert not promotes([clean(2)], "abc1234ff") and not promotes([clean(1), clean(2)], "def5678"), "one round, or an old head"
     assert skip_reason([], "abc1234") is None
     one = [{"n": 1, "sha": "abc1234", "verdict": "clean"}]

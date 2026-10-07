@@ -454,8 +454,8 @@ def round_on(rounds, head, holds=pr_review.on_head):
 
 
 def owed_mediums(rnd):
-    """A clean round's medium findings the fixer answers: every one but the intake checks'."""
-    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and f["lens"] not in pr_review.INTAKE for f in rnd["findings"])
+    """A clean round's medium findings the fixer answers: every one still holding the draft but the intake checks'."""
+    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and f["lens"] not in pr_review.INTAKE for f in pr_review.holding(rnd))
 
 
 def red_lanes(repo, sha):
@@ -531,7 +531,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
 def findings_in(clone, pr, rnd, answer, tried=0):
     """Answer a round's high and medium findings in the clone: a blocked round's, or a clean one's
     mediums. Returns (summary, model, touched, declined highs)."""
-    todo = [f for f in rnd["findings"] if f["severity"] in ("high", "medium") and f["lens"] not in pr_review.INTAKE]
+    todo = [f for f in pr_review.holding(rnd) if f["lens"] not in pr_review.INTAKE]
     highs = [f for f in todo if f["severity"] == "high"]
     if not highs and not owed_mediums(rnd):
         lenses = sorted({f["lens"] for f in rnd["findings"] if f["severity"] == "high"})
@@ -899,6 +899,9 @@ def gate_selfcheck():
 
 def selfcheck():
     errs = gate_selfcheck()
+    fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
+    if owed_mediums(fresh) or not owed_mediums(dict(fresh, n=2)) or not owed_mediums(dict(fresh, findings=[dict(fresh["findings"][0], since=2)])):
+        errs.append("a fresh medium from round 3 on is owed a fix, or a round-2 or carried one is not")
     tried = lambda *verdicts: [{"user": {"login": pr_review.BOT}, "created_at": "", "body": f"<!-- yi-autofix-meta pr=1 verdict={v} -->"} for v in verdicts]
     for err, notes, want in ((Missed("nothing changed"), tried(), "missed"), (Missed("nothing changed"), tried("missed", "missed"), "failed"),
                              (RuntimeError("Out of diskspace"), tried(), "deferred"), (RuntimeError("a person is next"), tried(), "failed"),
