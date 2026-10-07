@@ -50,25 +50,21 @@ pub fn frame(message: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn frames(bytes: &[u8]) -> Result<Vec<Frame>, String> {
-    let mut out = Vec::new();
+pub fn split_ready(bytes: &[u8]) -> (Vec<Frame>, Vec<u8>) {
+    let mut frames = Vec::new();
     let mut rest = bytes;
-    while !rest.is_empty() {
-        if rest.len() < 5 {
-            return Err("short connect frame".to_owned());
-        }
-        let flag = rest[0];
-        let len = u32::from_be_bytes([rest[1], rest[2], rest[3], rest[4]]) as usize;
-        if rest.len() < 5 + len {
-            return Err("truncated connect frame".to_owned());
-        }
-        out.push(Frame {
-            end: flag & 0x02 != 0,
-            message: rest[5..5 + len].to_vec(),
+    while let Some(head) = rest.get(..5) {
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+        let Some(message) = rest.get(5..5usize.saturating_add(len)) else {
+            break;
+        };
+        frames.push(Frame {
+            end: head[0] & 0x02 != 0,
+            message: message.to_vec(),
         });
         rest = &rest[5 + len..];
     }
-    Ok(out)
+    (frames, rest.to_vec())
 }
 
 pub struct Frame {
@@ -744,10 +740,4 @@ pub fn heartbeat() -> Vec<u8> {
     let mut client = Vec::new();
     field_msg(7, &[], &mut client);
     client
-}
-
-pub fn is_throw(message: &[u8]) -> bool {
-    walk(message)
-        .ok()
-        .is_some_and(|fields| fields.iter().any(|raw| raw.field == 5))
 }

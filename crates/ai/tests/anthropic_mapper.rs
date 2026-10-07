@@ -511,3 +511,37 @@ fn a_call_an_old_interrupt_left_unanswered_is_sent_as_an_error_result() -> Resul
     );
     Ok(())
 }
+
+#[test]
+fn a_cursor_tool_call_never_reaches_the_anthropic_history() {
+    let call = |id: &str, namespace: Option<&str>| Content::ToolCall {
+        id: id.to_owned(),
+        name: "read".to_owned(),
+        arguments: serde_json::Map::new(),
+        thought_signature: None,
+        namespace: namespace.map(str::to_owned),
+    };
+    let history = yi_ai::transform::transform_messages(
+        &[assistant(
+            vec![
+                call("cursor-1", Some(yi_ai::cursor::NAMESPACE)),
+                call("own-1", None),
+            ],
+            StopReason::ToolUse,
+        )],
+        &model(),
+        None,
+    );
+    let ids: Vec<&str> = history
+        .iter()
+        .flat_map(|message| match message {
+            AgentMessage::Assistant { content, .. } => content.iter().collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .filter_map(|block| match block {
+            Content::ToolCall { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec!["own-1"]);
+}

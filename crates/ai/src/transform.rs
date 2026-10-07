@@ -163,6 +163,11 @@ pub fn transform_messages(
                                 });
                             }
                         }
+                        Content::ToolCall { namespace, .. }
+                            if namespace.as_deref() == Some(crate::cursor::NAMESPACE) =>
+                        {
+                            continue;
+                        }
                         Content::ToolCall {
                             id,
                             name,

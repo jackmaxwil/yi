@@ -60,7 +60,7 @@ fn refresh_cursor(
     current: yi_oauth::store::Credential,
     proxy: Option<&crate::request::ProxyConfig>,
 ) -> (yi_oauth::store::Credential, Vec<(String, String)>) {
-    if current.kind != Kind::Oauth || !Store::expired(&current) {
+    if current.kind != Kind::Oauth {
         return (current, Vec::new());
     }
     let Some(refresh) = current.refresh.clone() else {
@@ -69,17 +69,10 @@ fn refresh_cursor(
     let wire = proxy.and_then(|config| {
         config.proxy_for(crate::request::host_of(yi_oauth::cursor::REFRESH_URL))
     });
-    let fresh = store
-        .with_refresh_lock(provider, || {
-            let again = store.load(provider).unwrap_or_else(|| current.clone());
-            if !Store::expired(&again) {
-                return Ok(again);
-            }
-            let refreshed = yi_oauth::cursor::refresh_ureq(&refresh, wire)?;
-            store.save(provider, &refreshed)?;
-            Ok(refreshed)
-        })
-        .unwrap_or(current);
+    let fresh = flow::refresh_locked(&store, provider, current.clone(), |_| {
+        yi_oauth::cursor::refresh_ureq(&refresh, wire)
+    })
+    .unwrap_or(current);
     (fresh, Vec::new())
 }
 
