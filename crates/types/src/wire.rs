@@ -76,7 +76,7 @@ pub enum Mutation {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStats {
     pub message_count: u64,
@@ -84,6 +84,9 @@ pub struct SessionStats {
     pub uncached_tokens: i64,
     pub total_tokens: i64,
     pub cost_total: f64,
+    /// A reply came back without usage, so `costTotal` is a lower bound; absent when none did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unknown_usage: bool,
 }
 
 impl SessionStats {
@@ -94,6 +97,7 @@ impl SessionStats {
             uncached_tokens: 0,
             total_tokens: 0,
             cost_total: 0.0,
+            unknown_usage: false,
         }
     }
 }

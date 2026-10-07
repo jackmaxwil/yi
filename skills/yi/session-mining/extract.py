@@ -247,6 +247,13 @@ def text_of(content):
     return ""
 
 
+def shown_failed(message):
+    """Mirrors `yi_types::event::shown_failed`: a non-zero exit or a verdict is unflagged, yet failed."""
+    details = message.get("details") if isinstance(message.get("details"), dict) else {}
+    return (bool(message.get("isError")) or details.get("exitCode") not in (None, 0)
+            or details.get("errorKind") == "verdict")
+
+
 def read_only_segment(segment):
     tokens = [
         t
@@ -382,7 +389,7 @@ def signals(entries):
                     turn["calls"].append(call)
             assistants.append(turn)
         elif role == "toolResult":
-            results.append({"id": message.get("toolCallId"), "tool": message.get("toolName"), "text": text_of(message.get("content")), "error": bool(message.get("isError"))})
+            results.append({"id": message.get("toolCallId"), "tool": message.get("toolName"), "text": text_of(message.get("content")), "error": shown_failed(message)})
     ordered = [c for t in assistants for c in t["calls"]]
     result_of = {r["id"]: r for r in results}
     final = assistants[-1]["text"] if assistants else ""
@@ -656,7 +663,7 @@ def extract_session(path, header, entries, census):
             for row in delegation:
                 if row.get("callId") == message.get("toolCallId"):
                     row["resultBytes"] = len(body)
-            if message.get("isError"):
+            if shown_failed(message):
                 failures += 1
                 census["error"][name] += 1
                 blame = error_class.classify(name, body, message.get("details"))

@@ -175,13 +175,13 @@ fn confirmed(
         _ => None,
     };
     let description = format!(
-        "{op} on plan {} at revision {} (args {args_hash}): an op the plan owner may not apply alone{}",
-        current.id,
-        revision.0,
+        "{}{op} on plan {} at revision {} (args {args_hash}): an op the plan owner may not apply alone",
         accepting
             .as_deref()
-            .map(|why| format!("; {why}"))
-            .unwrap_or_default()
+            .map(|why| format!("{why} · "))
+            .unwrap_or_default(),
+        current.id,
+        revision.0,
     );
     let cwd = engine.cwd.to_string_lossy();
     let call = accepting.as_deref().map(|display| crate::classifier::Call {

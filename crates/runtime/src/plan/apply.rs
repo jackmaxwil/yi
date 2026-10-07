@@ -9,7 +9,7 @@ use yi_types::plan::doc::{PlanId, PlanIssue, Todo, TodoLabel, TodoStateName};
 use super::declare::Blob;
 use super::ops::{Op, OpRequest, Outcome, PlanOpError, SetRow, TodoSpec};
 use super::table::OpKind;
-use super::tool::{ArgError, PlanTool, PlanToolError, opt, todo_specs};
+use super::tool::{ArgError, PlanTool, PlanToolError, opt, todo_specs, view_request};
 
 /// A plan the repairs cannot settle in this many passes is refused as it stands.
 const REPAIRS: usize = 32;
@@ -102,8 +102,7 @@ pub(super) fn set_rows(args: &Map<String, Value>, op: OpKind) -> Result<Vec<SetR
 }
 
 pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-    let (now, mut rows, mut deferred, mut conditions) =
-        (held(tool, args), Vec::new(), Vec::new(), Vec::new());
+    let (now, mut rows, mut conditions) = (held(tool, args), Vec::new(), Vec::new());
     let mut ruled = true;
     for row in args
         .get("todos")
@@ -121,17 +120,31 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             .unwrap_or_default()
             .to_owned();
         let was = now.get(&label);
-        let ops = row_ops(&mut row, &label, was);
-        let want = row.get("state").and_then(Value::as_str).unwrap_or_default();
-        if !ops.is_empty() || ["failed", "dropped"].contains(&want) {
-            let state = was.map_or("pending", TodoStateName::as_str);
-            row.insert("state".to_owned(), json!(state));
-        }
-        deferred.extend(ops);
+        let asks = ["state", "on", "todos"]
+            .iter()
+            .any(|key| row.contains_key(*key));
+        let moves = if was == Some(&TodoStateName::Blocked) && !asks {
+            conditions.push(format!("{label}: still blocked on the user; left as is"));
+            row.insert("state".to_owned(), json!("blocked"));
+            Vec::new()
+        } else {
+            let mut ops = row_ops(&mut row, &label, was);
+            let want = row.get("state").and_then(Value::as_str).unwrap_or_default();
+            if !ops.is_empty() || ["failed", "dropped"].contains(&want) {
+                let state = was.map_or("pending", TodoStateName::as_str);
+                row.insert("state".to_owned(), json!(state));
+            }
+            if let Some(plan) = args.get("plan") {
+                for op in ops.iter_mut().filter_map(Value::as_object_mut) {
+                    op.insert("plan".to_owned(), plan.clone());
+                }
+            }
+            ops
+        };
         let alone = json!({"op": "set", "todos": [Value::Object(row.clone())]});
         let (alone, _) = super::natural::natural(alone.as_object().unwrap_or(&Map::new()));
         match super::tool::declared(tool.actor(), &alone) {
-            Ok(_) => rows.push(row),
+            Ok(_) => rows.push((row, moves)),
             Err(error) => {
                 ruled &= error.kind() == yi_types::event::ToolErrorKind::Verdict;
                 let error = error.to_string();
@@ -145,15 +158,24 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
         return Err(ArgError::LeftOut { text, ruled }.into());
     }
     let mut set = args.clone();
+    if set.remove("list").is_some() {
+        conditions.push(
+            "the `list` checklist was left out: the `todos` rows state the whole plan".to_owned(),
+        );
+    }
+    let mut open = None;
     for _ in 0..REPAIRS {
         set.insert(
             "todos".to_owned(),
-            rows.iter().cloned().map(Value::Object).collect(),
+            rows.iter()
+                .map(|(row, _)| Value::Object(row.clone()))
+                .collect(),
         );
-        let issue = match tool.apply_one(&set) {
+        let issue = match tool.apply(&set) {
             Ok(text) => {
                 let notes = text.lines().filter_map(|line| line.strip_prefix("note: "));
                 conditions.extend(notes.map(str::to_owned));
+                open = None;
                 break;
             }
             Err(PlanToolError::Op(PlanOpError::LabelNotUnique { label })) => {
@@ -162,11 +184,18 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             Err(PlanToolError::Op(PlanOpError::Invalid { issue })) => issue,
             Err(error) => return Err(error),
         };
-        conditions.push(repair(&mut rows, &issue).ok_or(PlanOpError::Invalid { issue })?);
+        let Some(note) = repair(&mut rows, &issue) else {
+            return Err(PlanOpError::Invalid { issue }.into());
+        };
+        conditions.push(note);
+        open = Some(issue);
     }
-    for op in &deferred {
+    if let Some(issue) = open {
+        return Err(PlanOpError::Invalid { issue }.into());
+    }
+    for op in rows.iter().flat_map(|(_, moves)| moves) {
         let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
-        match tool.apply_one(op.as_object().unwrap_or(&Map::new())) {
+        match tool.apply(op.as_object().unwrap_or(&Map::new())) {
             Ok(text) => conditions.extend(
                 (text.lines())
                     .filter_map(|line| line.strip_prefix("note: "))
@@ -175,8 +204,12 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             Err(error) => conditions.push(format!("{label}: {error}")),
         }
     }
-    let view = tool.apply_one(json!({"op": "view"}).as_object().unwrap_or(&Map::new()));
-    let mut text = view?;
+    let mut view = Map::new();
+    view.insert("op".to_owned(), json!("view"));
+    if let Some(plan) = args.get("plan") {
+        view.insert("plan".to_owned(), plan.clone());
+    }
+    let mut text = tool.apply(&view)?;
     for condition in conditions {
         text.push_str(&format!("\nnote: {condition}"));
     }
@@ -222,19 +255,12 @@ fn row_ops(row: &mut Map<String, Value>, label: &str, was: Option<&TodoStateName
 
 /// Each row's state in the open plan, by label; a row the engine moves keeps it until it moves.
 fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoStateName> {
-    let plan = args
+    let plan: Option<PlanId> = args
         .get("plan")
         .and_then(|plan| serde_json::from_value(plan.clone()).ok());
-    let view = OpRequest {
-        plan,
-        actor: tool.actor().clone(),
-        op: Op::View { full: true },
-        request_id: None,
-        expected_revision: None,
-    };
     let todos = tool
         .engine()
-        .apply(view)
+        .apply(view_request(tool.actor(), plan))
         .map(|seen| seen.plan.todos)
         .unwrap_or_default();
     (todos.iter())
@@ -247,13 +273,14 @@ fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoState
         .collect()
 }
 
-/// The smallest change that answers the engine's issue, named as the row's condition.
-fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<String> {
+/// The smallest change that answers the engine's issue, named as the row's condition; a row
+/// removed takes its deferred engine moves with it.
+fn repair(rows: &mut Vec<(Map<String, Value>, Vec<Value>)>, issue: &PlanIssue) -> Option<String> {
     let label_of =
         |row: &Map<String, Value>| row.get("label").and_then(Value::as_str).map(str::to_owned);
-    let at = |rows: &[Map<String, Value>], label: &str| {
+    let at = |rows: &[(Map<String, Value>, Vec<Value>)], label: &str| {
         rows.iter()
-            .rposition(|row| label_of(row).as_deref() == Some(label))
+            .rposition(|(row, _)| label_of(row).as_deref() == Some(label))
     };
     let unlink = |row: &mut Map<String, Value>, after: &str| {
         if let Some(Value::Array(edges)) = row.get_mut("after") {
@@ -263,17 +290,21 @@ fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<Strin
     match issue {
         PlanIssue::Cycle { labels } => {
             let names: Vec<&str> = labels.iter().map(|label| label.as_str()).collect();
-            let (index, after) = rows.iter().enumerate().rev().find_map(|(index, row)| {
-                let edges = row.get("after")?.as_array()?;
-                let closing = edges
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .find(|edge| names.contains(edge))?;
-                names
-                    .contains(&label_of(row)?.as_str())
-                    .then(|| (index, closing.to_owned()))
-            })?;
-            let row = rows.get_mut(index)?;
+            let (index, after) = rows
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, (row, _))| {
+                    let edges = row.get("after")?.as_array()?;
+                    let closing = edges
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .find(|edge| names.contains(edge))?;
+                    names
+                        .contains(&label_of(row)?.as_str())
+                        .then(|| (index, closing.to_owned()))
+                })?;
+            let (row, _) = rows.get_mut(index)?;
             unlink(row, &after);
             let own = label_of(row).unwrap_or_default();
             Some(format!(
@@ -283,7 +314,7 @@ fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<Strin
         }
         PlanIssue::UnresolvedEdge { todo, after } => {
             let index = at(rows, todo.as_str())?;
-            unlink(rows.get_mut(index)?, after.as_str());
+            unlink(&mut rows.get_mut(index)?.0, after.as_str());
             Some(format!(
                 "{}: after {:?} left out: no todo has that label",
                 todo.as_str(),
@@ -299,7 +330,7 @@ fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<Strin
         }
         PlanIssue::Contract { label, issue } => {
             let index = at(rows, label.as_str())?;
-            rows.get_mut(index)?.remove("contract")?;
+            rows.get_mut(index)?.0.remove("contract")?;
             Some(format!("{}: contract left out: {issue}", label.as_str()))
         }
         PlanIssue::Unanswered { .. } => None,
@@ -350,10 +381,7 @@ pub(super) fn reorder_rest(
     let Op::Reorder { labels } = &request.op else {
         return None;
     };
-    let view = OpRequest {
-        op: Op::View { full: true },
-        ..request.clone()
-    };
+    let view = view_request(&request.actor, request.plan.clone());
     let held = match tool.engine().apply(view) {
         Ok(seen) => seen.plan.todos,
         Err(error) => return Some(Err(error.into())),
@@ -378,13 +406,7 @@ fn todos_of(tool: &PlanTool, plan: Option<PlanId>) -> Vec<Todo> {
 }
 
 fn viewed(tool: &PlanTool, plan: Option<PlanId>) -> Option<yi_types::plan::doc::Plan> {
-    let view = OpRequest {
-        plan,
-        actor: tool.actor().clone(),
-        op: Op::View { full: true },
-        request_id: None,
-        expected_revision: None,
-    };
+    let view = view_request(tool.actor(), plan);
     tool.engine().apply(view).ok().map(|seen| seen.plan)
 }
 
@@ -594,10 +616,7 @@ fn rows_or_next(tool: &PlanTool, args: &Map<String, Value>) -> Result<(), ArgErr
 
 /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.
 pub(super) fn runs_itself(tool: &PlanTool, request: &OpRequest, label: &TodoLabel) -> bool {
-    let view = OpRequest {
-        op: Op::View { full: true },
-        ..request.clone()
-    };
+    let view = view_request(&request.actor, request.plan.clone());
     *tool.actor() == super::ops::Actor::Owner
         && (tool.engine().apply(view).ok()).is_some_and(|seen| {
             seen.plan
