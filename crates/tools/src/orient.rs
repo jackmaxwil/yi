@@ -178,7 +178,7 @@ fn task_map(task: Option<&str>, context: &ToolContext) -> LayerBody {
             "[task map: {} of {} signatures, cut at ripwire's byte budget — bash: ripwire . --for={} --json --token-budget={}]",
             field(&answer, "sigs_shown"),
             field(&answer, "sigs_total"),
-            crate::ripwire::quoted(task),
+            crate::process::quoted(task),
             spent.saturating_mul(2).div_ceil(1_000).saturating_mul(1_000),
         ));
     }
@@ -207,7 +207,7 @@ fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
         if rows.len() > NEAR_ROWS {
             out.push(format!(
                 "[{verb}: {NEAR_ROWS} of {count} rows, cap {NEAR_ROWS} — bash: ripwire . --{verb}={} --json --limit={count}]",
-                crate::ripwire::quoted(&symbol)
+                crate::process::quoted(&symbol)
             ));
         }
         Ok((out.join("\n"), rows.is_empty()))
@@ -223,7 +223,7 @@ fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     if no_callers && no_callees {
         out.push_str(&format!(
             "\n[{symbol}: no call found either way; ripwire matches calls by name and does not track uses of a type — grep -rn {} for those]",
-            crate::ripwire::quoted(&symbol)
+            crate::process::quoted(&symbol)
         ));
     }
     Ok(out)

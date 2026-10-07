@@ -298,7 +298,15 @@ fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestRe
             path.display()
         ));
     }
-    let pause = if slow { "/bin/sleep 1\n" } else { "" };
+    // A slow answer marks itself running for its second, and notes `overlap` when another was.
+    let pause = match slow {
+        true => {
+            "d=$(/usr/bin/dirname \"$0\"); : > \"$d/running.$$\"\n\
+                 for f in \"$d\"/running.*; do [ \"$f\" != \"$d/running.$$\" ] && echo overlap >> \"$d/args\"; done\n\
+                 /bin/sleep 1; /bin/rm -f \"$d/running.$$\"\n"
+        }
+        false => "",
+    };
     let ripwire = dir.join("ripwire");
     fs::write(
         &ripwire,
@@ -329,8 +337,8 @@ fn ask(dir: &Path, key: &str, value: &str) -> String {
     run(dir, input)
 }
 
-/// The task map and the neighborhood's callers and callees wait on ripwire, so the packet waits
-/// for one answer, not three in a row: each fake answer takes 1 s, three in a row 3 s.
+/// Once a repository's index answered, the task map and the neighborhood's callers and callees are
+/// asked at once: the fake notes each answer that ran beside another, and each takes 1 s.
 #[cfg(unix)]
 #[test]
 fn the_ripwire_layers_are_asked_at_once() -> TestResult {
@@ -343,12 +351,22 @@ fn the_ripwire_layers_are_asked_at_once() -> TestResult {
         ];
         return with_fake_ripwire(NAME, true, &answers);
     };
+    let dir = Path::new(&dir);
+    ask(dir, "task", "warm the index");
+    fs::remove_file(dir.join("args"))?;
     let mut input = Map::new();
     input.insert("task".to_owned(), json!("change what alpha returns"));
     input.insert("symbol".to_owned(), json!("alpha"));
     let started = std::time::Instant::now();
-    let packet = run(Path::new(&dir), input);
+    let packet = run(dir, input);
     let took = started.elapsed();
+    let overlaps = fs::read_to_string(dir.join("args"))?
+        .matches("overlap")
+        .count();
+    assert!(
+        overlaps >= 2,
+        "the three layers ran {overlaps} beside another"
+    );
     assert!(
         packet.contains("src/lib.rs:5  pub fn caller() -> u32"),
         "{packet}"
@@ -359,7 +377,37 @@ fn the_ripwire_layers_are_asked_at_once() -> TestResult {
     );
     assert!(packet.contains("  other src/beta.rs:2"), "{packet}");
     assert!(packet.contains("callees of alpha: 1"), "{packet}");
-    assert!(took < std::time::Duration::from_millis(2500), "{took:?}");
+    assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
+    Ok(())
+}
+
+/// Incident: a cold repository's first packet asked three layers at once, and each built the same
+/// index; until one has answered, the calls take turns.
+#[cfg(unix)]
+#[test]
+fn a_cold_repositorys_ripwire_calls_take_turns() -> TestResult {
+    const NAME: &str = "a_cold_repositorys_ripwire_calls_take_turns";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--for=", "for.json"),
+            ("--callers=", "callers.json"),
+            ("--callees=", "callees.json"),
+        ];
+        return with_fake_ripwire(NAME, true, &answers);
+    };
+    let dir = Path::new(&dir);
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    let packet = run(dir, input);
+    let args = fs::read_to_string(dir.join("args"))?;
+    assert!(packet.contains("callees of alpha: 1"), "{packet}");
+    assert_eq!(
+        args.lines().filter(|line| line.starts_with("--")).count(),
+        3,
+        "{args}"
+    );
+    assert!(!args.contains("overlap"), "{args}");
     Ok(())
 }
 

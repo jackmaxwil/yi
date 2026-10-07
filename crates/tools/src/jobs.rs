@@ -501,7 +501,7 @@ fn start(
 /// shell so the command arrives whole, and the sweep that kills what a killed call left in there.
 pub fn in_container(container: &str, cwd: &Path, command: &str) -> (String, String) {
     static CALLS: AtomicU64 = AtomicU64::new(0);
-    let quote = crate::ripwire::quoted;
+    let quote = crate::process::quoted;
     // Invariant: a killed host `docker exec` leaves its process running in the container, and
     // every descendant inherits this mark; the trailing dash keeps call 1's out of call 12's.
     let mark = format!(

@@ -1,6 +1,6 @@
 //! Every `ripwire` spawn. Ripwire indexes the tree it is pointed at, so each runs at the repository's top.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -80,24 +80,12 @@ impl CheckLayer {
     }
 }
 
-pub(crate) fn quoted(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
-}
-
 pub fn installed() -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("ripwire").is_file()))
-}
-
-/// The repository's top, where ripwire indexes; a worktree never borrows the main checkout's.
-pub fn git_root(cwd: &Path) -> Option<PathBuf> {
-    (cwd.ancestors())
-        .find(|dir| dir.join(".git").exists())
-        .map(Path::to_path_buf)
+    crate::syntax::on_path("ripwire").is_some()
 }
 
 pub(crate) fn root(cwd: &Path) -> PathBuf {
-    git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+    crate::process::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
 fn relative(top: &Path, path: &Path) -> Option<String> {
@@ -382,11 +370,28 @@ fn attr(element: &str, key: &str) -> String {
         )
 }
 
+/// Incident: a first get_context on a cold repository asked its three layers at once and each built
+/// the same index; until one call on a repository has answered, the calls take turns.
+static WARM: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+static COLD: Mutex<()> = Mutex::new(());
+
+fn warm(root: &Path) -> bool {
+    (WARM.lock()).is_ok_and(|guard| guard.as_ref().is_some_and(|tops| tops.contains(root)))
+}
+
 pub(crate) fn json(root: &Path, args: &[&str], cancelled: &CancelFlag) -> Result<Value, String> {
     let mut args = args.to_vec();
     args.push("--json");
+    let _turn = (!warm(root)).then(|| COLD.lock().ok()).flatten();
     let capture = spawn(root, &args, cancelled, OUTPUT_CAP)
         .map_err(|error| format!("ripwire binary not runnable: {error}"))?;
+    if capture.exit_code == Some(0)
+        && let Ok(mut guard) = WARM.lock()
+    {
+        guard
+            .get_or_insert_with(HashSet::new)
+            .insert(root.to_path_buf());
+    }
     if capture.exit_code != Some(0) {
         return Err(format!(
             "ripwire {} exited {:?}: {}",

@@ -1877,6 +1877,8 @@ fn a_read_only_command_is_a_read_kind_call() {
             "ripwire . --for='fix the bold split' --json",
             ToolKind::Read,
         ),
+        // ripwire 0.6.5's own schema line: safe-delete is "a READ never a verdict"; the tree is untouched.
+        ("ripwire . --safe-delete=alpha", ToolKind::Read),
         ("ripwire . --note-add='X: slow'", ToolKind::Exec),
         ("ripwire . --run-trace='cargo test'", ToolKind::Exec),
         (
