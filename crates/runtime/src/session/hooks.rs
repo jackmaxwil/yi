@@ -11,7 +11,7 @@ use yi_types::wire::SessionStats;
 use super::run::{self, Queued};
 use super::{
     AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, host_text,
-    store_of,
+    record_store_error, store_of,
 };
 
 pub(super) type LedgerFold = dyn FnMut(&str, &[Entry], &SessionStats) + Send;
@@ -51,14 +51,29 @@ impl AgentSession {
                 Entry::ModelChange {
                     provider, model_id, ..
                 } => {
-                    if let Some(model) = crate::provider::resolve_model(provider, model_id)
-                        && let Ok(mut slot) = self.shared.model.lock()
-                    {
+                    let Some(model) = crate::provider::resolve_model(provider, model_id) else {
+                        record_store_error(
+                            &self.shared,
+                            &yi_session::SessionError::InvalidPayload(format!(
+                                "the ledger switched to {provider}/{model_id}, which the catalog no longer resolves"
+                            )),
+                        );
+                        continue;
+                    };
+                    if let Ok(mut slot) = self.shared.model.lock() {
                         *slot = model;
                     }
                 }
                 Entry::ThinkingLevelChange { thinking_level, .. } => {
-                    effort = thinking_level.parse().ok();
+                    match thinking_level.parse::<Effort>() {
+                        Ok(level) => effort = Some(level),
+                        Err(_) => record_store_error(
+                            &self.shared,
+                            &yi_session::SessionError::InvalidPayload(format!(
+                                "the ledger's thinking level {thinking_level} did not parse"
+                            )),
+                        ),
+                    }
                 }
                 _ => {}
             }
