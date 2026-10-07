@@ -418,12 +418,22 @@ pub(crate) fn fit_spans(
     background: Option<ratatui::style::Color>,
 ) -> Vec<Span<'static>> {
     let mut out = spans;
-    let cells = crate::wrap::flatten_spans(&out);
-    let kept = crate::wrap::take_cells(&cells, width);
-    let used: usize = kept.iter().map(|cell| cell.width).sum();
-    if kept.len() < cells.len() {
-        out = crate::wrap::rebuild(kept, None).spans;
-    }
+    // An ASCII row's width is its length, so the common row that fits skips the cell walk.
+    let ascii = (out.iter()).try_fold(0usize, |sum, span| {
+        (span.content.is_ascii()).then(|| sum.saturating_add(span.content.len()))
+    });
+    let used = match ascii {
+        Some(used) if used <= width => used,
+        _ => {
+            let cells = crate::wrap::flatten_spans(&out);
+            let kept = crate::wrap::take_cells(&cells, width);
+            let used: usize = kept.iter().map(|cell| cell.width).sum();
+            if kept.len() < cells.len() {
+                out = crate::wrap::rebuild(kept, None).spans;
+            }
+            used
+        }
+    };
     if used < width {
         out.push(Span::styled(
             " ".repeat(width.saturating_sub(used)),
