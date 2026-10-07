@@ -57,15 +57,14 @@ with Yi(repo, model="faux/faux-1", yi=yi_bin, args=["--faux", script, "--session
 print(json.dumps({"answers": answers, "big": len(big), "failed": failed}))
 "#;
 
-const CANCELLED_PROGRAM: &str = r#"
+const HARNESS_TEMPLATE: &str = r#"
 import json, sys, threading, traceback
 sys.path.insert(0, sys.argv[1])
 from yi_client import Yi, YiError
 out = {}
 def work():
     try:
-        with Yi(sys.argv[3], yi=sys.argv[2], mode="ask") as yi:
-            out["result"] = yi.run("1")
+{body}
     except YiError as error:
         out["error"] = str(error)
     except Exception:
@@ -73,8 +72,22 @@ def work():
 thread = threading.Thread(target=work, daemon=True)
 thread.start()
 thread.join(timeout=10)
-print(json.dumps({"finished": not thread.is_alive(), "error": out.get("error", ""), "result": out.get("result", "")}))
+print(json.dumps({report}))
 "#;
+
+fn harness(body: &str, report: &str) -> String {
+    HARNESS_TEMPLATE
+        .replacen("{body}", body, 1)
+        .replacen("{report}", report, 1)
+}
+
+fn cancelled_program() -> String {
+    harness(
+        r#"        with Yi(sys.argv[3], yi=sys.argv[2], mode="ask") as yi:
+            out["result"] = yi.run("1")"#,
+        r#"{"finished": not thread.is_alive(), "error": out.get("error", ""), "result": out.get("result", "")}"#,
+    )
+}
 
 const CANCELLED_STUB: &str = r#"#!/usr/bin/env python3
 import json, os, sys
@@ -106,7 +119,7 @@ fn a_cancelled_cell_update_raises_instead_of_hanging_the_client() -> TestResult 
     std::fs::write(&stub, CANCELLED_STUB)?;
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
     let program = dir.join("program.py");
-    std::fs::write(&program, CANCELLED_PROGRAM)?;
+    std::fs::write(&program, cancelled_program())?;
     let out = run(
         "python3",
         &[
@@ -154,24 +167,13 @@ for line in sys.stdin:
         print(json.dumps({"jsonrpc": "2.0", "id": frame.get("id"), "result": {}}), flush=True)
 "#;
 
-const WIRED_PROGRAM: &str = r#"
-import json, sys, threading, traceback
-sys.path.insert(0, sys.argv[1])
-from yi_client import Yi, YiError
-out = {}
-def work():
-    try:
-        with Yi(sys.argv[3], yi=sys.argv[2]) as yi:
-            out["result"] = yi.run("1")
-    except YiError as error:
-        out["error"] = str(error)
-    except Exception:
-        out["error"] = traceback.format_exc()
-thread = threading.Thread(target=work, daemon=True)
-thread.start()
-thread.join(timeout=10)
-print(json.dumps({"finished": not thread.is_alive(), "error": out.get("error", "")}))
-"#;
+fn wired_program() -> String {
+    harness(
+        r#"        with Yi(sys.argv[3], yi=sys.argv[2]) as yi:
+            out["result"] = yi.run("1")"#,
+        r#"{"finished": not thread.is_alive(), "error": out.get("error", "")}"#,
+    )
+}
 
 #[test]
 fn a_terminal_update_without_a_tool_call_id_raises_instead_of_hanging() -> TestResult {
@@ -183,7 +185,7 @@ fn a_terminal_update_without_a_tool_call_id_raises_instead_of_hanging() -> TestR
     std::fs::write(&stub, WIRED_STUB)?;
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
     let program = dir.join("program.py");
-    std::fs::write(&program, WIRED_PROGRAM)?;
+    std::fs::write(&program, wired_program())?;
     let out = run(
         "python3",
         &[
@@ -219,25 +221,25 @@ for line in sys.stdin:
         print(json.dumps({"jsonrpc": "2.0", "id": frame.get("id"), "result": {}}), flush=True)
 "#;
 
-const LEAK_PROGRAM: &str = r#"
-import json, os, sys, time
-sys.path.insert(0, sys.argv[1])
-from yi_client import Yi, YiError
-try:
-    Yi(sys.argv[3], yi=sys.argv[2])
-    dead = False
-except YiError as error:
-    pid = int(open(sys.argv[4]).read())
-    dead = False
-    for _ in range(100):
+fn leak_program() -> String {
+    harness(
+        r#"        import os, time
         try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            dead = True
-            break
-        time.sleep(0.05)
-print(json.dumps({"dead": dead}))
-"#;
+            Yi(sys.argv[3], yi=sys.argv[2])
+        except YiError:
+            pass
+        pid = int(open(sys.argv[4]).read())
+        out["dead"] = False
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                out["dead"] = True
+                break"#,
+        r#"{"dead": out.get("dead", False)}"#,
+    )
+}
 
 #[test]
 fn a_refused_handshake_kills_the_spawned_process_instead_of_leaking_it() -> TestResult {
@@ -249,7 +251,7 @@ fn a_refused_handshake_kills_the_spawned_process_instead_of_leaking_it() -> Test
     std::fs::write(&stub, LEAK_STUB)?;
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
     let program = dir.join("program.py");
-    std::fs::write(&program, LEAK_PROGRAM)?;
+    std::fs::write(&program, leak_program())?;
     let out = run(
         "python3",
         &[
