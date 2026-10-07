@@ -56,9 +56,10 @@ class Yi:
             call = self._request("_yi/kernel_execute", {"sessionId": self.session, "code": code})["callId"]
             while True:
                 update = self._frame().get("params", {}).get("update", {})
-                if update.get("toolCallId") == call and update.get("status") in ("completed", "failed"):
+                status = update.get("status")
+                if update.get("toolCallId") == call and status not in (None, "pending", "in_progress"):
                     text = "".join(part.get("content", {}).get("text", "") for part in update.get("content", []))
-                    if update["status"] == "failed":
+                    if status != "completed":
                         raise YiError(text)
                     return text
 
@@ -94,7 +95,6 @@ class Yi:
                 if "error" in frame:
                     raise YiError(frame["error"].get("message", str(frame["error"])))
                 return frame["result"]
-
     def _frame(self) -> dict:
         while True:
             line = self._proc.stdout.readline()
