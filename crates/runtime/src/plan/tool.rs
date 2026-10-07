@@ -131,7 +131,7 @@ pub(super) fn known_keys(kind: OpKind) -> &'static [&'static str] {
         OpKind::Retry => &["op", "plan", "label", "todo", "delegation"],
         OpKind::Decompose => &["op", "plan", "label", "todo", "todos"],
         OpKind::Supersede => &["op", "plan", "reason", "todos"],
-        OpKind::Set => &["op", "plan", "goal", "list"],
+        OpKind::Set => &["op", "plan", "goal", "list", "todos"],
         OpKind::View => &["op", "plan", "full"],
         OpKind::FuseReset => &["op", "plan"],
         OpKind::Repair => &["op", "plan", "resolutions"],
@@ -331,6 +331,7 @@ macro_rules! from_arg {
 
 from_arg!(
     GoalText,
+    TodoStateName,
     TodoLabel,
     Vec<TodoLabel>,
     PlanId,
@@ -352,7 +353,7 @@ from_arg!(
     yi_types::plan::canonical::ArtifactRef,
 );
 
-fn opt<T: FromArg>(
+pub(super) fn opt<T: FromArg>(
     args: &Map<String, Value>,
     op: OpKind,
     field: &'static str,
@@ -380,7 +381,7 @@ pub(super) fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, 
     }
 }
 
-fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, ArgError> {
+pub(super) fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, ArgError> {
     let field = "todos";
     let raw: &Vec<Value> = match args.get(field) {
         Some(Value::String(text)) => match serde_json::from_str::<Vec<Value>>(text) {
@@ -484,7 +485,12 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         OpKind::Set => Op::Set {
             goal: opt(args, kind, "goal")?,
-            rows: parse_checklist(&need::<String>(args, kind, "list")?)?,
+            rows: match args.get("todos") {
+                Some(Value::Array(_)) if !args.contains_key("list") => {
+                    super::apply::set_rows(args, kind)?
+                }
+                _ => parse_checklist(&need::<String>(args, kind, "list")?)?,
+            },
         },
         OpKind::View => Op::View {
             full: opt(args, kind, "full")?.unwrap_or(false),
@@ -574,7 +580,12 @@ impl PlanTool {
         }
     }
 
-    fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+    pub(super) fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+        let unstrung = super::natural::unstring_todos(args);
+        let args = unstrung.as_ref();
+        if super::apply::wants(args) {
+            return super::apply::apply(self, args);
+        }
         let mut args = args.clone();
         let blocks = super::natural::blocks(&mut args);
         let mut text = self.apply(&args)?;
@@ -590,6 +601,19 @@ impl PlanTool {
             text.push_str("\nnote: a todo's on became its own block once the todo existed");
         }
         Ok(text)
+    }
+
+    pub(super) fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    pub(super) fn engine(&self) -> &PlanEngine {
+        &self.engine
+    }
+
+    /// One op through the natural reading and its retries, without the whole-plan apply.
+    pub(super) fn apply_one(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+        self.apply(args)
     }
 
     fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
@@ -693,10 +717,7 @@ impl PlanTool {
                     }
                     .into());
                 };
-                let view = OpRequest {
-                    op: Op::View { full: true },
-                    ..request.clone()
-                };
+                let view = view_request(&request.actor, request.plan.clone());
                 let mut order = labels.clone();
                 let rest: Vec<TodoLabel> = (self.engine.apply(view)?.plan.todos.iter())
                     .map(|todo| todo.label.clone())
@@ -722,48 +743,27 @@ impl PlanTool {
         Ok(text)
     }
 
-    /// One call per label, in order; a refusal among them makes the whole reply an error.
-    fn each(
-        &self,
-        args: &Map<String, Value>,
-        labels: &[Value],
-        mut said: Vec<String>,
-    ) -> Result<String, PlanToolError> {
-        let (mut text, mut refused) = (String::new(), false);
-        for label in labels {
-            let mut one = args.clone();
-            one.remove("labels");
-            one.insert("todo".to_owned(), label.clone());
-            let reply = self.run(&one).unwrap_or_else(|err| {
-                refused = true;
-                format!("{label}: refused: {err}")
-            });
-            text.push_str(&format!("{reply}\n"));
-        }
-        said.push("labels named several todos, so each ran as its own call, in order".to_owned());
-        for line in said {
-            text.push_str(&format!("note: {line}\n"));
-        }
-        let text = text.trim_end().to_owned();
-        if refused {
-            Err(ArgError::Declared(text).into())
-        } else {
-            Ok(text)
-        }
-    }
-
     /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.
     fn runs_itself(&self, request: &OpRequest, label: &TodoLabel) -> bool {
-        let view = OpRequest {
-            op: Op::View { full: true },
-            ..request.clone()
-        };
+        let view = view_request(&request.actor, request.plan.clone());
         self.actor == Actor::Owner
             && (self.engine.apply(view).ok()).is_some_and(|seen| {
                 seen.plan
                     .todo(label)
                     .is_some_and(|t| t.delegation.is_none())
             })
+    }
+}
+
+/// Invariant: a view never pins a request id or a revision, so every reader of the open plan
+/// builds it from actor and plan alone.
+pub(super) fn view_request(actor: &Actor, plan: Option<PlanId>) -> OpRequest {
+    OpRequest {
+        plan,
+        actor: actor.clone(),
+        op: Op::View { full: true },
+        request_id: None,
+        expected_revision: None,
     }
 }
 
@@ -802,6 +802,9 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
+        if super::apply::wants(input) {
+            return Ok(());
+        }
         (super::natural::calls(input).iter())
             .try_for_each(|call| declared(&self.actor, call).map(|_| ()))
             .map_err(|error| error.to_string())
@@ -843,13 +846,14 @@ pub fn schema() -> Value {
                 "op": {
                     "type": "string",
                     "enum": ALL_OPS.iter().take(MODEL_OPS).map(|op| op_name(*op)).collect::<Vec<_>>(),
-                    "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it; accepted_by_user asks the user, or the classifier in auto mode, to close a todo whose check cannot run here"
+                    "description": "set states the whole plan, as a checklist list or as todos rows with a state, and lands with each row it could not reach saying why; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it; accepted_by_user asks the user, or the classifier in auto mode, to close a todo whose check cannot run here"
                 },
                 "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent; trailing `user://<n>` tokens cite the user's messages the row serves"},
                 "plan": {"type": "string", "description": "Sub-plan id; omit for the root plan"},
                 "goal": {"type": "string", "description": "init: the whole deliverable in one line"},
-                "todos": {"type": "array", "minItems": 1, "description": "init/append/decompose/supersede: the todos. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract", "items": {"type": "object", "required": ["label"], "properties": {
-                    "label": {"type": "string", "maxLength": TODO_LABEL_MAX, "description": format!("the todo's name, imperative, at most {TODO_LABEL_MAX} chars")}, "after": {"type": "array", "items": {"type": "string"}, "description": "labels of the todos this one waits on"},
+                "todos": {"type": "array", "minItems": 1, "description": "set/init/append/decompose/supersede: the todos. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract", "items": {"type": "object", "required": ["label"], "properties": {
+                    "label": {"type": "string", "maxLength": TODO_LABEL_MAX, "description": format!("the todo's name, imperative, at most {TODO_LABEL_MAX} chars")},
+                    "state": {"type": "string", "enum": ["pending", "running", "done", "blocked"], "description": "set: the state the row should reach; done runs its contract first, blocked asks the user (on, note, options as in block); a row the engine cannot move says why in the reply"}, "after": {"type": "array", "items": {"type": "string"}, "description": "labels of the todos this one waits on"},
                     "intent": {"type": "array", "items": {"type": "string"}, "description": "user://<n> of each user message it serves; default the latest"}, "waived": {"type": "array", "items": {"type": "object"}, "description": "[{address, reason}]: a user message the plan leaves unserved"},
                     "delegation": {"type": "object", "description": "{spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}"},
                     "contract": contract}}},
