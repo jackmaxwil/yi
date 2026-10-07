@@ -279,16 +279,17 @@ fn skeletons_rank_hot_files_ahead_of_the_alphabet() -> TestResult {
     Ok(())
 }
 
-/// Reruns `name` with PATH holding only a fake `ripwire` that answers each verb with the real
-/// ripwire 0.6.5 answer recorded under tests/fixtures/ripwire; `slow` makes each answer take 1 s.
-#[cfg(unix)]
 /// The task map's and the neighborhood's three answers, for the tests that time them.
+#[cfg(unix)]
 const LAYERS: [(&str, &str); 3] = [
     ("--for=", "for.json"),
     ("--callers=", "callers.json"),
     ("--callees=", "callees.json"),
 ];
 
+/// Reruns `name` with PATH holding only a fake `ripwire` that answers each verb with the real
+/// ripwire 0.6.5 answer recorded under tests/fixtures/ripwire; `slow` makes each answer take 1 s.
+#[cfg(unix)]
 fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestResult {
     use std::os::unix::fs::PermissionsExt;
     let dir = Scratch::new(&format!("yi-orient-{name}"))?;
@@ -436,6 +437,57 @@ fn a_refused_first_answer_still_warms_the_repository() -> TestResult {
     assert!(
         args.contains("overlap"),
         "the calls after a refused first one still took turns:\n{args}"
+    );
+    Ok(())
+}
+
+/// A cancelled packet on a cold repository starts no ripwire after the cancel, and leaves the
+/// repository cold: the waiting calls hear the cancel, and the next packet still takes turns.
+#[cfg(unix)]
+#[test]
+fn a_cancel_reaches_the_calls_waiting_on_a_cold_repository() -> TestResult {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const NAME: &str = "a_cancel_reaches_the_calls_waiting_on_a_cold_repository";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        return with_fake_ripwire(NAME, true, &LAYERS);
+    };
+    let dir = Path::new(&dir);
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let seen = Arc::clone(&flag);
+    context.cancelled = Arc::new(move || seen.load(Ordering::SeqCst));
+    let cancel = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        flag.store(true, Ordering::SeqCst);
+    });
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    GetContextTool.execute(input, &context);
+    cancel.join().map_err(|_| "the cancel thread panicked")?;
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let args = fs::read_to_string(dir.join("args"))?;
+    let asked = args.lines().filter(|line| line.starts_with("--")).count();
+    assert_eq!(asked, 1, "calls started after the cancel:\n{args}");
+    // The killed first run built no index, so the next packet still takes turns.
+    fs::remove_file(dir.join("args"))?;
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    run(dir, input);
+    let args = fs::read_to_string(dir.join("args"))?;
+    let lines: Vec<&str> = args.lines().collect();
+    let asked: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].starts_with("--"))
+        .collect();
+    let first = asked.first().map(|&at| format!("done {}", lines[at]));
+    let done = lines
+        .iter()
+        .position(|line| Some(line.to_string()) == first);
+    assert!(
+        asked.len() == 3 && done.is_some_and(|done| done < asked[1]),
+        "a cancelled cold run left the repository warm:\n{args}"
     );
     Ok(())
 }

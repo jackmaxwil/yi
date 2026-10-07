@@ -398,8 +398,11 @@ pub(crate) fn json(root: &Path, args: &[&str], cancelled: &CancelFlag) -> Result
     let turn = turn(root, cancelled)?;
     let capture = spawn(root, &args, cancelled, OUTPUT_CAP)
         .map_err(|error| format!("ripwire binary not runnable: {error}"))?;
-    // An answer of any exit built what it could, so a repository ripwire refuses is not cold forever.
-    if let Ok(mut tops) = WARM.lock() {
+    // An answer of any exit built what it could, so a repository ripwire refuses is not cold forever;
+    // a run the cancel killed built nothing, so the next packet still takes turns.
+    if !capture.cancelled
+        && let Ok(mut tops) = WARM.lock()
+    {
         tops.insert(root.to_path_buf());
     }
     drop(turn);
