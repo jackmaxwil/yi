@@ -65,9 +65,10 @@ FINDINGS_SCHEMA = {
                                                 "properties": {"n": {"type": "integer"}, "reason": {"type": "string"}}}},
     },
 }
-# A file the findings fixer creates is kept when it is source or a test, never a build dir's output.
-# Not skills/: a skill is instructions later sessions load, never a file a fixer model writes.
-NEW_FILE = re.compile(r"^(crates|python|docs|evals)/(?!.*(^|/)target[^/]*/).+\.(rs|py|md|toml|txt)$")
+# A file the findings fixer creates is kept when it is source, a test or a test's fixture, never a
+# build dir's output. Not skills/: a skill is instructions later sessions load, never a fixer's file.
+# Incident: #1025's fix wrote a test and its callers-shape.json fixture, and only the test landed.
+NEW_FILE = re.compile(r"^(crates|python|docs|evals)/(?!.*(^|/)target[^/]*/).+\.(rs|py|md|toml|txt|json|jsonl|xml)$")
 SIGNED = "The fixer's answer to review round"
 # Incident: #1025's retry died on an upstream 429 and was labelled failed and counted as a miss,
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
@@ -740,7 +741,7 @@ def selfcheck():
         errs.append(f"the misses since the last push read {misses(notes), misses(tries), misses(tries + notes[:1])}")
     if fix_spend(notes) != 0.5:
         errs.append(f"the fixer's cap read {fix_spend(notes)}, not 0.5: only its own meta lines count")
-    if not NEW_FILE.match("crates/a/tests/new.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs") or NEW_FILE.match("skills/x/SKILL.md"):
+    if not NEW_FILE.match("crates/tools/tests/fixtures/ripwire/callers-shape.json") or not NEW_FILE.match("crates/a/tests/new.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs") or NEW_FILE.match("skills/x/SKILL.md"):
         errs.append("the new-file rule keeps a build output or drops a new test")
     if not MARKER.search("a\n<<<<<<< HEAD\nb\n") or MARKER.search("a\n<<<<<<<< not one\n"):
         errs.append("the marker check misreads a conflict marker")
