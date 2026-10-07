@@ -231,16 +231,19 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     return None
 
 
-def carried(rounds):
+def carried(rounds, own=None):
     """The last round's findings a new round re-checks at its head before trusting its own,
     narrower read: only a refuter that finds a finding gone clears it. A high the owner overrode
-    is settled, and the intake checks run fresh every round."""
+    is settled, and the intake checks run fresh every round. With `own` (the PR's own patch by
+    path), a finding on a file the PR no longer changes is gone with it. Incident: #1097 carried
+    two findings on #1094's and #1092's files after both landed on main, and blocked on them."""
     if not rounds:
         return []
     last = rounds[-1]
     return [{**f, "since": f.get("since") or last["n"]} for f in last["findings"]
             if f.get("severity") in REPORTED and f.get("lens") not in INTAKE
-            and not (f["severity"] == "high" and last["verdict"] == "override")]
+            and not (f["severity"] == "high" and last["verdict"] == "override")
+            and (own is None or not f.get("path") or f.get("path") in own)]
 
 
 def silent(r):
@@ -699,6 +702,7 @@ def read_pr(repo, number, allowed):
         base = delta_base(rounds, merge_base, is_ancestor, sha)
         diff, base = review_diff(forge_pr.git, merge_base, base, sha)
         own = added_at(forge_pr.git("diff", f"{merge_base}..{sha}"))
+        mine = set(own)
         # Incident: a round after a fix re-read the PR's whole change to each file the fix touched
         # and found mediums in lines no fix changed, so rounds never ran out of findings.
         if base != merge_base:
@@ -716,7 +720,7 @@ def read_pr(repo, number, allowed):
         else:
             kept, dropped, outside, unanswered, cleared = read_round(
                 pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING),
-                load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds), fix_note=fix_note)
+                load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds, mine), fix_note=fix_note)
     finally:
         discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
@@ -955,6 +959,9 @@ def selfcheck():
     assert carried([{"n": 4, "verdict": "blocked", "findings": [finding, low, twin, med]}]) == [dict(finding, since=4), dict(med, since=4)]
     assert carried([{"n": 5, "verdict": "override", "findings": [finding, dict(med, since=2)]}]) == [dict(med, since=2)], \
         "an overridden high is settled, and a carried finding keeps the round it was first raised in"
+    elsewhere = dict(med, path="crates/other.rs")
+    assert carried([{"n": 6, "verdict": "clean", "findings": [med, elsewhere, dict(med, path="")]}], {"a.rs": {2}}) == \
+        [dict(med, since=6), dict(med, path="", since=6)], "a finding on a file the PR no longer changes is not carried"
     assert ready_problems([{"n": 1, "sha": "abc1234", "verdict": "clean"}, {"n": 2, "sha": "abc1234", "verdict": "clean", "skipped": "1"}], "abc1234ff"), \
         "a last round that lost a lens is not ready"
     lost = render(1, 1, "abcdef1", "abcdef0", [], 0, None, "blocking", 0, ["x lens"])
