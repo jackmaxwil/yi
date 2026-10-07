@@ -130,6 +130,15 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
         };
         let pending = match carried {
             super::Carried::Start => return apply(start),
+            super::Carried::Block { on, note, ask } => {
+                let label = label.clone();
+                return apply(Op::Block {
+                    label,
+                    on,
+                    note,
+                    ask,
+                });
+            }
             super::Carried::Wait { plan, address } => {
                 let read = engine
                     .store()
