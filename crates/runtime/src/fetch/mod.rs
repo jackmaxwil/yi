@@ -417,7 +417,7 @@ impl Resolver {
     /// The one resolver a child session reads through: its transcript and, walled, the spill
     /// roots and session stores its tool seam walls (D340, D345). The root's builder in
     /// `attach_runtime` keeps the full capability set; every new scheme lands there.
-    pub fn for_child(
+    pub(crate) fn for_child(
         workspace: PathBuf,
         wall: Wall,
         agent: impl Into<String>,
@@ -427,7 +427,7 @@ impl Resolver {
         let stores = if wall.is_empty() {
             crate::tools::session_stores(broker)
         } else {
-            crate::tools::walled_roots(&wall, broker)
+            crate::tools::walled_roots(&wall, crate::tools::default_spill_root().as_deref(), broker)
         };
         Self::new(workspace, wall)
             .with_session_stores(stores)

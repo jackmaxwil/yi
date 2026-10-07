@@ -110,7 +110,7 @@ pub(crate) fn heartbeat_gate(
 ) -> Arc<crate::schedule::GateFn> {
     let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
     let (wall, cwd) = (wiring.wall.clone(), wiring.cwd.clone());
-    let roots = walled_roots(&wall, broker.as_deref());
+    let roots = walled_roots(&wall, default_spill_root().as_deref(), broker.as_deref());
     Arc::new(move |command: &str| {
         let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
         let rules = rules();
@@ -279,15 +279,17 @@ pub(crate) fn spill_roots_and_stores(
         .collect()
 }
 
-/// The roots a walled session reads only where a later rule spares it; none for an unwalled one.
+/// Invariant: a walled session reads only its own spills and transcript: the spill roots and
+/// session stores are walled, its own spill dir and transcript spared (D340, D345).
 pub(crate) fn walled_roots(
     wall: &crate::wall::Wall,
+    spill_root: Option<&std::path::Path>,
     broker: Option<&PermissionBroker>,
 ) -> Vec<PathBuf> {
     if wall.is_empty() {
         return Vec::new();
     }
-    spill_roots_and_stores(default_spill_root().as_deref(), broker)
+    spill_roots_and_stores(spill_root, broker)
 }
 
 /// Invariant: a spare, a kernel's or a tool's, never reopens a path the wall's own `deny_read`
@@ -344,15 +346,6 @@ impl ToolAdapter {
     pub fn with_transcript(mut self, store: crate::goal::StoreHandle) -> Self {
         self.transcript = Some(store);
         self
-    }
-
-    /// Invariant: a walled session reads only its own spills and transcript: the spill roots and
-    /// session stores are walled, its own spill dir and transcript spared (D340, D345).
-    fn walled_roots(&self) -> Vec<PathBuf> {
-        if self.wall.is_empty() {
-            return Vec::new();
-        }
-        spill_roots_and_stores(self.spill_root.as_deref(), self.permission.as_deref())
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {
@@ -431,7 +424,12 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let (spills, walled_roots) = (self.session_spills(), self.walled_roots());
+        let walled_roots = walled_roots(
+            &self.wall,
+            self.spill_root.as_deref(),
+            self.permission.as_deref(),
+        );
+        let spills = self.session_spills();
         let store = (self.transcript.as_ref()).and_then(|store| store());
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());

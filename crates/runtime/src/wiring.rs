@@ -241,10 +241,9 @@ impl RuntimeWiring {
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         if !self.wall.is_empty() {
-            let broker = self.broker.as_deref();
-            sandbox
-                .deny_read
-                .extend(crate::tools::walled_roots(&self.wall, broker));
+            let (spills, broker) = (crate::tools::default_spill_root(), self.broker.as_deref());
+            let roots = crate::tools::walled_roots(&self.wall, spills.as_deref(), broker);
+            sandbox.deny_read.extend(roots);
             let board =
                 Some(self.family_dir()).filter(|dir| crate::tools::unwalled(&self.wall, dir));
             sandbox.spared.extend(board);
