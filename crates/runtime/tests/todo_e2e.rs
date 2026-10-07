@@ -355,6 +355,68 @@ fn a_stale_set_lands_and_keeps_the_row_a_user_added() -> TestResult {
     Ok(())
 }
 
+/// Dies with a stale set deleting a subtask the user added under a row it kept, and with a stale
+/// point op refused again: the old view lands on the list as it is now, children included.
+#[test]
+fn a_stale_view_keeps_a_users_subtask_and_lands_a_point_op() -> TestResult {
+    let (_root, session) = session("stale-child")?;
+    let store = store_for(&session);
+    store.apply(
+        Op::Init {
+            phases: vec![(PhaseName::new("Tasks")?, vec![item("a")?])],
+        },
+        None,
+    )?;
+    store.apply_as(
+        Op::Append {
+            phase: None,
+            under: Some(TodoLabel::new("a")?),
+            items: vec![item("user sub")?],
+        },
+        None,
+        "user",
+    )?;
+    let applied = store.apply(
+        Op::Set {
+            list: "- [>] a\n- [ ] b\n".to_owned(),
+        },
+        Some(1),
+    )?;
+    let a = (applied.list.items())
+        .find(|row| row.label.as_str() == "a")
+        .ok_or("a missing")?;
+    assert!(
+        a.children
+            .iter()
+            .any(|row| row.label.as_str() == "user sub"),
+        "{:?}",
+        applied.list
+    );
+    assert!(
+        applied
+            .notes
+            .iter()
+            .any(|note| note.contains("\"user sub\"")),
+        "{:?}",
+        applied.notes
+    );
+    let appended = store.apply(
+        Op::Append {
+            phase: None,
+            under: None,
+            items: vec![item("c")?],
+        },
+        Some(1),
+    )?;
+    assert!(appended.list.items().any(|row| row.label.as_str() == "c"));
+    assert!(
+        (appended.notes.iter()).any(|note| note.contains("changed since you last saw it")),
+        "{:?}",
+        appended.notes
+    );
+    Ok(())
+}
+
 #[test]
 fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
     let (_root, session) = session("evidence")?;
@@ -1500,15 +1562,7 @@ fn a_block_on_a_clock_address_is_checked_before_it_waits() -> TestResult {
 fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
     let (_scratch, session) = session("todo-kinds")?;
     let tool = TodoTool::new(store_for(&session));
-    let kind = |args: Value| {
-        let input = args.as_object().cloned().unwrap_or_default();
-        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
-        assert!(output.is_error, "{args}");
-        output.result.details["errorKind"]
-            .as_str()
-            .unwrap_or("untagged")
-            .to_owned()
-    };
+    let kind = |args: Value| crate::support::refusal_kind(&tool, args);
     assert_eq!(kind(json!({"op": "frobnicate"})), "invalid_args");
     assert_eq!(
         kind(json!({"op": "done", "label": "ghost", "evidence": "x"})),
@@ -1523,5 +1577,20 @@ fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
     );
     assert!(!set.is_error, "{:?}", set.result.content);
     assert_eq!(kind(json!({"op": "append", "items": ["first"]})), "verdict");
+    assert_eq!(
+        kind(json!({"op": "append", "items": []})),
+        "invalid_args",
+        "an empty append is an argument shape, not state gone stale"
+    );
+    assert_eq!(
+        kind(json!({"op": "done", "label": "first"})),
+        "verdict",
+        "done without evidence is the rule saying no, as on the plan tool"
+    );
+    assert_eq!(
+        kind(json!({"op": "set", "list": format!("# {}\n- [ ] a", "p".repeat(100))})),
+        "verdict",
+        "a phase name past its cap is a cap saying no, as the plan tool's label cap is"
+    );
     Ok(())
 }

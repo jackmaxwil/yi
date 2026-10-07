@@ -5,6 +5,8 @@
 mod scratch;
 
 mod anthropic_mapper;
+#[path = "../../types/tests/support/model.rs"]
+mod common;
 mod compat;
 mod decide;
 mod effort_catalog;
@@ -19,5 +21,6 @@ mod openrouter;
 mod proxy;
 mod refresh;
 mod resend;
+mod strict_tools;
 mod structured;
 mod tool_choice;

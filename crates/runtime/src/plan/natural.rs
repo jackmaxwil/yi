@@ -1,8 +1,9 @@
 //! The shapes models send for a plan call the tool understands, made canonical before the strict
 //! parse; every case here was a refused call in the dogfood sessions of #982.
 
-use serde_json::{Map, Value, json};
+use std::borrow::Cow;
 
+use serde_json::{Map, Value, json};
 use yi_types::plan::doc::TODO_LABEL_MAX;
 use yi_types::plan::op::{ALL_OPS, MODEL_OPS, op_name};
 
@@ -32,7 +33,7 @@ pub(super) const TARGETED: [&str; 10] = [
 ];
 
 pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<String>) {
-    let mut args = unleak(args);
+    let mut args = unleak(&unstring_todos(args));
     let mut said = Vec::new();
     infer_op(&mut args);
     let rows =
@@ -712,4 +713,17 @@ impl super::tool::PlanTool {
             Ok(text)
         }
     }
+}
+
+/// `todos` sent as a JSON string is the array it names, on every op that takes rows: the
+/// whole-plan reading and the strict parse both see one spelling.
+pub(super) fn unstring_todos(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
+    if let Some(Value::String(text)) = args.get("todos")
+        && let Ok(parsed @ Value::Array(_)) = serde_json::from_str::<Value>(text)
+    {
+        let mut fixed = args.clone();
+        fixed.insert("todos".to_owned(), parsed);
+        return Cow::Owned(fixed);
+    }
+    Cow::Borrowed(args)
 }

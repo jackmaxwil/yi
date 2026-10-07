@@ -200,6 +200,7 @@ pub fn session(
         schema: reader.schema.clone(),
         shared_through: reader.shared_through,
     });
+    let wall = build.wall.clone();
     child.set_wall(build.wall);
     if let Some(rules) = rules {
         if reader.role == Role::Worker {
@@ -209,10 +210,25 @@ pub fn session(
         }
         child.set_rules_engine(rules);
     }
-    let named: Vec<_> = tools
+    let mut named: Vec<_> = tools
         .into_iter()
         .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
         .collect();
+    let resolver = crate::fetch::Resolver::for_child(
+        cwd.clone(),
+        wall,
+        build.link.child_name.clone(),
+        child.store_handle(),
+        broker.as_deref(),
+    );
+    let resolver = match build.link.host.upgrade() {
+        Some(host) => resolver.with_plans_dir(host.options.plans_dir.clone()),
+        None => resolver,
+    };
+    crate::fetch::route_urls(&mut named, &Arc::new(resolver));
+    if named.iter().any(|tool| tool.name() == "bash") {
+        crate::wiring::wire_job_completions(&child);
+    }
     if named.is_empty() {
         child.set_reuse(yi_types::model::Reuse::OneShot);
     }
@@ -225,16 +241,21 @@ pub(crate) fn partition(
     entries: &[String],
     wall: &crate::wall::Wall,
     cwd: &Path,
+    reader: bool,
 ) -> Result<String, String> {
     let mut out = String::new();
     for (index, raw) in entries.iter().enumerate() {
         let url: Url = raw
             .parse()
             .map_err(|error| format!("partition {raw}: {error}"))?;
-        if matches!(url.scheme(), Scheme::Kernel) {
-            return Err(format!(
-                "partition {raw}: a kernel value rides context_keys, not the partition"
-            ));
+        if let Some(reason) = match url.scheme().as_str() {
+            "kernel" => Some("a kernel value rides context_keys, not the partition"),
+            "family" if reader => Some(
+                "a family entry shows a reader only its sidecar; a computed value rides context_keys",
+            ),
+            _ => None,
+        } {
+            return Err(format!("partition {raw}: {reason}"));
         }
         if let Some(denied) = wall.check_url(&url, cwd) {
             return Err(format!(
@@ -324,7 +345,13 @@ pub(crate) fn brief(
     let named = entries(kwargs)?;
     let fenced = match (named.is_empty(), host.resolver.get()) {
         (true, _) => None,
-        (false, Some(resolver)) => Some(partition(resolver, &named, &cast.2, &host.options.cwd)?),
+        (false, Some(resolver)) => Some(partition(
+            resolver,
+            &named,
+            &cast.2,
+            &host.options.cwd,
+            cast.3.is_some(),
+        )?),
         (false, None) => return Err("this session resolves no partition".to_owned()),
     };
     let Some(reader) = cast.3.as_mut() else {

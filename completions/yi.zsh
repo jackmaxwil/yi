@@ -12,6 +12,7 @@ _yi() {
         'tui:open the terminal UI'
         'mcp:one-shot MCP client calls'
         'version:print the version'
+        'update:replace this install from the latest signed release'
     )
     flags=(
         '--model[provider/id]:model:'

@@ -1,6 +1,6 @@
 # yi(1) bash completion. Static: lexopt has no generator (X10).
 _yi() {
-    local commands='ask sessions undo rpc acp serve tui mcp version'
+    local commands='ask sessions undo rpc acp serve tui mcp version update'
     local flags='--model --system --thinking --json --yolo --confirm --session --session-dir --continue --schema --cwd --socket --headless --keys --frames --version'
     local word=${COMP_WORDS[COMP_CWORD]}
     if [[ $word == -* ]]; then

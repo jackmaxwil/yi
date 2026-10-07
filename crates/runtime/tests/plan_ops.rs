@@ -3430,6 +3430,9 @@ mod contracts {
         Ok(Confirmer { broker, store })
     }
 
+    /// Each prompt's description, in the order the person was asked.
+    type Asked = Arc<Mutex<Vec<String>>>;
+
     /// The owner's plan tool over `rig`, confirming through a broker in `mode` that answers
     /// `answer` and counts each time it asks, judged by a sidecar answering `safe` when given.
     fn asking_tool(
@@ -3437,12 +3440,14 @@ mod contracts {
         mode: PermissionMode,
         answer: AskOutcome,
         safe: Option<f64>,
-    ) -> Result<(PlanTool, Arc<std::sync::atomic::AtomicU32>), Box<dyn Error>> {
+    ) -> Result<(PlanTool, Asked), Box<dyn Error>> {
         let Confirmer { store, .. } = confirmer(rig, answer)?;
-        let asked = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let counted = Arc::clone(&asked);
-        let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let asked: Asked = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&asked);
+        let asker: Asker = Arc::new(move |ask: &PermissionAsk<'_>| {
+            if let Ok(mut asked) = recorded.lock() {
+                asked.push(ask.description.to_owned());
+            }
             answer
         });
         let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
@@ -3466,7 +3471,7 @@ mod contracts {
             broker.set_approver(Arc::new(Approver::new(
                 sidecar,
                 thresholds,
-                None,
+                yi_runtime::classifier::Timing::Instant,
                 Arc::new(|_| {}),
             )));
         }
@@ -3516,7 +3521,16 @@ mod contracts {
         let (tool, asked) = asking_tool(&rig, PermissionMode::Ask, AskOutcome::AllowOnce, None)?;
         let (plan, refused, text) = accept_through(&tool, &rig)?;
         assert!(!refused, "{text}");
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(asked.lock().map_or(0, |asked| asked.len()), 1);
+        let description = asked
+            .lock()
+            .map(|asked| asked.concat())
+            .map_err(|_| "poisoned")?;
+        assert!(
+            description
+                .starts_with("ship it: just check exit 0 by hand · accepted_by_user on plan "),
+            "the prompt shows two rows of this line, so the todo and why lead it: {description}"
+        );
         assert!(matches!(
             todo_of(&rig.store, &plan, "ship it")?.state,
             TodoState::Done {
@@ -3539,6 +3553,72 @@ mod contracts {
         accept_through(&tool, &rig)
     }
 
+    /// Dies with the plan's prompt left open: the review found an `after-delay` allow settling
+    /// under an id the prompt never carried, so the front end could not close it.
+    #[test]
+    fn an_accept_the_classifier_settles_after_the_delay_closes_the_persons_prompt() -> TestResult {
+        use yi_runtime::classifier::{Approver, Sidecar, Thresholds, Timing};
+        let rig = rig("yi-accept-after-delay", None)?;
+        let Confirmer { store, .. } = confirmer(&rig, AskOutcome::Reject)?;
+        let shown: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&shown);
+        let asker: Asker = Arc::new(move |ask: &PermissionAsk<'_>| {
+            if let Ok(mut seen) = seen.lock() {
+                *seen = ask.tool_call_id.map(str::to_owned);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            AskOutcome::Reject
+        });
+        let (events, mut heard) = tokio::sync::broadcast::channel(16);
+        let broker = PermissionBroker::new(
+            PermissionMode::Auto,
+            rig.ws.clone(),
+            Vec::new(),
+            Some(asker),
+            events,
+        );
+        broker.prompts_close_on_settle();
+        let (port, _sidecar) =
+            crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+        broker.set_approver(Arc::new(Approver::new(
+            Sidecar {
+                url: format!("http://127.0.0.1:{port}"),
+                key: Some("k".to_owned()),
+                model: "english".to_owned(),
+                timeout: std::time::Duration::from_secs(2),
+                threshold: None,
+            },
+            Thresholds {
+                allow_at: 0.9,
+                allow_destructive_at: 0.98,
+                ask_at: 0.2,
+            },
+            Timing::AfterDelay(std::time::Duration::from_millis(200)),
+            Arc::new(|_| {}),
+        )));
+        let tool = PlanTool::new(Arc::clone(&rig.engine), Actor::Owner).confirming(
+            yi_runtime::plan::authority::Confirming {
+                broker: Arc::new(broker),
+                store: Arc::new(move || Some(store.clone())),
+            },
+        );
+        let (_plan, refused, text) = accept_through(&tool, &rig)?;
+        assert!(!refused, "{text}");
+        let shown = shown
+            .lock()
+            .map_err(|_| "poisoned")?
+            .clone()
+            .ok_or("the prompt carried no id")?;
+        let mut resolved = None;
+        while let Ok(event) = heard.try_recv() {
+            if let yi_types::event::AgentEvent::PermissionResolved { tool_call_id, .. } = event {
+                resolved = Some(tool_call_id);
+            }
+        }
+        assert_eq!(resolved.as_deref(), Some(shown.as_str()));
+        Ok(())
+    }
+
     /// Dies with the person asked, or the acceptance recorded as theirs, when the classifier in
     /// auto mode allows it: it lands `AcceptedByClassifier` with `classifier` as the actor.
     #[test]
@@ -3553,7 +3633,7 @@ mod contracts {
         let (plan, refused, text) = accept_through(&tool, &allowed)?;
         assert!(!refused, "{text}");
         assert_eq!(
-            asked.load(std::sync::atomic::Ordering::SeqCst),
+            asked.lock().map_or(0, |asked| asked.len()),
             0,
             "no person was asked"
         );
@@ -3579,7 +3659,7 @@ mod contracts {
         let (plan, refused, text) = accept_through(&tool, &unsure)?;
         assert!(!refused, "{text}");
         assert_eq!(
-            asked.load(std::sync::atomic::Ordering::SeqCst),
+            asked.lock().map_or(0, |asked| asked.len()),
             1,
             "an unsure classifier asks"
         );
