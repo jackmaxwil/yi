@@ -30,18 +30,23 @@ pub fn fit(line: Line<'static>, width: usize) -> Line<'static> {
 
 pub(crate) fn flatten_spans(spans: &[Span<'_>]) -> Vec<Cell> {
     let mut cells: Vec<Cell> = Vec::new();
-    let mut text = String::new();
-    let mut drawn = 0usize;
+    let mut cluster = String::new();
+    let mut cluster_width = 0usize;
     for span in spans {
         for ch in span.content.chars() {
-            text.push(ch);
             let width = UnicodeWidthChar::width(ch).unwrap_or(0);
             let width = if width == 0 {
-                UnicodeWidthStr::width(text.as_str()).saturating_sub(drawn)
+                cluster.push(ch);
+                let measured = UnicodeWidthStr::width(cluster.as_str());
+                let delta = measured.saturating_sub(cluster_width);
+                cluster_width = measured;
+                delta
             } else {
+                cluster.clear();
+                cluster.push(ch);
+                cluster_width = width;
                 width
             };
-            drawn = drawn.saturating_add(width);
             cells.push(Cell {
                 ch,
                 style: span.style,

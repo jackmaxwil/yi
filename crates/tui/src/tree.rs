@@ -417,10 +417,20 @@ pub(crate) fn fit_spans(
     width: usize,
     background: Option<ratatui::style::Color>,
 ) -> Vec<Span<'static>> {
-    let cells = crate::wrap::flatten_spans(&spans);
-    let kept = crate::wrap::take_cells(&cells, width);
-    let mut out = crate::wrap::rebuild(kept, None).spans;
-    let used: usize = kept.iter().map(|cell| cell.width).sum();
+    let mut out = spans;
+    let mut used = 0usize;
+    for span in &out {
+        used = used.saturating_add(unicode_width::UnicodeWidthStr::width(span.content.as_ref()));
+        if used > width {
+            break;
+        }
+    }
+    if used > width {
+        let cells = crate::wrap::flatten_spans(&out);
+        let kept = crate::wrap::take_cells(&cells, width);
+        out = crate::wrap::rebuild(kept, None).spans;
+        used = kept.iter().map(|cell| cell.width).sum();
+    }
     if used < width {
         out.push(Span::styled(
             " ".repeat(width.saturating_sub(used)),
