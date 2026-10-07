@@ -118,6 +118,7 @@ fn extract_tool_calls(message: &AgentMessage) -> Vec<ExtractedCall> {
     content
         .iter()
         .filter_map(|block| match block {
+            Content::ToolCall { namespace, .. } if namespace.as_deref() == Some("cursor") => None,
             Content::ToolCall {
                 id,
                 name,

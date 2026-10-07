@@ -1,5 +1,5 @@
-//! The five model catalogs are 146,182 bytes of JSON the binary would carry raw; deflated
-//! here they are 11,857. `miniz_oxide` is already in the graph, via `yi-orb`.
+//! The model catalogs are JSON the binary would carry raw; deflated here they are smaller.
+//! `miniz_oxide` is already in the graph, via `yi-orb`.
 use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "openrouter",
         "openai-codex",
         "google",
+        "cursor",
     ] {
         let source = format!("data/{name}.json");
         println!("cargo::rerun-if-changed={source}");
