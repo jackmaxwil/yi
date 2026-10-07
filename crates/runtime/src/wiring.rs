@@ -241,9 +241,7 @@ impl RuntimeWiring {
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         if !self.wall.is_empty() {
-            let spills = crate::tools::default_spill_root();
-            let broker = self.broker.as_deref();
-            let roots = crate::tools::spill_roots_and_stores(spills.as_deref(), broker);
+            let roots = crate::tools::walled_roots(&self.wall, self.broker.as_deref());
             sandbox.deny_read.extend(roots);
             let board =
                 Some(self.family_dir()).filter(|dir| crate::tools::unwalled(&self.wall, dir));
@@ -402,15 +400,19 @@ fn wire_fetch(
         .parent_link
         .as_ref()
         .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
-    let mut resolver = crate::fetch::Resolver::new(wiring.cwd.clone(), wiring.wall.clone())
-        .with_plans_dir(plans_dir.to_path_buf())
-        .with_session_handle(agent, session.store_handle())
-        .with_log(log)
-        .with_kernel_variables(kernels)
-        .with_transcripts(transcripts)
-        .with_family_dir(wiring.family_dir())
-        .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>)
-        .with_session_stores(crate::tools::session_stores(wiring.broker.as_deref()));
+    let mut resolver = crate::fetch::Resolver::for_child(
+        wiring.cwd.clone(),
+        wiring.wall.clone(),
+        agent,
+        session.store_handle(),
+        wiring.broker.as_deref(),
+    )
+    .with_plans_dir(plans_dir.to_path_buf())
+    .with_log(log)
+    .with_kernel_variables(kernels)
+    .with_transcripts(transcripts)
+    .with_family_dir(wiring.family_dir())
+    .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>);
     if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
         resolver = resolver.with_checkpoint_show(show);
     }
@@ -798,7 +800,7 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 
 /// A job this session started reports through its follow-up queue and wakes it when idle; the
 /// loop ends with the session, so a retired child's job starts no paid turn in it.
-fn wire_job_completions(session: &AgentSession) {
+pub(crate) fn wire_job_completions(session: &AgentSession) {
     let (report, owner) = (session.job_report_hook(), session.job_owner());
     tokio::spawn(crate::session::until(job_settled(), move || {
         let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();

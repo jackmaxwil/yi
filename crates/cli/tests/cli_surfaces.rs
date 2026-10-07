@@ -370,6 +370,31 @@ fn show_json_carries_the_name_a_session_file_sets() -> TestResult {
     Ok(())
 }
 
+/// Dies with a failing command listed as ok: a non-zero exit is unflagged now, so `show` reads
+/// the exit from `details` to keep calling it an error.
+#[test]
+fn show_calls_an_unflagged_nonzero_exit_an_error() -> TestResult {
+    let workspace = Workspace::new("show-exit")?;
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../types/tests/fixtures/v4-golden.jsonl");
+    let golden = std::fs::read_to_string(fixture)?;
+    let failed = golden.replace(
+        r#""details":{"exit":0,"lines":3}"#,
+        r#""details":{"exitCode":1}"#,
+    );
+    assert_ne!(failed, golden, "the exit must be planted");
+    std::fs::write(session_dir.join("1_fixture-a.jsonl"), failed)?;
+    let shown = stdout(&workspace.yi(&["sessions", "show", "fixture-a"])?);
+    assert!(shown.contains("bash (error)"), "{shown}");
+    Ok(())
+}
+
 /// Dies with an old session's list reading differently after the todo merge: `yi todo` over a
 /// recorded session prints what the pre-merge binary printed for it, byte for byte.
 #[test]
