@@ -33,7 +33,7 @@ new ones.
 | Primitive | Shape | Status |
 |---|---|---|
 | Retention row | `{store, root, live(entry) -> bool, age, action}` | ✚ |
-| Sweeper | reads the table; hourly in-process throttle; `yi gc [--dry-run] [--lane N]` | ✚ (throttle ✓ `tools/src/spill.rs` `sweep_hourly`) |
+| Sweeper | reads the table; hourly in-process throttle; `yi gc [--fix] [--lane N]` | ✚ (throttle ✓ `tools/src/spill.rs` `sweep_hourly`) |
 | Liveness tests | flock held, `ps` names the path, worktree dir exists, branch merged | ✓ all four exist, in four crates |
 
 The test-home half needs no Yi code. A worktree's test HOME moves inside the worktree at
@@ -144,8 +144,8 @@ boundary moves.
 | converted | `~/.yi/converted` | newer than 30 d | 30 d, then size cap 256 MiB | evict oldest | ✓ `tools/src/document.rs:496` |
 | kernel venvs | `~/.yi/kernel-venv-*` **and the legacy `kernel-venv`** | flock held, or `ps` names it, or mtime < 24 h | 24 h | delete dir | ✓ `kernel/src/lock.rs:152`, ✚ legacy name |
 | kernel connections | `~/.yi/kernel-connections/<pid>-…` | pid alive | none | delete dir | ✓ `kernel/src/connection.rs:104` |
-| checkpoints, orphan | `~/.yi/checkpoints/<xxh32>` | `core.worktree` dir exists | 7 d since last capture | delete repo | ✚ |
-| checkpoints, live | same, live repos | object mtime < 30 d | 30 d | `git prune --expire=30.days.ago` | ✚ |
+| checkpoints, orphan | `~/.yi/checkpoints/<xxh32>` | `core.worktree` dir exists; kept when it cannot be stat'd or its nearest surviving ancestor is a mount root (unmounted volume) | 7 d since last capture | rename aside, then delete | ✚ |
+| checkpoints, live | same, live repos | object mtime < 30 d | 30 d | `git prune --expire=30.days.ago`, never a delete (review: a delete raced a session starting there) | ✚ |
 | lane slots | `~/.yi/lanes/<hash>/<n>` | `.held` flock taken, or tree dirty, or branch unmerged | 14 d since release | `git worktree remove`, drop `N.json` | ✚ (liveness ✓ `abandoned` `lane/mod.rs:890`) |
 | uv binaries | `~/.yi/uv/<ver>` | `ver == UV_VERSION` | none | delete dir | ✚ |
 | traces | `~/.yi/traces/<ms>` | newer than 30 d | 30 d | delete dir | ✚ |
@@ -170,14 +170,18 @@ touched, the warmer's `cargo check` included. The slot's `N.json` is rewritten a
   compared by mtime. It replaces the per-process `sweep_hourly` throttle, so two hundred test
   processes do not each scan.
 - **`yi gc`** ✚. It runs every row now, ignoring the throttle, and prints one line per row: kept
-  out of found, removed, bytes freed. `--dry-run` prints the same lines and deletes nothing.
+  out of found, removed, bytes freed. Bare `yi gc` prints the same lines and deletes nothing; `--fix` acts, as `yi doctor --fix` does.
   `--lane N` force-frees one slot and is the old `yi lanes reap N`. `yi lanes reap` stays as an
   alias for one version, then goes (one-in-one-out, section 7).
 - **`yi doctor --fix`.** Its `lanes` row (`cli/src/doctor.rs:233-262`) calls the lane row of the
   table instead of its own loop.
 
-Bytes freed are measured as the `df` delta of the volume, not as the `du` of what was deleted,
-because a cloned file frees nothing until its last clone goes (section 1.1).
+As built (S3), the report carries counts only. A byte figure was tried and cut: apparent bytes
+said 984 MB where `du` said 2.8 GB, and neither is what deleting frees on APFS (section 1.1).
+The existing sweeps (spills, converted documents, stale venvs, kernel connections) keep their own
+triggers and did not move into the table: moving them would buy no behavior. A short-lived
+process such as `yi ask` can exit before its background sweep finishes; the sweep is idempotent,
+and the next hour's session picks up where it stopped.
 
 ## 4. Test homes: inside the worktree
 
@@ -236,7 +240,7 @@ The journey that proves it: run the suite through the wrapper, and the count of
 4. Meanwhile, in the developer's real `~/.yi`, the hourly sweep deletes the checkpoint repos of
    the temp dirs that older sessions left behind, once each has been gone seven days. It also
    prunes snapshot objects older than 30 days in live projects and removes lane slots released
-   more than 14 days ago. `yi gc --dry-run` shows what the next sweep would take.
+   more than 14 days ago. `yi gc` shows what the next sweep would take.
 
 ## 7. Inventory
 
@@ -270,7 +274,7 @@ first.
 |---|---|---|
 | S1 HOME inside the worktree (no Yi code: `scripts/wt_home.sh`, the memory rule, a `.ruler` line) | `git worktree remove` frees the home; `.yi-homes` never reappears | one PR landed using it |
 | S2 Tests own their HOME (#1123) | `just check` leaves `~/.yi/checkpoints` count unchanged | a full suite run on the real HOME leaves 23 repos (seen red); through `just test` it leaves 0 |
-| S3 Retention table, checkpoint rows, legacy venv, `yi gc` (#1124) | `yi gc --dry-run` on this machine lists about 11,600 orphan repos and 2.8 GB; the real run frees it by `df` | a test per row at age − 1 and at age, plus one with a live holder |
+| S3 Retention table, checkpoint rows, legacy venv, `yi gc` (#1124) | `yi gc` on this machine lists about 11,600 orphan repos and 2.8 GB; the real run frees it by `df` | a test per row at age − 1 and at age, plus one with a live holder |
 | S4 Lane slot row; `yi lanes reap` becomes `yi gc --lane` (#1125) | a slot released 15 days ago (mtime set) is removed; one held or unmerged is kept | feature-ledger `journey:` test over a real pool |
 | S5 uv and traces rows, ACP delete leak (#1126) | `yi gc` reports them | per-row tests |
 

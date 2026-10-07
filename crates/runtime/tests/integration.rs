@@ -67,6 +67,7 @@ mod reader_e2e;
 mod reap_kernel;
 mod recursion_e2e;
 mod requests_e2e;
+mod retention;
 mod rewind_branch;
 mod route_record;
 mod rules_e2e;

@@ -430,6 +430,7 @@ fn build_session(
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
     drop(levers);
+    yi_runtime::retention::sweep_hourly(home());
     yi_runtime::node::configure(config().node.clone().unwrap_or_default());
     if args.model.is_empty() {
         return Err(Refused {
@@ -1132,6 +1133,7 @@ fn dispatch(args: Args) {
         "fetch" => std::process::exit(fetch::run(&args)),
         "catalog" => std::process::exit(catalog::run(&args)),
         "doctor" => std::process::exit(doctor::run(&args)),
+        "gc" => lanes::run_gc(args.fix),
         "debug" => std::process::exit(debug::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
