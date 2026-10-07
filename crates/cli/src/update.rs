@@ -525,16 +525,45 @@ fn publish(
         .parent()
         .ok_or_else(|| format!("{} has no parent", dest.display()))?;
     std::fs::create_dir_all(parent).map_err(io(parent))?;
-    let staged_bin = parent.join(format!(".yi-new-{}", std::process::id()));
-    write_exec(&staged_bin, binary)?;
-    let staged = home.join(format!(".yi/.skills-new-{}", std::process::id()));
-    // Invariant: skills move only after the binary rename lands, so a failed update leaves both.
-    let result = stage_skills(&staged, skills)
-        .and_then(|()| std::fs::rename(&staged_bin, dest).map_err(io(dest)))
-        .and_then(|()| merge_skills(&staged, skills, &target));
-    let _ = std::fs::remove_file(&staged_bin);
-    let _ = std::fs::remove_dir_all(&staged);
+    let pid = std::process::id();
+    let new_bin = parent.join(format!(".yi-new-{pid}"));
+    let new_skills = home.join(format!(".yi/.skills-new-{pid}"));
+    let result = write_exec(&new_bin, binary)
+        .and_then(|()| stage_skills(&new_skills, &target, skills))
+        .and_then(|()| swap(dest, &new_bin, &target, &new_skills));
+    let _ = std::fs::remove_file(&new_bin);
+    let _ = std::fs::remove_dir_all(&new_skills);
     result
+}
+
+/// Invariant: each live path is replaced by one rename with its predecessor kept aside, so a
+/// failed update puts the old binary and the old skills tree back together.
+fn swap(dest: &Path, new_bin: &Path, target: &Path, new_skills: &Path) -> Result<(), String> {
+    let pid = std::process::id();
+    let old_bin = dest.with_file_name(format!(".yi-old-{pid}"));
+    let old_skills = target.with_file_name(format!(".skills-old-{pid}"));
+    std::fs::copy(dest, &old_bin).map_err(io(dest))?;
+    if let Err(error) = std::fs::rename(new_bin, dest) {
+        let _ = std::fs::remove_file(&old_bin);
+        return Err(io(dest)(error));
+    }
+    let had = target.exists();
+    let moved = if had {
+        std::fs::rename(target, &old_skills).map_err(io(target))
+    } else {
+        Ok(())
+    }
+    .and_then(|()| std::fs::rename(new_skills, target).map_err(io(target)));
+    if let Err(error) = moved {
+        if had && !target.exists() {
+            let _ = std::fs::rename(&old_skills, target);
+        }
+        let _ = std::fs::rename(&old_bin, dest);
+        return Err(error);
+    }
+    let _ = std::fs::remove_dir_all(&old_skills);
+    let _ = std::fs::remove_file(&old_bin);
+    Ok(())
 }
 
 fn write_exec(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -547,14 +576,40 @@ fn write_exec(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn stage_skills(staging: &Path, skills: &[(String, Vec<u8>)]) -> Result<(), String> {
+fn stage_skills(staging: &Path, target: &Path, skills: &[(String, Vec<u8>)]) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(staging);
+    std::fs::create_dir_all(staging).map_err(io(staging))?;
+    if target.exists() {
+        copy_tree(target, staging)?;
+    }
     for (relative, bytes) in skills {
         let path = skill_file(staging, relative)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(io(parent))?;
         }
         std::fs::write(&path, bytes).map_err(io(&path))?;
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
+    while let Some((from, to)) = pending.pop() {
+        for entry in std::fs::read_dir(&from).map_err(io(&from))? {
+            let entry = entry.map_err(io(&from))?;
+            let (source, copy) = (entry.path(), to.join(entry.file_name()));
+            let kind = entry.file_type().map_err(io(&source))?;
+            if kind.is_dir() {
+                std::fs::create_dir(&copy).map_err(io(&copy))?;
+                pending.push((source, copy));
+            } else if kind.is_symlink() {
+                let link = std::fs::read_link(&source).map_err(io(&source))?;
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(link, &copy).map_err(io(&copy))?;
+            } else {
+                std::fs::copy(&source, &copy).map_err(io(&copy))?;
+            }
+        }
     }
     Ok(())
 }
@@ -570,18 +625,6 @@ fn skill_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
         path.push(part);
     }
     Ok(path)
-}
-
-fn merge_skills(staged: &Path, skills: &[(String, Vec<u8>)], target: &Path) -> Result<(), String> {
-    for (relative, _) in skills {
-        let from = skill_file(staged, relative)?;
-        let to = skill_file(target, relative)?;
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).map_err(io(parent))?;
-        }
-        std::fs::rename(&from, &to).map_err(io(&to))?;
-    }
-    Ok(())
 }
 
 fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {
@@ -986,6 +1029,53 @@ mod tests {
         );
         left.sort();
         assert_eq!(left, ["skills", "yi"], "no staging left behind");
+        Ok(())
+    }
+
+    fn old_install(tmp: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+        let home = tmp.join("home");
+        std::fs::create_dir_all(home.join(".yi/skills/yi/SKILL.md"))?;
+        std::fs::write(home.join(".yi/skills/yi/SKILL.md/mine.md"), b"mine")?;
+        let dest = tmp.join("prefix/yi");
+        std::fs::create_dir_all(tmp.join("prefix"))?;
+        std::fs::write(&dest, b"old")?;
+        Ok((home, dest))
+    }
+
+    #[test]
+    fn a_failure_mid_merge_leaves_the_old_binary_and_skills()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = Tmp::new()?;
+        let (home, dest) = old_install(&tmp.0)?;
+        let skills = [
+            ("a/one.md".to_owned(), b"one".to_vec()),
+            ("yi/SKILL.md".to_owned(), b"new skill".to_vec()),
+        ];
+        publish(&dest, b"new", &home, &skills).expect_err("collision");
+        assert_eq!(std::fs::read(&dest)?, b"old");
+        assert!(!home.join(".yi/skills/a").exists());
+        assert_eq!(
+            std::fs::read(home.join(".yi/skills/yi/SKILL.md/mine.md"))?,
+            b"mine"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_skills_swap_restores_the_old_binary() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = Tmp::new()?;
+        let (home, dest) = old_install(&tmp.0)?;
+        let blocker = home.join(format!(".yi/.skills-old-{}", std::process::id()));
+        std::fs::create_dir_all(&blocker)?;
+        std::fs::write(blocker.join("held"), b"held")?;
+        let skills = [("a/one.md".to_owned(), b"one".to_vec())];
+        publish(&dest, b"new", &home, &skills).expect_err("swap");
+        assert_eq!(std::fs::read(&dest)?, b"old");
+        assert!(!home.join(".yi/skills/a").exists());
+        assert_eq!(
+            std::fs::read(home.join(".yi/skills/yi/SKILL.md/mine.md"))?,
+            b"mine"
+        );
         Ok(())
     }
 }
