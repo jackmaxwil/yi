@@ -304,8 +304,10 @@ fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
     Ok(())
 }
 
+/// Dies with a stale view refused, which sent the model to view and rebuild its call, or with a
+/// set from it deleting the row the user added since: the set lands and keeps that row.
 #[test]
-fn a_stale_touched_counter_is_refused_so_a_user_edit_survives() -> TestResult {
+fn a_stale_set_lands_and_keeps_the_row_a_user_added() -> TestResult {
     let (_root, session) = session("stale")?;
     let store = store_for(&session);
     store.apply(
@@ -323,23 +325,94 @@ fn a_stale_touched_counter_is_refused_so_a_user_edit_survives() -> TestResult {
         None,
         "user",
     )?;
-    let error = store
-        .apply(
-            Op::Done {
-                target: Target::Label(label("a")?),
-                evidence: None,
-            },
-            Some(1),
-        )
-        .err()
-        .ok_or("a stale op must be refused")?;
+    let applied = store.apply(
+        Op::Set {
+            list: "- [>] a\n- [ ] b\n".to_owned(),
+        },
+        Some(1),
+    )?;
+    let labels: Vec<String> = applied
+        .list
+        .items()
+        .map(|item| item.label.to_string())
+        .collect();
     assert!(
-        matches!(error, TodoError::Stale { now: 2, sent: 1 }),
-        "{error}"
+        labels.contains(&"user added".to_owned()) && labels.contains(&"b".to_owned()),
+        "{labels:?}"
     );
-    assert_eq!(
-        latest_record(&session).map(|record| record.actor),
-        Some("user".to_owned())
+    assert!(
+        applied
+            .notes
+            .iter()
+            .any(|note| note.contains("changed since you last saw it"))
+            && applied
+                .notes
+                .iter()
+                .any(|note| note.contains("\"user added\"")),
+        "{:?}",
+        applied.notes
+    );
+    Ok(())
+}
+
+/// Dies with a stale set deleting a subtask the user added under a row it kept, and with a stale
+/// point op refused again: the old view lands on the list as it is now, children included.
+#[test]
+fn a_stale_view_keeps_a_users_subtask_and_lands_a_point_op() -> TestResult {
+    let (_root, session) = session("stale-child")?;
+    let store = store_for(&session);
+    store.apply(
+        Op::Init {
+            phases: vec![(PhaseName::new("Tasks")?, vec![item("a")?])],
+        },
+        None,
+    )?;
+    store.apply_as(
+        Op::Append {
+            phase: None,
+            under: Some(TodoLabel::new("a")?),
+            items: vec![item("user sub")?],
+        },
+        None,
+        "user",
+    )?;
+    let applied = store.apply(
+        Op::Set {
+            list: "- [>] a\n- [ ] b\n".to_owned(),
+        },
+        Some(1),
+    )?;
+    let a = (applied.list.items())
+        .find(|row| row.label.as_str() == "a")
+        .ok_or("a missing")?;
+    assert!(
+        a.children
+            .iter()
+            .any(|row| row.label.as_str() == "user sub"),
+        "{:?}",
+        applied.list
+    );
+    assert!(
+        applied
+            .notes
+            .iter()
+            .any(|note| note.contains("\"user sub\"")),
+        "{:?}",
+        applied.notes
+    );
+    let appended = store.apply(
+        Op::Append {
+            phase: None,
+            under: None,
+            items: vec![item("c")?],
+        },
+        Some(1),
+    )?;
+    assert!(appended.list.items().any(|row| row.label.as_str() == "c"));
+    assert!(
+        (appended.notes.iter()).any(|note| note.contains("changed since you last saw it")),
+        "{:?}",
+        appended.notes
     );
     Ok(())
 }
@@ -416,20 +489,25 @@ fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
         },
         None,
     )?;
-    let closed = store
-        .apply(
-            Op::Set {
-                list: "- [x] c\n- [x] d\n".to_owned(),
-            },
-            None,
-        )
-        .err()
-        .ok_or("a set that moves an item to done must be refused")?;
+    let closed = store.apply(
+        Op::Set {
+            list: "- [x] c\n- [x] d\n- [ ] h\n".to_owned(),
+        },
+        None,
+    )?;
     assert!(
-        matches!(closed, TodoError::SetClosed { ref labels } if labels == "\"c\""),
-        "{closed}"
+        closed
+            .notes
+            .iter()
+            .any(|note| note.starts_with("\"c\" kept open: done needs evidence")),
+        "{:?}",
+        closed.notes
     );
-    assert_eq!(store.progress().open, 1, "the refused set moved nothing");
+    assert_eq!(
+        store.progress().open,
+        2,
+        "c stays open and the new row h lands"
+    );
     Ok(())
 }
 
@@ -1045,6 +1123,13 @@ const GOLDEN: &str = include_str!("fixtures/todo/golden.jsonl");
 /// Synthetic calls of the shapes the 2026-09-11 v4 sweep's models sent, with the call each `means`
 /// or the refusal `text` it keeps; the sweep's own calls stay out of the repository.
 const SHAPES: &str = include_str!("fixtures/todo/shapes.jsonl");
+/// Calls a later decision answers anew (a stale view merges, a set keeps a closed row open): the
+/// fixtures keep main's recorded refusal, replay skips them as that refusal did, their own tests pin them.
+const DECIDED: [(&str, usize); 3] = [
+    ("state-refusals", 8),
+    ("set-cannot-close", 2),
+    ("set-cannot-close-twice", 1),
+];
 
 struct Sequence {
     name: String,
@@ -1128,6 +1213,9 @@ fn every_well_formed_call_returns_mains_result() -> TestResult {
     for sequence in sequences(GOLDEN)? {
         let (_root, tool) = replayed_to(&sequence, 0, "same")?;
         for (index, row) in sequence.calls.iter().enumerate() {
+            if DECIDED.contains(&(sequence.name.as_str(), index)) {
+                continue;
+            }
             let (is_error, text) = replay(&tool, &row["args"]);
             assert_eq!(
                 row["isError"], is_error,
@@ -1138,7 +1226,7 @@ fn every_well_formed_call_returns_mains_result() -> TestResult {
             calls += 1;
         }
     }
-    assert_eq!(calls, 87);
+    assert_eq!(calls, 86);
     Ok(())
 }
 
@@ -1147,7 +1235,7 @@ fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
     let (mut landed, mut refused, mut wrong) = (0, 0, Vec::new());
     for sequence in sequences(SHAPES)? {
         for (index, row) in sequence.calls.iter().enumerate() {
-            if row["isError"] == false {
+            if row["isError"] == false || DECIDED.contains(&(sequence.name.as_str(), index)) {
                 continue;
             }
             let (_root, tool) = replayed_to(&sequence, index, "sent")?;
@@ -1181,7 +1269,7 @@ fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!((landed, refused), (17, 9), "of the 26 refused calls");
+    assert_eq!((landed, refused), (17, 7), "of the 24 refused calls left");
     Ok(())
 }
 

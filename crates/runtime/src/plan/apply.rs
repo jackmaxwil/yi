@@ -119,7 +119,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                 .map(|(row, _)| Value::Object(row.clone()))
                 .collect(),
         );
-        let issue = match tool.apply_one(&set) {
+        let issue = match tool.apply(&set) {
             Ok(_) => {
                 open = None;
                 break;
@@ -141,7 +141,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     }
     for op in rows.iter().filter_map(|(_, moves)| moves.as_ref()) {
         let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
-        if let Err(error) = tool.apply_one(op.as_object().unwrap_or(&Map::new())) {
+        if let Err(error) = tool.apply(op.as_object().unwrap_or(&Map::new())) {
             conditions.push(format!("{label}: {error}"));
         }
     }
@@ -150,7 +150,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     if let Some(plan) = args.get("plan") {
         view.insert("plan".to_owned(), plan.clone());
     }
-    let mut text = tool.apply_one(&view)?;
+    let mut text = tool.apply(&view)?;
     for condition in conditions {
         text.push_str(&format!("\nnote: {condition}"));
     }
