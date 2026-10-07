@@ -119,6 +119,13 @@ pub(crate) fn handle_plan_tree_key(app: &mut App, key: &SingleKey) {
 }
 
 pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
+    if key.code == KeyCodeValue::Char('c')
+        && key.ctrl
+        && !matches!(app.bottom, Some(Bottom::Approval(..)))
+    {
+        app.bottom = None;
+        return;
+    }
     let Some(mut bottom) = app.bottom.take() else {
         return;
     };
@@ -206,7 +213,7 @@ pub(crate) fn handle_action(
                 return;
             }
             let now = Instant::now();
-            if !app.composer.is_empty() {
+            if !app.composer.textarea.is_empty() {
                 app.composer.set_text("");
                 return;
             }
@@ -258,7 +265,8 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "editor" => app.pending_editor = true,
         "agents" => app.open_agents(),
         "model" => app.open_model_picker(),
-        "advisor" | "plan" | "goal" | "permissions" | "compact" | "sessions" | "heartbeat" => {
+        "advisor" | "plan" | "goal" | "permissions" | "compact" | "sessions" | "heartbeat"
+        | "todo" => {
             app.pending_command = Some(if args.is_empty() {
                 command.to_owned()
             } else {
@@ -303,5 +311,17 @@ pub(crate) fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::Unbounded
             app.pending_open_tree = true;
         }
         _ => app.last_esc_at = Some(now),
+    }
+}
+
+impl App {
+    /// An open approval never takes it (closing it rejects the tool call); a closed box takes it
+    /// when it holds any text, the one predicate [`Action::Quit`] clears on.
+    pub fn takes_ctrl_c(&self) -> bool {
+        match &self.bottom {
+            Some(Bottom::Approval(..)) => false,
+            Some(_) => true,
+            None => !self.composer.textarea.is_empty(),
+        }
     }
 }
