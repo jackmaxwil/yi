@@ -868,7 +868,7 @@ def promote(repo, pr, rounds):
     if not (title.startswith(DRAFT) and promotes(rounds, pr["head"]["sha"], holds_for(number, pr["base"]["ref"]))):
         return False
     ready = forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
-    print(f"#{number}: " + ("out of draft, two clean rounds and nothing above low left" if (ready or {}).get("number")
+    print(f"#{number}: " + ("out of draft, two clean rounds and nothing left holding it" if (ready or {}).get("number")
                             else f"stays a draft, the forge refused: {(ready or {}).get('message')}"))
     return bool((ready or {}).get("number"))
 
