@@ -147,8 +147,8 @@ impl Aside {
     }
 }
 
-/// Invariant: a reader sees the old target or the whole new one; a file is replaced by one
-/// rename over a hard link of it, a directory by a rename aside, and a symlink is refused.
+/// Invariant: a reader sees the old target or the whole new one; a file is replaced by one rename
+/// over a hard link of it (a copy where links fail), a directory by a rename aside; no symlink.
 pub fn swap_in(staging: &Path, target: &Path) -> Result<Aside, String> {
     let describe = |error: std::io::Error| format!("{}: {error}", target.display());
     let old = target.with_extension(format!("old-{}", std::process::id()));
@@ -160,7 +160,13 @@ pub fn swap_in(staging: &Path, target: &Path) -> Result<Aside, String> {
             ));
         }
         Ok(meta) if meta.is_dir() => std::fs::rename(target, &old).map(|()| Some(old)),
-        Ok(_) => std::fs::hard_link(target, &old).map(|()| Some(old)),
+        Ok(_) => match std::fs::hard_link(target, &old) {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                std::fs::copy(target, &old).map(|_| ())
+            }
+            linked => linked,
+        }
+        .map(|()| Some(old)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
