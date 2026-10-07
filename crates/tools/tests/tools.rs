@@ -1143,8 +1143,32 @@ fn a_backgrounded_job_still_dies_at_timeout_secs() -> TestResult {
         )),
         "{killed}"
     );
+    assert!(
+        polled.is_error,
+        "a job Yi killed is a call it could not finish"
+    );
     let at = clock.elapsed();
     assert!(at < std::time::Duration::from_secs(11), "killed at {at:?}");
+    Ok(())
+}
+
+/// Dies with a finished failing job flagged as a tool fault: like a foreground command, a job
+/// that ran and exited non-zero is a result the model reads, and still shows as failed.
+#[test]
+fn a_polled_job_that_exited_nonzero_is_a_result() -> TestResult {
+    let dir = temp_dir("background-exit")?;
+    let tool = BashTool::default();
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let started = tool.execute(args(&[("command", json!("sleep 1; exit 3"))]), &context);
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    assert!(!polled.is_error, "{:?}", polled.result.content);
+    assert_eq!(polled.result.details["exitCode"], json!(3));
+    assert!(yi_types::event::shown_failed(
+        polled.is_error,
+        &polled.result.details
+    ));
     Ok(())
 }
 

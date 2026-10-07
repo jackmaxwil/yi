@@ -146,6 +146,7 @@ pub struct Replay {
     pub todos: Option<TodoList>,
     pub context_window: Option<u64>,
     pub child: Option<String>,
+    pub stats: Option<yi_types::wire::SessionStats>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -267,6 +268,9 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
                     .and_then(|value| serde_json::from_value::<TodoList>(value).ok()),
                 context_window: fields.get("contextWindow").and_then(Value::as_u64),
                 child: string(fields.get("childId")),
+                stats: fields
+                    .remove("stats")
+                    .and_then(|value| serde_json::from_value(value).ok()),
             };
             Ok(Decoded::Replay(Box::new(replay), entries))
         }

@@ -128,14 +128,19 @@ impl SessionState {
         if let Entry::Message { message, .. } = entry
             && let yi_types::message::AgentMessage::Assistant { usage, .. } = message
         {
-            self.stats.cached_tokens = self.stats.cached_tokens.saturating_add(usage.cache_read);
-            self.stats.uncached_tokens = self
-                .stats
-                .uncached_tokens
-                .saturating_add(usage.input.saturating_add(usage.cache_write));
-            self.stats.total_tokens = self.stats.total_tokens.saturating_add(usage.total_tokens);
-            self.stats.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
+            self.absorb_usage(usage);
         }
+    }
+
+    fn absorb_usage(&mut self, usage: &yi_types::message::Usage) {
+        self.stats.cached_tokens = self.stats.cached_tokens.saturating_add(usage.cache_read);
+        self.stats.uncached_tokens = self
+            .stats
+            .uncached_tokens
+            .saturating_add(usage.input.saturating_add(usage.cache_write));
+        self.stats.total_tokens = self.stats.total_tokens.saturating_add(usage.total_tokens);
+        self.stats.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
+        self.stats.unknown_usage |= usage.unknown;
     }
 
     pub fn apply_mutation(&mut self, mutation: Mutation) -> Result<(), SessionError> {
@@ -222,15 +227,7 @@ impl SessionState {
                     LaneRecord::Usage { cause, .. } if cause == "assistant"
                 );
                 if let Some(usage) = record.usage().filter(|_| !mirrors_entry) {
-                    self.stats.cached_tokens =
-                        self.stats.cached_tokens.saturating_add(usage.cache_read);
-                    self.stats.uncached_tokens = self
-                        .stats
-                        .uncached_tokens
-                        .saturating_add(usage.input.saturating_add(usage.cache_write));
-                    self.stats.total_tokens =
-                        self.stats.total_tokens.saturating_add(usage.total_tokens);
-                    self.stats.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
+                    self.absorb_usage(usage);
                 }
             }
             Mutation::Lane { lane, leaf_id, .. } => {

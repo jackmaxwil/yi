@@ -154,3 +154,53 @@ fn a_replayed_turn_reads_as_the_live_one_did() -> TestResult {
     assert!(divided, "a divider opens the second turn: {lines:#?}");
     Ok(())
 }
+
+fn priced(text: &str, cost: f64, unknown: bool) -> Result<AgentMessage, Box<dyn Error>> {
+    Ok(serde_json::from_value(json!({
+        "role": "assistant", "content": [{"type": "text", "text": text}], "api": "faux",
+        "provider": "faux", "model": "faux-1", "stopReason": "stop", "timestamp": 0,
+        "usage": {"input": 400, "output": 20, "cacheRead": 9_600, "cacheWrite": 0,
+            "totalTokens": 10_020, "unknown": unknown,
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": cost}},
+    }))?)
+}
+
+/// Dies with a restarted `yi` showing $0 for a session that had spent: the row's dollars were a
+/// sum of live replies. A second load (a rewind, a reconnect) must set the figure, not add to it.
+#[test]
+fn a_resumed_session_shows_its_stored_spend_and_cache_rate_once() -> TestResult {
+    use std::sync::Arc;
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = crate::scratch::Scratch::new("yi-tui-resume-spend")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned());
+    let store = repo.create(CreateOptions::default())?;
+    {
+        let mut ledger = lock_session(&store);
+        ledger.append_message("main", typed("price the build"))?;
+        ledger.append_message("main", priced("costed", 0.1, false)?)?;
+        ledger.append_message("main", priced("unreported", 0.0, true)?)?;
+        let record = crate::usage_record::child_usage(ledger.next_id(), 100, 0.05)?;
+        ledger.append_record(record)?;
+    }
+    let session = Arc::new(yi_runtime::AgentSession::new(
+        yi_runtime::SessionConfig {
+            system_prompt: String::new(),
+            model: common::test_model("faux-1"),
+            thinking_level: None,
+            tool_execution: yi_runtime::ExecutionMode::Sequential,
+        },
+        Arc::new(yi_runtime::ProviderStream::new(None)),
+    ));
+    session.attach_store(store)?;
+    let mut port = Arc::clone(&session);
+    let mut app = app();
+    for load in ["first", "second"] {
+        app.load_history(&mut port);
+        let row = status_row(&mut app)?;
+        assert!(
+            row.contains("≥$0.150") && row.contains("95% cached"),
+            "{load} load: {row:?}"
+        );
+    }
+    Ok(())
+}
