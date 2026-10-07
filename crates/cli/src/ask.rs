@@ -320,10 +320,7 @@ async fn follow(
                 },
         } = &event
         {
-            use yi_types::message::Content;
-            let text = content.iter().any(
-                |block| matches!(block, Content::Text { text, .. } if !text.trim().is_empty()),
-            );
+            let text = yi_types::message::has_text(content);
             said_anything |= text;
             last_stop = Some((*stop_reason, text));
             said.push(std::mem::take(&mut answer));
