@@ -130,7 +130,10 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
         } else {
             let mut ops = row_ops(&mut row, &label, was);
             let want = row.get("state").and_then(Value::as_str).unwrap_or_default();
-            if !ops.is_empty() || ["failed", "dropped"].contains(&want) {
+            if !ops.is_empty()
+                || ["failed", "dropped"].contains(&want)
+                || (row.get("state").is_none() && was.is_some())
+            {
                 let state = was.map_or("pending", TodoStateName::as_str);
                 row.insert("state".to_owned(), json!(state));
             }
@@ -516,17 +519,17 @@ pub(super) fn noted(mut text: String, said: Vec<String>) -> String {
     text
 }
 
-/// Rows a `set` does not name stay as they are, so a set from a stale view never deletes one;
-/// a row leaves the plan by state `dropped`, which the set returns for [`drop_struck`].
+/// Invariant: a `set` from a stale view never deletes a row it left out; the session todo list
+/// holds the same rule, so a fix to one walks the other. A row leaves by state `dropped`.
 pub(super) fn keep_omitted(
     tool: &PlanTool,
     mut request: OpRequest,
     said: &mut Vec<String>,
 ) -> (OpRequest, Vec<OpRequest>) {
-    let active =
-        |plan: &yi_types::plan::doc::Plan| plan.state == yi_types::plan::doc::PlanState::Active;
-    let held = (viewed(tool, request.plan.clone()).filter(active))
-        .map_or_else(Vec::new, |plan| plan.todos);
+    if !matches!(request.op, Op::Set { .. }) {
+        return (request, Vec::new());
+    }
+    let held = viewed(tool, request.plan.clone()).map_or_else(Vec::new, |plan| plan.todos);
     let template = request.clone();
     let Op::Set { rows, .. } = &mut request.op else {
         return (request, Vec::new());

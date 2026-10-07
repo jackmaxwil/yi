@@ -46,7 +46,6 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<Str
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    unsent_nulls(&mut args);
     super::ask::few_options(&mut args, &mut said);
     for row in (args
         .get_mut("todos")
@@ -58,6 +57,7 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<Str
         super::ask::few_options(row, &mut said);
     }
     fold_row(&mut args, &mut said);
+    unsent_nulls(&mut args);
     labels(&op, &mut args);
     cut_labels(&mut args, &mut said);
     if let ("init" | "append", Some(shared)) = (op.as_str(), args.remove("delegation"))
@@ -337,15 +337,6 @@ fn lift_row(row: &mut Value, said: &mut Vec<String>) {
     ));
 }
 
-/// A key sent as null is a key not sent, in the call and in each of its rows.
-fn unsent_nulls(args: &mut Map<String, Value>) {
-    args.retain(|_, value| !value.is_null());
-    let rows = args.get_mut("todos").and_then(Value::as_array_mut);
-    for row in rows.into_iter().flatten().filter_map(Value::as_object_mut) {
-        row.retain(|_, value| !value.is_null());
-    }
-}
-
 /// A label past the cap is cut to it wherever it is named, so the todo and a later call that
 /// names it in full meet at the same label.
 pub(super) fn cut_labels(args: &mut Map<String, Value>, said: &mut Vec<String>) {
@@ -576,6 +567,15 @@ fn fold_row(args: &mut Map<String, Value>, said: &mut Vec<String>) {
             _ => said
                 .push("a todo's fields beside the goal repeat a row in todos; left out".to_owned()),
         }
+    }
+}
+
+/// A key sent as null in a row is a key not sent; the call's own nulls are stripped by the
+/// adapter before the plan tool reads them.
+fn unsent_nulls(args: &mut Map<String, Value>) {
+    let rows = args.get_mut("todos").and_then(Value::as_array_mut);
+    for row in rows.into_iter().flatten().filter_map(Value::as_object_mut) {
+        row.retain(|_, value| !value.is_null());
     }
 }
 

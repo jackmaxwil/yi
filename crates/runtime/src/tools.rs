@@ -52,7 +52,8 @@ fn unsent_empties(schema: &Value, mut args: Map<String, Value>) -> Map<String, V
             Value::String(text) => ["", "[]", "{}", "null"].contains(&text.trim()),
             Value::Array(items) => items.is_empty(),
             Value::Object(fields) => fields.is_empty(),
-            Value::Null | Value::Bool(_) | Value::Number(_) => false,
+            Value::Null => true,
+            Value::Bool(_) | Value::Number(_) => false,
         };
         !empty || required(key)
     });
