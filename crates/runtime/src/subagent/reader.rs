@@ -200,6 +200,7 @@ pub fn session(
         schema: reader.schema.clone(),
         shared_through: reader.shared_through,
     });
+    let wall = build.wall.clone();
     child.set_wall(build.wall);
     if let Some(rules) = rules {
         if reader.role == Role::Worker {
@@ -209,10 +210,25 @@ pub fn session(
         }
         child.set_rules_engine(rules);
     }
-    let named: Vec<_> = tools
+    let mut named: Vec<_> = tools
         .into_iter()
         .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
         .collect();
+    let resolver = crate::fetch::Resolver::for_child(
+        cwd.clone(),
+        wall,
+        build.link.child_name.clone(),
+        child.store_handle(),
+        broker.as_deref(),
+    );
+    let resolver = match build.link.host.upgrade() {
+        Some(host) => resolver.with_plans_dir(host.options.plans_dir.clone()),
+        None => resolver,
+    };
+    crate::fetch::route_urls(&mut named, &Arc::new(resolver));
+    if named.iter().any(|tool| tool.name() == "bash") {
+        crate::wiring::wire_job_completions(&child);
+    }
     if named.is_empty() {
         child.set_reuse(yi_types::model::Reuse::OneShot);
     }

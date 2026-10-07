@@ -1,0 +1,549 @@
+[
+  {
+    "name": "read",
+    "description": "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match; when that line defines a name, the references to it in files of the same type follow. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones. Files in these formats are converted to Markdown: doc, docx (docm), odt, pdf, ppt (pps, pot), pptx (ppsx, ppsm, pptm), rtf, epub, xlsx (xls, xlsm, xlsb), ods, odp. The Markdown is read-only (edit and write refuse the original), files past 256 MiB are refused, PDF pages without a text layer are left out, a PDF page with a table or two columns arrives as plain text in reading order under a note saying so, and pages=\"3-5\" reads only those PDF pages.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File, directory, or glob such as src/**/*.rs (relative to the working directory, or absolute)"
+        },
+        "find": {
+          "type": "string",
+          "description": "Show the block around the first line containing this text, then, for a definition, its references; exclusive with offset/ranges"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "1-based first line to read"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max lines (default 2000; explicit values may exceed it, byte-budgeted)"
+        },
+        "ranges": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "description": "1-based inclusive [start, end] windows; exclusive with offset/limit"
+        },
+        "pages": {
+          "type": "string",
+          "description": "PDF only: the 1-based pages to convert, such as \"3-5,9\"; the rest are left out"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "edit",
+    "description": "Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste; then give new content. `:` headers take `+` body rows; colonless paste `PUT`, `CUT`, `REM`, `MV` take none.\n\n<headers>\nSection: `[PATH#TAG]` or `[PATH]`; `TAG`: 4-hex snapshot from the `read`/`grep`/`write`/`edit` output the numbers came from; omitted = the latest one shown. A tag never shown for this path is REJECTED. New files: `write`; hashline edits existing files only.\n</headers>\n\n<ops>\n`PUT N.=M:`: replace original inclusive lines N–M with body.\n`PUT N*:`: replace syntactic block beginning N; closing line resolved.\n`PUT <N:` insert body rows before line N (`PUT <1:` = file head).\n`PUT >N:` insert body rows after line N (`PUT >$:` = file tail).\n`PUT >N*:`: insert after block N's end, at sibling depth. Append inside block: `PUT >M:`.\n`PUT <N @name` / `PUT >N @name` paste register `@name` at the gap before/after line N; omit `@name` for the anonymous register.\n`PUT N.=M @name` / `PUT N* @name` paste `@name` over the range / resolved block; `@name` required here.\n`CUT N.=M` / `CUT N*`: delete and capture inclusive lines N–M / block N; anonymous or given `@name`.\n`REM`: delete section file. `MV DEST`: move/rename (quote paths with spaces); prior edits apply to source, final content to `DEST`.\nSingle line: `PUT N.=N:` / `CUT N.=N`. Ranges name original inclusive touched lines; body length irrelevant.\n</ops>\n\n<body-rows>\nOnly below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+`: blank. NEVER `-old`, bare, or context rows: range deletes; body is final content. Keep line: exclude it from every range. Literal initial `-`/`+`: `- item` → `+- item`; `+ item` → `++ item`.\n</body-rows>\n\n<rules>\n- Numbers: `LINE:TEXT` from any `read`/`grep`/`edit` output this session; the tool maps them onto the current file (`rebased` in the response). A cited line that itself changed since is rejected with the current text. Within one call numbers are original, never shifted by hunks.\n- Touch only lines displayed this session by `read`/`grep`/`write`/`edit` output or by an edit refusal that printed them; undisplayed hunks REJECTED. The refusal prints ≤40 rows (each such line ±2) and a retry then lands; past that, `read` with `ranges=[[a,b]]` first.\n- Elisions UNSEEN: `…`, `..`, collapsed `N-M:` rows. NEVER hunk in/across one; `read` first.\n- NEVER start/end range mid-expression or mid-block.\n- Ranges: changed lines only; NEVER widen over keepers. Non-adjacent changes: separate hunks.\n- Whole construct: `PUT N*:`; internal lines: `PUT N.=M:`.\n- `PUT N*:` resolves exactly node N. Leading decorators/attributes/doc-comments are separate nodes: point N at first decorator to include both. Standalone line-comments never swept: use `PUT N.=M:`.\n- Block ops: opening line of multi-line construct, NEVER closer, last line, bare inner statement. One statement: plain `PUT N.=N:` / `CUT N.=N` / `PUT >N:`. At closer: `PUT >M:`.\n- Markdown headings are block openers. Block op on `##`/`###`: whole section through deeper headings to next same/higher heading. After section `PUT >N*:`: end body with blank line to separate next heading.\n- Pure addition: `PUT <N:` / `PUT >N:`, NEVER widened `PUT N.=M:`.\n- Move: `CUT`+`PUT`; `CUT 5.=9 @fn` → `@fn`, `PUT >40 @fn` pastes. Single call-local move: unlabeled `CUT` + `PUT >40`. Named registers persist across edit calls.\n- NEVER format/restyle with this tool; run project formatter.\n</rules>\n\n<example>\n`read` output shape:\n```\n[greet.py#A1B2]\n1:def greet(name):\n2:    msg = \"Hello, \" + name\n3:    print(msg)\n4:greet(\"world\")\n```\n\nEdit, then move:\n```\n[greet.py#A1B2]\nPUT 1.=3:\n+def greet(name):\n+    print(f\"Hi, {name}\")\nMV lib/greet.py\n```\n\nMarkdown bullets — file receives `- task`:\n```\n[PLAN.md#A1B2]\nPUT >2:\n+- task\n+  - nested task\n```\n\nMove `greet` to sibling file via named register; flows across sections:\n```\n[greet.py#A1B2]\nCUT 1* @fn\n[other.py#3C4D]\nPUT <1 @fn\n```\n\n`PUT 1*:` resolves lines 1–3 (`def` through `print(msg)`); line 4 separate, remains:\n```\n[greet.py#A1B2]\nPUT 1*:\n+def greet(name):\n+    print(f\"Hello, {name}\")\n```\n\nDecorator/doc-comment separate block: point N at decorator to include both; anchoring `def` line 2 orphans `@cache`:\n```\n[svc.py#C3D4]\nPUT 1*:\n+@cache\n+def load(key):\n+    return store[key]\n```\n</example>\n\n<anti-patterns>\n# WRONG — empty `PUT` to delete. RIGHT: `CUT 4.=4`\nPUT 4.=4:\n\n# WRONG — range sized to the post-edit content. RIGHT: `PUT 1.=1:` (body length irrelevant)\nPUT 1.=2:\n+def greet(name):\n\n# WRONG — `-` rows / bare context lines do not exist; the range deletes, the body is only new content.\nPUT 3.=3:\n    msg = \"Hello, \" + name\n-   print(msg)\n+   return msg\n# RIGHT\nPUT 3.=3:\n+   return msg\n\n# WRONG — pure insertion as a widened `PUT`: retyped keepers get dropped (here line 4).\nPUT 2.=4:\n+    msg = \"Hello, \" + name\n+    extra = compute(name)\n+    print(msg)\n# RIGHT — touch nothing you keep.\nPUT >2:\n+    extra = compute(name)\n\n# WRONG — `PUT >N*:` anchored on the closing delimiter / last visible line. RIGHT: plain `PUT >M:`\nPUT >3*:\n+after()\n# RIGHT\nPUT >3:\n+after()\n\n# WRONG — body rows under register PUT; register pastes take no body. RIGHT: bodyless `PUT >20 @fn`.\nPUT >20 @fn:\n+function f() {}\n</anti-patterns>\n\n<critical>\n1. RANGES TIGHT: changed lines only. Whole construct: `PUT N*:`.\n2. BODY FINAL CONTENT: every row starts `+`; Markdown bullet: `+- item`, not `- item`.\n</critical>\n",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string",
+          "description": "Hashline patch: [path#TAG] section headers followed by PUT/CUT/REM/MV ops and +TEXT body rows"
+        }
+      },
+      "required": [
+        "patch"
+      ]
+    }
+  },
+  {
+    "name": "write",
+    "description": "Write content to a file, creating parent directories and overwriting any existing file.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path (absolute, or relative to the working directory)"
+        },
+        "content": {
+          "type": "string",
+          "description": "Full file content to write"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    }
+  },
+  {
+    "name": "grep",
+    "description": "Search file contents with a regex (literal=true for plain text); office documents and PDFs are searched through the Markdown read shows. Hits group per file under a [path#TAG] header with LINE:TEXT rows; tag+line anchor edits directly. block shows each hit's enclosing function, def keeps definition lines, count counts per file, replace previews a rewrite and apply writes it. Pages 200 hits via offset.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": [
+            "string",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Regex (Rust syntax), or an array of them matched as alternatives"
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory or file to search (default: cwd)"
+        },
+        "literal": {
+          "type": "boolean",
+          "description": "Match the pattern as plain text"
+        },
+        "ignore_case": {
+          "type": "boolean",
+          "description": "Case-insensitive"
+        },
+        "include": {
+          "type": "string",
+          "description": "Glob on file paths: relative to path, or absolute"
+        },
+        "type": {
+          "type": "string",
+          "description": "Type filter: rust, py, js, ts, md, toml, json, yaml, sh, html, css, c"
+        },
+        "context": {
+          "type": "integer",
+          "description": "Context lines per side (max 10)"
+        },
+        "block": {
+          "type": "boolean",
+          "description": "Show each hit's enclosing block instead of context lines (max 20 hits per page)"
+        },
+        "def": {
+          "type": "boolean",
+          "description": "Only hits on definition lines (fn, struct, class, def, …)"
+        },
+        "count": {
+          "type": "boolean",
+          "description": "Per-file hit counts, descending"
+        },
+        "multiline": {
+          "type": "boolean",
+          "description": "Match across lines; a hit reports its first line"
+        },
+        "replace": {
+          "type": "string",
+          "description": "Replacement text ($1 captures); previews the diff, writes nothing"
+        },
+        "apply": {
+          "type": "boolean",
+          "description": "With replace: write the previewed rewrite and tag every file"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Matches to skip (paging)"
+        },
+        "files_with_matches": {
+          "type": "boolean",
+          "description": "Paths only, no content rows"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "name": "bash",
+    "description": "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to run. Omit it to check on a background job instead."
+        },
+        "job": {
+          "type": "integer",
+          "description": "Background job to check on; defaults to the most recent"
+        },
+        "wait": {
+          "type": "integer",
+          "description": "With command: seconds, below timeout_secs, before a still-running command becomes a background job. Without: seconds to wait for that job. Clamped 5-300."
+        },
+        "timeout_secs": {
+          "type": "integer",
+          "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."
+        },
+        "max_output_lines": {
+          "type": "integer",
+          "description": "Per-call reducer line budget, for when the full output matters"
+        }
+      }
+    }
+  },
+  {
+    "name": "get_context",
+    "description": "One orientation packet for the working directory: grid roots, symbol neighborhood, file skeletons, git change heat, gate commands, prior mining issues. Layers are clamped and name what they cut; the header says how many were available. Call it once, first, in a repository you have not read this session. PARTIAL - k of n layers means the missing layers are absent, not empty; read what the packet names.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Optional callsign or type name for the symbol-neighborhood layer"
+        }
+      }
+    }
+  },
+  {
+    "name": "ipython",
+    "description": "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `%%bash` runs a shell in the kernel's env (on macOS loopback only, so `%pip install` fails); pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout or stderr past 65,536 characters is cut, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a displayed value past that is cut with no file; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. The kernel is Yi's own venv over the machine's site-packages: what `python3` here imports, a cell imports; a project's own venv is reached through a `%%bash` cell that runs its interpreter or runner (`uv run`, `.venv/bin/python`, `cargo`, `npm`)."
+        }
+      },
+      "required": [
+        "code"
+      ]
+    }
+  },
+  {
+    "name": "ask_user",
+    "description": "Ask the user something only they can decide, and end the turn on it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose. Block the todo it waits on first. With auto-review on, `request` (the number a denial quoted) puts that denial to the user instead; a denial you do not escalate stays denied.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "What only the user can decide, in one sentence"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Two to four choices, the recommended one first"
+        },
+        "default": {
+          "type": "string",
+          "description": "The option you proceed on if the user does not answer"
+        },
+        "request": {
+          "type": "integer",
+          "description": "The request number quoted in an auto-review denial."
+        }
+      }
+    }
+  },
+  {
+    "name": "plan",
+    "description": "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. Declare todos with contracts and delegations; the engine starts, verifies and accepts delegated ones. done closes your own todos. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. It is the delegation ledger; the todo list shows it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "set",
+            "init",
+            "append",
+            "drop",
+            "block",
+            "unblock",
+            "reorder",
+            "add_edge",
+            "start",
+            "done",
+            "fail",
+            "retry",
+            "decompose",
+            "supersede",
+            "view",
+            "accepted_by_user"
+          ],
+          "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it; accepted_by_user asks the user, or the classifier in auto mode, to close a todo whose check cannot run here"
+        },
+        "list": {
+          "type": "string",
+          "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent; trailing `user://<n>` tokens cite the user's messages the row serves"
+        },
+        "plan": {
+          "type": "string",
+          "description": "Sub-plan id; omit for the root plan"
+        },
+        "goal": {
+          "type": "string",
+          "description": "init: the whole deliverable in one line"
+        },
+        "todos": {
+          "type": "array",
+          "minItems": 1,
+          "description": "init/append/decompose/supersede: the todos. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract",
+          "items": {
+            "type": "object",
+            "required": [
+              "label"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "the todo's name, imperative, at most 80 chars"
+              },
+              "after": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "labels of the todos this one waits on"
+              },
+              "intent": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "user://<n> of each user message it serves; default the latest"
+              },
+              "waived": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "description": "[{address, reason}]: a user message the plan leaves unserved"
+              },
+              "delegation": {
+                "type": "object",
+                "description": "{spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}"
+              },
+              "contract": {
+                "type": "object",
+                "required": [
+                  "class",
+                  "items"
+                ],
+                "description": "what must hold when the todo is done; done runs its items and passes at the threshold",
+                "properties": {
+                  "class": {
+                    "type": "string",
+                    "enum": [
+                      "writer",
+                      "reader",
+                      "inline"
+                    ],
+                    "description": "writer needs a critical cmd or example item, reader a critical schema item, inline either"
+                  },
+                  "covers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "globs whose writes preview the cmd items"
+                  },
+                  "threshold": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "description": "thousandths of the decided weight that must pass; default 1000"
+                  },
+                  "min_coverage": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "description": "thousandths of the whole weight that must decide rather than abstain; default 1000"
+                  },
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "critical",
+                        "weight",
+                        "decider"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "the item's name, unique in the contract"
+                        },
+                        "critical": {
+                          "type": "boolean",
+                          "description": "a failed critical item fails the todo, an abstaining one holds it"
+                        },
+                        "weight": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100,
+                          "description": "the item's share of the score"
+                        },
+                        "decider": {
+                          "type": "object",
+                          "description": "{cmd: \"shell command that exits 0 only when the item holds\"}, or {cmd: {checker: command, timeout_ms}} (default and ceiling 600000); {schema: {schema: artifact}}; {example: {cases: artifact, runner: artifact, timeout_ms}}; an artifact is {digest, media_type, length}"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "label": {
+          "type": "string",
+          "description": "drop/block/unblock/start/done/fail/retry/decompose/accepted_by_user: the todo"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "reorder: every label of the plan, in the new priority order"
+        },
+        "todo": {
+          "type": "string",
+          "description": "add_edge: the todo that waits"
+        },
+        "after": {
+          "type": "string",
+          "description": "add_edge: the sibling it waits on"
+        },
+        "on": {
+          "type": "object",
+          "description": "block: {\"child\": agent} | {\"user\": null} | {\"external\": {\"probe\": command}} | {\"channel\": {\"address\": \"clock://at <ISO time>\" or an exec://, file:// or channel:// address as in todo, \"filter\"?}}, unblocked by the first match"
+        },
+        "note": {
+          "type": "string",
+          "description": "block: what would unblock it; accepted_by_user: the check you ran by hand and its exit line"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by replying with its number, id or label; a preview is light (a line, a small diagram's source, or an address), at most 2048 bytes"
+        },
+        "cause": {
+          "type": "string",
+          "description": "fail: what went wrong"
+        },
+        "output": {
+          "type": "string",
+          "description": "done: url of the product; required when the delegation declares an output schema"
+        },
+        "delegation": {
+          "type": "object",
+          "description": "retry: replacement delegation, shaped as in todos"
+        },
+        "reason": {
+          "type": "string",
+          "description": "supersede: why the cut is wrong"
+        },
+        "full": {
+          "type": "boolean",
+          "description": "view: every todo instead of counts plus the frontier"
+        }
+      },
+      "required": [
+        "op"
+      ]
+    }
+  },
+  {
+    "name": "todo",
+    "description": "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "set",
+            "init",
+            "append",
+            "start",
+            "done",
+            "drop",
+            "block",
+            "unblock",
+            "rm",
+            "view"
+          ],
+          "description": "done/drop/rm also take a phase, or nothing for all"
+        },
+        "list": {
+          "type": "string",
+          "description": "set: the checklist; trailing `user://<n>` tokens on a row cite the user messages it serves"
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "init: [{name, items: [label]}]"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "init (flat, one phase) or append: labels to add"
+        },
+        "phase": {
+          "type": "string",
+          "description": "append: the phase (created if missing); done/drop/rm: every item in it"
+        },
+        "under": {
+          "type": "string",
+          "description": "append: the parent label the items nest under"
+        },
+        "id": {
+          "type": "string",
+          "description": "start/done/drop/block/unblock/rm: the item's id, e.g. t3; or use label"
+        },
+        "label": {
+          "type": "string",
+          "description": "start/done/drop/block/unblock/rm: the item, verbatim"
+        },
+        "evidence": {
+          "type": "string",
+          "description": "done: the command in backticks and the output line that proves it"
+        },
+        "reason": {
+          "type": "string",
+          "description": "drop: why the item no longer applies"
+        },
+        "on": {
+          "type": "string",
+          "description": "block: who it waits on: user, external, child, or an address: `clock://at <ISO time>`, `exec://<command>?every=30s`, `file://<path>`, `channel://<name>`; the first message matching `filter` unblocks it"
+        },
+        "filter": {
+          "type": "string",
+          "description": "block: `key=value&…` matched exactly, or a substring; `ok=true` waits for an exec to pass"
+        },
+        "note": {
+          "type": "string",
+          "description": "block: what would unblock it"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by number, id or label; a preview is light, at most 2048 bytes"
+        },
+        "touched": {
+          "type": "integer",
+          "description": "optional: the touched counter you last saw; a stale value is refused so a user edit is never overwritten"
+        }
+      }
+    }
+  }
+]

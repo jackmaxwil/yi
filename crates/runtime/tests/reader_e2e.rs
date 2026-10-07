@@ -169,7 +169,7 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         parent_messages: Arc::new(Vec::new),
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
-        plans_dir: workspace.join(".yi/plans"),
+        plans_dir: root.join("plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     host.set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
@@ -331,6 +331,40 @@ async fn a_reader_answers_without_tools_at_its_turn_cap() -> TestResult {
         rows.iter()
             .any(|(role, text)| role == "user" && text.starts_with("[turns] No more tool calls")),
         "the capped turn is told its tools are off: {rows:?}"
+    );
+    Ok(())
+}
+
+/// Incident (#992): two of five capped readers called a tool on their last turn; the call was
+/// refused and the run ended with no answer, which `result` reported as empty prose.
+#[tokio::test]
+async fn a_reader_that_calls_a_tool_on_its_capped_turn_still_answers() -> TestResult {
+    let read = |id: &str| {
+        let mut args = Map::new();
+        args.insert("path".to_owned(), Value::from("notes.txt"));
+        faux_assistant_message(vec![faux_tool_call(id, "read", args)], StopReason::ToolUse)
+    };
+    let script: Script = Arc::new(Mutex::new(vec![
+        read("c1"),
+        read("c2"),
+        reply("green sea is line 3"),
+    ]));
+    let family = family(4, script)?;
+    family.host.spawn(
+        "Which line names the sea?".to_owned(),
+        kwargs(json!({"name": "q9", "role": "reader", "turns": 2})),
+    )?;
+    let rows = transcript(&family, "q9").await?;
+    assert!(
+        rows.iter()
+            .any(|(role, text)| role == "tool" && text.contains("was not executed")),
+        "the capped turn's call is refused: {rows:?}"
+    );
+    let last = rows.iter().rev().find(|(role, _)| role == "assistant");
+    assert_eq!(
+        last.map(|(_, text)| text.as_str()),
+        Some("green sea is line 3"),
+        "{rows:?}"
     );
     Ok(())
 }
@@ -915,6 +949,90 @@ async fn a_workers_reminder_fires_again_after_it_compacts() -> TestResult {
         text.matches("tell the owner what you wrote").count(),
         2,
         "the reminder fires once before the compaction and once after: {rows:?}"
+    );
+    Ok(())
+}
+
+fn call(id: &str, tool: &str, args: Value) -> AgentMessage {
+    faux_assistant_message(
+        vec![faux_tool_call(id, tool, kwargs(args))],
+        StopReason::ToolUse,
+    )
+}
+
+#[tokio::test]
+async fn a_worker_hears_its_backgrounded_bash_job_finish() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![
+        call(
+            "c1",
+            "bash",
+            json!({"command": "sleep 6; echo job-marker", "wait": 5}),
+        ),
+        call("c2", "bash", json!({"command": "sleep 3"})),
+        reply("waiting"),
+        reply("heard it"),
+    ]));
+    let family = family(1, script)?;
+    family.host.spawn(
+        "Start the job".to_owned(),
+        kwargs(json!({"name": "jobber", "role": "worker", "tools": ["bash"]})),
+    )?;
+    let rows = transcript(&family, "jobber").await?;
+    assert!(
+        rows.iter().any(|(role, text)| role == "user"
+            && text.contains("<async_result")
+            && text.contains("job-marker")),
+        "the worker was never told its job finished: {rows:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_worker_and_a_reader_read_a_history_url() -> TestResult {
+    for role in ["worker", "reader"] {
+        let name = format!("own-{role}");
+        let script: Script = Arc::new(Mutex::new(vec![
+            call("c1", "read", json!({"path": format!("history://{name}")})),
+            reply("read it"),
+        ]));
+        let family = family(1, script)?;
+        family.host.spawn(
+            "Read your own transcript".to_owned(),
+            kwargs(json!({"name": name, "role": role})),
+        )?;
+        let rows = transcript(&family, &name).await?;
+        assert!(
+            rows.iter()
+                .any(|(kind, text)| kind == "tool" && text.contains("Read your own transcript")),
+            "a {role}'s history:// read did not resolve: {rows:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with a worker's `plan://` read failing: no route, or one opening the workspace's
+/// default `.yi/plans` instead of the family's configured plans dir.
+#[tokio::test]
+async fn a_worker_reads_a_plan_under_the_configured_plans_dir() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![
+        call("c1", "read", json!({"path": "plan://configured"})),
+        reply("read it"),
+    ]));
+    let family = family(1, script)?;
+    std::fs::create_dir_all(family.root.join("plans"))?;
+    std::fs::write(
+        family.root.join("plans/configured.md"),
+        "the configured plan",
+    )?;
+    family.host.spawn(
+        "Read the plan".to_owned(),
+        kwargs(json!({"name": "planner", "role": "worker"})),
+    )?;
+    let rows = transcript(&family, "planner").await?;
+    assert!(
+        rows.iter()
+            .any(|(kind, text)| kind == "tool" && text.contains("the configured plan")),
+        "a worker's plan:// read missed the configured plans dir: {rows:?}"
     );
     Ok(())
 }
