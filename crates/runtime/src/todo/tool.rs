@@ -453,14 +453,7 @@ impl Tool for TodoTool {
     fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
         match self.run(&input) {
             Ok(text) => text_output(text),
-            Err(error) => {
-                let kind = match &error {
-                    TodoToolError::Arg(_) => yi_types::event::ToolErrorKind::InvalidArgs,
-                    TodoToolError::Todo(error) => error.kind(),
-                    TodoToolError::Plan(_) => yi_types::event::ToolErrorKind::ToolError,
-                };
-                error_output_kind(error.to_string(), kind)
-            }
+            Err(error) => error_output_kind(error.to_string(), error.kind()),
         }
     }
 }

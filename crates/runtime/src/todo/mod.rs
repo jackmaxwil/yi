@@ -175,14 +175,26 @@ impl TodoError {
             | Self::DuplicateOfPlanRow { .. }
             | Self::ParentOpen { .. }
             | Self::SetClosed { .. }
-            | Self::Doc(_)
             | Self::Unanswered(_) => ToolErrorKind::Verdict,
+            Self::Doc(error) => crate::plan::kinds::doc_kind(error),
             Self::Ambiguous { .. }
             | Self::ManyRunning { .. }
             | Self::NoEvidence { .. }
             | Self::Checklist { .. }
             | Self::TooDeep { .. }
             | Self::Mirrored { .. } => ToolErrorKind::InvalidArgs,
+        }
+    }
+}
+
+impl tool::TodoToolError {
+    /// What the call met, for `details.errorKind`, beside [`TodoError::kind`].
+    pub fn kind(&self) -> yi_types::event::ToolErrorKind {
+        use yi_types::event::ToolErrorKind;
+        match self {
+            Self::Arg(_) => ToolErrorKind::InvalidArgs,
+            Self::Todo(error) => error.kind(),
+            Self::Plan(_) => ToolErrorKind::ToolError,
         }
     }
 }

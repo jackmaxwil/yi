@@ -3,9 +3,9 @@
 
 use yi_types::event::ToolErrorKind;
 
-use super::ops::PlanOpError;
-use super::store::StoreError;
 use super::tool::{ArgError, PlanToolError};
+use super::{ops::PlanOpError, store::StoreError};
+use yi_types::plan::doc::DocError;
 
 impl PlanOpError {
     /// What the call met, for `details.errorKind`: misread (`InvalidArgs`), the model's view out of
@@ -43,7 +43,8 @@ impl PlanOpError {
             | Self::OutputRequired { .. }
             | Self::Contract { .. } => ToolErrorKind::Verdict,
             Self::NotOwner { .. } | Self::AcceptanceUnavailable { .. } => ToolErrorKind::Denied,
-            Self::UnknownState { .. } | Self::Doc(_) => ToolErrorKind::InvalidArgs,
+            Self::UnknownState { .. } => ToolErrorKind::InvalidArgs,
+            Self::Doc(error) => doc_kind(error),
             Self::SpawnFailed { .. }
             | Self::ReapFailed { .. }
             | Self::UnresolvedOutput { .. }
@@ -65,6 +66,12 @@ impl PlanOpError {
             | Self::Store(_) => ToolErrorKind::ToolError,
         }
     }
+}
+
+/// Invariant: a malformed document is the caller's misread, so every tool that refuses one
+/// reads this class and the census counts it once.
+pub(crate) fn doc_kind(_: &DocError) -> ToolErrorKind {
+    ToolErrorKind::InvalidArgs
 }
 
 impl ArgError {
