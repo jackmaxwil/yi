@@ -1002,11 +1002,10 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
             jobs.mark_delivered(id);
             let exit_code = report.exit_code.unwrap_or(-1);
             let text = format!("{}\n{}", report.headline(), report.output);
-            return crate::tool::ran_output(
-                text,
-                json!({ "job": id.0, "exitCode": exit_code }),
-                false,
-            );
+            let killed =
+                report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
+            let details = json!({ "job": id.0, "exitCode": exit_code });
+            return crate::tool::ran_output(text, details, killed);
         }
         match deadline {
             // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
