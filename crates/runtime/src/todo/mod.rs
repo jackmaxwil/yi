@@ -197,11 +197,16 @@ pub type ResyncFn = dyn Fn(&TodoList) -> Option<TodoList> + Send + Sync;
 /// `Ok(None)` is a [`Carried::Wait`] whose row no longer waits on its address.
 pub type CarryFn = dyn Fn(&TodoLabel, Carried) -> Result<Option<String>, String> + Send + Sync;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Carried {
     Start,
     Done {
         pending: bool,
+    },
+    Block {
+        on: BlockedOn,
+        note: String,
+        ask: Option<Box<yi_types::plan::ask::Ask>>,
     },
     /// A channel wait's match, applied only while the row in `plan` still waits on `address`.
     Wait {
@@ -318,12 +323,18 @@ impl TodoStore {
     }
 
     pub fn carry(&self, op: &Op) -> Option<Result<String, String>> {
-        let done = match op {
-            Op::Start { .. } => false,
+        let blocked = |on: &BlockedOn, note: &String, ask: &Option<Box<_>>| Carried::Block {
+            on: on.clone(),
+            note: note.clone(),
+            ask: ask.clone(),
+        };
+        let (done, block) = match op {
+            Op::Start { .. } => (false, None),
             Op::Done {
                 target: Target::Label(_),
                 ..
-            } => true,
+            } => (true, None),
+            Op::Block { on, note, ask, .. } => (false, Some(blocked(on, note, ask))),
             _ => return None,
         };
         self.resync();
@@ -337,10 +348,10 @@ impl TodoStore {
         Some(
             carry(
                 &item.label,
-                if done {
-                    Carried::Done { pending }
-                } else {
-                    Carried::Start
+                match (block, done) {
+                    (Some(block), _) => block,
+                    (None, true) => Carried::Done { pending },
+                    (None, false) => Carried::Start,
                 },
             )
             .map(Option::unwrap_or_default),

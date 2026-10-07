@@ -246,3 +246,18 @@ pub(super) fn line(todo: &Todo) -> String {
         None => format!(" · answered in the user's own words by {}", answer.address),
     }
 }
+
+/// A question with fewer options than the user is offered is asked open, and the reply says so.
+pub(crate) fn few_options(args: &mut Map<String, Value>, said: &mut Vec<String>) {
+    use yi_types::plan::ask::{OPTIONS_MAX, OPTIONS_MIN};
+    let few = args.get("options").and_then(Value::as_array);
+    if let Some(count) = few
+        .map(Vec::len)
+        .filter(|count| (1..OPTIONS_MIN).contains(count))
+    {
+        args.remove("options");
+        said.push(format!(
+            "a question offers {OPTIONS_MIN} to {OPTIONS_MAX} options and this one had {count}, so it is asked open"
+        ));
+    }
+}

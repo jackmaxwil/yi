@@ -375,12 +375,18 @@ impl TodoTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
+        let (mut args, mut said) = (args.clone(), Vec::new());
+        crate::plan::ask::few_options(&mut args, &mut said);
+        let args = &args;
         let op = self.store.aim(parse_op(args)?)?;
-        let inferred = if string(args, "op").as_deref() == Some(op.name()) {
+        let mut inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
         } else {
             format!("(op inferred: {})\n", op.name())
         };
+        for line in said {
+            inferred.push_str(&format!("({line})\n"));
+        }
         if let Some(carried) = self.store.carry(&op) {
             let text = carried.map_err(TodoToolError::Plan)?;
             return Ok(format!(

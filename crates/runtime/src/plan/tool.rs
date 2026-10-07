@@ -495,7 +495,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::Set => Op::Set {
             goal: opt(args, kind, "goal")?,
             rows: match args.get("todos") {
-                Some(Value::Array(_)) if !args.contains_key("list") => {
+                Some(Value::Array(_) | Value::String(_)) if !args.contains_key("list") => {
                     super::apply::set_rows(args, kind)?
                 }
                 _ => parse_checklist(&need::<String>(args, kind, "list")?)?,

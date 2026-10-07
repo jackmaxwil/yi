@@ -747,7 +747,7 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
 }
 
 /// Dies with the options dropped between the call and the list a parent reads, or with a two-option
-/// question let through: the child's own list is where its `needs_you` note is read from.
+/// question refused instead of asked open: the child's own list is where `needs_you` is read from.
 #[test]
 fn a_block_on_the_user_carries_three_to_five_options() -> TestResult {
     let (_root, session) = session("asks")?;
@@ -757,9 +757,10 @@ fn a_block_on_the_user_carries_three_to_five_options() -> TestResult {
     let block = |options: Vec<Value>| json!({"op": "block", "id": "t1", "on": "user", "note": "which name?", "options": options});
     let (is_error, text) = call(&tool, block(vec![option("a"), option("b")]));
     assert!(
-        is_error && text.contains("offers 3 to 5 options, not 2"),
+        !is_error && text.contains("this one had 2, so it is asked open"),
         "{text}"
     );
+    call(&tool, json!({"op": "unblock", "id": "t1"}));
     let (is_error, text) = call(&tool, block(vec![option("a"), option("b"), option("c")]));
     assert!(!is_error, "{text}");
     assert!(

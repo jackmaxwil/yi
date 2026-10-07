@@ -46,6 +46,16 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<Str
         .unwrap_or_default()
         .to_owned();
     unsent_nulls(&mut args);
+    super::ask::few_options(&mut args, &mut said);
+    for row in (args
+        .get_mut("todos")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten())
+    .filter_map(Value::as_object_mut)
+    {
+        super::ask::few_options(row, &mut said);
+    }
     fold_row(&mut args, &mut said);
     labels(&op, &mut args);
     cut_labels(&mut args, &mut said);
@@ -398,9 +408,10 @@ fn infer_op(args: &mut Map<String, Value>) {
             name
         }
         None if args.contains_key("list") => "set".to_owned(),
+        None if args.contains_key("state") && args.contains_key("label") => "set".to_owned(),
         None if args.contains_key("goal") && args.contains_key("todos") => "set".to_owned(),
         None if args.contains_key("goal") && args.contains_key("label") => "init".to_owned(),
-        None if args.contains_key("todos") => "append".to_owned(),
+        None if args.contains_key("todos") => "set".to_owned(),
         None if args.keys().all(|key| key == "plan") => "view".to_owned(),
         None => return,
     };
@@ -535,8 +546,8 @@ fn first_label(args: &Map<String, Value>) -> Option<String> {
 
 /// A todo's fields written beside the goal are that todo's row, unless a row already holds it.
 fn fold_row(args: &mut Map<String, Value>, said: &mut Vec<String>) {
-    let rows =
-        ["init", "append"].contains(&args.get("op").and_then(Value::as_str).unwrap_or_default());
+    let op = args.get("op").and_then(Value::as_str).unwrap_or_default();
+    let rows = ["init", "append"].contains(&op) || (op == "set" && args.contains_key("state"));
     let label = args.get("label").and_then(Value::as_str).map(str::to_owned);
     if let (true, Some(label)) = (rows, label) {
         let keys = [
@@ -621,6 +632,12 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<String>) {
     };
     for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
         let label = todo.get("label").and_then(Value::as_str).map(str::to_owned);
+        if let Some(Value::Object(delegation)) = todo.get_mut("delegation")
+            && let Some(contract) = delegation.remove("contract")
+        {
+            todo.entry("contract").or_insert(contract);
+            said.push("a contract inside the delegation is the row's".to_owned());
+        }
         let check = contract_check(todo);
         if let Some(Value::Object(delegation)) = todo.get_mut("delegation") {
             delegation_shape(delegation, label.as_deref(), said);

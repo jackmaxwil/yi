@@ -23,16 +23,58 @@ pub(super) fn whole(args: &Map<String, Value>) -> Option<(Map<String, Value>, Ve
         args.insert("todos".to_owned(), rows);
     }
     super::natural::cut_labels(&mut args, &mut said);
+    let unnamed = !args.contains_key("op") && args.contains_key("todos");
+    if unnamed || args.get("op").and_then(Value::as_str) == Some("set") {
+        one_row(&mut args, &mut said);
+    }
     let rich =
         |row: &Value| (row.as_object()).is_some_and(|row| row.keys().any(|key| key != "label"));
     let rows = args.get("todos").and_then(Value::as_array);
-    let unnamed = !args.contains_key("op") && args.contains_key("goal");
     let set = unnamed || args.get("op").and_then(Value::as_str) == Some("set");
     if !(set && rows.is_some_and(|rows| rows.iter().any(rich))) {
         return None;
     }
     args.insert("op".to_owned(), json!("set"));
     Some((args, said))
+}
+
+/// A block's fields beside a set's one row are that row's, and a field sent as a JSON string is
+/// its object; both came from one call that blocked the row it was setting.
+fn one_row(args: &mut Map<String, Value>, said: &mut Vec<String>) {
+    let parsed = |value: &mut Value| {
+        let text = value
+            .as_str()
+            .filter(|text| text.trim_start().starts_with(['{', '[']));
+        if let Some(Ok(object)) = text.map(serde_json::from_str::<Value>) {
+            *value = object;
+        }
+    };
+    let beside: Vec<(String, Value)> = (["on", "note", "options"].iter())
+        .filter_map(|key| Some(((*key).to_owned(), args.remove(*key)?)))
+        .collect();
+    let Some(Value::Array(rows)) = args.get_mut("todos") else {
+        return;
+    };
+    let single = rows.len() == 1;
+    for row in rows.iter_mut().filter_map(Value::as_object_mut) {
+        if single {
+            for (key, value) in &beside {
+                row.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+        for key in ["on", "options", "contract", "delegation"] {
+            if let Some(value) = row.get_mut(key) {
+                parsed(value);
+            }
+        }
+    }
+    match (single, beside.is_empty()) {
+        (true, false) => said.push("the block fields beside the one row are that row's".to_owned()),
+        (false, false) => {
+            said.push("block fields beside several rows name none of them; left out".to_owned())
+        }
+        _ => {}
+    }
 }
 
 /// `set`'s rows as objects: each one's `state` (pending unless named) beside its spec.
@@ -124,8 +166,13 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     }
     for op in &deferred {
         let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
-        if let Err(error) = tool.apply_one(op.as_object().unwrap_or(&Map::new())) {
-            conditions.push(format!("{label}: {error}"));
+        match tool.apply_one(op.as_object().unwrap_or(&Map::new())) {
+            Ok(text) => conditions.extend(
+                (text.lines())
+                    .filter_map(|line| line.strip_prefix("note: "))
+                    .map(|note| format!("{label}: {note}")),
+            ),
+            Err(error) => conditions.push(format!("{label}: {error}")),
         }
     }
     let view = tool.apply_one(json!({"op": "view"}).as_object().unwrap_or(&Map::new()));
@@ -142,8 +189,9 @@ fn row_ops(row: &mut Map<String, Value>, label: &str, was: Option<&TodoStateName
     let by_engine = row.contains_key("contract") || row.contains_key("delegation");
     let (on, note, options) = (row.remove("on"), row.remove("note"), row.remove("options"));
     let (cause, steps) = (row.remove("cause"), row.remove("todos"));
+    let asked = if on.is_some() { "blocked" } else { "pending" };
     let want = (row.get("state").and_then(Value::as_str))
-        .unwrap_or("pending")
+        .unwrap_or(asked)
         .to_owned();
     let op = |op: &str| json!({"op": op, "label": label});
     let mut ops = Vec::new();

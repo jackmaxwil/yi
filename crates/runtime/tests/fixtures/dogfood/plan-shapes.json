@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982) and in the three stage 5 and three stage 6 surface probe runs on 2026-10-06 (#1076), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
+ "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982) and in the three stage 5 and seven stage 6 surface probe runs on 2026-10-06 (#1076), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -2600,6 +2600,158 @@
    },
    "lands": true,
    "says": "1 todos: 1 pending"
+  },
+  {
+   "name": "rows with no op and block fields beside the one row",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "note": "By hand I ran `true`: exit 0; the slow part cannot finish here.",
+    "on": "{\"user\": null}",
+    "options": "[{\"id\": \"accept\", \"label\": \"Accept it\"}, {\"id\": \"reject\", \"label\": \"Leave it open\"}]",
+    "todos": [
+     {
+      "label": "a",
+      "state": "blocked",
+      "note": "Waiting for you"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "asked open"
+  },
+  {
+   "name": "a row carrying on and no state",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "set",
+    "todos": [
+     {
+      "label": "a",
+      "on": {
+       "user": null
+      },
+      "note": "which way?"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "blocked a"
+  },
+  {
+   "name": "todos as a JSON string a mend cannot balance",
+   "setup": [],
+   "call": {
+    "goal": "Add input validation to calc.divide, with divide-by-zero behavior decided by the user",
+    "todos": "[{\"contract\": {\"class\": \"inline\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"grep -q 'def divide' calc.py && grep -q 'calc.divide' test_calc.py\"}, \"id\": \"grounded\", \"weight\": 1}], \"label\": \"Ground divide and its callers\", \"state\": \"done\"}, {\"contract\": {\"class\": \"writer\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"python3 -m unittest -q test_calc 2>&1 | tail -1 | grep -q '^OK'\"}, \"id\": \"validation-in-place\", \"weight\": 3}], \"label\": \"Implement validation in calc.divide\"}, {\"contract\": {\"class\": \"inline\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"test -f .decided\"}, \"id\": \"user-choice\", \"weight\": 1}], \"label\": \"Decide divide-by-zero behavior\", \"state\": \"blocked\", \"on\": {\"user\": null}, \"options\": [{\"id\": \"raise\", \"label\": \"Raise ValueError\", \"preview\": \"def divide(a, b):\\n    if b == 0:\\n        raise ValueError(\\\"division by zero\\\")\\n    return a / b\"}, {\"id\": \"none\", \"label\": \"Return None\", \"preview\": \"def divide(a, b):\\n    if b == 0:\\n        return None\\n    return a / b\"}, {\"id\": \"both\", \"label\": \"Return None only for floats, raise ValueError otherwise\"}], \"note\": \"User picks: raise ValueError, return None, or another rule\"}], \"label\": \"Decide divide-by-zero behavior\"}, {\"contract\": {\"class\": \"reader\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"grep -q 'def test_divide_by_zero' test_calc.py && python3 -m unittest -q 2>&1 | tail -1 | grep -q '^OK'\"}, \"id\": \"regression-test\", \"weight\": 2}], \"label\": \"Add divide-by-zero regression test\"}, {\"contract\": {\"class\": \"reader\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"python3 -m unittest -q 2>&1 | tail -1 | grep -q '^OK'\"}, \"id\": \"gate-green\", \"weight\": 1}], \"label\": \"Verify full suite green\"}]}"
+   },
+   "lands": false,
+   "says": "\"todos\" is malformed"
+  },
+  {
+   "name": "a set reopening a finished plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "a"
+    },
+    {
+     "op": "done",
+     "label": "a"
+    }
+   ],
+   "call": {
+    "op": "set",
+    "todos": [
+     {
+      "label": "b",
+      "state": "pending"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "pending b"
+  },
+  {
+   "name": "a row's fields at the top with no op",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "a",
+    "state": "running"
+   },
+   "lands": true,
+   "says": "running a"
+  },
+  {
+   "name": "a contract inside the delegation",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "goal": "g",
+    "todos": [
+     {
+      "label": "x",
+      "delegation": {
+       "spec": {
+        "isolation": "worktree"
+       },
+       "contract": {
+        "class": "writer",
+        "items": [
+         {
+          "critical": true,
+          "id": "t",
+          "weight": 1,
+          "decider": {
+           "cmd": "true"
+          }
+         }
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "inside the delegation"
   }
  ]
 }

@@ -130,11 +130,16 @@ pub fn step(from: &TodoState, op: OpKind) -> Option<TodoStateName> {
 }
 
 /// Invariant: a plan that is not Active admits `view` alone, bar `retry` on a finished plan,
-/// the §9 ladder's first rung, which only a Failed todo satisfies.
+/// the §9 ladder's first rung, and `set`, whose rows reopen it; its state is the rows' again.
 pub(super) fn check_plan_state(plan: &Plan, op: OpKind) -> Result<(), PlanOpError> {
     let allowed = match &plan.state {
         PlanState::Active => true,
-        PlanState::Done => matches!(op, OpKind::View | OpKind::Retry | OpKind::Program),
+        PlanState::Done => {
+            matches!(
+                op,
+                OpKind::View | OpKind::Retry | OpKind::Program | OpKind::Set
+            )
+        }
         PlanState::Superseded { .. } | PlanState::Abandoned | PlanState::Other(_) => {
             matches!(op, OpKind::View)
         }
