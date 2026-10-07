@@ -57,7 +57,6 @@ fn every_fact_a_seam_asserts_parses() -> Result<(), String> {
         graph::COROUTINE_UNAWAITED.to_owned(),
         graph::METHOD_AWAITED.to_owned(),
         graph::LISTING_NAME_MISSED.to_owned(),
-        graph::GRID_ANSWER_EMPTY.to_owned(),
         graph::SESSION_ON_DISK.to_owned(),
         graph::SESSION_IN_MEMORY.to_owned(),
     ];

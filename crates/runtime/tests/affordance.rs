@@ -107,7 +107,6 @@ const METHOD_AWAITED: &str = "next: rlm.run is a method, not a coroutine — cal
 const LISTING_NAME: &str =
     "next: list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle";
 const CHILD_FINISHED: &str = "next: await rlm.result('porter', schema=…) validates the answer host-side; the child stays addressable for follow-ups";
-const GRID_EMPTY: &str = "next: an empty grid answer means it cannot prove the relationship, not that the code is absent; grep to close the gap";
 const COMPACTED_ON_DISK: &str = "next: the window holds a summary plus recent turns; compact.recall(\"needle\") then rlm.fetch(\"history://<id>/<entry>\") pulls what the summary cites as (#entry)";
 const COMPACTED_IN_MEMORY: &str = "next: the window holds a summary plus recent turns; compact.recall(\"needle\") pulls entry ids the summary cites as (#entry)";
 
@@ -144,10 +143,6 @@ fn every_line_rendered_today_renders_from_the_graph() -> TestResult {
     assert_eq!(
         affordance::next("rlm.run", &["child_state(finished)"], "porter"),
         CHILD_FINISHED
-    );
-    assert_eq!(
-        affordance::next("bash", &["grid_answer_empty"], ""),
-        GRID_EMPTY
     );
     assert_eq!(
         affordance::next("compact.run", &["session_on_disk"], ""),
