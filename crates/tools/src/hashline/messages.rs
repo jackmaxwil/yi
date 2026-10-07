@@ -492,7 +492,7 @@ fn shell_path(path: &str) -> String {
     if !path.is_empty() && path.chars().all(inert) {
         path.to_owned()
     } else {
-        crate::ripwire::quoted(path)
+        crate::process::quoted(path)
     }
 }
 

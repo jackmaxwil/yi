@@ -105,7 +105,7 @@ pub fn content_hash(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub use yi_tools::ripwire::git_root;
+pub use yi_tools::git_root;
 
 pub struct ProjectResources {
     cwd: PathBuf,
