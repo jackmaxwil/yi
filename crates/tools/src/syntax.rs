@@ -24,7 +24,7 @@ fn checker(extension: &str) -> Option<(&'static str, &'static [&'static str])> {
     })
 }
 
-fn on_path(program: &str) -> Option<PathBuf> {
+pub(crate) fn on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(program))

@@ -261,6 +261,7 @@ pub fn transform_messages(
         }
     }
     synthesize(&mut pending, &mut seen_results, &mut result);
+    omit_refused_images(&mut result);
     if model.api == "anthropic-messages" || model.id.contains("claude") {
         keep_newest_images(&mut result);
     }
@@ -273,35 +274,62 @@ pub fn transform_messages(
 const CLAUDE_MAX_IMAGES: usize = 20;
 const CLAUDE_MAX_IMAGE_CHARS: usize = 24_000_000;
 
-fn keep_newest_images(messages: &mut [AgentMessage]) {
-    let (mut kept, mut chars) = (0usize, 0usize);
-    for message in messages.iter_mut().rev() {
-        let blocks = match message {
+/// Every image block in `messages`, newest first.
+fn images_newest_first(messages: &mut [AgentMessage]) -> impl Iterator<Item = &mut Content> {
+    messages
+        .iter_mut()
+        .rev()
+        .flat_map(|message| match message {
             AgentMessage::User {
                 content: yi_types::message::UserContent::Blocks(blocks),
                 ..
             }
             | AgentMessage::ToolResult {
                 content: blocks, ..
-            } => blocks,
-            _ => continue,
+            } => blocks.iter_mut().rev(),
+            _ => [].iter_mut().rev(),
+        })
+        .filter(|block| matches!(block, Content::Image { .. }))
+}
+
+/// Incident: a provider refuses a malformed image on every later request (#860), and a kernel
+/// header check cannot see a truncated body or a session saved before it existed.
+fn omit_refused_images(messages: &mut [AgentMessage]) {
+    for block in images_newest_first(messages) {
+        let Content::Image { data, mime_type } = block else {
+            continue;
         };
-        for block in blocks.iter_mut().rev() {
-            let Content::Image { data, mime_type } = block else {
-                continue;
-            };
-            let total = chars.saturating_add(data.len());
-            if kept < CLAUDE_MAX_IMAGES && total <= CLAUDE_MAX_IMAGE_CHARS {
-                (kept, chars) = (kept.saturating_add(1), total);
-                continue;
-            }
-            *block = Content::Text {
-                text: format!(
-                    "(earlier image omitted: {mime_type}, {} KB of base64; the request keeps its newest {CLAUDE_MAX_IMAGES})",
-                    data.len() / 1000
-                ),
-                text_signature: None,
-            };
+        let Some(defect) = yi_types::image::image_defect(mime_type, data) else {
+            continue;
+        };
+        *block = Content::Text {
+            text: format!(
+                "[image omitted: {mime_type}, {} KB of base64; the image {defect}, which the provider refuses. {}]",
+                data.len() / 1000,
+                defect.remedy()
+            ),
+            text_signature: None,
+        };
+    }
+}
+
+fn keep_newest_images(messages: &mut [AgentMessage]) {
+    let (mut kept, mut chars) = (0usize, 0usize);
+    for block in images_newest_first(messages) {
+        let Content::Image { data, mime_type } = block else {
+            continue;
+        };
+        let total = chars.saturating_add(data.len());
+        if kept < CLAUDE_MAX_IMAGES && total <= CLAUDE_MAX_IMAGE_CHARS {
+            (kept, chars) = (kept.saturating_add(1), total);
+            continue;
         }
+        *block = Content::Text {
+            text: format!(
+                "(earlier image omitted: {mime_type}, {} KB of base64; the request keeps its newest {CLAUDE_MAX_IMAGES})",
+                data.len() / 1000
+            ),
+            text_signature: None,
+        };
     }
 }

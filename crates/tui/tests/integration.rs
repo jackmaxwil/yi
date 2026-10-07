@@ -2,8 +2,12 @@
 //! binary here, not sixteen. Cargo.toml sets `autotests = false`, so a new file here runs only
 //! once it has a line below.
 mod common;
+#[path = "../../types/tests/support/model.rs"]
+mod fixture_model;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "../../types/tests/support/usage_record.rs"]
+mod usage_record;
 
 mod agents;
 mod asks;
@@ -11,6 +15,7 @@ mod cards;
 mod diffview;
 mod highlight;
 mod hud_todos;
+mod input;
 mod logos;
 mod markdown_render;
 mod model_picker;

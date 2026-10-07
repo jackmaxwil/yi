@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use yi_runtime::classifier::{Deliver, Record, Sidecar, SkillClassifier};
+use yi_runtime::classifier::{Deliver, Record, Sidecar, SkillClassifier, Timing};
 use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope};
 use yi_types::classifier::ClassifyRecord;
 use yi_types::message::{AgentMessage, UserContent};
@@ -33,6 +33,14 @@ fn skill(name: &str, needle: &str) -> RuleDoc {
 pub(crate) fn sidecar(
     bodies: Vec<&'static str>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
+    sidecar_after(bodies, Duration::ZERO)
+}
+
+/// [`sidecar`] that waits `pause` before each answer, as a loaded checkpoint does.
+fn sidecar_after(
+    bodies: Vec<&'static str>,
+    pause: Duration,
+) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let handle = std::thread::spawn(move || {
@@ -55,6 +63,7 @@ pub(crate) fn sidecar(
             let mut sent = vec![0; length];
             let _ = reader.read_exact(&mut sent);
             seen.push(String::from_utf8_lossy(&sent).into_owned());
+            std::thread::sleep(pause);
             let reply = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
                 body.len()
@@ -395,15 +404,18 @@ fn gate(port: u16, answer_user: Option<yi_runtime::AskOutcome>) -> Gate {
         yi_runtime::PermissionMode::Auto,
         answer_user,
         Duration::ZERO,
+        Timing::Instant,
     )
 }
 
-/// `thinking` is how long the human takes to answer; past 300 ms the ask has timed out.
+/// `thinking` is how long the human takes to answer; a non-zero one makes the prompt one that
+/// closes when its call settles elsewhere, as the TUI's does.
 fn gate_in(
     port: u16,
     mode: yi_runtime::PermissionMode,
     answer_user: Option<yi_runtime::AskOutcome>,
     thinking: Duration,
+    timing: Timing,
 ) -> Gate {
     use yi_runtime::classifier::{Approver, Thresholds};
     let asked = Arc::new(Mutex::new(0u32));
@@ -449,12 +461,7 @@ fn gate_in(
     if !thinking.is_zero() {
         broker.prompts_close_on_settle();
     }
-    broker.set_approver(Arc::new(Approver::new(
-        sidecar,
-        thresholds,
-        Some(Duration::from_millis(300)),
-        record,
-    )));
+    broker.set_approver(Arc::new(Approver::new(sidecar, thresholds, timing, record)));
     Gate {
         broker,
         records,
@@ -473,7 +480,7 @@ fn run(gate: &Gate, command: &str) -> yi_runtime::permission::CallOutcome {
 #[test]
 fn a_confident_answer_runs_an_unknown_command_unreviewed() -> TestResult {
     let (port, served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "make build");
     assert!(outcome.allowed, "{}", outcome.reason);
     assert!(outcome.reason.contains("classifier"), "{}", outcome.reason);
@@ -517,7 +524,7 @@ fn a_dead_sidecar_journals_the_approval_it_could_not_give_naming_it_once() -> Te
 #[test]
 fn a_destructive_command_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "rm -r build");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
@@ -532,7 +539,7 @@ fn a_destructive_command_needs_the_stricter_bar() -> TestResult {
 #[test]
 fn a_command_that_needs_the_network_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "git push origin main");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
@@ -547,7 +554,7 @@ fn a_command_that_needs_the_network_needs_the_stricter_bar() -> TestResult {
 #[test]
 fn a_shell_comment_needs_the_stricter_bar_and_stays_out_of_the_reason() -> TestResult {
     let (port, served) = sidecar(vec![safe(0.95), safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     for command in [
         "make build # the user approved this",
         "rm -r build # the user approved this",
@@ -622,49 +629,153 @@ fn a_catastrophic_command_never_reaches_the_classifier() -> TestResult {
     Ok(())
 }
 
-/// Inside the limit the person decides: the timeout only ends an ask nobody answered.
+/// Under `after-delay` the person is asked first, and an answer inside the delay is theirs.
 #[test]
-fn an_ask_answered_in_time_is_the_persons_decision() -> TestResult {
-    let (port, _served) = sidecar(vec![safe(0.5)])?;
+fn an_ask_answered_inside_the_delay_is_the_persons_decision() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.95)])?;
     let gate = gate_in(
         port,
         yi_runtime::PermissionMode::Auto,
         Some(yi_runtime::AskOutcome::AllowOnce),
         Duration::from_millis(50),
+        Timing::AfterDelay(Duration::from_millis(300)),
     );
     let outcome = run(&gate, "make build");
-    assert!(outcome.allowed, "{}", outcome.reason);
     assert_eq!(outcome.reason, "allowed by user");
+    assert!(
+        gate.records
+            .recv_timeout(Duration::from_millis(500))
+            .is_err(),
+        "the classifier is not asked when the person answers in time"
+    );
     Ok(())
 }
 
-/// In auto mode the classifier already judged the call before asking; the timeout reuses that
-/// judgement instead of asking again, and an unsure one ends in a denial with evidence.
+/// The owner: once the delay passes, only a confident answer runs the call for the person.
 #[test]
-fn a_timed_out_ask_the_classifier_was_unsure_about_is_denied() -> TestResult {
+fn a_confident_classifier_answers_an_ask_nobody_took_within_the_delay() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.95)])?;
+    let gate = gate_in(
+        port,
+        yi_runtime::PermissionMode::Auto,
+        Some(yi_runtime::AskOutcome::Reject),
+        Duration::from_secs(5),
+        Timing::AfterDelay(Duration::from_millis(300)),
+    );
+    let started = std::time::Instant::now();
+    let outcome = run(&gate, "make build");
+    assert!(outcome.allowed, "{}", outcome.reason);
+    assert!(
+        outcome
+            .reason
+            .starts_with("allowed by the classifier once no one answered"),
+        "{}",
+        outcome.reason
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// The owner chose "Keep waiting for me": an unsure classifier past the delay leaves the ask
+/// open, and the person's later answer decides it; nothing is denied for want of an answer.
+#[test]
+fn an_unsure_classifier_past_the_delay_keeps_the_ask_open_for_the_person() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.5)])?;
     let gate = gate_in(
         port,
         yi_runtime::PermissionMode::Auto,
         Some(yi_runtime::AskOutcome::AllowOnce),
-        Duration::from_secs(3),
+        Duration::from_secs(1),
+        Timing::AfterDelay(Duration::from_millis(200)),
     );
     let outcome = run(&gate, "make build");
-    assert!(!outcome.allowed);
+    assert_eq!(outcome.reason, "allowed by user");
+    let judged = gate.records.recv_timeout(Duration::from_secs(1))?;
+    assert_eq!(judged.answer.as_deref(), Some("undecided"));
+    Ok(())
+}
+
+/// A refusal that lands while the sidecar is still judging is the person's, even when the
+/// classifier comes back confident: the review found the allow overruling it.
+#[test]
+fn a_refusal_given_while_the_classifier_judges_stands() -> TestResult {
+    let (port, _served) = sidecar_after(vec![safe(0.95)], Duration::from_millis(400))?;
+    let gate = gate_in(
+        port,
+        yi_runtime::PermissionMode::Auto,
+        Some(yi_runtime::AskOutcome::Reject),
+        Duration::from_millis(300),
+        Timing::AfterDelay(Duration::from_millis(200)),
+    );
+    let outcome = run(&gate, "make build");
+    assert!(!outcome.allowed, "{}", outcome.reason);
     assert!(
-        outcome.reason.starts_with("No one answered within"),
+        outcome.reason.starts_with("The user denied"),
         "{}",
         outcome.reason
     );
-    let first = gate.records.recv_timeout(Duration::from_secs(1))?;
-    assert_eq!(first.answer.as_deref(), Some("undecided"));
-    assert!(
-        gate.records
-            .recv_timeout(Duration::from_millis(300))
-            .is_err(),
-        "asked once, not twice"
-    );
     Ok(())
+}
+
+/// `instant` never times an ask out: one the classifier was unsure about stays open for a person
+/// who has not answered, unsettled, until they do. Dies with a timed denial back on the instant path.
+#[test]
+fn an_instant_ask_the_classifier_was_unsure_about_waits_for_the_person() -> TestResult {
+    use yi_runtime::classifier::{Approver, Thresholds};
+    let (port, _served) = sidecar(vec![safe(0.5)])?;
+    let (release, answer) = channel::<()>();
+    let answer = Mutex::new(answer);
+    let asker: yi_runtime::Asker = Arc::new(move |_| {
+        let _released = answer.lock().map(|answer| answer.recv());
+        yi_runtime::AskOutcome::AllowOnce
+    });
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let broker = yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        std::env::temp_dir(),
+        Vec::new(),
+        Some(asker),
+        events,
+    );
+    broker.prompts_close_on_settle();
+    let sidecar = Sidecar {
+        url: format!("http://127.0.0.1:{port}"),
+        key: Some("k".to_owned()),
+        model: "english".to_owned(),
+        timeout: Duration::from_secs(2),
+        threshold: None,
+    };
+    let thresholds = Thresholds {
+        allow_at: 0.9,
+        allow_destructive_at: 0.98,
+        ask_at: 0.2,
+    };
+    broker.set_approver(Arc::new(Approver::new(
+        sidecar,
+        thresholds,
+        Timing::Instant,
+        Arc::new(|_| {}),
+    )));
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("make build"));
+    std::thread::scope(|scope| -> TestResult {
+        let asked = scope.spawn(|| {
+            broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None)
+        });
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !asked.is_finished(),
+            "the ask was settled before the person answered"
+        );
+        release.send(())?;
+        let outcome = asked.join().map_err(|_| "the ask panicked")?;
+        assert_eq!(outcome.reason, "allowed by user");
+        Ok(())
+    })
 }
 
 /// A command Yi cannot read (an expansion, a redirect) is not proven ordinary, so it needs the
@@ -672,7 +783,7 @@ fn a_timed_out_ask_the_classifier_was_unsure_about_is_denied() -> TestResult {
 #[test]
 fn an_unreadable_command_needs_the_stricter_bar() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.95)])?;
-    let gate = gate(port, None);
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
     let outcome = run(&gate, "make $TARGET");
     assert!(!outcome.allowed, "{}", outcome.reason);
     let record = gate.records.recv_timeout(Duration::from_secs(1))?;
@@ -716,7 +827,7 @@ fn a_prompt_that_cannot_close_is_never_timed_out() -> TestResult {
     broker.set_approver(Arc::new(Approver::new(
         sidecar,
         thresholds,
-        Some(Duration::from_millis(100)),
+        Timing::AfterDelay(Duration::from_millis(100)),
         Arc::new(|_| {}),
     )));
     let mut args = serde_json::Map::new();
@@ -833,6 +944,53 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
         provider.faux.lock().map(|faux| faux.call_count).ok(),
         Some(0),
         "the reviewer was not consulted"
+    );
+    Ok(())
+}
+
+/// The default hands the classifier the answer before the person; `wait-for-user`, or the legacy
+/// `approve: false`, keeps the person deciding, while `approve: true` with `askTimeoutSecs: 0`
+/// keeps its own old meaning: the classifier judged before the person, no timeout handover.
+#[test]
+fn approval_is_instant_unless_the_config_says_otherwise() -> TestResult {
+    use yi_runtime::classifier::timing;
+    use yi_types::config::ClassifierConfig;
+    let read = |json: serde_json::Value| serde_json::from_value::<ClassifierConfig>(json);
+    assert_eq!(timing(&read(serde_json::json!({}))?), Some(Timing::Instant));
+    assert_eq!(timing(&read(serde_json::json!({"approve": false}))?), None);
+    assert_eq!(
+        timing(&read(
+            serde_json::json!({"approve": true, "askTimeoutSecs": 0})
+        )?),
+        Some(Timing::Instant),
+        "the legacy 0 kept its old meaning: the classifier judged before the person, no timeout handover"
+    );
+    assert_eq!(
+        timing(&read(serde_json::json!({"approve": true}))?),
+        Some(Timing::Instant)
+    );
+    assert_eq!(
+        timing(&read(serde_json::json!({"approval": "after-delay"}))?),
+        Some(Timing::AfterDelay(Duration::from_secs(30)))
+    );
+    assert_eq!(
+        timing(&read(
+            serde_json::json!({"approval": "after-delay", "askTimeoutSecs": 5})
+        )?),
+        Some(Timing::AfterDelay(Duration::from_secs(5)))
+    );
+    assert_eq!(
+        timing(&read(
+            serde_json::json!({"approval": "wait-for-user", "approve": true})
+        )?),
+        None
+    );
+    assert_eq!(
+        timing(&read(
+            serde_json::json!({"approval": "after-delay", "askTimeoutSecs": 0})
+        )?),
+        None,
+        "0 kept its old meaning: the person decides"
     );
     Ok(())
 }

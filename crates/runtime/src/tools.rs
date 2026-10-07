@@ -23,6 +23,7 @@ pub struct ToolAdapter {
     wall: crate::wall::Wall,
     ext: Option<crate::session::ExtHook>,
     check: Option<Arc<crate::plan::covers::WriteCheck>>,
+    job_owner: Option<yi_tools::jobs::JobOwner>,
     rejections: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
 }
 
@@ -43,9 +44,8 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
 
 /// The predicates that hold after this call; the needles are the states the old
 /// producers branched on, and one ipython needle wins, in the order they were tried.
-fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
+fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
     let text = result_text(&output.result);
-    let body = text.trim();
     let kind = output
         .result
         .details
@@ -56,12 +56,6 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
         true => format!("{}({kind})", yi_types::graph::RESULT_ERROR),
         false => yi_types::graph::RESULT_OK.to_owned(),
     }];
-    if tool == "bash"
-        && command.trim_start().starts_with("grid ")
-        && (body.is_empty() || body.lines().count() <= 1 && body.contains("exit code"))
-    {
-        holds.push(yi_types::graph::GRID_ANSWER_EMPTY.to_owned());
-    }
     // ponytail: CPython 3.11-3.13 wording; add a second needle if a venv rewords it.
     let needle = if text.contains("<coroutine object ") {
         Some(yi_types::graph::COROUTINE_UNAWAITED)
@@ -109,9 +103,7 @@ pub(crate) fn heartbeat_gate(
 ) -> Arc<crate::schedule::GateFn> {
     let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
     let (wall, cwd) = (wiring.wall.clone(), wiring.cwd.clone());
-    let spills = default_spill_root();
-    let roots = spill_roots_and_stores(spills.as_deref(), broker.as_deref());
-    let roots: Vec<PathBuf> = roots.into_iter().filter(|_| !wall.is_empty()).collect();
+    let roots = walled_roots(&wall, broker.as_deref());
     Arc::new(move |command: &str| {
         let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
         let rules = rules();
@@ -280,6 +272,18 @@ pub(crate) fn spill_roots_and_stores(
         .collect()
 }
 
+/// Invariant: a walled session reads only its own spills and transcript: the spill roots and
+/// session stores are walled, its own spill dir and transcript spared (D340, D345).
+pub(crate) fn walled_roots(
+    wall: &crate::wall::Wall,
+    broker: Option<&PermissionBroker>,
+) -> Vec<PathBuf> {
+    if wall.is_empty() {
+        return Vec::new();
+    }
+    spill_roots_and_stores(default_spill_root().as_deref(), broker)
+}
+
 /// Invariant: a spare, a kernel's or a tool's, never reopens a path the wall's own `deny_read`
 /// covers (#1000, #1001).
 pub(crate) fn unwalled(wall: &crate::wall::Wall, dir: &std::path::Path) -> bool {
@@ -306,8 +310,14 @@ impl ToolAdapter {
             wall: crate::wall::Wall::default(),
             ext: None,
             check: None,
+            job_owner: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub fn with_job_owner(mut self, owner: yi_tools::jobs::JobOwner) -> Self {
+        self.job_owner = Some(owner);
+        self
     }
 
     /// The session's key names its spill dir, read per call: the store may attach after wiring.
@@ -328,15 +338,6 @@ impl ToolAdapter {
     pub fn with_transcript(mut self, store: crate::goal::StoreHandle) -> Self {
         self.transcript = Some(store);
         self
-    }
-
-    /// Invariant: a walled session reads only its own spills and transcript: the spill roots and
-    /// session stores are walled, its own spill dir and transcript spared (D340, D345).
-    fn walled_roots(&self) -> Vec<PathBuf> {
-        if self.wall.is_empty() {
-            return Vec::new();
-        }
-        spill_roots_and_stores(self.spill_root.as_deref(), self.permission.as_deref())
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {
@@ -415,7 +416,8 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let (spills, walled_roots) = (self.session_spills(), self.walled_roots());
+        let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
+        let spills = self.session_spills();
         let store = (self.transcript.as_ref()).and_then(|store| store());
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
@@ -434,6 +436,7 @@ impl AgentTool for ToolAdapter {
             deny_write: self.wall.deny_write.clone(),
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
+            job_owner: self.job_owner,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
@@ -592,7 +595,7 @@ impl AgentTool for ToolAdapter {
                     {
                         broker.note_containment_failure(refusal);
                     }
-                    let holds = facts_of(&name, &command, &output);
+                    let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
                         holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
                         name: "",

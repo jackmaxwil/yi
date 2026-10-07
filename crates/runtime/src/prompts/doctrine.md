@@ -146,8 +146,8 @@ of the failure.
 ## Look before you write
 
 Before writing any new type, function, schema, or helper, search for an
-existing one: grep for the name and the shape, and where the `grid`
-binary is available, `grid resolve` / `grid uses` / `grid scope` for
+existing one: grep for the name and the shape, and where the `ripwire`
+binary is available, its `--for` / `--callers` / `--uses` for
 definitions and relationships. What you are about to write usually already
 exists.
 
@@ -291,9 +291,9 @@ read of a large file you need one function of. The same command failing
 twice is a hypothesis, not a retry.
 
 Long commands: pass `wait`; a command still running then becomes a job.
-Its result comes on its own only while your turn runs, so before you end
-the turn wait for it with `bash job=N wait=S`. `timeout_secs` still bounds
-it. Never sleep to wait.
+To wait on it, end the turn: its exit starts your next one. `bash job=N
+wait=S` waits now instead. `timeout_secs` still bounds it. Never sleep,
+loop or poll to wait.
 
 ## Git, lanes, and the tree
 

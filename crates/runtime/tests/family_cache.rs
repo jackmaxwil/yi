@@ -282,15 +282,9 @@ fn recorded_reply(
     }))?)
 }
 
-/// Through the production wiring (D315): `cache_miss::attach` folds the root's replies, and once
-/// they show two half-hour pauses the next OpenRouter request holds every history breakpoint an
-/// hour; the root's worker child, a loop whose stream no ledger feeds, stays at five minutes.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none()
--> TestResult {
-    let scratch = Scratch::new("yi-family-ttl-choice")?;
-    // Each reply reads 41k of a 41.5k prompt, so the root's own reply keeps the ledger's
-    // estimate pricing an hour when the child's request goes out.
+/// An OpenRouter Claude route priced for the TTL choice, and a stand-in whose every reply reads
+/// 41k of a 41.5k prompt, so a root's own reply keeps the ledger's estimate pricing an hour.
+fn ttl_route() -> Result<(Model, u16, mpsc::Receiver<Value>), Box<dyn Error>> {
     let usage = json!({"prompt_tokens": 41_500, "completion_tokens": 5, "total_tokens": 41_505,
         "prompt_tokens_details": {"cached_tokens": 41_000}});
     let reply_stream = [
@@ -306,6 +300,17 @@ async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its
     let price = |value: f64| serde_json::Number::from_f64(value).ok_or("price");
     (model.cost.input, model.cost.cache_write) = (price(1.0)?, price(1.25)?);
     model.cost.cache_read = price(0.1)?;
+    Ok((model, port, from))
+}
+
+/// Through the production wiring (D315): `cache_miss::attach` folds the root's replies, and once
+/// they show two half-hour pauses the next OpenRouter request holds every history breakpoint an
+/// hour; the root's worker child, a loop whose stream no ledger feeds, stays at five minutes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none()
+-> TestResult {
+    let scratch = Scratch::new("yi-family-ttl-choice")?;
+    let (model, port, from) = ttl_route()?;
     let (session, host) = root(&scratch, model.clone(), port, false)?;
     yi_runtime::cache_miss::attach(&session);
     let minute = 60_000;
@@ -342,6 +347,112 @@ async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its
     host.spawn("Which line names the sea?".to_owned(), kwargs)?;
     let child = cache_controls(&body_asking(&mut bodies, &from, "names the sea?").await?);
     assert!(!child.is_empty() && !child.contains(&hour), "{child:?}");
+    Ok(())
+}
+
+/// Dies with a resumed session writing five-minute marks where its ledger had learned an hour:
+/// the tracker started empty in each new process, so every resume lost the hour tier until the
+/// session paused long again. The ledger is folded as the store attaches, before any request,
+/// and into the tracker too, so the first live reply refines the ledger's estimate.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_root_holds_its_history_an_hour_from_its_first_request() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let scratch = Scratch::new("yi-family-ttl-resume")?;
+    let (model, port, from) = ttl_route()?;
+    let mut repo = JsonlRepo::new(scratch.join("sessions"), "/tmp".to_owned());
+    let store = repo.create(CreateOptions::default())?;
+    let minute = 60_000;
+    for (prompt, elapsed) in [(40_000, 60 * minute), (40_500, 30 * minute), (41_000, 0)] {
+        let mut reply = recorded_reply(&model, prompt, elapsed)?;
+        if let AgentMessage::Assistant { diagnostics, .. } = &mut reply {
+            for note in diagnostics.iter_mut().flatten() {
+                note.details = json!({"elapsed_ms": elapsed, "ttl": "1h"})
+                    .as_object()
+                    .cloned();
+            }
+        }
+        let mut ledger = lock_session(&store);
+        ledger.append_message("main", AgentMessage::task("look again", 0))?;
+        ledger.append_message("main", reply)?;
+    }
+    let (session, _host) = root(&scratch, model.clone(), port, false)?;
+    yi_runtime::cache_miss::attach(&session);
+    session.attach_store(store)?;
+    let hour = yi_types::model::Ttl::Hour1;
+    let ttl = || yi_loop::run::StreamFn::cache_ttl(session.provider(), &model);
+    assert_eq!(
+        ttl(),
+        hour,
+        "the ledger's estimate missed the first request"
+    );
+    session.prompt("resumed turn")?;
+    let mut bodies = Vec::new();
+    let marks = cache_controls(&body_asking(&mut bodies, &from, "resumed turn").await?);
+    let mark = json!({"type": "ephemeral", "ttl": "1h"});
+    assert!(
+        !marks.is_empty() && marks.iter().all(|m| *m == mark),
+        "{marks:?}"
+    );
+    // The live reply re-derives the estimate from the tracker alone; an empty one says five.
+    session.provider().set_ttl_estimate(None);
+    session
+        .events_sender()
+        .send(yi_types::event::AgentEvent::MessageEnd {
+            message: recorded_reply(&model, 41_500, 0)?,
+        })?;
+    let mut refined = false;
+    for _ in 0..100 {
+        refined = ttl() == hour;
+        if refined {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        refined,
+        "the tracker the live replies feed was never seeded"
+    );
+    Ok(())
+}
+
+/// Dies with a session muted for good: a ledger that once raised the cache tripwire folded its
+/// `announced` flag into every later process, so two fresh total misses there said nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_session_raises_the_tripwire_on_its_own_misses() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let scratch = Scratch::new("yi-family-tripwire-resume")?;
+    let (model, port, _from) = ttl_route()?;
+    let miss = || -> Result<AgentMessage, Box<dyn Error>> {
+        Ok(serde_json::from_value(json!({
+            "role": "assistant", "content": [], "api": model.api, "provider": model.provider,
+            "model": model.id, "stopReason": "stop", "timestamp": 0,
+            "usage": {"input": 40_000, "output": 10, "cacheRead": 0, "cacheWrite": 0,
+                "totalTokens": 40_010,
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+        }))?)
+    };
+    let store = JsonlRepo::new(scratch.join("sessions"), "/tmp".to_owned())
+        .create(CreateOptions::default())?;
+    for _ in 0..3 {
+        lock_session(&store).append_message("main", miss()?)?;
+    }
+    let (session, _host) = root(&scratch, model.clone(), port, false)?;
+    yi_runtime::cache_miss::attach(&session);
+    session.attach_store(store)?;
+    for _ in 0..2 {
+        session
+            .events_sender()
+            .send(yi_types::event::AgentEvent::MessageEnd { message: miss()? })?;
+    }
+    let mut alerted = false;
+    for _ in 0..100 {
+        alerted = session.pending_count() > 0;
+        if alerted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(alerted, "two fresh total misses raised no notice");
     Ok(())
 }
 

@@ -241,9 +241,7 @@ impl RuntimeWiring {
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         if !self.wall.is_empty() {
-            let spills = crate::tools::default_spill_root();
-            let broker = self.broker.as_deref();
-            let roots = crate::tools::spill_roots_and_stores(spills.as_deref(), broker);
+            let roots = crate::tools::walled_roots(&self.wall, self.broker.as_deref());
             sandbox.deny_read.extend(roots);
             let board =
                 Some(self.family_dir()).filter(|dir| crate::tools::unwalled(&self.wall, dir));
@@ -402,15 +400,19 @@ fn wire_fetch(
         .parent_link
         .as_ref()
         .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
-    let mut resolver = crate::fetch::Resolver::new(wiring.cwd.clone(), wiring.wall.clone())
-        .with_plans_dir(plans_dir.to_path_buf())
-        .with_session_handle(agent, session.store_handle())
-        .with_log(log)
-        .with_kernel_variables(kernels)
-        .with_transcripts(transcripts)
-        .with_family_dir(wiring.family_dir())
-        .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>)
-        .with_session_stores(crate::tools::session_stores(wiring.broker.as_deref()));
+    let mut resolver = crate::fetch::Resolver::for_child(
+        wiring.cwd.clone(),
+        wiring.wall.clone(),
+        agent,
+        session.store_handle(),
+        wiring.broker.as_deref(),
+    )
+    .with_plans_dir(plans_dir.to_path_buf())
+    .with_log(log)
+    .with_kernel_variables(kernels)
+    .with_transcripts(transcripts)
+    .with_family_dir(wiring.family_dir())
+    .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>);
     if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
         resolver = resolver.with_checkpoint_show(show);
     }
@@ -796,24 +798,25 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     session.set_advisor(advisor);
 }
 
-/// A job of this session's cwd reports through the §4.3 follow-up queue, read at a running
-/// turn's end; an idle session hears it only after its next turn (#820 wakes it).
-fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
-    let follow_up = session.follow_up_hook();
-    tokio::spawn(async move {
-        let settled = job_settled();
-        let never: std::convert::Infallible = crate::session::until(settled, || {
-            for report in yi_tools::jobs::registry().take_finished(&cwd) {
-                let (job, headline, body) = (report.id, report.headline(), &report.output);
-                let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
-                let unread = move || !yi_tools::jobs::registry().delivered(job);
-                follow_up(&text, Some(Arc::new(unread)));
-            }
+/// A job this session started reports through its follow-up queue and wakes it when idle; the
+/// loop ends with the session, so a retired child's job starts no paid turn in it.
+pub(crate) fn wire_job_completions(session: &AgentSession) {
+    let (report, owner) = (session.job_report_hook(), session.job_owner());
+    tokio::spawn(crate::session::until(job_settled(), move || {
+        let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
+        let texts = reports.map(|report| {
+            let (job, headline, body) = (report.id, report.headline(), &report.output);
+            let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
+            let unread: crate::session::StillNews =
+                Arc::new(move || !yi_tools::jobs::registry().delivered(job));
+            (text, unread)
+        });
+        if report(texts.collect()) {
             std::ops::ControlFlow::Continue(None)
-        })
-        .await;
-        match never {}
-    });
+        } else {
+            std::ops::ControlFlow::Break(())
+        }
+    }));
 }
 
 pub(crate) fn journal_into<T: yi_types::entry::CustomRecord + 'static>(
@@ -999,7 +1002,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         wiring.broker.clone(),
         wiring.auto_background,
     );
-    wire_job_completions(session, wiring.cwd.clone());
+    wire_job_completions(session);
     host
 }
 

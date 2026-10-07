@@ -30,7 +30,7 @@ fn git(root: &Path, args: &[&str]) -> TestResult {
 }
 
 /// A fixture repo with two commits, a gate manifest, and a mining store, so
-/// every non-grid layer has something to report.
+/// every layer but ripwire's has something to report.
 fn fixture(tag: &str) -> Result<Scratch, Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-orient-{tag}"))?;
     let root = &dir;
@@ -104,7 +104,7 @@ fn packet_is_byte_stable_across_two_runs_on_one_tree() -> TestResult {
 }
 
 /// Sections as (name, first body line). The header count is checked against
-/// this, so the assertion holds whether or not the machine has grid.
+/// this, so the assertion holds whether or not the machine has ripwire.
 fn sections(packet: &str) -> Vec<(String, String)> {
     packet
         .split("\n## ")
@@ -279,95 +279,403 @@ fn skeletons_rank_hot_files_ahead_of_the_alphabet() -> TestResult {
     Ok(())
 }
 
-/// The two grid layers wait on another process each, so the packet waits for one of them, not
-/// both. The rerun owns a PATH of a fake grid that takes 1 s to answer.
+/// The task map's and the neighborhood's three answers, for the tests that time them.
+#[cfg(unix)]
+const LAYERS: [(&str, &str); 3] = [
+    ("--for=", "for.json"),
+    ("--callers=", "callers.json"),
+    ("--callees=", "callees.json"),
+];
+
+/// Whether the fake's log shows three calls whose first answered before the second began.
+#[cfg(unix)]
+fn took_turns(args: &str) -> bool {
+    let lines: Vec<&str> = args.lines().collect();
+    let asked: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].starts_with("--"))
+        .collect();
+    let first = asked.first().map(|&at| format!("done {}", lines[at]));
+    let done = lines
+        .iter()
+        .position(|line| Some(line.to_string()) == first);
+    asked.len() == 3 && done.is_some_and(|done| asked.get(1).is_some_and(|&next| done < next))
+}
+
+/// Reruns `name` with PATH holding only a fake `ripwire` that answers each verb with the real
+/// ripwire 0.6.5 answer recorded under tests/fixtures/ripwire; `slow` makes each answer take 1 s.
+#[cfg(unix)]
+fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new(&format!("yi-orient-{name}"))?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ripwire");
+    let mut cases = String::new();
+    for (verb, fixture) in answers {
+        let path = fixtures.join(fixture);
+        let (stream, code) = match fixture.ends_with(".txt") {
+            true => (">&2", 1),
+            false => ("", 0),
+        };
+        cases.push_str(&format!(
+            "  {verb}*) /bin/cat '{}' {stream}; exit {code};;\n",
+            path.display()
+        ));
+    }
+    // A slow answer marks itself running for its second, and notes `overlap` when another was.
+    let pause = match slow {
+        true => {
+            "d=$(/usr/bin/dirname \"$0\"); : > \"$d/running.$$\"\n\
+                 for f in \"$d\"/running.*; do [ \"$f\" != \"$d/running.$$\" ] && echo overlap >> \"$d/args\"; done\n\
+                 /bin/sleep 1; /bin/rm -f \"$d/running.$$\"; echo \"done $2\" >> \"$d/args\"\n"
+        }
+        false => "",
+    };
+    let ripwire = dir.join("ripwire");
+    fs::write(
+        &ripwire,
+        format!(
+            "#!/bin/sh\n[ -n \"$YI_WARM\" ] && exit 0\necho \"$2\" >> \"$(/usr/bin/dirname \"$0\")/args\"\n\
+             {pause}case \"$2\" in\n{cases}esac\nexit 2\n"
+        ),
+    )?;
+    fs::set_permissions(&ripwire, fs::Permissions::from_mode(0o755))?;
+    // Incident: a fresh script's first exec stalled past a second under load; run it once here.
+    yi_tools::command(&ripwire).env("YI_WARM", "1").output()?;
+    let rerun = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", name])
+        .env("PATH", &*dir)
+        .env("YI_FAKE_RIPWIRE", &*dir)
+        .output()?;
+    let stdout = String::from_utf8_lossy(&rerun.stdout);
+    assert!(
+        rerun.status.success() && stdout.contains("1 passed"),
+        "{stdout}"
+    );
+    Ok(())
+}
+
+fn ask(dir: &Path, key: &str, value: &str) -> String {
+    let mut input = Map::new();
+    input.insert(key.to_owned(), json!(value));
+    run(dir, input)
+}
+
+/// Once a repository's index answered, the task map and the neighborhood's callers and callees are
+/// asked at once: the fake notes each answer that ran beside another, and each takes 1 s.
 #[cfg(unix)]
 #[test]
-fn the_grid_layers_are_asked_at_once() -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    const NAME: &str = "the_grid_layers_are_asked_at_once";
-    let Some(dir) = std::env::var_os("YI_FAKE_GRID") else {
-        let dir = Scratch::new("yi-orient-overlap")?;
-        fs::create_dir_all(dir.join(".grid"))?;
-        let grid = dir.join("grid");
-        fs::write(&grid, "#!/bin/sh\n/bin/sleep 1\necho \"$1 answered\"\n")?;
-        fs::set_permissions(&grid, fs::Permissions::from_mode(0o755))?;
-        let rerun = yi_tools::command(std::env::current_exe()?)
-            .args(["--exact", NAME])
-            .env("PATH", &*dir)
-            .env("YI_FAKE_GRID", &*dir)
-            .output()?;
-        let stdout = String::from_utf8_lossy(&rerun.stdout);
-        assert!(
-            rerun.status.success() && stdout.contains("1 passed"),
-            "{stdout}"
-        );
-        return Ok(());
+fn the_ripwire_layers_are_asked_at_once() -> TestResult {
+    const NAME: &str = "the_ripwire_layers_are_asked_at_once";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        return with_fake_ripwire(NAME, true, &LAYERS);
     };
+    let dir = Path::new(&dir);
+    ask(dir, "task", "warm the index");
+    fs::remove_file(dir.join("args"))?;
     let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
     input.insert("symbol".to_owned(), json!("alpha"));
     let started = std::time::Instant::now();
-    let packet = run(Path::new(&dir), input);
+    let packet = run(dir, input);
     let took = started.elapsed();
-    assert!(packet.contains("roots answered"), "{packet}");
-    assert!(packet.contains("scope answered"), "{packet}");
+    let overlaps = fs::read_to_string(dir.join("args"))?
+        .matches("overlap")
+        .count();
+    assert!(
+        overlaps >= 2,
+        "the three layers ran {overlaps} beside another"
+    );
+    assert!(
+        packet.contains("src/lib.rs:5  pub fn caller() -> u32"),
+        "{packet}"
+    );
+    assert!(
+        packet.contains("callers of alpha: 2, matched by name"),
+        "{packet}"
+    );
+    assert!(packet.contains("  other src/beta.rs:2"), "{packet}");
+    assert!(packet.contains("callees of alpha: 1"), "{packet}");
     assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
     Ok(())
 }
 
-/// Dogfood 2026-09-27: `symbol=HashlineEditTool` said nothing is called that, because grid
-/// matches every dot-separated segment, and the miss kept only its first line. The fake answers
-/// `**.alpha` and `**.tool.alpha`, and anything else with grid's real miss, closest names and all;
-/// its `scope` leaves a `ran` marker, which an uncharted tree must never see.
+/// Incident: a cold repository's first packet asked three layers at once, and each built the same
+/// index; until one has answered, the calls take turns.
 #[cfg(unix)]
 #[test]
-fn a_bare_symbol_reaches_grid_under_any_path_and_a_miss_keeps_its_names() -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    const NAME: &str = "a_bare_symbol_reaches_grid_under_any_path_and_a_miss_keeps_its_names";
-    let Some(dir) = std::env::var_os("YI_FAKE_GRID") else {
-        let dir = Scratch::new("yi-orient-bare")?;
-        let miss = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid/scope-miss.txt");
-        let grid = dir.join("grid");
-        fs::write(
-            &grid,
-            format!(
-                "#!/bin/sh\ncase \"$1 $2\" in\n\
-                 'scope **.alpha'|'scope **.tool.alpha') : > ran; echo \"scope $2 answered\";;\n\
-                 scope*) /bin/cat '{}' >&2; exit 2;;\n\
-                 roots*) echo \"roots answered\"; exit 0;;\nesac\n",
-                miss.display()
-            ),
-        )?;
-        fs::set_permissions(&grid, fs::Permissions::from_mode(0o755))?;
-        let rerun = yi_tools::command(std::env::current_exe()?)
-            .args(["--exact", NAME])
-            .env("PATH", &*dir)
-            .env("YI_FAKE_GRID", &*dir)
-            .output()?;
-        let stdout = String::from_utf8_lossy(&rerun.stdout);
-        assert!(
-            rerun.status.success() && stdout.contains("1 passed"),
-            "{stdout}"
-        );
-        return Ok(());
+fn a_cold_repositorys_ripwire_calls_take_turns() -> TestResult {
+    const NAME: &str = "a_cold_repositorys_ripwire_calls_take_turns";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        return with_fake_ripwire(NAME, true, &LAYERS);
     };
-    let ask = |symbol: &str| {
-        let mut input = Map::new();
-        input.insert("symbol".to_owned(), json!(symbol));
-        run(Path::new(&dir), input)
+    let dir = Path::new(&dir);
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    let packet = run(dir, input);
+    let args = fs::read_to_string(dir.join("args"))?;
+    assert!(packet.contains("callees of alpha: 1"), "{packet}");
+    assert!(
+        took_turns(&args),
+        "the first call had not answered when the next began:\n{args}"
+    );
+    Ok(())
+}
+
+/// A cold repository whose first answer is a refusal is warm after it: the two calls queued behind
+/// it run at once, rather than every later packet taking turns for the process's life.
+#[cfg(unix)]
+#[test]
+fn a_refused_first_answer_still_warms_the_repository() -> TestResult {
+    const NAME: &str = "a_refused_first_answer_still_warms_the_repository";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let refusals = [
+            ("--for=", "callers-miss.txt"),
+            ("--callers=", "callers-miss.txt"),
+            ("--callees=", "callers-miss.txt"),
+        ];
+        return with_fake_ripwire(NAME, true, &refusals);
     };
-    // grid scope leaves `.grid/` in an uncharted tree; grid roots reads the files alone.
-    let uncharted = ask("alpha");
-    assert!(!Path::new(&dir).join("ran").exists(), "{uncharted}");
-    assert!(uncharted.contains("absent: no .grid chart"), "{uncharted}");
-    assert!(uncharted.contains("roots answered"), "{uncharted}");
-    fs::create_dir_all(Path::new(&dir).join(".grid"))?;
-    let bare = ask("alpha");
-    assert!(bare.contains("scope **.alpha answered"), "{bare}");
-    let pathed = ask("crate::tool::alpha");
-    assert!(pathed.contains("scope **.tool.alpha answered"), "{pathed}");
-    let missed = ask("scale");
-    assert!(missed.contains("  drift.user.total"), "{missed}");
+    let dir = Path::new(&dir);
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    run(dir, input);
+    let args = fs::read_to_string(dir.join("args"))?;
+    assert!(
+        args.contains("overlap"),
+        "the calls after a refused first one still took turns:\n{args}"
+    );
+    Ok(())
+}
+
+/// A cancelled packet on a cold repository starts no ripwire after the cancel, and leaves the
+/// repository cold: the waiting calls hear the cancel, and the next packet still takes turns.
+#[cfg(unix)]
+#[test]
+fn a_cancel_reaches_the_calls_waiting_on_a_cold_repository() -> TestResult {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const NAME: &str = "a_cancel_reaches_the_calls_waiting_on_a_cold_repository";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        return with_fake_ripwire(NAME, true, &LAYERS);
+    };
+    let dir = Path::new(&dir);
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let seen = Arc::clone(&flag);
+    context.cancelled = Arc::new(move || seen.load(Ordering::SeqCst));
+    let cancel = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        flag.store(true, Ordering::SeqCst);
+    });
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    GetContextTool.execute(input, &context);
+    cancel.join().map_err(|_| "the cancel thread panicked")?;
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let args = fs::read_to_string(dir.join("args"))?;
+    let asked = args.lines().filter(|line| line.starts_with("--")).count();
+    assert_eq!(asked, 1, "calls started after the cancel:\n{args}");
+    // The killed first run built no index, so the next packet still takes turns.
+    fs::remove_file(dir.join("args"))?;
+    let mut input = Map::new();
+    input.insert("task".to_owned(), json!("change what alpha returns"));
+    input.insert("symbol".to_owned(), json!("alpha"));
+    run(dir, input);
+    let args = fs::read_to_string(dir.join("args"))?;
+    assert!(
+        took_turns(&args),
+        "a cancelled cold run left the repository warm:\n{args}"
+    );
+    Ok(())
+}
+
+/// Ripwire's own cuts reach the model at the cut: its byte budget names the call that widens it,
+/// and its relevance floor says how many symbols scored, down to none.
+#[cfg(unix)]
+#[test]
+fn the_task_map_names_ripwires_own_cuts() -> TestResult {
+    const NAME: &str = "the_task_map_names_ripwires_own_cuts";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--for=capped", "for-capped.json"),
+            ("--for=nothing", "for-nothing-scored.json"),
+            ("--for=", "for.json"),
+        ];
+        return with_fake_ripwire(NAME, false, &answers);
+    };
+    let dir = Path::new(&dir);
+    let capped = ask(dir, "task", "capped streaming bold split");
+    assert!(
+        capped.contains("[task map: 30 of 40 signatures, cut at ripwire's byte budget — bash: ripwire . --for='capped streaming bold split' --json --token-budget=7000]"),
+        "{capped}"
+    );
+    assert!(
+        capped.contains("crates/tui/src/app/stream.rs:466  pub(super) fn commit_prose"),
+        "{capped}"
+    );
+    // The suggested command is pasted into a shell, so a task with a quote must survive sh.
+    let quoted = ask(dir, "task", "capped: a session's lane");
+    let pasted = quoted
+        .split("bash: ripwire . --for=")
+        .nth(1)
+        .and_then(|rest| rest.split(" --json").next())
+        .ok_or(quoted.clone())?;
+    let echoed = yi_tools::command("/bin/sh")
+        .args(["-c", &format!("printf %s {pasted}")])
+        .output()?;
+    assert_eq!(
+        String::from_utf8_lossy(&echoed.stdout),
+        "capped: a session's lane"
+    );
+    let floor = ask(dir, "task", "change what alpha returns");
+    assert!(
+        floor.contains(
+            "[task map — relevance floor: kept 3 of 40 - the other 37 scored zero on this query"
+        ),
+        "{floor}"
+    );
+    let none = ask(dir, "task", "nothing like this here");
+    assert!(
+        none.contains("[task map — relevance floor: kept 0 of 40"),
+        "{none}"
+    );
+    let untasked = run(dir, Map::new());
+    assert!(
+        untasked.contains("absent: no task argument was given"),
+        "{untasked}"
+    );
+    Ok(())
+}
+
+/// A symbol ripwire cannot find keeps its did-you-mean, so the next call is the right name.
+#[cfg(unix)]
+#[test]
+fn a_missed_symbol_keeps_ripwires_suggestion() -> TestResult {
+    const NAME: &str = "a_missed_symbol_keeps_ripwires_suggestion";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--callers=", "callers-miss.txt"),
+            ("--callees=", "callers-miss.txt"),
+        ];
+        return with_fake_ripwire(NAME, false, &answers);
+    };
+    let missed = ask(Path::new(&dir), "symbol", "alpha2");
+    assert!(missed.contains("(did you mean 'alpha'?)"), "{missed}");
+    assert!(missed.contains("PARTIAL"), "{missed}");
+    Ok(())
+}
+
+/// Incident: `crate::app::stream::commit_prose` missed though `commit_prose` is found; a path is
+/// cut to the name, or to `Type::name` where a type owns it.
+#[cfg(unix)]
+#[test]
+fn a_path_qualified_symbol_asks_ripwire_by_its_last_names() -> TestResult {
+    const NAME: &str = "a_path_qualified_symbol_asks_ripwire_by_its_last_names";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--callers=", "callers.json"),
+            ("--callees=", "callees.json"),
+        ];
+        return with_fake_ripwire(NAME, false, &answers);
+    };
+    let dir = Path::new(&dir);
+    ask(dir, "symbol", "crate::app::stream::commit_prose");
+    ask(
+        dir,
+        "symbol",
+        "yi_tools::hashline::tool::HashlineEditTool::execute",
+    );
+    let asked = fs::read_to_string(dir.join("args"))?;
+    assert!(asked.contains("--callers=commit_prose\n"), "{asked}");
+    assert!(
+        asked.contains("--callers=HashlineEditTool::execute\n"),
+        "{asked}"
+    );
+    Ok(())
+}
+
+/// Twenty rows a side are shown: `draft` has exactly twenty callers and shows them all;
+/// `journal_path` has twenty-one, and the cut names the call that lists every one.
+#[cfg(unix)]
+#[test]
+fn the_neighborhood_names_its_row_cap_at_the_limit_plus_one() -> TestResult {
+    const NAME: &str = "the_neighborhood_names_its_row_cap_at_the_limit_plus_one";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--callers=draft", "callers-at-cap.json"),
+            ("--callees=draft", "callees-at-cap.json"),
+            ("--callers=journal_path", "callers-past-cap.json"),
+            ("--callees=journal_path", "callees-past-cap.json"),
+        ];
+        return with_fake_ripwire(NAME, false, &answers);
+    };
+    let dir = Path::new(&dir);
+    let at = ask(dir, "symbol", "draft");
+    assert!(!at.contains("rows, cap 20"), "{at}");
+    assert!(at.contains("callees of draft: 18"), "{at}");
+    let past = ask(dir, "symbol", "journal_path");
+    assert!(
+        past.contains("[callers: 20 of 21 rows, cap 20 — bash: ripwire . --callers='journal_path' --json --limit=21]"),
+        "{past}"
+    );
+    assert!(past.contains("callees of journal_path: 2"), "{past}");
+    let section = past
+        .split("callers of journal_path")
+        .nth(1)
+        .unwrap_or_default();
+    let shown = section
+        .lines()
+        .take_while(|line| !line.starts_with('['))
+        .skip(1);
+    assert_eq!(
+        shown.filter(|line| line.starts_with("  ")).count(),
+        20,
+        "{past}"
+    );
+    Ok(())
+}
+
+/// Ripwire's real answer for a type is no call either way, which says nothing about its uses.
+#[cfg(unix)]
+#[test]
+fn a_type_with_no_calls_points_at_grep() -> TestResult {
+    const NAME: &str = "a_type_with_no_calls_points_at_grep";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--callers=", "callers-type.json"),
+            ("--callees=", "callees-type.json"),
+        ];
+        return with_fake_ripwire(NAME, false, &answers);
+    };
+    let near = ask(Path::new(&dir), "symbol", "HashlineEditTool");
+    assert!(
+        near.contains("[HashlineEditTool: no call found either way; ripwire matches calls by name and does not track uses of a type — grep -rn 'HashlineEditTool' for those]"),
+        "{near}"
+    );
+    Ok(())
+}
+
+/// An exit-0 answer the seam cannot read is named absent per layer, never zero rows: shape drift
+/// is not proof that no call exists.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_neighborhood_answer_is_absent_not_clean() -> TestResult {
+    const NAME: &str = "an_unreadable_neighborhood_answer_is_absent_not_clean";
+    let Some(dir) = std::env::var_os("YI_FAKE_RIPWIRE") else {
+        let answers = [
+            ("--callers=", "callers-shape.json"),
+            ("--callees=", "callers-shape.json"),
+        ];
+        return with_fake_ripwire(NAME, false, &answers);
+    };
+    let near = ask(Path::new(&dir), "symbol", "alpha");
+    assert!(
+        near.contains("absent: the answer named no callers rows"),
+        "{near}"
+    );
+    assert!(!near.contains("no call found either way"), "{near}");
     Ok(())
 }
 

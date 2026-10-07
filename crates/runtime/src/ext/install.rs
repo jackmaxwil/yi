@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 
 use yi_permission::PermissionMode;
 
-use super::grid::Grid;
 use super::orchestrate::Orchestrate;
 use super::pack::{Pack, PackExtension};
 use super::project::{ProjectResources, TrustGate, git_root};
+use super::ripwire::Ripwire;
 use super::telemetry::RouteTelemetry;
 use super::{Host, Rank, Slot, Trust};
 
@@ -67,7 +67,7 @@ pub fn install(options: ExtOptions) -> Host {
     ));
     register_packs(&mut host, &cwd, &home);
     host.register(Box::new(Orchestrate::new(ORCHESTRATE)));
-    host.register(Box::new(Grid::new(cwd, home)));
+    host.register(Box::new(Ripwire));
     host.register(Box::new(RouteTelemetry::new()));
     host
 }

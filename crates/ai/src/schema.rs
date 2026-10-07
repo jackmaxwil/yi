@@ -1,6 +1,8 @@
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-const UNSUPPORTED: [&str; 22] = [
+/// Value bounds strict decoding refuses and a tool's own parser enforces anyway, so a tool schema
+/// drops them rather than losing its strict mode.
+const BOUNDS: [&str; 11] = [
     "minimum",
     "maximum",
     "exclusiveMinimum",
@@ -12,6 +14,9 @@ const UNSUPPORTED: [&str; 22] = [
     "minItems",
     "maxItems",
     "uniqueItems",
+];
+
+const REFUSED: [&str; 11] = [
     "allOf",
     "not",
     "if",
@@ -25,24 +30,51 @@ const UNSUPPORTED: [&str; 22] = [
     "contains",
 ];
 
+/// Keys strict mode's providers give meaning to; anything else they refuse whole (an unknown
+/// keyword like `examples` 400s the route), so it loosens the tool instead.
+const STRICT_KEYS: [&str; 14] = [
+    "type",
+    "description",
+    "properties",
+    "required",
+    "items",
+    "additionalProperties",
+    "enum",
+    "const",
+    "anyOf",
+    "$ref",
+    "$defs",
+    "definitions",
+    "title",
+    "default",
+];
+
 pub fn strict(schema: &Value) -> bool {
     is_object(schema) && node(schema)
 }
 
 fn is_object(schema: &Value) -> bool {
-    schema.get("properties").is_some()
-        || match schema.get("type") {
-            Some(Value::String(kind)) => kind == "object",
-            Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "object"),
-            _ => false,
-        }
+    schema.get("properties").is_some() || typed(schema, "object")
+}
+
+fn typed(schema: &Value, kind: &str) -> bool {
+    match schema.get("type") {
+        Some(Value::String(named)) => named == kind,
+        Some(Value::Array(kinds)) => kinds.iter().any(|named| named == kind),
+        _ => false,
+    }
 }
 
 fn node(schema: &Value) -> bool {
     let Value::Object(map) = schema else {
         return false;
     };
-    if UNSUPPORTED.iter().any(|key| map.contains_key(*key)) || (is_object(schema) && !closed(map)) {
+    if BOUNDS
+        .iter()
+        .chain(&REFUSED)
+        .any(|key| map.contains_key(*key))
+        || (is_object(schema) && !closed(map))
+    {
         return false;
     }
     let values = |key: &str| match map.get(key) {
@@ -82,4 +114,122 @@ pub fn chat(schema: &Value) -> Value {
 
 pub fn responses(schema: &Value) -> Value {
     json!({"type": "json_schema", "name": "answer", "schema": schema, "strict": strict(schema)})
+}
+
+/// A tool schema as strict decoding takes it: every object closed, bounds dropped, optional
+/// properties left optional. None: no closed shape to give it.
+pub fn strict_tool(schema: &Value) -> Option<Value> {
+    let Value::Object(map) = schema else {
+        return None;
+    };
+    if typed(schema, "array") && !map.contains_key("items") {
+        return None;
+    }
+    let mut out = Map::new();
+    for (key, value) in map {
+        let key = key.as_str();
+        if BOUNDS.contains(&key) {
+            continue;
+        }
+        if REFUSED.contains(&key) {
+            return None;
+        }
+        if !STRICT_KEYS.contains(&key) {
+            return None;
+        }
+        let malformed = match key {
+            "additionalProperties" => value != &Value::Bool(false),
+            "anyOf" | "enum" => !value.is_array(),
+            "required" => !(value.as_array()).is_some_and(|keys| keys.iter().all(Value::is_string)),
+            "properties" | "$defs" | "definitions" => !value.is_object(),
+            _ => false,
+        };
+        if malformed {
+            return None;
+        }
+        let each = |values: &Map<String, Value>| {
+            (values.iter())
+                .map(|(name, value)| Some((name.clone(), strict_tool(value)?)))
+                .collect::<Option<Map<String, Value>>>()
+        };
+        let value = match (key, value) {
+            ("properties" | "$defs" | "definitions", Value::Object(values)) => {
+                Value::Object(each(values)?)
+            }
+            ("items", item) => strict_tool(item)?,
+            ("anyOf", Value::Array(options)) => Value::Array(
+                (options.iter())
+                    .map(strict_tool)
+                    .collect::<Option<Vec<Value>>>()?,
+            ),
+            (_, value) => value.clone(),
+        };
+        out.insert(key.to_owned(), value);
+    }
+    if typed(schema, "object") {
+        if !matches!(out.get("properties"), Some(Value::Object(_))) {
+            return None;
+        }
+        out.insert("additionalProperties".to_owned(), Value::Bool(false));
+    } else if !["type", "anyOf", "enum", "const", "$ref"]
+        .iter()
+        .any(|key| out.contains_key(*key))
+    {
+        return None;
+    }
+    Some(Value::Object(out))
+}
+
+/// The tool schema a strict route sends closed: None, the original goes loose. `keep` is the
+/// route's own gate on the closed schema (OpenAI's nothing-optional, Anthropic's caps).
+pub fn strict_tool_json(
+    schema: &Value,
+    strict: bool,
+    keep: impl FnOnce(&Value) -> bool,
+) -> Option<Value> {
+    (strict.then(|| strict_tool(schema))).flatten().filter(keep)
+}
+
+/// Optional and union-typed properties in a schema, nested ones included: what Anthropic's
+/// per-request strict caps count.
+pub(crate) fn weight(schema: &Value) -> (usize, usize) {
+    let Value::Object(map) = schema else {
+        return (0, 0);
+    };
+    let mut total = (0usize, 0usize);
+    let mut add = |(optional, unions): (usize, usize)| {
+        total = (
+            total.0.saturating_add(optional),
+            total.1.saturating_add(unions),
+        );
+    };
+    if let Some(Value::Object(properties)) = map.get("properties") {
+        let required = map.get("required").and_then(Value::as_array);
+        for (name, property) in properties {
+            let optional = !required.is_some_and(|keys| keys.contains(&json!(name)));
+            let union = property.get("anyOf").is_some()
+                || property.get("type").is_some_and(Value::is_array);
+            add((usize::from(optional), usize::from(union)));
+            add(weight(property));
+        }
+    }
+    if let Some(item) = map.get("items") {
+        add(weight(item));
+    }
+    for key in ["$defs", "definitions"] {
+        if let Some(Value::Object(defs)) = map.get(key) {
+            for def in defs.values() {
+                add(weight(def));
+            }
+        }
+    }
+    for option in map
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        add(weight(option));
+    }
+    total
 }

@@ -147,10 +147,18 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             if state.finished.is_none() {
                 cell.elapsed_ms = elapsed_ms(state.started);
             }
-            live_lines.extend(cell.lines(content_width, theme, app.mode, spinner));
+            let rows = cell.lines(content_width, theme, app.mode, spinner);
+            join_live(&mut live_lines, !app.pane && app.last_commit_blank, rows);
         }
     }
     live_lines
+}
+
+/// Invariant: blank rows meeting at a join collapse to one, as a commit and a rebuild do.
+fn join_live(out: &mut Vec<Line<'static>>, blank_above: bool, rows: Vec<Line<'static>>) {
+    let blank_above = out.last().map_or(blank_above, crate::history::is_blank);
+    let skip = usize::from(blank_above && rows.first().is_some_and(crate::history::is_blank));
+    out.extend(rows.into_iter().skip(skip));
 }
 
 pub struct ChatLayout {
@@ -190,6 +198,9 @@ pub fn layout_chat(
         Vec::new()
     } else {
         crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
+            .into_iter()
+            .map(|line| crate::wrap::fit(line, width))
+            .collect()
     };
 
     let selected = &app.selection.model;
@@ -258,7 +269,9 @@ pub fn layout_chat(
         .is_some_and(|at| at.elapsed() < crate::input::ESC_WINDOW);
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
-        if let (Some(mid), Some(label)) = (rows.get_mut(1), app.working_label()) {
+        if let (Some(mid), Some(label)) =
+            (rows.get_mut(usize::from(ORB_ROWS / 2)), app.working_label())
+        {
             let hint = if esc_armed {
                 "esc again to interrupt"
             } else {
@@ -357,7 +370,8 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
     // Incident (D46): the mark trails the live tail. §17.3 makes the viewport's top row the
     // commit boundary, so a leading mark walked down a paragraph at a time.
     if layout.show_working || layout.kitty {
-        if layout.kitty && y < area.bottom() {
+        // Invariant: a squeezed orb is dropped, never squashed or painted over the rows below.
+        if layout.kitty && area.bottom().saturating_sub(y) >= ORB_ROWS {
             orb_at = Some((area.left(), y));
         }
         put(buffer, &layout.working, &mut y);
@@ -416,10 +430,11 @@ pub fn paint_pane(
     let (shown, owners, thumb) = if *scroll == 0 {
         app.pane_hold = None;
         let history = yi_types::trace::span("tui.history_rows");
-        let want = above.saturating_sub(live.len()).max(1);
+        // One spare row: the seam may collapse a blank, and the trim below keeps `above`.
+        let want = above.saturating_sub(live.len()).saturating_add(1);
         let (mut column, mut owners) = app.history.lines(width, &theme, mode, want);
         drop(history);
-        column.extend(live);
+        join_live(&mut column, false, live);
         let start = column.len().saturating_sub(above);
         (
             column.split_off(start),
@@ -442,7 +457,7 @@ pub fn paint_pane(
         let at_most = hold.map_or(usize::MAX, |(_, _, pinned, _)| pinned);
         let (from, mut column, owners) = app.history.tail(width, &theme, mode, need, at_most);
         let history_rows = column.len();
-        column.extend(live);
+        join_live(&mut column, false, live);
         *scroll = (*scroll).min(column.len().saturating_sub(above));
         app.pane_hold = Some((width, mode, from, column.len().saturating_sub(above)));
         let end = column.len().saturating_sub(*scroll);
