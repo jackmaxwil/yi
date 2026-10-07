@@ -356,11 +356,17 @@ fn cursor_stream(
             .unwrap_or_default(),
     );
     let cut = signal.cut_flag();
+    let fired = signal.fired_flag();
+    let stop: yi_ai::cursor::StopFn = Arc::new(move || {
+        cut.load(std::sync::atomic::Ordering::SeqCst)
+            || fired.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let tool_stop = Arc::clone(&stop);
     let tool: yi_ai::cursor::ToolFn = Box::new(move |call_id, name, args| {
         let tools = Arc::clone(&tools);
-        let cut = Arc::clone(&cut);
+        let stop = Arc::clone(&tool_stop);
         Box::pin(async move {
-            if cut.load(std::sync::atomic::Ordering::SeqCst) {
+            if stop() {
                 return "aborted".to_owned();
             }
             let Some(found) = tools.iter().find(|tool| tool.definition().name == name) else {
@@ -368,6 +374,9 @@ fn cursor_stream(
             };
             let local = InterruptSignal::default();
             let outcome = found.execute(&call_id, args, &local).await;
+            if stop() {
+                return "aborted".to_owned();
+            }
             outcome
                 .result
                 .content
@@ -380,7 +389,7 @@ fn cursor_stream(
                 .join("\n")
         })
     });
-    yi_ai::cursor::stream(model, context, key, tool)
+    yi_ai::cursor::stream(model, context, key, tool, stop)
 }
 
 fn error_stream(model: &Model, text: &str) -> Receiver<AssistantMessageEvent> {

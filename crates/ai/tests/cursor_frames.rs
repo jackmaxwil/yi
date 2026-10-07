@@ -45,10 +45,14 @@ fn text_delta(text: &str) -> Vec<u8> {
 }
 
 fn tool_frame(id: u32, name: &str, call_id: &str) -> Vec<u8> {
+    let mut entry = Vec::new();
+    entry.extend(str_field(1, "path"));
+    entry.extend(msg(2, &str_field(3, "a.rs")));
     let mut mcp = Vec::new();
     mcp.extend(str_field(1, name));
-    mcp.extend(str_field(2, call_id));
-    mcp.extend(str_field(3, r#"{"path":"a.rs"}"#));
+    mcp.extend(msg(2, &entry));
+    mcp.extend(str_field(3, call_id));
+    mcp.extend(str_field(5, name));
     let mut exec = Vec::new();
     exec.extend(var_field(1, u64::from(id)));
     exec.extend(msg(11, &mcp));
@@ -86,7 +90,7 @@ fn a_text_delta_a_tool_and_an_unknown_frame() {
     assert!(!proto::is_throw(&tool_applied.replies[0]));
     let unknown = apply_message(&shell_frame(9), &mut tool);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(unknown.replies.len(), 1);
+    assert_eq!(unknown.replies.len(), 2);
     assert!(proto::is_throw(&unknown.replies[0]));
     assert_eq!(
         proto::frames(&frame(&text_delta("pong")))
