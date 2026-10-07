@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Bump the version and all four digests together, from the release's `.sha256` files.
@@ -29,8 +28,6 @@ const PINNED: [(&str, &str, &str, &str); 4] = [
         "e38d97460b98ebfd31b197de0fe9fa578add4bc8ba0179b203dd3f87b99f98e6",
     ),
 ];
-const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_TAR_BYTES: usize = 256 * 1024 * 1024;
 const REMEDY: &str = "install uv (https://docs.astral.sh/uv/) or python3-venv, then re-run yi";
 
 pub struct Release {
@@ -64,22 +61,12 @@ pub fn installed(home: &Path) -> Option<PathBuf> {
 }
 
 pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new()
-        .try_proxy_from_env(true)
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
-        .build();
-    let response = agent.get(url).call().map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_ARCHIVE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
+    let response = crate::tarball::agent()
+        .build()
+        .get(url)
+        .call()
         .map_err(|error| error.to_string())?;
-    if u64::try_from(bytes.len()).map_or(true, |len| len > MAX_ARCHIVE_BYTES) {
-        return Err(format!("larger than {MAX_ARCHIVE_BYTES} bytes"));
-    }
-    Ok(bytes)
+    crate::tarball::read_capped(response.into_reader())
 }
 
 /// Downloads the pinned archive through `fetch`, checks its digest before reading a byte of
@@ -95,14 +82,15 @@ pub fn install(
     let url = release.url();
     let archive = fetch(&url)
         .map_err(|error| format!("couldn't download uv {UV_VERSION}: {error}; {REMEDY}"))?;
-    let digest = sha256_hex(&archive);
+    let digest = crate::tarball::sha256_hex(&archive);
     if digest != release.sha256 {
         return Err(format!(
             "{url} has sha256 {digest}, yi pins {}; not installing. {REMEDY}",
             release.sha256
         ));
     }
-    let tar = gunzip(&archive)?;
+    let tar =
+        crate::tarball::gunzip(&archive).map_err(|error| format!("the uv archive {error}"))?;
     let binary = tar_file(&tar, &format!("uv-{}/uv", release.triple))?;
     let root = home.join(".yi").join("uv");
     let staging = root.join(format!(".staging-{}", std::process::id()));
@@ -134,67 +122,13 @@ fn at(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-/// RFC 1952: a 10-byte header, optional fields named by the flag byte, raw deflate, an
-/// 8-byte trailer. The digest already authenticated the bytes, so the CRC is not re-checked.
-fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let bad = || "the uv archive is not gzip".to_owned();
-    if bytes.get(..3) != Some(&[0x1f, 0x8b, 8][..]) {
-        return Err(bad());
-    }
-    let flags = *bytes.get(3).ok_or_else(bad)?;
-    let mut at = 10usize;
-    if flags & 0x04 != 0 {
-        let len = bytes.get(at..at.saturating_add(2)).ok_or_else(bad)?;
-        let len = usize::from(u16::from_le_bytes(len.try_into().map_err(|_| bad())?));
-        at = at.saturating_add(2).saturating_add(len);
-    }
-    for name_or_comment in [0x08, 0x10] {
-        if flags & name_or_comment != 0 {
-            let rest = bytes.get(at..).ok_or_else(bad)?;
-            let end = rest.iter().position(|byte| *byte == 0).ok_or_else(bad)?;
-            at = at.saturating_add(end).saturating_add(1);
-        }
-    }
-    if flags & 0x02 != 0 {
-        at = at.saturating_add(2);
-    }
-    let deflate = bytes
-        .get(at..bytes.len().saturating_sub(8))
-        .ok_or_else(bad)?;
-    miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, MAX_TAR_BYTES)
-        .map_err(|error| format!("the uv archive does not inflate: {:?}", error.status))
-}
-
-fn tar_file<'a>(mut tar: &'a [u8], path: &str) -> Result<&'a [u8], String> {
-    let missing = || format!("the uv archive carries no {path}");
-    loop {
-        let (header, rest) = tar.split_at_checked(512).ok_or_else(missing)?;
-        if header.iter().all(|byte| *byte == 0) {
-            return Err(missing());
-        }
-        let name = header.get(..100).unwrap_or_default();
-        let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
-        let size = octal(header.get(124..136).unwrap_or_default()).ok_or_else(missing)?;
-        let padded = size.div_ceil(512).checked_mul(512).ok_or_else(missing)?;
-        let regular = matches!(header.get(156), Some(b'0' | 0));
-        if regular && name == path.as_bytes() {
-            return rest.get(..size).ok_or_else(missing);
-        }
-        tar = rest.get(padded..).ok_or_else(missing)?;
-    }
-}
-
-fn octal(field: &[u8]) -> Option<usize> {
-    let text = std::str::from_utf8(field).ok()?;
-    usize::from_str_radix(text.trim_matches(['\0', ' ']), 8).ok()
+fn tar_file<'a>(tar: &'a [u8], path: &str) -> Result<&'a [u8], String> {
+    crate::tarball::entries(tar)
+        .map_err(|error| format!("the uv archive: {error}"))?
+        .into_iter()
+        .find(|entry| entry.regular && entry.name == path)
+        .map(|entry| entry.bytes)
+        .ok_or_else(|| format!("the uv archive carries no {path}"))
 }
 
 #[cfg(test)]
@@ -234,7 +168,7 @@ mod tests {
     }
 
     fn release_for(archive: &[u8]) -> Release {
-        let sha256 = Box::leak(sha256_hex(archive).into_boxed_str());
+        let sha256 = Box::leak(crate::tarball::sha256_hex(archive).into_boxed_str());
         Release {
             triple: TRIPLE,
             sha256,

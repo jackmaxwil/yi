@@ -14,6 +14,22 @@ cp -R python "$root/python"
 mkdir -p "$root/skills"
 cp -R skills/. "$root/skills/"
 
+base=$(basename "$PWD")
+rest=${base#yi-}
+if [ "$rest" != "$base" ] && [ "${rest#*-}" != "$rest" ]; then
+  version=${rest%%-*}
+  target=${rest#*-}
+  json_escape() {
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    printf '%s' "$s"
+  }
+  printf '{"prefix":"%s","version":"%s","target":"%s"}\n' \
+    "$(json_escape "$prefix")" "$(json_escape "$version")" "$(json_escape "$target")" \
+    > "$root/install.json"
+fi
+
 echo "installed $prefix/yi"
 case ":$PATH:" in
   *":$prefix:"*) ;;

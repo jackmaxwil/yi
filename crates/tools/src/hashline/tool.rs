@@ -3,14 +3,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
-use super::format::{format_hashline_header, format_numbered_line};
+use super::format::{FileTag, format_hashline_header, format_numbered_line};
 use super::input::Patch;
 use super::normalize::{normalize_to_lf, strip_bom};
 use super::patcher::{PatchSectionResult, Patcher, SectionOp};
 use super::snapshots::SnapshotStore;
 use super::types::Clipboard;
 use crate::diff::GitPatch;
-use crate::grid::{GridLayer, Unavailable};
+use crate::ripwire::CheckLayer;
 use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path, text_output,
 };
@@ -135,11 +135,40 @@ impl Tool for HashlineReadTool {
         if display_path.contains(['*', '?', '[']) {
             return self.read_glob(&display_path, context);
         }
+        // Incident: grep prints hits under `[path#TAG]` and a reader passed that `path#TAG`
+        // to read, which found no such file (#993). A file really named so still reads.
+        let tagged = (!resolve_path(context, &display_path).exists())
+            .then(|| super::tokenizer::try_parse_header(&format!("[{display_path}]")))
+            .flatten()
+            .and_then(|header| Some((header.path, FileTag::parse(&header.file_hash?)?)))
+            .filter(|(bare, _)| resolve_path(context, bare).is_file());
+        let (display_path, tag) = match tagged {
+            Some((bare, tag)) => (bare, Some(tag)),
+            None => (display_path, None),
+        };
         let path = resolve_path(context, &display_path);
         if path.is_dir() {
             return read_dir(&display_path, &path, context);
         }
-        self.read_file(&display_path, &path, &input, context)
+        let mut output = self.read_file(&display_path, &path, &input, context);
+        if let Some(tag) = tag
+            && let Some(yi_types::message::Content::Text { text, .. }) =
+                output.result.content.first_mut()
+            && let Some(live) = text
+                .lines()
+                .next()
+                .and_then(super::tokenizer::try_parse_header)
+                .and_then(|header| header.file_hash)
+            && FileTag::parse(&live) != Some(tag)
+        {
+            text.insert_str(
+                0,
+                &format!(
+                    "[{display_path}#{tag} is not the current version: the file is now #{live}; this is the current content]\n"
+                ),
+            );
+        }
+        output
     }
 }
 
@@ -960,14 +989,7 @@ impl Tool for HashlineEditTool {
             }
             rendered.push(render_section_result(result, snapshots));
         }
-        let updated = results
-            .iter()
-            .filter(|result| result.op == SectionOp::Update);
-        let charted = crate::grid::charted_files(
-            context,
-            updated.map(|result| result.canonical_path.as_str()),
-        );
-        let (verdicts, layer) = post_edit_checks(&checked, &charted, context);
+        let (verdicts, layer) = post_edit_checks(&checked, &results, context);
         let mut syntax: Option<String> = None;
         for ((index, _), line) in checked.iter().zip(verdicts) {
             let Some(line) = line else { continue };
@@ -977,7 +999,7 @@ impl Tool for HashlineEditTool {
             }
             syntax = Some(crate::syntax::worst(syntax, line));
         }
-        let grid = layer.map_or("skipped", |layer| {
+        let ripwire = layer.map_or("skipped", |layer| {
             rendered.push(layer.render());
             layer.name()
         });
@@ -986,7 +1008,7 @@ impl Tool for HashlineEditTool {
             output.result.details = crate::diff::patch_details(&GitPatch::from_text(diff));
         }
         if let Value::Object(details) = &mut output.result.details {
-            details.insert("grid".to_owned(), Value::String(grid.to_owned()));
+            details.insert("ripwire".to_owned(), Value::String(ripwire.to_owned()));
             details.insert(
                 "syntax".to_owned(),
                 syntax.map_or(Value::Null, Value::String),
@@ -1010,27 +1032,45 @@ impl Tool for HashlineEditTool {
     }
 }
 
-/// Both read the settled tree, so the grid check runs beside the syntax verdicts.
+/// Both read the settled tree, so the ripwire check runs beside the syntax verdicts.
 fn post_edit_checks(
     paths: &[(usize, &str)],
-    charted: &[String],
+    results: &[PatchSectionResult],
     context: &ToolContext,
-) -> (Vec<Option<String>>, Option<GridLayer>) {
+) -> (Vec<Option<String>>, Option<CheckLayer>) {
+    let installed = crate::ripwire::installed();
+    let top = {
+        let root = crate::ripwire::root(&context.cwd);
+        root.canonicalize().unwrap_or(root)
+    };
+    let updates: Vec<&PatchSectionResult> = (results.iter())
+        .filter(|result| result.op == SectionOp::Update && installed)
+        .collect();
+    let regions: Vec<(String, u64)> = (updates.iter())
+        .flat_map(|result| {
+            let (path, before) = (&result.canonical_path, &result.before);
+            crate::ripwire::regions(&top, path, before, &result.after)
+        })
+        .collect();
+    let removed: Vec<(String, String)> = (updates.iter())
+        .flat_map(|result| {
+            let (path, before) = (&result.canonical_path, &result.before);
+            crate::ripwire::removed(&top, path, before, &result.after)
+        })
+        .collect();
     std::thread::scope(|scope| {
-        let grid = (!charted.is_empty()).then(|| {
+        let ripwire = (!regions.is_empty() || !removed.is_empty()).then(|| {
             scope.spawn(|| {
-                let _span = yi_types::trace::span("edit.grid");
-                crate::grid::check(context, charted)
+                let _span = yi_types::trace::span("edit.ripwire");
+                crate::ripwire::check(context, &top, regions, removed)
             })
         });
         let verdicts = paths
             .iter()
             .map(|(_, path)| crate::syntax::verdict(Path::new(path)))
             .collect();
-        let layer = grid.map(|handle| {
-            handle
-                .join()
-                .unwrap_or(GridLayer::Unavailable(Unavailable::NoBinary))
+        let layer = ripwire.map(|handle| {
+            (handle.join()).unwrap_or_else(|_| CheckLayer::failed("the check's thread panicked"))
         });
         (verdicts, layer)
     })

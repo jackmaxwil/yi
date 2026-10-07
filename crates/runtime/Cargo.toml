@@ -27,6 +27,7 @@ globset = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 # The two harnesses a guardrail runs by name (`--test behavior`, `--test request_budget`)
 # keep their own binaries; everything else is a module of `integration`.

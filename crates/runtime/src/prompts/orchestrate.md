@@ -126,7 +126,7 @@ the standard. While children run, keep working the tasks you kept.
 
 Context reaches a child four ways: `context_keys` for what you computed
 (the brief), `kernel://main/<var>` for what is live, `family://<name>`
-for what was `put`, `tree://<name>/<path>` for a file in a worktree.
+for what was `put` (a member with a kernel reads it with `rlm.get`; a reader or worker sees only its sidecar and a partition refuses it, so pass a computed value through `context_keys`), `tree://<name>/<path>` for a file in a worktree.
 
 When a child fails or `rlm.status()` says `stuck`, read its tail
 (`history://<name>/tail/20`), fix the brief, and respawn; never repair

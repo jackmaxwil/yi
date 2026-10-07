@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use yi_types::classifier::{ClassifyRecord, DecisionRequest, DecisionResponse, Question};
-use yi_types::config::UserConfig;
+use yi_types::config::{ApprovalMode, ClassifierConfig, UserConfig};
 use yi_types::message::{AgentMessage, UserContent};
 
 use crate::AgentSession;
@@ -251,7 +251,7 @@ const SAFE_INSTRUCTIONS: &str = "Is it safe for a coding agent to run this witho
 const DEFAULT_ALLOW_AT: f64 = 0.9;
 const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.98;
 const DEFAULT_ASK_AT: f64 = 0.05;
-const DEFAULT_ASK_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_DELAY_SECS: u64 = 30;
 
 pub struct Thresholds {
     pub allow_at: f64,
@@ -274,32 +274,33 @@ pub enum Judgement {
     Undecided,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timing {
+    Instant,
+    AfterDelay(Duration),
+}
+
 pub struct Approver {
     sidecar: Sidecar,
     thresholds: Thresholds,
-    ask_timeout: Option<Duration>,
+    timing: Timing,
     breaker: Mutex<Breaker>,
     record: Record,
 }
 
 impl Approver {
-    pub fn new(
-        sidecar: Sidecar,
-        thresholds: Thresholds,
-        ask_timeout: Option<Duration>,
-        record: Record,
-    ) -> Self {
+    pub fn new(sidecar: Sidecar, thresholds: Thresholds, timing: Timing, record: Record) -> Self {
         Self {
             sidecar,
             thresholds,
-            ask_timeout,
+            timing,
             breaker: Mutex::new(Breaker::default()),
             record,
         }
     }
 
-    pub fn ask_timeout(&self) -> Option<Duration> {
-        self.ask_timeout
+    pub fn timing(&self) -> Timing {
+        self.timing
     }
 
     pub fn judge(&self, call: &Call<'_>) -> Judgement {
@@ -463,6 +464,22 @@ pub fn endpoint(config: &UserConfig) -> Option<Endpoint> {
     })
 }
 
+pub fn timing(block: &ClassifierConfig) -> Option<Timing> {
+    let mode = match (block.approval, block.approve, block.ask_timeout_secs) {
+        (Some(mode), _, _) => mode,
+        (None, Some(false), _) => ApprovalMode::WaitForUser,
+        (None, _, _) => ApprovalMode::Instant,
+    };
+    match mode {
+        ApprovalMode::Instant => Some(Timing::Instant),
+        ApprovalMode::AfterDelay => match block.ask_timeout_secs.unwrap_or(DEFAULT_DELAY_SECS) {
+            0 => None,
+            secs => Some(Timing::AfterDelay(Duration::from_secs(secs))),
+        },
+        ApprovalMode::WaitForUser => None,
+    }
+}
+
 pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
     let Some(Endpoint {
         checkpoint: model,
@@ -483,10 +500,27 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
         allow_destructive_at: number(&block.allow_destructive_at, DEFAULT_ALLOW_DESTRUCTIVE_AT),
         ask_at: number(&block.ask_at, DEFAULT_ASK_AT),
     };
-    let approve = block.approve == Some(true);
+    let timing = timing(&block);
+    let broker = session.permission_broker();
+    let mut warnings = Vec::new();
+    if let (Some(Timing::AfterDelay(_)), Some(broker)) = (&timing, broker.as_ref())
+        && !broker.asks_close_on_settle()
+    {
+        warnings.push(
+            "classifier.approval is after-delay, but this surface's prompts never close on \
+             settle, so approval acts as wait-for-user here"
+                .to_owned(),
+        );
+    }
+    let key = sidecar_key(
+        home,
+        "laya",
+        timing.is_some() && broker.is_some(),
+        &mut warnings,
+    );
     let sidecar = Sidecar {
         url,
-        key: yi_ai::auth::api_key("laya").map(|secret| secret.expose().to_owned()),
+        key,
         model,
         timeout: Duration::from_millis(block.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         threshold: block
@@ -494,24 +528,13 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             .as_ref()
             .and_then(serde_json::Number::as_f64),
     };
-    let mut warnings = Vec::new();
-    if approve {
-        match (&sidecar.key, session.permission_broker()) {
-            (None, _) => warnings.push(
-                "classifier.approve is on but LAYA_API_KEY is not set, so the classifier approves nothing"
-                    .to_owned(),
-            ),
-            (Some(_), Some(broker)) => broker.set_approver(Arc::new(Approver::new(
-                sidecar.clone(),
-                thresholds,
-                match block.ask_timeout_secs {
-                    Some(0) => None,
-                    secs => Some(Duration::from_secs(secs.unwrap_or(DEFAULT_ASK_TIMEOUT_SECS))),
-                },
-                journal(session),
-            ))),
-            (Some(_), None) => {}
-        }
+    if let (Some(timing), Some(_), Some(broker)) = (timing, &sidecar.key, broker) {
+        broker.set_approver(Arc::new(Approver::new(
+            sidecar.clone(),
+            thresholds,
+            timing,
+            journal(session),
+        )));
     }
     let Some(rules) = session.rules_engine() else {
         return warnings;
@@ -530,6 +553,27 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
     warnings
 }
 
+fn sidecar_key(
+    home: &Path,
+    provider: &str,
+    armed: bool,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    if !armed {
+        // Approval is off: an existing key may still serve skill reminders, nothing mints.
+        return yi_ai::auth::stored_key(home, provider).map(|secret| secret.expose().to_owned());
+    }
+    match yi_ai::auth::key_in(home, provider) {
+        Ok(key) => Some(key.expose().to_owned()),
+        Err(error) => {
+            warnings.push(format!(
+                "no {provider} key could be made ({error}), so the classifier approves nothing"
+            ));
+            None
+        }
+    }
+}
+
 fn journal(session: &AgentSession) -> Record {
     let store = session.store_handle();
     Arc::new(move |record| {
@@ -537,4 +581,29 @@ fn journal(session: &AgentSession) -> Record {
             let _journaled = yi_session::lock_session(&store).append_custom_record(&record);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sidecar_key;
+    use crate::scratch::Scratch;
+
+    #[test]
+    fn an_opt_out_session_mints_no_key_and_an_armed_one_does() -> std::io::Result<()> {
+        let home = Scratch::new("yi-classifier-opt-out")?;
+        let token = home.join(".yi/providers/tokens/yi-key-test.json");
+        let mut warnings = Vec::new();
+        assert!(sidecar_key(&home, "yi-key-test", false, &mut warnings).is_none());
+        assert!(warnings.is_empty());
+        assert!(!token.exists(), "an opt-out session never mints a key");
+        let home = Scratch::new("yi-classifier-armed")?;
+        let token = home.join(".yi/providers/tokens/yi-key-test.json");
+        let mut warnings = Vec::new();
+        assert!(sidecar_key(&home, "yi-key-test", true, &mut warnings).is_some());
+        assert!(
+            token.exists(),
+            "an armed session mints the key it arms with"
+        );
+        Ok(())
+    }
 }

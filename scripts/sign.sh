@@ -26,6 +26,7 @@ if [ ! -f "$signers" ]; then
   exit 1
 fi
 
+rm -f "$file.sig"
 ssh-keygen -Y sign -f "$key" -n "$namespace" "$file" >/dev/null 2>&1
 # Signing with a key nobody can verify against is worse than not signing, so
 # the signature is checked here rather than first by whoever downloads it.

@@ -197,6 +197,10 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             .sum::<usize>()
             / 2;
         let body = raw.trim_start();
+        let bad = || ArgError::Checklist {
+            line,
+            text: raw.to_owned(),
+        };
         let (state, label) = ["- [ ] ", "- [>] ", "- [x] ", "- [X] "]
             .iter()
             .find_map(|marker| body.strip_prefix(marker).map(|label| (*marker, label)))
@@ -208,10 +212,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 };
                 (state, label.trim())
             })
-            .ok_or_else(|| ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            })?;
+            .ok_or_else(bad)?;
         if indent > CHECKLIST_DEPTH {
             return Err(ArgError::TooDeep {
                 line,
@@ -264,25 +265,11 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             continue;
         }
         let Some((root_index, _)) = path.first().copied() else {
-            return Err(ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            });
+            return Err(bad());
         };
-        let mut parent = roots
-            .get_mut(root_index)
-            .ok_or_else(|| ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            })?;
+        let mut parent = roots.get_mut(root_index).ok_or_else(bad)?;
         for (_, child_index) in path.iter().skip(1) {
-            parent = parent
-                .children
-                .get_mut(*child_index)
-                .ok_or_else(|| ArgError::Checklist {
-                    line,
-                    text: raw.to_owned(),
-                })?;
+            parent = parent.children.get_mut(*child_index).ok_or_else(bad)?;
         }
         parent.children.push(todo);
         path.push((0, parent.children.len().saturating_sub(1)));
@@ -618,11 +605,7 @@ impl PlanTool {
     }
 
     /// One op through the natural reading and its retries, without the whole-plan apply.
-    pub(super) fn apply_one(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        self.apply(args)
-    }
-
-    fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+    pub(super) fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let (mut args, mut said) = super::natural::natural(args);
         super::apply::decompose_target(self, &mut args, &mut said);
         if let Some(Value::Array(labels)) = args.get("labels")
@@ -751,16 +734,25 @@ impl PlanTool {
 
     /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.
     fn runs_itself(&self, request: &OpRequest, label: &TodoLabel) -> bool {
-        let view = OpRequest {
-            op: Op::View { full: true },
-            ..request.clone()
-        };
+        let view = view_request(&request.actor, request.plan.clone());
         self.actor == Actor::Owner
             && (self.engine.apply(view).ok()).is_some_and(|seen| {
                 seen.plan
                     .todo(label)
                     .is_some_and(|t| t.delegation.is_none())
             })
+    }
+}
+
+/// Invariant: a view never pins a request id or a revision, so every reader of the open plan
+/// builds it from actor and plan alone.
+pub(super) fn view_request(actor: &Actor, plan: Option<PlanId>) -> OpRequest {
+    OpRequest {
+        plan,
+        actor: actor.clone(),
+        op: Op::View { full: true },
+        request_id: None,
+        expected_revision: None,
     }
 }
 

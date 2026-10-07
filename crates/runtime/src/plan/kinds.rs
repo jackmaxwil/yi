@@ -16,7 +16,6 @@ impl PlanOpError {
             | Self::PlanExists { .. }
             | Self::UnknownLabel { .. }
             | Self::IllegalStep { .. }
-            | Self::NotAPermutation { .. }
             | Self::NotActive { .. }
             | Self::StaleRevision { .. }
             | Self::Stale { .. }
@@ -43,7 +42,9 @@ impl PlanOpError {
             | Self::OutputRequired { .. }
             | Self::Contract { .. } => ToolErrorKind::Verdict,
             Self::NotOwner { .. } | Self::AcceptanceUnavailable { .. } => ToolErrorKind::Denied,
-            Self::UnknownState { .. } | Self::Doc(_) => ToolErrorKind::InvalidArgs,
+            Self::UnknownState { .. } | Self::Doc(_) | Self::NotAPermutation { .. } => {
+                ToolErrorKind::InvalidArgs
+            }
             Self::SpawnFailed { .. }
             | Self::ReapFailed { .. }
             | Self::UnresolvedOutput { .. }
@@ -70,11 +71,12 @@ impl PlanOpError {
 impl ArgError {
     pub(super) fn kind(&self) -> ToolErrorKind {
         match self {
+            Self::ChildViews { .. } => ToolErrorKind::Denied,
             Self::LabelTooLong { .. } | Self::EmptyList | Self::Unverifiable { .. } => {
                 ToolErrorKind::Verdict
             }
-            Self::ActorArg | Self::ChildViews { .. } => ToolErrorKind::Denied,
-            Self::NoOp
+            Self::ActorArg
+            | Self::NoOp
             | Self::UnknownOp { .. }
             | Self::Missing { .. }
             | Self::Malformed { .. }
