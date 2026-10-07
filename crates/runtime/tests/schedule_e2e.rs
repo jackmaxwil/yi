@@ -1286,6 +1286,13 @@ async fn a_childs_live_growth_counts_under_the_session_that_saw_it() -> TestResu
         until(|| session.pending_count() == 2).await,
         "Y's child crossed nothing"
     );
+    session.events_sender().send(turn_of(800))?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        2,
+        "Y's own 1,900 tokens never crossed 2,000: an alert here fired on 3,000, X's total carried in"
+    );
     Ok(())
 }
 
