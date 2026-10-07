@@ -1117,22 +1117,11 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
     }
     let store = shared.store.lock().ok().and_then(|slot| slot.clone());
     if let Some(store) = store {
-        let mut session = yi_session::lock_session(&store);
-        let id = session.next_id();
-        let recorded = session.append_record(yi_types::record::LaneRecord::Usage {
-            id,
-            lane: "main".to_owned(),
-            usage: child.clone(),
-            cause: yi_context::attribution::CHILD_USAGE_CAUSE.to_owned(),
-            run_id: None,
-            entry_id: None,
-            attempt: None,
-            stop_reason: None,
-            tool_call_id: None,
-            details: None,
-            seq: 0,
-            timestamp: 0,
-        });
+        let recorded = crate::spend::append_main_usage(
+            &store,
+            yi_context::attribution::CHILD_USAGE_CAUSE.to_owned(),
+            child.clone(),
+        );
         if let Err(error) = recorded {
             record_store_error(shared, &error);
         }

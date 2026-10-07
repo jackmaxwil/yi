@@ -520,6 +520,16 @@ fn slash_verbs_run_on_the_worker_and_unknown_ones_are_refused() -> TestResult {
         Some("/undo: this session has taken no turn yet — `yi undo` restores an earlier session"),
         "/undo answers as the solo chat does: {undone:?}"
     );
+    let todos = client.request(
+        "5t",
+        "_yi/slash",
+        json!({"sessionId": session_id, "line": "todo clear"}),
+    )?;
+    assert_eq!(
+        text_of(&todos).as_deref(),
+        Some("no todos to clear"),
+        "/todo clear reaches the session's list over the worker: {todos:?}"
+    );
     let unknown = client.request(
         "5",
         "_yi/slash",

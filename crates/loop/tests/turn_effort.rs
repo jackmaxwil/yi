@@ -307,6 +307,95 @@ async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
     );
 }
 
+type Shown = (bool, bool, Option<ToolChoice>);
+
+/// Records each request's tools, schema and choice; answers from `1`, then with a `noop` call.
+struct Insistent(Arc<Mutex<Vec<Shown>>>, Mutex<Vec<AgentMessage>>);
+
+impl yi_loop::run::StreamFn for Insistent {
+    fn stream(
+        &self,
+        _model: &Model,
+        context: &LlmContext,
+        _effort: Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut seen) = self.0.lock() {
+            let choice = context.tool_choice.clone();
+            seen.push((context.tools.is_some(), context.schema.is_some(), choice));
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let call = faux_tool_call("call-1", "noop", serde_json::Map::new());
+        let message = match self.1.lock() {
+            Ok(mut queue) if !queue.is_empty() => queue.remove(0),
+            _ => faux_assistant_message(vec![call], StopReason::ToolUse),
+        };
+        let _ = sender.try_send(AssistantMessageEvent::Done {
+            reason: StopReason::ToolUse,
+            message,
+        });
+        receiver
+    }
+}
+
+async fn insist(responses: Vec<AgentMessage>) -> Vec<Shown> {
+    let mut config = LoopConfig::new(faux_model());
+    config.schema = Some(serde_json::json!({"type": "object"}));
+    config.should_stop_after_turn = Some(Box::new(|_| true));
+    config.last_word_capped = Some(Box::new(|| true));
+    config.last_word = Some(Box::new(|_| {
+        Some(AgentMessage::user_input(
+            yi_types::message::UserContent::Text("[turns] No more tool calls".to_owned()),
+            0,
+        ))
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(Noop)],
+    };
+    let mut emit = |_: AgentEvent| {};
+    let prompt = yi_types::message::UserContent::Text("hi".to_owned());
+    run_loop(
+        &mut context,
+        vec![AgentMessage::user_input(prompt, 0)],
+        &config,
+        &InterruptSignal::default(),
+        &mut emit,
+        &Insistent(Arc::clone(&seen), Mutex::new(responses)),
+    )
+    .await;
+    seen.lock().map(|seen| seen.clone()).unwrap_or_default()
+}
+
+/// A last word answered with a tool call gets exactly one more request, with the tools kept so
+/// Anthropic accepts the history and choice `none`; a tool call there too ends the run (#992).
+#[tokio::test]
+async fn a_refused_last_word_is_asked_once_more_forcing_no_tool() {
+    let tools = (true, false, None);
+    let forced = (true, false, Some(ToolChoice::None));
+    assert_eq!(insist(Vec::new()).await, vec![tools.clone(), tools, forced]);
+}
+
+/// OpenRouter routes no glm-5.3-flash endpoint for choice `none` (HTTP 404), so that follow-up's
+/// retry offers no tools, and the answer schema rides it.
+#[tokio::test]
+async fn a_refused_forced_follow_up_is_retried_without_tools() {
+    let call = || {
+        let call = faux_tool_call("call-1", "noop", serde_json::Map::new());
+        faux_assistant_message(vec![call], StopReason::ToolUse)
+    };
+    let mut refused = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut refused {
+        *error_message = Some("HTTP 404: No endpoints found for z-ai/glm-5.3-flash.".to_owned());
+    }
+    let answer = faux_assistant_message(vec![faux_text("line 3")], StopReason::Stop);
+    let seen = insist(vec![call(), call(), refused, answer]).await;
+    assert_eq!(seen.get(3), Some(&(false, true, None)), "{seen:?}");
+    assert_eq!(seen.len(), 4, "{seen:?}");
+}
+
 /// Records every request's messages and answers `done`.
 struct Recorder(Arc<Mutex<Vec<Vec<AgentMessage>>>>);
 

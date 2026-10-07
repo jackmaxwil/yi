@@ -49,7 +49,7 @@ pub(super) fn run(args: &Args) -> i32 {
         let _guard = runtime.enter();
         let asker: Option<yi_runtime::Asker> =
             interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
-        match build_session(args, asker, Some(&target.id)) {
+        match build_session(args, asker, Some(&target.id), false) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
@@ -320,10 +320,7 @@ async fn follow(
                 },
         } = &event
         {
-            use yi_types::message::Content;
-            let text = content.iter().any(
-                |block| matches!(block, Content::Text { text, .. } if !text.trim().is_empty()),
-            );
+            let text = yi_types::message::has_text(content);
             said_anything |= text;
             last_stop = Some((*stop_reason, text));
             said.push(std::mem::take(&mut answer));

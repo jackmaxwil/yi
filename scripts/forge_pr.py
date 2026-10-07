@@ -766,7 +766,7 @@ def build_parser():
     import pr_review
 
     for name, run in (("status", cmd_status), ("ready", cmd_ready), ("update", cmd_update), ("rerun", cmd_rerun),
-                      ("review", pr_review.cmd_review), ("fix", pr_review.cmd_fix)):
+                      ("review", pr_review.cmd_review)):
         sub = pr.add_parser(name)
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)
@@ -778,6 +778,11 @@ def build_parser():
     autofix = pr.add_parser("autofix", help="fix conflicts with the base: one PR now, or one pass oldest first")
     autofix.add_argument("number", nargs="?")
     autofix.set_defaults(run=pr_autofix.cmd_autofix)
+    import bot_meter
+
+    spend = pr.add_parser("spend", help="what the review and autofix bots spent, from their comments")
+    spend.add_argument("--days", type=int, default=1)
+    spend.set_defaults(run=bot_meter.cmd_spend)
     replay = pr.add_parser("replay")
     replay.add_argument("numbers", nargs="+", type=int)
     replay.add_argument("--label", required=True, help="what the PR is known to be: bad, kept, closed")
