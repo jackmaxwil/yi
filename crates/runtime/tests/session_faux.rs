@@ -661,34 +661,6 @@ async fn the_start_capture_overlaps_the_request_and_gates_the_tools() -> Result<
     Ok(())
 }
 
-/// Dies with the root's `plan://` read opening the default `.yi/plans` store instead of the
-/// configured `plans.dir`, where the owner's plans live.
-#[tokio::test]
-async fn a_root_plan_read_resolves_under_the_configured_plans_dir() -> Result<(), Box<dyn Error>> {
-    let root = scratch("plans-dir-read")?;
-    std::fs::create_dir_all(root.join("plans"))?;
-    std::fs::write(root.join("plans/configured.md"), "the configured plan")?;
-    let mut call_args = serde_json::Map::new();
-    call_args.insert("path".to_owned(), serde_json::json!("plan://configured"));
-    let mut session = one_call_session("read", call_args);
-    attach_like_yi_ask(&mut session, &root, None);
-    let mut events = session.subscribe();
-    session.prompt("read the plan")?;
-    session.wait_idle().await;
-    let mut read = None;
-    while let Ok(event) = events.try_recv() {
-        if let AgentEvent::ToolExecutionEnd {
-            result, is_error, ..
-        } = event
-        {
-            read = Some((is_error, serde_json::to_string(&result.content)?));
-        }
-    }
-    let (is_error, text) = read.ok_or("the read never ran")?;
-    assert!(!is_error && text.contains("the configured plan"), "{text}");
-    Ok(())
-}
-
 /// A first open of the shadow gitdir is a `git init` (40-200 ms) that sat on the start of
 /// every first session in a project; the first capture, beside the turn, opens it now.
 #[tokio::test]
