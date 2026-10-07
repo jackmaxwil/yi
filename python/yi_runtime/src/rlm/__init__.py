@@ -568,7 +568,8 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     "edit", "write", "bash", "get_context"]`` (the first four by default), ``turns`` 12 (at most
     40), its writes behind the same wall, permissions and rules as a root child's; it holds a child
     slot, may take ``isolation``, and refuses ``fork`` and ``check``. ``partition`` is
-    a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
+    a list of URLs (``local://path#L1-40`` for those lines as they are now, ``#L1-40@TAG`` to refuse a changed
+    file, ``history://…``, ``plan://…``) resolved now and
     inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
     ``context_keys``. ``schema`` (a reader's) names the answer's shape in its question and, on a
     reader with ``tools=[]`` or ``turns=1``, asks the provider for it (the capped last turn
