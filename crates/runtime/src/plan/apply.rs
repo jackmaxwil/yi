@@ -4,21 +4,31 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
-use yi_types::plan::doc::{PlanIssue, TodoStateName};
+use yi_types::plan::doc::{PlanId, PlanIssue, Todo, TodoLabel, TodoStateName};
 
-use super::ops::{Op, OpRequest, PlanOpError, SetRow};
+use super::declare::Blob;
+use super::ops::{Op, OpRequest, Outcome, PlanOpError, SetRow, TodoSpec};
 use super::table::OpKind;
 use super::tool::{ArgError, PlanTool, PlanToolError, opt, todo_specs};
 
 /// A plan the repairs cannot settle in this many passes is refused as it stands.
 const REPAIRS: usize = 32;
 
-/// `set` with a row that carries more than a label: a contract, edges, a delegation or a state.
-pub(super) fn wants(args: &Map<String, Value>) -> bool {
+/// The call as a whole-plan apply when it is one: `set` with a row that carries more than a
+/// label, a contract, edges, a delegation or a state. A string of rows is read first.
+pub(super) fn whole(args: &Map<String, Value>) -> Option<(Map<String, Value>, Vec<String>)> {
+    let (mut args, mut said) = (args.clone(), Vec::new());
+    let text = args.get("todos").and_then(Value::as_str);
+    if let Some(rows) = text.and_then(|text| super::natural::rows_text(text, &mut said)) {
+        args.insert("todos".to_owned(), rows);
+    }
+    super::natural::cut_labels(&mut args, &mut said);
     let rich =
         |row: &Value| (row.as_object()).is_some_and(|row| row.keys().any(|key| key != "label"));
-    args.get("op").and_then(Value::as_str) == Some("set")
-        && (args.get("todos").and_then(Value::as_array)).is_some_and(|rows| rows.iter().any(rich))
+    let rows = args.get("todos").and_then(Value::as_array);
+    (args.get("op").and_then(Value::as_str) == Some("set")
+        && rows.is_some_and(|rows| rows.iter().any(rich)))
+    .then_some((args, said))
 }
 
 /// `set`'s rows as objects: each one's `state` (pending unless named) beside its spec.
@@ -85,7 +95,8 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             row.insert("state".to_owned(), json!(state));
         }
         let alone = json!({"op": "set", "todos": [Value::Object(row.clone())]});
-        match super::tool::declared(tool.actor(), alone.as_object().unwrap_or(&Map::new())) {
+        let (alone, _) = super::natural::natural(alone.as_object().unwrap_or(&Map::new()));
+        match super::tool::declared(tool.actor(), &alone) {
             Ok(_) => rows.push(row),
             Err(error) => {
                 let error = error.to_string();
@@ -93,6 +104,13 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                 conditions.push(format!("{label}: left out: {error}"));
             }
         }
+    }
+    if rows.is_empty() {
+        return Err(ArgError::Declared(format!(
+            "every row was left out\n{}",
+            conditions.join("\n")
+        ))
+        .into());
     }
     let mut set = args.clone();
     for _ in 0..REPAIRS {
@@ -116,7 +134,8 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             conditions.push(format!("{label}: {error}"));
         }
     }
-    let mut text = tool.apply_one(json!({"op": "view"}).as_object().unwrap_or(&Map::new()))?;
+    let view = tool.apply_one(json!({"op": "view"}).as_object().unwrap_or(&Map::new()));
+    let mut text = view?;
     for condition in conditions {
         text.push_str(&format!("\nnote: {condition}"));
     }
@@ -207,4 +226,182 @@ fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<Strin
         }
         PlanIssue::Unanswered { .. } => None,
     }
+}
+
+/// `init` while a plan is open adds the todos it does not hold to that plan; the goal stays.
+pub(super) fn init_on_open(
+    tool: &PlanTool,
+    request: &OpRequest,
+    id: PlanId,
+    blobs: &[Blob],
+    said: &mut Vec<String>,
+) -> Result<Outcome, PlanToolError> {
+    let Op::Init { todos, .. } = &request.op else {
+        return Err(PlanOpError::PlanExists { id }.into());
+    };
+    let on = |op| OpRequest {
+        plan: Some(id.clone()),
+        op,
+        ..request.clone()
+    };
+    let held = tool.engine().apply(on(Op::View { full: true }))?.plan.todos;
+    let (old, new): (Vec<TodoSpec>, Vec<TodoSpec>) =
+        (todos.iter().cloned()).partition(|todo| held.iter().any(|row| row.label == todo.label));
+    said.push(format!(
+        "plan {id} was open, so init added its new todos to it; its goal stays"
+    ));
+    if !old.is_empty() {
+        let names: Vec<&str> = old.iter().map(|todo| todo.label.as_str()).collect();
+        said.push(format!("{} were in it already", names.join(", ")));
+    }
+    Ok(if new.is_empty() {
+        tool.engine().apply(on(Op::View { full: false }))?
+    } else {
+        tool.engine()
+            .apply_with(on(Op::Append { todos: new }), blobs)?
+    })
+}
+
+/// A `reorder` naming some of the todos puts those first and keeps the rest in their order.
+pub(super) fn reorder_rest(
+    tool: &PlanTool,
+    request: OpRequest,
+    blobs: &[Blob],
+    said: &mut Vec<String>,
+) -> Option<Result<Outcome, PlanToolError>> {
+    let Op::Reorder { labels } = &request.op else {
+        return None;
+    };
+    let view = OpRequest {
+        op: Op::View { full: true },
+        ..request.clone()
+    };
+    let held = match tool.engine().apply(view) {
+        Ok(seen) => seen.plan.todos,
+        Err(error) => return Some(Err(error.into())),
+    };
+    let mut order = labels.clone();
+    order.extend(
+        (held.iter())
+            .map(|todo| todo.label.clone())
+            .filter(|label| !labels.contains(label)),
+    );
+    said.push("the todos not named keep their order after the named ones".to_owned());
+    let reorder = OpRequest {
+        op: Op::Reorder { labels: order },
+        ..request
+    };
+    Some(tool.engine().apply_with(reorder, blobs).map_err(Into::into))
+}
+
+/// The open plan's todos, or those of the plan named.
+fn todos_of(tool: &PlanTool, plan: Option<PlanId>) -> Vec<Todo> {
+    let view = OpRequest {
+        plan,
+        actor: tool.actor().clone(),
+        op: Op::View { full: true },
+        request_id: None,
+        expected_revision: None,
+    };
+    (tool.engine().apply(view)).map_or_else(|_| Vec::new(), |seen| seen.plan.todos)
+}
+
+/// `decompose` naming no todo splits the one todo running in the plan, when there is one.
+pub(super) fn decompose_target(
+    tool: &PlanTool,
+    args: &mut Map<String, Value>,
+    said: &mut Vec<String>,
+) {
+    let named = ["label", "todo"].iter().any(|key| args.contains_key(*key));
+    if named || args.get("op").and_then(Value::as_str) != Some("decompose") {
+        return;
+    }
+    let plan = args
+        .get("plan")
+        .and_then(|plan| serde_json::from_value(plan.clone()).ok());
+    let todos = todos_of(tool, plan);
+    let running: Vec<&Todo> = (todos.iter())
+        .filter(|todo| TodoStateName::of(&todo.state) == TodoStateName::Running)
+        .collect();
+    if let [one] = running.as_slice() {
+        said.push(format!(
+            "decompose named no todo; {} is the one running, so it was split",
+            one.label
+        ));
+        args.insert("label".to_owned(), json!(one.label.as_str()));
+    }
+}
+
+/// A call on a label the open plan lacks runs on the one sub-plan that holds it.
+pub(super) fn in_holder(
+    tool: &PlanTool,
+    args: &Map<String, Value>,
+    plan: PlanId,
+    label: TodoLabel,
+    mut said: Vec<String>,
+) -> Result<String, PlanToolError> {
+    let sub = holder(tool, &label).ok_or(PlanOpError::UnknownLabel { plan, label })?;
+    said.push(format!(
+        "that todo is in sub-plan {sub}, so the call ran there"
+    ));
+    let mut again = args.clone();
+    again.insert("plan".to_owned(), json!(sub.as_str()));
+    Ok(noted(tool.run(&again)?, said))
+}
+
+fn holder(tool: &PlanTool, label: &TodoLabel) -> Option<PlanId> {
+    let mut queue: Vec<PlanId> = (todos_of(tool, None).iter())
+        .filter_map(|todo| todo.subplan.clone())
+        .collect();
+    let mut found = Vec::new();
+    while let Some(plan) = queue.pop() {
+        let todos = todos_of(tool, Some(plan.clone()));
+        if todos.iter().any(|todo| todo.label == *label) {
+            found.push(plan);
+        }
+        queue.extend(todos.into_iter().filter_map(|todo| todo.subplan));
+    }
+    match found.as_slice() {
+        [one] => Some(one.clone()),
+        _ => None,
+    }
+}
+
+/// `block` on a failed todo retries it first, since a terminal todo waits on nothing.
+pub(super) fn block_failed(
+    tool: &PlanTool,
+    request: &OpRequest,
+    blobs: &[Blob],
+    said: &mut Vec<String>,
+) -> Option<Result<Outcome, PlanToolError>> {
+    let Op::Block { label, .. } = &request.op else {
+        return None;
+    };
+    let failed = (todos_of(tool, request.plan.clone()).iter()).any(|todo| {
+        todo.label == *label && TodoStateName::of(&todo.state) == TodoStateName::Failed
+    });
+    if !failed {
+        return None;
+    }
+    let retry = OpRequest {
+        op: Op::Retry {
+            label: label.clone(),
+            delegation: None,
+        },
+        ..request.clone()
+    };
+    said.push("it had failed, so it was retried, then blocked".to_owned());
+    Some(
+        (tool.engine().apply(retry))
+            .and_then(|_| tool.engine().apply_with(request.clone(), blobs))
+            .map_err(Into::into),
+    )
+}
+
+/// The reply with each note on its own `note:` line.
+pub(super) fn noted(mut text: String, said: Vec<String>) -> String {
+    for line in said {
+        text.push_str(&format!("\nnote: {line}"));
+    }
+    text
 }

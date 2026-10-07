@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
+ "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982) and in the three stage 5 surface probe runs on 2026-10-06 (#1076), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -880,15 +880,15 @@
    "says": "no plan was open"
   },
   {
-   "name": "todos as a JSON string that does not parse",
+   "name": "todos as a JSON string with one brace too many in its contract",
    "setup": [],
    "call": {
     "op": "init",
     "goal": "Add a mean(values) function to calc.py",
     "todos": "[{\"label\": \"Add mean(values) to calc.py with unittest tests\", \"delegation\": {\"spec\": {\"role\": \"root\", \"isolation\": \"worktree\"}, \"accept\": {\"stated\": \"Child implements mean(values) in calc.py and tests in test_calc.py; python3 -m unittest -q passes in the worktree\"}, \"context\": [\"calc.py\", \"test_calc.py\"]}, \"contract\": {\"class\": \"writer\", \"items\": [{\"id\": \"mean_implemented\", \"critical\": true, \"weight\": 40, \"decider\": {\"cmd\": \"python3 -c \\\"import calc; assert calc.mean([2,4,6]) == 4.0\\\"\"}}, {\"id\": \"tests_pass\", \"critical\": true, \"weight\": 60, \"decider\": {\"cmd\": \"python3 -m unittest -q\"}}, {\"id\": \"mean_test_present\", \"critical\": true, \"weight\": 20, \"decider\": {\"cmd\": \"grep -q 'def test_mean' test_calc.py\"}}}], \"after\": []}]"
    },
-   "lands": false,
-   "says": "\"todos\" is malformed: expected"
+   "lands": true,
+   "says": "mended"
   },
   {
    "name": "a stray line under the checklist",
@@ -1665,6 +1665,768 @@
    },
    "lands": true,
    "says": "became its own block"
+  },
+  {
+   "name": "set with a goal and no rows reads the plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "survey"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "set",
+    "goal": "Fix the failing divide test in calc.py",
+    "full": true,
+    "after": "[]"
+   },
+   "lands": true,
+   "says": "this is the plan as it stands"
+  },
+  {
+   "name": "an empty call reads the plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "survey"
+      }
+     ]
+    }
+   ],
+   "call": {},
+   "lands": true
+  },
+  {
+   "name": "init repeating its todo beside the goal",
+   "setup": [],
+   "call": {
+    "delegation": {
+     "accept": {
+      "command": "true"
+     },
+     "isolation": "worktree",
+     "spec": {
+      "effort": "low"
+     }
+    },
+    "goal": "Child writes alpha.txt containing the word alpha",
+    "label": "alpha writes alpha.txt",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "id": "alpha-file",
+         "weight": 100,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "command": "true"
+       },
+       "isolation": "worktree"
+      },
+      "label": "alpha writes alpha.txt",
+      "state": "pending"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "repeat a row in todos"
+  },
+  {
+   "name": "a delegation context given as paths",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Add a mean(values) function to calc.py with tests, implemented by a worktree child",
+    "todos": [
+     {
+      "label": "Add mean(values) to calc.py with tests",
+      "delegation": {
+       "spec": {
+        "isolation": "worktree"
+       },
+       "accept": {
+        "command": "true"
+       },
+       "context": [
+        "calc.py",
+        "test_calc.py"
+       ]
+      },
+      "contract": {
+       "class": "writer",
+       "covers": [
+        "calc.py",
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "id": "unittest",
+         "critical": true,
+         "weight": 1000,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "an inline output schema",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Worktree child alpha writes alpha.txt containing the word alpha; engine accepts the finish",
+    "todos": [
+     {
+      "label": "alpha writes a file alpha.txt holding the word alpha",
+      "state": "pending",
+      "delegation": {
+       "spec": {
+        "role": "root",
+        "isolation": "worktree"
+       },
+       "accept": {
+        "stated": "child writes alpha.txt with the word alpha and reports completion"
+       },
+       "context": [],
+       "output": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "outcome"
+         ],
+         "properties": {
+          "outcome": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      },
+      "contract": {
+       "class": "writer",
+       "covers": [
+        "alpha.txt"
+       ],
+       "items": [
+        {
+         "id": "alpha",
+         "critical": true,
+         "weight": 1,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "inline schema was left out"
+  },
+  {
+   "name": "accept stated as true",
+   "setup": [],
+   "call": {
+    "goal": "Three independent worktree children write alpha.txt, beta.txt, gamma.txt; engine verifies and accepts each",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "alpha-txt",
+         "weight": 100
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "stated": true
+       },
+       "isolation": "worktree",
+       "spec": {
+        "role": "worker"
+       }
+      },
+      "label": "alpha writes alpha.txt holding alpha",
+      "state": "pending"
+     },
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "beta-txt",
+         "weight": 100
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "stated": true
+       },
+       "isolation": "worktree",
+       "spec": {
+        "role": "worker"
+       }
+      },
+      "label": "beta writes beta.txt holding beta",
+      "state": "pending"
+     },
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "gamma-txt",
+         "weight": 100
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "stated": true
+       },
+       "isolation": "worktree",
+       "spec": {
+        "role": "worker"
+       }
+      },
+      "label": "gamma writes gamma.txt holding gamma",
+      "state": "pending"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "contract item ids with spaces",
+   "setup": [],
+   "call": {
+    "goal": "Two children write one.txt and two.txt in worktrees",
+    "todos": [
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "one.txt holds the word one",
+         "weight": 1
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "stated": "one.txt contains exactly the word one"
+       },
+       "spec": {
+        "isolation": "worktree",
+        "role": "worker"
+       }
+      },
+      "label": "one",
+      "state": "pending"
+     },
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "two.txt holds the word two",
+         "weight": 1
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "stated": "two.txt contains exactly the word two"
+       },
+       "spec": {
+        "isolation": "worktree",
+        "role": "worker"
+       }
+      },
+      "label": "two",
+      "state": "pending"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "they became dashes"
+  },
+  {
+   "name": "a whole-plan set whose one row is over the label cap",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "goal": "Probe plan tool edge inputs",
+    "todos": [
+     {
+      "label": "This is a ninety character label used to stress the plan tool's input handling limits now abcdefghij",
+      "state": "pending"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "cut to 80"
+  },
+  {
+   "name": "done on a done todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      },
+      {
+       "label": "b"
+      }
+     ]
+    },
+    {
+     "op": "done",
+     "label": "a"
+    }
+   ],
+   "call": {
+    "op": "done",
+    "label": "a"
+   },
+   "lands": true,
+   "says": "already done"
+  },
+  {
+   "name": "init with its one todo beside the goal",
+   "setup": [],
+   "call": {
+    "goal": "Write alpha.txt",
+    "label": "write alpha.txt"
+   },
+   "lands": true,
+   "says": "its one row in todos"
+  },
+  {
+   "name": "block with its op leaked into the note key",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "block<arg_key>note": "Waiting on user acceptance: the gate is red.",
+    "options": [
+     {
+      "id": "accept",
+      "label": "Accept the todo as-is"
+     },
+     {
+      "id": "fix",
+      "label": "Fix it and re-run the gate"
+     },
+     {
+      "id": "drop",
+      "label": "Drop the todo"
+     }
+    ],
+    "on": {
+     "user": null
+    },
+    "todo": "a"
+   },
+   "lands": true
+  },
+  {
+   "name": "a label over the cap",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "long",
+    "todos": [
+     {
+      "label": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "cut to 80"
+  },
+  {
+   "name": "init while a plan is open",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "init",
+    "goal": "another",
+    "todos": [
+     {
+      "label": "b"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "was open"
+  },
+  {
+   "name": "supersede whose empty todos the adapter left unsent",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "reason": "probe"
+   },
+   "lands": true,
+   "says": "nothing changed"
+  },
+  {
+   "name": "decompose with no todos",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "label": "a"
+   },
+   "lands": true,
+   "says": "nothing changed"
+  },
+  {
+   "name": "todos as a JSON string of rows with state",
+   "setup": [],
+   "call": {
+    "goal": "Add mean",
+    "todos": "[{\"contract\": {\"class\": \"writer\", \"items\": [{\"critical\": true, \"id\": \"unittest_pass\", \"weight\": 100, \"decider\": {\"cmd\": \"true\"}}]}, \"label\": \"Add mean(values) to calc.py with tests\", \"state\": \"pending\"}, {\"contract\": {\"class\": \"inline\", \"items\": [{\"critical\": true, \"id\": \"reported\", \"weight\": 100, \"decider\": {\"cmd\": \"true\"}}]}, \"label\": \"Report outcome\", \"state\": \"pending\"}]"
+   },
+   "lands": true
+  },
+  {
+   "name": "retry on a running todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "a"
+    }
+   ],
+   "call": {
+    "op": "retry",
+    "label": "a"
+   },
+   "lands": true,
+   "says": "running"
+  },
+  {
+   "name": "todos as a JSON string with a placeholder artifact",
+   "setup": [],
+   "call": {
+    "goal": "Add mean(values) to calc.py with tests, delegated to a child in a worktree",
+    "todos": "[{\"contract\": {\"class\": \"writer\", \"items\": [{\"critical\": true, \"id\": \"unittest_pass\", \"weight\": 100, \"decider\": {\"cmd\": \"python3 -m unittest -q\"}}], \"label\": \"Add mean(values) to calc.py with tests\", \"state\": \"pending\"}, {\"contract\": {\"class\": \"inline\", \"items\": [{\"critical\": true, \"id\": \"reported\", \"weight\": 100, \"decider\": {\"example\": {\"cases\": {\"digest\": \"0\", \"media_type\": \"text\", \"length\": 1}, \"runner\": {\"digest\": \"0\", \"media_type\": \"text\", \"length\": 1}}}}], \"label\": \"Report outcome\", \"state\": \"pending\"}]"
+   },
+   "lands": false,
+   "says": "64"
+  },
+  {
+   "name": "todos as a JSON string whose rows never close",
+   "setup": [],
+   "call": {
+    "goal": "Add mean(values) to calc.py with tests, delegated to a child in a worktree",
+    "todos": "[{\"contract\": {\"class\": \"writer\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"python3 -m unittest -q\"}, \"id\": \"unittest_pass\", \"weight\": 100}], \"label\": \"Add mean(values) to calc.py with tests\"}, {\"contract\": {\"class\": \"inline\", \"items\": [{\"critical\": true, \"id\": \"reported\", \"weight\": 100, \"decider\": {\"cmd\": \"true\"}}], \"label\": \"Report outcome\"}]"
+   },
+   "lands": true
+  },
+  {
+   "name": "todos as a JSON string whose delegated row never closes",
+   "setup": [],
+   "call": {
+    "goal": "Add mean(values) to calc.py with tests, delegated to a child in a worktree",
+    "todos": "[{\"contract\": {\"class\": \"writer\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"python3 -m unittest -q\"}, \"id\": \"unittest-pass\", \"weight\": 100}], \"label\": \"Add mean(values) to calc.py with tests\", \"delegation\": {\"spec\": {\"isolation\": \"worktree\"}, \"accept\": {\"command\": \"python3 -m unittest -q\"}}}, {\"contract\": {\"class\": \"inline\", \"items\": [{\"critical\": true, \"decider\": {\"cmd\": \"true\"}, \"id\": \"reported\", \"weight\": 100}], \"label\": \"Report outcome\"}]"
+   },
+   "lands": true
+  },
+  {
+   "name": "set rows as a string with one brace too many",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "goal": "Add input validation to calc.divide, per user-chosen divide-by-zero semantics",
+    "todos": "[{\"label\": \"Decide divide-by-zero semantics: ValueError, None, or zero-check flag\", \"state\": \"blocked\", \"note\": \"Blocked on user: raise ValueError vs return None vs leave behavior unchanged (only type validation). Reply with a number.\", \"contract\": {\"class\": \"inline\", \"items\": [{\"id\": \"semantics-decided\", \"critical\": true, \"weight\": 1, \"decider\": {\"stated\": true}}]}}} , {\"label\": \"Fix divide implementation (currently returns a * b)\", \"state\": \"pending\", \"after\": [\"Decide divide-by-zero semantics: ValueError, None, or zero-check flag\"], \"contract\": {\"class\": \"writer\", \"items\": [{\"id\": \"divide-returns-quotient\", \"critical\": true, \"weight\": 60, \"decider\": {\"cmd\": \"python3 -c \\\"import calc; assert calc.divide(6,3)==2\\\"\"}}, {\"id\": \"div-by-zero-per-decision\", \"critical\": true, \"weight\": 40, \"decider\": {\"cmd\": \"python3 -c \\\"import calc\\ntry:\\n    calc.divide(1,0)\\nexcept ValueError: pass\\n\\\"\"}}]}}, {\"label\": \"Add input validation (numeric types) to calc.divide\", \"state\": \"pending\", \"after\": [\"Decide divide-by-zero semantics: ValueError, None, or zero-check flag\"], \"contract\": {\"class\": \"writer\", \"items\": [{\"id\": \"non-numeric-raises-typeerror\", \"critical\": true, \"weight\": 100, \"decider\": {\"cmd\": \"python3 -c \\\"import calc\\ntry:\\n    calc.divide('a', 2)\\nexcept TypeError: pass\\n\\\"\"}}]}}, {\"label\": \"Add regression tests: quotient, zero divisor, non-numeric input\", \"state\": \"pending\", \"after\": [\"Add input validation (numeric types) to calc.divide\", \"Fix divide implementation (currently returns a * b)\"], \"contract\": {\"class\": \"writer\", \"items\": [{\"id\": \"test-suite-green\", \"critical\": true, \"weight\": 100, \"decider\": {\"cmd\": \"python3 -m unittest -v test_calc\"}}]}}]"
+   },
+   "lands": true,
+   "says": "mended"
+  },
+  {
+   "name": "set rows as a string whose contracts close after the label",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "goal": "Add a mod(a, b) function to calc.py with a passing unit test, exercising every plan tool op",
+    "todos": "[{\"label\": \"add mod(a, b) to calc.py\", \"state\": \"pending\", \"intent\": [\"user://1\"], \"contract\": {\"class\": \"writer\", \"items\": [{\"id\": \"mod_defined\", \"critical\": true, \"weight\": 50, \"decider\": {\"cmd\": \"python3 -c 'import calc; print(calc.mod(7,3))'\"}}, {\"id\": \"test_passes\", \"critical\": true, \"weight\": 50, \"decider\": {\"cmd\": \"python3 -m unittest test_calc -v\"}}]}, {\"label\": \"add test for mod\", \"state\": \"pending\", \"intent\": [\"user://1\"], \"after\": [\"add mod(a, b) to calc.py\"]}, {\"label\": \"run the test suite\", \"state\": \"pending\", \"intent\": [\"user://1\"], \"after\": [\"add test for mod\"]}]}"
+   },
+   "lands": true,
+   "says": "mended"
+  },
+  {
+   "name": "decompose naming no todo while one runs",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "a"
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "todos": [
+     {
+      "label": "a1"
+     },
+     {
+      "label": "a2"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "one running"
+  },
+  {
+   "name": "an op on a label held by a sub-plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "a"
+    },
+    {
+     "op": "decompose",
+     "label": "a",
+     "todos": [
+      {
+       "label": "a1"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "start",
+    "label": "a1"
+   },
+   "lands": true,
+   "says": "sub-plan"
+  },
+  {
+   "name": "block on a failed todo in a finished plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "a"
+    },
+    {
+     "op": "fail",
+     "label": "a",
+     "cause": "red"
+    }
+   ],
+   "call": {
+    "op": "block",
+    "label": "a",
+    "on": {
+     "user": null
+    },
+    "note": "which way?",
+    "options": [
+     {
+      "id": "fix",
+      "label": "Write it now"
+     },
+     {
+      "id": "drop",
+      "label": "Drop it"
+     },
+     {
+      "id": "skip",
+      "label": "Leave it blocked"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "retried"
+  },
+  {
+   "name": "append with a checklist list",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "append",
+    "list": "- [ ] b\n  - [ ] c"
+   },
+   "lands": true
+  },
+  {
+   "name": "a row key sent as null",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "a"
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "todo": "a",
+    "todos": [
+     {
+      "label": "a1",
+      "after": [
+       "a2"
+      ],
+      "label2": null
+     },
+     {
+      "label": "a2"
+     }
+    ]
+   },
+   "lands": true
   }
  ]
 }

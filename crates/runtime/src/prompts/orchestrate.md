@@ -43,8 +43,12 @@ The label is a name, not a sentence. Give a contract whenever a command can
 judge the work, preferring the repository's own gates; independent todos
 carry no `after`.
 
-A checklist you work yourself, with nothing for the engine to run, is one
-`op=set` call with a `goal`.
+The plan is one `op=set` call with a `goal` and every todo as a row in
+`todos`. To change anything, send the whole plan again with each row's new
+`state`. A row the engine could not move, such as an edge that closes a
+cycle or a check that failed, is a `note:` line in the reply: fix that row
+and send the plan again; the rest has landed. A checklist `list` is the
+short form for rows with nothing to verify.
 
 A task is one coherent change verifiable in isolation. Three real tasks beat
 nine ceremonial ones. Adding tasks later is free; never quietly weaken or

@@ -174,12 +174,12 @@ impl TodoError {
             Self::Duplicate { .. }
             | Self::DuplicateOfPlanRow { .. }
             | Self::ParentOpen { .. }
+            | Self::NoEvidence { .. }
             | Self::SetClosed { .. }
             | Self::Doc(_)
             | Self::Unanswered(_) => ToolErrorKind::Verdict,
             Self::Ambiguous { .. }
             | Self::ManyRunning { .. }
-            | Self::NoEvidence { .. }
             | Self::Checklist { .. }
             | Self::TooDeep { .. }
             | Self::Mirrored { .. } => ToolErrorKind::InvalidArgs,
