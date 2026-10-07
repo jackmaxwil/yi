@@ -788,7 +788,46 @@ fn a_done_row_that_omits_its_contract_lands_through_the_engine() -> TestResult {
         ]}),
     );
     assert!(!refused, "{text}");
+
     assert_eq!(state_of(&rig, "Fix calc.divide")?, "Done");
+    assert_eq!(state_of(&rig, "Add power(a, b)")?, "Pending");
+    Ok(())
+}
+
+/// Dies with a failed row abbreviated to done erasing its failure: the whole-plan set
+/// once reset a Failed contracted todo to pending and start-firsted it, swallowing the
+/// contract's refusal into a note, so a re-sent plan silently un-failed the todo.
+#[test]
+fn a_done_row_for_a_failed_todo_keeps_the_failure() -> TestResult {
+    let rig = rig("apply-abbreviated-failed")?;
+    let passing = json!({"class": "inline",
+        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    opened(
+        &rig,
+        json!([
+            {"label": "Fix calc.divide", "contract": passing},
+            {"label": "Add power(a, b)"},
+        ]),
+    )?;
+    call(&rig, json!({"op": "start", "label": "Fix calc.divide"}));
+    call(
+        &rig,
+        json!({"op": "fail", "label": "Fix calc.divide", "cause": "the fix broke power"}),
+    );
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Failed");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "ship it", "todos": [
+            {"label": "Fix calc.divide", "state": "done"},
+            {"label": "Add power(a, b)"},
+        ]}),
+    );
+    assert!(!refused, "{text}");
+    assert!(
+        text.contains("it was failed, so the done was left out"),
+        "{text}"
+    );
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Failed");
     assert_eq!(state_of(&rig, "Add power(a, b)")?, "Pending");
     Ok(())
 }

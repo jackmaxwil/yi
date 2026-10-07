@@ -94,16 +94,28 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             }
             _ => {
                 if let Some(mut op) = engine_op {
-                    if let (Some(map), Some(plan)) = (op.as_object_mut(), args.get("plan")) {
-                        map.insert("plan".to_owned(), plan.clone());
+                    let held = now.get(&label).map(|(state, _)| state.clone());
+                    if matches!(held, Some(TodoStateName::Failed | TodoStateName::Abandoned)) {
+                        let state = held
+                            .as_ref()
+                            .map(TodoStateName::as_str)
+                            .unwrap_or("pending");
+                        conditions.push(format!(
+                            "{label}: it was {state}, so the done was left out; retry it"
+                        ));
+                        row.insert("state".to_owned(), json!(state));
+                    } else {
+                        if let (Some(map), Some(plan)) = (op.as_object_mut(), args.get("plan")) {
+                            map.insert("plan".to_owned(), plan.clone());
+                        }
+                        moves = Some(op);
+                        let state = match held.as_ref() {
+                            Some(TodoStateName::Running) => "running",
+                            Some(TodoStateName::Done) => "done",
+                            _ => "pending",
+                        };
+                        row.insert("state".to_owned(), json!(state));
                     }
-                    moves = Some(op);
-                    let state = match now.get(&label) {
-                        Some((TodoStateName::Running, _)) => "running",
-                        Some((TodoStateName::Done, _)) => "done",
-                        _ => "pending",
-                    };
-                    row.insert("state".to_owned(), json!(state));
                 }
             }
         }
