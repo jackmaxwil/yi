@@ -81,6 +81,8 @@ pub struct ReplayFrame<'a> {
     pub todos: Option<&'a yi_types::todo::TodoList>,
     pub context_window: u64,
     pub child: Option<&'a ChildId>,
+    /// The ledger's totals, set by the client rather than added to; sent on a root's last frame.
+    pub stats: Option<&'a yi_types::wire::SessionStats>,
 }
 
 pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
@@ -121,6 +123,12 @@ pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
     ];
     if let Some(child) = frame.child {
         fields.push(("childId", Value::String(child.0.clone())));
+    }
+    if let Some(stats) = frame
+        .stats
+        .and_then(|stats| serde_json::to_value(stats).ok())
+    {
+        fields.push(("stats", stats));
     }
     extension("_yi/replay", fields)
 }

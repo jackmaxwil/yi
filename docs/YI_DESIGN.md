@@ -475,7 +475,7 @@ A persistent IPython process per session that reaches the host only through host
 ## 10. Url and fetch
 `Url` is the one reference type; `Resolver` turns one into text and logs every read.
 
-- `Url { scheme, path, fragment }` serializes as `scheme://path[#L<start>-<end>@<TAG>]`.
+- `Url { scheme, path, fragment }` serializes as `scheme://path[#L<start>-<end>[@<TAG>]]`.
   Whitespace or an empty scheme or path fails the parse; an unknown scheme parses as `External`
   and fetch refuses it. Only `local` and `checkpoint` take a fragment; `TAG` is the whole-file
   xxh32 in four uppercase hex digits, and a live file that differs is refused `Stale`.
@@ -839,7 +839,8 @@ an unknown method −32601, bad JSON −32700.
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
-`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame),
+`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame; a root's
+last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
 `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
