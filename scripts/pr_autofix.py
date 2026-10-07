@@ -251,9 +251,13 @@ def reprice(clone, base="MERGE_HEAD"):
                if sh(clone, "git", "cat-file", "-e", f"{base}:docs/changes/{p.name}", check=False).returncode]
     if not pending:
         return
+    # Incident: #1094 and #1096 each carry a stacked parent's change file too, and only the last
+    # one's raise was rewritten, so the two summed past what the gates measured.
+    for other in pending:
+        other.write_text(re.sub(r"^raise: .*\n", "", other.read_text(), flags=re.M))
+        sh(clone, "git", "add", str(other.relative_to(clone)))
     path = pending[-1]
-    text = re.sub(r"^raise: .*\n", "", path.read_text(), flags=re.M)
-    path.write_text(text)
+    text = path.read_text()
     raises = [r for gate in ("crate_size", "test_size", "comments")
               for r in RAISE.findall(sh(clone, sys.executable, f"scripts/guardrails/check_{gate}.py", env=scrubbed(), check=False).stdout)]
     growth = re.search(r"growth \(([+-]\d+) src lines", sh(clone, sys.executable, "scripts/guardrails/check_growth.py", env=scrubbed(), check=False).stdout)
@@ -1017,6 +1021,19 @@ def selfcheck():
         errs.append(f"a hook's failure reads {failures(hook)!r}, not its FAIL blocks")
     if "Autofix failed" not in render(1, {}, "failed", "boom") or "boom" not in render(1, {}, "failed", "boom"):
         errs.append("a failure's comment does not carry its reason")
+    stack = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-stack-"))
+    try:
+        git = lambda *a: sh(stack, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        git("init", "-q", "-b", "main"); (stack / "docs/changes").mkdir(parents=True)
+        (stack / "a.txt").write_text("a\n"); git("add", "-A"); git("commit", "-qm", "seed")
+        for name in ("2026-01-01-parent.md", "2026-01-02-child.md"):
+            (stack / "docs/changes" / name).write_text("---\nissue: 1\nraise: crate types +24\n---\nprose\n")
+        reprice(stack, "main")
+        left = [n.name for n in (stack / "docs/changes").glob("*.md") if "raise:" in n.read_text()]
+        if left:
+            errs.append(f"a stacked branch's change files kept raises the gates no longer measure: {left}")
+    finally:
+        shutil.rmtree(stack, ignore_errors=True)
     if errs:
         print("FAIL pr_autofix selfcheck")
         for err in errs:
