@@ -703,12 +703,19 @@ async fn finished(harness: &Harness, name: &str) -> Result<(), String> {
 
 /// A child whose first turn a two-second tool call holds open, returned once it is running.
 async fn busy_child() -> Result<(Harness, yi_runtime::ChildFeed), Box<dyn Error>> {
+    held_child("sleep 2").await
+}
+
+/// A child named `busy` whose first turn `command` holds open, returned once it is running.
+async fn held_child(
+    command: &'static str,
+) -> Result<(Harness, yi_runtime::ChildFeed), Box<dyn Error>> {
     let harness = harness_with(HarnessOptions {
         child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "ok",
-        tool_command: Some("sleep 2"),
+        tool_command: Some(command),
         cwd: None,
         wake_parent: None,
     })?;
@@ -1146,9 +1153,6 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
 /// restored poll must hold without a wall timer ever firing: `pause` first, yield with the
 /// clock frozen, one `advance` after a finished poll.
 const WAKE_YIELDS: usize = 8;
-/// A settling turn may outlast one wake window; frozen time stays under any 100 ms poll
-/// even at the last round, so a red against a restored poll still holds.
-const SETTLE_WAKE_ROUNDS: usize = 80;
 async fn wakes<T>(task: &tokio::task::JoinHandle<T>) -> bool {
     tokio::time::pause();
     for _ in 0..WAKE_YIELDS {
@@ -1160,6 +1164,21 @@ async fn wakes<T>(task: &tokio::task::JoinHandle<T>) -> bool {
     tokio::time::advance(std::time::Duration::from_millis(1)).await;
     tokio::time::resume();
     task.is_finished()
+}
+
+/// A family wait from the latest cursor that one wake window leaves asleep.
+async fn parked_wait(
+    harness: &Harness,
+) -> Result<tokio::task::JoinHandle<Result<Map<String, Value>, String>>, Box<dyn Error>> {
+    let mut cursor = 0;
+    loop {
+        let host = Arc::clone(&harness.host);
+        let wait = tokio::spawn(async move { host.wait(5_000, Some(cursor)).await });
+        if !wakes(&wait).await {
+            return Ok(wait);
+        }
+        cursor = wait.await??["cursor"].as_u64().ok_or("cursor")?;
+    }
 }
 
 fn receive_task(
@@ -1187,15 +1206,7 @@ fn receive_task(
 #[tokio::test]
 async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
     let (harness, _busy) = busy_child().await?;
-    let mut cursor = 0;
-    let parked = loop {
-        let host = Arc::clone(&harness.host);
-        let wait = tokio::spawn(async move { host.wait(5_000, Some(cursor)).await });
-        if !wakes(&wait).await {
-            break wait;
-        }
-        cursor = wait.await??["cursor"].as_u64().ok_or("cursor")?;
-    };
+    let parked = parked_wait(&harness).await?;
     harness.host.interrupt("busy")?;
     assert!(wakes(&parked).await, "the interrupt did not wake the wait");
     parked.await??;
@@ -1206,41 +1217,39 @@ async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
 /// child's own end, so a normally settling child is seen a poll late.
 #[tokio::test]
 async fn a_family_wait_wakes_on_a_settling_child_not_on_a_poll() -> TestResult {
-    let harness = harness_with(HarnessOptions {
-        child_errors: false,
-        depth: 0,
-        max_depth: 1,
-        child_answer: "done",
-        tool_command: Some("true"),
-        cwd: None,
-        wake_parent: None,
-    })?;
-    harness
-        .host
-        .spawn("work".to_owned(), kwargs(&[("name", "kid")]))?;
-    let host = Arc::clone(&harness.host);
-    let first = tokio::spawn(async move { host.wait(5_000, Some(0)).await });
-    let started = json!(first.await??);
-    let cursor = started["cursor"].as_u64().ok_or("cursor")?;
-    let host = Arc::clone(&harness.host);
-    let parked = tokio::spawn(async move { host.wait(5_000, Some(cursor)).await });
-    let mut woke = false;
-    assert!(
-        !wakes(&parked).await,
-        "the wait woke before the child's turn could settle"
+    let release = std::env::temp_dir().join(format!("yi-settle-{}", std::process::id()));
+    let _ = std::fs::remove_file(&release);
+    let hold = format!(
+        "for _ in $(seq 3000); do [ -e '{}' ] && exit 0; sleep 0.01; done",
+        release.display()
     );
-    for _ in 0..SETTLE_WAKE_ROUNDS {
-        if wakes(&parked).await {
-            woke = true;
+    let (harness, _busy) = held_child(Box::leak(hold.into_boxed_str())).await?;
+    let parked = parked_wait(&harness).await?;
+    // Invariant: the clock stays frozen from release to settle, so a restored 100 ms poll
+    // cannot fire however long the child's process takes; only the settle's wake can.
+    tokio::time::pause();
+    std::fs::write(&release, "")?;
+    let mut settled = false;
+    for _ in 0..30_000 {
+        let view = harness.host.children_view();
+        settled = view
+            .iter()
+            .any(|child| child.update.status == ChildStatus::Completed);
+        if settled {
             break;
         }
-        // Invariant: real time passes with the tokio clock frozen, so a restored 100 ms
-        // poll never fires while the child's tool runs out its own process.
+        tokio::task::yield_now().await;
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert!(woke, "the child's end did not wake the parked wait");
+    tokio::time::resume();
+    let _ = std::fs::remove_file(&release);
+    assert!(settled, "the released child never settled");
+    assert!(
+        wakes(&parked).await,
+        "the child's end did not wake the parked wait"
+    );
     let ended = json!(parked.await??);
-    assert_eq!(ended["states"]["kid"], "finished", "{ended}");
+    assert_eq!(ended["states"]["busy"], "finished", "{ended}");
     Ok(())
 }
 
