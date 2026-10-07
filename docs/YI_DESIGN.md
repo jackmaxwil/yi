@@ -85,9 +85,15 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Kernel | A persistent Python process that reaches the host only through named host requests | §9 |
 | Url | The one reference type, `scheme://path#fragment`, resolved by `fetch` | §10 |
 | Child | A family member admitted under a lease, ending in one typed exit | §11 |
+| Lease | The tokens and deadline a child draws from its parent's own, never more | §11 |
+| Wall | A hereditary deny set over paths and URLs that only narrows down the family | §11 |
 | Envelope | A message written to the receiver's session store before delivery | §12 |
+| Todo | One unit of work, the same type in a session list and in a plan | §13, D282 |
 | Plan and contract | A hash-chained op journal over todos; a done-predicate over a frozen attempt | §13 |
 | Lane | A leased git-worktree slot with a moving hand-back | §14 |
+| Node | One machine's card of kernel slots, which every live kernel is admitted against | §9, D285 |
+| Schedule | A clock subscription whose tick creates a todo | §15.2, D283 |
+| Channel | A durable JSONL buffer that adapters append to and a blocked todo waits on | §15.2, D287 |
 
 | Capability | Composed from | Settled by |
 |---|---|---|
@@ -102,7 +108,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Shared family objects | Kernel `rlm.put` / `rlm.get` + Url (`family://`) | D164 |
 | Paged reading of anything | Url + `fetch` pages | D213 |
 | Checker after every covered write | Contract (`covers`) + Tool | D228 |
-| Heartbeat | Schedule + Session run queue (steer or follow-up) | |
+| Heartbeat | Schedule + Todo + Session run queue (steer or follow-up) | D283 |
 | Next-step hints | Tool result + procedural graph | D219 |
 
 ## 4. Session
@@ -613,8 +619,9 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
   Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
-- `OpKind`, 23 kinds; the `plan` tool schema shows the first 15 (`MODEL_OPS`): `set, init, append,
-  drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view`.
+- `OpKind`, 23 kinds; the `plan` tool schema shows the first 16 (`MODEL_OPS`): `set, init, append,
+  drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view,
+  accepted_by_user`.
 - `Actor { Owner, Child, User, Host, Engine }`. User may apply every op; Owner every op but
   `fuse_reset`, `resolve`, `accepted_by_user` and a resolving `repair`; Host `unblock, reconcile`;
   Child `view, submit`; Engine `start, submit, done, fail, retry`.
