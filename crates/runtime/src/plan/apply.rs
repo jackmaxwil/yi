@@ -72,7 +72,9 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let moved_by_engine = row.contains_key("contract") || row.contains_key("delegation");
+        let moved_by_engine = row.contains_key("contract")
+            || row.contains_key("delegation")
+            || now.get(&label).is_some_and(|(_, needs)| *needs);
         let (on, note, options) = (row.remove("on"), row.remove("note"), row.remove("options"));
         let engine_op = match row.get("state").and_then(Value::as_str) {
             Some("done") if moved_by_engine => Some(json!({"op": "done", "label": label})),
@@ -86,7 +88,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
         };
         let mut moves = None;
         match now.get(&label) {
-            Some(TodoStateName::Blocked) => {
+            Some((TodoStateName::Blocked, _)) => {
                 conditions.push(format!("{label}: still blocked on the user; left as is"));
                 row.insert("state".to_owned(), json!("blocked"));
             }
@@ -97,8 +99,8 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                     }
                     moves = Some(op);
                     let state = match now.get(&label) {
-                        Some(TodoStateName::Running) => "running",
-                        Some(TodoStateName::Done) => "done",
+                        Some((TodoStateName::Running, _)) => "running",
+                        Some((TodoStateName::Done, _)) => "done",
                         _ => "pending",
                     };
                     row.insert("state".to_owned(), json!(state));
@@ -168,15 +170,13 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     if let Some(plan) = args.get("plan") {
         view.insert("plan".to_owned(), plan.clone());
     }
-    let mut text = tool.apply(&view)?;
-    for condition in conditions {
-        text.push_str(&format!("\nnote: {condition}"));
-    }
-    Ok(text)
+    let text = tool.apply(&view)?;
+    Ok(noted(text, conditions))
 }
 
-/// Each row's state in the open plan, by label; a row the engine moves keeps it until it moves.
-fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoStateName> {
+/// Each held todo's state beside whether its completion needs a resolution, by label; a row
+/// the engine moves keeps it until it moves.
+fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, (TodoStateName, bool)> {
     let plan: Option<PlanId> = args
         .get("plan")
         .and_then(|plan| serde_json::from_value(plan.clone()).ok());
@@ -189,7 +189,10 @@ fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoState
         .map(|todo| {
             (
                 todo.label.as_str().to_owned(),
-                TodoStateName::of(&todo.state),
+                (
+                    TodoStateName::of(&todo.state),
+                    super::state::needs_resolution(todo),
+                ),
             )
         })
         .collect()

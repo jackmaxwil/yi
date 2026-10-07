@@ -573,11 +573,8 @@ impl PlanTool {
 
     pub(super) fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         if let Some((set, said)) = super::apply::whole(args) {
-            let mut text = super::apply::apply(self, &set)?;
-            for line in said {
-                text.push_str(&format!("\nnote: {line}"));
-            }
-            return Ok(text);
+            let text = super::apply::apply(self, &set)?;
+            return Ok(super::apply::noted(text, said));
         }
         let mut args = args.clone();
         let blocks = super::natural::blocks(&mut args);

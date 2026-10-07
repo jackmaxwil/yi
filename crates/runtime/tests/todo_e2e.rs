@@ -1468,6 +1468,30 @@ fn a_done_naming_no_item_lands_on_the_running_one() -> TestResult {
     Ok(())
 }
 
+/// A repeated done for an item already done lands as a view with a note, not the
+/// TodoError::Illegal the store alone returns.
+#[test]
+fn a_done_sent_again_for_a_done_item_is_a_view_with_a_note() -> TestResult {
+    let (_root, session) = session("done-again")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(store.clone());
+    call(&tool, json!({"op": "init", "items": ["one"]}));
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "label": "t1", "evidence": "`make` ok"}),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "label": "t1", "evidence": "`make` ok"}),
+    );
+    assert!(
+        !is_error && text.contains("it was already done, so nothing changed"),
+        "{text}"
+    );
+    Ok(())
+}
+
 /// Dies with the session list, the common case with no plan open, unblocking an ask nobody has
 /// answered, or leaving the user's pick unrecorded once they reply.
 #[test]
