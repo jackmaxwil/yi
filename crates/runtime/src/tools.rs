@@ -39,15 +39,16 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
 }
 
 /// Invariant: a verdict is the tool's answer, not its failure: the call ran and a rule said no,
-/// so it reaches the model unflagged and keeps its class as `details.outcome`.
+/// so it reaches the model unflagged and keeps its `details.errorKind`.
 fn verdict_is_a_result(output: &mut yi_tools::ToolOutput) {
-    let verdict = yi_types::event::ToolErrorKind::Verdict.as_str();
-    if let Value::Object(details) = &mut output.result.details
-        && output.is_error
-        && details.get("errorKind").and_then(Value::as_str) == Some(verdict)
+    let verdict = Some(yi_types::event::ToolErrorKind::Verdict.as_str());
+    if output
+        .result
+        .details
+        .get("errorKind")
+        .and_then(Value::as_str)
+        == verdict
     {
-        details.remove("errorKind");
-        details.insert("outcome".to_owned(), Value::String(verdict.to_owned()));
         output.is_error = false;
     }
 }
