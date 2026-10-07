@@ -49,7 +49,7 @@ pub(super) fn run(args: &Args) -> i32 {
         let _guard = runtime.enter();
         let asker: Option<yi_runtime::Asker> =
             interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
-        match build_session(args, asker, Some(&target.id)) {
+        match build_session(args, asker, Some(&target.id), false) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
