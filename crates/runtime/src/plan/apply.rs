@@ -46,8 +46,7 @@ pub(super) fn set_rows(args: &Map<String, Value>, op: OpKind) -> Result<Vec<SetR
 }
 
 pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-    let (now, mut rows, mut deferred, mut conditions) =
-        (held(tool, args), Vec::new(), Vec::new(), Vec::new());
+    let (now, mut rows, mut conditions) = (held(tool, args), Vec::new(), Vec::new());
     for row in args
         .get("todos")
         .and_then(Value::as_array)
@@ -98,10 +97,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
         }
         let alone = json!({"op": "set", "todos": [Value::Object(row.clone())]});
         match super::tool::declared(tool.actor(), alone.as_object().unwrap_or(&Map::new())) {
-            Ok(_) => {
-                rows.push(row);
-                deferred.extend(moves);
-            }
+            Ok(_) => rows.push((row, moves)),
             Err(error) => {
                 let error = error.to_string();
                 let error = error.strip_prefix("set todos[0]: ").unwrap_or(&error);
@@ -119,7 +115,9 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     for _ in 0..REPAIRS {
         set.insert(
             "todos".to_owned(),
-            rows.iter().cloned().map(Value::Object).collect(),
+            rows.iter()
+                .map(|(row, _)| Value::Object(row.clone()))
+                .collect(),
         );
         let issue = match tool.apply_one(&set) {
             Ok(_) => {
@@ -141,7 +139,7 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     if let Some(issue) = open {
         return Err(PlanOpError::Invalid { issue }.into());
     }
-    for op in &deferred {
+    for op in rows.iter().filter_map(|(_, moves)| moves.as_ref()) {
         let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
         if let Err(error) = tool.apply_one(op.as_object().unwrap_or(&Map::new())) {
             conditions.push(format!("{label}: {error}"));
@@ -179,13 +177,17 @@ fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoState
         .collect()
 }
 
-/// The smallest change that answers the engine's issue, named as the row's condition.
-fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<String> {
+/// The smallest change that answers the engine's issue, named as the row's condition; a row
+/// removed takes its deferred engine move with it.
+fn repair(
+    rows: &mut Vec<(Map<String, Value>, Option<Value>)>,
+    issue: &PlanIssue,
+) -> Option<String> {
     let label_of =
         |row: &Map<String, Value>| row.get("label").and_then(Value::as_str).map(str::to_owned);
-    let at = |rows: &[Map<String, Value>], label: &str| {
+    let at = |rows: &[(Map<String, Value>, Option<Value>)], label: &str| {
         rows.iter()
-            .rposition(|row| label_of(row).as_deref() == Some(label))
+            .rposition(|(row, _)| label_of(row).as_deref() == Some(label))
     };
     let unlink = |row: &mut Map<String, Value>, after: &str| {
         if let Some(Value::Array(edges)) = row.get_mut("after") {
@@ -195,17 +197,21 @@ fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<Strin
     match issue {
         PlanIssue::Cycle { labels } => {
             let names: Vec<&str> = labels.iter().map(|label| label.as_str()).collect();
-            let (index, after) = rows.iter().enumerate().rev().find_map(|(index, row)| {
-                let edges = row.get("after")?.as_array()?;
-                let closing = edges
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .find(|edge| names.contains(edge))?;
-                names
-                    .contains(&label_of(row)?.as_str())
-                    .then(|| (index, closing.to_owned()))
-            })?;
-            let row = rows.get_mut(index)?;
+            let (index, after) = rows
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, (row, _))| {
+                    let edges = row.get("after")?.as_array()?;
+                    let closing = edges
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .find(|edge| names.contains(edge))?;
+                    names
+                        .contains(&label_of(row)?.as_str())
+                        .then(|| (index, closing.to_owned()))
+                })?;
+            let (row, _) = rows.get_mut(index)?;
             unlink(row, &after);
             let own = label_of(row).unwrap_or_default();
             Some(format!(
@@ -215,7 +221,7 @@ fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<Strin
         }
         PlanIssue::UnresolvedEdge { todo, after } => {
             let index = at(rows, todo.as_str())?;
-            unlink(rows.get_mut(index)?, after.as_str());
+            unlink(&mut rows.get_mut(index)?.0, after.as_str());
             Some(format!(
                 "{}: after {:?} left out: no todo has that label",
                 todo.as_str(),
@@ -231,7 +237,7 @@ fn repair(rows: &mut Vec<Map<String, Value>>, issue: &PlanIssue) -> Option<Strin
         }
         PlanIssue::Contract { label, issue } => {
             let index = at(rows, label.as_str())?;
-            rows.get_mut(index)?.remove("contract")?;
+            rows.get_mut(index)?.0.remove("contract")?;
             Some(format!("{}: contract left out: {issue}", label.as_str()))
         }
         PlanIssue::Unanswered { .. } => None,
