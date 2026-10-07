@@ -885,14 +885,36 @@ fn init_list(phases: Vec<(PhaseName, Vec<Todo>)>) -> Result<TodoList, TodoError>
     Ok(fresh)
 }
 
-/// Rows of `prior` the new list lost, put back in their own phase; their labels, quoted.
+/// Rows of `prior` the new list lost, put back under their parent or in their own phase; their
+/// labels, quoted.
 fn keep_omitted(prior: &TodoList, list: &mut TodoList) -> Vec<String> {
     let mut kept = Vec::new();
     for phase in &prior.phases {
-        let lost: Vec<Todo> = (phase.items.iter())
-            .filter(|item| !list.items().any(|now| now.label == item.label))
-            .cloned()
-            .collect();
+        let held = |list: &TodoList, label: &TodoLabel| list.items().any(|now| now.label == *label);
+        let mut lost = Vec::new();
+        for item in &phase.items {
+            if !held(list, &item.label) {
+                lost.push(item.clone());
+                continue;
+            }
+            let children = item
+                .children
+                .iter()
+                .filter(|child| !held(list, &child.label));
+            let children: Vec<Todo> = children.cloned().collect();
+            let mut parents = list.phases.iter_mut().flat_map(|now| now.items.iter_mut());
+            match parents.find(|now| now.label == item.label) {
+                Some(parent) => {
+                    kept.extend(
+                        children
+                            .iter()
+                            .map(|child| format!("{:?}", child.label.as_str())),
+                    );
+                    parent.children.extend(children);
+                }
+                None => lost.extend(children),
+            }
+        }
         if lost.is_empty() {
             continue;
         }
