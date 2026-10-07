@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
-use yi_types::plan::doc::{PlanIssue, TodoStateName};
+use yi_types::plan::doc::{PlanId, PlanIssue, TodoStateName};
 
-use super::ops::{Op, OpRequest, PlanOpError, SetRow};
+use super::ops::{PlanOpError, SetRow};
 use super::table::OpKind;
-use super::tool::{ArgError, PlanTool, PlanToolError, opt, todo_specs};
+use super::tool::{ArgError, PlanTool, PlanToolError, opt, todo_specs, view_request};
 
 /// A plan the repairs cannot settle in this many passes is refused as it stands.
 const REPAIRS: usize = 32;
@@ -75,14 +75,25 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
                 "options": options.unwrap_or(Value::Null)})),
             _ => None,
         };
-        if let Some(op) = engine_op {
-            deferred.push(op);
-            let state = match now.get(&label) {
-                Some(TodoStateName::Running) => "running",
-                Some(TodoStateName::Done) => "done",
-                _ => "pending",
-            };
-            row.insert("state".to_owned(), json!(state));
+        match now.get(&label) {
+            Some(TodoStateName::Blocked) => {
+                conditions.push(format!("{label}: still blocked on the user; left as is"));
+                row.insert("state".to_owned(), json!("blocked"));
+            }
+            _ => {
+                if let Some(mut op) = engine_op {
+                    if let (Some(map), Some(plan)) = (op.as_object_mut(), args.get("plan")) {
+                        map.insert("plan".to_owned(), plan.clone());
+                    }
+                    deferred.push(op);
+                    let state = match now.get(&label) {
+                        Some(TodoStateName::Running) => "running",
+                        Some(TodoStateName::Done) => "done",
+                        _ => "pending",
+                    };
+                    row.insert("state".to_owned(), json!(state));
+                }
+            }
         }
         let alone = json!({"op": "set", "todos": [Value::Object(row.clone())]});
         match super::tool::declared(tool.actor(), alone.as_object().unwrap_or(&Map::new())) {
@@ -95,20 +106,36 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
         }
     }
     let mut set = args.clone();
+    if set.remove("list").is_some() {
+        conditions.push(
+            "the `list` checklist was left out: the `todos` rows state the whole plan".to_owned(),
+        );
+    }
+    let mut open = None;
     for _ in 0..REPAIRS {
         set.insert(
             "todos".to_owned(),
             rows.iter().cloned().map(Value::Object).collect(),
         );
         let issue = match tool.apply_one(&set) {
-            Ok(_) => break,
+            Ok(_) => {
+                open = None;
+                break;
+            }
             Err(PlanToolError::Op(PlanOpError::LabelNotUnique { label })) => {
                 PlanIssue::DuplicateLabel { label }
             }
             Err(PlanToolError::Op(PlanOpError::Invalid { issue })) => issue,
             Err(error) => return Err(error),
         };
-        conditions.push(repair(&mut rows, &issue).ok_or(PlanOpError::Invalid { issue })?);
+        let Some(note) = repair(&mut rows, &issue) else {
+            return Err(PlanOpError::Invalid { issue }.into());
+        };
+        conditions.push(note);
+        open = Some(issue);
+    }
+    if let Some(issue) = open {
+        return Err(PlanOpError::Invalid { issue }.into());
     }
     for op in &deferred {
         let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
@@ -116,7 +143,12 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             conditions.push(format!("{label}: {error}"));
         }
     }
-    let mut text = tool.apply_one(json!({"op": "view"}).as_object().unwrap_or(&Map::new()))?;
+    let mut view = Map::new();
+    view.insert("op".to_owned(), json!("view"));
+    if let Some(plan) = args.get("plan") {
+        view.insert("plan".to_owned(), plan.clone());
+    }
+    let mut text = tool.apply_one(&view)?;
     for condition in conditions {
         text.push_str(&format!("\nnote: {condition}"));
     }
@@ -125,19 +157,12 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
 
 /// Each row's state in the open plan, by label; a row the engine moves keeps it until it moves.
 fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoStateName> {
-    let plan = args
+    let plan: Option<PlanId> = args
         .get("plan")
         .and_then(|plan| serde_json::from_value(plan.clone()).ok());
-    let view = OpRequest {
-        plan,
-        actor: tool.actor().clone(),
-        op: Op::View { full: true },
-        request_id: None,
-        expected_revision: None,
-    };
     let todos = tool
         .engine()
-        .apply(view)
+        .apply(view_request(tool.actor(), plan))
         .map(|seen| seen.plan.todos)
         .unwrap_or_default();
     (todos.iter())
