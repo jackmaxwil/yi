@@ -44,6 +44,13 @@ class Yi:
 
     def close(self) -> None:
         if self._proc.poll() is None:
+            try:
+                self.run("while True:\n"
+                         "    reply = await rlm.wait(300)\n"
+                         "    if reply['state'] in ('settled', 'asks'):\n"
+                         "        break\n")
+            except YiError:
+                pass
             self._proc.stdin.close()
             try:
                 self._proc.wait(timeout=10)
