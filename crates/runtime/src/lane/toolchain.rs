@@ -115,15 +115,22 @@ fn mark_seen(pool: &Pool, hash: &str) -> Result<(), LaneError> {
 }
 
 /// Seatbelt-contained like a bash call: slot and scratch writable, credentials unreadable.
-fn contained(tree: &Path, home: &Path, argv: &[&str]) -> Option<(String, Vec<String>)> {
+/// The sandbox rides along so a failed sync can carry the real refusal, not a guess from its text.
+fn contained(
+    tree: &Path,
+    home: &Path,
+    argv: &[&str],
+) -> Option<(String, Vec<String>, Option<yi_tools::Sandbox>)> {
     let (program, args) = argv.split_first()?;
     if yi_tools::Sandbox::available() {
         let sandbox = yi_tools::Sandbox::for_workspace(tree, home, None);
-        return Some(sandbox.wrap(program, args));
+        let (program, args) = sandbox.wrap(program, args);
+        return Some((program, args, Some(sandbox)));
     }
     Some((
         (*program).to_owned(),
         args.iter().map(|arg| (*arg).to_owned()).collect(),
+        None,
     ))
 }
 
@@ -141,7 +148,7 @@ pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>,
         return Ok(None);
     }
     if let Some(argv) = toolchain.sync
-        && let Some((program, args)) = contained(tree, pool.home(), argv)
+        && let Some((program, args, sandbox)) = contained(tree, pool.home(), argv)
     {
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         super::capture_named(
@@ -150,7 +157,8 @@ pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>,
             &program,
             &borrowed,
             std::time::Duration::from_millis(SYNC_TIMEOUT_MS),
-            super::CAPTURE_CAP,
+            yi_tools::OUTPUT_CAP,
+            sandbox.as_ref(),
         )
         .map_err(LaneError::Forge)?;
     }
@@ -180,7 +188,7 @@ pub fn warm(pool: &Pool, slot: SlotIndex) -> Result<(), LaneError> {
         // Invariant: a failed warm is not retried until the base moves.
         return Ok(());
     }
-    let Some((program, args)) = contained(&tree, pool.home(), toolchain.warm) else {
+    let Some((program, args, _)) = contained(&tree, pool.home(), toolchain.warm) else {
         return Ok(());
     };
     let mut command = yi_tools::command("nice");
