@@ -2,9 +2,49 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use yi_types::event::AgentEvent;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Usage};
+use yi_types::record::LaneRecord;
 
 use crate::AgentSession;
+
+/// The one [`yi_types::record::LaneRecord::Usage`] row a call's spend lands on, always on the
+/// main lane so the session's cost total cannot undercount it.
+pub(crate) fn append_main_usage(
+    store: &yi_session::SharedSession,
+    cause: String,
+    usage: Usage,
+) -> Result<(), yi_session::SessionError> {
+    let mut session = yi_session::lock_session(store);
+    let id = session.next_id();
+    session.append_record(LaneRecord::Usage {
+        id,
+        lane: "main".to_owned(),
+        usage,
+        cause,
+        run_id: None,
+        entry_id: None,
+        attempt: None,
+        stop_reason: None,
+        tool_call_id: None,
+        details: None,
+        seq: 0,
+        timestamp: 0,
+    })?;
+    Ok(())
+}
+
+/// Invariant: a side call that reports spend leaves one [`yi_types::record::LaneRecord::Usage`]
+/// row; a known zero leaves none.
+pub(crate) fn book_side_call(
+    store: &yi_session::SharedSession,
+    cause: &str,
+    usage: Usage,
+) -> Result<(), yi_session::SessionError> {
+    if usage == Usage::zero() {
+        return Ok(());
+    }
+    append_main_usage(store, cause.to_owned(), usage)
+}
 
 pub const SPEND_ALERT_TYPE: &str = "spend_alert";
 
