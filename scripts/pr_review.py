@@ -418,13 +418,17 @@ def lens_prompt(probe, pr, diff, base, sha, full_read):
     )
 
 
-def refute_prompt(finding, answer=""):
+def refute_prompt(finding, answer="", body=""):
     earlier = ("It was made at an earlier head of this PR, which has changed since, so its line may have moved: "
                "judge it at this head, and refute it when the code here no longer has the defect. ") if finding.get("since") else ""
     # Incident: #1050's fix moved the duplicated fallback into one helper, and a lone refuter, reading
     # the call that fed it, kept the finding; the fix's own account says where to look.
     told = (f"\n<fix-commit>\n{answer[:3000]}\n</fix-commit>\nThe commit after that head says it answers the claim as "
             "above; check that against the code rather than trusting it.\n") if finding.get("since") and answer else ""
+    # Incident: #1059's carried finding was on its PR body's rollback claim, fixed in the body, and
+    # refuters that read only the tree kept it; a carried claim is judged against the body as it is.
+    if finding.get("since") and body:
+        told += f"\n<pr-body>\n{body[:6000]}\n</pr-body>\nThe PR's description as it is now, for a claim about it.\n"
     return (
         "A reviewer claims this about the code in your working directory. " + earlier + "Try to break the claim: read the "
         "code around it and anything it calls (only reading works here; commands are refused). Default to refuted: "
@@ -559,6 +563,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
 
 
 def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None, carry=(), fix_note=""):
+    body = pr.get("body") or ""
     """Every probe that applies, then the host's quote and scope checks, then the refuters, each
     stage's calls at once; `carry` (see `carried`) meets refuters beside the new findings. `own` is
     the PR's own patch (fork to head) by added line, the read diff when absent. Returns (kept,
@@ -589,7 +594,7 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
         checked = fresh + list(carry)
         seats_ = [(i, f) for i, f in enumerate(checked) for _ in range(seats(f, probes))]
         votes = list(pool.map(lambda seat: tried(f"refuter on {seat[1]['lens']} finding at {seat[1]['path']}:{seat[1]['line']}",
-                                                 refute_prompt(seat[1], fix_note), REFUTE_SCHEMA, tree), seats_))
+                                                 refute_prompt(seat[1], fix_note, body), REFUTE_SCHEMA, tree), seats_))
     # A silent refuter casts no vote. With none cast the finding is kept and says so: silence is not a refutation.
     heard = [[v for (j, _), v in zip(seats_, votes) if j == i and v] for i in range(len(checked))]
     unverified = "(unverified: no refuter answered) "
@@ -1057,6 +1062,15 @@ def selfcheck():
                                             own={"a.rs": {9}}, carry=[dict(held, severity="medium")], fix_note="Moved it into one helper.")
         assert kept == [] and cleared == 1 and len(votes) == 3 and all(votes), \
             "a carried medium meets three refuters who read the fix's commit, so one literal reader cannot keep it"
+        bodies = []
+        def body_read(p, sch, cwd):
+            if sch is REFUTE_SCHEMA:
+                bodies.append("<pr-body>" in p and "rollback is not clean" in p)
+                return {"refuted": True, "reason": "the body says it now"}
+            return answer(p, sch, cwd)
+        read_round({"number": 1, "title": "t", "body": "## Risk and rollback\nThe rollback is not clean."}, change, "a" * 8, "b" * 8,
+                   tree, body_read, probes, own={"a.rs": {9}}, carry=[dict(held, severity="medium")])
+        assert bodies and all(bodies), "a carried finding's refuters are not shown the PR body a claim may be about"
         assert "Cleared: 1" in render(3, 1, "abcdef1", "abcdef0", [], 0, None, "blocking", cleared=1)
         once = pathlib.Path(tree) / "yi"
         once.write_text(f"#!/bin/sh\ncat >/dev/null\nif [ ! -e {tree}/hung ]; then touch {tree}/hung; exec sleep 30; fi\n"
