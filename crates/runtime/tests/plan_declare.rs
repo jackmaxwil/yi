@@ -763,6 +763,36 @@ fn a_row_left_out_of_a_whole_plan_set_does_not_move() -> TestResult {
     Ok(())
 }
 
+/// Dies with a finished row abbreviated to its state refusing the whole set: a contracted
+/// todo re-sent as `{"state": "done"}` lands through the engine's own done, never through
+/// `set`'s completion, which has no resolution to author.
+#[test]
+fn a_done_row_that_omits_its_contract_lands_through_the_engine() -> TestResult {
+    let rig = rig("apply-abbreviated")?;
+    let passing = json!({"class": "inline",
+        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "harden calc.py", "todos": [
+            {"label": "Fix calc.divide", "contract": passing},
+            {"label": "Add power(a, b)"},
+        ]}),
+    );
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Pending");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "harden calc.py", "todos": [
+            {"label": "Fix calc.divide", "state": "done"},
+            {"label": "Add power(a, b)"},
+        ]}),
+    );
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Done");
+    assert_eq!(state_of(&rig, "Add power(a, b)")?, "Pending");
+    Ok(())
+}
+
 /// Dies with a sub-plan's whole set moving the root's row: the deferred `block` and the closing
 /// view went to the root plan, so a row named in both plans moved in the wrong one.
 #[test]
