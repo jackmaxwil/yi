@@ -355,6 +355,68 @@ fn a_stale_set_lands_and_keeps_the_row_a_user_added() -> TestResult {
     Ok(())
 }
 
+/// Dies with a stale set deleting a subtask the user added under a row it kept, and with a stale
+/// point op refused again: the old view lands on the list as it is now, children included.
+#[test]
+fn a_stale_view_keeps_a_users_subtask_and_lands_a_point_op() -> TestResult {
+    let (_root, session) = session("stale-child")?;
+    let store = store_for(&session);
+    store.apply(
+        Op::Init {
+            phases: vec![(PhaseName::new("Tasks")?, vec![item("a")?])],
+        },
+        None,
+    )?;
+    store.apply_as(
+        Op::Append {
+            phase: None,
+            under: Some(TodoLabel::new("a")?),
+            items: vec![item("user sub")?],
+        },
+        None,
+        "user",
+    )?;
+    let applied = store.apply(
+        Op::Set {
+            list: "- [>] a\n- [ ] b\n".to_owned(),
+        },
+        Some(1),
+    )?;
+    let a = (applied.list.items())
+        .find(|row| row.label.as_str() == "a")
+        .ok_or("a missing")?;
+    assert!(
+        a.children
+            .iter()
+            .any(|row| row.label.as_str() == "user sub"),
+        "{:?}",
+        applied.list
+    );
+    assert!(
+        applied
+            .notes
+            .iter()
+            .any(|note| note.contains("\"user sub\"")),
+        "{:?}",
+        applied.notes
+    );
+    let appended = store.apply(
+        Op::Append {
+            phase: None,
+            under: None,
+            items: vec![item("c")?],
+        },
+        Some(1),
+    )?;
+    assert!(appended.list.items().any(|row| row.label.as_str() == "c"));
+    assert!(
+        (appended.notes.iter()).any(|note| note.contains("changed since you last saw it")),
+        "{:?}",
+        appended.notes
+    );
+    Ok(())
+}
+
 #[test]
 fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
     let (_root, session) = session("evidence")?;
