@@ -1150,15 +1150,35 @@ async fn wakes<T>(task: &tokio::task::JoinHandle<T>) -> bool {
     tokio::time::pause();
     for _ in 0..WAKE_YIELDS {
         if task.is_finished() {
-            tokio::time::advance(std::time::Duration::from_millis(1)).await;
-            tokio::time::resume();
-            return true;
+            break;
         }
         tokio::task::yield_now().await;
     }
     tokio::time::advance(std::time::Duration::from_millis(1)).await;
     tokio::time::resume();
     task.is_finished()
+}
+
+fn receive_task(
+    harness: &Harness,
+    name: &str,
+    timeout_ms: u64,
+) -> Result<tokio::task::JoinHandle<yi_kernel::client::HostReply>, String> {
+    use yi_kernel::client::HostHandlers as _;
+    let receiver = harness
+        .receivers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .remove(name);
+    let receiver = receiver.ok_or(format!("{name} was built without its receive"))?;
+    let payload = json!({"timeout_ms": timeout_ms})
+        .as_object()
+        .cloned()
+        .ok_or("payload")?;
+    let waiting = receiver
+        .dispatch("rlm.receive", payload)
+        .ok_or("rlm.receive is not registered")?;
+    Ok(tokio::spawn(waiting))
 }
 
 /// Dies with the 100 ms poll back in the family wait: the parked wait sleeps through the
@@ -1185,19 +1205,9 @@ async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
 /// instead of waking on it.
 #[tokio::test]
 async fn a_receive_wakes_on_the_mail_not_on_a_poll() -> TestResult {
-    use yi_kernel::client::HostHandlers as _;
     let harness = harness(0, 1, "done")?;
     finished(&harness, "beta").await?;
-    let beta = harness
-        .receivers
-        .lock()
-        .map_err(|_| "poisoned")?
-        .remove("beta");
-    let beta = beta.ok_or("beta was built without its receive")?;
-    let payload = json!({"timeout_ms": 5_000});
-    let payload = payload.as_object().cloned().ok_or("payload")?;
-    let waiting = beta.dispatch("rlm.receive", payload);
-    let waiting = tokio::spawn(waiting.ok_or("rlm.receive is not registered")?);
+    let waiting = receive_task(&harness, "beta", 5_000)?;
     assert!(
         !wakes(&waiting).await,
         "rlm.receive answered an empty inbox"
@@ -3011,7 +3021,6 @@ async fn a_checked_childs_check_runs_in_the_session_cwd() -> TestResult {
 /// number, polled the filesystem and read alpha's kernel, and alpha's mail came after its answer.
 #[tokio::test]
 async fn a_sibling_receives_its_mail_instead_of_polling() -> TestResult {
-    use yi_kernel::client::HostHandlers as _;
     let harness = harness_with(HarnessOptions {
         child_errors: false,
         depth: 0,
@@ -3027,20 +3036,7 @@ async fn a_sibling_receives_its_mail_instead_of_polling() -> TestResult {
     harness
         .host
         .spawn("wait for alpha".to_owned(), kwargs(&[("name", "beta")]))?;
-    let beta = harness
-        .receivers
-        .lock()
-        .map_err(|_| "poisoned")?
-        .remove("beta");
-    let beta = beta.ok_or("beta was built without its receive")?;
-    let payload = json!({"timeout_ms": 10_000})
-        .as_object()
-        .cloned()
-        .ok_or("payload")?;
-    let waiting = beta
-        .dispatch("rlm.receive", payload)
-        .ok_or("rlm.receive is not registered")?;
-    let waiting = tokio::spawn(waiting);
+    let waiting = receive_task(&harness, "beta", 10_000)?;
     let feed = harness.host.children_view();
     let feed = feed
         .iter()
