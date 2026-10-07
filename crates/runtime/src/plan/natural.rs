@@ -703,11 +703,9 @@ impl super::tool::PlanTool {
             text.push_str(&format!("{reply}\n"));
         }
         said.push("labels named several todos, so each ran as its own call, in order".to_owned());
-        let mut text = text.trim_end().to_owned();
-        for line in said {
-            text.push_str(&format!("\nnote: {line}"));
-        }
-        let text = text.trim_end().to_owned();
+        let text = super::apply::noted(text.trim_end().to_owned(), said)
+            .trim_end()
+            .to_owned();
         if refused {
             Err(ArgError::Declared(text).into())
         } else {
