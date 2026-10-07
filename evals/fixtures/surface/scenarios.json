@@ -137,6 +137,102 @@
       "timeoutSec": 360,
       "seed": {},
       "clean": {"files": ["greeting.txt"], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "plan-01-contract-inline",
+      "road": "#982 plan dogfood: a todo carrying an inline contract, declared and done",
+      "prompt": "Fix the failing test in this repo. Before editing, write a plan with the plan tool: one todo per change, each with a contract whose check runs the test suite (python3 -m unittest -q). Close each todo with the plan tool's done once its check passes.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-02-set-checklist",
+      "road": "#982 plan dogfood: the whole plan as one markdown checklist",
+      "prompt": "Use the plan tool's set op to lay out a four-step checklist for adding a `subtract(a, b)` function to calc.py with a unit test. Work through it, marking each row running and then done in the plan as you go, until every row is done.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-03-deps-edges",
+      "road": "#982 plan dogfood: dependencies, reorder and a cycle the engine must refuse",
+      "prompt": "Plan three todos with the plan tool: document calc.py's functions in the README, add a `power(a, b)` function, and add tests for power. The tests depend on the function. Then reorder the todos, try to add an edge that would make a cycle, and tell me exactly what the tool answered. Then finish the work.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-04-block-options",
+      "road": "#982 plan dogfood: a todo blocked on the user with options",
+      "prompt": "Plan adding input validation to calc.divide with the plan tool. Whether dividing by zero should raise ValueError or return None is my call: block that todo on me with three options to pick from, and stop there.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-05-decompose-supersede",
+      "road": "#982 plan dogfood: decompose into a sub-plan, then supersede",
+      "prompt": "Use the plan tool: plan \"harden calc.py\" as a single todo, start it, then decompose it into a sub-plan of concrete steps that each carry a check. Then decide the cut is wrong and supersede it with a better plan. Finish the work and close every todo.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-06-accept-hatch",
+      "road": "#982 plan dogfood: a check that cannot run here, and the accept hatch",
+      "prompt": "Use the plan tool to plan one todo, \"run the slow gate\", whose contract check is `sleep 900 && python3 -m unittest -q`. Start it and close it with done. If the engine cannot finish the check, use the plan tool's way of asking me to accept it, with a note saying what you ran by hand. Quote every plan tool reply verbatim in your answer.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-07-edge-inputs",
+      "road": "#982 plan dogfood: edge inputs: long, non-ASCII and duplicate labels, empty lists",
+      "prompt": "Stress-test the plan tool's input handling and quote each reply verbatim: a todo label of 90 characters; labels with non-ASCII text (é, 中文, emoji); two todos with the same label; an `after` naming a label that does not exist; an empty todos list; a contract with zero items; a contract item missing its weight. After that, make one valid plan that fixes the failing test and finish it.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-08-all-ops",
+      "road": "#982 plan dogfood: every op the model may call, once",
+      "prompt": "On a small real plan for this repo (add a `mod(a, b)` function and its test), use every op the plan tool offers at least once. Whenever the tool refuses a call, quote the refusal verbatim together with the arguments you sent, then correct the call and continue. End with the work done and the plan closed.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-09-delegate-worktree",
+      "road": "#982 plan dogfood: a worktree delegation with an accept command",
+      "prompt": "Plan \"add a `mean(values)` function to calc.py with tests\" with the plan tool and delegate that todo to a child working in a worktree, with a contract that runs python3 -m unittest -q. Wait for the child, let the engine verify it, and report the outcome.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-10-question",
+      "road": "#982 plan dogfood: a question that must not become a plan",
+      "prompt": "is the calc module fully tested?",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-11-checks-fail",
+      "road": "#982 plan dogfood: done before the fix, then retry, fail and block",
+      "prompt": "Use the plan tool to plan fixing calc.divide with a contract that runs the tests. Deliberately call done before fixing anything, read the refusal, then fix the bug and call done again. Then retry, fail and block ops on a second todo of your choosing, quoting every reply.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
+    },
+    {
+      "id": "plan-12-view-and-resume",
+      "road": "#982 plan dogfood: view the plan and resume it",
+      "prompt": "Make a plan with the plan tool for fixing the failing test and adding a `negate(a)` function, with checks. Use view (and the full view) between steps to keep track, and finish everything. Report anything in the tool's replies that was confusing or contradicted its description.",
+      "timeoutSec": 900,
+      "seed": {"README.md": "# calc\n\nRun the tests with `python3 -m unittest -q`.\n", "calc.py": "\"\"\"A tiny calculator.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a * b\n", "test_calc.py": "import unittest\n\nimport calc\n\n\nclass CalcTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n\n    def test_divide(self):\n        self.assertEqual(calc.divide(6, 3), 2)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"},
+      "clean": {}
     }
   ]
 }
