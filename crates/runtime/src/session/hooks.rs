@@ -49,11 +49,32 @@ impl AgentSession {
         Arc::new(move |event| dispatch_ext(&shared, &event))
     }
 
+    /// Read per call: the engine attaches after the heartbeat service is wired.
+    pub fn rules_handle(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<Arc<crate::rules::RuleEngine>> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || shared.rules.lock().ok().and_then(|slot| slot.clone()))
+    }
+
     pub fn store_handle(
         &self,
     ) -> std::sync::Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         std::sync::Arc::new(move || store_of(&shared))
+    }
+
+    /// The environment block as the host would render it now, for checks that count its facts.
+    pub fn environment_handle(&self) -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            let hook = shared
+                .environment
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())?;
+            hook()
+        })
     }
 
     /// Incident: snapshotting these left `rlm.run` and `model.info` on the
@@ -83,7 +104,7 @@ impl AgentSession {
                 run::enqueue(&parts, Queued::new(message, true, None));
             }
             yi_types::schedule::DeliveryMode::FollowUp => {
-                run::follow(&parts, message);
+                run::follow(&parts, message, None);
             }
         })
     }
@@ -137,10 +158,18 @@ impl AgentSession {
         Arc::clone(&self.shared.mail)
     }
 
+    /// Incident: under a client's cell every finished child woke the idle root, a paid model
+    /// turn for news the cell was about to read itself; while one runs, the notice only queues.
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage, Option<StillNews>) + Send + Sync> {
         let parts = self.parts();
+        let kernel = Arc::clone(&self.kernel);
         Arc::new(move |message, news| {
-            run::enqueue(&parts, Queued::new(message, true, news));
+            let cell = kernel
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .is_some_and(|service| service.user_cell_running());
+            run::enqueue(&parts, Queued::new(message, !cell, news));
         })
     }
 
@@ -157,7 +186,7 @@ impl AgentSession {
                     run::push(&mut queue, Queued::new(message, false, None));
                 }
             } else if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(message);
+                queue.push(Queued::new(message, false, None));
             }
         })
     }
@@ -274,14 +303,45 @@ impl AgentSession {
         })
     }
 
-    /// A job's report (§4.3), taken after a running turn's answer or the next one's, never waking.
-    pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str| {
-            if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(host_text(yi_types::message::HostSource::Job, text));
+    /// Job reports (§4.3) start a turn on an idle session; false once retired, ending the loop.
+    /// Each carries its `news`: a report already read by a wait on the job is dropped unread.
+    pub fn job_report_hook(&self) -> Arc<super::run::JobReportFn> {
+        let parts = self.parts();
+        Arc::new(move |reports: Vec<(String, StillNews)>| {
+            if parts
+                .shared
+                .retired
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return false;
             }
+            for (text, news) in reports {
+                run::follow(
+                    &parts,
+                    host_text(yi_types::message::HostSource::Job, &text),
+                    Some(news),
+                );
+            }
+            true
         })
+    }
+
+    /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session
+    /// leaks its IPython process. Every path that retires a session calls this.
+    pub fn retire(&self) {
+        self.shared
+            .retired
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let Some(kernel) = self.kernel_service() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(async move { kernel.dispose().await });
+        }
+    }
+
+    pub fn job_owner(&self) -> yi_tools::jobs::JobOwner {
+        self.shared.job_owner
     }
 
     pub fn wait_hook(&self) -> Arc<crate::compaction::WaitFn> {

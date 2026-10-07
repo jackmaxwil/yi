@@ -160,8 +160,8 @@ its partition, no kernel. Every pattern here but map-reduce spawns
   plus your one-line correction.
 - Long-running probe: `check=` watches an external system; `needs_you`
   fires when it asks; your todo sits `blocked on child`.
-- Cost-shaped fan-out: `find_models` picks the cheapest for readers,
-  yours for writers; `status()` tokens are the fact you report.
+- Cost-shaped fan-out: `find_models` cost informs a reader's model,
+  yours for writers; `status()` cost is the fact you report.
 
 ## Collect as data
 

@@ -33,8 +33,11 @@
 //! disposition through `fail` or `drop` as any other non-accept exit does. Writing it from
 //! the repossession needs a road from the host into the engine's journal, which F3a owns.
 
+#[path = "../../types/tests/support/repo.rs"]
+mod repo;
 use crate::scratch;
 use crate::support;
+use repo::init_repo;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -97,17 +100,6 @@ impl Rig {
     fn pool(&self, slots: u8) -> Result<Pool, Box<dyn Error>> {
         Ok(Pool::open(&self.home, &self.repo, slots)?)
     }
-}
-
-fn init_repo(repo: &Path) -> TestResult {
-    std::fs::create_dir_all(repo)?;
-    git(repo, &["init", "-q", "-b", "main"])?;
-    git(repo, &["config", "user.email", "lanes@test"])?;
-    git(repo, &["config", "user.name", "lanes"])?;
-    std::fs::write(repo.join("README.md"), "base\n")?;
-    git(repo, &["add", "README.md"])?;
-    git(repo, &["commit", "-qm", "base"])?;
-    Ok(())
 }
 
 #[test]

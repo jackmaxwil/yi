@@ -4,7 +4,7 @@ use crate::common;
 use std::error::Error;
 use std::sync::Arc;
 
-use common::{VT100Backend, test_model};
+use common::test_model;
 use serde_json::{Map, json};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_tui::app::{App, TuiOptions};
@@ -57,14 +57,6 @@ fn update(status: ChildStatus, flag: Option<ChildFlag>) -> ChildUpdate {
     }
 }
 
-/// The live region as rows of a real screen.
-fn live_rows(app: &mut App) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(80, 24), 4)?;
-    yi_tui::render::draw(app, &mut terminal, None);
-    let backend = terminal.backend();
-    Ok((0..24).map(|row| backend.row_text(row)).collect())
-}
-
 fn flat(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
     lines
         .iter()
@@ -83,7 +75,7 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
         note: note.to_owned(),
     });
     app.reduce_child_update(&update(ChildStatus::Running, asking));
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     let row = |needle: &str| rows.iter().find(|row| row.contains(needle)).cloned();
     let title = row("Writer").ok_or(format!("no card: {rows:#?}"))?;
     assert!(title.contains("? Writer · needs you"), "{title:?}");
@@ -100,7 +92,7 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
         note: "idle 312s".to_owned(),
     });
     app.reduce_child_update(&update(ChildStatus::Running, stalled));
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     let title = rows.iter().find(|row| row.contains("Writer")).cloned();
     assert!(
         title.is_some_and(|title| title.contains("! Writer · stuck")),
@@ -118,7 +110,7 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
         "{first:?}"
     );
     app.reduce_child_update(&update(ChildStatus::Running, None));
-    let rows = live_rows(&mut app)?;
+    let rows = common::live_rows(&mut app)?;
     let title = rows.iter().find(|row| row.contains("Writer")).cloned();
     assert!(
         title.is_some_and(|title| !title.contains("done") && title.contains("waiting")),
@@ -399,9 +391,11 @@ fn a_prompt_closes_when_its_own_call_settles_elsewhere() -> TestResult {
         tool_call_id: Some("c1".to_owned()),
     });
     let prompt_up = |app: &mut App| -> Result<bool, Box<dyn Error>> {
-        Ok(live_rows(app)?.iter().any(|row| row.contains("Allow once")))
+        Ok(common::live_rows(app)?
+            .iter()
+            .any(|row| row.contains("Allow once")))
     };
-    assert!(prompt_up(&mut app)?, "{:#?}", live_rows(&mut app)?);
+    assert!(prompt_up(&mut app)?, "{:#?}", common::live_rows(&mut app)?);
     let settled = |id: &str| AgentEvent::PermissionResolved {
         tool_call_id: id.to_owned(),
         allowed: false,
@@ -412,7 +406,7 @@ fn a_prompt_closes_when_its_own_call_settles_elsewhere() -> TestResult {
         "another call settling leaves this prompt up"
     );
     app.reduce_agent(settled("c1"));
-    assert!(!prompt_up(&mut app)?, "{:#?}", live_rows(&mut app)?);
+    assert!(!prompt_up(&mut app)?, "{:#?}", common::live_rows(&mut app)?);
     assert!(
         matches!(
             answered.try_recv(),
