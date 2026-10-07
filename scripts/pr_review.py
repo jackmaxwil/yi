@@ -857,9 +857,10 @@ def promote(repo, pr, rounds):
     return bool((ready or {}).get("number"))
 
 
-# Incident: the runner kills a job at 45 minutes; a round can take ten, so a sweep starts no new
-# one past 25 and reads at most three heads, and the next sweep takes the rest.
-SWEEP_SECS, SWEEP_HEADS = 25 * 60, 3
+# A round at thinking high took 19m20s on #1101, so a sweep starts no new one once a round would
+# outrun the job's limit (review.yml), reads at most three heads, and the next sweep takes the rest.
+ROUND_SECS, SWEEP_HEADS = 20 * 60, 3
+SWEEP_SECS = forge_pr.job_secs("review") - ROUND_SECS
 
 
 def cmd_sweep(args):
