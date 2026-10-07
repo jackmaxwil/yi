@@ -301,6 +301,10 @@ def selfcheck():
         want = dict(sorted(collections.Counter(r["label"] for r in labelled).items()))
         assert blamed["mu"][0]["errorClasses"] == want, blamed["mu"][0]["errorClasses"]
         assert {r["errorClass"] for r in blamed["board"]} == set(want), blamed["board"]
+        # The census reads errorKind off the board; a dropped copy reports every failure untagged.
+        named = {c["details"]["errorKind"] for c in labelled
+                 if isinstance(c["details"], dict) and c["details"].get("errorKind")}
+        assert {r["errorKind"] for r in blamed["board"] if r["errorKind"]} == named, blamed["board"]
     print(
         "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
         " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden, signals,"

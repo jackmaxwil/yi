@@ -588,3 +588,47 @@ fn a_set_row_with_a_contract_is_refused_and_bare_rows_land() -> TestResult {
     assert!(!refused, "{text}");
     Ok(())
 }
+
+/// Dies with a plan refusal that names no class: the tool-failure census counts misreads and
+/// stale views toward zero by `details.errorKind`, so an untagged refusal is invisible to it.
+#[test]
+fn every_plan_refusal_names_its_class() -> TestResult {
+    let rig = rig("kinds")?;
+    let kind = |args: Value| crate::support::refusal_kind(&rig.tool, args);
+    assert_eq!(kind(json!({"op": "frobnicate"})), "invalid_args");
+    assert_eq!(kind(json!({"op": "done", "label": "ghost"})), "stale");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "init", "goal": "g", "todos": [{"label": "a"}, {"label": "b", "after": ["a"]}]}),
+    );
+    assert!(!refused, "{text}");
+    assert_eq!(
+        kind(json!({"op": "add_edge", "todo": "a", "after": "b"})),
+        "verdict"
+    );
+    assert_eq!(
+        kind(json!({"op": "accepted_by_user", "label": "a", "note": "ran it"})),
+        "denied"
+    );
+    assert_eq!(
+        kind(json!({"op": "reorder", "labels": ["a", "a"]})),
+        "invalid_args",
+        "a reorder naming a label twice is a misread, not a stale view"
+    );
+    assert_eq!(
+        kind(json!({"op": "reorder", "labels": ["a", "ghost"]})),
+        "stale",
+        "a reorder naming a label the plan no longer holds is the model's view gone stale"
+    );
+    assert_eq!(
+        kind(json!({"op": "append", "todos": [{"label": "x".repeat(200)}]})),
+        "verdict",
+        "a label past its cap is the cap saying no, as the change file's decision files it"
+    );
+    assert_eq!(
+        kind(json!({"op": "view", "actor": "owner"})),
+        "invalid_args",
+        "an actor argument is a misread of the call, not a safety refusal"
+    );
+    Ok(())
+}

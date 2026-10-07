@@ -192,6 +192,10 @@ pub enum ToolErrorKind {
     Aborted,
     StaleTag,
     NoopLoop,
+    /// The call named state the world no longer holds: a plan already closed, a label gone.
+    Stale,
+    /// The tool understood the call and the rules said no: a cycle, a failing check, a cap.
+    Verdict,
     ToolError,
 }
 
@@ -204,6 +208,8 @@ impl ToolErrorKind {
             Self::Aborted => "aborted",
             Self::StaleTag => "stale_tag",
             Self::NoopLoop => "noop_loop",
+            Self::Stale => "stale",
+            Self::Verdict => "verdict",
             Self::ToolError => "tool_error",
         }
     }

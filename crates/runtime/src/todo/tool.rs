@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
+use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, text_output};
 use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
 use yi_types::todo::PhaseName;
 
@@ -453,7 +453,14 @@ impl Tool for TodoTool {
     fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
         match self.run(&input) {
             Ok(text) => text_output(text),
-            Err(error) => error_output(error.to_string()),
+            Err(error) => {
+                let kind = match &error {
+                    TodoToolError::Arg(_) => yi_types::event::ToolErrorKind::InvalidArgs,
+                    TodoToolError::Todo(error) => error.kind(),
+                    TodoToolError::Plan(_) => yi_types::event::ToolErrorKind::ToolError,
+                };
+                error_output_kind(error.to_string(), kind)
+            }
         }
     }
 }

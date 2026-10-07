@@ -1467,3 +1467,42 @@ fn a_block_on_a_clock_address_is_checked_before_it_waits() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a todo refusal that names no class: the tool-failure census counts misreads and
+/// stale views toward zero by `details.errorKind`, so an untagged refusal is invisible to it.
+#[test]
+fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
+    let (_scratch, session) = session("todo-kinds")?;
+    let tool = TodoTool::new(store_for(&session));
+    let kind = |args: Value| crate::support::refusal_kind(&tool, args);
+    assert_eq!(kind(json!({"op": "frobnicate"})), "invalid_args");
+    assert_eq!(
+        kind(json!({"op": "done", "label": "ghost", "evidence": "x"})),
+        "stale"
+    );
+    let set = tool.execute(
+        json!({"op": "set", "list": "- [ ] first\n- [ ] second"})
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        &ToolContext::new(std::env::temp_dir()),
+    );
+    assert!(!set.is_error, "{:?}", set.result.content);
+    assert_eq!(kind(json!({"op": "append", "items": ["first"]})), "verdict");
+    assert_eq!(
+        kind(json!({"op": "append", "items": []})),
+        "invalid_args",
+        "an empty append is an argument shape, not state gone stale"
+    );
+    assert_eq!(
+        kind(json!({"op": "done", "label": "first"})),
+        "verdict",
+        "done without evidence is the rule saying no, as on the plan tool"
+    );
+    assert_eq!(
+        kind(json!({"op": "set", "list": format!("# {}\n- [ ] a", "p".repeat(100))})),
+        "verdict",
+        "a phase name past its cap is a cap saying no, as the plan tool's label cap is"
+    );
+    Ok(())
+}
