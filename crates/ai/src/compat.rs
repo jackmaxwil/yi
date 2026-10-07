@@ -46,6 +46,15 @@ pub(crate) fn replays_reasoning_content(model: &Model) -> bool {
             .is_some_and(|(_, replays)| *replays)
 }
 
+/// Strict tool decoding where the route enforces it: OpenAI's own API, and Anthropic's for a
+/// Claude from 4.5; any other route opts in per entry, since one that cannot enforce a schema 400s.
+pub(crate) fn strict_tools(model: &Model) -> bool {
+    let native = model.base_url.contains("api.openai.com")
+        || (model.base_url.contains("api.anthropic.com")
+            && claude_generation(&model.id).is_none_or(|generation| generation >= (4, 5)));
+    compat_bool(model, "strictTools", native)
+}
+
 /// `claude-opus-4-6` is (4, 6), `claude-opus-4-20250514` (4, 0), `claude-3-7-sonnet` (3, 7).
 fn claude_generation(id: &str) -> Option<(u32, u32)> {
     let mut numbers = id

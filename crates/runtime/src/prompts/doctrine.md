@@ -146,8 +146,8 @@ of the failure.
 ## Look before you write
 
 Before writing any new type, function, schema, or helper, search for an
-existing one: grep for the name and the shape, and where the `grid`
-binary is available, `grid resolve` / `grid uses` / `grid scope` for
+existing one: grep for the name and the shape, and where the `ripwire`
+binary is available, its `--for` / `--callers` / `--uses` for
 definitions and relationships. What you are about to write usually already
 exists.
 
