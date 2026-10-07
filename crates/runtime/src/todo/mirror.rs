@@ -11,6 +11,8 @@ use crate::plan::store::PlanStore;
 
 pub const ENGINE_ACTOR: &str = "engine";
 pub const PLAN_KEY: &str = "plan";
+/// Marks a mirrored row the session wrote before a plan absorbed it, so it outlives that plan.
+const OWN_KEY: &str = "own";
 
 pub fn plan_of(list: &TodoList) -> Option<&str> {
     list.extra.get(PLAN_KEY).and_then(Value::as_str)
@@ -61,6 +63,11 @@ fn row(todo: &Todo, plan: &Plan, was: Option<&Todo>) -> Todo {
         PLAN_KEY.to_owned(),
         Value::String(plan.id.as_str().to_owned()),
     );
+    if was
+        .is_some_and(|seen| !seen.extra.contains_key(PLAN_KEY) || seen.extra.contains_key(OWN_KEY))
+    {
+        item.extra.insert(OWN_KEY.to_owned(), Value::Bool(true));
+    }
     item
 }
 
@@ -172,6 +179,25 @@ pub fn projected(plan: &Plan, current: &TodoList) -> TodoList {
         })
         .collect();
     let mut phases = own(current).phases;
+    // Incident: a second plan's projection dropped the rows the first had absorbed from the
+    // session's list, and the model's `todo done` on them was refused as stale.
+    let returned: Vec<Todo> = (current.items())
+        .filter(|item| item.extra.contains_key(OWN_KEY))
+        .filter(|item| row_plan(item).is_some_and(|id| id != plan.id))
+        .map(|item| {
+            let mut item = item.clone();
+            item.extra.remove(PLAN_KEY);
+            item.extra.remove(OWN_KEY);
+            item
+        })
+        .collect();
+    if let (false, Ok(name)) = (returned.is_empty(), PhaseName::new(super::DEFAULT_PHASE)) {
+        phases.push(TodoPhase {
+            name,
+            items: returned,
+            extra: serde_json::Map::new(),
+        });
+    }
     for phase in &mut phases {
         phase.items.retain(|item| plan.todo(&item.label).is_none());
     }

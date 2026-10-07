@@ -1358,6 +1358,11 @@ fn an_op_passed_as_a_key_lands_as_that_op() -> TestResult {
     let list = latest_record(&session).ok_or("no record")?.list;
     let first = list.items().next().ok_or("no items")?;
     assert_eq!(TodoStateName::of(&first.state), TodoStateName::Done);
+    // A stage 6 surface call named the todo twice, under the op's key and as `label`, with no
+    // evidence: it is a done that owes its evidence, never a call with no op.
+    let (_, text) = call(&tool, json!({"done": "two", "label": "two"}));
+    assert!(!text.contains("op is required"), "{text}");
+    assert!(text.contains("evidence"), "{text}");
     // A set's own argument is not an id, so the repair stays off the ops that take a list.
     let (is_error, text) = call(&tool, json!({"set": "- [ ] rebuilt"}));
     assert!(

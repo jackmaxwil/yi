@@ -70,6 +70,8 @@ impl PlanOpError {
 impl ArgError {
     pub(super) fn kind(&self) -> ToolErrorKind {
         match self {
+            Self::LeftOut { ruled, .. } if *ruled => ToolErrorKind::Verdict,
+            Self::LeftOut { .. } => ToolErrorKind::InvalidArgs,
             Self::LabelTooLong { .. } | Self::EmptyList | Self::Unverifiable { .. } => {
                 ToolErrorKind::Verdict
             }
@@ -83,6 +85,7 @@ impl ArgError {
             | Self::Checklist { .. }
             | Self::TooDeep { .. }
             | Self::Declared(_)
+            | Self::NoRows { .. }
             | Self::UnknownKey { .. } => ToolErrorKind::InvalidArgs,
         }
     }

@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982) and in the three stage 5 surface probe runs on 2026-10-06 (#1076), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
+ "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982) and in the three stage 5 and three stage 6 surface probe runs on 2026-10-06 (#1076), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -469,7 +469,7 @@
     "list": "## demo\n- [x] Implement mod\n- [ ] Verify suite\n- [-] Spare todo"
    },
    "lands": true,
-   "says": "struck rows"
+   "says": "was struck, so it was dropped"
   },
   {
    "name": "supersede with a list",
@@ -1667,7 +1667,7 @@
    "says": "became its own block"
   },
   {
-   "name": "set with a goal and no rows reads the plan",
+   "name": "set with a goal and no rows is refused with its next call",
    "setup": [
     {
      "op": "init",
@@ -1685,8 +1685,8 @@
     "full": true,
     "after": "[]"
    },
-   "lands": true,
-   "says": "this is the plan as it stands"
+   "lands": false,
+   "says": "changed nothing"
   },
   {
    "name": "an empty call reads the plan",
@@ -2157,8 +2157,8 @@
     "op": "supersede",
     "reason": "probe"
    },
-   "lands": true,
-   "says": "nothing changed"
+   "lands": false,
+   "says": "changed nothing"
   },
   {
    "name": "decompose with no todos",
@@ -2177,8 +2177,8 @@
     "op": "decompose",
     "label": "a"
    },
-   "lands": true,
-   "says": "nothing changed"
+   "lands": false,
+   "says": "changed nothing"
   },
   {
    "name": "todos as a JSON string of rows with state",
@@ -2220,8 +2220,8 @@
     "goal": "Add mean(values) to calc.py with tests, delegated to a child in a worktree",
     "todos": "[{\"contract\": {\"class\": \"writer\", \"items\": [{\"critical\": true, \"id\": \"unittest_pass\", \"weight\": 100, \"decider\": {\"cmd\": \"python3 -m unittest -q\"}}], \"label\": \"Add mean(values) to calc.py with tests\", \"state\": \"pending\"}, {\"contract\": {\"class\": \"inline\", \"items\": [{\"critical\": true, \"id\": \"reported\", \"weight\": 100, \"decider\": {\"example\": {\"cases\": {\"digest\": \"0\", \"media_type\": \"text\", \"length\": 1}, \"runner\": {\"digest\": \"0\", \"media_type\": \"text\", \"length\": 1}}}}], \"label\": \"Report outcome\", \"state\": \"pending\"}]"
    },
-   "lands": false,
-   "says": "64"
+   "lands": true,
+   "says": "Report outcome: left out"
   },
   {
    "name": "todos as a JSON string whose rows never close",
@@ -2427,6 +2427,179 @@
     ]
    },
    "lands": true
+  },
+  {
+   "name": "set naming a row at the top with no rows",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "set",
+    "label": "a",
+    "goal": "demo",
+    "full": true
+   },
+   "lands": false,
+   "says": "{\"op\":\"set\",\"todos\":[{\"label\":\"a\",\"state\":\"done\"}]}"
+  },
+  {
+   "name": "accepted_by_user carrying a set row",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "accepted_by_user",
+    "note": "ran `true`, exit 0",
+    "todos": [
+     {
+      "label": "a",
+      "state": "done"
+     }
+    ]
+   },
+   "lands": false,
+   "says": "confirmation"
+  },
+  {
+   "name": "goal and rows with sub-steps and no op",
+   "setup": [],
+   "call": {
+    "goal": "Fix calc.divide",
+    "todos": [
+     {
+      "label": "Fix calc.divide",
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "id": "t",
+         "weight": 1,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      },
+      "todos": [
+       {
+        "label": "edit"
+       },
+       {
+        "label": "run tests"
+       }
+      ]
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "a set whose every row is a stated worktree delegation",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "goal": "three children",
+    "todos": [
+     {
+      "label": "alpha",
+      "delegation": {
+       "spec": {
+        "isolation": "worktree"
+       },
+       "accept": {
+        "stated": "alpha.txt holds alpha"
+       }
+      }
+     }
+    ]
+   },
+   "lands": false,
+   "says": "every row was left out"
+  },
+  {
+   "name": "a worktree delegation with a contract and no accept",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "goal": "two children",
+    "todos": [
+     {
+      "label": "one",
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "id": "t",
+         "weight": 1,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      },
+      "delegation": {
+       "spec": {
+        "isolation": "worktree"
+       }
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "takes its contract's check"
+  },
+  {
+   "name": "a set with a goal on a finished plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "a"
+    },
+    {
+     "op": "done",
+     "label": "a"
+    }
+   ],
+   "call": {
+    "op": "set",
+    "goal": "the next thing",
+    "todos": [
+     {
+      "label": "b",
+      "state": "pending",
+      "after": []
+     }
+    ]
+   },
+   "lands": true,
+   "says": "1 todos: 1 pending"
   }
  ]
 }

@@ -919,3 +919,60 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the rows a finished plan absorbed from the session's own list lost when the next
+/// plan takes the list: the model's `todo done` on them was refused as stale (stage 5 run 3).
+#[test]
+fn a_row_a_finished_plan_absorbed_returns_to_the_list_when_another_plan_opens() -> TestResult {
+    let mut own = TodoList::default();
+    own.phases.push(yi_types::todo::TodoPhase {
+        name: PhaseName::new("Tasks")?,
+        items: vec![Todo::pending(TodoLabel::new("add mod")?)],
+        extra: Map::new(),
+    });
+    let first = Plan::opening(
+        PlanId::new("first")?,
+        GoalText::new("first")?,
+        PlanTier::Root,
+        vec![Todo::pending(TodoLabel::new("add mod")?)],
+    );
+    let absorbed = yi_runtime::todo::mirror::projected(&first, &own);
+    assert_eq!(
+        absorbed.items().count(),
+        1,
+        "the plan holds the row: {absorbed:?}"
+    );
+    let mut finished = first.clone();
+    for todo in &mut finished.todos {
+        todo.state = TodoState::Done {
+            output: None,
+            resolution: None,
+        };
+    }
+    let absorbed = yi_runtime::todo::mirror::projected(&finished, &absorbed);
+    let second = Plan::opening(
+        PlanId::new("second")?,
+        GoalText::new("second")?,
+        PlanTier::Root,
+        vec![Todo::pending(TodoLabel::new("close out")?)],
+    );
+    let list = yi_runtime::todo::mirror::projected(&second, &absorbed);
+    let rows: Vec<(String, TodoStateName, bool)> = (list.items())
+        .map(|item| {
+            let planned = item.extra.contains_key(yi_runtime::todo::mirror::PLAN_KEY);
+            (
+                item.label.as_str().to_owned(),
+                TodoStateName::of(&item.state),
+                planned,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("add mod".to_owned(), TodoStateName::Done, false),
+            ("close out".to_owned(), TodoStateName::Pending, true)
+        ]
+    );
+    Ok(())
+}
