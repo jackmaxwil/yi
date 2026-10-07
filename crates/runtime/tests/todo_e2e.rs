@@ -1499,5 +1499,10 @@ fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
         "verdict",
         "done without evidence is the rule saying no, as on the plan tool"
     );
+    assert_eq!(
+        kind(json!({"op": "set", "list": format!("# {}\n- [ ] a", "p".repeat(100))})),
+        "invalid_args",
+        "a phase name past its cap is a misread of the call, not a rule saying no"
+    );
     Ok(())
 }
