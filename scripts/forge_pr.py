@@ -22,6 +22,16 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def job_secs(workflow):
+    """A bot job's time limit, from the one place it is set: its workflow's `timeout-minutes`.
+    The runner's own cap (the infra repository `CI_RUNNER_JOB_TIMEOUT`, 45m) must not be below it."""
+    text = (ROOT / ".forgejo/workflows" / f"{workflow}.yml").read_text()
+    found = re.search(r"^\s+timeout-minutes:\s*(\d+)\s*$", text, re.M)
+    if not found:
+        raise ValueError(f"{workflow}.yml sets no timeout-minutes, the job limit the bot budgets from")
+    return int(found.group(1)) * 60
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 from check_pr_metadata import DRAFT  # noqa: E402
@@ -588,6 +598,13 @@ def cmd_land(args):
 
 
 def selfcheck():
+    # The bots' budgets read the workflows' own limit; a workflow that loses it fails here, not mid-run.
+    assert job_secs("review") > 0 and job_secs("autofix") > 0
+    try:
+        job_secs("does-not-exist")
+        raise AssertionError("a missing workflow read as a limit")
+    except FileNotFoundError:
+        pass
     assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"
     assert repo_of("https://git.example.invalid/apex/yi") == "apex/yi"
     assert repo_of("git@github.com:jackmaxwil/yi.git") == "jackmaxwil/yi"
