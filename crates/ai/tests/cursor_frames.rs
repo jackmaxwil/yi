@@ -68,7 +68,10 @@ fn a_text_delta_a_tool_and_an_unknown_frame() {
     let mut tool = |name: &str, args: &serde_json::Map<String, serde_json::Value>| {
         calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(name, "read");
-        assert_eq!(args.get("path").and_then(|value| value.as_str()), Some("a.rs"));
+        assert_eq!(
+            args.get("path").and_then(|value| value.as_str()),
+            Some("a.rs")
+        );
         "file body".to_owned()
     };
     let text = apply_message(&text_delta("pong"), &mut tool);
@@ -85,5 +88,10 @@ fn a_text_delta_a_tool_and_an_unknown_frame() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(unknown.replies.len(), 1);
     assert!(proto::is_throw(&unknown.replies[0]));
-    assert_eq!(proto::frames(&frame(&text_delta("pong"))).expect("frames").len(), 1);
+    assert_eq!(
+        proto::frames(&frame(&text_delta("pong")))
+            .expect("frames")
+            .len(),
+        1
+    );
 }

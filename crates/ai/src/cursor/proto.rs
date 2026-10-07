@@ -142,7 +142,12 @@ fn string_of(raw: &Raw) -> String {
     String::from_utf8_lossy(&raw.bytes).into_owned()
 }
 
-pub fn run_request(prompt: &str, model_id: &str, conversation_id: &str, tools: &[ToolWire]) -> Vec<u8> {
+pub fn run_request(
+    prompt: &str,
+    model_id: &str,
+    conversation_id: &str,
+    tools: &[ToolWire],
+) -> Vec<u8> {
     let mut state = Vec::new();
     field_varint(10, 1, &mut state);
     field_str(22, "yi", &mut state);
@@ -191,7 +196,9 @@ pub enum Inbound {
         call_id: String,
         args: Map<String, Value>,
     },
-    Reject { id: u32 },
+    Reject {
+        id: u32,
+    },
     Ignore,
 }
 
@@ -200,10 +207,16 @@ pub fn decode(message: &[u8]) -> Result<Inbound, String> {
     if outer.iter().any(|raw| raw.field > 8) {
         return Err("unknown agent server field".to_owned());
     }
-    if let Some(update) = outer.iter().find(|raw| raw.field == 1 && raw.varint.is_none()) {
+    if let Some(update) = outer
+        .iter()
+        .find(|raw| raw.field == 1 && raw.varint.is_none())
+    {
         return decode_update(&update.bytes);
     }
-    if let Some(exec) = outer.iter().find(|raw| raw.field == 2 && raw.varint.is_none()) {
+    if let Some(exec) = outer
+        .iter()
+        .find(|raw| raw.field == 2 && raw.varint.is_none())
+    {
         return decode_exec(&exec.bytes);
     }
     Ok(Inbound::Ignore)
@@ -211,7 +224,10 @@ pub fn decode(message: &[u8]) -> Result<Inbound, String> {
 
 fn decode_update(bytes: &[u8]) -> Result<Inbound, String> {
     let fields = walk(bytes)?;
-    if let Some(text) = fields.iter().find(|raw| raw.field == 1 && raw.varint.is_none()) {
+    if let Some(text) = fields
+        .iter()
+        .find(|raw| raw.field == 1 && raw.varint.is_none())
+    {
         let inner = walk(&text.bytes)?;
         let value = inner
             .iter()
@@ -220,7 +236,10 @@ fn decode_update(bytes: &[u8]) -> Result<Inbound, String> {
             .unwrap_or_default();
         return Ok(Inbound::Text(value));
     }
-    if let Some(thinking) = fields.iter().find(|raw| raw.field == 4 && raw.varint.is_none()) {
+    if let Some(thinking) = fields
+        .iter()
+        .find(|raw| raw.field == 4 && raw.varint.is_none())
+    {
         let inner = walk(&thinking.bytes)?;
         let value = inner
             .iter()
@@ -243,7 +262,10 @@ fn decode_exec(bytes: &[u8]) -> Result<Inbound, String> {
         .and_then(|raw| raw.varint)
         .and_then(|n| u32::try_from(n).ok())
         .unwrap_or(0);
-    if let Some(mcp) = fields.iter().find(|raw| raw.field == 11 && raw.varint.is_none()) {
+    if let Some(mcp) = fields
+        .iter()
+        .find(|raw| raw.field == 11 && raw.varint.is_none())
+    {
         let inner = walk(&mcp.bytes)?;
         let name = inner
             .iter()

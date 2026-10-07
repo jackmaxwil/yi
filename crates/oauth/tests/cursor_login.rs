@@ -15,17 +15,26 @@ fn jwt_with_exp(exp: u64) -> String {
 fn poll_waits_through_404_then_stores_the_token() {
     let token = jwt_with_exp(1_893_456_000);
     let mut calls = 0u32;
-    let credential = login_polled(true, Pace { attempts: 4, delay: Duration::ZERO }, |url| {
-        calls += 1;
-        assert!(url.contains("verifier="), "{url}");
-        if calls == 1 {
-            return Ok((404, Vec::new()));
-        }
-        Ok((
-            200,
-            json!({"accessToken": token, "refreshToken": "refresh-1"}).to_string().into_bytes(),
-        ))
-    })
+    let credential = login_polled(
+        true,
+        Pace {
+            attempts: 4,
+            delay: Duration::ZERO,
+        },
+        |url| {
+            calls += 1;
+            assert!(url.contains("verifier="), "{url}");
+            if calls == 1 {
+                return Ok((404, Vec::new()));
+            }
+            Ok((
+                200,
+                json!({"accessToken": token, "refreshToken": "refresh-1"})
+                    .to_string()
+                    .into_bytes(),
+            ))
+        },
+    )
     .expect("poll");
     assert_eq!(calls, 2);
     assert_eq!(credential.access, token);
@@ -55,11 +64,7 @@ fn cursor_is_a_built_in_until_a_profile_file_exists() {
     assert!(registry::ids().iter().any(|id| id == "cursor"));
     let dir = home.join(".yi").join("oauth");
     std::fs::create_dir_all(&dir).expect("oauth dir");
-    std::fs::write(
-        dir.join("cursor.json"),
-        r#"{"kind":"api-key"}"#,
-    )
-    .expect("profile");
+    std::fs::write(dir.join("cursor.json"), r#"{"kind":"api-key"}"#).expect("profile");
     assert!(matches!(
         registry::lookup("cursor").expect("profile wins"),
         Some(Kind::ApiKey)
