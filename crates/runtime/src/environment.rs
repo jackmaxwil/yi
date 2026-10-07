@@ -312,7 +312,17 @@ pub fn branch_diff(root: &Path) -> Option<yi_types::lane::BranchDiff> {
 pub fn branch_diff_capped(root: &Path, cap: usize) -> Option<yi_types::lane::BranchDiff> {
     let git = |args: &[&str]| crate::lane::capture(root, "git", args, PROBE).ok();
     let whole = |args: &[&str]| {
-        crate::lane::capture_capped(root, "git", args, PROBE, cap.saturating_mul(2)).ok()
+        let label = format!("git {}", args.join(" "));
+        crate::lane::capture_named(
+            root,
+            &label,
+            "git",
+            args,
+            PROBE,
+            cap.saturating_mul(2),
+            None,
+        )
+        .ok()
     };
     let base = git(&["merge-base", "HEAD", "origin/main"])
         .or_else(|| git(&["merge-base", "HEAD", "main"]))?

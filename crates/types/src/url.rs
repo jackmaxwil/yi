@@ -79,17 +79,17 @@ impl std::fmt::Display for Scheme {
     }
 }
 
-/// A `#L<start>-<end>@<tag>` span expectation on a `local://` or
-/// `checkpoint://` reference.
+/// A `#L<start>-<end>[@<tag>]` span on a `local://` or `checkpoint://` reference; without a
+/// tag it names the current content of those lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HashlineFragment {
     start: NonZeroU32,
     end: NonZeroU32,
-    tag: u16,
+    tag: Option<u16>,
 }
 
 impl HashlineFragment {
-    pub fn new(start: NonZeroU32, end: NonZeroU32, tag: u16) -> Result<Self, UrlError> {
+    pub fn new(start: NonZeroU32, end: NonZeroU32, tag: Option<u16>) -> Result<Self, UrlError> {
         if start > end {
             return Err(UrlError::InvertedRange {
                 start: start.get(),
@@ -106,22 +106,28 @@ impl HashlineFragment {
             fragment: text.to_owned(),
         };
         let body = text.strip_prefix('L').ok_or_else(syntax)?;
-        let (range, tag_text) = body.split_once('@').ok_or_else(syntax)?;
+        let (range, tag_text) = match body.split_once('@') {
+            Some((range, tag_text)) => (range, Some(tag_text)),
+            None => (body, None),
+        };
         let (start_text, end_text) = range.split_once('-').ok_or_else(syntax)?;
         let start = parse_line(start_text, text)?;
         let end = parse_line(end_text, text)?;
-        if tag_text.len() != 4
-            || !tag_text
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
-        {
-            return Err(UrlError::TagSyntax {
-                tag: tag_text.to_owned(),
-            });
-        }
-        let tag = u16::from_str_radix(tag_text, 16).map_err(|_| UrlError::TagSyntax {
-            tag: tag_text.to_owned(),
-        })?;
+        let tag = tag_text
+            .map(|tag_text| {
+                let bad = || UrlError::TagSyntax {
+                    tag: tag_text.to_owned(),
+                };
+                if tag_text.len() != 4
+                    || !tag_text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+                {
+                    return Err(bad());
+                }
+                u16::from_str_radix(tag_text, 16).map_err(|_| bad())
+            })
+            .transpose()?;
         Self::new(start, end, tag)
     }
 
@@ -133,7 +139,7 @@ impl HashlineFragment {
         self.end
     }
 
-    pub fn tag(&self) -> u16 {
+    pub fn tag(&self) -> Option<u16> {
         self.tag
     }
 }
@@ -149,7 +155,11 @@ fn parse_line(text: &str, fragment: &str) -> Result<NonZeroU32, UrlError> {
 
 impl std::fmt::Display for HashlineFragment {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "L{}-{}@{:04X}", self.start, self.end, self.tag)
+        write!(formatter, "L{}-{}", self.start, self.end)?;
+        match self.tag {
+            Some(tag) => write!(formatter, "@{tag:04X}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -276,7 +286,7 @@ impl std::fmt::Display for UrlError {
             ),
             Self::FragmentSyntax { fragment } => write!(
                 formatter,
-                "fragment {fragment:?} is not L<start>-<end>@<tag>"
+                "fragment {fragment:?} is not L<start>-<end>@<tag> or L<start>-<end>"
             ),
             Self::ZeroLine { fragment } => {
                 write!(formatter, "fragment {fragment:?} names line zero")
@@ -306,7 +316,7 @@ mod tests {
         assert_eq!(url.path(), "src/auth.rs");
         let fragment = url.fragment().ok_or("fragment missing")?;
         assert_eq!(fragment.start().get(), 42);
-        assert_eq!(fragment.tag(), 0x9F3E);
+        assert_eq!(fragment.tag(), Some(0x9F3E));
         assert_eq!(url.to_string(), "local://src/auth.rs#L42-58@9F3E");
         assert_eq!(url.durability(), Durability::Durable);
         let agent: Url = "agent://main".parse()?;
@@ -314,6 +324,32 @@ mod tests {
         let external: Url = "https://example.com/page".parse()?;
         assert_eq!(external.scheme(), &Scheme::External("https".to_owned()));
         Ok(())
+    }
+
+    #[test]
+    fn a_fragment_without_a_tag_parses_and_round_trips() -> TestResult {
+        let url: Url = "local://src/auth.rs#L42-58".parse()?;
+        let fragment = url.fragment().ok_or("fragment missing")?;
+        assert_eq!((fragment.start().get(), fragment.end().get()), (42, 58));
+        assert_eq!(fragment.tag(), None);
+        assert_eq!(url.to_string(), "local://src/auth.rs#L42-58");
+        let one: Url = "checkpoint://abc/x#L7-7".parse()?;
+        assert_eq!(one.to_string(), "checkpoint://abc/x#L7-7");
+        let max: Url = "local://x#L1-4294967295@FFFF".parse()?;
+        assert_eq!(max.to_string(), "local://x#L1-4294967295@FFFF");
+        Ok(())
+    }
+
+    #[test]
+    fn the_syntax_error_names_both_forms() {
+        let error = "local://x#L5".parse::<Url>().err().map(|e| e.to_string());
+        let text = error.unwrap_or_default();
+        assert!(text.contains("L<start>-<end>@<tag>"), "{text}");
+        assert!(
+            text.replace("L<start>-<end>@<tag>", "")
+                .contains("L<start>-<end>"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -327,6 +363,13 @@ mod tests {
             "local://x#L42-58@a3f2",
             "local://x#L0-2@9F3E",
             "local://x#L5-2@9F3E",
+            "local://x#L0-2",
+            "local://x#L5-2",
+            "local://x#L1-2@",
+            "local://x#L1-2@9F3",
+            "local://x#L1-2@9F3E0",
+            "local://x#L1-@9F3E",
+            "plan://p#L1-2",
         ] {
             assert!(bad.parse::<Url>().is_err(), "{bad} parsed");
         }

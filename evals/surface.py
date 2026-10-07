@@ -196,19 +196,23 @@ def _read(store, name):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-# The tool's own `errorKind` names the class; a command's exit is the extractor's `command` blame.
+# The tool's own `errorKind` names the class; a command's exit and a kernel call into rlm/yi
+# (`api_misuse`, which holds verdicts and misreads alike) are the extractor's blames.
 # Only misread and stale count toward the zero target; `untagged` is a tool not yet saying.
 CLASS_OF_KIND = {
     "invalid_args": "misread", "noop_loop": "misread",
     "stale": "stale", "stale_tag": "stale", "not_found": "stale",
     "verdict": "verdict", "denied": "safety", "aborted": "tool", "tool_error": "tool",
 }
-CLASSES = ("misread", "stale", "verdict", "exit", "safety", "tool", "untagged")
+CLASSES = ("misread", "stale", "verdict", "exit", "api_misuse", "safety", "tool", "untagged")
 
 
 def class_of(issue):
-    if issue.get("errorClass") in ("command", "api_misuse"):
+    blame = issue.get("errorClass")
+    if blame == "command":
         return "exit"
+    if blame == "api_misuse":
+        return "api_misuse"
     return CLASS_OF_KIND.get(issue.get("errorKind") or "", "untagged")
 
 

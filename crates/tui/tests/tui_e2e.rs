@@ -822,6 +822,34 @@ fn the_approval_prompt_renders_its_diff_as_a_diff() -> TestResult {
     Ok(())
 }
 
+/// The prompt shows two rows of its reason; a longer one says it was cut there rather than
+/// stopping mid-sentence, as the plan's acceptance prompt did in the console.
+#[test]
+fn an_approval_reason_past_two_rows_ends_in_an_ellipsis() -> TestResult {
+    use unicode_width::UnicodeWidthStr;
+    use yi_tui::approval::ApprovalView;
+    use yi_tui::popup::BottomView;
+
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let long = "Put a check that cannot run here to the classifier via accepted_by_user: the forge is not reachable from this sandbox · accepted_by_user on plan trigger-the-auto-review-classifier-on at revision 2 (args sha256:3cb38679571f1779e12d6a8a8a175d3e69932458e56503582e7c318d32fe2698): an op the plan owner may not apply alone";
+    let view = ApprovalView::new(
+        "yi plan accepted_by_user asks for your confirmation".to_owned(),
+        long.to_owned(),
+        Vec::new(),
+    );
+    let rendered = flat_lines(&view.lines(80, &theme));
+    let second = rendered.get(2).ok_or("two prose rows")?;
+    assert!(second.ends_with('…'), "{rendered:#?}");
+    assert!(
+        rendered.iter().all(|line| line.width() <= 80),
+        "{rendered:#?}"
+    );
+    let short = ApprovalView::new("write".to_owned(), "write x".to_owned(), Vec::new());
+    let rendered = flat_lines(&short.lines(80, &theme));
+    assert!(!rendered.join("\n").contains('…'), "{rendered:#?}");
+    Ok(())
+}
+
 /// "Always allow" names what it keeps: one option per grant the broker offers, and the choice
 /// carries which one.
 #[test]

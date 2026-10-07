@@ -8,6 +8,8 @@ mod own;
 mod scratch;
 #[path = "support/family.rs"]
 mod support;
+#[path = "../../types/tests/support/usage_record.rs"]
+mod usage_record;
 
 mod advisor_compaction;
 mod advisor_e2e;
