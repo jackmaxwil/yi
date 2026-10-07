@@ -887,7 +887,7 @@ def check_surface():
         ]
         (store / "issues.jsonl").write_text("".join(json.dumps(issue) + "\n" for issue in issues))
         classes = surface.census(store)["classes"]
-        assert classes == {"misread": 2, "stale": 1, "verdict": 3, "exit": 4, "api": 2,
+        assert classes == {"misread": 2, "stale": 1, "verdict": 3, "exit": 4, "api_misuse": 2,
                            "safety": 1, "tool": 0, "untagged": 1}, classes
         cell = surface.ledger_cell(surface.census(store))
         assert cell.startswith("tool failures: misread 2, stale 1; verdict 3"), cell

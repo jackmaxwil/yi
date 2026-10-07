@@ -616,9 +616,14 @@ fn every_plan_refusal_names_its_class() -> TestResult {
         "a reorder naming a label twice is a misread, not a stale view"
     );
     assert_eq!(
+        kind(json!({"op": "reorder", "labels": ["a", "ghost"]})),
+        "stale",
+        "a reorder naming a label the plan no longer holds is the model's view gone stale"
+    );
+    assert_eq!(
         kind(json!({"op": "append", "todos": [{"label": "x".repeat(200)}]})),
-        "invalid_args",
-        "a label past its cap is a misread of the cap, not the rules saying no"
+        "verdict",
+        "a label past its cap is the cap saying no, as the change file's decision files it"
     );
     assert_eq!(
         kind(json!({"op": "view", "actor": "owner"})),
