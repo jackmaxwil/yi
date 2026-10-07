@@ -154,7 +154,8 @@ def make_clone(repo, into, sha):
     sh(repo, "git", "clone", "-q", "--shared", "--no-checkout", str(repo), str(into))
     sh(into, "git", "fetch", "-q", str(repo), "+refs/remotes/origin/*:refs/remotes/origin/*")
     sh(into, "git", "checkout", "-q", "--detach", sha)
-    sh(into, "git", "config", "merge.baseline.driver", f"{sys.executable} scripts/merge_baseline.py %O %A %B")
+    # Incident: the PR's own older driver kept stale hashes main had moved; this checkout's is main's.
+    sh(into, "git", "config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B")
 
 
 def resolve_prompt(pr, base_ref, conflicted):
