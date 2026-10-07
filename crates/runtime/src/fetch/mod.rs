@@ -427,7 +427,7 @@ impl Resolver {
         let stores = if wall.is_empty() {
             crate::tools::session_stores(broker)
         } else {
-            crate::tools::walled_roots(&wall, crate::tools::default_spill_root().as_deref(), broker)
+            crate::tools::walled_roots(&wall, broker)
         };
         Self::new(workspace, wall)
             .with_session_stores(stores)

@@ -110,7 +110,7 @@ pub(crate) fn heartbeat_gate(
 ) -> Arc<crate::schedule::GateFn> {
     let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
     let (wall, cwd) = (wiring.wall.clone(), wiring.cwd.clone());
-    let roots = walled_roots(&wall, default_spill_root().as_deref(), broker.as_deref());
+    let roots = walled_roots(&wall, broker.as_deref());
     Arc::new(move |command: &str| {
         let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
         let rules = rules();
@@ -283,13 +283,12 @@ pub(crate) fn spill_roots_and_stores(
 /// session stores are walled, its own spill dir and transcript spared (D340, D345).
 pub(crate) fn walled_roots(
     wall: &crate::wall::Wall,
-    spill_root: Option<&std::path::Path>,
     broker: Option<&PermissionBroker>,
 ) -> Vec<PathBuf> {
     if wall.is_empty() {
         return Vec::new();
     }
-    spill_roots_and_stores(spill_root, broker)
+    spill_roots_and_stores(default_spill_root().as_deref(), broker)
 }
 
 /// Invariant: a spare, a kernel's or a tool's, never reopens a path the wall's own `deny_read`
@@ -424,11 +423,7 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let walled_roots = walled_roots(
-            &self.wall,
-            self.spill_root.as_deref(),
-            self.permission.as_deref(),
-        );
+        let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
         let spills = self.session_spills();
         let store = (self.transcript.as_ref()).and_then(|store| store());
         let transcript =
