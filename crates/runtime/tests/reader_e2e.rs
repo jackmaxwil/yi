@@ -335,6 +335,40 @@ async fn a_reader_answers_without_tools_at_its_turn_cap() -> TestResult {
     Ok(())
 }
 
+/// Incident (#992): two of five capped readers called a tool on their last turn; the call was
+/// refused and the run ended with no answer, which `result` reported as empty prose.
+#[tokio::test]
+async fn a_reader_that_calls_a_tool_on_its_capped_turn_still_answers() -> TestResult {
+    let read = |id: &str| {
+        let mut args = Map::new();
+        args.insert("path".to_owned(), Value::from("notes.txt"));
+        faux_assistant_message(vec![faux_tool_call(id, "read", args)], StopReason::ToolUse)
+    };
+    let script: Script = Arc::new(Mutex::new(vec![
+        read("c1"),
+        read("c2"),
+        reply("green sea is line 3"),
+    ]));
+    let family = family(4, script)?;
+    family.host.spawn(
+        "Which line names the sea?".to_owned(),
+        kwargs(json!({"name": "q9", "role": "reader", "turns": 2})),
+    )?;
+    let rows = transcript(&family, "q9").await?;
+    assert!(
+        rows.iter()
+            .any(|(role, text)| role == "tool" && text.contains("was not executed")),
+        "the capped turn's call is refused: {rows:?}"
+    );
+    let last = rows.iter().rev().find(|(role, _)| role == "assistant");
+    assert_eq!(
+        last.map(|(_, text)| text.as_str()),
+        Some("green sea is line 3"),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_reader_is_refused_what_a_reader_cannot_use() -> TestResult {
     let family = family(4, Arc::default())?;

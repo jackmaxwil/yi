@@ -81,6 +81,9 @@ pub struct LoopConfig {
     pub last_word: Option<Box<InterceptFn>>,
     /// Polled while a request streams: true aborts it, and the last word follows.
     pub last_word_due: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// Whether the word just said was the turn cap's: its refused tool calls earn the one
+    /// forced no-tool request; a deadline last word settles and ends the run (D299).
+    pub last_word_capped: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     /// Work started beside the request: awaited before each tool batch and before `AgentEnd`.
     pub side_work: Option<Box<GateFn>>,
     pub guards: LoopGuards,
@@ -106,6 +109,7 @@ impl LoopConfig {
             intercept_stop: None,
             waiting: None,
             last_word: None,
+            last_word_capped: None,
             last_word_due: None,
             side_work: None,
             guards: LoopGuards::default(),
