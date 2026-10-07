@@ -332,6 +332,13 @@ pub fn join_text(blocks: &[Content], sep: &str) -> String {
         .join(sep)
 }
 
+/// Whether any text block carries a non-empty answer; tool calls and thinking are not text.
+pub fn has_text(blocks: &[Content]) -> bool {
+    blocks
+        .iter()
+        .any(|block| matches!(block, Content::Text { text, .. } if !text.trim().is_empty()))
+}
+
 impl AgentMessage {
     /// Host text in the user role, named by its producer; the model reads it as runtime context.
     pub fn host_text(source: HostSource, text: &str, timestamp: u64) -> Self {

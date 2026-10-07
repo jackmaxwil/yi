@@ -274,7 +274,7 @@ pub(crate) fn capture_named(
     sandbox: Option<&yi_tools::Sandbox>,
 ) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
-    let mut command = yi_tools::command(program);
+    let mut command = yi_tools::keyless_command(program);
     command.current_dir(cwd).args(args);
     let deadline = std::time::Instant::now()
         .checked_add(deadline)

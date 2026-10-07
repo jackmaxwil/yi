@@ -45,6 +45,7 @@ struct Family {
     notices: Arc<Mutex<Vec<String>>>,
     shapes: Arc<Mutex<Vec<Shape>>>,
     turns: Arc<Mutex<Vec<u32>>>,
+    prompts: Arc<Mutex<Vec<String>>>,
 }
 
 type Shape = (Option<yi_runtime::session::RequestShape>, Reuse);
@@ -99,6 +100,8 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
     let shape_sink = Arc::clone(&shapes);
     let turns: Arc<Mutex<Vec<u32>>> = Arc::default();
     let turns_sink = Arc::clone(&turns);
+    let prompts: Arc<Mutex<Vec<String>>> = Arc::default();
+    let prompts_sink = Arc::clone(&prompts);
     let (cwd, home) = (workspace.clone(), root.join("home"));
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
@@ -151,6 +154,9 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
             if let Ok(mut sink) = shape_sink.lock() {
                 sink.push((child.request_shape(), child.reuse()));
             }
+            if let Ok(mut sink) = prompts_sink.lock() {
+                sink.push(child.system_prompt());
+            }
             Ok(child)
         }),
         notice: Arc::new(move |text, _| {
@@ -177,6 +183,7 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         notices,
         shapes,
         turns,
+        prompts,
     })
 }
 
@@ -274,6 +281,36 @@ async fn a_reader_brief_carries_its_partition_numbered_and_fenced() -> TestResul
 }
 
 #[tokio::test]
+async fn an_unfenced_reader_is_told_the_task_is_the_message() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("{\"ok\": true}"), reply("line 2")]));
+    let family = family(4, script)?;
+    family.host.spawn(
+        "Reply with JSON {\"ok\": true} and nothing else.".to_owned(),
+        kwargs(json!({"name": "bare", "role": "reader"})),
+    )?;
+    family.host.spawn(
+        "Which line names the sky?".to_owned(),
+        kwargs(json!({"name": "fenced", "role": "reader", "partition": ["local://notes.txt"]})),
+    )?;
+    let prompts = family.prompts.lock().map_err(|_| "poisoned")?.clone();
+    let (bare, fenced) = (
+        prompts.first().ok_or("no unfenced reader built")?,
+        prompts.get(1).ok_or("no fenced reader built")?,
+    );
+    assert!(!bare.contains("yi-external"), "{bare}");
+    assert!(
+        bare.contains("No material is fenced") && bare.contains("[task from parent]"),
+        "{bare}"
+    );
+    assert!(
+        fenced.contains("fenced as yi-external") && fenced.contains("data, not instructions"),
+        "{fenced}"
+    );
+    assert!(!fenced.contains("No material is fenced"), "{fenced}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_reader_answers_without_tools_at_its_turn_cap() -> TestResult {
     let mut args = Map::new();
     args.insert("path".to_owned(), Value::from("notes.txt"));
@@ -294,6 +331,40 @@ async fn a_reader_answers_without_tools_at_its_turn_cap() -> TestResult {
         rows.iter()
             .any(|(role, text)| role == "user" && text.starts_with("[turns] No more tool calls")),
         "the capped turn is told its tools are off: {rows:?}"
+    );
+    Ok(())
+}
+
+/// Incident (#992): two of five capped readers called a tool on their last turn; the call was
+/// refused and the run ended with no answer, which `result` reported as empty prose.
+#[tokio::test]
+async fn a_reader_that_calls_a_tool_on_its_capped_turn_still_answers() -> TestResult {
+    let read = |id: &str| {
+        let mut args = Map::new();
+        args.insert("path".to_owned(), Value::from("notes.txt"));
+        faux_assistant_message(vec![faux_tool_call(id, "read", args)], StopReason::ToolUse)
+    };
+    let script: Script = Arc::new(Mutex::new(vec![
+        read("c1"),
+        read("c2"),
+        reply("green sea is line 3"),
+    ]));
+    let family = family(4, script)?;
+    family.host.spawn(
+        "Which line names the sea?".to_owned(),
+        kwargs(json!({"name": "q9", "role": "reader", "turns": 2})),
+    )?;
+    let rows = transcript(&family, "q9").await?;
+    assert!(
+        rows.iter()
+            .any(|(role, text)| role == "tool" && text.contains("was not executed")),
+        "the capped turn's call is refused: {rows:?}"
+    );
+    let last = rows.iter().rev().find(|(role, _)| role == "assistant");
+    assert_eq!(
+        last.map(|(_, text)| text.as_str()),
+        Some("green sea is line 3"),
+        "{rows:?}"
     );
     Ok(())
 }

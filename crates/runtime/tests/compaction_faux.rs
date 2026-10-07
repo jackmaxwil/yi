@@ -207,6 +207,64 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Dies with the summary's spend never booked: the compaction's own call billed the provider
+/// and the session's cost total counted only the turns around it.
+#[tokio::test]
+async fn a_compaction_call_is_booked_in_the_session_cost_total() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-cost")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-cost");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-cost".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
+        crate::support::priced_reply("## Goal\nPriced summary", 0.25),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+    let before = yi_session::lock_session(&store).stats().cost_total;
+    assert!(
+        session
+            .compact_now()
+            .await
+            .is_ok_and(|outcome| outcome.applied())
+    );
+    let after = yi_session::lock_session(&store).stats().cost_total;
+    assert!((after - before - 0.25).abs() < 1e-9, "{before} -> {after}");
+    Ok(())
+}
+
+/// Dies with a billed attempt dropped when its reply had no text: the summarize closure
+/// turned the empty answer into an error before anything read its usage.
+#[tokio::test]
+async fn an_empty_compaction_reply_is_still_booked() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-empty-cost")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-empty-cost");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-empty-cost".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
+        crate::support::priced_reply("", 0.25),
+        crate::support::priced_reply("", 0.25),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+    let before = yi_session::lock_session(&store).stats().cost_total;
+    session.compact_now().await.ok();
+    let after = yi_session::lock_session(&store).stats().cost_total;
+    assert!((after - before - 0.5).abs() < 1e-9, "{before} -> {after}");
+    Ok(())
+}
+
 /// The summarizer ran but the entry never reached disk: the live history must stay what a
 /// resume loads, the model must read why at the next request, and a disk that stays broken
 /// must not buy another summarizer call at every boundary.
@@ -489,6 +547,139 @@ async fn the_prompt_after_an_idle_compaction_does_not_compact_again() -> Result<
         "the idle compaction's summary still leads: {messages:#?}"
     );
     Ok(())
+}
+
+fn window_numbers(store: &yi_session::SharedSession) -> Vec<u64> {
+    let entries = yi_session::lock_session(store)
+        .find_entries_on_branch(
+            "main",
+            &yi_session::EntryQuery {
+                order: yi_session::EntryOrder::OldestFirst,
+                ..yi_session::EntryQuery::default()
+            },
+            &yi_session::BranchBounds::default(),
+        )
+        .unwrap_or_default();
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Compaction {
+                details: Some(details),
+                ..
+            } => details["window"]["number"].as_u64(),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn compacted(session: &AgentSession) -> bool {
+    session
+        .compact_now()
+        .await
+        .is_ok_and(|outcome| outcome.applied())
+}
+
+/// #958: the stale-reply marker lived in memory, so a session resumed right after a compaction
+/// read the kept tail's pre-compaction usage as the count and compacted again on its first prompt.
+/// Two compactions before the drop tell the latest entry from the first.
+#[tokio::test]
+async fn the_first_prompt_after_resuming_a_compacted_session_does_not_compact()
+-> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-resume")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-resume");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-resume".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let summary = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    let first = Arc::new(ProviderStream::new(None));
+    first.queue_faux(vec![
+        reply_with_usage(&"answer ".repeat(20), 1_400, 1_500),
+        summary("## Goal\nFIRST"),
+        reply_with_usage(&"again ".repeat(20), 1_400, 1_500),
+        summary("## Goal\nSECOND"),
+    ]);
+    let session = session_for_compaction(first);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("ask")?;
+    session.wait_idle().await;
+    assert!(compacted(&session).await);
+    session.prompt("ask again")?;
+    session.wait_idle().await;
+    assert!(compacted(&session).await);
+    drop(session);
+
+    let resumed_store = repo.open("compact-resume")?;
+    let second = Arc::new(ProviderStream::new(None));
+    second.queue_faux(vec![summary("ok"), summary("## Goal\nTHIRD")]);
+    let resumed = session_for_compaction(Arc::clone(&second));
+    resumed.attach_store(Arc::clone(&resumed_store))?;
+    resumed.prompt("next ask")?;
+    resumed.wait_idle().await;
+    let left = second
+        .faux
+        .lock()
+        .map_err(|_| "faux lock")?
+        .pending_response_count();
+    assert_eq!(left, 1, "one request: the prompt's own, no second summary");
+    assert!(compacted(&resumed).await);
+    assert_eq!(
+        window_numbers(&repo.open("compact-resume")?),
+        vec![1, 2, 3],
+        "the window chain continues"
+    );
+    Ok(())
+}
+
+/// A rewind past a compaction re-attaches the same session: the abandoned compaction's window
+/// must not number the next one.
+#[tokio::test]
+async fn a_rewind_past_a_compaction_restarts_the_window_chain() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-rewind")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-rewind");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-rewind".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let summary = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&"answer ".repeat(20), 1_400, 1_500),
+        summary("## Goal\nFIRST"),
+        reply_with_usage(&"again ".repeat(20), 1_400, 1_500),
+        summary("## Goal\nSECOND"),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("ask")?;
+    session.wait_idle().await;
+    let user_id = compaction_user_id(&store)?;
+    assert!(compacted(&session).await);
+    yi_runtime::rewind::rewind_to(&session, &user_id)?;
+    session.prompt("ask again")?;
+    session.wait_idle().await;
+    assert!(compacted(&session).await);
+    assert_eq!(
+        window_numbers(&store),
+        vec![1],
+        "a fresh chain on the new lane"
+    );
+    Ok(())
+}
+
+fn compaction_user_id(store: &yi_session::SharedSession) -> Result<String, Box<dyn Error>> {
+    yi_session::lock_session(store)
+        .find_entries(&yi_session::EntryQuery::default())?
+        .into_iter()
+        .find_map(|entry| match entry {
+            Entry::Message {
+                id,
+                message: AgentMessage::User { .. },
+                ..
+            } => Some(id),
+            _ => None,
+        })
+        .ok_or_else(|| "no user entry".into())
 }
 
 #[tokio::test]

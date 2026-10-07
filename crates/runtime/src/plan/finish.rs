@@ -987,6 +987,7 @@ mod tests {
             note: Some(note.to_owned()),
             tools: 1,
             tokens: 0,
+            cost: 0.0,
             idle_s: 400,
             worktree: None,
         };

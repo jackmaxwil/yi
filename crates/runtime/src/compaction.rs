@@ -10,7 +10,7 @@ use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, StopReason};
+use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, Reuse, ToolDef};
 
 use crate::provider::ProviderStream;
@@ -245,7 +245,6 @@ pub struct Compactor {
     opening: Mutex<Option<AgentMessage>>,
     /// The newest reply with a usage that the latest compaction kept: its count is the history
     /// before that compaction, so `due` does not read it (D338).
-    /// ponytail: in memory, so a resumed session compacts once more; persist with the window.
     stale: Mutex<Option<AgentMessage>>,
 }
 
@@ -289,45 +288,51 @@ fn synthesize_entries(messages: &[AgentMessage]) -> Vec<Entry> {
         .collect()
 }
 
+/// Invariant: the usage is the terminal message's own, error stops included: a reply that
+/// ended in an error was still billed when the provider reported tokens, so it is never dropped.
 pub(crate) async fn complete_text(
     provider: &ProviderStream,
     model: &Model,
     context: &LlmContext,
     effort: Effort,
     signal: &InterruptSignal,
-) -> Result<String, String> {
-    let mut receiver = provider.stream(model, context, effort, signal);
+) -> (Result<String, String>, Usage) {
+    reply_of(provider.stream(model, context, effort, signal)).await
+}
+
+async fn reply_of(
+    mut receiver: tokio::sync::mpsc::Receiver<AssistantMessageEvent>,
+) -> (Result<String, String>, Usage) {
     while let Some(event) = receiver.recv().await {
-        match event {
-            AssistantMessageEvent::Done { message, .. } => {
-                if let AgentMessage::Assistant {
-                    content,
-                    stop_reason,
-                    error_message,
-                    ..
-                } = message
-                {
-                    if stop_reason == StopReason::Error {
-                        return Err(error_message.unwrap_or_else(|| "unknown error".to_owned()));
-                    }
-                    let text: String = yi_types::message::join_text(&content, "\n");
-                    return Ok(text);
-                }
-                return Err("summarizer returned a non-assistant message".to_owned());
-            }
-            AssistantMessageEvent::Error { error, .. } => {
-                let text = match error {
-                    AgentMessage::Assistant { error_message, .. } => {
-                        error_message.unwrap_or_else(|| "unknown error".to_owned())
-                    }
-                    _ => "unknown error".to_owned(),
-                };
-                return Err(text);
-            }
-            _ => {}
-        }
+        let (message, failed) = match event {
+            AssistantMessageEvent::Done { message, .. } => (message, false),
+            AssistantMessageEvent::Error { error, .. } => (error, true),
+            _ => continue,
+        };
+        let AgentMessage::Assistant {
+            content,
+            stop_reason,
+            error_message,
+            usage,
+            ..
+        } = message
+        else {
+            return (
+                Err("summarizer returned a non-assistant message".to_owned()),
+                Usage::unknown(),
+            );
+        };
+        let text = if failed || stop_reason == StopReason::Error {
+            Err(error_message.unwrap_or_else(|| "unknown error".to_owned()))
+        } else {
+            Ok(yi_types::message::join_text(&content, "\n"))
+        };
+        return (text, usage);
     }
-    Err("summarizer stream ended without a terminal event".to_owned())
+    (
+        Err("summarizer stream ended without a terminal event".to_owned()),
+        Usage::unknown(),
+    )
 }
 
 fn merge(standing: Option<String>, once: Option<String>) -> Option<String> {
@@ -368,6 +373,46 @@ impl Compactor {
             standing: Mutex::new(None),
             opening: Mutex::new(None),
             stale: Mutex::new(None),
+        }
+    }
+
+    /// Rebuilds the window chain and the stale reply from the latest compaction entry, which
+    /// stores both its details and the kept tail; resume would otherwise compact once more.
+    /// A branch with none (a rewind past the compaction) goes back to the initial window.
+    pub fn resume(&self, entries: &[yi_types::entry::Entry]) {
+        let latest = entries.iter().rev().find_map(|entry| match entry {
+            yi_types::entry::Entry::Compaction {
+                retained_tail,
+                details,
+                ..
+            } => Some((retained_tail, details)),
+            _ => None,
+        });
+        let mut window = lock_window(&self.window);
+        match latest {
+            None => *window = Window::new_initial(window.ids().first),
+            Some((_, details)) => {
+                let ids = details
+                    .as_ref()
+                    .and_then(|value| {
+                        serde_json::from_value::<yi_types::compaction::CompactionDetails>(
+                            value.clone(),
+                        )
+                        .ok()
+                    })
+                    .and_then(|details| details.window);
+                if let Some(ids) = ids {
+                    *window = Window::restore(ids.number, ids);
+                }
+            }
+        }
+        drop(window);
+        if let Ok(mut slot) = self.stale.lock() {
+            *slot = latest.and_then(|(tail, _)| {
+                tail.iter()
+                    .rfind(|message| reply_tokens(message).is_some())
+                    .cloned()
+            });
         }
     }
 
@@ -632,7 +677,13 @@ impl Compactor {
             }
         };
         let summarize = |context: LlmContext, warm: bool| async move {
-            match complete_text(provider, summarizer, &context, effort(warm), signal).await {
+            let (reply, usage) =
+                complete_text(provider, summarizer, &context, effort(warm), signal).await;
+            if let Some(store) = store {
+                // A lost cost row must not undo a compaction that can still apply.
+                crate::spend::book_side_call(store, "side:compact", usage).ok();
+            }
+            match reply {
                 // With the loop's tools attached a reply can be a call alone: no summary in it.
                 Ok(text) if text.trim().is_empty() => {
                     Err("the summarizer returned no text".to_owned())
@@ -726,5 +777,30 @@ impl Compactor {
             messages: replacement,
             elision,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::message::Content;
+
+    /// A stream cut before its terminal event billed something nobody can read: the row it books
+    /// must say "unknown", and a zero would leave the call off the books.
+    #[tokio::test]
+    async fn a_stream_cut_before_its_terminal_event_reports_unknown_usage() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(4);
+        let partial = yi_ai::faux::faux_assistant_message(
+            vec![Content::Text {
+                text: "## Goal\nhalf a summ".to_owned(),
+                text_signature: None,
+            }],
+            StopReason::Pending,
+        );
+        let _ = sender.send(AssistantMessageEvent::Start { partial }).await;
+        drop(sender);
+        let (reply, usage) = reply_of(receiver).await;
+        assert!(reply.is_err());
+        assert!(usage.unknown, "{usage:?}");
     }
 }

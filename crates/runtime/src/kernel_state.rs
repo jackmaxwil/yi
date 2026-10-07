@@ -79,7 +79,7 @@ fn register_mcp_connect(
             let session = plain_name(&payload, "session")?;
             if !config.is_file() {
                 return Err(format!(
-                    "mcp.connect: no {}; add an entry {entry} there on the host",
+                    "mcp.connect: no {}; ask the user to add an entry {entry} there",
                     config.display()
                 ));
             }

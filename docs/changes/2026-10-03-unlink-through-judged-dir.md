@@ -1,0 +1,6 @@
+---
+issue: Closes #964
+raise: crate permission +45, comments +1
+decision: the read gate's delete unlinks through the parent it opened as judged on every system, with `rustix` 0.38 as a direct dependency of `yi-permission` (amends D339, which left macOS unlinking by name): the parent opens with `O_NOFOLLOW_ANY` on macOS and under the name judged on Linux, then `unlinkat(dir, name, 0)` removes the entry inside it, a link itself when the name is one | std has no `unlinkat`, and the review of #963 measured one key deleted in 100,000 parent-swap removes on macOS; `forbid(unsafe_code)` stays, rustix 0.38 is the version crossterm already links, and `/dev/fd/N/name` does not resolve under a directory descriptor on macOS | drop `rustix` and unlink by the resolved name again
+---
+A delete on macOS lands in the directory the gate judged (Closes #964). An edit's `REM` and the source of an `MV` judged the parent, then unlinked by name, so a background process swapping that parent for a link to `~/.ssh` in between could delete a key; the #963 review measured 1 in 100,000. The gate now holds the parent open as judged and unlinks inside it on macOS as on Linux, through `rustix`, a crate the binary already linked through crossterm. A name that is itself a link is removed as a link instead of refused.
