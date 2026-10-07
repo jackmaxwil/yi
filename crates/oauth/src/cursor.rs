@@ -55,7 +55,9 @@ fn jwt_expiry(token: &str) -> Option<SystemTime> {
     let payload = token.split('.').nth(1)?;
     let claims: Value = serde_json::from_slice(&base64url_decode(payload)?).ok()?;
     let exp = claims.get("exp").and_then(Value::as_u64)?;
-    let millis = exp.saturating_mul(1000).saturating_sub(SLACK.as_millis() as u64);
+    let millis = exp
+        .saturating_mul(1000)
+        .saturating_sub(SLACK.as_millis() as u64);
     (millis != 0).then(|| SystemTime::UNIX_EPOCH + Duration::from_millis(millis))
 }
 
@@ -70,7 +72,8 @@ fn credential(body: &Value, fallback_refresh: Option<String>) -> Result<Credenti
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or(fallback_refresh);
-    let expires = jwt_expiry(&access).or_else(|| store::now().checked_add(Duration::from_secs(3600)));
+    let expires =
+        jwt_expiry(&access).or_else(|| store::now().checked_add(Duration::from_secs(3600)));
     Ok(Credential {
         kind: Kind::Oauth,
         access,
@@ -112,8 +115,8 @@ where
 }
 
 pub fn tokens_from_exchange(body: &[u8], previous_refresh: &str) -> Result<Credential> {
-    let parsed: Value =
-        serde_json::from_slice(body).map_err(|error| format!("cursor refresh response: {error}"))?;
+    let parsed: Value = serde_json::from_slice(body)
+        .map_err(|error| format!("cursor refresh response: {error}"))?;
     credential(&parsed, Some(previous_refresh.to_owned()))
 }
 
@@ -145,10 +148,7 @@ pub fn login_ureq(no_browser: bool, proxy: Option<&ureq::Proxy>) -> Result<Crede
     })
 }
 
-pub fn refresh_ureq(
-    refresh_token: &str,
-    proxy: Option<&ureq::Proxy>,
-) -> Result<Credential> {
+pub fn refresh_ureq(refresh_token: &str, proxy: Option<&ureq::Proxy>) -> Result<Credential> {
     let mut builder = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30));

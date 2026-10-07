@@ -91,7 +91,9 @@ fn stored(
     let store = Store::open(root);
     let current = store.load(provider)?;
     let spec = match registry::lookup(provider) {
-        Ok(Some(registry::Kind::Cursor)) => return Some(refresh_cursor(store, provider, current, proxy)),
+        Ok(Some(registry::Kind::Cursor)) => {
+            return Some(refresh_cursor(store, provider, current, proxy));
+        }
         Ok(Some(registry::Kind::OauthCode(spec))) => spec,
         Ok(_) => return Some((current, Vec::new())),
         // A broken profile is not a missing credential: refuse it so

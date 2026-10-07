@@ -21,7 +21,10 @@ pub struct Applied {
     pub replies: Vec<Vec<u8>>,
 }
 
-pub fn apply_message(message: &[u8], tool: &mut dyn FnMut(&str, &Map<String, Value>) -> String) -> Applied {
+pub fn apply_message(
+    message: &[u8],
+    tool: &mut dyn FnMut(&str, &Map<String, Value>) -> String,
+) -> Applied {
     let mut events = Vec::new();
     let mut replies = Vec::new();
     match proto::decode(message) {
@@ -54,7 +57,11 @@ pub fn apply_message(message: &[u8], tool: &mut dyn FnMut(&str, &Map<String, Val
     Applied { events, replies }
 }
 
-pub(crate) fn tool_event(id: &str, name: &str, arguments: Map<String, Value>) -> AssistantMessageEvent {
+pub(crate) fn tool_event(
+    id: &str,
+    name: &str,
+    arguments: Map<String, Value>,
+) -> AssistantMessageEvent {
     AssistantMessageEvent::ToolCallEnd {
         content_index: 0,
         tool_call: Content::ToolCall {
@@ -151,7 +158,10 @@ pub fn finish(model: &Model, events: &[AssistantMessageEvent]) -> AgentMessage {
         });
     }
     content.extend(calls);
-    *stop_reason = if content.iter().any(|block| matches!(block, Content::ToolCall { .. })) {
+    *stop_reason = if content
+        .iter()
+        .any(|block| matches!(block, Content::ToolCall { .. }))
+    {
         StopReason::ToolUse
     } else {
         StopReason::Stop

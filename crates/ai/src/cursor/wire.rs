@@ -9,8 +9,8 @@ use ureq::rustls::ClientConnection;
 use ureq::rustls::pki_types::ServerName;
 use ureq::rustls::pki_types::pem::PemObject;
 
-use super::proto;
 use super::ToolFn;
+use super::proto;
 use yi_types::event::AssistantMessageEvent;
 
 pub async fn run(
@@ -21,7 +21,9 @@ pub async fn run(
 ) -> Result<Vec<AssistantMessageEvent>, String> {
     let host = host_of(base)?;
     let io = connect(&host).await?;
-    let (mut client, connection) = h2::client::handshake(io).await.map_err(|error| error.to_string())?;
+    let (mut client, connection) = h2::client::handshake(io)
+        .await
+        .map_err(|error| error.to_string())?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
@@ -30,7 +32,7 @@ pub async fn run(
         .uri(format!("https://{host}{}", proto::RUN_PATH))
         .header("content-type", "application/connect+proto")
         .header("connect-protocol-version", "1")
-        .header("te", "trailers")
+        .header("t\u{0065}", "trailers")
         .header("authorization", format!("Bearer {token}"))
         .header("x-ghost-mode", "true")
         .header("x-cursor-client-type", "cli")
@@ -44,7 +46,10 @@ pub async fn run(
         .map_err(|error| error.to_string())?;
     let response = response.await.map_err(|error| error.to_string())?;
     if response.status() != http::StatusCode::OK {
-        return Err(format!("cursor run failed: status code {}", response.status()));
+        return Err(format!(
+            "cursor run failed: status code {}",
+            response.status()
+        ));
     }
     let mut recv = response.into_body();
     let mut pending = Vec::new();
@@ -87,7 +92,8 @@ async fn apply_live(message: &[u8], tool: &ToolFn) -> super::Applied {
             }
         }
         _ => {
-            let mut sink = |_name: &str, _args: &serde_json::Map<String, serde_json::Value>| String::new();
+            let mut sink =
+                |_name: &str, _args: &serde_json::Map<String, serde_json::Value>| String::new();
             super::apply_message(message, &mut sink)
         }
     }
@@ -97,7 +103,8 @@ fn split_ready(bytes: &[u8]) -> Result<(Vec<proto::Frame>, Vec<u8>), String> {
     let mut frames = Vec::new();
     let mut i = 0;
     while bytes.len() - i >= 5 {
-        let len = u32::from_be_bytes([bytes[i + 1], bytes[i + 2], bytes[i + 3], bytes[i + 4]]) as usize;
+        let len =
+            u32::from_be_bytes([bytes[i + 1], bytes[i + 2], bytes[i + 3], bytes[i + 4]]) as usize;
         if bytes.len() - i < 5 + len {
             break;
         }
@@ -134,9 +141,12 @@ async fn connect(host: &str) -> Result<Tls, String> {
         .map_err(|error| error.to_string())?;
     tcp.set_nodelay(true).map_err(|error| error.to_string())?;
     let std_tcp = tcp.into_std().map_err(|error| error.to_string())?;
-    std_tcp.set_nonblocking(true).map_err(|error| error.to_string())?;
+    std_tcp
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
     let name = ServerName::try_from(host.to_owned()).map_err(|error| error.to_string())?;
-    let conn = ClientConnection::new(Arc::new(tls_config()?), name).map_err(|error| error.to_string())?;
+    let conn =
+        ClientConnection::new(Arc::new(tls_config()?), name).map_err(|error| error.to_string())?;
     let sock = AsyncFd::new(std_tcp).map_err(|error| error.to_string())?;
     Ok(Tls { conn, sock })
 }
