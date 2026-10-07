@@ -529,7 +529,7 @@ pub(super) fn keep_omitted(
     if !matches!(request.op, Op::Set { .. }) {
         return (request, Vec::new());
     }
-    let held = viewed(tool, request.plan.clone()).map_or_else(Vec::new, |plan| plan.todos);
+    let held = todos_of(tool, request.plan.clone());
     let template = request.clone();
     let Op::Set { rows, .. } = &mut request.op else {
         return (request, Vec::new());
