@@ -218,13 +218,14 @@ def promotes(rounds, head, holds=on_head):
 
 def skip_reason(rounds, head, wanted=2, holds=on_head):
     """Why a new round on this head would repeat one: a redelivered message, or a sweep racing
-    another, must not post again. A head is read at most `wanted` times while clean, and once
-    when blocked, which then belongs to the fixer or the owner."""
+    another, must not post again. A head is read once; a second read is only for a PR whose one
+    round found nothing, since leaving draft takes two. Incident: a second read of a head was a
+    fresh draw that added to the first (#1043: three mediums, then a high and seven)."""
     here = [r for r in rounds if holds(r["sha"], head)]
     if here and here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
-    if len(here) >= wanted:
-        return f"{len(here)} rounds already read this head"
+    if here and (len(rounds) >= wanted or any(f.get("severity") in REPORTED for f in here[-1].get("findings", []))):
+        return f"round {here[-1]['n']} read this head; the fixer or the next push is next"
     return None
 
 
@@ -264,8 +265,8 @@ def delta_base(rounds, merge_base, is_ancestor, head):
 
 def review_diff(git, merge_base, base, sha):
     """The PR's own change, fork to head, so what main brought in by merge is never read as the PR's.
-    After a clean round only the paths touched since it are kept: the delta, without main's work.
-    Returns (diff, the base that diff was cut from)."""
+    After a round only what changed since it is read, on the paths the PR itself changes; `read_pr`
+    keeps a finding only on a line both changed. Returns (diff, the base that diff was cut from)."""
     own = f"{merge_base}..{sha}"
     if base == merge_base:
         return git("diff", own), merge_base
@@ -275,7 +276,8 @@ def review_diff(git, merge_base, base, sha):
     if not paths:
         return git("diff", own), merge_base
     # Chunked so a large merge does not put thousands of pathspecs on one command line.
-    return "\n".join(git("diff", own, "--", *[f":(literal){p}" for p in paths[i:i + 200]]) for i in range(0, len(paths), 200)), base
+    return "\n".join(git("diff", f"{base}..{sha}", "--", *[f":(literal){p}" for p in paths[i:i + 200]])
+                     for i in range(0, len(paths), 200)), base
 
 
 def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0, unanswered=(), meter=None, status="", cleared=0):
@@ -671,6 +673,11 @@ def read_pr(repo, number, allowed):
         base = delta_base(rounds, merge_base, is_ancestor, sha)
         diff, base = review_diff(forge_pr.git, merge_base, base, sha)
         own = added_at(forge_pr.git("diff", f"{merge_base}..{sha}"))
+        # Incident: a round after a fix re-read the PR's whole change to each file the fix touched
+        # and found mediums in lines no fix changed, so rounds never ran out of findings.
+        if base != merge_base:
+            since = added_at(diff)
+            own = {path: lines & since.get(path, set()) for path, lines in own.items()}
         others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
                  (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=30") or [])
         found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo, stacked)
@@ -837,8 +844,7 @@ def cmd_sweep(args):
         rounds = rounds_of(comments(repo, pr["number"]), allowed, pr["number"])
         if promote(repo, pr, rounds):
             continue
-        on_head = rounds and pr["head"]["sha"].startswith(rounds[-1]["sha"])
-        if not on_head or len(rounds) < 2 and rounds[-1]["verdict"] != "blocked":
+        if skip_reason(rounds, pr["head"]["sha"]) is None:
             if read >= SWEEP_HEADS or time.monotonic() - started > SWEEP_SECS:
                 print(f"sweep: {read} head(s) read in {int(time.monotonic() - started)}s; the rest wait for the next sweep")
                 break
@@ -943,7 +949,9 @@ def selfcheck():
     assert not promotes([clean(2)], "abc1234ff") and not promotes([clean(1), clean(2)], "def5678"), "one round, or an old head"
     assert skip_reason([], "abc1234") is None
     one = [{"n": 1, "sha": "abc1234", "verdict": "clean"}]
-    assert skip_reason(one, "abc1234ff") is None, "a clean head is read a second time"
+    assert skip_reason(one, "abc1234ff") is None, "a clean head whose one round found nothing is read a second time"
+    assert skip_reason([dict(one[0], findings=[dict(finding, severity="medium")])], "abc1234ff"), "a head with a medium waits for the fixer"
+    assert skip_reason([{"n": 1, "sha": "0000000", "verdict": "clean"}] + one, "abc1234ff"), "a PR with two rounds reads a head once"
     assert skip_reason(one + [{"n": 2, "sha": "abc1234", "verdict": "clean"}], "abc1234ff"), "never a third"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff"), "a blocked head is the fixer's"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "def5678") is None, "a new head is read"
@@ -1109,6 +1117,7 @@ def selfcheck():
         assert used == clean_head
         assert "+b" in seen, "a non-ASCII path changed since the clean round is in the delta"
         assert "stable.txt" not in seen, "a file the PR did not touch since the clean round is not re-read"
+        assert "+two" in seen and "+one" not in seen, "a round after a round reads what changed since, not the PR's whole change again"
         run("checkout", "-q", "main")
         put("landed2.txt", "another\n")
         run("checkout", "-q", "pr")
@@ -1119,7 +1128,7 @@ def selfcheck():
             "a push that only merged main reads the PR's whole change, not an empty diff"
         assert "own.txt" in seen and "+two" in seen, seen
         assert "landed.txt" not in seen, "a commit main brought in is not the PR's change"
-        assert "+one" in seen, "a path changed since the clean round shows the PR's whole change to it"
+        assert "+one" in seen, "a push that only merged main reads the PR's whole change to each path"
     finally:
         shutil.rmtree(tmp)
     hunk = "+++ b/a.rs\n@@ -1,3 +1,4 @@\n fn main() {\n+    let x = 1;\n-    old();\n }\n@@ -40 +41,2 @@\n+tail\n context\n"
