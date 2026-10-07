@@ -703,12 +703,19 @@ async fn finished(harness: &Harness, name: &str) -> Result<(), String> {
 
 /// A child whose first turn a two-second tool call holds open, returned once it is running.
 async fn busy_child() -> Result<(Harness, yi_runtime::ChildFeed), Box<dyn Error>> {
+    held_child("sleep 2").await
+}
+
+/// A child named `busy` whose first turn `command` holds open, returned once it is running.
+async fn held_child(
+    command: &'static str,
+) -> Result<(Harness, yi_runtime::ChildFeed), Box<dyn Error>> {
     let harness = harness_with(HarnessOptions {
         child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "ok",
-        tool_command: Some("sleep 2"),
+        tool_command: Some(command),
         cwd: None,
         wake_parent: None,
     })?;
@@ -1141,68 +1148,129 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
     Ok(())
 }
 
-/// Dies with the 100 ms poll back in the family wait: a child's end was seen a poll late, so
-/// five spawn-and-wait rounds took half a second or more.
-#[tokio::test]
-async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
-    let harness = harness(0, 1, "done")?;
-    let started = std::time::Instant::now();
-    for round in 0..5 {
-        let name = format!("c{round}");
-        harness
-            .host
-            .spawn(format!("work {round}"), kwargs(&[("name", &name)]))?;
-        let mut cursor = 0;
-        loop {
-            let reply = harness.host.wait(5_000, Some(cursor)).await?;
-            if reply["state"] == "settled" {
-                break;
-            }
-            cursor = reply["cursor"].as_u64().ok_or("cursor")?;
+/// Invariant: readiness, not wall time, decides a wake here. A poll's wall-clock re-check
+/// under OS starvation satisfies a wait bounded by elapsed time, so a red against a
+/// restored poll must hold without a wall timer ever firing: `pause` first, yield with the
+/// clock frozen, one `advance` after a finished poll.
+const WAKE_YIELDS: usize = 8;
+async fn wakes<T>(task: &tokio::task::JoinHandle<T>) -> bool {
+    tokio::time::pause();
+    for _ in 0..WAKE_YIELDS {
+        if task.is_finished() {
+            break;
         }
+        tokio::task::yield_now().await;
     }
-    let took = started.elapsed();
-    assert!(
-        took < std::time::Duration::from_millis(250),
-        "five rounds took {took:?}"
-    );
-    Ok(())
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+    tokio::time::resume();
+    task.is_finished()
 }
 
-/// Dies with the 100 ms poll back in `rlm.receive`: mail sent just after the wait began sat a
-/// poll in the queue, so five sends took half a second or more.
-#[tokio::test]
-async fn a_receive_wakes_on_the_mail_not_on_a_poll() -> TestResult {
+/// A family wait from the latest cursor that one wake window leaves asleep.
+async fn parked_wait(
+    harness: &Harness,
+) -> Result<tokio::task::JoinHandle<Result<Map<String, Value>, String>>, Box<dyn Error>> {
+    let mut cursor = 0;
+    loop {
+        let host = Arc::clone(&harness.host);
+        let wait = tokio::spawn(async move { host.wait(5_000, Some(cursor)).await });
+        if !wakes(&wait).await {
+            return Ok(wait);
+        }
+        cursor = wait.await??["cursor"].as_u64().ok_or("cursor")?;
+    }
+}
+
+fn receive_task(
+    harness: &Harness,
+    name: &str,
+    timeout_ms: u64,
+) -> Result<tokio::task::JoinHandle<yi_kernel::client::HostReply>, String> {
     use yi_kernel::client::HostHandlers as _;
-    let harness = harness(0, 1, "done")?;
-    finished(&harness, "beta").await?;
-    let beta = harness
+    let receiver = harness
         .receivers
         .lock()
         .map_err(|_| "poisoned")?
-        .remove("beta");
-    let beta = beta.ok_or("beta was built without its receive")?;
-    let payload = json!({"timeout_ms": 5_000});
-    let payload = payload.as_object().cloned().ok_or("payload")?;
-    let started = std::time::Instant::now();
-    for round in 0..5 {
-        let waiting = beta.dispatch("rlm.receive", payload.clone());
-        let waiting = tokio::spawn(waiting.ok_or("rlm.receive is not registered")?);
+        .remove(name);
+    let receiver = receiver.ok_or(format!("{name} was built without its receive"))?;
+    let mut payload = serde_json::Map::new();
+    payload.insert("timeout_ms".to_owned(), json!(timeout_ms));
+    let waiting = receiver
+        .dispatch("rlm.receive", payload)
+        .ok_or("rlm.receive is not registered")?;
+    Ok(tokio::spawn(waiting))
+}
+
+/// Dies with the 100 ms poll back in the family wait: the parked wait sleeps through the
+/// interrupt's move instead of waking on it.
+#[tokio::test]
+async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
+    let (harness, _busy) = busy_child().await?;
+    let parked = parked_wait(&harness).await?;
+    harness.host.interrupt("busy")?;
+    assert!(wakes(&parked).await, "the interrupt did not wake the wait");
+    parked.await??;
+    Ok(())
+}
+
+/// Dies with the 100 ms poll back in the family wait: the parked wait sleeps through a
+/// child's own end, so a normally settling child is seen a poll late.
+#[tokio::test]
+async fn a_family_wait_wakes_on_a_settling_child_not_on_a_poll() -> TestResult {
+    let release = std::env::temp_dir().join(format!("yi-settle-{}", std::process::id()));
+    let _ = std::fs::remove_file(&release);
+    let hold = format!(
+        "for _ in $(seq 3000); do [ -e '{}' ] && exit 0; sleep 0.01; done",
+        release.display()
+    );
+    let (harness, _busy) = held_child(Box::leak(hold.into_boxed_str())).await?;
+    let parked = parked_wait(&harness).await?;
+    // Invariant: the clock stays frozen from release to settle, so a restored 100 ms poll
+    // cannot fire however long the child's process takes; only the settle's wake can.
+    tokio::time::pause();
+    std::fs::write(&release, "")?;
+    let mut settled = false;
+    for _ in 0..30_000 {
+        let view = harness.host.children_view();
+        settled = view
+            .iter()
+            .any(|child| child.update.status == ChildStatus::Completed);
+        if settled {
+            break;
+        }
         tokio::task::yield_now().await;
-        harness
-            .host
-            .route("parent", "beta", &format!("note {round}"), false)?;
-        let got = waiting.await??;
-        assert_eq!(
-            got["envelopes"].as_array().map(Vec::len),
-            Some(1),
-            "{got:?}"
-        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    let took = started.elapsed();
+    tokio::time::resume();
+    let _ = std::fs::remove_file(&release);
+    assert!(settled, "the released child never settled");
     assert!(
-        took < std::time::Duration::from_millis(250),
-        "five receives took {took:?}"
+        wakes(&parked).await,
+        "the child's end did not wake the parked wait"
+    );
+    let ended = json!(parked.await??);
+    assert_eq!(ended["states"]["busy"], "finished", "{ended}");
+    Ok(())
+}
+
+/// Dies with the 100 ms poll back in `rlm.receive`: the parked receive sleeps through the mail
+/// instead of waking on it.
+#[tokio::test]
+async fn a_receive_wakes_on_the_mail_not_on_a_poll() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    finished(&harness, "beta").await?;
+    let waiting = receive_task(&harness, "beta", 5_000)?;
+    assert!(
+        !wakes(&waiting).await,
+        "rlm.receive answered an empty inbox"
+    );
+    harness.host.route("parent", "beta", "note", false)?;
+    assert!(wakes(&waiting).await, "the mail did not wake the receive");
+    let got = waiting.await??;
+    assert_eq!(
+        got["envelopes"].as_array().map(Vec::len),
+        Some(1),
+        "{got:?}"
     );
     Ok(())
 }
@@ -3005,7 +3073,6 @@ async fn a_checked_childs_check_runs_in_the_session_cwd() -> TestResult {
 /// number, polled the filesystem and read alpha's kernel, and alpha's mail came after its answer.
 #[tokio::test]
 async fn a_sibling_receives_its_mail_instead_of_polling() -> TestResult {
-    use yi_kernel::client::HostHandlers as _;
     let harness = harness_with(HarnessOptions {
         child_errors: false,
         depth: 0,
@@ -3021,20 +3088,7 @@ async fn a_sibling_receives_its_mail_instead_of_polling() -> TestResult {
     harness
         .host
         .spawn("wait for alpha".to_owned(), kwargs(&[("name", "beta")]))?;
-    let beta = harness
-        .receivers
-        .lock()
-        .map_err(|_| "poisoned")?
-        .remove("beta");
-    let beta = beta.ok_or("beta was built without its receive")?;
-    let payload = json!({"timeout_ms": 10_000})
-        .as_object()
-        .cloned()
-        .ok_or("payload")?;
-    let waiting = beta
-        .dispatch("rlm.receive", payload)
-        .ok_or("rlm.receive is not registered")?;
-    let waiting = tokio::spawn(waiting);
+    let waiting = receive_task(&harness, "beta", 10_000)?;
     let feed = harness.host.children_view();
     let feed = feed
         .iter()
