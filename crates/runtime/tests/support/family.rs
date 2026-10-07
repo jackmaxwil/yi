@@ -13,6 +13,19 @@ use yi_types::lease::LeaseRecord;
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Model, ModelCost};
 
+/// A finished reply that reports it cost `dollars`: what a priced provider's terminal message
+/// carries and the faux provider's own replies never do.
+pub fn priced_reply(text: &str, dollars: f64) -> AgentMessage {
+    let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    if let AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.input = 100;
+        usage.output = 20;
+        usage.total_tokens = 120;
+        usage.cost.total = serde_json::Number::from_f64(dollars).unwrap_or_else(|| 0.into());
+    }
+    message
+}
+
 pub struct Built {
     pub wall: Wall,
     pub deadline: Option<std::time::Duration>,
@@ -66,7 +79,7 @@ pub fn faux_model() -> Model {
 }
 
 /// `hold` makes every child run that shell command first, so its turn stays open; each
-/// reply bills 120 tokens.
+/// reply bills 120 tokens and costs a quarter dollar.
 pub fn family(
     dir: PathBuf,
     cwd: PathBuf,
@@ -106,11 +119,7 @@ pub fn family(
                 let call = faux_tool_call("call-1", "bash", args);
                 script.push(faux_assistant_message(vec![call], StopReason::ToolUse));
             }
-            let mut reply = faux_assistant_message(vec![faux_text("ok")], StopReason::Stop);
-            if let AgentMessage::Assistant { usage, .. } = &mut reply {
-                usage.total_tokens = 120;
-            }
-            script.push(reply);
+            script.push(priced_reply("ok", 0.25));
             provider.queue_faux(script);
             let config = SessionConfig {
                 system_prompt: "child sys".to_owned(),

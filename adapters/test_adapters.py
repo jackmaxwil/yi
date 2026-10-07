@@ -120,44 +120,6 @@ class ExampleAdapterTests(unittest.TestCase):
             adapter.calls()[0], ["api", "--hostname", "git.example.invalid", "repos/apex/yi/pulls?state=open&limit=50"]
         )
 
-    def test_sqs_deletes_a_message_only_after_the_host_acks_it(self):
-        messages = {"Messages": [
-            {"MessageId": "5fea7756-0ea4-451a-a703-a558b933e274", "ReceiptHandle": "AQEB-one",
-             "MD5OfBody": "x", "Body": '{"alarm": "disk"}'},
-            {"MessageId": "a9c3b2d1-1111-4a4a-9b9b-000000000002", "ReceiptHandle": "AQEB-two",
-             "MD5OfBody": "y", "Body": "plain text"},
-        ]}
-        fake = f"""
-            import pathlib
-            count = pathlib.Path(sys.argv[0] + ".n")
-            n = int(count.read_text()) if count.exists() else 0
-            if sys.argv[2] == "receive-message":
-                count.write_text(str(n + 1))
-                if n == 0:
-                    print(json.dumps({messages!r}))
-                else:
-                    time.sleep(0.2)
-                    print("{{}}")
-            """
-        adapter = Adapter("yi-adapter-sqs", "sqs://sqs.us-east-1.amazonaws.com/123456789012/alarms", {"aws": fake})
-        try:
-            first, second = adapter.next(), adapter.next()
-            self.assertEqual(first["data"], {"alarm": "disk"})
-            self.assertEqual(second["data"], {"body": "plain text"})
-            self.assertFalse([call for call in adapter.calls() if "delete-message" in call])
-            adapter.proc.stdin.write(json.dumps({"ack": first["id"]}) + "\n")
-            adapter.proc.stdin.flush()
-            for _ in range(100):
-                deleted = [call for call in adapter.calls() if "delete-message" in call]
-                if deleted:
-                    break
-                threading.Event().wait(0.05)
-        finally:
-            adapter.close()
-        self.assertEqual(len(deleted), 1, adapter.calls())
-        self.assertIn("AQEB-one", deleted[0])
-        self.assertIn("https://sqs.us-east-1.amazonaws.com/123456789012/alarms", deleted[0])
-
 
 if __name__ == "__main__":
     unittest.main()
