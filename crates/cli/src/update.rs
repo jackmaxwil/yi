@@ -257,7 +257,12 @@ fn agent() -> ureq::Agent {
 }
 
 fn fetch(url: &str, agent: &ureq::Agent) -> Result<Vec<u8>, String> {
-    let response = match agent.get(url).call() {
+    let request = agent.get(url);
+    let request = match token_in(&fgj_config()).filter(|_| url.starts_with(FORGE)) {
+        Some(token) => request.set("Authorization", &format!("token {token}")),
+        None => request,
+    };
+    let response = match request.call() {
         Ok(response) => response,
         Err(ureq::Error::Status(401 | 403 | 404, _)) => {
             return Err("the release is not readable".to_owned());
@@ -341,6 +346,34 @@ fn login_agent() -> Result<ureq::Agent, String> {
 #[cfg(not(target_os = "macos"))]
 fn login_agent() -> Result<ureq::Agent, String> {
     Err("no login keychain".to_owned())
+}
+
+fn fgj_config() -> String {
+    let Ok(home) = std::env::var("HOME") else {
+        return String::new();
+    };
+    std::fs::read_to_string(format!("{home}/.config/fgj/config.yaml")).unwrap_or_default()
+}
+
+fn token_in(text: &str) -> Option<String> {
+    let mut host = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == "git.example.invalid:" {
+            host = true;
+            continue;
+        }
+        if host && !line.starts_with("        ") && !trimmed.is_empty() {
+            return None;
+        }
+        if host && let Some(value) = trimmed.strip_prefix("token:") {
+            let value = value.trim().trim_matches('"');
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn digest_hex(file: &[u8]) -> Result<String, String> {
@@ -673,6 +706,14 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fgj_token_for_this_forge_is_read() {
+        let text =
+            "hosts:\n    git.example.invalid:\n        token: abc\n    other:\n        token: no\n";
+        assert_eq!(token_in(text).as_deref(), Some("abc"));
+        assert_eq!(token_in("hosts:\n").as_deref(), None);
+    }
 
     struct Tmp(PathBuf);
 
