@@ -646,6 +646,45 @@ fn reconnect_wipes_and_replays() -> TestResult {
     )
 }
 
+/// The ledger's totals as the worker sends them on a root replay's last frame.
+fn priced(mut frames: Vec<Value>) -> Vec<Value> {
+    if let Some(update) = frames
+        .first_mut()
+        .and_then(|f| f.pointer_mut("/params/update"))
+    {
+        update["stats"] = json!({"messageCount": 40, "cachedTokens": 600_000,
+            "uncachedTokens": 30_000, "totalTokens": 640_000, "costTotal": 86.2,
+            "unknownUsage": true});
+    }
+    frames
+}
+
+/// Dies with a resumed session's row at $0, or at $172.40 once a reconnect replays it again:
+/// the row's dollars were a sum of live replies, and a replay must set them, not add.
+#[test]
+fn a_resumed_session_shows_the_ledgers_spend_once_across_a_reconnect() -> TestResult {
+    run(
+        "replay-spend",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", |frame| priced(resume_alpha(frame))),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Close,
+            Step::Accept,
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/resume", |frame| priced(resume_alpha_again(frame))),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 ≥$86.20  ·  0 / 128K\n\
+         wait-frame 8000 replayed again\n\
+         wait-frame 1000 ≥$86.20  ·  0 / 128K\n\
+         quit\n",
+    )
+}
+
 #[test]
 fn permission_request_blocks_then_answers() -> TestResult {
     run(
