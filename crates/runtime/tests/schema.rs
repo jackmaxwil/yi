@@ -19,7 +19,7 @@ use std::error::Error;
 use serde_json::json;
 use yi_runtime::plan::artifact::Artifacts;
 use yi_runtime::plan::verify::freeze;
-use yi_runtime::schema::Schema;
+use yi_runtime::schema::{Schema, extract};
 use yi_types::plan::contract::Contract;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -198,6 +198,37 @@ fn the_assertion_refusal_lands_when_the_contract_is_frozen() -> TestResult {
     assert!(
         refusal.contains("findings-shape") && refusal.contains("$.properties.score.minimum"),
         "{refusal}"
+    );
+    Ok(())
+}
+
+// Dies with `last_fenced_json` in `schema.rs`: a reader's paragraph quotes inline JSON or a
+// bracketed tag before the answer fence, and the first-brace fallback used to eat it.
+#[test]
+fn the_last_fenced_block_that_parses_is_the_answer() -> TestResult {
+    assert_eq!(
+        extract(
+            "the object {\"a\": 1} shows the shape, and [pkg/more.py#F0C2] is its origin\n\n\
+             ```json\n{\"outcome\": \"the quota parser lands\"}\n```"
+        )?,
+        json!({"outcome": "the quota parser lands"}),
+        "prose that quotes JSON before the fence must not be the answer"
+    );
+    assert_eq!(
+        extract(
+            "first\n```\n{\"outcome\": \"draft\"}\n```\nlast\n```json\n{\"outcome\": \"final\"}\n```"
+        )?,
+        json!({"outcome": "final"}),
+        "the last fence that parses wins over an earlier one"
+    );
+    assert_eq!(
+        extract("```json\n{\"outcome\": 5}\n```")?,
+        json!({"outcome": 5}),
+        "a fenced block with an info string still parses"
+    );
+    assert!(
+        extract("Voil\u{e0}:\n```\nnot json\n```\n").is_err(),
+        "no fence that parses falls back to refusal"
     );
     Ok(())
 }

@@ -169,17 +169,17 @@ impl TodoError {
             Self::NoSuchLabel { .. }
             | Self::NoSuchPhase { .. }
             | Self::Illegal { .. }
-            | Self::Empty
             | Self::Stale { .. } => ToolErrorKind::Stale,
             Self::Duplicate { .. }
             | Self::DuplicateOfPlanRow { .. }
             | Self::ParentOpen { .. }
             | Self::SetClosed { .. }
-            | Self::Doc(_)
+            | Self::NoEvidence { .. }
             | Self::Unanswered(_) => ToolErrorKind::Verdict,
             Self::Ambiguous { .. }
             | Self::ManyRunning { .. }
-            | Self::NoEvidence { .. }
+            | Self::Empty
+            | Self::Doc(_)
             | Self::Checklist { .. }
             | Self::TooDeep { .. }
             | Self::Mirrored { .. } => ToolErrorKind::InvalidArgs,

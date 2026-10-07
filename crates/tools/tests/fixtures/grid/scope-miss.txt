@@ -1,4 +1,0 @@
-grid: nothing is called `scale` — closest:
-  drift.alpha.scale
-  drift.beta.base
-  drift.user.total
