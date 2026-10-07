@@ -1,7 +1,7 @@
 # Disk retention: test homes die with their worktree, Yi sweeps what it writes
 
 ```
-status:  ACCEPTED, revision 1 (2026-10-07). Decided in two question rounds the same day.
+status:  ACCEPTED, revision 2 (2026-10-07; section 5 changed after a measurement). Decided in two question rounds the same day.
          Forge issues: #1123 (S2), #1124 (S3), #1125 (S4), #1126 (S5); S1 is tooling.
 tree:    main @ 319d0ce5, re-read for this document (ARCHITECTURE 0.525.0, last row D341).
 inputs:  du/df census of ~/Development/.yi-homes (116 entries at first look) and ~/.yi on this
@@ -191,7 +191,7 @@ It changes in two places.
    worktree. `.yi-homes` is no longer created, and the scratch files that collected there
    (section 1.1) have nowhere to go but the session scratchpad, so item 3 of the original list
    needs no rule of its own.
-2. **One wrapper script makes the env** ✚ `scripts/wt-env`:
+2. **One wrapper script makes the env** ✚ `scripts/wt_home.sh`:
    `exec env HOME=$wt/target/yi-home CARGO_HOME=$REAL/.cargo RUSTUP_HOME=$REAL/.rustup UV_CACHE_DIR=$REAL/.cache/uv RUSTUP_AUTO_INSTALL=0 "$@"`,
    after copying `~/.gitconfig` in. It spells `$HOME` rather than `~`, which closes the 2026-09-28
    incident where `CARGO_HOME=~/.cargo` made a literal `./~` holding a 1.4 GB toolchain. Subagents
@@ -208,25 +208,29 @@ The rule for `git push`, `fgj` and `just push` is unchanged. They run with the r
 
 ## 5. Tests stop writing to the real `~/.yi`
 
-Every test that spawns `CARGO_BIN_EXE_yi` sets `HOME` to its own scratch dir. Some already do,
-for example `cli_surfaces.rs`, `acp_protocol.rs` and `support/daemon.rs`. `rpc_protocol.rs` and
-the in-process ACP tests do not.
+Revision 2, after a measurement. One full `cargo nextest run --workspace` on the real HOME (2,710
+tests) left 23 checkpoint repos in `~/.yi`, plus writes to `spills/`, `tool-output/`, `mcp/` and
+`node/slots/`. Six of the repos came from `rpc_protocol.rs`, which spawns the binary without
+`HOME`. The other seventeen came from five in-process runtime test files (`kernel_sandbox`,
+`kept_rules`, `snapshot_e2e`, `kernel_across_sessions`, and the family tests). They pass the real
+`$HOME` into `RuntimeWiring` on purpose: it shares one warm kernel venv, and it keeps the sandbox
+tests' HOME outside the temp roots, where Seatbelt grants would make them pass vacuously.
 
-The fix is one helper in the shared test support ✚. It returns a `Command` for the binary with
-`HOME` set to the scratch dir and `.gitconfig` copied in, and every spawn site uses it. A guardrail
-✚ fails a test file that names `CARGO_BIN_EXE_yi` without going through the helper. This checks
-how the spawn is spelled, not a sentence, which is the line between it and the banned
-source-grep test.
+Patching each site with a scratch HOME would break both of those properties. Every local and CI
+run of the suite goes through `just test` (`just check`, `just lane test`, the pre-push hook), so
+the fix sits there: `just test` re-executes itself under `scripts/wt_home.sh`. Whatever any test
+writes to HOME lands in `<worktree>/target/yi-home`, which is outside the temp roots, holds one
+shared venv for the run, and is deleted with the worktree. That makes the per-site helper and its
+guardrail unnecessary.
 
-The journey that proves it: run `just check` once, and the count of
+The journey that proves it: run the suite through the wrapper, and the count of
 `~/.yi/checkpoints/*` before and after is equal.
 
 ## 6. Worked example: one PR worktree's life
 
 1. `git worktree add ~/Development/yi-s7 -b jack/x origin/main`.
-2. `scripts/wt-env just check`. HOME is `yi-s7/target/yi-home`. The kernel venv is built there
-   from the shared uv cache: 124 MB physical. The tests' own spawns use their scratch HOMEs, so
-   nothing lands in `~/.yi`.
+2. `just check`. `just test` moves HOME to `yi-s7/target/yi-home`. The kernel venv is built there
+   from the shared uv cache, at 124 MB physical, and nothing lands in `~/.yi`.
 3. The PR merges. `git worktree remove yi-s7` deletes the checkout, `target/` and the home with
    it.
 4. Meanwhile, in the developer's real `~/.yi`, the hourly sweep deletes the checkpoint repos of
@@ -249,8 +253,8 @@ The journey that proves it: run `just check` once, and the count of
 | Retention table and sweeper | `runtime/src/retention.rs` | ✚ |
 | `yi gc` | `cli/src/main.rs` subcommand match (`:1048-1148`) | ✚ |
 | `yi debug paths` lists every root | `cli/src/debug.rs:83-104` (omits checkpoints, spills, converted, venvs) | ✚ four lines |
-| Test spawn helper and guardrail | test support, `scripts/guardrails/` | ✚ |
-| `scripts/wt-env` | | ✚ |
+| `just test` re-executes under the wrapper | `justfile` `test` recipe | ✚ one line |
+| `scripts/wt_home.sh` | | ✚ |
 
 **What it deletes.** `yi lanes reap` becomes an alias for one version, then goes. The `lanes`
 loop in `yi doctor --fix` is deleted. Four separate per-store throttles and triggers fold into
@@ -264,8 +268,8 @@ first.
 
 | Stage | Demo | Gate |
 |---|---|---|
-| S1 HOME inside the worktree (no Yi code: `scripts/wt-env`, the memory rule, a `.ruler` line) | `git worktree remove` frees the home; `.yi-homes` never reappears | one PR landed using it |
-| S2 Tests own their HOME (#1123) | `just check` leaves `~/.yi/checkpoints` count unchanged | the spawn-helper guardrail, seen red on `rpc_protocol.rs` before the fix |
+| S1 HOME inside the worktree (no Yi code: `scripts/wt_home.sh`, the memory rule, a `.ruler` line) | `git worktree remove` frees the home; `.yi-homes` never reappears | one PR landed using it |
+| S2 Tests own their HOME (#1123) | `just check` leaves `~/.yi/checkpoints` count unchanged | a full suite run on the real HOME leaves 23 repos (seen red); through `just test` it leaves 0 |
 | S3 Retention table, checkpoint rows, legacy venv, `yi gc` (#1124) | `yi gc --dry-run` on this machine lists about 11,600 orphan repos and 2.8 GB; the real run frees it by `df` | a test per row at age − 1 and at age, plus one with a live holder |
 | S4 Lane slot row; `yi lanes reap` becomes `yi gc --lane` (#1125) | a slot released 15 days ago (mtime set) is removed; one held or unmerged is kept | feature-ledger `journey:` test over a real pool |
 | S5 uv and traces rows, ACP delete leak (#1126) | `yi gc` reports them | per-row tests |
@@ -293,7 +297,7 @@ Two items from the original list changed on contact with the tree:
   write permission on the parent directory, not on the file (https://keith.github.io/xcode-man-pages/rm.1.html),
   so `rm -rf` succeeds.
 - **"Share `RUSTUP_HOME` and `UV_CACHE_DIR`"** was already the rule. The leak was runs that forgot
-  it, and `scripts/wt-env` makes forgetting impossible.
+  it, and `scripts/wt_home.sh` makes forgetting impossible.
 
 ## 10. Open questions
 
