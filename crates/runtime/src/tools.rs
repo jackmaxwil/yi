@@ -38,6 +38,23 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
     }
 }
 
+/// Invariant: an empty value in a property the schema does not require is a key not sent; models
+/// fill optional fields with `""` or `[]` they do not mean, and a required one is never touched.
+fn unsent_empties(schema: &Value, mut args: Map<String, Value>) -> Map<String, Value> {
+    let required = schema.get("required").and_then(Value::as_array);
+    let required = |key: &str| required.is_some_and(|keys| keys.iter().any(|name| name == key));
+    args.retain(|key, value| {
+        let empty = match value {
+            Value::String(text) => text.is_empty(),
+            Value::Array(items) => items.is_empty(),
+            Value::Object(fields) => fields.is_empty(),
+            Value::Null | Value::Bool(_) | Value::Number(_) => false,
+        };
+        !empty || required(key)
+    });
+    args
+}
+
 /// Invariant: a verdict is the tool's answer, not its failure: the call ran and a rule said no,
 /// so it reaches the model unflagged and keeps its `details.errorKind`.
 fn verdict_is_a_result(output: &mut yi_tools::ToolOutput) {
@@ -403,6 +420,7 @@ impl AgentTool for ToolAdapter {
     }
 
     fn validate(&self, args: &Map<String, Value>) -> Result<(), String> {
+        let args = &unsent_empties(&self.tool.schema(), args.clone());
         let Err(reason) = self.tool.validate(args) else {
             return Ok(());
         };
@@ -431,6 +449,7 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
+        let args = unsent_empties(&tool.schema(), args);
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
         let spills = self.session_spills();
         let store = (self.transcript.as_ref()).and_then(|store| store());
