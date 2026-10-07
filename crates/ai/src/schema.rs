@@ -192,7 +192,7 @@ pub fn strict_tool_json(
 
 /// Optional and union-typed properties in a schema, nested ones included: what Anthropic's
 /// per-request strict caps count.
-pub fn weight(schema: &Value) -> (usize, usize) {
+pub(crate) fn weight(schema: &Value) -> (usize, usize) {
     let Value::Object(map) = schema else {
         return (0, 0);
     };

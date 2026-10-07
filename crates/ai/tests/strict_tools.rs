@@ -249,31 +249,41 @@ fn the_session_tools_fit_anthropic_caps_in_order() -> TestResult {
 }
 
 /// Dies with a tool whose $defs hold the optional properties weight() used to skip: the caps
-/// count them once the schema is closed, and past the cap Anthropic refuses the whole request.
+/// count them once the schema is closed, so a tool just under the cap stays strict and one
+/// past it goes loose before Anthropic can refuse the whole request.
 #[test]
 fn the_caps_count_properties_hidden_in_defs() {
-    let optional: Map<String, Value> = (0..30)
-        .map(|index| (format!("p{index}"), json!({"type": "string"})))
-        .collect();
-    let parameters = json!({
-        "type": "object",
-        "properties": {"x": {"type": "string"}},
-        "required": ["x"],
-        "$defs": {
-            "big": {
-                "type": "object",
-                "properties": optional,
-                "required": [],
-            }
-        },
-    });
-    let tools = vec![ToolDef {
+    let defs = |count: usize| {
+        let optional: Map<String, Value> = (0..count)
+            .map(|index| (format!("p{index}"), json!({"type": "string"})))
+            .collect();
+        json!({
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"],
+            "$defs": {
+                "big": {
+                    "type": "object",
+                    "properties": optional,
+                    "required": [],
+                }
+            },
+        })
+    };
+    let tool = |parameters| ToolDef {
         name: "big".to_owned(),
         description: String::new(),
         parameters,
         freeform: None,
-    }];
-    assert_eq!(claude_strict("claude-opus-5-5", tools), [false]);
+    };
+    assert_eq!(
+        claude_strict("claude-opus-5-5", vec![tool(defs(24))]),
+        [true]
+    );
+    assert_eq!(
+        claude_strict("claude-opus-5-5", vec![tool(defs(25))]),
+        [false]
+    );
 }
 
 /// Dies with a tool strict where the provider 400s the whole request instead: a bare
