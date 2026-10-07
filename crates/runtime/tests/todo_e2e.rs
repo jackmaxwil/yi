@@ -1474,15 +1474,7 @@ fn a_block_on_a_clock_address_is_checked_before_it_waits() -> TestResult {
 fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
     let (_scratch, session) = session("todo-kinds")?;
     let tool = TodoTool::new(store_for(&session));
-    let kind = |args: Value| {
-        let input = args.as_object().cloned().unwrap_or_default();
-        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
-        assert!(output.is_error, "{args}");
-        output.result.details["errorKind"]
-            .as_str()
-            .unwrap_or("untagged")
-            .to_owned()
-    };
+    let kind = |args: Value| crate::support::refusal_kind(&tool, args);
     assert_eq!(kind(json!({"op": "frobnicate"})), "invalid_args");
     assert_eq!(
         kind(json!({"op": "done", "label": "ghost", "evidence": "x"})),
@@ -1497,5 +1489,15 @@ fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
     );
     assert!(!set.is_error, "{:?}", set.result.content);
     assert_eq!(kind(json!({"op": "append", "items": ["first"]})), "verdict");
+    assert_eq!(
+        kind(json!({"op": "append", "items": []})),
+        "invalid_args",
+        "an empty append is an argument shape, not state gone stale"
+    );
+    assert_eq!(
+        kind(json!({"op": "done", "label": "first"})),
+        "verdict",
+        "done without evidence is the rule saying no, as on the plan tool"
+    );
     Ok(())
 }

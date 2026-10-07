@@ -811,7 +811,7 @@ fn the_daemon_starts_the_classifier_sidecar_and_a_sigkill_takes_it_down() -> Tes
     let (home, port) = sidecar_home(
         &dir,
         "localhost",
-        "#!/bin/sh\necho \"$$ $LAYA_HOST $LAYA_PORT $LAYA_MODELS\" >> \"$HOME/starts\"\nexec sleep 600\n",
+        "#!/bin/sh\necho \"$$ $LAYA_HOST $LAYA_PORT $LAYA_MODELS $LAYA_API_KEY\" >> \"$HOME/starts\"\nexec sleep 600\n",
     )?;
     let (mut daemon, _socket) = spawn_daemon_in(&dir, &home)?;
     let waited = wait_until(Instant::now() + Duration::from_secs(10), || {
@@ -823,10 +823,17 @@ fn the_daemon_starts_the_classifier_sidecar_and_a_sigkill_takes_it_down() -> Tes
     let outcome = (|| -> TestResult {
         waited.map_err(|_| "yi serve never started the configured sidecar")?;
         let port = port.to_string();
-        if fields.get(1..) != Some(&["localhost", port.as_str(), "english"][..]) {
+        if fields.get(1..4) != Some(&["localhost", port.as_str(), "english"][..]) {
             return Err(
                 format!("the sidecar must bind the configured url and checkpoint: {line}").into(),
             );
+        }
+        let stored: Value = serde_json::from_str(&std::fs::read_to_string(
+            home.join(".yi/providers/tokens/laya.json"),
+        )?)?;
+        let minted = stored["access"].as_str().unwrap_or_default();
+        if minted.len() != 64 || fields.get(4) != Some(&minted) {
+            return Err(format!("the sidecar must get the key Yi minted and saved: {line}").into());
         }
         daemon.kill()?;
         daemon.wait()?;

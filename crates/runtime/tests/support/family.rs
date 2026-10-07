@@ -13,6 +13,18 @@ use yi_types::lease::LeaseRecord;
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Model, ModelCost};
 
+/// The `details.errorKind` a tool's refusal names, `untagged` when it names none: what the
+/// tool-failure census reads.
+pub fn refusal_kind(tool: &dyn yi_tools::Tool, args: serde_json::Value) -> String {
+    let input = args.as_object().cloned().unwrap_or_default();
+    let output = tool.execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
+    assert!(output.is_error, "{args}");
+    output.result.details["errorKind"]
+        .as_str()
+        .unwrap_or("untagged")
+        .to_owned()
+}
+
 /// A finished reply that reports it cost `dollars`: what a priced provider's terminal message
 /// carries and the faux provider's own replies never do.
 pub fn priced_reply(text: &str, dollars: f64) -> AgentMessage {
