@@ -744,17 +744,24 @@ fn the_same_whole_plan_set_twice_lands_twice() -> TestResult {
 }
 
 /// Dies with a left-out row's move still run after the set: the reply said the row was not
-/// taken, then answered its `done` against a plan that no longer holds it.
+/// taken, then answered its `done` against a plan that no longer holds it, or against its twin.
 #[test]
 fn a_row_left_out_of_a_whole_plan_set_does_not_move() -> TestResult {
     let rig = rig("apply-left-out")?;
     opened(&rig, json!([{"label": "a"}, {"label": "b"}]))?;
-    let rows = json!([{"label": "a", "state": "done", "contract": {"class": "inline",
-        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]},
-        "bogus": 1}, {"label": "b"}]);
+    let passing = json!({"class": "inline",
+        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let rows = json!([{"label": "a", "state": "done", "contract": passing, "bogus": 1},
+        {"label": "b"}, {"label": "b", "state": "done", "contract": passing}]);
     let (refused, text) = call(&rig, json!({"op": "set", "goal": "ship it", "todos": rows}));
     assert!(!refused && text.contains("note: a: left out"), "{text}");
     assert_eq!(text.matches("note: a:").count(), 1, "{text}");
+    assert_eq!(text.matches("note: b:").count(), 1, "{text}");
+    assert_eq!(
+        state_of(&rig, "b")?,
+        "Pending",
+        "the left-out twin's done moved b"
+    );
     Ok(())
 }
 
