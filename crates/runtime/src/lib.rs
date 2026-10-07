@@ -87,6 +87,7 @@ pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
 pub use yi_ai::request::ProxyConfig;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
+pub use yi_kernel::tarball;
 
 /// None where the platform has no sandbox: a contained decision then degrades
 /// to a question rather than to an unenforced allowance.
