@@ -169,7 +169,7 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         parent_messages: Arc::new(Vec::new),
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
-        plans_dir: workspace.join(".yi/plans"),
+        plans_dir: root.join("plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     host.set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
@@ -973,5 +973,32 @@ async fn a_worker_and_a_reader_read_a_history_url() -> TestResult {
             "a {role}'s history:// read did not resolve: {rows:?}"
         );
     }
+    Ok(())
+}
+
+/// Dies with a worker's `plan://` read failing: no route, or one opening the workspace's
+/// default `.yi/plans` instead of the family's configured plans dir.
+#[tokio::test]
+async fn a_worker_reads_a_plan_under_the_configured_plans_dir() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![
+        call("c1", "read", json!({"path": "plan://configured"})),
+        reply("read it"),
+    ]));
+    let family = family(1, script)?;
+    std::fs::create_dir_all(family.root.join("plans"))?;
+    std::fs::write(
+        family.root.join("plans/configured.md"),
+        "the configured plan",
+    )?;
+    family.host.spawn(
+        "Read the plan".to_owned(),
+        kwargs(json!({"name": "planner", "role": "worker"})),
+    )?;
+    let rows = transcript(&family, "planner").await?;
+    assert!(
+        rows.iter()
+            .any(|(kind, text)| kind == "tool" && text.contains("the configured plan")),
+        "a worker's plan:// read missed the configured plans dir: {rows:?}"
+    );
     Ok(())
 }
