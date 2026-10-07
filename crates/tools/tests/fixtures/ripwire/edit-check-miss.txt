@@ -1,0 +1,1 @@
+ripwire: --edit-check symbol not found: @src/lib.rs:4 (no indexed symbol spans line 4 of ./src/lib.rs — top-level blank, comment or preprocessor text sits inside no definition; seed a line of a definition instead)

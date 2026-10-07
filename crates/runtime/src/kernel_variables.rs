@@ -4,7 +4,60 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::kernel::{VARIABLE_MARKER, VARIABLE_MAX_CHARS, VariableName};
+pub(crate) const VARIABLE_MARKER: &str = "__yi_kernel_var__";
+pub(crate) const VARIABLE_MAX_CHARS: usize = 8_192;
+pub(crate) const VARIABLE_NAME_MAX_BYTES: usize = 128;
+
+/// Invariant: an ASCII Python identifier, never a dotted path: the name is
+/// interpolated into a cell, and attribute access runs arbitrary code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableName(String);
+
+impl VariableName {
+    pub fn parse(raw: &str) -> Result<Self, VariableReadError> {
+        let head_ok = raw
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
+        let body_ok = raw
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || char == '_');
+        if head_ok && body_ok && raw.len() <= VARIABLE_NAME_MAX_BYTES {
+            return Ok(Self(raw.to_owned()));
+        }
+        Err(VariableReadError::NotAnIdentifier {
+            name: raw.to_owned(),
+            max: VARIABLE_NAME_MAX_BYTES,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VariableName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VariableReadError {
+    #[error("{name:?} is not an ASCII Python identifier of 1 to {max} bytes")]
+    NotAnIdentifier { name: String, max: usize },
+    #[error("no IPython kernel is running for this agent")]
+    NotRunning,
+    #[error("the kernel could not be read: {detail}")]
+    Cell { detail: String },
+    #[error(
+        "the agent is running a cell; nothing was read within {} s",
+        yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
+    )]
+    Busy,
+    #[error("repr({name}) raised {python}")]
+    Unreadable { name: VariableName, python: String },
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum VariableReply {

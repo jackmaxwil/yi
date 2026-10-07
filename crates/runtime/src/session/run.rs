@@ -489,6 +489,7 @@ fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
     // Not the interrupt: the turn in flight ends and settles, and no request follows.
     let stop = Arc::clone(shared);
     let capped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let capped_word = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (turns, cap_hit) = (std::sync::atomic::AtomicU32::new(0), Arc::clone(&capped));
     let cap = shared.turn_cap.get().copied();
     config.should_stop_after_turn = Some(Box::new(move |_| {
@@ -501,11 +502,13 @@ fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
     }));
     // Incident: the wind-down ended three confirmation runs on a tool call, with no answer.
     let clock = Arc::clone(shared);
+    let word_flag = Arc::clone(&capped_word);
     config.last_word = Some(Box::new(move |_| {
         let cancelled = clock.cancelled.load(std::sync::atomic::Ordering::SeqCst);
         let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
         let out_of_time = out_of_time || clock.last_word_due();
         if capped.load(std::sync::atomic::Ordering::SeqCst) && !out_of_time && !cancelled {
+            word_flag.store(true, std::sync::atomic::Ordering::SeqCst);
             return Some(super::host_text(
                 yi_types::message::HostSource::Deadline,
                 TURN_CAP_WORD,
@@ -516,6 +519,10 @@ fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
     }));
     let due = Arc::clone(shared);
     config.last_word_due = Some(Box::new(move || due.last_word_due()));
+    let said_capped = Arc::clone(&capped_word);
+    config.last_word_capped = Some(Box::new(move || {
+        said_capped.load(std::sync::atomic::Ordering::SeqCst)
+    }));
 }
 
 fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
