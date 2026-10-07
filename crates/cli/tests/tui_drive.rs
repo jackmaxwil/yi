@@ -614,6 +614,79 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
     Ok(())
 }
 
+/// Seen in the console: a blocked todo's row ran off the right edge mid-word. Through the real
+/// draw path at 60 columns it now ends in `…` on the screen's last column.
+#[test]
+fn a_todo_row_wider_than_the_screen_ends_in_an_ellipsis_at_the_edge() -> TestResult {
+    let dir = Scratch::new("yi-tui-hud-fit")?;
+    let home = dir.home()?;
+    let label = "Put a check that cannot run here to the classifier via accepted_by_user";
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(
+        &cassette,
+        cassette_lines(
+            &[
+                (
+                    "todo",
+                    serde_json::json!({"op": "set", "list": format!("## Tasks\n- [ ] {label}")}),
+                ),
+                (
+                    "todo",
+                    serde_json::json!({"op": "block", "label": label, "on": "user", "note": "the forge is not reachable from this sandbox"}),
+                ),
+            ],
+            "Blocked on you.",
+        ),
+    )?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait-idle 20000\nquit\n")?;
+    let frames = dir.join("frames");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--here",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--cwd",
+            &dir.display().to_string(),
+            "--size",
+            "60x30",
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "set up the check",
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = entries.last().ok_or("no frame")?;
+    let screen = std::fs::read_to_string(last.path())?;
+    let row = screen
+        .lines()
+        .map(|line| line.trim_matches('"'))
+        .find(|row| row.contains("1. ! Put a check"))
+        .ok_or_else(|| format!("no blocked todo row:\n{screen}"))?;
+    assert_eq!(row.chars().count(), 60, "{row:?}");
+    assert!(row.ends_with('…'), "the cut is marked at the edge: {row:?}");
+    Ok(())
+}
+
 /// A loopback listener every connection lands on; it logs each one's first line.
 fn recorder() -> std::io::Result<(String, std::sync::Arc<std::sync::Mutex<Vec<String>>>)> {
     use std::io::Read;
