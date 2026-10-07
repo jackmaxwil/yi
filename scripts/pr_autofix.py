@@ -154,7 +154,8 @@ def make_clone(repo, into, sha):
     sh(repo, "git", "clone", "-q", "--shared", "--no-checkout", str(repo), str(into))
     sh(into, "git", "fetch", "-q", str(repo), "+refs/remotes/origin/*:refs/remotes/origin/*")
     sh(into, "git", "checkout", "-q", "--detach", sha)
-    sh(into, "git", "config", "merge.baseline.driver", f"{sys.executable} scripts/merge_baseline.py %O %A %B")
+    # Incident: the PR's own older driver kept stale hashes main had moved; this checkout's is main's.
+    sh(into, "git", "config", "merge.baseline.driver", f"{sys.executable} {ROOT / 'scripts/merge_baseline.py'} %O %A %B")
 
 
 def resolve_prompt(pr, base_ref, conflicted):
@@ -271,6 +272,15 @@ def reprice(clone, base="MERGE_HEAD"):
         head = re.sub(r"^growth: \+\d+ ", f"growth: +{int(growth.group(1))} ", head, flags=re.M)
     path.write_text("---\n" + head + sep + body)
     sh(clone, "git", "add", str(path.relative_to(clone)))
+
+
+def remeasure(clone):
+    """A merge re-measures the stored baselines into its own commit, which may carry them; the model
+    may not touch them. Incident: #1110 and #1111 merged main, each side had raised the request
+    budget and moved tool hashes, and the hook refused a ceiling no file the model owns could meet."""
+    for gate in ("check_schemas_lock.py", "check_request_budget.py"):
+        sh(clone, sys.executable, f"scripts/guardrails/{gate}", "--update", env=scrubbed(), check=False)
+    sh(clone, "git", "add", "--", "scripts/guardrails/baselines")
 
 
 def formatted(clone):
@@ -496,6 +506,8 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before)
             subject, signed = f"Answer the findings review round {rnd['n']} confirmed", f"{SIGNED} {rnd['n']} on #{pr['number']}.\n"
         reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
+        if kind == "conflict":
+            remeasure(clone)
         message = lambda: (f"{subject}\n\n{summary}\n\n{signed}"
                            f"Made by the autofixer{f' with {model[0]}' if model else ''}; #{pr['number']}.\n")
         # The author is set in the environment: git hands a hook's own GIT_AUTHOR_* to every child,
@@ -518,6 +530,8 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             if refused:
                 raise RuntimeError(refused)
             reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
+            if kind == "conflict":
+                remeasure(clone)
             summary += ("\n\nThe commit hook refused the first attempt; one more turn: "
                         + ((said.get("summary") or "").strip() or "no summary") + note)
             formatted(clone)
@@ -808,6 +822,10 @@ def selfcheck():
         (tmp / "scripts/hooks").mkdir(parents=True)
         (tmp / "scripts/hooks/pre-commit").write_text("#!/bin/sh\nif grep -q TOO_LONG a.txt; then echo 'FAIL file_size'; echo '  a.txt: TOO_LONG'; exit 1; fi\n")
         (tmp / "scripts/hooks/pre-commit").chmod(0o755)
+        (tmp / "scripts/guardrails").mkdir(parents=True)
+        (tmp / "scripts/guardrails/check_request_budget.py").write_text(
+            "import json, pathlib\nout = pathlib.Path('scripts/guardrails/baselines')\nout.mkdir(exist_ok=True)\n"
+            "(out / 'request_budget.json').write_text(json.dumps({'total': len(pathlib.Path('a.txt').read_text())}))\n")
         git("add", "-A"); git("commit", "-qm", "hook")
         bare = tmp.parent / (tmp.name + "-remote.git")
         sh(tmp.parent, "git", "init", "-q", "--bare", str(bare))
@@ -828,6 +846,9 @@ def selfcheck():
             parents = sh(tmp, "git", "log", "-1", "--format=%P", "origin/topic").stdout.split()
             if landed != "main and topic\n" or len(parents) != 2 or len(turns) != 2 or "FAIL file_size" not in turns[1]:
                 errs.append(f"the repaired fix landed {landed!r} with {len(parents)} parents after {len(turns)} turns")
+            budget = sh(tmp, "git", "show", "origin/topic:scripts/guardrails/baselines/request_budget.json", check=False).stdout
+            if budget != '{"total": 15}':
+                errs.append(f"the merge carried the request budget {budget!r}, not the merged tree's measure")
         except RuntimeError as err:
             errs.append(f"a hook refusal the repair turn fixes still failed the fix: {err}")
         # A blocked round answered end to end: signed, pushed, a declined high carried to the owner,
