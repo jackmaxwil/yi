@@ -23,13 +23,18 @@ pub struct Applied {
     pub replies: Vec<Vec<u8>>,
 }
 
-pub fn apply_message(
-    message: &[u8],
-    tool: &mut dyn FnMut(&str, &Map<String, Value>) -> String,
+pub type Blobs = std::collections::HashMap<Vec<u8>, Vec<u8>>;
+
+pub async fn apply_message(
+    inbound: Result<proto::Inbound, String>,
+    tool: &ToolFn,
+    tools: &[proto::ToolWire],
+    workspace: &str,
+    blobs: &mut Blobs,
 ) -> Applied {
     let mut events = Vec::new();
     let mut replies = Vec::new();
-    match proto::decode(message) {
+    match inbound {
         Ok(proto::Inbound::Text(text)) => events.push(AssistantMessageEvent::TextDelta {
             content_index: 0,
             delta: text,
@@ -38,11 +43,18 @@ pub fn apply_message(
             content_index: 0,
             delta: text,
         }),
-        Ok(proto::Inbound::TurnEnded)
-        | Ok(proto::Inbound::Ignore)
-        | Ok(proto::Inbound::Context { .. })
-        | Ok(proto::Inbound::KvGet { .. })
-        | Ok(proto::Inbound::KvSet { .. }) => {}
+        Ok(proto::Inbound::TurnEnded) | Ok(proto::Inbound::Ignore) => {}
+        Ok(proto::Inbound::KvSet { id, blob_id, data }) => {
+            blobs.insert(blob_id, data);
+            replies.push(proto::kv_set_reply(id));
+        }
+        Ok(proto::Inbound::KvGet { id, blob_id }) => {
+            let data = blobs.get(&blob_id).cloned().unwrap_or_default();
+            replies.push(proto::kv_get_reply(id, &data));
+        }
+        Ok(proto::Inbound::Context { id, exec_id }) => {
+            replies.push(proto::context_reply(id, &exec_id, workspace, tools));
+        }
         Ok(proto::Inbound::Tool {
             id,
             name,
@@ -53,7 +65,7 @@ pub fn apply_message(
             command,
             cwd,
         }) => {
-            let output = tool(&name, &args);
+            let output = tool(call_id.clone(), name.clone(), args.clone()).await;
             events.push(tool_event(&call_id, &name, args));
             replies.extend(proto::tool_frames(
                 route, id, &exec_id, &command, &cwd, &output,
@@ -71,11 +83,7 @@ pub fn apply_message(
     Applied { events, replies }
 }
 
-pub(crate) fn tool_event(
-    id: &str,
-    name: &str,
-    arguments: Map<String, Value>,
-) -> AssistantMessageEvent {
+fn tool_event(id: &str, name: &str, arguments: Map<String, Value>) -> AssistantMessageEvent {
     AssistantMessageEvent::ToolCallEnd {
         content_index: 0,
         tool_call: Content::ToolCall {
@@ -135,7 +143,7 @@ fn tools_of(context: &LlmContext) -> Vec<proto::ToolWire> {
         .collect()
 }
 
-pub fn finish(model: &Model, events: &[AssistantMessageEvent]) -> AgentMessage {
+fn finish(model: &Model, blocks: Blocks) -> AgentMessage {
     let mut message = empty_assistant(model);
     let AgentMessage::Assistant {
         content,
@@ -147,17 +155,12 @@ pub fn finish(model: &Model, events: &[AssistantMessageEvent]) -> AgentMessage {
         return message;
     };
     *usage = Usage::zero();
-    let mut text = String::new();
-    let mut thinking = String::new();
-    let mut calls = Vec::new();
-    for event in events {
-        match event {
-            AssistantMessageEvent::TextDelta { delta, .. } => text.push_str(delta),
-            AssistantMessageEvent::ThinkingDelta { delta, .. } => thinking.push_str(delta),
-            AssistantMessageEvent::ToolCallEnd { tool_call, .. } => calls.push(tool_call.clone()),
-            _ => {}
-        }
-    }
+    let Blocks {
+        text,
+        thinking,
+        calls,
+        ..
+    } = blocks;
     if !thinking.is_empty() {
         content.push(Content::Thinking {
             thinking,
@@ -229,7 +232,7 @@ pub fn stream(
                 if !blocks.close(&sender).await {
                     return;
                 }
-                let done = finish(&model, blocks.raw());
+                let done = finish(&model, blocks);
                 let _ = sender
                     .send(AssistantMessageEvent::Done {
                         reason: stop_of(&done),
@@ -265,7 +268,7 @@ pub(super) struct Blocks {
     thinking_open: bool,
     text: String,
     thinking: String,
-    raw: Vec<AssistantMessageEvent>,
+    calls: Vec<Content>,
 }
 
 impl Blocks {
@@ -291,6 +294,10 @@ impl Blocks {
                 self.thinking.push_str(delta);
                 out.push(event.clone());
             }
+            AssistantMessageEvent::ToolCallEnd { tool_call, .. } => {
+                self.calls.push(tool_call.clone());
+                out.push(event.clone());
+            }
             other => out.push(other.clone()),
         }
         out
@@ -302,7 +309,6 @@ impl Blocks {
         event: AssistantMessageEvent,
     ) -> bool {
         let staged = self.stage(&event);
-        self.raw.push(event);
         for event in staged {
             if sender.send(event).await.is_err() {
                 return false;
@@ -326,21 +332,17 @@ impl Blocks {
             self.thinking_open = false;
             out.push(AssistantMessageEvent::ThinkingEnd {
                 content_index: 0,
-                content: std::mem::take(&mut self.thinking),
+                content: self.thinking.clone(),
             });
         }
         if self.text_open {
             self.text_open = false;
             out.push(AssistantMessageEvent::TextEnd {
                 content_index: 1,
-                content: std::mem::take(&mut self.text),
+                content: self.text.clone(),
             });
         }
         out
-    }
-
-    fn raw(&self) -> &[AssistantMessageEvent] {
-        &self.raw
     }
 }
 

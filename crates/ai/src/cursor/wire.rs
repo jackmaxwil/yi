@@ -71,7 +71,7 @@ pub async fn run(
     }
     let mut recv = response.into_body();
     let mut pending = Vec::new();
-    let mut blobs: std::collections::HashMap<Vec<u8>, Vec<u8>> = std::collections::HashMap::new();
+    let mut blobs = super::Blobs::new();
     'read: loop {
         let chunk = tokio::select! {
             biased;
@@ -89,15 +89,16 @@ pub async fn run(
         let chunk = chunk.map_err(|error| error.to_string())?;
         let _ = recv.flow_control().release_capacity(chunk.len());
         pending.extend_from_slice(&chunk);
-        let (ready, rest) = split_ready(&pending)?;
+        let (ready, rest) = proto::split_ready(&pending);
         pending = rest;
         for frame in ready {
             if frame.end {
                 let text = String::from_utf8_lossy(&frame.message);
                 return Err(format!("cursor stream ended: {text}"));
             }
-            let ended = matches!(proto::decode(&frame.message), Ok(proto::Inbound::TurnEnded));
-            let applied = apply_live(&frame.message, tool, tools, workspace, &mut blobs).await;
+            let inbound = proto::decode(&frame.message);
+            let ended = matches!(inbound, Ok(proto::Inbound::TurnEnded));
+            let applied = super::apply_message(inbound, tool, tools, workspace, &mut blobs).await;
             for reply in applied.replies {
                 send.send_data(bytes::Bytes::from(proto::frame(&reply)), false)
                     .map_err(|error| error.to_string())?;
@@ -122,81 +123,8 @@ async fn wait_stop(stop: &super::StopFn) {
     }
 }
 
-async fn apply_live(
-    message: &[u8],
-    tool: &ToolFn,
-    tools: &[proto::ToolWire],
-    workspace: &str,
-    blobs: &mut std::collections::HashMap<Vec<u8>, Vec<u8>>,
-) -> super::Applied {
-    match proto::decode(message) {
-        Ok(proto::Inbound::KvSet { id, blob_id, data }) => {
-            blobs.insert(blob_id, data);
-            super::Applied {
-                events: Vec::new(),
-                replies: vec![proto::kv_set_reply(id)],
-            }
-        }
-        Ok(proto::Inbound::KvGet { id, blob_id }) => {
-            let data = blobs.get(&blob_id).cloned().unwrap_or_default();
-            super::Applied {
-                events: Vec::new(),
-                replies: vec![proto::kv_get_reply(id, &data)],
-            }
-        }
-        Ok(proto::Inbound::Context { id, exec_id }) => super::Applied {
-            events: Vec::new(),
-            replies: vec![proto::context_reply(id, &exec_id, workspace, tools)],
-        },
-        Ok(proto::Inbound::Tool {
-            id,
-            name,
-            call_id,
-            exec_id,
-            args,
-            route,
-            command,
-            cwd,
-        }) => {
-            let output = tool(call_id.clone(), name.clone(), args.clone()).await;
-            super::Applied {
-                events: vec![super::tool_event(&call_id, &name, args)],
-                replies: proto::tool_frames(route, id, &exec_id, &command, &cwd, &output),
-            }
-        }
-        _ => {
-            let mut sink =
-                |_name: &str, _args: &serde_json::Map<String, serde_json::Value>| String::new();
-            super::apply_message(message, &mut sink)
-        }
-    }
-}
-
-fn split_ready(bytes: &[u8]) -> Result<(Vec<proto::Frame>, Vec<u8>), String> {
-    let mut frames = Vec::new();
-    let mut i = 0;
-    while bytes.len() - i >= 5 {
-        let len =
-            u32::from_be_bytes([bytes[i + 1], bytes[i + 2], bytes[i + 3], bytes[i + 4]]) as usize;
-        if bytes.len() - i < 5 + len {
-            break;
-        }
-        frames.push(proto::Frame {
-            end: bytes[i] & 0x02 != 0,
-            message: bytes[i + 5..i + 5 + len].to_vec(),
-        });
-        i += 5 + len;
-    }
-    Ok((frames, bytes[i..].to_vec()))
-}
-
 fn host_of(base: &str) -> Result<String, String> {
-    let rest = base
-        .strip_prefix("https://")
-        .or_else(|| base.strip_prefix("http://"))
-        .unwrap_or(base);
-    let host = rest.split('/').next().unwrap_or(rest);
-    let host = host.split(':').next().unwrap_or(host);
+    let host = crate::request::host_of(base);
     if host.is_empty() {
         return Err("cursor base url has no host".to_owned());
     }

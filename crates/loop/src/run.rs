@@ -1115,3 +1115,40 @@ pub async fn run_loop<S: StreamFn>(
 
     end(config, emit, collected).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cursor_call_is_not_run_again_by_the_loop() {
+        let call = |id: &str, namespace: Option<&str>| Content::ToolCall {
+            id: id.to_owned(),
+            name: "read".to_owned(),
+            arguments: Map::new(),
+            thought_signature: None,
+            namespace: namespace.map(str::to_owned),
+        };
+        let message = AgentMessage::Assistant {
+            content: vec![call("cursor-1", Some("cursor")), call("own-1", None)],
+            api: "cursor-agent".to_owned(),
+            provider: "cursor".to_owned(),
+            model: "composer-2.5-fast".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::zero(),
+            stop_reason: StopReason::ToolUse,
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        };
+        let ids: Vec<String> = extract_tool_calls(&message)
+            .into_iter()
+            .map(|call| call.id)
+            .collect();
+        assert_eq!(ids, vec!["own-1".to_owned()]);
+    }
+}

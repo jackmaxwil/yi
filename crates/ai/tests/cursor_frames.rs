@@ -1,7 +1,8 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use yi_ai::cursor::apply_message;
 use yi_ai::cursor::proto::{self, frame};
+use yi_ai::cursor::{Blobs, ToolFn, apply_message};
 
 fn varint(mut n: u64, out: &mut Vec<u8>) {
     loop {
@@ -66,36 +67,64 @@ fn shell_frame(id: u32) -> Vec<u8> {
     msg(2, &exec)
 }
 
-#[test]
-fn a_text_delta_a_tool_and_an_unknown_frame() {
-    let calls = AtomicUsize::new(0);
-    let mut tool = |name: &str, args: &serde_json::Map<String, serde_json::Value>| {
-        calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(name, "read");
-        assert_eq!(
-            args.get("path").and_then(|value| value.as_str()),
-            Some("a.rs")
+fn is_throw(reply: &[u8]) -> bool {
+    reply.first() == Some(&((5 << 3) | 2))
+}
+
+#[tokio::test]
+async fn a_text_delta_a_tool_and_an_unknown_frame() -> Result<(), Box<dyn std::error::Error>> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tool: ToolFn = Box::new({
+        let calls = Arc::clone(&calls);
+        move |_call_id, name, args| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let ok =
+                name == "read" && args.get("path").and_then(|value| value.as_str()) == Some("a.rs");
+            Box::pin(async move { if ok { "file body" } else { "wrong" }.to_owned() })
+        }
+    });
+    let mut wire = frame(&text_delta("pong"));
+    wire.extend(frame(&tool_frame(7, "read", "call-7")));
+    wire.extend(frame(&shell_frame(9)));
+    let tail = frame(&text_delta("next"));
+    wire.extend_from_slice(tail.get(..3).ok_or("short")?);
+    let (ready, rest) = proto::split_ready(&wire);
+    assert_eq!(ready.len(), 3);
+    assert_eq!(rest.len(), 3);
+    let mut blobs = Blobs::new();
+    let mut applied = Vec::new();
+    for frame in ready {
+        applied.push(
+            apply_message(
+                proto::decode(&frame.message),
+                &tool,
+                &[],
+                "file:///",
+                &mut blobs,
+            )
+            .await,
         );
-        "file body".to_owned()
+    }
+    let [text, ran, unknown] = applied.as_slice() else {
+        return Err("three frames".into());
     };
-    let text = apply_message(&text_delta("pong"), &mut tool);
     assert!(text.events.iter().any(|event| matches!(
         event,
         yi_types::event::AssistantMessageEvent::TextDelta { delta, .. } if delta == "pong"
     )));
     assert!(text.replies.is_empty());
-    let tool_applied = apply_message(&tool_frame(7, "read", "call-7"), &mut tool);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(tool_applied.replies.len(), 1);
-    assert!(!proto::is_throw(&tool_applied.replies[0]));
-    let unknown = apply_message(&shell_frame(9), &mut tool);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(unknown.replies.len(), 2);
-    assert!(proto::is_throw(&unknown.replies[0]));
-    assert_eq!(
-        proto::frames(&frame(&text_delta("pong")))
-            .expect("frames")
-            .len(),
-        1
+    assert_eq!(ran.replies.len(), 1);
+    assert!(!is_throw(&ran.replies[0]));
+    assert!(
+        ran.replies[0]
+            .windows(b"file body".len())
+            .any(|window| window == b"file body")
     );
+    assert_eq!(unknown.replies.len(), 2);
+    assert!(is_throw(&unknown.replies[0]));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let (whole, leftover) = proto::split_ready(&frame(&text_delta("pong")));
+    assert_eq!((whole.len(), leftover.len()), (1, 0));
+    Ok(())
 }

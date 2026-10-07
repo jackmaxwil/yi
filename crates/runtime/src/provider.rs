@@ -132,7 +132,7 @@ impl ProviderStream {
             routing: self.routing.clone(),
             telemetry: self.telemetry.clone(),
             force_faux: self.force_faux,
-            tools: Arc::clone(&self.tools),
+            tools: Arc::default(),
         }
     }
 
@@ -355,14 +355,25 @@ fn cursor_stream(
             .map(|held| held.clone())
             .unwrap_or_default(),
     );
+    let stop = cursor_stop(signal);
+    let tool = cursor_tool(tools, Arc::clone(&stop));
+    yi_ai::cursor::stream(model, context, key, tool, stop)
+}
+
+fn cursor_stop(signal: &InterruptSignal) -> yi_ai::cursor::StopFn {
     let cut = signal.cut_flag();
     let fired = signal.fired_flag();
-    let stop: yi_ai::cursor::StopFn = Arc::new(move || {
+    Arc::new(move || {
         cut.load(std::sync::atomic::Ordering::SeqCst)
             || fired.load(std::sync::atomic::Ordering::SeqCst)
-    });
-    let tool_stop = Arc::clone(&stop);
-    let tool: yi_ai::cursor::ToolFn = Box::new(move |call_id, name, args| {
+    })
+}
+
+fn cursor_tool(
+    tools: Arc<Vec<Arc<dyn yi_loop::tool::AgentTool>>>,
+    tool_stop: yi_ai::cursor::StopFn,
+) -> yi_ai::cursor::ToolFn {
+    Box::new(move |call_id, name, args| {
         let tools = Arc::clone(&tools);
         let stop = Arc::clone(&tool_stop);
         Box::pin(async move {
@@ -388,8 +399,7 @@ fn cursor_stream(
                 .collect::<Vec<_>>()
                 .join("\n")
         })
-    });
-    yi_ai::cursor::stream(model, context, key, tool, stop)
+    })
 }
 
 fn error_stream(model: &Model, text: &str) -> Receiver<AssistantMessageEvent> {
@@ -453,6 +463,73 @@ mod tests {
             .ok_or("bundled catalog missing gpt-5.6-luna")?;
         assert_eq!(provider_api(&model.api), Some(ProviderApi::OpenAiResponses));
         Ok(())
+    }
+
+    #[test]
+    fn a_cursor_model_routes_to_cursor_not_faux() -> Result<(), Box<dyn std::error::Error>> {
+        let model = resolve_model("cursor", "composer-2.5-fast")
+            .ok_or("bundled catalog missing composer-2.5-fast")?;
+        assert_eq!(provider_api(&model.api), Some(ProviderApi::CursorAgent));
+        Ok(())
+    }
+
+    #[test]
+    fn a_child_stream_does_not_rearm_the_parent_tools() {
+        let parent = ProviderStream::new(None);
+        parent.arm_tools(vec![Arc::new(Named("parent"))]);
+        parent.for_child().arm_tools(vec![Arc::new(Named("child"))]);
+        let held = parent.tools.lock().map(|tools| {
+            tools
+                .iter()
+                .map(|tool| tool.definition().name)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(held.ok(), Some(vec!["parent".to_owned()]));
+    }
+
+    struct Named(&'static str);
+
+    impl yi_loop::tool::AgentTool for Named {
+        fn definition(&self) -> yi_types::model::ToolDef {
+            yi_types::model::ToolDef {
+                name: self.0.to_owned(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+                freeform: None,
+            }
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _tool_call_id: &'a str,
+            _args: serde_json::Map<String, serde_json::Value>,
+            _signal: &'a InterruptSignal,
+        ) -> yi_loop::tool::ToolFuture<'a> {
+            Box::pin(async {
+                yi_loop::tool::ToolOutcome {
+                    result: yi_loop::tool::error_tool_result(self.0),
+                    is_error: false,
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fired_session_stops_the_cursor_stream_and_its_tools() {
+        let signal = InterruptSignal::default();
+        let stop = cursor_stop(&signal);
+        let tool = cursor_tool(Arc::new(vec![Arc::new(Named("read"))]), Arc::clone(&stop));
+        assert!(!stop());
+        assert_eq!(
+            tool("c".into(), "read".into(), Default::default()).await,
+            "read"
+        );
+        signal.fire();
+        assert!(stop());
+        assert_eq!(
+            tool("c".into(), "read".into(), Default::default()).await,
+            "aborted"
+        );
     }
 
     /// A child of a `--faux` run spawns on the script, never on a login whose refresh dials out,
