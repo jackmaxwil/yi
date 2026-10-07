@@ -16,6 +16,7 @@ mod sidecar;
 mod stats;
 mod todo;
 mod tty;
+mod update;
 mod why;
 
 use std::sync::Arc;
@@ -1030,6 +1031,7 @@ fn mcp_fast_path() {
 
 fn main() {
     doctor::early();
+    update::early();
     if let Err(error) = load_config() {
         eprintln!("error: {error}");
         std::process::exit(2);
@@ -1043,6 +1045,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+    dispatch(args);
+}
+
+fn dispatch(args: Args) {
     let version = env!("ARCHITECTURE_VERSION");
     match args.command.as_str() {
         "version" => println!("yi {version}"),
@@ -1122,6 +1128,7 @@ fn main() {
         "fetch" => std::process::exit(fetch::run(&args)),
         "catalog" => std::process::exit(catalog::run(&args)),
         "doctor" => std::process::exit(doctor::run(&args)),
+        "update" => std::process::exit(update::run()),
         "debug" => std::process::exit(debug::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
