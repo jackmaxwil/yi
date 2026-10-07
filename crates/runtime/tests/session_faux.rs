@@ -785,7 +785,75 @@ async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error
 /// an unattended classifier allow.
 #[tokio::test]
 async fn a_headless_session_with_no_asker_fails_closed() -> Result<(), Box<dyn Error>> {
-    let root = scratch("approve-default")?;
+    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+    let (broker, warnings) = brokered_with_classifier("approve-default", None, false, "", port)?;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("make build"));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+    assert!(
+        !outcome.allowed,
+        "headless, nobody answers for the person, so the ask degrades to a denial: {}",
+        outcome.reason
+    );
+    Ok(())
+}
+
+/// The owner: approval "should be on by default". A config with no `approval` key arms
+/// the classifier through attach, so an auto-mode ask the classifier is sure of is allowed
+/// where the person asked would have said no. Dies with an unattended classifier allow.
+#[tokio::test]
+async fn a_classifier_with_no_mode_set_approves_by_default() -> Result<(), Box<dyn Error>> {
+    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (broker, warnings) =
+        brokered_with_classifier("approve-default-on", Some(asker), false, "", port)?;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("make build"));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+    assert!(outcome.allowed, "default-on: {}", outcome.reason);
+    assert!(outcome.reason.contains("classifier"), "{}", outcome.reason);
+    Ok(())
+}
+
+/// `after-delay` answers only where prompts close on settle; every other surface gets
+/// wait-for-user, and attach must say so at start, never silently.
+#[tokio::test]
+async fn after_delay_warns_where_prompts_never_close() -> Result<(), Box<dyn Error>> {
+    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+    let extra = r#", "approval": "after-delay""#;
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (_, warnings) =
+        brokered_with_classifier("after-delay-warn", Some(asker), false, extra, port)?;
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("never close on settle")),
+        "{warnings:?}"
+    );
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (_, warnings) =
+        brokered_with_classifier("after-delay-close", Some(asker), true, extra, port)?;
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("never close on settle")),
+        "{warnings:?}"
+    );
+    Ok(())
+}
+
+/// The session shape every approval surface builds before `classifier::attach` runs: an
+/// auto-mode broker behind the runtime wiring, then a classifier config parsed from `raw`.
+fn brokered_with_classifier(
+    name: &str,
+    asker: Option<yi_runtime::Asker>,
+    close_on_settle: bool,
+    extra: &str,
+    port: u16,
+) -> Result<(Arc<yi_runtime::PermissionBroker>, Vec<String>), Box<dyn Error>> {
+    let root = scratch(name)?;
     let home = root.join("home");
     std::fs::create_dir_all(&home)?;
     let mut session = tool_call_session("echo unused");
@@ -793,9 +861,12 @@ async fn a_headless_session_with_no_asker_fails_closed() -> Result<(), Box<dyn E
         yi_runtime::PermissionMode::Auto,
         root.to_path_buf(),
         Vec::new(),
-        None,
+        asker,
         session.events_sender(),
     ));
+    if close_on_settle {
+        broker.prompts_close_on_settle();
+    }
     let provider = Arc::clone(session.provider_arc());
     yi_runtime::attach_runtime(
         &mut session,
@@ -827,22 +898,12 @@ async fn a_headless_session_with_no_asker_fails_closed() -> Result<(), Box<dyn E
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
-    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
     let raw = format!(
-        r#"{{"models": {{"classifier": "english"}}, "classifier": {{"url": "http://127.0.0.1:{port}"}}}}"#
+        r#"{{"models": {{"classifier": "english"}}, "classifier": {{"url": "http://127.0.0.1:{port}"{extra}}}}}"#
     );
     let (config, _) = yi_types::config::parse(&raw)?;
     let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
-    assert!(warnings.is_empty(), "{warnings:?}");
-    let mut args = serde_json::Map::new();
-    args.insert("command".to_owned(), serde_json::json!("make build"));
-    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
-    assert!(
-        !outcome.allowed,
-        "headless, nobody answers for the person, so the ask degrades to a denial: {}",
-        outcome.reason
-    );
-    Ok(())
+    Ok((broker, warnings))
 }
 
 /// What the model was sent, in order: user text, reminder text, or `assistant`.

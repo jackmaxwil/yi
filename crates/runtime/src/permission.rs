@@ -18,7 +18,7 @@ use yi_types::permission::{
 
 mod kept;
 mod late;
-use late::{Answered, Late, ask_or_judge};
+use late::{Late, ask_or_judge};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -1028,19 +1028,26 @@ impl PermissionBroker {
         });
         let late = late.as_ref().and_then(|late| self.late(late));
         let answered = late.map(|late| ask_or_judge(self.asker.as_ref(), ask, late));
-        if let Some(Answered::Classifier(safe)) = answered {
-            self.settle(tool_call_id, ask, true, Answerer::Classifier);
-            return CallOutcome {
-                allowed: true,
-                reason: format!(
-                    "allowed by the classifier once no one answered (P(safe) {safe:.2})"
-                ),
-                containment: Containment::Uncontained,
-            };
-        }
         let outcome = match (&self.asker, answered) {
-            (Some(_), Some(Answered::Person(outcome))) => outcome,
-            (Some(asker), _) => asker(ask),
+            (Some(_), Some(answered)) => {
+                let (outcome, safe) = self.settle_answered(tool_call_id, ask, answered);
+                if let Some(safe) = safe {
+                    return CallOutcome {
+                        allowed: true,
+                        reason: format!(
+                            "allowed by the classifier once no one answered (P(safe) {safe:.2})"
+                        ),
+                        containment: Containment::Uncontained,
+                    };
+                }
+                outcome
+            }
+            (Some(asker), _) => {
+                let outcome = asker(ask);
+                let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
+                self.settle(tool_call_id, ask, allowed, Answerer::User);
+                outcome
+            }
             (None, _) => {
                 self.settle(tool_call_id, ask, false, Answerer::Nobody);
                 let asked = yi_permission::Decision::Ask {
@@ -1056,7 +1063,6 @@ impl PermissionBroker {
             }
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-        self.settle(tool_call_id, ask, allowed, Answerer::User);
         let mut ledger = self
             .ledger
             .lock()
