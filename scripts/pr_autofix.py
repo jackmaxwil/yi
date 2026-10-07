@@ -322,7 +322,8 @@ def findings_prompt(pr, n, todo):
         "the file:line that shows why; a person decides those. Scope is no reason to decline: these are the work.\n"
         "A finding about a test is fixed by a test that fails against the unfixed code: revert your fix here, run "
         "the test and see it fail, restore it and see it pass, and quote both results in `summary`. Never delete "
-        "or weaken a test or an assertion to make a finding go away.\n"
+        "or weaken a test or an assertion to make a finding go away, with one exception: a tests finding that a "
+        "test proves nothing, where no test could fail against the unfixed code, is fixed by deleting that test.\n"
         "Do not touch .forgejo/, .github/, scripts/guardrails/, scripts/hooks/, the justfile or "
         "skills/yi/pr-review/; build with the default target dir; do not commit or change git state.\n"
         "Answer with `summary` (what you changed for each number, one paragraph) and `declined`.\n"
@@ -357,10 +358,12 @@ def test_from(text, path):
     return before + 1 if before < len(text.splitlines()) else None
 
 
-def weakened(clone):
+def weakened(clone, spared=frozenset()):
     """A staged change that deletes a test or loses assertions from test code: the cheap way to
     make a test finding go away, refused whatever the summary says. A test moved between files is
-    no loss, and an `assert!` that src turns into a typed error is not test code."""
+    no loss, and an `assert!` that src turns into a typed error is not test code. `spared` files
+    may lose tests: a tests finding there may say a test proves nothing, and deleting it is the fix.
+    Incident: #1058's fix deleted such a test, the refusal restored it, and the high came back."""
     diff = sh(clone, "git", "diff", "--cached", "--unified=0", "--no-renames", "HEAD").stdout
     show = lambda rev, path: sh(clone, "git", "show", f"{rev}:{path}", check=False).stdout
     tests, path, starts, gone, came = 0, None, {}, {}, {}
@@ -372,8 +375,8 @@ def weakened(clone):
             at = {"-": int(hunk.group(1)), "+": int(hunk.group(2))}
         elif line[:1] in "-+" and not line.startswith(("---", "+++")):
             side, sign = line[0], (1 if line[0] == "-" else -1)
-            tests += sign * bool(TEST_FN.search(line[1:]))
-            if starts.get(side) is not None and at[side] >= starts[side] and ASSERT.search(line[1:]):
+            tests += sign * bool(TEST_FN.search(line[1:])) * (path not in spared)
+            if path not in spared and starts.get(side) is not None and at[side] >= starts[side] and ASSERT.search(line[1:]):
                 (gone if side == "-" else came).setdefault(path, Counter())[line[1:].strip()] += 1
             at[side] += 1
     if tests > 0:
@@ -386,6 +389,11 @@ def weakened(clone):
         if lost > 0:
             return f"the fix removes {lost} more assertion(s) from {where} than it adds there"
     return None
+
+
+def tests_named(findings):
+    """The files a tests-lens finding names, where `weakened` lets a fix delete a test."""
+    return frozenset(f.get("path") for f in findings if f.get("lens") == "tests")
 
 
 def prior_fixes(repo, sha, stopped=0.0):
@@ -427,6 +435,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
     before = snapshot(clone)
     said = answer(findings_prompt(pr, rnd["n"], todo), model, FINDINGS_SCHEMA)
     own = set(sh(clone, "git", "diff", "--name-only", f"origin/{pr['base']['ref']}...HEAD").stdout.split())
+    spared = tests_named(todo)
 
     def judged():
         touched, note = accept(clone, [], before, keep_new=NEW_FILE.match)
@@ -434,7 +443,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
         if foreign:
             return touched, note, ("the fix edits skills this PR does not touch, which later sessions load as instructions: "
                                    + ", ".join(foreign))
-        return touched, note, weakened(clone)
+        return touched, note, weakened(clone, spared)
 
     touched, note, refused = judged()
     if refused:
@@ -502,7 +511,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             said = answer(hook_prompt(pr, refused), model or TIERS[0], deadline=REPAIR_SECS)
             more, note = accept(clone, [], before, keep_new=NEW_FILE.match if kind == "findings" else lambda path: False)
             touched = sorted(set(touched) | set(more))
-            refused = weakened(clone) if kind == "findings" else None
+            refused = weakened(clone, tests_named(rnd["findings"])) if kind == "findings" else None
             if refused:
                 raise RuntimeError(refused)
             reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
@@ -826,7 +835,7 @@ def selfcheck():
         git("add", "-A"); git("commit", "-qm", "a test"); git("push", "-q", "origin", "HEAD:refs/heads/topic")
         git("fetch", "-q", "origin")
         rnd = {"n": 4, "verdict": "blocked", "findings": [
-            {"lens": "tests", "severity": "high", "claim": "the test passes unfixed", "path": "tests/t.rs", "line": 3},
+            {"lens": "tests", "severity": "high", "claim": "the test passes unfixed", "path": "tests/other.rs", "line": 3},
             {"lens": "correctness", "severity": "high", "claim": "a false alarm", "path": "a.txt", "line": 1},
             {"lens": "duplicate", "severity": "high", "claim": "a twin", "path": "", "line": 0}]}
 
@@ -899,7 +908,7 @@ def selfcheck():
     finally:
         shutil.rmtree(tmp)
         shutil.rmtree(tmp.parent / (tmp.name + "-remote.git"), ignore_errors=True)
-    def weak(before, after):
+    def weak(before, after, spared=frozenset()):
         repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-weak-"))
         try:
             git = lambda *a: sh(repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
@@ -911,7 +920,7 @@ def selfcheck():
                 git("add", "-A")
                 if files is before:
                     git("commit", "-qm", "seed")
-            return weakened(repo)
+            return weakened(repo, spared)
         finally:
             shutil.rmtree(repo)
     unit = "#[test]\nfn t() {\n    assert!(f());\n}\n"
@@ -930,6 +939,10 @@ def selfcheck():
          {"a/tests/x.rs": unit.replace("    assert!(f());\n", ""), "a/tests/y.rs": "#[test]\nfn u() {\n    assert!(true);\n}\n"},
          "from a/tests/x.rs"),
     ]
+    if weak({"a/tests/x.rs": unit}, {"a/tests/x.rs": ""}, frozenset({"a/tests/x.rs"})) is not None \
+            or weak({"a/tests/x.rs": unit, "a/tests/y.rs": unit.replace("fn t", "fn u")},
+                    {"a/tests/x.rs": "", "a/tests/y.rs": ""}, frozenset({"a/tests/x.rs"})) is None:
+        errs.append("a test a tests finding names is not deletable, or naming one file spares another")
     for what, before, after, want in cases:
         got = weak(before, after)
         if (want is None) != (got is None) or (want and want not in got):
