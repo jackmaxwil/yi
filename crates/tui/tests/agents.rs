@@ -1,10 +1,15 @@
 use std::error::Error;
 
+use crate::common::test_model;
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 use yi_tui::agents::{AgentRow, AgentState, AgentsPopup};
+use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
-use yi_tui::keymap::{KeyCodeValue, SingleKey};
+use yi_tui::input::handle_terminal_event;
+use yi_tui::keymap::{KeyCodeValue, SingleKey, default_keymap};
 use yi_tui::popup::{BottomView, PopupResult};
+use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -145,4 +150,52 @@ fn the_roster_marks_each_child_in_the_status_vocabulary() -> TestResult {
         assert!(rendered.contains(mark), "{mark}: {rendered}");
     }
     Ok(())
+}
+
+/// Dies with ctrl+c ignored over an open agents popup: the key that cancels everywhere else
+/// left it open.
+#[test]
+fn ctrl_c_closes_the_agents_popup_without_stopping_a_row() -> TestResult {
+    let mut app = App::new(
+        TuiOptions {
+            model: test_model("faux-1"),
+            session_name: "agents".to_owned(),
+            cwd: "/tmp".to_owned(),
+            lane: None,
+            context_window: 128_000,
+            session_dir: String::new(),
+            keys: Vec::new(),
+            initial_prompt: None,
+            pace: 0,
+        },
+        theme(),
+        default_keymap(),
+        80,
+    );
+    app.adopt(&child_update(), None);
+    app.open_agents();
+    assert!(app.bottom_open(), "the roster never opened");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    handle_terminal_event(
+        &mut app,
+        &tx,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    assert!(!app.bottom_open(), "the popup stays after ctrl-c");
+    Ok(())
+}
+
+fn child_update() -> ChildUpdate {
+    ChildUpdate {
+        id: ChildId("sub-scout".to_owned()),
+        name: "scout".to_owned(),
+        status: ChildStatus::Running,
+        activity: ChildActivity::Waiting,
+        tool_use_count: 1,
+        token_count: 40,
+        answer_preview: None,
+        error: None,
+        exit: None,
+        flag: None,
+    }
 }

@@ -1,6 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::cell::spinner_frame;
 use crate::colors::{Theme, name_accent};
@@ -83,6 +83,16 @@ impl TokenTally {
         self.cached = bump(self.cached, usage.cache_read);
     }
 
+    pub(crate) fn of_ledger(stats: &yi_types::wire::SessionStats) -> Self {
+        let (cached, uncached) = (bump(0, stats.cached_tokens), bump(0, stats.uncached_tokens));
+        let input = cached.saturating_add(uncached);
+        Self {
+            input,
+            output: bump(0, stats.total_tokens).saturating_sub(input),
+            cached,
+        }
+    }
+
     /// `N% cached` once input was read, where a read was expected or one happened.
     pub(crate) fn cache_label(self, expected: bool) -> Option<String> {
         (self.input > 0 && (expected || self.cached > 0))
@@ -101,6 +111,13 @@ impl Money {
     pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
         self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
         self.lower_bound |= usage.unknown;
+    }
+
+    pub(crate) fn of_ledger(stats: &yi_types::wire::SessionStats) -> Self {
+        Self {
+            cost: stats.cost_total,
+            lower_bound: stats.unknown_usage,
+        }
     }
 
     /// `None` until something was spent or went unreported.
@@ -320,17 +337,13 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-/// `text` less at least `over` cells, whole characters only, ending in `…`.
+/// `text` less at least `over` cells, whole characters only, ending in `…`. Measures the
+/// string, not the characters: `⚠️` is 1 + 0 cells apart and 2 together.
 fn clip_cells(text: &str, over: usize) -> String {
     let keep = text.width().saturating_sub(over + 1);
-    let mut used = 0;
-    let mut out: String = text
-        .chars()
-        .take_while(|ch| {
-            used += ch.width().unwrap_or(0);
-            used <= keep
-        })
-        .collect();
+    let cells = crate::wrap::flatten_spans(&[Span::raw(text)]);
+    let kept = crate::wrap::take_cells(&cells, keep);
+    let mut out: String = kept.iter().map(|cell| cell.ch).collect();
     out.push('…');
     out
 }

@@ -221,10 +221,15 @@ fn kind(value: &Value) -> &'static str {
     }
 }
 
-/// Models fence their JSON however they like; take the first complete value.
+/// Models fence their JSON however they like; when the reply does not parse whole, the
+/// last fenced block that parses as JSON is the answer, and prose (including quoted JSON
+/// and bracketed tags) around it never reaches the parser. Inline JSON is the fallback.
 pub fn extract(text: &str) -> Result<Value, String> {
     let trimmed = text.trim();
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(value);
+    }
+    if let Some(value) = last_fenced_json(trimmed) {
         return Ok(value);
     }
     let start = trimmed
@@ -237,4 +242,28 @@ pub fn extract(text: &str) -> Result<Value, String> {
         Some(Err(error)) => Err(format!("answer is not valid JSON: {error}")),
         None => Err("answer contains no JSON value".to_owned()),
     }
+}
+
+fn last_fenced_json(text: &str) -> Option<Value> {
+    let mut last = None;
+    let mut content = String::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        let bare = line.trim_start();
+        if fenced {
+            if bare.starts_with("```") {
+                if let Ok(value) = serde_json::from_str::<Value>(content.trim()) {
+                    last = Some(value);
+                }
+                fenced = false;
+                content.clear();
+            } else {
+                content.push_str(line);
+                content.push('\n');
+            }
+        } else if bare.starts_with("```") {
+            fenced = true;
+        }
+    }
+    last
 }

@@ -266,7 +266,7 @@ impl BottomView for ModelPopup {
                 self.query.pop();
                 self.selected = 0;
             }
-            KeyCodeValue::Char(character) if typing => {
+            KeyCodeValue::Char(character) if typing && !key.ctrl && !key.alt => {
                 self.query.push(character);
                 self.selected = 0;
             }

@@ -105,6 +105,11 @@ impl App {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Session { chat: Some(_), .. }))
     }
 
+    pub(super) fn chat_takes_ctrl_c(&mut self) -> bool {
+        self.focused_chat()
+            .is_some_and(|chat| chat.app.takes_ctrl_c())
+    }
+
     pub(super) fn popup_open(&self) -> bool {
         self.state
             .focused_pane()
@@ -264,6 +269,9 @@ impl App {
         for chat in self.state.chats_mut(id) {
             if replay.child.is_none() {
                 chat.port.absorb_replay(replay, entries.clone());
+            }
+            if let Some(stats) = replay.stats.as_ref().filter(|_| replay.child.is_none()) {
+                chat.app.seed_ledger(stats);
             }
             if let Some(name) = &replay.name {
                 chat.app.set_session_name(name.clone());

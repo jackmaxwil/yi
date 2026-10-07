@@ -684,6 +684,46 @@ impl yi_runtime::ext::Extension for Noisy {
     }
 }
 
+/// The ripwire card is in the prompt exactly when a `ripwire` binary is on PATH; each half runs
+/// in a rerun of this test whose PATH is one scratch dir, and the dir's name says it is one.
+#[test]
+fn the_ripwire_card_attaches_only_when_ripwire_is_on_path() -> TestResult {
+    let path = std::env::var_os("PATH").map(PathBuf::from);
+    if let Some(dir) = path.filter(|dir| {
+        dir.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("yi-ext-ripwire-"))
+    }) {
+        let host = started(&dir, &dir);
+        let present = dir.join("ripwire").is_file();
+        assert_eq!(
+            host.system_prompt()
+                .contains("`ripwire` maps this repository's code"),
+            present
+        );
+        return Ok(());
+    }
+    for present in [false, true] {
+        let dir = Scratch::new("yi-ext-ripwire")?;
+        if present {
+            std::fs::write(dir.join("ripwire"), "#!/bin/sh\n")?;
+        }
+        let rerun = yi_tools::command(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "ext_e2e::the_ripwire_card_attaches_only_when_ripwire_is_on_path",
+            ])
+            .env("PATH", &*dir)
+            .output()?;
+        let stdout = String::from_utf8_lossy(&rerun.stdout);
+        assert!(
+            rerun.status.success() && stdout.contains("1 passed"),
+            "present={present}: {stdout}"
+        );
+    }
+    Ok(())
+}
+
 /// A pack is data: the same interpreter carries the compiled-in `lang-rust`
 /// and one the user drops in a directory.
 #[test]

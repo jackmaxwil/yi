@@ -649,30 +649,15 @@ fn a_block_op_on_a_python_file_replaces_the_indented_body() -> TestResult {
     Ok(())
 }
 
+/// A file no ripwire parser reads has no definition to check, installed or not.
 #[test]
-fn an_edit_to_a_charted_file_carries_a_named_grid_layer() -> TestResult {
-    let fixture = Fixture::new("grid-layer")?;
-    fs::create_dir_all(fixture.context.cwd.join(".grid"))?;
-    fixture.write("a.rs", "fn a() {}\n")?;
-    let tag = fixture.tag_of("a.rs")?;
-    let edit = fixture.edit(&format!("[a.rs#{tag}]\nPUT 1.=1:\n+fn a() {{ 1 }}\n"));
-    let text = output_text(&edit);
-    assert!(!edit.is_error, "{text}");
-    assert!(
-        text.contains("[grid check"),
-        "the layer is named either way: {text}"
-    );
-    assert!(
-        edit.result.details["grid"].is_string(),
-        "{}",
-        edit.result.details
-    );
-
+fn an_edit_to_a_file_ripwire_cannot_parse_skips_its_check() -> TestResult {
+    let fixture = Fixture::new("ripwire-plain")?;
     fixture.write("b.txt", "one\n")?;
     let tag = fixture.tag_of("b.txt")?;
     let plain = fixture.edit(&format!("[b.txt#{tag}]\nPUT 1.=1:\n+two\n"));
-    assert!(!output_text(&plain).contains("[grid check"));
-    assert_eq!(plain.result.details["grid"], json!("skipped"));
+    assert!(!output_text(&plain).contains("[ripwire check"));
+    assert_eq!(plain.result.details["ripwire"], json!("skipped"));
     Ok(())
 }
 

@@ -242,8 +242,9 @@ fn walk_capped(
     // Rules above the root bind it, from the nearest repository top down; a root that is one
     // takes none from above.
     let above: Vec<&Path> = root.ancestors().collect();
-    if let Some(top) = above.iter().position(|dir| dir.join(".git").exists()) {
-        (above.iter().take(top.saturating_add(1)).skip(1).rev())
+    let top = crate::process::git_root(&root);
+    if let Some(at) = above.iter().position(|dir| top.as_deref() == Some(*dir)) {
+        (above.iter().take(at.saturating_add(1)).skip(1).rev())
             .for_each(|dir| ignore.push_dir(dir));
     }
     let mut seen = 0_usize;
@@ -266,8 +267,8 @@ fn walk_capped(
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            // Every guarded identity is a directory's but a linked worktree's `.git` file, which
-            // the ignore rules drop by name, so a file's is read only under a wall.
+            // A guarded file (a key file, a linked worktree's `.git`) is refused where a visit
+            // opens it, through the gate, so a file's identity is read here only under a wall.
             let meta = (file_type.is_dir() || !ids.is_empty())
                 .then(|| entry.metadata().ok())
                 .flatten();
@@ -298,24 +299,21 @@ const READ_ONLY_VERBS: [&str; 24] = [
     "du", "df", "date", "env", "printenv", "grep", "rg", "ag", "find", "fd", "diff", "true",
 ];
 
-/// `git` is half a read tool: only the reporting subcommands qualify.
+#[rustfmt::skip]
 const READ_ONLY_GIT: [&str; 10] = [
-    "log",
-    "status",
-    "diff",
-    "show",
-    "blame",
-    "branch",
-    "describe",
-    "rev-parse",
-    "ls-files",
+    "log", "status", "diff", "show", "blame", "branch", "describe", "rev-parse", "ls-files",
     "shortlog",
 ];
 
-/// Grid's query verbs read the chart; `survey` and `edit` write.
-const READ_ONLY_GRID: [&str; 14] = [
-    "resolve", "uses", "scope", "todo", "roots", "explain", "version", "orphans", "hotspots",
-    "log", "diff", "drift", "check", "help",
+/// Ripwire's query flags read the tree; its edit, baseline, note, export, server and run-trace
+/// flags write or execute, so a command carrying any flag outside this set stays `Exec`.
+#[rustfmt::skip]
+const READ_ONLY_RIPWIRE: [&str; 38] = [
+    "for", "pack-task", "callers", "callees", "uses", "around", "expand", "outline", "path",
+    "connect", "impact", "verify", "mentions", "affected", "exercises", "situ", "test-gate",
+    "edit-check", "safe-delete", "slice", "at", "from-trace", "cochange", "whereis", "tree",
+    "recall", "lego", "json", "limit", "offset", "detail", "signatures-only", "pack-signatures",
+    "token-budget", "max-tokens", "compress", "help", "version",
 ];
 
 /// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
@@ -346,7 +344,11 @@ fn read_only_segment(segment: &str) -> bool {
     let verb = verb.rsplit('/').next().unwrap_or(verb);
     match verb {
         "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub)),
-        "grid" => words.next().is_some_and(|sub| READ_ONLY_GRID.contains(sub)),
+        // Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write.
+        "ripwire" => words.all(|word| match word.strip_prefix("--") {
+            Some(flag) => READ_ONLY_RIPWIRE.contains(&flag.split('=').next().unwrap_or(flag)),
+            None => !(word.starts_with('-') || word.contains(':') || word.contains('@')),
+        }),
         _ => READ_ONLY_VERBS.contains(&verb),
     }
 }
@@ -791,7 +793,8 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
                 let after = background_after.unwrap_or_default();
-                return backgrounded_output(sections, id, after, timeout);
+                let owned = context.job_owner.is_some();
+                return backgrounded_output(sections, id, after, timeout, owned);
             }
             Err(message) => return error_output(message),
         };
@@ -855,11 +858,14 @@ impl Tool for BashTool {
             sections.push(hint);
         }
         // The raw output, not the reduced text: a refusal line the reducer cut still counts.
+        let raw = format!("{}{}", capture.stdout, capture.stderr);
         let refusal = context.sandbox.as_ref().and_then(|sandbox| {
-            let raw = format!("{}{}", capture.stdout, capture.stderr);
             crate::sandbox::sandbox_refusal(sandbox, &context.cwd, capture.exit_code, &raw, command)
         });
         sections.extend(refusal.as_ref().map(crate::sandbox::denial_hint));
+        let note = (context.sandbox.as_ref())
+            .and_then(|_| crate::sandbox::outcome_note(&raw, command, exit_code));
+        sections.extend(note);
         let mut text = if sections.is_empty() {
             "(no output)".to_owned()
         } else {
@@ -906,12 +912,18 @@ fn backgrounded_output(
     id: crate::jobs::JobId,
     after: std::time::Duration,
     timeout: std::time::Duration,
+    owned: bool,
 ) -> ToolOutput {
     const TAIL_LINES: usize = 20;
     const TAIL_BYTES: usize = 2_048;
     let timeout = timeout.as_secs();
+    let arrival = if owned {
+        "when it exits, starting your next turn: end the turn rather than sleep or poll"
+    } else {
+        "only if it exits while this turn is still running"
+    };
     sections.push(format!(
-        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own only if it exits while this turn is still running; before you end the turn, wait for it with bash job={id} wait=<s>.]"
+        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own {arrival}; bash job={id} wait=<s> waits for it now.]"
     ));
     let chunk = crate::jobs::registry().output_since(id, 0);
     let (so_far, printed) = chunk.map_or((String::new(), 0), |chunk| (chunk.text, chunk.next));

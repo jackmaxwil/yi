@@ -11,12 +11,33 @@ use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
 
+pub(crate) fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// The repository's top; a worktree never borrows the main checkout's.
+pub fn git_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    (cwd.ancestors())
+        .find(|dir| dir.join(".git").exists())
+        .map(std::path::Path::to_path_buf)
+}
+
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[expect(
         clippy::disallowed_methods,
         reason = "process spawns live in yi-tools; every spawn routes through run_captured via this constructor"
     )]
     Command::new(program)
+}
+
+/// [`command`] for a command the model wrote, whose output it reads: yi's provider keys never
+/// reach it, contained or not (#906). The kernel, which cannot reach this crate, strips the same.
+pub fn keyless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut process = command(program);
+    for (_, variable) in yi_types::PROVIDER_KEY_VARS {
+        process.env_remove(variable);
+    }
+    process
 }
 
 #[derive(Debug, Clone)]

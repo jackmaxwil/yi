@@ -7,6 +7,7 @@ use crate::process::{OUTPUT_CAP, command, run_captured};
 use crate::tool::{Tool, ToolContext, ToolKind, ToolOutput, text_output};
 
 const LAYER_CAP: usize = 4_000;
+const NEAR_ROWS: usize = 20;
 /// The skeleton footer's longest form, held back from the layer so the footer always fits.
 const FOOTER_ROOM: usize = 200;
 const SKELETON_FILES: usize = 40;
@@ -57,14 +58,15 @@ impl Tool for GetContextTool {
     }
 
     fn description(&self) -> &str {
-        "One orientation packet for the working directory: grid roots, symbol neighborhood, file skeletons, git change heat, gate commands, prior mining issues. Layers are clamped and name what they cut; the header says how many were available. Call it once, first, in a repository you have not read this session. PARTIAL - k of n layers means the missing layers are absent, not empty; read what the packet names."
+        "One orientation packet for the working directory: task map, symbol neighborhood, file skeletons, git change heat, gate commands, prior mining issues. Layers are clamped and name what they cut; the header says how many were available. Call it once, first, in a repository you have not read this session. PARTIAL - k of n layers means the missing layers are absent, not empty; read what the packet names."
     }
 
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "symbol": {"type": "string", "description": "Optional callsign or type name for the symbol-neighborhood layer"}
+                "task": {"type": "string", "description": "Optional task in plain words for the task-map layer"},
+                "symbol": {"type": "string", "description": "Optional function or type name for the symbol-neighborhood layer"}
             }
         })
     }
@@ -74,22 +76,22 @@ impl Tool for GetContextTool {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
+        let task = input.get("task").and_then(Value::as_str);
         let symbol = input.get("symbol").and_then(Value::as_str);
-        text_output(packet(symbol, context))
+        text_output(packet(task, symbol, context))
     }
 }
 
-fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
+fn packet(task: Option<&str>, symbol: Option<&str>, context: &ToolContext) -> String {
     let root = context.cwd.as_path();
-    // The grid calls wait on another process, so they run beside the heat and the walk.
-    let (roots, near, heat, skeleton) = std::thread::scope(|scope| {
-        let roots = scope.spawn(|| {
-            let _span = yi_types::trace::span("context.grid");
-            let chart = crate::grid::chart_root(root).unwrap_or(root);
-            crate::grid::layer(chart, &["roots"], &context.cancelled)
+    // The ripwire calls wait on another process, so they run beside the heat and the walk.
+    let (map, near, heat, skeleton) = std::thread::scope(|scope| {
+        let map = scope.spawn(|| {
+            let _span = yi_types::trace::span("context.ripwire");
+            task_map(task, context)
         });
         let near = scope.spawn(|| {
-            let _span = yi_types::trace::span("context.grid");
+            let _span = yi_types::trace::span("context.ripwire");
             neighborhood(symbol, context)
         });
         let heat_span = yi_types::trace::span("context.heat");
@@ -97,12 +99,10 @@ fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
         drop(heat_span);
         let _span = yi_types::trace::span("context.skeletons");
         let skeleton = skeletons(root, symbol, heat.as_ref().ok(), context);
-        (joined(roots), joined(near), heat, skeleton)
+        (joined(map), joined(near), heat, skeleton)
     });
     let layers: [(&str, LayerBody); 6] = [
-        // Invariant: this tool only reads. `grid survey` charts the worktree,
-        // so the packet takes a slice of an existing chart instead.
-        ("grid roots", roots),
+        ("task map", map),
         ("symbol neighborhood", near),
         ("file skeletons", skeleton),
         ("git change heat", git_heat(heat)),
@@ -147,17 +147,104 @@ fn clamp(name: &str, body: String) -> String {
     format!("{kept}\n[{name} truncated at {LAYER_CAP} bytes]")
 }
 
+fn task_map(task: Option<&str>, context: &ToolContext) -> LayerBody {
+    let task = task.ok_or_else(|| "no task argument was given".to_owned())?;
+    let root = &crate::ripwire::root(&context.cwd);
+    let answer = crate::ripwire::json(root, &[&format!("--for={task}")], &context.cancelled)?;
+    let rows = answer.get("sigs").and_then(Value::as_array);
+    let mut out = vec![format!(
+        "ripwire confidence {} (margin {}%)",
+        field(&answer, "confidence"),
+        field(&answer, "margin_pct")
+    )];
+    out.extend(rows.into_iter().flatten().map(|row| {
+        format!(
+            "{}:{}  {}",
+            field(row, "p"),
+            field(row, "l"),
+            field(row, "sig")
+        )
+    }));
+    if let Some(floor) = answer.get("relevance_floor").and_then(Value::as_str) {
+        let floor = floor.trim().trim_start_matches('[').trim_end_matches(']');
+        out.push(format!("[task map — {floor}]"));
+    }
+    if answer.get("capped").and_then(Value::as_bool) == Some(true) {
+        let spent = answer
+            .get("est_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(4_000);
+        out.push(format!(
+            "[task map: {} of {} signatures, cut at ripwire's byte budget — bash: ripwire . --for={} --json --token-budget={}]",
+            field(&answer, "sigs_shown"),
+            field(&answer, "sigs_total"),
+            crate::process::quoted(task),
+            spent.saturating_mul(2).div_ceil(1_000).saturating_mul(1_000),
+        ));
+    }
+    Ok(out.join("\n"))
+}
+
 fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
-    let symbol = symbol.ok_or_else(|| "no symbol argument was given".to_owned())?;
-    let chart = crate::grid::chart_root(&context.cwd).ok_or_else(|| {
-        "no .grid chart in or above the working directory — bash: grid survey charts it".to_owned()
-    })?;
-    let pattern = crate::grid::scope_pattern(symbol);
-    crate::grid::layer(
-        chart,
-        &["scope", &pattern, "--depth", "1"],
-        &context.cancelled,
-    )
+    let symbol = bare(symbol.ok_or_else(|| "no symbol argument was given".to_owned())?);
+    let root = &crate::ripwire::root(&context.cwd);
+    let ask = |verb: &str| -> Result<(String, bool), String> {
+        let flag = format!("--{verb}={symbol}");
+        let answer = crate::ripwire::json(root, &[&flag], &context.cancelled)?;
+        let rows: &[Value] = match answer.get(verb) {
+            Some(Value::Array(rows)) => rows,
+            _ => return Err(format!("the answer named no {verb} rows")),
+        };
+        let count = field(&answer, "count");
+        let mut out = vec![format!(
+            "{verb} of {symbol}: {count}, matched by name: a row can be a same-named function elsewhere, and calls ripwire could not resolve are missing"
+        )];
+        out.extend(
+            rows.iter()
+                .take(NEAR_ROWS)
+                .map(|row| format!("  {} {}", field(row, "n"), field(row, "p"))),
+        );
+        if rows.len() > NEAR_ROWS {
+            out.push(format!(
+                "[{verb}: {NEAR_ROWS} of {count} rows, cap {NEAR_ROWS} — bash: ripwire . --{verb}={} --json --limit={count}]",
+                crate::process::quoted(&symbol)
+            ));
+        }
+        Ok((out.join("\n"), rows.is_empty()))
+    };
+    let (callers, callees) = std::thread::scope(|scope| {
+        let callees = scope.spawn(|| ask("callees"));
+        let callers = ask("callers");
+        let panicked = |_| Err("the layer's thread panicked".to_owned());
+        (callers, callees.join().unwrap_or_else(panicked))
+    });
+    let ((callers, no_callers), (callees, no_callees)) = (callers?, callees?);
+    let mut out = format!("{callers}\n{callees}");
+    if no_callers && no_callees {
+        out.push_str(&format!(
+            "\n[{symbol}: no call found either way; ripwire matches calls by name and does not track uses of a type — grep -rn {} for those]",
+            crate::process::quoted(&symbol)
+        ));
+    }
+    Ok(out)
+}
+
+/// Incident: a path-qualified name missed; ripwire takes `name` or `Type::name`.
+fn bare(symbol: &str) -> String {
+    let mut parts = symbol.rsplit("::");
+    let name = parts.next().unwrap_or(symbol);
+    match parts.next() {
+        Some(owner) if owner.starts_with(char::is_uppercase) => format!("{owner}::{name}"),
+        _ => name.to_owned(),
+    }
+}
+
+fn field(row: &Value, key: &str) -> String {
+    match row.get(key) {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
+        None => "?".to_owned(),
+    }
 }
 
 fn skeletons(

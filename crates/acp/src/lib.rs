@@ -207,7 +207,7 @@ impl Drop for SessionHandle {
         self.forwarder.abort();
         // Each running child is revoked under its own `parent_close`, its work kept.
         let _revoked = self.host.close();
-        self.session.dispose_kernel();
+        self.session.retire();
     }
 }
 
@@ -967,7 +967,7 @@ impl AcpState {
         child: Option<&ChildId>,
     ) -> Result<u64, (i64, String)> {
         let mut span = yi_types::trace::span("acp.emit_replay");
-        let (entries, leaf, goal) = {
+        let (entries, leaf, goal, stats) = {
             let session = lock_session(store);
             let entries = session
                 .find_entries(&EntryQuery {
@@ -976,8 +976,9 @@ impl AcpState {
                 })
                 .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
             let leaf = session.leaf_id("main").ok().flatten();
-            (entries, leaf, session.goal())
+            (entries, leaf, session.goal(), session.stats())
         };
+        let stats = child.is_none().then_some(&stats);
         let todos = yi_runtime::todo::latest_record(store).map(|record| record.list);
         let name = session_name(store);
         let total = u64::try_from(entries.len()).unwrap_or(u64::MAX);
@@ -1000,6 +1001,7 @@ impl AcpState {
                 todos: todos.as_ref(),
                 context_window,
                 child,
+                stats: stats.filter(|_| last),
             };
             (self.sink)(&update_notification(session_id, replay_update(&frame)));
         }
@@ -1014,6 +1016,7 @@ impl AcpState {
                 todos: todos.as_ref(),
                 context_window,
                 child,
+                stats,
             };
             (self.sink)(&update_notification(session_id, replay_update(&frame)));
         }

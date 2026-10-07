@@ -254,7 +254,7 @@ fn an_image_turn_marks_its_last_text_part_and_never_the_image() -> TestResult {
             text("compare these"),
             text("the second is newer"),
             Content::Image {
-                data: "iVBORw0KGgo=".to_owned(),
+                data: crate::images::PNG.to_owned(),
                 mime_type: "image/png".to_owned(),
             },
         ]),
