@@ -288,7 +288,7 @@ pub(crate) fn capture_named(
     let output = format!("{}{}", capture.stdout, capture.stderr);
     let denied = sandbox
         .and_then(|sandbox| {
-            yi_tools::sandbox_refusal(sandbox, cwd, capture.exit_code, &output, program)
+            yi_tools::sandbox_refusal(sandbox, cwd, capture.exit_code, &output, label)
         })
         .map(|refusal| format!("\n{}\n", yi_tools::denial_hint(&refusal)))
         .unwrap_or_default();
@@ -1106,5 +1106,37 @@ impl Lane {
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_denied_sync_names_the_toolchains_write_target_not_the_wrapper() -> Result<(), String> {
+        let cwd = std::env::temp_dir().join("yi-lane-refusal-hint");
+        std::fs::create_dir_all(&cwd).map_err(|error| error.to_string())?;
+        let home = std::env::temp_dir();
+        let sandbox = yi_tools::Sandbox::for_workspace(&cwd, &home, None);
+        let script = "echo x > /denied-target/a; \
+                      printf 'sh: /etc/hosts: Operation not permitted\\n' >&2; exit 3";
+        let label = format!("sh -c {script}");
+        let Err(error) = capture_named(
+            &cwd,
+            &label,
+            "sh",
+            &["-c", script],
+            std::time::Duration::from_secs(10),
+            yi_tools::OUTPUT_CAP,
+            Some(&sandbox),
+        ) else {
+            return Err("the denied sync succeeded".to_owned());
+        };
+        assert!(
+            error.contains("next: the sandbox refused writing `/denied-target/a"),
+            "the hint names the toolchain command's write target, not the wrapper: {error}"
+        );
+        Ok(())
     }
 }

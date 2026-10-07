@@ -215,6 +215,7 @@ pub(crate) fn partition(
     entries: &[String],
     wall: &crate::wall::Wall,
     cwd: &Path,
+    reader: bool,
 ) -> Result<String, String> {
     let mut out = String::new();
     for (index, raw) in entries.iter().enumerate() {
@@ -223,7 +224,7 @@ pub(crate) fn partition(
             .map_err(|error| format!("partition {raw}: {error}"))?;
         if let Some(reason) = match url.scheme().as_str() {
             "kernel" => Some("a kernel value rides context_keys, not the partition"),
-            "family" => Some(
+            "family" if reader => Some(
                 "a family entry shows a reader only its sidecar; a computed value rides context_keys",
             ),
             _ => None,
@@ -318,7 +319,13 @@ pub(crate) fn brief(
     let named = entries(kwargs)?;
     let fenced = match (named.is_empty(), host.resolver.get()) {
         (true, _) => None,
-        (false, Some(resolver)) => Some(partition(resolver, &named, &cast.2, &host.options.cwd)?),
+        (false, Some(resolver)) => Some(partition(
+            resolver,
+            &named,
+            &cast.2,
+            &host.options.cwd,
+            cast.3.is_some(),
+        )?),
         (false, None) => return Err("this session resolves no partition".to_owned()),
     };
     let Some(reader) = cast.3.as_mut() else {
