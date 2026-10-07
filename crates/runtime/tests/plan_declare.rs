@@ -594,17 +594,7 @@ fn a_set_row_with_a_contract_is_refused_and_bare_rows_land() -> TestResult {
 #[test]
 fn every_plan_refusal_names_its_class() -> TestResult {
     let rig = rig("kinds")?;
-    let kind = |args: Value| {
-        let output = rig.tool.execute(
-            args.as_object().cloned().unwrap_or_default(),
-            &ToolContext::new(std::env::temp_dir()),
-        );
-        assert!(output.is_error, "{args}");
-        output.result.details["errorKind"]
-            .as_str()
-            .unwrap_or("untagged")
-            .to_owned()
-    };
+    let kind = |args: Value| crate::support::refusal_kind(&rig.tool, args);
     assert_eq!(kind(json!({"op": "frobnicate"})), "invalid_args");
     assert_eq!(kind(json!({"op": "done", "label": "ghost"})), "stale");
     let (refused, text) = call(
@@ -619,6 +609,21 @@ fn every_plan_refusal_names_its_class() -> TestResult {
     assert_eq!(
         kind(json!({"op": "accepted_by_user", "label": "a", "note": "ran it"})),
         "denied"
+    );
+    assert_eq!(
+        kind(json!({"op": "reorder", "labels": ["a", "a"]})),
+        "invalid_args",
+        "a reorder naming a label twice is a misread, not a stale view"
+    );
+    assert_eq!(
+        kind(json!({"op": "append", "todos": [{"label": "x".repeat(200)}]})),
+        "invalid_args",
+        "a label past its cap is a misread of the cap, not the rules saying no"
+    );
+    assert_eq!(
+        kind(json!({"op": "view", "actor": "owner"})),
+        "invalid_args",
+        "an actor argument is a misread of the call, not a safety refusal"
     );
     Ok(())
 }
