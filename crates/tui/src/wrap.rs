@@ -1,12 +1,12 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Copy)]
-struct Cell {
-    ch: char,
-    style: Style,
-    width: usize,
+pub(crate) struct Cell {
+    pub(crate) ch: char,
+    pub(crate) style: Style,
+    pub(crate) width: usize,
 }
 
 /// One row: a line wider than `width` keeps what fits before a closing `…`.
@@ -15,48 +15,60 @@ pub fn fit(line: Line<'static>, width: usize) -> Line<'static> {
     if cells.iter().map(|cell| cell.width).sum::<usize>() <= width {
         return line;
     }
-    let budget = width.saturating_sub(1);
-    let mut used = 0usize;
-    let kept = cells
-        .iter()
-        .take_while(|cell| {
-            used = used.saturating_add(cell.width);
-            used <= budget
-        })
-        .count();
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for cell in cells.iter().take(kept) {
-        match spans.last_mut() {
-            Some(span) if span.style == cell.style => span.content.to_mut().push(cell.ch),
-            _ => spans.push(Span::styled(cell.ch.to_string(), cell.style)),
-        }
-    }
+    let kept = take_cells(&cells, width.saturating_sub(1));
+    let mut cut = rebuild(kept, None);
     let style = cells
-        .get(kept)
+        .get(kept.len())
         .map_or_else(Style::default, |cell| cell.style);
-    spans.push(Span::styled("…", style));
+    cut.spans.push(Span::styled("…", style));
     Line {
-        spans,
         style: line.style,
         alignment: line.alignment,
+        ..cut
     }
 }
 
-fn flatten(line: &Line<'_>) -> Vec<Cell> {
-    let mut cells = Vec::new();
-    for span in &line.spans {
+pub(crate) fn flatten_spans(spans: &[Span<'_>]) -> Vec<Cell> {
+    let mut cells: Vec<Cell> = Vec::new();
+    let mut text = String::new();
+    let mut drawn = 0usize;
+    for span in spans {
         for ch in span.content.chars() {
+            text.push(ch);
+            let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let width = if width == 0 {
+                UnicodeWidthStr::width(text.as_str()).saturating_sub(drawn)
+            } else {
+                width
+            };
+            drawn = drawn.saturating_add(width);
             cells.push(Cell {
                 ch,
                 style: span.style,
-                width: UnicodeWidthChar::width(ch).unwrap_or(0),
+                width,
             });
         }
     }
     cells
 }
 
-fn rebuild(cells: &[Cell], indent: Option<&str>) -> Line<'static> {
+fn flatten(line: &Line<'_>) -> Vec<Cell> {
+    flatten_spans(&line.spans)
+}
+
+pub(crate) fn take_cells(cells: &[Cell], budget: usize) -> &[Cell] {
+    let mut used = 0usize;
+    let end = cells
+        .iter()
+        .take_while(|cell| {
+            used = used.saturating_add(cell.width);
+            used <= budget
+        })
+        .count();
+    cells.get(..end).unwrap_or(cells)
+}
+
+pub(crate) fn rebuild(cells: &[Cell], indent: Option<&str>) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     if let Some(indent) = indent
         && !indent.is_empty()
