@@ -251,7 +251,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, the permission-mode
   fragment, user system text and schema instruction (text compiled in from
   `crates/runtime/src/prompts/`), then registers `project-resources` (skills catalog), `pack`
-  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `grid`, `route-telemetry`, `memory`.
+  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `ripwire`, `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
   Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
@@ -397,9 +397,11 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
   one; loopback the only network, and no unix socket (#599). Without it, `Contain`
   becomes a reviewable `Ask`.
-- With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
-  from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,
-  else on to the reviewer; an ask it may judge left unanswered 120 s is settled by that judgement.
+- With a classifier and its `laya` key (minted by `yi serve`), `classifier.approval` says when the
+  sidecar's `noul` answers a reviewable auto-mode ask: `instant` (default) first — P(safe) ≥ 0.9
+  (0.98 if destructive) allows, ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
+  person has not answered for `askTimeoutSecs` (30; 0 never hands it over), a confident allow only, and only
+  where a prompt closes when its call settles elsewhere (the solo TUI); `wait-for-user` never.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
@@ -473,7 +475,7 @@ A persistent IPython process per session that reaches the host only through host
 ## 10. Url and fetch
 `Url` is the one reference type; `Resolver` turns one into text and logs every read.
 
-- `Url { scheme, path, fragment }` serializes as `scheme://path[#L<start>-<end>@<TAG>]`.
+- `Url { scheme, path, fragment }` serializes as `scheme://path[#L<start>-<end>[@<TAG>]]`.
   Whitespace or an empty scheme or path fails the parse; an unknown scheme parses as `External`
   and fetch refuses it. Only `local` and `checkpoint` take a fragment; `TAG` is the whole-file
   xxh32 in four uppercase hex digits, and a live file that differs is refused `Stale`.
@@ -812,7 +814,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold,approve,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
+  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
@@ -837,7 +839,8 @@ an unknown method −32601, bad JSON −32700.
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
-`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame),
+`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame; a root's
+last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
 `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 

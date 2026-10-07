@@ -26,7 +26,7 @@ pub mod finish;
 pub mod import;
 pub mod journal;
 pub mod judge;
-pub(crate) mod kinds;
+mod kinds;
 pub mod ledger;
 pub mod loop_coupling;
 mod natural;

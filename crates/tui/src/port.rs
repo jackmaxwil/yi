@@ -86,6 +86,10 @@ pub trait SessionPort {
     fn claims(&self, _list_changed: bool) -> Option<Vec<yi_types::todo::Claim>> {
         None
     }
+    /// The store's folded totals; a port that replays them in-band answers none.
+    fn ledger(&self) -> Option<yi_types::wire::SessionStats> {
+        None
+    }
 }
 
 /// The status row's branch, from the runtime's HEAD reader: a file read, never a git process.
@@ -169,6 +173,10 @@ fn sessions_listing(session_dir: &str, cwd: &str) -> String {
 impl SessionPort for Arc<AgentSession> {
     fn history(&mut self) -> Answer {
         Answer::now(Reply::History(branch_of(self)))
+    }
+
+    fn ledger(&self) -> Option<yi_types::wire::SessionStats> {
+        self.store().map(|store| lock_session(&store).stats())
     }
 
     fn entries(&mut self) -> Answer {
@@ -440,6 +448,16 @@ impl App {
         if let Answer::Now(reply) = port.history() {
             self.apply(*reply);
         }
+        if let Some(stats) = port.ledger() {
+            self.seed_ledger(&stats);
+        }
+    }
+
+    /// Invariant: the ledger's fold replaces the row's totals, so a second replay never adds.
+    pub fn seed_ledger(&mut self, stats: &yi_types::wire::SessionStats) {
+        self.spent = crate::status::Money::of_ledger(stats);
+        self.session_tokens = crate::status::TokenTally::of_ledger(stats);
+        self.scheduler.request();
     }
 
     /// Every pending flag a key raised, settled against the port in one place.

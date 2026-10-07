@@ -27,6 +27,7 @@ pub enum AskChoice {
 /// Diff rows the prompt shows. The permission layer already cuts the patch at 40
 /// (`cut_preview`); this second cut sizes the view to a 24-row screen beside the transcript.
 const BODY_LINES: usize = 10;
+const PROSE_LINES: usize = 2;
 
 /// Fixed-height approval view — height is set at spawn so the live
 /// region never jitters while the user decides.
@@ -82,14 +83,23 @@ impl BottomView for ApprovalView {
         if prose.chars().count() > 200 {
             prose = prose.chars().take(200).collect::<String>() + "…";
         }
+        let wrapped = wrap_line(
+            &Line::from(Span::styled(format!("   {prose}"), theme.muted_style())),
+            width,
+            "   ",
+        );
+        let cut = wrapped.len() > PROSE_LINES;
         out.extend(
-            wrap_line(
-                &Line::from(Span::styled(format!("   {prose}"), theme.muted_style())),
-                width,
-                "   ",
-            )
-            .into_iter()
-            .take(2),
+            wrapped
+                .into_iter()
+                .take(PROSE_LINES)
+                .enumerate()
+                .map(|(row, mut line)| {
+                    if cut && row + 1 == PROSE_LINES {
+                        line.spans.push(Span::styled("…", theme.muted_style()));
+                    }
+                    crate::wrap::fit(line, width)
+                }),
         );
         let body: Vec<&str> = self
             .description

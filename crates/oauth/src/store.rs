@@ -74,7 +74,11 @@ fn at(millis: u64) -> Option<SystemTime> {
 
 impl Store {
     pub fn default_root() -> PathBuf {
-        home().join(".yi").join("providers")
+        Self::root_under(&home())
+    }
+
+    pub fn root_under(home: &std::path::Path) -> PathBuf {
+        home.join(".yi").join("providers")
     }
 
     pub fn open(root: PathBuf) -> Self {

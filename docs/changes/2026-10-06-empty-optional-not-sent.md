@@ -1,5 +1,6 @@
 ---
 issue: Closes #1073
+raise: crate runtime +28, tests +61, comments +2
 decision: the tool adapter drops an argument whose value is an empty string, array or object when the tool's schema does not require it, before the tool validates or runs, for every tool; a required argument is never touched, so `write` with empty `content` still writes an empty file; generic unknown-key and type-coercion handling stays out of the adapter (amends the zero-tool-failures plan's stage 2) | the #995 A/B showed glm-5.3-flash filling optional fields with `""` and `[]` it did not mean (`"find": ""`, `"pages": ""` on a read of a source file, refused as a PDF page range); the owner chose "Empty values only" after baseline row 0073 showed no misreads on read (0 of 27), edit (0 of 23) or write (0 of 9), while plan and todo already read unknown keys and loose shapes themselves (D344) | delete `unsent_empties` and its two calls in `crates/runtime/src/tools.rs`
 ---
 An empty optional argument is treated as not sent, for every tool (Closes #1073). A model that filled a field it did not need with `""` or `[]` had the call refused for it, such as `read` with `"pages": ""` on a source file; the adapter now leaves such a field out before the tool sees it. A required field is passed as sent.

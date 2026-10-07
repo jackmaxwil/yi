@@ -46,6 +46,7 @@ fn get_session_stats_data_keeps_its_bytes() -> Result<(), Box<dyn Error>> {
             uncached_tokens: 1430,
             total_tokens: 10774,
             cost_total: 0.007432,
+            unknown_usage: false,
         },
     ];
     assert_eq!(
