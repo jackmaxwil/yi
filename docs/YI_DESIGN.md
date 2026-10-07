@@ -358,6 +358,14 @@ gitdir. `capture` = `add --all` + `write-tree`. `restore` moves only the paths i
 start-to-end tree diff (`--no-renames`); a path changed after the turn is kept and named; a start
 with no paired end restores unscoped and says so. Turn start and end capture into
 `custom{checkpoint}`; `/undo` and `yi undo` restore the last turn start. Without git, a no-op.
+A shadow gitdir whose project has been gone 7 days is deleted, renamed aside first so a cut-short
+delete never leaves a half repo; a project that cannot be stat'd, or whose nearest surviving ancestor is a mount
+root (`/Volumes`, `/mnt`, `/media`: an unmounted volume), is kept. A live project's repo is never deleted, only `git prune`d at 30 days,
+which keeps every younger capture and the objects it names: captures write no ref, the shadow
+index roots the newest, and each capture refreshes its tree's mtime because `write-tree` hands
+back a cached tree untouched. The sweep is [`retention`](../crates/runtime/src/retention.rs):
+about hourly behind `~/.yi/retention.stamp` from session start, and on demand as `yi gc` (a
+preview) or `yi gc --fix`, one `kept of found, removed, trimmed` line per store.
 
 - Owner: [`tools`](../crates/tools/src/checkpoint.rs), [`types`](../crates/types/src/checkpoint.rs).
   Settled by: D248.
@@ -799,7 +807,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed |
-| `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
+| `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills` (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |

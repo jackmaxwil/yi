@@ -31,6 +31,7 @@ pub mod node;
 pub mod permission;
 pub mod plan;
 pub mod provider;
+pub mod retention;
 pub mod rewind;
 pub mod rules;
 pub mod schedule;
