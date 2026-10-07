@@ -8,7 +8,7 @@ the model's own view, with three facts: what was kept over what existed, the cap
 - The notice is a `[…]` row where the cut is. A detail field may carry the same fact for
   `yi stats`; it never carries it instead. A log line is not a notice.
 - Every model-facing surface is bound: tool results, `get_context` layers, error text, edit
-  responses, background job output, previews, the post-edit grid layer.
+  responses, background job output, previews, the post-edit ripwire layer.
 - A cap that "rarely trips" is still silent when it does. The test for a cap is the test that
   trips it and reads the notice; a cap without that test is unfinished.
 - What is not a cap: a window the model asked for (`ranges`, `offset`/`limit`) and a filter
