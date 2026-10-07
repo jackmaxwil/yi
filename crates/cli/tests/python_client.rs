@@ -38,6 +38,25 @@ fn run(program: &str, args: &[&str], dir: &std::path::Path) -> Result<String, Bo
 
 const CLIENT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../python");
 
+fn init_repo(repo: &std::path::Path) -> TestResult {
+    for args in [
+        &["init", "-q"][..],
+        &["add", "README"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    ] {
+        run("git", args, repo)?;
+    }
+    Ok(())
+}
+
 const PROGRAM: &str = r#"
 import json, sys
 sys.path.insert(0, sys.argv[1])
@@ -74,12 +93,15 @@ print(json.dumps({"finished": not thread.is_alive(), "error": out.get("error", "
 "#;
 
 const CANCELLED_STUB: &str = r#"#!/usr/bin/env python3
-import json, sys
+import json, os, sys
+log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "calls.log"), "a")
 for line in sys.stdin:
     frame = json.loads(line)
     if frame.get("method") == "session/new":
         print(json.dumps({"jsonrpc": "2.0", "id": frame["id"], "result": {"sessionId": "s1"}}), flush=True)
     elif frame.get("method") == "_yi/kernel_execute":
+        log.write(frame.get("params", {}).get("code", "") + "\n")
+        log.flush()
         print(json.dumps({"jsonrpc": "2.0", "id": frame["id"], "result": {"callId": "c1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"update": {
             "toolCallId": "c1", "status": "cancelled",
@@ -120,6 +142,11 @@ fn a_cancelled_cell_update_raises_instead_of_hanging_the_client() -> TestResult 
             .is_some_and(|text| text.contains("600 s ceiling")),
         "the cancelled update's own text reached YiError: {report}"
     );
+    let calls = std::fs::read_to_string(dir.join("calls.log"))?;
+    assert!(
+        calls.lines().any(|code| code.contains("rlm.wait")),
+        "close() drained the family with an rlm.wait cell before closing stdin: {calls}"
+    );
     Ok(())
 }
 
@@ -144,21 +171,7 @@ fn a_permission_ask_is_refused_and_the_client_continues() -> TestResult {
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo)?;
     std::fs::write(repo.join("README"), "probe\n")?;
-    for args in [
-        &["init", "-q"][..],
-        &["add", "README"],
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            "init",
-        ],
-    ] {
-        run("git", args, &repo)?;
-    }
+    init_repo(&repo)?;
     let script = dir.join("script.jsonl");
     let turns = [
         serde_json::to_string(&faux_assistant_message(
@@ -220,21 +233,7 @@ fn a_python_program_fans_out_readers_with_no_model_turn_at_the_root() -> TestRes
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo)?;
     std::fs::write(repo.join("README"), "probe\n")?;
-    for args in [
-        &["init", "-q"][..],
-        &["add", "README"],
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            "init",
-        ],
-    ] {
-        run("git", args, &repo)?;
-    }
+    init_repo(&repo)?;
     let replies = ["alpha", "beta", "gamma"]
         .iter()
         .map(|text| {
@@ -248,12 +247,11 @@ fn a_python_program_fans_out_readers_with_no_model_turn_at_the_root() -> TestRes
     std::fs::write(&script, replies.join("\n"))?;
     let program = dir.join("program.py");
     std::fs::write(&program, PROGRAM)?;
-    let client_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../python");
     let out = run(
         "python3",
         &[
             &program.display().to_string(),
-            client_dir,
+            CLIENT_DIR,
             env!("CARGO_BIN_EXE_yi"),
             &repo.display().to_string(),
             &script.display().to_string(),
