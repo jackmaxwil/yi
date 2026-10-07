@@ -1146,6 +1146,9 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
 /// restored poll must hold without a wall timer ever firing: `pause` first, yield with the
 /// clock frozen, one `advance` after a finished poll.
 const WAKE_YIELDS: usize = 8;
+/// A settling turn may outlast one wake window; frozen time stays under any 100 ms poll
+/// even at the last round, so a red against a restored poll still holds.
+const SETTLE_WAKE_ROUNDS: usize = 80;
 async fn wakes<T>(task: &tokio::task::JoinHandle<T>) -> bool {
     tokio::time::pause();
     for _ in 0..WAKE_YIELDS {
@@ -1171,10 +1174,8 @@ fn receive_task(
         .map_err(|_| "poisoned")?
         .remove(name);
     let receiver = receiver.ok_or(format!("{name} was built without its receive"))?;
-    let payload = json!({"timeout_ms": timeout_ms})
-        .as_object()
-        .cloned()
-        .ok_or("payload")?;
+    let mut payload = serde_json::Map::new();
+    payload.insert("timeout_ms".to_owned(), json!(timeout_ms));
     let waiting = receiver
         .dispatch("rlm.receive", payload)
         .ok_or("rlm.receive is not registered")?;
@@ -1198,6 +1199,48 @@ async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
     harness.host.interrupt("busy")?;
     assert!(wakes(&parked).await, "the interrupt did not wake the wait");
     parked.await??;
+    Ok(())
+}
+
+/// Dies with the 100 ms poll back in the family wait: the parked wait sleeps through a
+/// child's own end, so a normally settling child is seen a poll late.
+#[tokio::test]
+async fn a_family_wait_wakes_on_a_settling_child_not_on_a_poll() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "done",
+        tool_command: Some("true"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    harness
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", "kid")]))?;
+    let host = Arc::clone(&harness.host);
+    let first = tokio::spawn(async move { host.wait(5_000, Some(0)).await });
+    let started = json!(first.await??);
+    let cursor = started["cursor"].as_u64().ok_or("cursor")?;
+    let host = Arc::clone(&harness.host);
+    let parked = tokio::spawn(async move { host.wait(5_000, Some(cursor)).await });
+    let mut woke = false;
+    assert!(
+        !wakes(&parked).await,
+        "the wait woke before the child's turn could settle"
+    );
+    for _ in 0..SETTLE_WAKE_ROUNDS {
+        if wakes(&parked).await {
+            woke = true;
+            break;
+        }
+        // Invariant: real time passes with the tokio clock frozen, so a restored 100 ms
+        // poll never fires while the child's tool runs out its own process.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(woke, "the child's end did not wake the parked wait");
+    let ended = json!(parked.await??);
+    assert_eq!(ended["states"]["kid"], "finished", "{ended}");
     Ok(())
 }
 
