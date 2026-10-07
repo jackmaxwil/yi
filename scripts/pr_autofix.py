@@ -402,6 +402,13 @@ def prior_fixes(repo, sha, stopped=0.0):
     return count
 
 
+def round_on(rounds, head, holds=pr_review.on_head):
+    """The last round when it still reads `head`, by the review job's own rule. Incident: #1053's
+    head only merged main after its round, so the review job left it to the fixer, and the fixer,
+    reading only an exact SHA, called it unreviewed; neither side ever acted."""
+    return rounds[-1] if rounds and holds(rounds[-1]["sha"], head) else None
+
+
 def owed_mediums(rnd):
     """A clean round's medium findings the fixer answers: every one but the intake checks'."""
     return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and f["lens"] not in pr_review.INTAKE for f in rnd["findings"])
@@ -594,7 +601,7 @@ def attempt(repo, pr, ids, asked=False):
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", pr["base"]["ref"])
     notes = pr_review.comments(repo, number)
     rounds = pr_review.rounds_of(notes, pr_review.authors(), number)
-    rnd = rounds[-1] if rounds and pr["head"]["sha"].startswith(rounds[-1]["sha"]) else None
+    rnd = round_on(rounds, pr["head"]["sha"], pr_review.holds_for(number, pr["base"]["ref"]))
     # The owner (2026-10-05): a clean round's mediums are fixed too, since a draft leaves draft
     # only with none left; `blocked` means a round on the head owes a findings fix.
     blocked = bool(rnd and (rnd["verdict"] == "blocked" or owed_mediums(rnd)))
@@ -1014,6 +1021,9 @@ def selfcheck():
                 errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
     finally:
         shutil.rmtree(bare)
+    merged_only = [{"n": 2, "sha": "771bd2c", "verdict": "clean", "findings": []}]
+    if round_on(merged_only, "b5657bbd", lambda sha, head: True) is None or round_on(merged_only, "b5657bbd") is not None:
+        errs.append("a round the review job holds for a merge-only head is not the fixer's round, or an unrelated head is")
     # A pass: PRs already labelled failed are skipped without spending its quota of fixes.
     module, tried_prs = sys.modules[__name__], []
     keep = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today")}
