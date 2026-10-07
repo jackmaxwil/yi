@@ -42,8 +42,10 @@ LABELS = {
 QUIET = 2 * 3600
 PER_RUN = 3
 # Incident: the runner killed a 45-minute pass ("exceeds the maximum run time") mid-fix. A fix's
-# model gets 20 minutes and its hook repair 10, and a new PR starts only while both still fit.
-FIX_SECS, REPAIR_SECS, PASS_SECS = 1200, 600, 40 * 60
+# model gets 20 minutes and its hook repair 10; a new PR starts only while both fit the job's limit
+# (autofix.yml), less the checkout, build and catalog refresh before the pass.
+FIX_SECS, REPAIR_SECS, SETUP_SECS = 1200, 600, 5 * 60
+PASS_SECS = forge_pr.job_secs("autofix") - SETUP_SECS
 CAP_DAY, CAP_PR = 25.0, 8.0
 # The owner's tiers (2026-10-01; GLM 5.3 replaced Sol 2026-10-05, whose host kept answering 429),
 # meant for roughly 60/30/10 of fixes: (model, thinking), cheapest first.
