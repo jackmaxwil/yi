@@ -779,6 +779,140 @@ async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// The owner: approval "should be on by default". A session attached with a classifier, armed by
+/// default or by the `approve` key that armed it before, mints the key under the session's HOME.
+/// Headless, with nobody wired to answer, an auto-mode ask the classifier is sure of still fails
+/// closed. Dies with an unattended classifier allow.
+#[tokio::test]
+async fn a_headless_session_with_no_asker_fails_closed() -> Result<(), Box<dyn Error>> {
+    for (name, extra) in [
+        ("approve-default", ""),
+        ("approve-armed", r#", "approve": true"#),
+    ] {
+        let (port, _served) =
+            crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+        let (broker, warnings) = brokered_with_classifier(name, None, false, extra, port)?;
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut args = serde_json::Map::new();
+        args.insert("command".to_owned(), serde_json::json!("make build"));
+        let outcome =
+            broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+        assert!(
+            !outcome.allowed,
+            "{name}: headless, nobody answers for the person, so the ask degrades to a denial: {}",
+            outcome.reason
+        );
+    }
+    Ok(())
+}
+
+/// The owner: approval "should be on by default". A config with no `approval` key arms
+/// the classifier through attach, so an auto-mode ask the classifier is sure of is allowed
+/// where the person asked would have said no. Dies with an unattended classifier allow.
+#[tokio::test]
+async fn a_classifier_with_no_mode_set_approves_by_default() -> Result<(), Box<dyn Error>> {
+    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (broker, warnings) =
+        brokered_with_classifier("approve-default-on", Some(asker), false, "", port)?;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("make build"));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+    assert!(outcome.allowed, "default-on: {}", outcome.reason);
+    assert!(outcome.reason.contains("classifier"), "{}", outcome.reason);
+    Ok(())
+}
+
+/// `after-delay` answers only where prompts close on settle; every other surface gets
+/// wait-for-user, and attach must say so at start, never silently.
+#[tokio::test]
+async fn after_delay_warns_where_prompts_never_close() -> Result<(), Box<dyn Error>> {
+    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+    let extra = r#", "approval": "after-delay""#;
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (_, warnings) =
+        brokered_with_classifier("after-delay-warn", Some(asker), false, extra, port)?;
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("never close on settle")),
+        "{warnings:?}"
+    );
+    let asker: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::Reject);
+    let (_, warnings) =
+        brokered_with_classifier("after-delay-close", Some(asker), true, extra, port)?;
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("never close on settle")),
+        "{warnings:?}"
+    );
+    Ok(())
+}
+
+/// The session shape every approval surface builds before `classifier::attach` runs: an
+/// auto-mode broker behind the runtime wiring, then a classifier config parsed from `raw`.
+fn brokered_with_classifier(
+    name: &str,
+    asker: Option<yi_runtime::Asker>,
+    close_on_settle: bool,
+    extra: &str,
+    port: u16,
+) -> Result<(Arc<yi_runtime::PermissionBroker>, Vec<String>), Box<dyn Error>> {
+    let root = scratch(name)?;
+    let home = root.join("home");
+    std::fs::create_dir_all(&home)?;
+    let mut session = tool_call_session("echo unused");
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        root.to_path_buf(),
+        Vec::new(),
+        asker,
+        session.events_sender(),
+    ));
+    if close_on_settle {
+        broker.prompts_close_on_settle();
+    }
+    let provider = Arc::clone(session.provider_arc());
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: home.clone(),
+            lane_slots: 1,
+            broker: Some(Arc::clone(&broker)),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    let raw = format!(
+        r#"{{"models": {{"classifier": "english"}}, "classifier": {{"url": "http://127.0.0.1:{port}"{extra}}}}}"#
+    );
+    let (config, _) = yi_types::config::parse(&raw)?;
+    let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
+    Ok((broker, warnings))
+}
+
 /// What the model was sent, in order: user text, reminder text, or `assistant`.
 fn transcript(session: &AgentSession) -> Vec<String> {
     use yi_types::message::UserContent;
@@ -1146,28 +1280,118 @@ async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dy
     Ok(())
 }
 
-/// What the bash text now says of an idle session: a job that exits after the turn ended is
-/// heard only once a later turn ends. #820 wakes the session instead; this pins today's truth.
+/// Waits for the transcript to hold `needle`, or names what it held instead.
+async fn said_eventually(session: &AgentSession, needle: &str) -> Result<String, Box<dyn Error>> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let said = serde_json::to_string(&session.messages())?;
+        if said.contains(needle) {
+            return Ok(said);
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("no {needle:?} in {said}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Issue #820: a job that exits after its turn ended starts a turn of its own, carrying its
+/// `<async_result>`, instead of waiting for the user to type.
 #[tokio::test]
-async fn a_job_that_exits_after_the_turn_waits_for_the_next_one() -> Result<(), Box<dyn Error>> {
+async fn a_job_that_exits_after_the_turn_wakes_the_idle_session() -> Result<(), Box<dyn Error>> {
     let root = scratch("job-idle")?;
     let calls = [serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5})];
-    let session = bash_session(&root, &calls, &["done", "seen", "after"], None);
+    let session = bash_session(&root, &calls, &["done", "woken"], None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = said_eventually(&session, "woken").await?;
+    let (report, woken) = (said.find("<async_result"), said.find("woken"));
+    assert!(report.is_some() && report < woken, "{said}");
+    assert!(said.contains("w2ke"), "{said}");
+    Ok(())
+}
+
+/// Issue #820: two sessions in one cwd, the first of them idle; only the session that started the
+/// job hears it. Keyed by cwd, the earliest-attached loop took every result in that directory.
+#[tokio::test]
+async fn a_job_reports_only_to_the_session_that_started_it() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-owner")?;
+    let bystander = bash_session(&root, &[], &["bystander woke"], None);
+    let calls = [serde_json::json!({"command": "sleep 6; echo own$((1+1))er", "wait": 5})];
+    let owner = bash_session(&root, &calls, &["done", "owner woke"], None);
+    owner.prompt("run it")?;
+    let said = said_eventually(&owner, "owner woke").await?;
+    assert!(said.contains("own2er"), "{said}");
+    let heard = serde_json::to_string(&bystander.messages())?;
+    assert!(!heard.contains("own2er"), "{heard}");
+    assert_eq!(bystander.status(), Status::Idle);
+    Ok(())
+}
+
+/// A retired session (a reaped child) starts no turn when its job exits: the wake would be a
+/// paid turn in a session nobody reads.
+#[tokio::test]
+async fn a_retired_session_s_job_starts_no_turn() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-retired")?;
+    let calls = [serde_json::json!({"command": "sleep 6; echo r$((1+1))tired", "wait": 5})];
+    let session = bash_session(&root, &calls, &["done", "should not run"], None);
     session.prompt("run it")?;
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
     let job = job_in(&serde_json::to_string(&session.messages())?)?;
+    session.retire();
     let jobs = yi_tools::jobs::registry();
     tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(20)))
         .await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let idle = serde_json::to_string(&session.messages())?;
-    assert!(!idle.contains("<async_result"), "{idle}");
+    let said = serde_json::to_string(&session.messages())?;
+    assert!(!said.contains("should not run"), "{said}");
     assert_eq!(session.status(), Status::Idle);
-    session.prompt("next")?;
+    Ok(())
+}
+
+/// Dies without the delivered bit: a job the completion loop queued while a turn ran, and the
+/// model then polled to finished, reached the model a second time as an `<async_result>`.
+#[tokio::test]
+async fn a_polled_job_queued_before_the_poll_is_not_announced() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-polled")?;
+    let session = bash_session(
+        &root,
+        &[serde_json::json!({"command": "sleep 6"})],
+        &["done", "again"],
+        None,
+    );
+    let mut context = yi_tools::ToolContext::new(root.to_path_buf());
+    context.job_owner = Some(session.job_owner());
+    let bash = |input: serde_json::Value, context: &yi_tools::ToolContext| {
+        let ran = yi_tools::Tool::execute(
+            &yi_tools::BashTool::default(),
+            input.as_object().cloned().unwrap_or_default(),
+            context,
+        );
+        serde_json::to_string(&ran.result)
+    };
+    let started = bash(
+        serde_json::json!({"command": "sleep 7; echo w$((1+1))ke", "wait": 5}),
+        &context,
+    )?;
+    let job = job_in(&started)?;
+    session.prompt("run it")?;
+    let jobs = yi_tools::jobs::registry();
+    tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(20)))
+        .await?;
+    assert_eq!(
+        session.status(),
+        Status::Running,
+        "the poll must land while the turn runs"
+    );
+    let polled = bash(serde_json::json!({ "job": job.0 }), &context)?;
+    assert!(
+        polled.contains("finished (exit 0)") && polled.contains("w2ke"),
+        "{polled}"
+    );
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
     let said = serde_json::to_string(&session.messages())?;
-    let (seen, report) = (said.find("seen"), said.find("<async_result"));
-    assert!(seen.is_some() && seen < report, "{said}");
+    assert!(!said.contains("<async_result"), "{said}");
     Ok(())
 }
 
@@ -1261,5 +1485,46 @@ async fn a_lagging_reader_gets_the_gap_then_the_next_event() -> Result<(), Box<d
     assert_eq!(next, Some(Ok(yi_types::event::AgentEvent::TurnStart)));
     drop(events);
     assert_eq!(yi_runtime::next_event(&mut reader).await, None);
+    Ok(())
+}
+
+/// Two steers sent while one tool batch runs are read together when it ends: both sit in the
+/// context ahead of the next reply, in arrival order, and nothing is left queued behind them.
+#[tokio::test]
+async fn steers_sent_during_a_tool_batch_arrive_together_in_the_next_request()
+-> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-steer-batch")?;
+    let started = dir.join("started");
+    let mut session = tool_call_session("echo up > started; sleep 1");
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Yolo,
+        dir.to_path_buf(),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    ));
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), Some(broker));
+    session.prompt("run it")?;
+    for _ in 0..500 {
+        if started.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(started.exists(), "the tool never started");
+    for text in ["fast forward main", "then run the tests"] {
+        session.steer_message(yi_runtime::session::user_input(text));
+    }
+    session.wait_idle().await;
+    assert_eq!(
+        transcript(&session),
+        [
+            "user: run it",
+            "assistant",
+            "user: fast forward main",
+            "user: then run the tests",
+            "assistant"
+        ]
+    );
     Ok(())
 }

@@ -1650,6 +1650,400 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     Ok(())
 }
 
+fn reader(id: &str, status: yi_runtime::ChildStatus, calls: u64) -> yi_runtime::ChildUpdate {
+    yi_runtime::ChildUpdate {
+        id: yi_types::subagent::ChildId(id.to_owned()),
+        name: id.to_owned(),
+        status,
+        activity: yi_types::subagent::ChildActivity::Executing,
+        tool_use_count: calls,
+        token_count: 1500,
+        answer_preview: None,
+        error: None,
+        exit: None,
+        flag: None,
+    }
+}
+
+/// Blank rows between each box's bottom border and the next box's top border, read off screen.
+fn gaps_between_boxes(rows: impl IntoIterator<Item = String>) -> Vec<usize> {
+    let mut gaps = Vec::new();
+    let mut open: Option<usize> = None;
+    for text in rows {
+        if text.starts_with("  ╭─") {
+            gaps.extend(open.take());
+        } else if text.starts_with("  ╰") {
+            open = Some(0);
+        } else if let Some(blank) = open.as_mut() {
+            if text.trim().is_empty() {
+                *blank += 1;
+            } else {
+                open = None;
+            }
+        }
+    }
+    gaps
+}
+
+/// The rows a console pane of `height` paints, top to bottom.
+fn pane_rows(app: &mut App, height: u16) -> Vec<String> {
+    pane_rows_scrolled(app, height, &mut 0)
+}
+
+fn pane_rows_scrolled(app: &mut App, height: u16, scroll: &mut usize) -> Vec<String> {
+    let area = ratatui::layout::Rect::new(0, 0, 80, height);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    let _ = yi_tui::render::paint_pane(app, None, &mut buffer, area, scroll);
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .filter_map(|x| buffer.cell((x, y)).map(|c| c.symbol().to_owned()))
+                .collect()
+        })
+        .collect()
+}
+
+/// Forty user turns, far more rows than any pane in these tests holds.
+fn outgrow_the_pane(app: &mut App) {
+    for turn in 1..=40 {
+        app.commit_cell(&Cell::User {
+            text: format!("question {turn}"),
+        });
+    }
+}
+
+/// A pane whose history outgrows it ends on a finished box's blank row, and the live answer
+/// opens on its own blank: the two collapse to one, and the status row stays on the last row.
+#[test]
+fn a_pane_that_collapses_its_seam_still_ends_on_the_status_row() -> TestResult {
+    let mut app = app();
+    app.set_pane();
+    outgrow_the_pane(&mut app);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let done = reader("reader-g1", yi_runtime::ChildStatus::Completed, 1);
+    app.adopt(&done, None);
+    app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+        message: yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text("")],
+            StopReason::Stop,
+        ),
+    });
+    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "Reading the pane code first".to_owned(),
+        },
+    });
+    let rows = pane_rows(&mut app, 20);
+    assert!(
+        rows.iter().any(|r| r.contains("Reading the pane code")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.last().is_some_and(|r| r.contains("faux-1")),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// A long history ending on a run of finished boxes: a pane counting rows before each boundary's
+/// blank collapsed came up short by the run, or slid a scrolled view when a box landed below it.
+#[test]
+fn a_pane_ending_on_a_run_of_boxes_still_ends_on_the_status_row() -> TestResult {
+    use yi_runtime::ChildStatus;
+    for (boxes, scroll, height) in [(20, 0, 60), (12, 3, 20)] {
+        let mut app = app();
+        app.set_pane();
+        outgrow_the_pane(&mut app);
+        app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        for n in 1..=boxes {
+            app.adopt(
+                &reader(&format!("reader-g{n}"), ChildStatus::Completed, 1),
+                None,
+            );
+        }
+        let mut at = scroll;
+        let rows = pane_rows_scrolled(&mut app, height, &mut at);
+        assert_eq!(
+            at, scroll,
+            "the view stays scrolled where it was put: {rows:#?}"
+        );
+        assert!(
+            rows.last().is_some_and(|r| r.contains("faux-1")),
+            "{boxes} boxes, scrolled {scroll}: {rows:#?}"
+        );
+        if scroll > 0 {
+            let late = reader("reader-late", ChildStatus::Completed, 1);
+            app.adopt(&late, None);
+            let held = pane_rows_scrolled(&mut app, height, &mut at);
+            assert_eq!(
+                held, rows,
+                "a box landing below a scrolled view moves nothing"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A console pane joins its history to its live rows: a finished box above a running sibling
+/// keeps the one blank row there too, not the box's trailing blank plus the sibling's leading one.
+#[test]
+fn a_pane_keeps_one_blank_between_a_finished_box_and_its_running_sibling() -> TestResult {
+    use yi_runtime::ChildStatus;
+    let mut app = app();
+    app.set_pane();
+    outgrow_the_pane(&mut app);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    for id in ["reader-g1", "reader-g2"] {
+        app.adopt(&reader(id, ChildStatus::Running, 1), None);
+    }
+    app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 1));
+    let rows = pane_rows(&mut app, 30);
+    assert_eq!(gaps_between_boxes(rows.clone()), vec![1], "{rows:#?}");
+    assert!(
+        rows.last().is_some_and(|r| r.contains("faux-1")),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// The dependent finishes first: a reader that ends before its sibling commits to scrollback
+/// while the sibling is still live, and that handoff must keep the one blank row between them.
+/// The roster's first snapshot lands before any call, and its activity is no previous step.
+#[test]
+fn a_reader_that_finishes_first_stays_one_blank_above_its_running_sibling() -> TestResult {
+    use yi_runtime::ChildStatus;
+    const ROWS: u16 = 30;
+    let backend = VT100Backend::with_scrollback(80, ROWS, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let ids = ["reader-g1", "reader-g2"];
+    let roster: Vec<yi_runtime::ChildView> = ids
+        .iter()
+        .map(|id| yi_runtime::ChildView {
+            update: reader(id, ChildStatus::Running, 0),
+            session: yi_runtime::ChildFeed::of(Arc::new(faux_session("read it"))),
+        })
+        .collect();
+    app.sync_children(&roster);
+    for (call, path) in [("r1", "a.rs"), ("r2", "b.rs")] {
+        for id in ids {
+            app.reduce_child(
+                id,
+                yi_types::event::AgentEvent::ToolExecutionStart {
+                    tool_call_id: format!("{id}-{call}"),
+                    tool_name: "read".to_owned(),
+                    args: serde_json::json!({ "path": format!("{id}/{path}") }),
+                },
+            );
+        }
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        let first = terminal.backend().contents();
+        assert!(
+            !first.contains("⚙ executing"),
+            "a label is not a step:\n{first}"
+        );
+    }
+    let live = terminal.backend().contents();
+    assert_eq!(
+        gaps_between_boxes((0..ROWS).map(|row| terminal.backend().row_text(row))),
+        vec![1],
+        "{live}"
+    );
+    app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 2));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let handed = terminal.backend().contents();
+    assert_eq!(
+        gaps_between_boxes((0..ROWS).map(|row| terminal.backend().row_text(row))),
+        vec![1],
+        "{handed}"
+    );
+    let top = (0..ROWS)
+        .find(|row| terminal.backend().row_text(*row).contains("Reader g2"))
+        .ok_or_else(|| format!("no live sibling:\n{handed}"))?;
+    let below = |offset: u16| terminal.backend().row_text(top.saturating_add(offset));
+    assert!(below(1).contains("⚙ read reader-g2/a.rs"), "{handed}");
+    assert!(
+        below(2).contains("⚙ read reader-g2/b.rs · 1K tokens"),
+        "{handed}"
+    );
+    Ok(())
+}
+
+/// The owner's screenshot: eight readers mid-call stood with two blank rows between boxes.
+/// Live, each running box shows the step before its current one, one blank row apart.
+#[test]
+fn eight_running_readers_stack_one_blank_apart_with_their_previous_step() -> TestResult {
+    use yi_runtime::ChildStatus;
+    const ROWS: u16 = 60;
+    let steps = [
+        ("crates/tools/src/lib.rs", "discover_exec_tools"),
+        ("crates/tools/src/bash.rs", "DEFAULT_MAX_OUTPUT_CHARS"),
+        ("Cargo.toml", "workspace"),
+        ("crates/tui/src/app/bridge.rs", "spawn_runtime_bridge"),
+        ("docs/YI_DESIGN.md", "18.3"),
+        ("crates/tools/src/ipython.rs", "KernelBridge"),
+        ("crates/orb/src/kitty.rs", "IMAGE_IDS"),
+        ("crates/tui/src/cell.rs", "fn boxed"),
+    ];
+    let backend = VT100Backend::with_scrollback(80, ROWS, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(usize::from(ROWS));
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    for (index, (path, pattern)) in steps.iter().enumerate() {
+        let id = format!("reader-g{}", index + 1);
+        app.adopt(&reader(&id, ChildStatus::Running, 2), None);
+        let calls = [
+            ("read", serde_json::json!({ "path": path })),
+            ("grep", serde_json::json!({ "pattern": pattern })),
+        ];
+        for (call, (tool, args)) in calls.into_iter().enumerate() {
+            app.reduce_child(
+                &id,
+                yi_types::event::AgentEvent::ToolExecutionStart {
+                    tool_call_id: format!("{id}-{call}"),
+                    tool_name: tool.to_owned(),
+                    args,
+                },
+            );
+        }
+    }
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let screen = terminal.backend().contents();
+    assert_eq!(
+        gaps_between_boxes((0..ROWS).map(|row| terminal.backend().row_text(row))),
+        vec![1; 7],
+        "{screen}"
+    );
+    for (index, (path, pattern)) in steps.iter().enumerate() {
+        let title = format!("Reader g{}", index + 1);
+        let top = (0..ROWS)
+            .find(|row| terminal.backend().row_text(*row).contains(&title))
+            .ok_or_else(|| format!("no {title}:\n{screen}"))?;
+        let below = |offset: u16| terminal.backend().row_text(top.saturating_add(offset));
+        assert!(below(1).contains(&format!("⚙ read {path}")), "{screen}");
+        assert!(below(2).contains(&format!("⚙ grep {pattern}")), "{screen}");
+        assert!(below(3).starts_with("  ╰"), "{screen}");
+    }
+    Ok(())
+}
+
+/// A box's bottom border is never flush with a one-row cell committed under it (a footer, a
+/// one-row card): the box keeps one blank row below it, in scrollback and in a console pane.
+#[test]
+fn a_committed_box_keeps_one_blank_row_above_a_one_row_cell() -> TestResult {
+    use yi_runtime::ChildStatus;
+    for pane in [false, true] {
+        let mut app = app();
+        if pane {
+            app.set_pane();
+        }
+        app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        app.adopt(&reader("reader-g1", ChildStatus::Running, 0), None);
+        app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 2));
+        app.commit_cell(&Cell::Footer {
+            text: "computed 1 · ran 3 · 24s".to_owned(),
+        });
+        let rows: Vec<String> = if pane {
+            pane_rows(&mut app, 30)
+        } else {
+            let backend = VT100Backend::with_scrollback(80, 30, 200);
+            let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+            yi_tui::render::draw(&mut app, &mut terminal, None);
+            (0..30)
+                .map(|row| terminal.backend().row_text(row))
+                .collect()
+        };
+        let bottom = rows
+            .iter()
+            .position(|row| row.starts_with("  ╰"))
+            .ok_or_else(|| format!("no box (pane {pane}): {rows:#?}"))?;
+        let below: Vec<&str> = rows
+            .iter()
+            .skip(bottom + 1)
+            .take(2)
+            .map(String::as_str)
+            .collect();
+        assert!(
+            below.first().is_some_and(|r| r.trim().is_empty())
+                && below.get(1).is_some_and(|r| r.contains("↳ computed 1")),
+            "one blank row, then the footer (pane {pane}): {rows:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// A pane with fewer rows left than the orb's five must not get a five-row placement: kitty
+/// would paint it over the composer, the status row or the pane below. Five rows still place it.
+#[test]
+fn an_orb_that_cannot_fit_its_rows_is_not_placed() -> TestResult {
+    for (height, placed) in [(5, 1), (4, 0)] {
+        let mut app = app();
+        app.set_pane();
+        app.set_kitty(true);
+        app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        let _ = pane_rows(&mut app, height);
+        let mut out = Vec::new();
+        yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+        let out = String::from_utf8_lossy(&out);
+        let sizes: Vec<&str> = out
+            .split("\x1b_Ga=p,")
+            .skip(1)
+            .filter_map(|keys| keys.split("\x1b\\").next())
+            .collect();
+        assert_eq!(sizes.len(), placed, "a {height}-row pane: {sizes:?}");
+        assert!(
+            sizes.iter().all(|keys| keys.ends_with("c=10,r=5")),
+            "a {height}-row pane: {sizes:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The owner asked for the orb two thirds bigger: a 10x5 cell image whose five reserved rows
+/// carry the working label on the middle one, beside the image's centre rather than its top.
+#[test]
+fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let mut out = Vec::new();
+    yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+    let out = String::from_utf8_lossy(&out);
+    let (before, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
+    let cup = before.rsplit("\x1b[").next().ok_or("no cursor move")?;
+    let row: u16 = cup.split(';').next().ok_or("no row")?.parse()?;
+    let keys: Vec<&str> = after
+        .split("\x1b\\")
+        .next()
+        .unwrap_or_default()
+        .split(',')
+        .collect();
+    assert!(keys.contains(&"c=10") && keys.contains(&"r=5"), "{keys:?}");
+    let screen = terminal.backend().contents();
+    let top = row.checked_sub(1).ok_or("cursor rows are 1-based")?;
+    for band in top..top.saturating_add(5) {
+        let text = terminal.backend().row_text(band);
+        let under_image: String = text.chars().take(10).collect();
+        assert!(
+            under_image.trim().is_empty(),
+            "row {band} is under the image:\n{screen}"
+        );
+        let labelled = text.contains("[esc] interrupt");
+        assert_eq!(
+            labelled,
+            band == top.saturating_add(2),
+            "row {band}:\n{screen}"
+        );
+    }
+    Ok(())
+}
+
 /// The screenshot's fourth defect: a host notice arrived as a user-role
 /// message, so it retitled the window, opened a turn with a divider, and drew
 /// the user's `›` rail on text the user never typed.

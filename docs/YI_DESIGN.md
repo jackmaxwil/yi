@@ -397,9 +397,11 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   bash read belt judges a store argument by identity, a directory above one and a glob that reaches
   one; loopback the only network, and no unix socket (#599). Without it, `Contain`
   becomes a reviewable `Ask`.
-- With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
-  from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,
-  else on to the reviewer; an ask it may judge left unanswered 120 s is settled by that judgement.
+- With a classifier and its `laya` key (minted by `yi serve`), `classifier.approval` says when the
+  sidecar's `noul` answers a reviewable auto-mode ask: `instant` (default) first — P(safe) ≥ 0.9
+  (0.98 if destructive) allows, ≤ 0.05 asks the user, else the reviewer; `after-delay` once the
+  person has not answered for `askTimeoutSecs` (30; 0 never hands it over), a confident allow only, and only
+  where a prompt closes when its call settles elsewhere (the solo TUI); `wait-for-user` never.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
@@ -812,7 +814,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold,approve,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
+  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
@@ -961,6 +963,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
 | `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
+| `rustix` | `fs`, `std` | permission | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide) |
 
 Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
 `macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.

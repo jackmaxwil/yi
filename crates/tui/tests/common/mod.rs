@@ -332,3 +332,11 @@ pub fn replay_stream(
     }
     Ok(())
 }
+
+/// The live region as rows of a real screen.
+pub fn live_rows(app: &mut yi_tui::app::App) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(80, 24), 4)?;
+    yi_tui::render::draw(app, &mut terminal, None);
+    let backend = terminal.backend();
+    Ok((0..24).map(|row| backend.row_text(row)).collect())
+}

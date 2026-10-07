@@ -110,19 +110,21 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();
     let off = model.clamp_effort(yi_types::model::Effort::Off);
-    let Ok(summary) =
+    let (reply, usage) =
         crate::compaction::complete_text(session.provider_arc(), &model, &context, off, &signal)
-            .await
-    else {
+            .await;
+    let Some(store) = session.store() else {
+        return;
+    };
+    // A lost cost row must not undo a rewind that already moved the lane.
+    crate::spend::book_side_call(&store, "side:branch", usage).ok();
+    let Ok(summary) = reply else {
         return;
     };
     let summary = summary.trim().to_owned();
     if summary.is_empty() {
         return;
     }
-    let Some(store) = session.store() else {
-        return;
-    };
     if yi_session::lock_session(&store)
         .append_branch_summary("main", stub.from_id, summary)
         .is_err()

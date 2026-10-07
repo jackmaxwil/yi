@@ -11,6 +11,7 @@ mod compat;
 mod decide;
 mod effort_catalog;
 mod faux_events;
+mod images;
 mod leak;
 mod model_headers;
 mod oauth;
