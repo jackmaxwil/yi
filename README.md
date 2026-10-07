@@ -5,7 +5,7 @@ The model works inside a persistent Python kernel, where subagents are function 
 and plans are programs: the agent loop is a program the model writes, not a
 conversation it has.
 
-![A kernel cell asks three subagents at once; they appear under the session and report back](docs/media/fanout.gif)
+![A kernel cell asks three subagents at once; they appear under the session and report back](docs/media/fanout.webp)
 
 ```bash
 yi                                             # workspace: sessions on a rail, chat panes
