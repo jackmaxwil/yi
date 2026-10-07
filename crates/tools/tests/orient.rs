@@ -287,6 +287,20 @@ const LAYERS: [(&str, &str); 3] = [
     ("--callees=", "callees.json"),
 ];
 
+/// Whether the fake's log shows three calls whose first answered before the second began.
+#[cfg(unix)]
+fn took_turns(args: &str) -> bool {
+    let lines: Vec<&str> = args.lines().collect();
+    let asked: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].starts_with("--"))
+        .collect();
+    let first = asked.first().map(|&at| format!("done {}", lines[at]));
+    let done = lines
+        .iter()
+        .position(|line| Some(line.to_string()) == first);
+    asked.len() == 3 && done.is_some_and(|done| asked.get(1).is_some_and(|&next| done < next))
+}
+
 /// Reruns `name` with PATH holding only a fake `ripwire` that answers each verb with the real
 /// ripwire 0.6.5 answer recorded under tests/fixtures/ripwire; `slow` makes each answer take 1 s.
 #[cfg(unix)]
@@ -400,15 +414,8 @@ fn a_cold_repositorys_ripwire_calls_take_turns() -> TestResult {
     let packet = run(dir, input);
     let args = fs::read_to_string(dir.join("args"))?;
     assert!(packet.contains("callees of alpha: 1"), "{packet}");
-    let lines: Vec<&str> = args.lines().collect();
-    let asked: Vec<usize> = (0..lines.len())
-        .filter(|&at| lines[at].starts_with("--"))
-        .collect();
-    assert_eq!(asked.len(), 3, "{args}");
-    let first = format!("done {}", lines[asked[0]]);
-    let done = lines.iter().position(|line| *line == first);
     assert!(
-        done.is_some_and(|done| done < asked[1]),
+        took_turns(&args),
         "the first call had not answered when the next began:\n{args}"
     );
     Ok(())
@@ -477,16 +484,8 @@ fn a_cancel_reaches_the_calls_waiting_on_a_cold_repository() -> TestResult {
     input.insert("symbol".to_owned(), json!("alpha"));
     run(dir, input);
     let args = fs::read_to_string(dir.join("args"))?;
-    let lines: Vec<&str> = args.lines().collect();
-    let asked: Vec<usize> = (0..lines.len())
-        .filter(|&at| lines[at].starts_with("--"))
-        .collect();
-    let first = asked.first().map(|&at| format!("done {}", lines[at]));
-    let done = lines
-        .iter()
-        .position(|line| Some(line.to_string()) == first);
     assert!(
-        asked.len() == 3 && done.is_some_and(|done| done < asked[1]),
+        took_turns(&args),
         "a cancelled cold run left the repository warm:\n{args}"
     );
     Ok(())
