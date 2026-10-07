@@ -44,9 +44,8 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
 
 /// The predicates that hold after this call; the needles are the states the old
 /// producers branched on, and one ipython needle wins, in the order they were tried.
-fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
+fn facts_of(tool: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
     let text = result_text(&output.result);
-    let body = text.trim();
     let kind = output
         .result
         .details
@@ -57,12 +56,6 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
         true => format!("{}({kind})", yi_types::graph::RESULT_ERROR),
         false => yi_types::graph::RESULT_OK.to_owned(),
     }];
-    if tool == "bash"
-        && command.trim_start().starts_with("grid ")
-        && (body.is_empty() || body.lines().count() <= 1 && body.contains("exit code"))
-    {
-        holds.push(yi_types::graph::GRID_ANSWER_EMPTY.to_owned());
-    }
     // ponytail: CPython 3.11-3.13 wording; add a second needle if a venv rewords it.
     let needle = if text.contains("<coroutine object ") {
         Some(yi_types::graph::COROUTINE_UNAWAITED)
@@ -602,7 +595,7 @@ impl AgentTool for ToolAdapter {
                     {
                         broker.note_containment_failure(refusal);
                     }
-                    let holds = facts_of(&name, &command, &output);
+                    let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
                         holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
                         name: "",
