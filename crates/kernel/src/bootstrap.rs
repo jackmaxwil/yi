@@ -177,28 +177,6 @@ fn unpack_entries(mut rest: &[u8], into: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The old tree is moved aside, never written into, so a symlink there is refused rather
-/// than followed and a reader sees the previous tree or the whole new one.
-fn replace_dir(staging: &Path, target: &Path) -> Result<(), String> {
-    let describe = |error: std::io::Error| format!("{}: {error}", target.display());
-    match std::fs::symlink_metadata(target) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(format!(
-                "{} is a symlink; not replacing it",
-                target.display()
-            ));
-        }
-        Ok(_) => {
-            let old = target.with_extension(format!("old-{}", std::process::id()));
-            std::fs::rename(target, &old).map_err(describe)?;
-            let _ = std::fs::remove_dir_all(&old);
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(describe(error)),
-    }
-    std::fs::rename(staging, target).map_err(describe)
-}
-
 /// Writes the embedded runtime to `<home>/.yi/python`, whole or not at all: a sibling temp
 /// dir is filled and stamped, then renamed over whatever was there.
 pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
@@ -220,7 +198,9 @@ pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
             std::fs::write(staging.join(PYTHON_STAMP_FILE), embed_stamp())
                 .map_err(|error| format!("{}: {error}", staging.display()))
         })
-        .and_then(|()| replace_dir(&staging, &target));
+        .and_then(|()| {
+            crate::tarball::swap_in(&staging, &target).map(crate::tarball::Aside::commit)
+        });
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
