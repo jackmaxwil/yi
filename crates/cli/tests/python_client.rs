@@ -9,8 +9,11 @@ use std::os::unix::fs::PermissionsExt;
 use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_types::message::StopReason;
 
+#[path = "../../types/tests/support/repo.rs"]
+mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+use repo::init_repo;
 use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -37,25 +40,6 @@ fn run(program: &str, args: &[&str], dir: &std::path::Path) -> Result<String, Bo
 }
 
 const CLIENT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../python");
-
-fn init_repo(repo: &std::path::Path) -> TestResult {
-    for args in [
-        &["init", "-q"][..],
-        &["add", "README"],
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t",
-            "commit",
-            "-qm",
-            "init",
-        ],
-    ] {
-        run("git", args, repo)?;
-    }
-    Ok(())
-}
 
 const PROGRAM: &str = r#"
 import json, sys
@@ -95,6 +79,8 @@ print(json.dumps({"finished": not thread.is_alive(), "error": out.get("error", "
 const CANCELLED_STUB: &str = r#"#!/usr/bin/env python3
 import json, os, sys
 log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "calls.log"), "a")
+log.write("argv " + " ".join(sys.argv[1:]) + "\n")
+log.flush()
 for line in sys.stdin:
     frame = json.loads(line)
     if frame.get("method") == "session/new":
@@ -144,8 +130,141 @@ fn a_cancelled_cell_update_raises_instead_of_hanging_the_client() -> TestResult 
     );
     let calls = std::fs::read_to_string(dir.join("calls.log"))?;
     assert!(
+        calls.lines().any(|line| line.contains("--confirm")),
+        "mode='ask' maps to the CLI's --confirm flag: {calls}"
+    );
+    assert!(
         calls.lines().any(|code| code.contains("rlm.wait")),
         "close() drained the family with an rlm.wait cell before closing stdin: {calls}"
+    );
+    Ok(())
+}
+
+const WIRED_STUB: &str = r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("method") == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": frame["id"], "result": {"sessionId": "s1"}}), flush=True)
+    elif frame.get("method") == "_yi/kernel_execute":
+        print(json.dumps({"jsonrpc": "2.0", "id": frame["id"], "result": {"callId": "c1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"update": {
+            "status": "completed", "content": []}}}), flush=True)
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": frame.get("id"), "result": {}}), flush=True)
+"#;
+
+const WIRED_PROGRAM: &str = r#"
+import json, sys, threading, traceback
+sys.path.insert(0, sys.argv[1])
+from yi_client import Yi, YiError
+out = {}
+def work():
+    try:
+        with Yi(sys.argv[3], yi=sys.argv[2]) as yi:
+            out["result"] = yi.run("1")
+    except YiError as error:
+        out["error"] = str(error)
+    except Exception:
+        out["error"] = traceback.format_exc()
+thread = threading.Thread(target=work, daemon=True)
+thread.start()
+thread.join(timeout=10)
+print(json.dumps({"finished": not thread.is_alive(), "error": out.get("error", "")}))
+"#;
+
+#[test]
+fn a_terminal_update_without_a_tool_call_id_raises_instead_of_hanging() -> TestResult {
+    let dir = Scratch::new("yi-python-client-wired")?;
+    dir.home()?;
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    let stub = dir.join("yi-stub.py");
+    std::fs::write(&stub, WIRED_STUB)?;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
+    let program = dir.join("program.py");
+    std::fs::write(&program, WIRED_PROGRAM)?;
+    let out = run(
+        "python3",
+        &[
+            &program.display().to_string(),
+            CLIENT_DIR,
+            &stub.display().to_string(),
+            &repo.display().to_string(),
+        ],
+        &dir,
+    )?;
+    let report: Value = serde_json::from_str(out.trim())?;
+    assert_eq!(
+        report["finished"], true,
+        "run() hung waiting for a toolCallId the wire stopped carrying: {report}"
+    );
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("toolCallId")),
+        "the wire-shape change reached YiError: {report}"
+    );
+    Ok(())
+}
+
+const LEAK_STUB: &str = r#"#!/usr/bin/env python3
+import json, os, sys
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "stub.pid"), "w").write(str(os.getpid()))
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("method") == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": frame["id"], "error": {"message": "refused"}}), flush=True)
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": frame.get("id"), "result": {}}), flush=True)
+"#;
+
+const LEAK_PROGRAM: &str = r#"
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from yi_client import Yi, YiError
+try:
+    Yi(sys.argv[3], yi=sys.argv[2])
+    dead = False
+except YiError as error:
+    pid = int(open(sys.argv[4]).read())
+    dead = False
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            dead = True
+            break
+        time.sleep(0.05)
+print(json.dumps({"dead": dead}))
+"#;
+
+#[test]
+fn a_refused_handshake_kills_the_spawned_process_instead_of_leaking_it() -> TestResult {
+    let dir = Scratch::new("yi-python-client-leak")?;
+    dir.home()?;
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    let stub = dir.join("yi-stub.py");
+    std::fs::write(&stub, LEAK_STUB)?;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
+    let program = dir.join("program.py");
+    std::fs::write(&program, LEAK_PROGRAM)?;
+    let out = run(
+        "python3",
+        &[
+            &program.display().to_string(),
+            CLIENT_DIR,
+            &stub.display().to_string(),
+            &repo.display().to_string(),
+            &dir.join("stub.pid").display().to_string(),
+        ],
+        &dir,
+    )?;
+    let report: Value = serde_json::from_str(out.trim())?;
+    assert_eq!(
+        report["dead"], true,
+        "the refused session/new left the spawned yi process alive: {report}"
     );
     Ok(())
 }
@@ -167,10 +286,7 @@ print(json.dumps({"wrote": os.path.exists(os.path.join(repo, "note.txt")),
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_permission_ask_is_refused_and_the_client_continues() -> TestResult {
     let dir = Scratch::new("yi-python-client-permission")?;
-    dir.home()?;
     let repo = dir.join("repo");
-    std::fs::create_dir_all(&repo)?;
-    std::fs::write(repo.join("README"), "probe\n")?;
     init_repo(&repo)?;
     let script = dir.join("script.jsonl");
     let turns = [
@@ -229,10 +345,7 @@ fn a_permission_ask_is_refused_and_the_client_continues() -> TestResult {
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_python_program_fans_out_readers_with_no_model_turn_at_the_root() -> TestResult {
     let dir = Scratch::new("yi-python-client")?;
-    dir.home()?;
     let repo = dir.join("repo");
-    std::fs::create_dir_all(&repo)?;
-    std::fs::write(repo.join("README"), "probe\n")?;
     init_repo(&repo)?;
     let replies = ["alpha", "beta", "gamma"]
         .iter()

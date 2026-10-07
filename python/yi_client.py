@@ -25,16 +25,23 @@ class YiError(RuntimeError):
 
 class Yi:
     def __init__(self, cwd: str, *, model: str | None = None, mode: str = "auto", yi: str = "yi",
-                 args: Iterable[str] = (), env: dict[str, str] | None = None):
-        command = [yi, "acp", "--cwd", str(cwd), f"--{mode}", *args]
+                 args: Iterable[str] = ()):
+        flags = {"ask": "--confirm", "confirm": "--confirm", "auto": "--auto", "yolo": "--yolo"}
+        if mode not in flags:
+            raise YiError(f"unknown mode {mode!r}: expected one of {', '.join(flags)}")
+        command = [yi, "acp", "--cwd", str(cwd), flags[mode], *args]
         if model:
             command[2:2] = ["--model", model]
-        self._proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                      text=True, env={**os.environ, **(env or {})})
+        self._proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self._lock = threading.Lock()
         self._serial = 0
-        self._request("initialize", {"protocolVersion": 2})
-        self.session = self._request("session/new", {"cwd": str(cwd), "mcpServers": []})["sessionId"]
+        try:
+            self._request("initialize", {"protocolVersion": 2})
+            self.session = self._request("session/new", {"cwd": str(cwd), "mcpServers": []})["sessionId"]
+        except BaseException:
+            self._proc.kill()
+            self._proc.wait()
+            raise
 
     def __enter__(self) -> "Yi":
         return self
@@ -64,6 +71,12 @@ class Yi:
             while True:
                 update = self._frame().get("params", {}).get("update", {})
                 status = update.get("status")
+                if (update.get("sessionUpdate") in (None, "tool_call_update")
+                        and status not in (None, "pending", "in_progress")
+                        and not update.get("toolCallId")):
+                    # Invariant: a terminal tool-call update without toolCallId is a wire-shape
+                    # change; raising beats spinning on frames that can never match `call`.
+                    raise YiError(f"terminal session/update without toolCallId: {update}")
                 if update.get("toolCallId") == call and status not in (None, "pending", "in_progress"):
                     text = "".join(part.get("content", {}).get("text", "") for part in update.get("content", []))
                     if status != "completed":
