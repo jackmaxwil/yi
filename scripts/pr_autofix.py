@@ -78,7 +78,22 @@ GATE_SIGNED = "The fixer's answer to the gate on"
 LANE_SECS = 900
 # Incident: #1025's retry died on an upstream 429 and was labelled failed and counted as a miss,
 # though a busy provider says nothing about the PR; such an attempt waits for the next pass.
-TRANSIENT = re.compile(r"\b(429|502|503|rate.limit\w*|overloaded|temporarily)\b", re.I)
+# Incident: #1111's pass met a runner with a full /tmp, and a disk that frees itself stopped the PR.
+TRANSIENT = re.compile(r"\b(429|502|503|rate.limit\w*|overloaded|temporarily)\b|No space left|Out of diskspace", re.I)
+
+
+class Missed(RuntimeError):
+    """The model fell short where a stronger one may not: nothing changed, a gate still red, a
+    refusal it repeated. Incident: #1110's findings stopped on GLM changing nothing, never tried higher."""
+
+
+def verdict_of(err, notes):
+    """A miss retries one tier up until the top tier has missed too; a disk or provider blip waits."""
+    if TRANSIENT.search(str(err)):
+        return "deferred"
+    if isinstance(err, (Missed, pr_review.Unanswered, subprocess.TimeoutExpired)) and misses(notes) + 1 < len(TIERS):
+        return "missed"
+    return "failed"
 
 
 def decide(labels, conflicted, quiet_for, asked=False, blocked=False, red=False):
@@ -111,7 +126,7 @@ def misses(notes):
     """Autofix attempts on this PR that failed or were deferred since its last pushed fix.
     Incident: #1025 sat on a tier whose model its provider rate-limited three passes running."""
     verdicts = [row.get("verdict") for row in bot_meter.rows(notes) if row["kind"] == "yi-autofix"]
-    return sum(v in ("failed", "deferred") for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
+    return sum(v in ("failed", "deferred", "missed") for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
 
 
 def last_stop(notes):
@@ -231,7 +246,7 @@ def accept(clone, conflicted, before, keep_new=lambda path: False):
     is still seen. Returns (touched, note on files left out)."""
     left = [p for p in conflicted if (clone / p).is_file() and MARKER.search((clone / p).read_text(errors="replace"))]
     if left:
-        raise RuntimeError(f"conflict markers left in {', '.join(left)}")
+        raise Missed(f"conflict markers left in {', '.join(left)}")
     # Git staged its own resolution of every clean path, so the worktree against the index is
     # what the model wrote, and the base's own changes to walled files are not counted against it.
     staged = {entry.split("\t", 1)[1] for entry in before ^ snapshot(clone) if "\t" in entry}
@@ -239,7 +254,7 @@ def accept(clone, conflicted, before, keep_new=lambda path: False):
                      | set(sh(clone, "git", "ls-files", "--others", "--exclude-standard").stdout.split()))
     walled = pr_review.walled(touched)
     if walled:
-        raise RuntimeError(f"the model edited a file the fixer may not touch: {', '.join(walled)}")
+        raise Missed(f"the model edited a file the fixer may not touch: {', '.join(walled)}")
     new = sh(clone, "git", "ls-files", "--others", "--exclude-standard").stdout.split()
     kept = [path for path in new if keep_new(path)]
     # A build dir or a scratch file the model left would otherwise ride the merge into the PR.
@@ -503,14 +518,14 @@ def gate_in(clone, pr, lanes, answer, tried=0):
         touched = sorted(set(touched) | set(more))
         cut = weakened(clone)
         if cut:
-            raise RuntimeError(cut)
+            raise Missed(cut)
         formatted(clone)
         reprice(clone, f"origin/{pr['base']['ref']}")
         summary = ((said.get("summary") or "").strip() or "the model gave no summary") + note
         refused = lane_failures(clone, lanes)
         if not refused:
             return summary, model, touched
-    raise RuntimeError("the lanes still fail after the fix and one more turn:\n" + refused)
+    raise Missed("the lanes still fail after the fix and one more turn:\n" + refused)
 
 
 def findings_in(clone, pr, rnd, answer, tried=0):
@@ -546,7 +561,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
                 "declined": again.get("declined") or said.get("declined")}
         touched, note, refused = judged()
         if refused:
-            raise RuntimeError(refused)
+            raise Missed(refused)
     every = [d for d in said.get("declined") or [] if isinstance(d, dict)]
     declined = [d for d in every if isinstance(d.get("n"), int) and 0 < d["n"] <= len(todo)]
     stray = [d for d in every if d not in declined]
@@ -557,7 +572,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
                        for d in stray)
     summary += reasons + note
     if not sh(clone, "git", "diff", "--cached", "--name-only").stdout.strip():
-        raise RuntimeError("the fixer changed nothing" + reasons)
+        raise Missed("the fixer changed nothing" + reasons)
     return summary, model, touched, declined_highs
 
 
@@ -611,7 +626,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             touched = sorted(set(touched) | set(more))
             refused = weakened(clone, tests_named(rnd["findings"])) if kind == "findings" else None
             if refused:
-                raise RuntimeError(refused)
+                raise Missed(refused)
             reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
             if kind == "conflict":
                 remeasure(clone)
@@ -620,7 +635,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             formatted(clone)
             committed = commit(message())
             if committed.returncode:
-                raise RuntimeError("the commit hook refused the fix, and again after one repair turn:\n"
+                raise Missed("the commit hook refused the fix, and again after one repair turn:\n"
                                    + failures(committed.stdout + committed.stderr))
         new = sh(clone, "git", "rev-parse", "HEAD").stdout.strip()
         sh(root, "git", "fetch", "-q", str(clone), new)
@@ -661,6 +676,9 @@ def render(n, fields, verdict, reason="", status="", meter=None):
                   fields["summary"]]
     elif verdict == "deferred":
         lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
+    elif verdict == "missed":
+        lines += ["**Autofix missed**; the next pass tries one model tier up, and a miss on the top tier stops it.",
+                  "", "```", reason.strip(), "```"]
     else:
         lines += ["**Autofix failed**; `autofix:failed` stops it until the label is removed.", "", "```", reason.strip(), "```"]
     if fields.get("touched"):
@@ -759,11 +777,9 @@ def attempt(repo, pr, ids, asked=False):
         print(f"#{number}: the push was refused, the branch moved: {err}")
         return "moved"
     except (RuntimeError, pr_review.Unanswered, subprocess.TimeoutExpired) as err:
-        reason = str(err)
+        reason, verdict = str(err), verdict_of(err, notes)
     finally:
         set_label(repo, number, ids, "autofix:working", False)
-    if verdict == "failed" and TRANSIENT.search(reason):
-        verdict = "deferred"
     # Stop and wait: a high the fixer showed wrong is the owner's call, not another round's.
     if verdict == "failed" or fields.get("declined"):
         set_label(repo, number, ids, "autofix:failed", True)
@@ -817,7 +833,7 @@ def cmd_autofix(args):
         said = attempt(repo, pr, ids)
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
-        fixed += said in ("pushed", "failed", "moved")
+        fixed += said in ("pushed", "failed", "missed", "moved")
         print(f"#{pr['number']}: {said}")
     return 0
 
@@ -883,6 +899,12 @@ def gate_selfcheck():
 
 def selfcheck():
     errs = gate_selfcheck()
+    tried = lambda *verdicts: [{"user": {"login": pr_review.BOT}, "created_at": "", "body": f"<!-- yi-autofix-meta pr=1 verdict={v} -->"} for v in verdicts]
+    for err, notes, want in ((Missed("nothing changed"), tried(), "missed"), (Missed("nothing changed"), tried("missed", "missed"), "failed"),
+                             (RuntimeError("Out of diskspace"), tried(), "deferred"), (RuntimeError("a person is next"), tried(), "failed"),
+                             (subprocess.TimeoutExpired("yi", 1), tried("missed"), "missed")):
+        if verdict_of(err, notes) != want:
+            errs.append(f"{err!r} after {len(notes)} miss(es) read {verdict_of(err, notes)}, not {want}")
     table = [
         (({"autofix:hold", "autofix"}, ["a.rs"], 9e9), "hold"),
         (({"autofix:failed"}, ["a.rs"], 9e9), "stopped"),
