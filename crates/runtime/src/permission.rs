@@ -18,7 +18,7 @@ use yi_types::permission::{
 
 mod kept;
 mod late;
-use late::{Late, ask_or_judge};
+use late::{Answered, Late};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -711,10 +711,9 @@ impl PermissionBroker {
                 && self.mode() == PermissionMode::Auto
                 && self.asker.is_some()
         });
+        let late = approver.and_then(|approver| Late::of(approver, &call));
         let mut prior = None;
-        if let Some(approver) =
-            approver.filter(|approver| approver.timing() == crate::classifier::Timing::Instant)
-        {
+        if let Some(approver) = approver.filter(|_| late.is_none()) {
             let judgement = approver.judge(&call);
             prior = Some(judgement);
             match judgement {
@@ -735,14 +734,6 @@ impl PermissionBroker {
                 | crate::classifier::Judgement::Undecided => {}
             }
         }
-        let late = approver.and_then(|approver| match approver.timing() {
-            crate::classifier::Timing::AfterDelay(delay) => Some(Late {
-                approver,
-                call: &call,
-                delay,
-            }),
-            crate::classifier::Timing::Instant => None,
-        });
         let asks_user = matches!(prior, Some(crate::classifier::Judgement::AskUser(_)));
         let Some(reviewer) = self.reviewer.get().cloned().filter(|_| !asks_user) else {
             return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, late);
@@ -1026,10 +1017,10 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: rendered.clone(),
         });
-        let late = late.as_ref().and_then(|late| self.late(late));
-        let answered = late.map(|late| ask_or_judge(self.asker.as_ref(), ask, late));
-        let outcome = match (&self.asker, answered) {
-            (Some(_), Some(answered)) => {
+        let outcome = match &self.asker {
+            Some(asker) => {
+                let answered = late.and_then(|late| self.late(ask, &late));
+                let answered = answered.unwrap_or_else(|| Answered::Person(asker(ask)));
                 let (outcome, safe) = self.settle_answered(tool_call_id, ask, answered);
                 if let Some(safe) = safe {
                     return CallOutcome {
@@ -1042,13 +1033,7 @@ impl PermissionBroker {
                 }
                 outcome
             }
-            (Some(asker), _) => {
-                let outcome = asker(ask);
-                let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-                self.settle(tool_call_id, ask, allowed, Answerer::User);
-                outcome
-            }
-            (None, _) => {
+            None => {
                 self.settle(tool_call_id, ask, false, Answerer::Nobody);
                 let asked = yi_permission::Decision::Ask {
                     title: ask.title.to_owned(),

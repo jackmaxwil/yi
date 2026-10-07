@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use yi_types::event::AgentEvent;
 
@@ -48,6 +48,23 @@ pub(super) struct Late<'a> {
     pub(super) delay: std::time::Duration,
 }
 
+impl<'a> Late<'a> {
+    /// The late ask `approver` makes of `call`, or none when it answers before the person.
+    pub(super) fn of(
+        approver: &'a crate::classifier::Approver,
+        call: &'a crate::classifier::Call<'a>,
+    ) -> Option<Self> {
+        match approver.timing() {
+            crate::classifier::Timing::AfterDelay(delay) => Some(Self {
+                approver,
+                call,
+                delay,
+            }),
+            crate::classifier::Timing::Instant => None,
+        }
+    }
+}
+
 pub(super) enum Answered {
     Person(AskOutcome),
     Classifier(f64),
@@ -65,23 +82,24 @@ pub(super) fn ask_or_judge(
     };
     let (owned, asker) = (OwnedAsk::of(ask), Arc::clone(asker));
     let (sender, receiver) = std::sync::mpsc::channel();
+    let claimed = Arc::new(AtomicBool::new(false));
+    let theirs = Arc::clone(&claimed);
     std::thread::spawn(move || {
-        let _gone_if_the_classifier_answered = sender.send(asker(&owned.ask()));
+        let outcome = asker(&owned.ask());
+        if !theirs.swap(true, Ordering::AcqRel) {
+            let _ = sender.send(outcome);
+        }
     });
     if let Ok(outcome) = receiver.recv_timeout(late.delay) {
         return Answered::Person(outcome);
     }
     let judged = late.approver.judge(late.call);
-    // A person who answered while the sidecar was judging decides, a refusal included.
-    if let Ok(outcome) = receiver.try_recv() {
-        return Answered::Person(outcome);
-    }
     if let crate::classifier::Judgement::Allow(safe) = judged {
-        // Invariant: an answer that lands while the allow is applied still beats it.
-        if let Ok(outcome) = receiver.try_recv() {
-            return Answered::Person(outcome);
+        // Invariant: person and classifier claim one flag; a person who claimed it first decides,
+        // a refusal included, and an answer after the classifier's claim finds the call decided.
+        if !claimed.swap(true, Ordering::AcqRel) {
+            return Answered::Classifier(safe);
         }
-        return Answered::Classifier(safe);
     }
     Answered::Person(receiver.recv().unwrap_or(AskOutcome::Reject))
 }
@@ -113,20 +131,12 @@ impl PermissionBroker {
             .get()
             .filter(|_| self.mode() == PermissionMode::Auto);
         let answered = match (approver.filter(|_| self.asker.is_some()), call) {
-            (Some(approver), Some(call)) => match approver.timing() {
-                crate::classifier::Timing::Instant => match approver.judge(call) {
+            (Some(approver), Some(call)) => match Late::of(approver, call) {
+                Some(late) => self.late(ask, &late),
+                None => match approver.judge(call) {
                     crate::classifier::Judgement::Allow(safe) => Some(Answered::Classifier(safe)),
                     _ => None,
                 },
-                crate::classifier::Timing::AfterDelay(delay) => {
-                    let late = Late {
-                        approver,
-                        call,
-                        delay,
-                    };
-                    self.late(&late)
-                        .map(|late| ask_or_judge(self.asker.as_ref(), ask, late))
-                }
             },
             _ => None,
         };
@@ -167,15 +177,16 @@ impl PermissionBroker {
         }
     }
 
-    /// Whether [`PermissionBroker::confirm_judged`] gets an answer: a person, or auto's classifier.
+    /// Whether [`PermissionBroker::confirm_judged`] gets an answer: a person, whom auto's
+    /// classifier answers for only beside one, so a headless confirmation has no confirmer.
     pub fn can_confirm(&self) -> bool {
-        self.can_ask() || (self.mode() == PermissionMode::Auto && self.approver.get().is_some())
+        self.can_ask()
     }
 
-    /// Invariant: a prompt that cannot close when its call settles elsewhere (a terminal
-    /// blocked on stdin) is never answered for, or its reader would take the next prompt's answer.
-    pub(super) fn late<'a>(&self, late: &'a Late<'a>) -> Option<&'a Late<'a>> {
-        (self.asker.is_none() || self.prompts_close_on_settle.load(Ordering::Relaxed))
-            .then_some(late)
+    /// Invariant: a surface whose prompt cannot close when its call settles elsewhere (a terminal
+    /// blocked on stdin) never hands the ask to the classifier, or its reader takes the next answer.
+    pub(super) fn late(&self, ask: &PermissionAsk<'_>, late: &Late<'_>) -> Option<Answered> {
+        (self.prompts_close_on_settle.load(Ordering::Relaxed))
+            .then(|| ask_or_judge(self.asker.as_ref(), ask, late))
     }
 }

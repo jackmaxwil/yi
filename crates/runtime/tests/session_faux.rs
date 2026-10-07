@@ -779,23 +779,30 @@ async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error
     Ok(())
 }
 
-/// The owner: approval "should be on by default". A session attached with a classifier and no
-/// `approval` key arms it, minting the key under the session's HOME. Headless, with nobody
-/// wired to answer, an auto-mode ask the classifier is sure of still fails closed. Dies with
-/// an unattended classifier allow.
+/// The owner: approval "should be on by default". A session attached with a classifier, armed by
+/// default or by the `approve` key that armed it before, mints the key under the session's HOME.
+/// Headless, with nobody wired to answer, an auto-mode ask the classifier is sure of still fails
+/// closed. Dies with an unattended classifier allow.
 #[tokio::test]
 async fn a_headless_session_with_no_asker_fails_closed() -> Result<(), Box<dyn Error>> {
-    let (port, _served) = crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
-    let (broker, warnings) = brokered_with_classifier("approve-default", None, false, "", port)?;
-    assert!(warnings.is_empty(), "{warnings:?}");
-    let mut args = serde_json::Map::new();
-    args.insert("command".to_owned(), serde_json::json!("make build"));
-    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
-    assert!(
-        !outcome.allowed,
-        "headless, nobody answers for the person, so the ask degrades to a denial: {}",
-        outcome.reason
-    );
+    for (name, extra) in [
+        ("approve-default", ""),
+        ("approve-armed", r#", "approve": true"#),
+    ] {
+        let (port, _served) =
+            crate::classifier_e2e::sidecar(vec![crate::classifier_e2e::safe(0.99)])?;
+        let (broker, warnings) = brokered_with_classifier(name, None, false, extra, port)?;
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut args = serde_json::Map::new();
+        args.insert("command".to_owned(), serde_json::json!("make build"));
+        let outcome =
+            broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+        assert!(
+            !outcome.allowed,
+            "{name}: headless, nobody answers for the person, so the ask degrades to a denial: {}",
+            outcome.reason
+        );
+    }
     Ok(())
 }
 
