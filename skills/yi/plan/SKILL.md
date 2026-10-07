@@ -74,12 +74,14 @@ Bad:
 
 ## The ops
 
-`plan init` with the goal and the todos; `plan start`, `done`, `fail`,
-`block`, `unblock` step one; `plan decompose` opens a sub-plan under a
-running todo; `plan supersede` replaces the cut with a reason. A todo moves
-pending → running → done in order: `done` on a pending todo and several
-`done` at once are refused. The todo tool stays the day-to-day list; a
-plan task may mirror a todo, and the plan steps it.
+`plan set` with the goal and every todo as a row is the whole write. A
+row's `contract`, `after` and `delegation` declare it and its `state`
+moves it: `done` runs the contract first, `blocked` asks the user, and a
+delegated row's child is started and verified by the engine. Send the plan
+again to change it. A row the engine could not move says why in a `note:`
+line of the reply, and the rest lands. `plan view` reads it; `plan
+decompose` opens a sub-plan under a running todo. The todo tool stays the
+day-to-day list; a plan task may mirror a todo, and the plan steps it.
 
 ## Delegation
 

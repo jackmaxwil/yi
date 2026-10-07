@@ -708,7 +708,10 @@ fn a_whole_plan_set_lands_and_each_unreachable_row_says_why() -> TestResult {
         text.contains("Document it: a second row with this name was left out"),
         "{text}"
     );
-    assert!(text.contains("label is 81 chars, the cap is 80"), "{text}");
+    assert!(
+        text.contains("a label of 81 chars was cut to 80, the label cap"),
+        "{text}"
+    );
     assert_eq!(
         state_of(&rig, "Fix calc.divide")?,
         "Running",
