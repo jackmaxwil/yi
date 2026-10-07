@@ -514,13 +514,7 @@ fn publish(
     home: &Path,
     skills: &[(String, Vec<u8>)],
 ) -> Result<(), String> {
-    if std::fs::symlink_metadata(dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err(format!("{} is a symlink", dest.display()));
-    }
     let target = home.join(".yi/skills");
-    if std::fs::symlink_metadata(&target).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err(format!("{} is a symlink", target.display()));
-    }
     let parent = dest
         .parent()
         .ok_or_else(|| format!("{} has no parent", dest.display()))?;
@@ -536,34 +530,19 @@ fn publish(
     result
 }
 
-/// Invariant: each live path is replaced by one rename with its predecessor kept aside, so a
-/// failed update puts the old binary and the old skills tree back together.
 fn swap(dest: &Path, new_bin: &Path, target: &Path, new_skills: &Path) -> Result<(), String> {
-    let pid = std::process::id();
-    let old_bin = dest.with_file_name(format!(".yi-old-{pid}"));
-    let old_skills = target.with_file_name(format!(".skills-old-{pid}"));
-    std::fs::copy(dest, &old_bin).map_err(io(dest))?;
-    if let Err(error) = std::fs::rename(new_bin, dest) {
-        let _ = std::fs::remove_file(&old_bin);
-        return Err(io(dest)(error));
-    }
-    let had = target.exists();
-    let moved = if had {
-        std::fs::rename(target, &old_skills).map_err(io(target))
-    } else {
-        Ok(())
-    }
-    .and_then(|()| std::fs::rename(new_skills, target).map_err(io(target)));
-    if let Err(error) = moved {
-        if had && !target.exists() {
-            let _ = std::fs::rename(&old_skills, target);
+    let binary = tarball::swap_in(new_bin, dest)?;
+    match tarball::swap_in(new_skills, target) {
+        Ok(skills) => {
+            skills.commit();
+            binary.commit();
+            Ok(())
         }
-        let _ = std::fs::rename(&old_bin, dest);
-        return Err(error);
+        Err(error) => Err(match binary.restore() {
+            Ok(()) => error,
+            Err(left) => format!("{error}; {left}"),
+        }),
     }
-    let _ = std::fs::remove_dir_all(&old_skills);
-    let _ = std::fs::remove_file(&old_bin);
-    Ok(())
 }
 
 fn write_exec(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1010,9 +989,13 @@ mod tests {
         std::fs::write(home.join(".yi/skills/yi/SKILL.md"), b"old skill")?;
         std::fs::write(home.join(".yi/skills/yi/mine.md"), b"mine")?;
         let dest = tmp.0.join("prefix/yi");
-        std::fs::create_dir_all(dest.join("busy"))?;
+        std::fs::create_dir_all(tmp.0.join("prefix"))?;
+        std::fs::write(&dest, b"old")?;
+        let held = format!("yi.old-{}", std::process::id());
+        std::fs::write(tmp.0.join("prefix").join(&held), b"held")?;
         let skills = [("yi/SKILL.md".to_owned(), b"new skill".to_vec())];
         let error = publish(&dest, b"new", &home, &skills).expect_err("rename");
+        assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(error.contains(&dest.display().to_string()), "{error}");
         assert_eq!(
             std::fs::read(home.join(".yi/skills/yi/SKILL.md"))?,
@@ -1028,7 +1011,7 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()?,
         );
         left.sort();
-        assert_eq!(left, ["skills", "yi"], "no staging left behind");
+        assert_eq!(left, ["skills", "yi", &held], "no staging left behind");
         Ok(())
     }
 
@@ -1065,7 +1048,7 @@ mod tests {
     fn a_failed_skills_swap_restores_the_old_binary() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = Tmp::new()?;
         let (home, dest) = old_install(&tmp.0)?;
-        let blocker = home.join(format!(".yi/.skills-old-{}", std::process::id()));
+        let blocker = home.join(format!(".yi/skills.old-{}", std::process::id()));
         std::fs::create_dir_all(&blocker)?;
         std::fs::write(blocker.join("held"), b"held")?;
         let skills = [("a/one.md".to_owned(), b"one".to_vec())];

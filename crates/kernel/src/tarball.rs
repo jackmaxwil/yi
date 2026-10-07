@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::path::{Path, PathBuf};
 
 pub const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TAR_BYTES: usize = 256 * 1024 * 1024;
@@ -118,4 +119,85 @@ fn header_text(header: &[u8], at: usize, len: usize) -> Result<String, String> {
 fn octal(field: &[u8]) -> Option<usize> {
     let text = std::str::from_utf8(field).ok()?;
     usize::from_str_radix(text.trim_matches(['\0', ' ']), 8).ok()
+}
+
+/// The predecessor [`swap_in`] kept beside its target; [`Aside::restore`] puts it back.
+#[must_use]
+pub struct Aside {
+    target: PathBuf,
+    old: Option<PathBuf>,
+}
+
+impl Aside {
+    pub fn commit(self) {
+        if let Some(old) = self.old {
+            let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
+        }
+    }
+
+    /// A failed restore names the path the predecessor still sits at, so it can be moved back.
+    pub fn restore(self) -> Result<(), String> {
+        let Some(old) = self.old else {
+            return Ok(());
+        };
+        std::fs::rename(&old, &self.target).map_err(|error| {
+            let (target, old) = (self.target.display(), old.display());
+            format!("{target} was not restored ({error}); the previous one is at {old}")
+        })
+    }
+}
+
+/// Invariant: a reader sees the old target or the whole new one; a file is replaced by one
+/// rename over a hard link of it, a directory by a rename aside, and a symlink is refused.
+pub fn swap_in(staging: &Path, target: &Path) -> Result<Aside, String> {
+    let describe = |error: std::io::Error| format!("{}: {error}", target.display());
+    let old = target.with_extension(format!("old-{}", std::process::id()));
+    let old = match std::fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(format!(
+                "{} is a symlink; not replacing it",
+                target.display()
+            ));
+        }
+        Ok(meta) if meta.is_dir() => std::fs::rename(target, &old).map(|()| Some(old)),
+        Ok(_) => std::fs::hard_link(target, &old).map(|()| Some(old)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+    .map_err(describe)?;
+    let aside = Aside {
+        target: target.to_path_buf(),
+        old,
+    };
+    match std::fs::rename(staging, target) {
+        Ok(()) => Ok(aside),
+        Err(error) => Err(match aside.restore() {
+            Ok(()) => describe(error),
+            Err(left) => format!("{}; {left}", describe(error)),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_restore_names_where_the_old_one_is() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = crate::scratch::Scratch::new("tarball-restore")?;
+        let (target, staging) = (scratch.join("yi"), scratch.join("yi.new"));
+        std::fs::write(&target, b"old")?;
+        std::fs::write(&staging, b"new")?;
+        let aside = swap_in(&staging, &target)?;
+        std::fs::remove_file(&target)?;
+        std::fs::create_dir_all(target.join("held"))?;
+        let error = match aside.restore() {
+            Ok(()) => return Err("restored over a non-empty directory".into()),
+            Err(error) => error,
+        };
+        let old = target.with_extension(format!("old-{}", std::process::id()));
+        assert!(error.contains(&old.display().to_string()), "{error}");
+        assert_eq!(std::fs::read(&old)?, b"old");
+        Ok(())
+    }
 }
