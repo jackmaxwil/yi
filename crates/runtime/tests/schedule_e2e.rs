@@ -996,10 +996,24 @@ fn turn_of(total: i64) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::MessageEnd { message }
 }
 
+/// The update a finished child's host publishes, again on every `publish_all`.
+fn child_done(tokens: u64) -> yi_types::event::AgentEvent {
+    let mut event = child_at(tokens);
+    if let yi_types::event::AgentEvent::ChildUpdate { update } = &mut event {
+        update.status = yi_types::subagent::ChildStatus::Completed;
+        update.exit = Some(yi_types::subagent::ChildExit::Completed);
+    }
+    event
+}
+
 fn child_at(tokens: u64) -> yi_types::event::AgentEvent {
+    child_named("c1", tokens)
+}
+
+fn child_named(id: &str, tokens: u64) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::ChildUpdate {
         update: yi_types::subagent::ChildUpdate {
-            id: yi_types::subagent::ChildId("c1".to_owned()),
+            id: yi_types::subagent::ChildId(id.to_owned()),
             name: "scout".to_owned(),
             status: yi_types::subagent::ChildStatus::Running,
             activity: yi_types::subagent::ChildActivity::Executing,
@@ -1047,6 +1061,237 @@ fn a_spend_alert_fires_once_per_crossing() -> TestResult {
             .observe(&child_at(100))
             .is_some_and(|text| text.contains("used 3000 tokens")),
         "a respawned child's restarted count erased what it had spent"
+    );
+    Ok(())
+}
+
+/// A faux session whose spend alarm fires every 1,000 tokens, wired as `yi` wires it.
+fn alarmed() -> Result<AgentSession, Box<dyn Error>> {
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(ProviderStream::new(None)),
+    );
+    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    Ok(session)
+}
+
+/// Dies with a resumed session's alarm counting from zero, so a session past its budget went
+/// silent after every restart; or with it re-announcing a crossing the last process announced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_spend_alarm_counts_on_from_the_ledger() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-resume")?;
+    let store =
+        JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned()).create(CreateOptions::default())?;
+    if let yi_types::event::AgentEvent::MessageEnd { message } = turn_of(1_500) {
+        lock_session(&store).append_message("main", message)?;
+    }
+    let session = alarmed()?;
+    session.attach_store(store)?;
+    for tokens in [400, 200] {
+        session.events_sender().send(turn_of(tokens))?;
+    }
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "2,100 tokens crossed 2,000 and nothing fired"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        1,
+        "the crossing at 1,000 fired again"
+    );
+    Ok(())
+}
+
+/// Dies with an alert at 1,200 of 600 real tokens: a rewind re-attaches the store, the ledger
+/// already holds the finished child's usage, and a stall notice re-publishes that child.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewind_does_not_count_a_finished_child_twice() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-rewind")?;
+    let store =
+        JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned()).create(CreateOptions::default())?;
+    let session = alarmed()?;
+    session.attach_store(Arc::clone(&store))?;
+    session.events_sender().send(child_at(600))?;
+    {
+        let mut ledger = lock_session(&store);
+        let record = crate::usage_record::child_usage(ledger.next_id(), 600, 0.0)?;
+        ledger.append_record(record)?;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    session.attach_store(store)?;
+    for event in [child_done(600), turn_of(1_000)] {
+        session.events_sender().send(event)?;
+    }
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "1,600 tokens crossed 1,000 and nothing fired"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        1,
+        "the finished child counted twice"
+    );
+    Ok(())
+}
+
+/// Dies with `/new` or an rpc switch carrying the last session's count into the next: an alert
+/// at 1,100 where the new session has spent 200, and none at its own ledger's 2,000 crossing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_sessions_store_reseeds_the_alarm_from_its_own_ledger() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-switch")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned());
+    let (first, second) = (
+        repo.create(CreateOptions::default())?,
+        repo.create(CreateOptions::default())?,
+    );
+    if let yi_types::event::AgentEvent::MessageEnd { message } = turn_of(1_500) {
+        lock_session(&second).append_message("main", message)?;
+    }
+    let session = alarmed()?;
+    session.attach_store(first)?;
+    session.events_sender().send(turn_of(900))?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    session.reset();
+    session.attach_store(second)?;
+    session.events_sender().send(turn_of(400))?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        0,
+        "the last session's 900 carried over"
+    );
+    session.events_sender().send(turn_of(200))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "the new session's 2,100 crossed 2,000 and nothing fired"
+    );
+    Ok(())
+}
+
+/// Dies with a finished child counted again after `/new` and back: the host keeps its children
+/// across a switch, and a stall notice re-publishes X's finished child into Y's alarm and into
+/// X's again, whose ledger already holds that child's usage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finished_child_counts_once_across_a_switch_and_back() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-x-y-x")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned());
+    let (x, y) = (
+        repo.create(CreateOptions::default())?,
+        repo.create(CreateOptions::default())?,
+    );
+    let session = alarmed()?;
+    let send = |event| {
+        session
+            .events_sender()
+            .send(event)
+            .map(|_| ())
+            .map_err(|_| "closed")
+    };
+    session.attach_store(Arc::clone(&x))?;
+    send(child_at(300))?;
+    {
+        let mut ledger = lock_session(&x);
+        let record = crate::usage_record::child_usage(ledger.next_id(), 600, 0.0)?;
+        ledger.append_record(record)?;
+    }
+    send(child_done(600))?;
+    let settle = || tokio::time::sleep(std::time::Duration::from_millis(150));
+    settle().await;
+    session.reset();
+    session.attach_store(y)?;
+    send(child_done(600))?;
+    send(turn_of(500))?;
+    settle().await;
+    assert_eq!(
+        session.pending_count(),
+        0,
+        "X's finished child counted in Y"
+    );
+    session.reset();
+    session.attach_store(x)?;
+    send(child_done(600))?;
+    send(turn_of(300))?;
+    settle().await;
+    assert_eq!(
+        session.pending_count(),
+        0,
+        "X's finished child counted twice"
+    );
+    send(turn_of(200))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "X's 1,100 crossed 1,000 and nothing fired"
+    );
+    Ok(())
+}
+
+/// Dies with a second alert at 1,000: a failed child's 1,900 live tokens never reach the
+/// ledger, and a re-attach seeding from its 900 moved the announced crossing back down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reattach_below_the_live_total_never_announces_again() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let dir = Scratch::new("yi-spend-below")?;
+    let store =
+        JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned()).create(CreateOptions::default())?;
+    let session = alarmed()?;
+    session.attach_store(Arc::clone(&store))?;
+    session.events_sender().send(child_at(1_900))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "1,900 fired nothing"
+    );
+    if let yi_types::event::AgentEvent::MessageEnd { message } = turn_of(900) {
+        lock_session(&store).append_message("main", message)?;
+    }
+    session.attach_store(store)?;
+    session.events_sender().send(turn_of(100))?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        1,
+        "the crossing at 1,000 fired again"
+    );
+    Ok(())
+}
+
+/// Dies with every child ignored after an attach: a child's live growth alone must cross the
+/// alert under X, and after `/new` a child first seen under Y counts in Y.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_childs_live_growth_counts_under_the_session_that_saw_it() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let dir = Scratch::new("yi-spend-owner")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp".to_owned());
+    let session = alarmed()?;
+    session.attach_store(repo.create(CreateOptions::default())?)?;
+    session.events_sender().send(child_named("x1", 1_100))?;
+    assert!(
+        until(|| session.pending_count() == 1).await,
+        "X's child crossed nothing"
+    );
+    session.reset();
+    session.attach_store(repo.create(CreateOptions::default())?)?;
+    session.events_sender().send(child_named("y1", 1_100))?;
+    assert!(
+        until(|| session.pending_count() == 2).await,
+        "Y's child crossed nothing"
+    );
+    session.events_sender().send(turn_of(800))?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        session.pending_count(),
+        2,
+        "Y's own 1,900 tokens never crossed 2,000: an alert here fired on 3,000, X's total carried in"
     );
     Ok(())
 }

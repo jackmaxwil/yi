@@ -417,23 +417,23 @@ pub(crate) fn fit_spans(
     width: usize,
     background: Option<ratatui::style::Color>,
 ) -> Vec<Span<'static>> {
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut used = 0_usize;
-    for span in spans {
-        let span_width = unicode_width::UnicodeWidthStr::width(span.content.as_ref());
-        if used.saturating_add(span_width) <= width {
-            used = used.saturating_add(span_width);
-            out.push(span);
-            continue;
+    let mut out = spans;
+    // An ASCII row's width is its length, so the common row that fits skips the cell walk.
+    let ascii = (out.iter()).try_fold(0usize, |sum, span| {
+        (span.content.is_ascii()).then(|| sum.saturating_add(span.content.len()))
+    });
+    let used = match ascii {
+        Some(used) if used <= width => used,
+        _ => {
+            let cells = crate::wrap::flatten_spans(&out);
+            let kept = crate::wrap::take_cells(&cells, width);
+            let used: usize = kept.iter().map(|cell| cell.width).sum();
+            if kept.len() < cells.len() {
+                out = crate::wrap::rebuild(kept, None).spans;
+            }
+            used
         }
-        let room = width.saturating_sub(used);
-        if room > 0 {
-            let text: String = span.content.chars().take(room).collect();
-            used = used.saturating_add(unicode_width::UnicodeWidthStr::width(text.as_str()));
-            out.push(Span::styled(text, span.style));
-        }
-        break;
-    }
+    };
     if used < width {
         out.push(Span::styled(
             " ".repeat(width.saturating_sub(used)),

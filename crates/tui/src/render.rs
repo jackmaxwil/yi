@@ -198,6 +198,9 @@ pub fn layout_chat(
         Vec::new()
     } else {
         crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
+            .into_iter()
+            .map(|line| crate::wrap::fit(line, width))
+            .collect()
     };
 
     let selected = &app.selection.model;
