@@ -175,6 +175,7 @@ impl TodoError {
             | Self::ParentOpen { .. }
             | Self::SetClosed { .. }
             | Self::NoEvidence { .. }
+            | Self::Doc(DocError::LabelTooLong { .. })
             | Self::Unanswered(_) => ToolErrorKind::Verdict,
             Self::Ambiguous { .. }
             | Self::ManyRunning { .. }
