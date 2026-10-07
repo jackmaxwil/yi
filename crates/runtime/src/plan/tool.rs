@@ -612,11 +612,7 @@ impl PlanTool {
     }
 
     /// One op through the natural reading and its retries, without the whole-plan apply.
-    pub(super) fn apply_one(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        self.apply(args)
-    }
-
-    fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+    pub(super) fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let (args, mut said) = super::natural::natural(args);
         if let Some(Value::Array(labels)) = args.get("labels")
             && (args.get("op").and_then(Value::as_str))

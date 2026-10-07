@@ -34,7 +34,7 @@ pub fn schema() -> Value {
             "filter": {"type": "string", "description": "block: `key=value&…` matched exactly, or a substring; `ok=true` waits for an exec to pass"},
             "note": {"type": "string", "description": "block: what would unblock it"},
             "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by number, id or label; a preview is light, at most 2048 bytes"},
-            "touched": {"type": "integer", "description": "optional: the touched counter you last saw; a stale value is refused so a user edit is never overwritten"}
+            "touched": {"type": "integer", "description": "optional: the touched counter you last saw; on a stale value the call is applied to the list as it is now, and a set keeps every row it left out, so a user edit is never overwritten"}
         }
     })
 }
@@ -407,8 +407,11 @@ impl TodoTool {
             ),
             None => String::new(),
         };
+        let notes: String = (applied.notes.iter())
+            .map(|note| format!("\nnote: {note}"))
+            .collect();
         Ok(format!(
-            "{inferred}{replaced}{body}\ntouched: {}",
+            "{inferred}{replaced}{body}\ntouched: {}{notes}",
             applied.touched
         ))
     }
