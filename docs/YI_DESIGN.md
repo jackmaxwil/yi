@@ -360,7 +360,7 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 `custom{checkpoint}`; `/undo` and `yi undo` restore the last turn start. Without git, a no-op.
 A shadow gitdir whose project has been gone 7 days is deleted, renamed aside first so a cut-short
 delete never leaves a half repo; a project that cannot be stat'd, or whose nearest surviving ancestor is a mount
-root (`/Volumes`, `/mnt`, `/media`: an unmounted volume), is kept. A live project's repo is never deleted, only `git prune`d at 30 days,
+root (`/Volumes`, `/mnt`, `/media`, `/run/media`: an unmounted volume), is kept. A live project's repo is never deleted, only `git prune`d at 30 days once idle an hour,
 which keeps every younger capture and the objects it names: captures write no ref, the shadow
 index roots the newest, and each capture refreshes its tree's mtime because `write-tree` hands
 back a cached tree untouched. The sweep is [`retention`](../crates/runtime/src/retention.rs):

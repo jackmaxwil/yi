@@ -181,7 +181,9 @@ said 984 MB where `du` said 2.8 GB, and neither is what deleting frees on APFS (
 The existing sweeps (spills, converted documents, stale venvs, kernel connections) keep their own
 triggers and did not move into the table: moving them would buy no behavior. A short-lived
 process such as `yi ask` can exit before its background sweep finishes; the sweep is idempotent,
-and the next hour's session picks up where it stopped.
+and the stamp is written only once a sweep finishes, so the next session picks up where it
+stopped. Known limit: a persistent Linux mount point (`/mnt/data`) left empty by an unmount
+reads as a deleted project, and its repos go after 7 days.
 
 ## 4. Test homes: inside the worktree
 

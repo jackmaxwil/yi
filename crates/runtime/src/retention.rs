@@ -9,7 +9,7 @@ const SWEEP_EVERY: Duration = Duration::from_secs(3600);
 const STAMP: &str = ".yi/retention.stamp";
 const TOMB: &str = "gone";
 /// A project whose nearest surviving ancestor is one of these sat on a volume now unmounted.
-const MOUNT_ROOTS: [&str; 3] = ["/Volumes", "/mnt", "/media"];
+const MOUNT_ROOTS: [&str; 4] = ["/Volumes", "/mnt", "/media", "/run/media"];
 const USER_MOUNTS: [&str; 2] = ["/media", "/run/media"];
 
 enum Fate {
@@ -33,7 +33,7 @@ const ROWS: [Row; 1] = [Row {
 }];
 
 /// Invariant: every capture rewrites the shadow index through `index.lock`, so the shadow
-/// dir's mtime is its last capture. A live project's repo is only trimmed, never removed.
+/// dir's mtime is its last capture. A live repo is trimmed once idle an hour, never removed.
 fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
     let Some(project) = yi_tools::checkpoint::work_tree(dir) else {
         return Fate::Keep;
@@ -50,7 +50,8 @@ fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
     match project.try_exists() {
         Ok(false) if !unmounted && idle > ORPHAN_AFTER => Fate::Remove,
         Ok(false) | Err(_) => Fate::Keep,
-        Ok(true) => Fate::Trim,
+        Ok(true) if idle > SWEEP_EVERY => Fate::Trim,
+        Ok(true) => Fate::Keep,
     }
 }
 
@@ -132,16 +133,20 @@ fn sweep_row(row: &Row, home: &Path, dry_run: bool) -> Report {
     report
 }
 
-/// About once an hour per home (two sessions starting together may both sweep), on a thread
-/// the caller never joins.
+/// About once an hour per home (sessions starting before one finishes may both sweep), on a
+/// thread the caller never joins.
 pub fn sweep_hourly(home: &Path) {
     let stamp = home.join(STAMP);
     let fresh = std::fs::metadata(&stamp)
         .and_then(|meta| meta.modified())
         .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < SWEEP_EVERY));
-    if fresh || std::fs::write(&stamp, b"").is_err() {
+    if fresh {
         return;
     }
     let home = home.to_path_buf();
-    std::thread::spawn(move || drop(sweep(&home, false)));
+    // Stamped once whole: a process that exits mid-sweep leaves the next session to finish it.
+    std::thread::spawn(move || {
+        drop(sweep(&home, false));
+        let _next_session_sweeps_again = std::fs::write(stamp, b"");
+    });
 }

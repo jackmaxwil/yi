@@ -68,8 +68,12 @@ fn only_an_orphan_past_seven_days_is_removed() -> Result<(), Box<dyn Error>> {
     let (nested, nested_orphan) = captured(&scratch, &root, "removed/project")?;
     let (_mounted, behind_mount) = captured(&scratch, &root, "mounted")?;
     // The real capture's config, its work tree moved onto a volume that is not mounted.
+    let mount_root = ["/Volumes", "/mnt", "/media"]
+        .into_iter()
+        .find(|root| Path::new(root).is_dir())
+        .ok_or("no mount root on this host")?;
     let away = format!(
-        "\tworktree = /Volumes/yi-absent-{}/project",
+        "\tworktree = {mount_root}/yi-absent-{}/project",
         std::process::id()
     );
     let config: Vec<String> = std::fs::read_to_string(behind_mount.join("config"))?
@@ -84,6 +88,7 @@ fn only_an_orphan_past_seven_days_is_removed() -> Result<(), Box<dyn Error>> {
         .collect();
     std::fs::write(behind_mount.join("config"), config.join("\n"))?;
     let (_idle, idle_live) = captured(&scratch, &root, "idle")?;
+    let (_active, active) = captured(&scratch, &root, "active")?;
     // git escapes the backslash in its config, so the path read back is not this one.
     let (_escaped, escaped) = captured(&scratch, &root, "back\\slash")?;
     // A parent turned file makes stat fail (ENOTDIR) for any user, root included.
@@ -122,7 +127,7 @@ fn only_an_orphan_past_seven_days_is_removed() -> Result<(), Box<dyn Error>> {
         .collect();
     assert_eq!(preview, swept, "the preview reported a different sweep");
     assert!(
-        swept.contains(&"checkpoints: kept 6 of 8, removed 2, trimmed 1".to_owned()),
+        swept.contains(&"checkpoints: kept 7 of 9, removed 2, trimmed 1".to_owned()),
         "{swept:?}"
     );
     assert!(!orphan_old.exists(), "an orphan past seven days was kept");
@@ -136,6 +141,7 @@ fn only_an_orphan_past_seven_days_is_removed() -> Result<(), Box<dyn Error>> {
         &behind_mount,
         &unreadable_shadow,
         &idle_live,
+        &active,
         &escaped,
         &foreign,
     ] {
@@ -165,6 +171,7 @@ fn a_trim_keeps_every_capture_inside_the_window() -> Result<(), Box<dyn Error>> 
     std::fs::write(project.join("main.rs"), "fn main() { todo() }\n")?;
     // The shadow index roots the newest capture, so only an older one tests the window.
     checkpoints.capture()?;
+    age_dir(&shadow, 2 * HOUR)?;
 
     yi_runtime::retention::sweep(&home, false);
 
@@ -192,7 +199,7 @@ fn a_session_start_sweeps_a_home_with_no_stamp() -> Result<(), Box<dyn Error>> {
     yi_runtime::retention::sweep_hourly(&home);
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while orphan.exists() && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(10));
     }
     assert!(
         !orphan.exists(),
