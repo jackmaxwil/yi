@@ -1528,3 +1528,64 @@ async fn steers_sent_during_a_tool_batch_arrive_together_in_the_next_request()
     );
     Ok(())
 }
+
+/// Dies with an empty optional argument read as a value: glm-5.3-flash sent `read` with
+/// `"find": ""` and `"pages": ""` it did not mean, refused as a PDF page range on a source file.
+/// A required empty value still reaches the tool, so `write` with `""` makes an empty file.
+#[tokio::test]
+async fn an_empty_optional_argument_is_not_sent_and_a_required_one_is() -> Result<(), Box<dyn Error>>
+{
+    let dir = Scratch::new("yi-runtime-empties")?;
+    std::fs::write(dir.join("calc.py"), "def add(a, b):\n    return a + b\n")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let read = serde_json::json!({"path": "calc.py", "find": "", "pages": ""});
+    let write = serde_json::json!({"path": "empty.txt", "content": ""});
+    let arguments = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "read", arguments(read))],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(
+            vec![faux_tool_call("call-2", "write", arguments(write))],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
+    let mut events = session.subscribe();
+    session.prompt("read calc.py and write an empty file")?;
+    session.wait_idle().await;
+    let mut ended = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd {
+            tool_name,
+            result,
+            is_error,
+            ..
+        } = event
+        {
+            ended.push((tool_name, is_error, serde_json::to_string(&result.content)?));
+        }
+    }
+    assert_eq!(ended.len(), 2, "{ended:?}");
+    for (tool, is_error, text) in &ended {
+        assert!(!is_error, "{tool}: {text}");
+    }
+    assert!(
+        ended
+            .iter()
+            .any(|(tool, _, text)| tool == "read" && text.contains("return a + b"))
+    );
+    assert_eq!(std::fs::read(dir.join("empty.txt"))?.len(), 0);
+    Ok(())
+}
