@@ -20,8 +20,9 @@ env:
 jobs:
   autofix:
     runs-on: ubuntu-latest
-    # Three fixes a pass, each a model run of up to 30 minutes and the commit hook's clippy.
-    timeout-minutes: 120
+    # The one place the autofix job's limit is set; pr_autofix.py budgets its pass from it, and the
+    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 45m) bounds it.
+    timeout-minutes: 45
     steps:
       # Main's tree: the merged PR's code runs only inside a token-free clone.
       - uses: actions/checkout@v4
