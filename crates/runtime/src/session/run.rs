@@ -347,6 +347,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         return false;
     }
     shared.signal.reset_if_epoch(admitted_epoch);
+    provider.arm_tools(context.tools.clone());
     run_loop(
         &mut context,
         vec![prompt],

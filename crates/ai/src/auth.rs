@@ -54,6 +54,35 @@ fn env_key(provider: &str) -> Option<Secret> {
 
 /// A stored OAuth credential is refreshed before it is handed out, through the
 /// session's proxy; a failed refresh falls back to the disk copy (the 401 names `yi login`).
+fn refresh_cursor(
+    store: Store,
+    provider: &str,
+    current: yi_oauth::store::Credential,
+    proxy: Option<&crate::request::ProxyConfig>,
+) -> (yi_oauth::store::Credential, Vec<(String, String)>) {
+    if current.kind != Kind::Oauth || !Store::expired(&current) {
+        return (current, Vec::new());
+    }
+    let Some(refresh) = current.refresh.clone() else {
+        return (current, Vec::new());
+    };
+    let wire = proxy.and_then(|config| {
+        config.proxy_for(crate::request::host_of(yi_oauth::cursor::REFRESH_URL))
+    });
+    let fresh = store
+        .with_refresh_lock(provider, || {
+            let again = store.load(provider).unwrap_or_else(|| current.clone());
+            if !Store::expired(&again) {
+                return Ok(again);
+            }
+            let refreshed = yi_oauth::cursor::refresh_ureq(&refresh, wire)?;
+            store.save(provider, &refreshed)?;
+            Ok(refreshed)
+        })
+        .unwrap_or(current);
+    (fresh, Vec::new())
+}
+
 fn stored(
     root: std::path::PathBuf,
     provider: &str,
@@ -62,6 +91,7 @@ fn stored(
     let store = Store::open(root);
     let current = store.load(provider)?;
     let spec = match registry::lookup(provider) {
+        Ok(Some(registry::Kind::Cursor)) => return Some(refresh_cursor(store, provider, current, proxy)),
         Ok(Some(registry::Kind::OauthCode(spec))) => spec,
         Ok(_) => return Some((current, Vec::new())),
         // A broken profile is not a missing credential: refuse it so

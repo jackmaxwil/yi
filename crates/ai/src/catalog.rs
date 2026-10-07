@@ -5,20 +5,21 @@ use std::sync::OnceLock;
 use serde_json::Value;
 use yi_types::model::Model;
 
-/// Deflated by `build.rs`: 146,182 bytes of JSON became 11,857 in the binary, and only
-/// [`Catalog::bundled`] inflates them, once, behind its `OnceLock`.
+/// Deflated by `build.rs`. [`Catalog::bundled`] inflates them once, behind its `OnceLock`.
 const ANTHROPIC_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/anthropic.zz"));
 const OPENAI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai.zz"));
 const OPENROUTER_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openrouter.zz"));
 const CODEX_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai-codex.zz"));
 const GOOGLE_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/google.zz"));
+const CURSOR_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cursor.zz"));
 
-pub const PROVIDERS: [&str; 5] = [
+pub const PROVIDERS: [&str; 6] = [
     "anthropic",
     "openai",
     "openrouter",
     "openai-codex",
     "google",
+    "cursor",
 ];
 
 /// A fetched file's top-level `"schema"`. One under another is stale and rewritten by the next
@@ -64,6 +65,7 @@ impl Catalog {
             OPENROUTER_DATA,
             CODEX_DATA,
             GOOGLE_DATA,
+            CURSOR_DATA,
         ]) {
             let source = format!("bundled {provider}.json");
             match miniz_oxide::inflate::decompress_to_vec_zlib(packed) {

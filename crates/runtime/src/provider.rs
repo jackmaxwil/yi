@@ -11,7 +11,7 @@ use yi_ai::openai_responses;
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Content};
 use yi_types::model::{Effort, LlmContext, Model};
 
 /// OpenRouter's model list omits routing variants (`:exacto`, `:nitro`): one takes its base's entry.
@@ -53,6 +53,7 @@ enum ProviderApi {
     AnthropicMessages,
     OpenAiCompletions,
     OpenAiResponses,
+    CursorAgent,
 }
 
 fn provider_api(api: &str) -> Option<ProviderApi> {
@@ -60,6 +61,7 @@ fn provider_api(api: &str) -> Option<ProviderApi> {
         "anthropic-messages" => Some(ProviderApi::AnthropicMessages),
         "openai-completions" => Some(ProviderApi::OpenAiCompletions),
         "openai-responses" => Some(ProviderApi::OpenAiResponses),
+        "cursor-agent" => Some(ProviderApi::CursorAgent),
         _ => None,
     }
 }
@@ -80,6 +82,7 @@ pub struct ProviderStream {
     /// Set by `--faux` or a `faux/…` model: every model, whatever its provider, streams from
     /// the script (#943).
     force_faux: bool,
+    tools: Arc<Mutex<Vec<Arc<dyn yi_loop::tool::AgentTool>>>>,
 }
 
 const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -105,6 +108,13 @@ impl ProviderStream {
             routing: None,
             telemetry: None,
             force_faux: false,
+            tools: Arc::default(),
+        }
+    }
+
+    pub(crate) fn arm_tools(&self, tools: Vec<Arc<dyn yi_loop::tool::AgentTool>>) {
+        if let Ok(mut held) = self.tools.lock() {
+            *held = tools;
         }
     }
 
@@ -122,6 +132,7 @@ impl ProviderStream {
             routing: self.routing.clone(),
             telemetry: self.telemetry.clone(),
             force_faux: self.force_faux,
+            tools: Arc::clone(&self.tools),
         }
     }
 
@@ -307,6 +318,7 @@ impl ProviderStream {
             ProviderApi::OpenAiResponses => {
                 openai_responses::stream(model, context, &openai(), key)
             }
+            ProviderApi::CursorAgent => cursor_stream(self, model, context, key, signal),
         }
     }
 
@@ -327,6 +339,48 @@ impl ProviderStream {
         }
         receiver
     }
+}
+
+fn cursor_stream(
+    provider: &ProviderStream,
+    model: &Model,
+    context: &LlmContext,
+    key: &str,
+    signal: &InterruptSignal,
+) -> Receiver<AssistantMessageEvent> {
+    let tools = Arc::new(
+        provider
+            .tools
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default(),
+    );
+    let cut = signal.cut_flag();
+    let tool: yi_ai::cursor::ToolFn = Box::new(move |call_id, name, args| {
+        let tools = Arc::clone(&tools);
+        let cut = Arc::clone(&cut);
+        Box::pin(async move {
+            if cut.load(std::sync::atomic::Ordering::SeqCst) {
+                return "aborted".to_owned();
+            }
+            let Some(found) = tools.iter().find(|tool| tool.definition().name == name) else {
+                return format!("unknown tool {name}");
+            };
+            let local = InterruptSignal::default();
+            let outcome = found.execute(&call_id, args, &local).await;
+            outcome
+                .result
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    Content::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    });
+    yi_ai::cursor::stream(model, context, key, tool)
 }
 
 fn error_stream(model: &Model, text: &str) -> Receiver<AssistantMessageEvent> {

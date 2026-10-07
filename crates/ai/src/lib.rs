@@ -5,6 +5,7 @@ pub mod auth;
 pub mod breakpoints;
 pub mod catalog;
 pub mod compat;
+pub mod cursor;
 pub mod decide;
 pub mod faux;
 pub use yi_types::json_salvage;
