@@ -119,7 +119,9 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let was = now.get(&label);
+        let (was, needs) = now
+            .get(&label)
+            .map_or((None, false), |(state, needs)| (Some(state), *needs));
         let asks = ["state", "on", "todos"]
             .iter()
             .any(|key| row.contains_key(*key));
@@ -127,8 +129,19 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
             conditions.push(format!("{label}: still blocked on the user; left as is"));
             row.insert("state".to_owned(), json!("blocked"));
             Vec::new()
+        } else if matches!(was, Some(TodoStateName::Failed | TodoStateName::Abandoned))
+            && row.get("state").and_then(Value::as_str) == Some("done")
+        {
+            // Incident: a stale view re-sent a failed contracted todo as done, and the set retried
+            // and finished it, so a re-sent plan silently un-failed the todo (#1110).
+            let state = was.map_or("pending", TodoStateName::as_str);
+            conditions.push(format!(
+                "{label}: it was {state}, so the done was left out; retry it"
+            ));
+            row.insert("state".to_owned(), json!(state));
+            Vec::new()
         } else {
-            let mut ops = row_ops(&mut row, &label, was);
+            let mut ops = row_ops(&mut row, &label, was, needs);
             let want = row.get("state").and_then(Value::as_str).unwrap_or_default();
             if !ops.is_empty()
                 || ["failed", "dropped"].contains(&want)
@@ -212,17 +225,19 @@ pub(super) fn apply(tool: &PlanTool, args: &Map<String, Value>) -> Result<String
     if let Some(plan) = args.get("plan") {
         view.insert("plan".to_owned(), plan.clone());
     }
-    let mut text = tool.apply(&view)?;
-    for condition in conditions {
-        text.push_str(&format!("\nnote: {condition}"));
-    }
-    Ok(text)
+    let text = tool.apply(&view)?;
+    Ok(noted(text, conditions))
 }
 
 /// The ops that move a row where `set` cannot: out of a failed or blocked state, into a state the
-/// engine decides or asks for, and into its own sub-steps, in that order.
-fn row_ops(row: &mut Map<String, Value>, label: &str, was: Option<&TodoStateName>) -> Vec<Value> {
-    let by_engine = row.contains_key("contract") || row.contains_key("delegation");
+/// engine decides (a contract, or `needs` a resolution) or asks for, and into its sub-steps.
+fn row_ops(
+    row: &mut Map<String, Value>,
+    label: &str,
+    was: Option<&TodoStateName>,
+    needs: bool,
+) -> Vec<Value> {
+    let by_engine = row.contains_key("contract") || row.contains_key("delegation") || needs;
     let (on, note, options) = (row.remove("on"), row.remove("note"), row.remove("options"));
     let (cause, steps) = (row.remove("cause"), row.remove("todos"));
     let asked = if on.is_some() { "blocked" } else { "pending" };
@@ -256,8 +271,9 @@ fn row_ops(row: &mut Map<String, Value>, label: &str, was: Option<&TodoStateName
     ops
 }
 
-/// Each row's state in the open plan, by label; a row the engine moves keeps it until it moves.
-fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoStateName> {
+/// Each held todo's state beside whether its completion needs a resolution, by label; a row
+/// the engine moves keeps it until it moves.
+fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, (TodoStateName, bool)> {
     let plan: Option<PlanId> = args
         .get("plan")
         .and_then(|plan| serde_json::from_value(plan.clone()).ok());
@@ -270,7 +286,10 @@ fn held(tool: &PlanTool, args: &Map<String, Value>) -> HashMap<String, TodoState
         .map(|todo| {
             (
                 todo.label.as_str().to_owned(),
-                TodoStateName::of(&todo.state),
+                (
+                    TodoStateName::of(&todo.state),
+                    super::state::needs_resolution(todo),
+                ),
             )
         })
         .collect()

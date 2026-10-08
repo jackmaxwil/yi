@@ -59,4 +59,8 @@ jobs:
           # Incident: the bundled catalog lags OpenRouter, so a fresh runner refused the Opus 5.5
           # tier as an unknown model; the fetched catalog names every model the key can reach.
           ./target/debug/yi catalog refresh openrouter
+          # Incident: /tmp is the job's 2 GB tmpfs, and the fixer's clones and the lanes it runs there
+          # filled it: #1111's fix died "Out of diskspace", and a 64 MB spill test failed in the clone.
+          export TMPDIR="$GITHUB_WORKSPACE/../autofix-tmp"
+          mkdir -p "$TMPDIR"
           just pr autofix

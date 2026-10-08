@@ -201,6 +201,10 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             .sum::<usize>()
             / 2;
         let body = raw.trim_start();
+        let bad = || ArgError::Checklist {
+            line,
+            text: raw.to_owned(),
+        };
         let (state, label) = ["- [ ] ", "- [>] ", "- [x] ", "- [X] ", "- [-] "]
             .iter()
             .find_map(|marker| body.strip_prefix(marker).map(|label| (*marker, label)))
@@ -213,10 +217,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 };
                 (state, label.trim())
             })
-            .ok_or_else(|| ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            })?;
+            .ok_or_else(bad)?;
         if indent > CHECKLIST_DEPTH {
             return Err(ArgError::TooDeep {
                 line,
@@ -269,25 +270,11 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             continue;
         }
         let Some((root_index, _)) = path.first().copied() else {
-            return Err(ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            });
+            return Err(bad());
         };
-        let mut parent = roots
-            .get_mut(root_index)
-            .ok_or_else(|| ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            })?;
+        let mut parent = roots.get_mut(root_index).ok_or_else(bad)?;
         for (_, child_index) in path.iter().skip(1) {
-            parent = parent
-                .children
-                .get_mut(*child_index)
-                .ok_or_else(|| ArgError::Checklist {
-                    line,
-                    text: raw.to_owned(),
-                })?;
+            parent = parent.children.get_mut(*child_index).ok_or_else(bad)?;
         }
         parent.children.push(todo);
         path.push((0, parent.children.len().saturating_sub(1)));
@@ -593,11 +580,8 @@ impl PlanTool {
         let unstrung = super::natural::unstring_todos(args);
         let args = unstrung.as_ref();
         if let Some((set, said)) = super::apply::whole(args) {
-            let mut text = super::apply::apply(self, &set)?;
-            for line in said {
-                text.push_str(&format!("\nnote: {line}"));
-            }
-            return Ok(text);
+            let text = super::apply::apply(self, &set)?;
+            return Ok(super::apply::noted(text, said));
         }
         let mut args = args.clone();
         let blocks = super::natural::blocks(&mut args);
