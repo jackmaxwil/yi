@@ -1,7 +1,8 @@
 # Disk retention: test homes die with their worktree, Yi sweeps what it writes
 
 ```
-status:  ACCEPTED, revision 2 (2026-10-07; section 5 changed after a measurement). Decided in two question rounds the same day.
+status:  ACCEPTED, revision 3 (2026-10-07; section 5 changed after a measurement; 2026-10-08
+         review rescoped section 5: journeys and dist-suite still write the real ~/.yi).
          Forge issues: #1123 (S2), #1124 (S3), #1125 (S4), #1126 (S5); S1 is tooling.
 tree:    main @ 319d0ce5, re-read for this document (ARCHITECTURE 0.525.0, last row D341).
 inputs:  du/df census of ~/Development/.yi-homes (116 entries at first look) and ~/.yi on this
@@ -216,12 +217,20 @@ tests) left 23 checkpoint repos in `~/.yi`, plus writes to `spills/`, `tool-outp
 `$HOME` into `RuntimeWiring` on purpose: it shares one warm kernel venv, and it keeps the sandbox
 tests' HOME outside the temp roots, where Seatbelt grants would make them pass vacuously.
 
-Patching each site with a scratch HOME would break both of those properties. Every local and CI
-run of the suite goes through `just test` (`just check`, `just lane test`, the pre-push hook), so
-the fix sits there: `just test` re-executes itself under `scripts/wt_home.sh`. Whatever any test
-writes to HOME lands in `<worktree>/target/yi-home`, which is outside the temp roots, holds one
-shared venv for the run, and is deleted with the worktree. That makes the per-site helper and its
+Patching each site with a scratch HOME would break both of those properties. The suite entries
+that route through `just test` (`just check`, `just lane test`, the pre-push hook) are covered
+there: `just test` re-executes itself under `scripts/wt_home.sh`. Whatever any test writes to
+HOME lands in `<worktree>/target/yi-home`, which is outside the temp roots, holds one shared
+venv for the run, and is deleted with the worktree. That makes the per-site helper and its
 guardrail unnecessary.
+
+Two suite entries sit outside that seam and still write the real `~/.yi` on every run: `just
+journeys` (called by `just postmerge` and the CI postmerge lane) runs `cargo test --workspace
+-- --ignored` at the ambient HOME, and `just dist-suite` (CI nightly `dist-suite.yml`) runs
+`cargo test --workspace --profile dist` the same way. The tier-2 journeys they run boot real
+kernels and spawn the binary at the ambient HOME, so kernel venvs, checkpoints and spills still
+land in the developer's `~/.yi`. Routing both through the wrapper is the remaining half of
+#1123; this PR closes the `just test` seam only.
 
 The journey that proves it: run the suite through the wrapper, and the count of
 `~/.yi/checkpoints/*` before and after is equal.

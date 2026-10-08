@@ -2,9 +2,8 @@
 # Incident: 116 test homes under ~/Development/.yi-homes were never deleted (2026-10-07). HOME at
 # <worktree>/target/yi-home dies with the worktree; toolchains and the uv cache stay shared.
 set -euo pipefail
-case "$HOME" in
-*/target/yi-home) exec "$@" ;;
-esac
+want="$(git rev-parse --show-toplevel)/target/yi-home"
+if [ "$HOME" = "$want" ]; then exec "$@"; fi
 real="$HOME"
 home="$(git rev-parse --show-toplevel)/target/yi-home"
 mkdir -p "$home"
