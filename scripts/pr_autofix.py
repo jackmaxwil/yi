@@ -832,6 +832,34 @@ def attempt(repo, pr, ids, asked=False):
 
 
 KINDS = {"fix": "conflict", "findings": "findings", "gate": "gate"}
+CITED = re.compile(r"\b(?:Closes|Refs) #(\d+)\.?[ \t]*")
+
+
+def tidied(body, state_of):
+    """The body without its citations of closed issues, or None when it has none or cites
+    nothing open, which is the author's call. Incident: #1110 and #1111 failed `title` on
+    issues their stacked parents' merges had closed, and nothing took the citations out."""
+    cited = {int(m.group(1)) for m in CITED.finditer(body or "")}
+    closed = {n for n in cited if state_of(n) == "closed"}
+    if not closed or closed == cited:
+        return None
+    return CITED.sub(lambda m: "" if int(m.group(1)) in closed else m.group(0), body)
+
+
+def tidy(repo, pr):
+    """When `title` failed on the head, take closed-issue citations out of the body and rerun."""
+    if forge_pr.jobs_of(pr).get("title") != "failure":
+        return False
+    body = tidied(pr.get("body"), lambda n: (forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}") or {}).get("state"))
+    if body is None:
+        return False
+    gone = sorted(set(CITED.findall(pr["body"])) - set(CITED.findall(body)), key=int)
+    forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{pr['number']}", {"body": body})
+    forge_pr.fgj_api("POST", f"repos/{repo}/issues/{pr['number']}/comments", {"body":
+                     f"Autofix took the citations of closed issues {', '.join('#' + n for n in gone)} out of the body; the checks rerun."})
+    forge_pr.cmd_rerun(argparse.Namespace(number=str(pr["number"])))
+    print(f"#{pr['number']}: cited closed issues {', '.join(gone)}; body tidied and checks rerun")
+    return True
 
 
 def room(elapsed):
@@ -869,6 +897,8 @@ def cmd_autofix(args):
         if spent_today(repo) >= CAP_DAY:
             print(f"autofix: today's fixes spent the ${CAP_DAY:.2f} cap; the rest wait for tomorrow")
             break
+        if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
+            tidy(repo, pr)
         said = attempt(repo, pr, ids)
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
@@ -947,6 +977,12 @@ def gate_selfcheck():
 
 def selfcheck():
     errs = gate_selfcheck()
+    states = {1072: "closed", 1076: "open", 1077: "open"}.get
+    body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
+    if tidied(body, states) != "Closes #1076. Stacked on #1098.\nRefs #1077.":
+        errs.append(f"a closed citation was not taken out cleanly: {tidied(body, states)!r}")
+    if tidied("Refs #1072.", states) is not None or tidied("Closes #1076.", states) is not None:
+        errs.append("a body citing only closed issues, or none, was rewritten")
     fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
     if owed_mediums(fresh) or not owed_mediums(dict(fresh, n=2)) or not owed_mediums(dict(fresh, findings=[dict(fresh["findings"][0], since=2)])):
         errs.append("a fresh medium from round 3 on is owed a fix, or a round-2 or carried one is not")
@@ -1300,13 +1336,13 @@ def selfcheck():
         errs.append("a round the review job holds for a merge-only head is not the fixer's round, or an unrelated head is")
     # A pass: PRs already labelled failed are skipped without spending its quota of fixes.
     module, tried_prs = sys.modules[__name__], []
-    keep = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today")}
+    keep = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today", "tidy")}
     keep_api, keep_repo = forge_pr.fgj_api, forge_pr.repo
     try:
         stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}} for n in (1, 2, 3)]
         fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}}
         forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh]), (lambda: "o/r")
-        module.label_ids, module.spent_today = (lambda repo: {}), (lambda repo: 0.0)
+        module.label_ids, module.spent_today, module.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
         module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
                                                               decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
         cmd_autofix(type("A", (), {"number": None})())
