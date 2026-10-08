@@ -839,3 +839,43 @@ fn setup_keeps_the_earlier_answers_when_the_install_fails() -> TestResult {
     journey.reclaim();
     Ok(())
 }
+
+/// The background sweep a session start triggers is the cleanup a user never runs by hand;
+/// the journey reads the home the binary was given, not the developer's.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the orphan's age is real: the sweep judges real mtimes"
+)]
+fn aged(days: u64) -> std::time::SystemTime {
+    std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 3600)
+}
+
+#[ignore = "tier-2 journey: `just journeys`"]
+#[test]
+fn a_session_start_sweeps_an_aged_orphan_without_yi_gc() -> TestResult {
+    let journey = Journey::new("retention")?;
+    let orphan = journey.root.join("home/.yi/checkpoints/oldorphan");
+    std::fs::create_dir_all(orphan.join("objects"))?;
+    std::fs::write(
+        orphan.join("config"),
+        format!(
+            "[core]\n\tworktree = {}\n",
+            journey.project().join("gone").display()
+        ),
+    )?;
+    std::fs::File::open(&orphan)?.set_modified(aged(8))?;
+    succeeded(
+        &journey.yi(&["ask", "hello"])?,
+        "ask on a home with an aged orphan",
+    )?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while orphan.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !orphan.exists(),
+        "the orphan a session start was meant to sweep stayed"
+    );
+    journey.reclaim();
+    Ok(())
+}

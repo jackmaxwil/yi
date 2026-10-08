@@ -196,7 +196,7 @@ fn a_session_start_sweeps_a_home_with_no_stamp() -> Result<(), Box<dyn Error>> {
     let (gone, orphan) = captured(&scratch, &root, "gone")?;
     std::fs::remove_dir_all(gone)?;
     age_dir(&orphan, 8 * DAY)?;
-    yi_runtime::retention::sweep_hourly(&home);
+    yi_runtime::retention::sweep_home_hourly(&home);
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while orphan.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

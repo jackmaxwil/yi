@@ -430,7 +430,7 @@ fn build_session(
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
     drop(levers);
-    yi_runtime::retention::sweep_hourly(home());
+    yi_runtime::retention::sweep_home_hourly(home());
     yi_runtime::node::configure(config().node.clone().unwrap_or_default());
     if args.model.is_empty() {
         return Err(Refused {
@@ -694,6 +694,16 @@ fn run_yi_mcp(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout)
         .trim_end()
         .to_owned())
+}
+
+/// A preview unless `--fix`, as `yi doctor` is: deleting is the act the user asks for.
+fn run_gc(fix: bool) {
+    if !fix {
+        println!("preview: `yi gc --fix` removes and trims what these lines count");
+    }
+    for report in yi_runtime::retention::sweep(home(), !fix) {
+        println!("{report}");
+    }
 }
 
 fn run_why(args: &Args) -> i32 {
@@ -1003,11 +1013,9 @@ fn report_undo(changes: &[yi_runtime::Change], scoped: bool, json: bool) {
 fn yi_ai_key(provider: &str) -> Option<yi_runtime::auth::Secret> {
     yi_runtime::auth::api_key(provider)
 }
-
 fn yi_loop_default() -> yi_runtime::ExecutionMode {
     yi_runtime::ExecutionMode::Sequential
 }
-
 fn mcp_enabled() -> bool {
     config().mcp.as_ref().and_then(|mcp| mcp.enabled) == Some(true)
 }
@@ -1133,7 +1141,7 @@ fn dispatch(args: Args) {
         "fetch" => std::process::exit(fetch::run(&args)),
         "catalog" => std::process::exit(catalog::run(&args)),
         "doctor" => std::process::exit(doctor::run(&args)),
-        "gc" => lanes::run_gc(args.fix),
+        "gc" => run_gc(args.fix),
         "debug" => std::process::exit(debug::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),

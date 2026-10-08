@@ -33,7 +33,7 @@ new ones.
 | Primitive | Shape | Status |
 |---|---|---|
 | Retention row | `{store, root, live(entry) -> bool, age, action}` | ✚ |
-| Sweeper | reads the table; hourly in-process throttle; `yi gc [--fix] [--lane N]` | ✚ (throttle ✓ `tools/src/spill.rs` `sweep_hourly`) |
+| Sweeper | reads the table; hourly in-process throttle; `yi gc [--fix] [--lane N]` | ✚ (a per-home stamp file; the in-process throttle in `tools/src/spill.rs` `sweep_hourly` stays until the spills row lands) |
 | Liveness tests | flock held, `ps` names the path, worktree dir exists, branch merged | ✓ all four exist, in four crates |
 
 The test-home half needs no Yi code. A worktree's test HOME moves inside the worktree at
@@ -167,8 +167,9 @@ touched, the warmer's `cargo check` included. The slot's `N.json` is rewritten a
 - **Background.** The first `yi` process in a home to pass the hourly throttle runs the sweep on a
   detached, niced thread, the way `remove_stale_venvs` is spawned today
   (`kernel/src/bootstrap.rs:866`). The throttle is a stamp file `~/.yi/retention.stamp` ✚,
-  compared by mtime. It replaces the per-process `sweep_hourly` throttle, so two hundred test
-  processes do not each scan.
+  compared by mtime. The per-process `sweep_hourly` in `tools/src/spill.rs` keeps its job until
+  the spills row lands; the stamp already keeps two hundred test processes from each scanning
+  the same home.
 - **`yi gc`** ✚. It runs every row now, ignoring the throttle, and prints one line per row: kept
   out of found, removed, bytes freed. Bare `yi gc` prints the same lines and deletes nothing; `--fix` acts, as `yi doctor --fix` does.
   `--lane N` force-frees one slot and is the old `yi lanes reap N`. `yi lanes reap` stays as an
@@ -248,7 +249,7 @@ The journey that proves it: run the suite through the wrapper, and the count of
 
 | Piece | Where | Status |
 |---|---|---|
-| Hourly throttle | `tools/src/spill.rs:180` `sweep_hourly` | ✓ replaced by the stamp file |
+| Hourly throttle | `tools/src/spill.rs:180` `sweep_hourly` | per-process guard stays until the spills row lands; the stamp file covers the home sweep |
 | Age sweep, link-safe | `tools/src/spill.rs:193-214` | ✓ becomes the spills row |
 | Age plus size eviction | `tools/src/document.rs:496` | ✓ becomes the converted row |
 | Guarded sibling sweep | `kernel/src/lock.rs:119-169` | ✓ venv row; ✚ legacy name |
