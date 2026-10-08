@@ -467,20 +467,58 @@ def red_lanes(repo, sha):
                   if status == "failure" and (m := re.fullmatch(r"gate \((\w+)\)", name)))
 
 
-def lane_failures(clone, lanes):
+# The test lane as `just lane test` runs it, without stopping at the first failure, so one run
+# names every failing test and the base can be asked about all of them at once.
+TEST_LANE = ["cargo", "nextest", "run", "--workspace", "--no-fail-fast"]
+NEXTEST_FAIL = re.compile(r"\bFAIL \[[^\]]*\] \([^)]*\) (\S+) (\S+)\s*$")
+
+
+def failed_tests(output):
+    """The (binary, test) pairs nextest reported failing."""
+    return {m.groups() for line in output.splitlines() if (m := NEXTEST_FAIL.search(line))}
+
+
+def at_base(clone, base_ref, failed):
+    """Which of `failed` also fail at the base, in the same environment: those are the runner's.
+    Incident: a spill test on a full /tmp, then a documents test under a disk TMPDIR, failed only
+    in the fixer's runs, and #1111's Opus fix was not pushed for a test CI passes."""
+    base = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-base-"))
+    try:
+        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(base), f"origin/{base_ref}")
+        expr = " | ".join(f"(binary_id({b}) & test(={t}))" for b, t in sorted(failed))
+        ran = subprocess.run((*TEST_LANE, "-E", expr), cwd=base, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
+        return failed & failed_tests(ran.stdout + ran.stderr)
+    finally:
+        sh(clone, "git", "worktree", "remove", "--force", str(base), check=False)
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def lane_failures(clone, lanes, base_ref="main"):
     """Each lane run in the clone the way CI runs it, by the host, not inside the model's sandbox:
-    the model's own test runs met the wall and read eight passing tests as failures (#1110)."""
+    the model's own test runs met the wall and read eight passing tests as failures (#1110). A
+    failing test that fails at the base too is left out, and the lane passes when nothing else fails."""
     found = []
     for lane in lanes:
-        ran = subprocess.run(("just", "lane", lane), cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
-        if ran.returncode:
-            lines = (ran.stdout + ran.stderr).splitlines()
-            # nextest indents its FAIL rows and panics, which failures() reads as detail of nothing.
-            tests = [row for i, line in enumerate(lines) if re.search(r"\bFAIL \[|panicked at", line)
-                     for row in (lines[i:i + 8] if "panicked at" in line else [line])]
-            rows = list(dict.fromkeys(tests))
-            text = "\n".join(rows[:80]) + (f"\n[… {len(rows) - 80} more lines cut at 80; the lane's own run holds them]" if len(rows) > 80 else "")
-            found.append(f"`just lane {lane}` failed:\n" + (text if rows else failures(ran.stdout + ran.stderr)))
+        command = TEST_LANE if lane == "test" else ["just", "lane", lane]
+        ran = subprocess.run(command, cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
+        if not ran.returncode:
+            continue
+        output = ran.stdout + ran.stderr
+        failed = failed_tests(output) if lane == "test" else set()
+        theirs = at_base(clone, base_ref, failed) if failed else set()
+        if failed and failed == theirs:
+            continue
+        mine = {t for _, t in failed - theirs}
+        lines = output.splitlines()
+        # nextest indents its FAIL rows and panics, which failures() reads as detail of nothing.
+        tests = [row for i, line in enumerate(lines)
+                 if (m := NEXTEST_FAIL.search(line)) and m.group(2) in mine
+                 or "panicked at" in line and any(f"'{t}'" in line for t in mine)
+                 for row in (lines[i:i + 8] if "panicked at" in line else [line])]
+        rows = list(dict.fromkeys(tests))
+        text = "\n".join(rows[:80]) + (f"\n[… {len(rows) - 80} more lines cut at 80; the lane's own run holds them]" if len(rows) > 80 else "")
+        skipped = f"\n[{len(theirs)} failing test(s) left out: they fail at origin/{base_ref} here too: {', '.join(sorted(t for _, t in theirs))}]" if theirs else ""
+        found.append(f"`just lane {lane}` failed:\n" + (text if rows else failures(output)) + skipped)
     return "\n\n".join(found)
 
 
@@ -505,7 +543,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
     """Make the red lanes pass in the clone, the deterministic repairs first; a model only for what
     they leave. Returns (summary, model, touched)."""
     reprice(clone, f"origin/{pr['base']['ref']}")
-    refused = lane_failures(clone, lanes)
+    refused = lane_failures(clone, lanes, pr["base"]["ref"])
     staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     if not refused:
         if staged:
@@ -523,7 +561,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
         formatted(clone)
         reprice(clone, f"origin/{pr['base']['ref']}")
         summary = ((said.get("summary") or "").strip() or "the model gave no summary") + note
-        refused = lane_failures(clone, lanes)
+        refused = lane_failures(clone, lanes, pr["base"]["ref"])
         if not refused:
             return summary, model, touched
     raise Missed("the lanes still fail after the fix and one more turn:\n" + refused)
@@ -842,14 +880,17 @@ def cmd_autofix(args):
 def gate_selfcheck():
     """A red lane fixed end to end in a scratch repo: the host runs the lane, the model fixes what it
     names, the stacked memo is repriced, and a lane that passes here is a flake, not a fix."""
-    errs, tmp = [], pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-gate-"))
+    global TEST_LANE
+    errs, tmp, saved = [], pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-gate-")), TEST_LANE
     bare = tmp.parent / (tmp.name + "-remote.git")
     git = lambda *a: sh(tmp, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
     try:
         git("init", "-q", "-b", "main")
         (tmp / "justfile").write_text("lane name:\n    sh lane.sh {{name}}\n")
-        (tmp / "lane.sh").write_text("if grep -q bug a.txt; then echo '        FAIL [   0.1s] (1/1) t::t'; "
-                                     "echo \"    thread 't' panicked at a.rs:1:5:\"; echo '    a.txt holds a bug'; exit 1; fi\n")
+        # One test fails everywhere, the base included, as the runner's own failures do.
+        (tmp / "lane.sh").write_text("echo '        FAIL [   0.1s] (1/2) yi t::env'; echo \"    thread 't::env' panicked at e.rs:1:1:\"; "
+                                     "echo '    the runner'; if grep -q bug a.txt; then echo '        FAIL [   0.1s] (2/2) yi t::bug'; "
+                                     "echo \"    thread 't::bug' panicked at a.rs:1:5:\"; echo '    a.txt holds a bug'; fi; exit 1\n")
         (tmp / "scripts/guardrails").mkdir(parents=True)
         (tmp / "scripts/guardrails/check_growth.py").write_text("print('ok   growth (+761 src lines since the fork x, free band +150)')\n")
         (tmp / "a.txt").write_text("ok\n")
@@ -864,6 +905,7 @@ def gate_selfcheck():
         sh(tmp.parent, "git", "init", "-q", "--bare", str(bare))
         git("remote", "add", "origin", str(bare)); git("push", "-q", "origin", "main", "topic", "flaky"); git("fetch", "-q", "origin")
         asked = []
+        TEST_LANE = ["sh", "lane.sh"]
 
         def run(ref, write):
             def model(prompt, schema, cwd, **_):
@@ -880,6 +922,8 @@ def gate_selfcheck():
         stuck = run("topic", "bug again\n")
         if not (isinstance(stuck, RuntimeError) and "still fail" in str(stuck) and len(asked) == 2 and "a.txt holds a bug" in asked[0]):
             errs.append(f"a fix that left the lane red read {stuck!r} after {len(asked)} turn(s)")
+        elif "the runner" in asked[0] or "left out: they fail at origin/main here too: t::env" not in asked[0]:
+            errs.append(f"a test that fails at the base too reached the model: {asked[0][:400]}")
         good = run("topic", "ok\n")
         sh(tmp, "git", "fetch", "-q", "origin")
         body = sh(tmp, "git", "log", "-1", "--format=%B", "origin/topic").stdout
@@ -895,6 +939,7 @@ def gate_selfcheck():
         if not isinstance(run("flaky", "ok\n"), Flaky):
             errs.append("a lane that passes in the clone was handed to the model instead of rerun")
     finally:
+        TEST_LANE = saved
         shutil.rmtree(tmp, ignore_errors=True)
         shutil.rmtree(bare, ignore_errors=True)
     return errs
