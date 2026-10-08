@@ -16,7 +16,6 @@ impl PlanOpError {
             | Self::PlanExists { .. }
             | Self::UnknownLabel { .. }
             | Self::IllegalStep { .. }
-            | Self::UnmetEdge { .. }
             | Self::NotActive { .. }
             | Self::StaleRevision { .. }
             | Self::Stale { .. }
@@ -24,6 +23,7 @@ impl PlanOpError {
             | Self::NotRunningBy { .. }
             | Self::Store(StoreError::Missing { .. }) => ToolErrorKind::Stale,
             Self::LabelNotUnique { .. }
+            | Self::UnmetEdge { .. }
             | Self::Invalid { .. }
             | Self::DepthExhausted { .. }
             | Self::SpawnCeilingExhausted { .. }
@@ -72,7 +72,9 @@ impl ArgError {
     pub(super) fn kind(&self) -> ToolErrorKind {
         match self {
             Self::ChildViews { .. } => ToolErrorKind::Denied,
-            Self::LabelTooLong { .. } => ToolErrorKind::Verdict,
+            Self::LabelTooLong { .. } | Self::EmptyList | Self::Unverifiable { .. } => {
+                ToolErrorKind::Verdict
+            }
             Self::ActorArg
             | Self::NoOp
             | Self::UnknownOp { .. }
@@ -81,7 +83,6 @@ impl ArgError {
             | Self::TodoShape { .. }
             | Self::Spec(_)
             | Self::Checklist { .. }
-            | Self::EmptyList
             | Self::TooDeep { .. }
             | Self::Declared(_)
             | Self::UnknownKey { .. } => ToolErrorKind::InvalidArgs,

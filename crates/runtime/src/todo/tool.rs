@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, text_output};
-use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
+use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel, TodoStateName};
 use yi_types::todo::PhaseName;
 
 use super::{Op, Target, TodoError, TodoStore, mirror, text};
@@ -173,10 +173,13 @@ pub fn infer_op(args: &Map<String, Value>) -> Option<&'static str> {
         .get("items")
         .and_then(Value::as_array)
         .is_some_and(|items| !items.is_empty());
+    if args.is_empty() {
+        return Some("view");
+    }
     match (list, items, named(args).is_some()) {
         (true, false, false) => Some("set"),
         (false, true, false) => Some("append"),
-        (false, false, true) if string(args, "evidence").is_some() => Some("done"),
+        (false, false, true) if args.contains_key("evidence") => Some("done"),
         (false, false, true) if string(args, "reason").is_some() => Some("drop"),
         (false, false, true) if string(args, "on").is_some() => Some("block"),
         _ => None,
@@ -384,7 +387,20 @@ impl TodoTool {
         }
         let expected = args.get("touched").and_then(Value::as_u64);
         let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
-        let applied = self.store.apply(op, expected)?;
+        let again = matches!(op, Op::Done { .. });
+        let applied = match self.store.apply(op, expected) {
+            Err(TodoError::Illegal {
+                op: "done",
+                from: TodoStateName::Done,
+                ..
+            }) if again => {
+                let mut seen = self.store.apply(Op::View, None)?;
+                seen.notes
+                    .push("it was already done, so nothing changed".to_owned());
+                seen
+            }
+            other => other?,
+        };
         let body = if applied.changed && !whole {
             text::render_change(&applied.before, &applied.list)
         } else {
