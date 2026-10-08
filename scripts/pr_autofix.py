@@ -432,17 +432,18 @@ def tests_named(findings):
     return frozenset(f.get("path") for f in findings if f.get("lens") == "tests")
 
 
-def prior_fixes(repo, sha, stopped=0.0):
+def prior_fixes(repo, sha, stopped=0.0, signed=SIGNED):
     """How many fix commits in a row the bot already made at the head of this branch, since the
     last stop (a Unix time): a person removing `autofix:failed` restarts the count. Incident: four
-    PRs stopped at two fixes, and lifting the label would have stopped them again at once."""
+    PRs stopped at two fixes, and lifting the label would have stopped them again at once. Only
+    fixes signed `signed` count: #1111's two findings fixes stopped its first gate fix unrun."""
     log = sh(repo, "git", "log", "--first-parent", "-n", "4", "--format=%ct%x00%an%x00%B%x1e", sha, check=False).stdout
     count = 0
     for record in filter(str.strip, log.split("\x1e")):
         when, author, body = (record.strip("\n").split("\x00", 2) + ["", ""])[:3]
         if author != pr_review.BOT or not (SIGNED in body or GATE_SIGNED in body) or float(when or 0) <= stopped:
             break
-        count += 1
+        count += signed in body
     return count
 
 
@@ -593,7 +594,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             summary, model, touched = resolve_in(clone, pr, base_ref, answer, tried)
             subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
         elif kind == "gate":
-            if prior_fixes(root, sha, stopped) >= 2:
+            if prior_fixes(root, sha, stopped, GATE_SIGNED) >= 2:
                 raise RuntimeError("two fixes in a row did not clear the gate; a person is next")
             summary, model, touched = gate_in(clone, pr, lanes, answer, tried)
             subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
@@ -887,8 +888,10 @@ def gate_selfcheck():
             errs.append(f"a fixed red lane read {good!r}")
         elif "growth: +242 " not in child:
             errs.append(f"the child's memo did not price past the stacked +519 to the measured +761: {child.splitlines()[1]}")
-        elif prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
-            errs.append("a gate fix at the head is not counted as a prior fix")
+        elif prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip(), signed=GATE_SIGNED) != 1:
+            errs.append("a gate fix at the head is not counted as a prior gate fix")
+        elif prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 0:
+            errs.append("a gate fix at the head is counted against the findings fixes' stop")
         if not isinstance(run("flaky", "ok\n"), Flaky):
             errs.append("a lane that passes in the clone was handed to the model instead of rerun")
     finally:
