@@ -133,9 +133,9 @@ fn sweep_row(row: &Row, home: &Path, dry_run: bool) -> Report {
     report
 }
 
-/// About once an hour per home (sessions starting before one finishes may both sweep), on a
-/// thread the caller never joins.
-pub fn sweep_hourly(home: &Path) {
+/// About once an hour per home, on a thread the caller never joins. The stamp is taken
+/// before the scan, so a session starting inside the hour skips the whole scan.
+pub fn sweep_home_hourly(home: &Path) {
     let stamp = home.join(STAMP);
     let fresh = std::fs::metadata(&stamp)
         .and_then(|meta| meta.modified())
@@ -144,9 +144,9 @@ pub fn sweep_hourly(home: &Path) {
         return;
     }
     let home = home.to_path_buf();
-    // Stamped once whole: a process that exits mid-sweep leaves the next session to finish it.
+    // The stamp lands before the scan, so a slow or killed sweep still holds the hour.
+    let _ = std::fs::write(&stamp, b"");
     std::thread::spawn(move || {
         drop(sweep(&home, false));
-        let _next_session_sweeps_again = std::fs::write(stamp, b"");
     });
 }

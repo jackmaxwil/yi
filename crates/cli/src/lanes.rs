@@ -161,13 +161,3 @@ pub(crate) fn run_lanes(args: &Args) -> i32 {
         }
     }
 }
-
-/// A preview unless `--fix`, as `yi doctor` is: deleting is the act the user asks for.
-pub(crate) fn run_gc(fix: bool) {
-    if !fix {
-        println!("preview: `yi gc --fix` removes and trims what these lines count");
-    }
-    for report in yi_runtime::retention::sweep(crate::home(), !fix) {
-        println!("{report}");
-    }
-}
