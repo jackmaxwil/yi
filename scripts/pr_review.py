@@ -862,10 +862,20 @@ def walled(paths):
     return [p for p in paths if p.startswith(WALL)]
 
 
+# Incident: #1111 left draft on a clean round while its test lane was red; a sweep retries
+# each draft, so one whose lanes are still running or red leaves on a later sweep.
+GATE_LANES = ("gate (guardrails)", "gate (lint)", "gate (test)")
+
+
 def promote(repo, pr, rounds):
-    """Take a draft that `promotes` out of draft; True when it left."""
+    """Take a draft that `promotes` and whose gate lanes passed on its head out of draft; True when it left."""
     title, number = pr.get("title", ""), pr["number"]
     if not (title.startswith(DRAFT) and promotes(rounds, pr["head"]["sha"], holds_for(number, pr["base"]["ref"]))):
+        return False
+    jobs = forge_pr.jobs_of(pr)
+    waiting = [lane for lane in GATE_LANES if jobs.get(lane) != "success"]
+    if waiting:
+        print(f"#{number}: stays a draft until its gate passes: " + ", ".join(f"{lane} {jobs.get(lane, 'not run')}" for lane in waiting))
         return False
     ready = forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
     print(f"#{number}: " + ("out of draft, two clean rounds and nothing left holding it" if (ready or {}).get("number")
@@ -1333,17 +1343,28 @@ def selfcheck():
               for n, sha, owner in ((1, "aaaaaaa1", "o/r"), (2, "bbbbbbb2", "o/r"), (3, "ccccccc3", "x/fork"),
                                     (4, "ddddddd4", "o/r"), (5, "eeeeeee5", "o/r"), (6, "fffffff6", "o/r"))]
     notes = {1: [clean_round(11, "aaaaaaa1"), clean_round(12, "aaaaaaa1")]}
-    patched, reviewed, saved = [], [], (forge_pr.fgj_api, forge_pr.repo, comments, holds_for, cmd_review, authors)
+    patched, reviewed, saved = [], [], (forge_pr.fgj_api, forge_pr.repo, comments, holds_for, cmd_review, authors, forge_pr.jobs_of)
     try:
         forge_pr.fgj_api = lambda method, url, body=None: drafts if method == "GET" else patched.append(url) or {"number": 1}
         forge_pr.repo = lambda: "o/r"
+        forge_pr.jobs_of = lambda pr: dict.fromkeys(GATE_LANES, "success")
         globals().update(comments=lambda repo, n: notes.get(n, []), holds_for=lambda n, base: on_head,
                          cmd_review=lambda a: reviewed.append(a.number), authors=lambda: {BOT})
         cmd_sweep(None)
     finally:
-        forge_pr.fgj_api, forge_pr.repo = saved[0], saved[1]
+        forge_pr.fgj_api, forge_pr.repo, forge_pr.jobs_of = saved[0], saved[1], saved[6]
         globals().update(comments=saved[2], holds_for=saved[3], cmd_review=saved[4], authors=saved[5])
     assert patched == ["repos/o/r/pulls/1"], f"the clean draft is promoted, nothing else: {patched}"
+    saved = (forge_pr.fgj_api, forge_pr.jobs_of, holds_for)
+    try:
+        forge_pr.fgj_api = lambda method, url, body=None: patched.append(url) or {"number": 1}
+        globals().update(holds_for=lambda n, base: on_head)
+        forge_pr.jobs_of = lambda pr: {**dict.fromkeys(GATE_LANES, "success"), "gate (test)": "failure"}
+        red = promote("o/r", drafts[0], [{"user": {}, **parse_round(c, {BOT}, None)} for c in notes[1]])
+    finally:
+        forge_pr.fgj_api, forge_pr.jobs_of = saved[0], saved[1]
+        globals().update(holds_for=saved[2])
+    assert not red and patched == ["repos/o/r/pulls/1"], "a clean draft whose test lane is red stays a draft"
     assert reviewed == [2, 4, 5], f"heads with no round are read, the fork skipped, three at most: {reviewed}"
     flaky = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-ask-"))
     try:
