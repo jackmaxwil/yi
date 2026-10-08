@@ -6,7 +6,7 @@ pub fn keychain_pem(path: &str) -> Result<Vec<u8>, String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = path;
-        return Err("no keychain".to_owned());
+        Err("no keychain".to_owned())
     }
     #[cfg(target_os = "macos")]
     {
