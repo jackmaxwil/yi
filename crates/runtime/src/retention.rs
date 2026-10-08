@@ -6,6 +6,7 @@ use std::time::Duration;
 const ORPHAN_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
 const SNAPSHOTS_KEPT: Duration = Duration::from_secs(30 * 24 * 3600);
 const SWEEP_EVERY: Duration = Duration::from_secs(3600);
+const DONE: &str = "done";
 const STAMP: &str = ".yi/retention.stamp";
 const TOMB: &str = "gone";
 /// A project whose nearest surviving ancestor is one of these sat on a volume now unmounted.
@@ -133,20 +134,20 @@ fn sweep_row(row: &Row, home: &Path, dry_run: bool) -> Report {
     report
 }
 
-/// About once an hour per home, on a thread the caller never joins. The stamp is taken
-/// before the scan, so a session starting inside the hour skips the whole scan.
+/// About once an hour per home, on a thread the caller never joins. The stamp is written
+/// only once the sweep ends, so a process killed mid-sweep leaves no fresh stamp and the
+/// next session runs the leftover pass.
 pub fn sweep_home_hourly(home: &Path) {
     let stamp = home.join(STAMP);
     let fresh = std::fs::metadata(&stamp)
         .and_then(|meta| meta.modified())
         .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < SWEEP_EVERY));
-    if fresh {
+    if fresh && std::fs::read_to_string(&stamp).is_ok_and(|mark| mark == DONE) {
         return;
     }
     let home = home.to_path_buf();
-    // The stamp lands before the scan, so a slow or killed sweep still holds the hour.
-    let _ = std::fs::write(&stamp, b"");
     std::thread::spawn(move || {
         drop(sweep(&home, false));
+        let _ = std::fs::write(stamp, DONE);
     });
 }
