@@ -304,16 +304,7 @@ fn login_agent() -> Result<ureq::Agent, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
-    use ureq::rustls::pki_types::CertificateDer;
-    use ureq::rustls::pki_types::pem::PemObject;
-    let ders = CertificateDer::pem_slice_iter(&output.stdout)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let mut roots = ureq::rustls::RootCertStore::empty();
-    let (valid, _) = roots.add_parsable_certificates(ders);
-    if valid == 0 {
-        return Err("the login keychain has no certificates".to_owned());
-    }
+    let roots = yi_runtime::roots::root_store(&output.stdout)?;
     let config = ureq::rustls::ClientConfig::builder_with_provider(
         ureq::rustls::crypto::ring::default_provider().into(),
     )

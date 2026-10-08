@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 pub const CLIENT_VERSION: &str = "cli-2026.07.23-e383d2b";
 pub const RUN_PATH: &str = "/agent.v1.AgentService/Run";
-pub const NAMESPACE: &str = "cursor";
+pub const NAMESPACE: &str = yi_types::message::CURSOR_TOOL_NAMESPACE;
 
 fn varint(mut n: u64, out: &mut Vec<u8>) {
     loop {

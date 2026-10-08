@@ -15,6 +15,8 @@ pub mod openai_responses;
 pub mod refresh;
 pub mod request;
 pub mod retry;
+pub mod roots;
+
 pub mod schema;
 pub mod settle;
 pub mod sse;
