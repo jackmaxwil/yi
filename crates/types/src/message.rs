@@ -42,6 +42,10 @@ pub enum Content {
 /// it from runs and the history transform drops it from outgoing messages.
 pub const CURSOR_TOOL_NAMESPACE: &str = "cursor";
 
+pub fn cursor_minted(namespace: Option<&str>) -> bool {
+    namespace == Some(CURSOR_TOOL_NAMESPACE)
+}
+
 /// D25: who a user-role message actually came from. Absent means [`Attribution::Unproven`],
 /// so older messages and host-minted ones are unresolvable by `user://`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

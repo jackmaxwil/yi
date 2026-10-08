@@ -293,18 +293,8 @@ fn login_keychain() -> Result<String, String> {
 #[cfg(target_os = "macos")]
 fn login_agent() -> Result<ureq::Agent, String> {
     let keychain = login_keychain()?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the login keychain holds a root rustls-native-certs does not load"
-    )]
-    let output = std::process::Command::new("security")
-        .args(["find-certificate", "-a", "-p", &keychain])
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-    }
-    let roots = yi_runtime::roots::root_store(&output.stdout)?;
+    let pem = yi_runtime::roots::keychain_pem(&keychain)?;
+    let roots = yi_runtime::roots::root_store(&pem)?;
     let config = ureq::rustls::ClientConfig::builder_with_provider(
         ureq::rustls::crypto::ring::default_provider().into(),
     )
