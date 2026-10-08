@@ -16,7 +16,6 @@ impl PlanOpError {
             | Self::PlanExists { .. }
             | Self::UnknownLabel { .. }
             | Self::IllegalStep { .. }
-            | Self::UnmetEdge { .. }
             | Self::NotActive { .. }
             | Self::StaleRevision { .. }
             | Self::Stale { .. }
@@ -24,6 +23,7 @@ impl PlanOpError {
             | Self::NotRunningBy { .. }
             | Self::Store(StoreError::Missing { .. }) => ToolErrorKind::Stale,
             Self::LabelNotUnique { .. }
+            | Self::UnmetEdge { .. }
             | Self::Invalid { .. }
             | Self::DepthExhausted { .. }
             | Self::SpawnCeilingExhausted { .. }
