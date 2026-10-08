@@ -97,6 +97,10 @@ pub enum ArgError {
     ActorArg,
     #[error("{0}")]
     Declared(String),
+    #[error(
+        r#"todo {label}: a stated accept gives the engine nothing to run on a worktree child's checkout; write it as a command, {{"command": "<shell check>"}} (for example {{"command": "test -s out.txt"}}), or declare a `contract`"#
+    )]
+    Unverifiable { label: String },
     #[error("{}{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), todo.map(|at| format!(" todos[{at}]")).unwrap_or_default(), misplaced(*op, todo.is_some(), key).unwrap_or(field_hint(key)))]
     UnknownKey {
         op: OpKind,
@@ -193,6 +197,10 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             .sum::<usize>()
             / 2;
         let body = raw.trim_start();
+        let bad = || ArgError::Checklist {
+            line,
+            text: raw.to_owned(),
+        };
         let (state, label) = ["- [ ] ", "- [>] ", "- [x] ", "- [X] "]
             .iter()
             .find_map(|marker| body.strip_prefix(marker).map(|label| (*marker, label)))
@@ -204,10 +212,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 };
                 (state, label.trim())
             })
-            .ok_or_else(|| ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            })?;
+            .ok_or_else(bad)?;
         if indent > CHECKLIST_DEPTH {
             return Err(ArgError::TooDeep {
                 line,
@@ -260,25 +265,11 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             continue;
         }
         let Some((root_index, _)) = path.first().copied() else {
-            return Err(ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            });
+            return Err(bad());
         };
-        let mut parent = roots
-            .get_mut(root_index)
-            .ok_or_else(|| ArgError::Checklist {
-                line,
-                text: raw.to_owned(),
-            })?;
+        let mut parent = roots.get_mut(root_index).ok_or_else(bad)?;
         for (_, child_index) in path.iter().skip(1) {
-            parent = parent
-                .children
-                .get_mut(*child_index)
-                .ok_or_else(|| ArgError::Checklist {
-                    line,
-                    text: raw.to_owned(),
-                })?;
+            parent = parent.children.get_mut(*child_index).ok_or_else(bad)?;
         }
         parent.children.push(todo);
         path.push((0, parent.children.len().saturating_sub(1)));
@@ -539,7 +530,7 @@ pub(super) fn declared(
     {
         return Err(ArgError::ChildViews { op: op.to_owned() });
     }
-    let (args, blobs) = super::declare::normalize(args).map_err(ArgError::Declared)?;
+    let (args, blobs) = super::declare::normalize(args)?;
     Ok((request(actor, &args)?, blobs))
 }
 
@@ -581,10 +572,9 @@ impl PlanTool {
     }
 
     pub(super) fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        let unstrung = super::natural::unstring_todos(args);
-        let args = unstrung.as_ref();
-        if super::apply::wants(args) {
-            return super::apply::apply(self, args);
+        if let Some((set, said)) = super::apply::whole(args) {
+            let text = super::apply::apply(self, &set)?;
+            return Ok(super::apply::noted(text, said));
         }
         let mut args = args.clone();
         let blocks = super::natural::blocks(&mut args);
@@ -613,7 +603,8 @@ impl PlanTool {
 
     /// One op through the natural reading and its retries, without the whole-plan apply.
     pub(super) fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        let (args, mut said) = super::natural::natural(args);
+        let (mut args, mut said) = super::natural::natural(args);
+        super::apply::decompose_target(self, &mut args, &mut said);
         if let Some(Value::Array(labels)) = args.get("labels")
             && (args.get("op").and_then(Value::as_str))
                 .is_some_and(|op| super::natural::TARGETED.contains(&op))
@@ -647,30 +638,54 @@ impl PlanTool {
                     self.engine.apply_with(request, &blobs)?
                 }
             }
-            Err(PlanOpError::IllegalStep {
-                from: TodoStateName::Pending | TodoStateName::Running,
-                op: OpKind::Unblock,
-                ..
-            }) => {
-                said.push("it was not blocked, so nothing changed".to_owned());
+            Err(PlanOpError::IllegalStep { from, op: kind, .. })
+                if matches!(
+                    (kind, &from),
+                    (OpKind::Done, TodoStateName::Done)
+                        | (OpKind::Retry, TodoStateName::Running)
+                        | (
+                            OpKind::Unblock,
+                            TodoStateName::Pending | TodoStateName::Running
+                        )
+                ) =>
+            {
+                let was = match kind {
+                    OpKind::Done => "already done",
+                    OpKind::Retry => "running already",
+                    _ => "not blocked",
+                };
+                said.push(format!("it was {was}, so nothing changed"));
                 self.engine.apply(OpRequest {
                     op: Op::View { full: false },
                     ..request
                 })?
+            }
+            Err(PlanOpError::PlanExists { id }) if matches!(request.op, Op::Init { .. }) => {
+                super::apply::init_on_open(self, &request, id, &blobs, &mut said)?
             }
             Err(
                 PlanOpError::NoPlan | PlanOpError::Store(super::store::StoreError::Missing { .. }),
             ) if request.plan.is_some() => {
                 let mut again = args.clone();
                 again.remove("plan");
-                let mut text = self.run(&again)?;
+                let text = self.run(&again)?;
                 said.push(
                     "the plan named is not open, so the call ran on the open plan".to_owned(),
                 );
-                for line in said {
-                    text.push_str(&format!("\nnote: {line}"));
-                }
-                return Ok(text);
+                return Ok(super::apply::noted(text, said));
+            }
+            Err(PlanOpError::UnknownLabel { plan, label }) if request.plan.is_none() => {
+                return super::apply::in_holder(self, &args, plan, label, said);
+            }
+            Err(
+                refused @ (PlanOpError::NotActive { .. }
+                | PlanOpError::IllegalStep {
+                    from: TodoStateName::Failed,
+                    op: OpKind::Block,
+                    ..
+                }),
+            ) if matches!(request.op, Op::Block { .. }) => {
+                super::apply::block_failed(self, &request, &blobs, &mut said).ok_or(refused)??
             }
             Err(refused @ (PlanOpError::NoPlan | PlanOpError::NotActive { .. })) => {
                 let first = match &request.op {
@@ -705,38 +720,13 @@ impl PlanTool {
                     other => other?,
                 }
             }
-            Err(PlanOpError::NotAPermutation { .. }) => {
-                let Op::Reorder { labels } = &request.op else {
-                    return Err(PlanOpError::NotAPermutation {
-                        got: 0,
-                        expected: 0,
-                    }
-                    .into());
-                };
-                let view = view_request(&request.actor, request.plan.clone());
-                let mut order = labels.clone();
-                let rest: Vec<TodoLabel> = (self.engine.apply(view)?.plan.todos.iter())
-                    .map(|todo| todo.label.clone())
-                    .filter(|label| !labels.contains(label))
-                    .collect();
-                order.extend(rest);
-                said.push("the todos not named keep their order after the named ones".to_owned());
-                let reorder = Op::Reorder { labels: order };
-                self.engine.apply_with(
-                    OpRequest {
-                        op: reorder,
-                        ..request
-                    },
-                    &blobs,
-                )?
+            Err(PlanOpError::NotAPermutation { got, expected }) => {
+                super::apply::reorder_rest(self, request, &blobs, &mut said)
+                    .ok_or(PlanOpError::NotAPermutation { got, expected })??
             }
             other => other?,
         };
-        let mut text = render_outcome(&op, &outcome);
-        for line in said {
-            text.push_str(&format!("\nnote: {line}"));
-        }
-        Ok(text)
+        Ok(super::apply::noted(render_outcome(&op, &outcome), said))
     }
 
     /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.
@@ -798,11 +788,14 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        if super::apply::wants(input) {
+        if super::apply::whole(input).is_some() {
             return Ok(());
         }
-        (super::natural::calls(input).iter())
-            .try_for_each(|call| declared(&self.actor, call).map(|_| ()))
+        (super::natural::calls(input).into_iter())
+            .try_for_each(|mut call| {
+                super::apply::decompose_target(self, &mut call, &mut Vec::new());
+                declared(&self.actor, &call).map(|_| ())
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -825,7 +818,7 @@ impl Tool for PlanTool {
 
 /// Invariant: the request-prefix gate prices this tool through these two
 /// items rather than a live [`PlanTool`], so what is measured is what ships.
-pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. Declare todos with contracts and delegations; the engine starts, verifies and accepts delegated ones. done closes your own todos. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. It is the delegation ledger; the todo list shows it.";
+pub const DESCRIPTION: &str = "The plan ledger. op=set with a goal and every todo as a row in todos is the whole plan in one call: send it again with the rows' new state to change anything. A row's contract and delegation declare it; state done runs its contract first, blocked asks the user, and the engine starts, verifies and accepts delegated rows. A row it could not move says why in a note line of the reply, and the rest lands. A markdown checklist list (`- [ ] todo`, `- [>] running`, `- [x] done`) is the short form for rows with nothing to verify. A todo is a unit of decision, not of iteration. Batch with real work; never call it alone.";
 
 const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=view. When your work is done, end your turn with your answer; the engine takes it as your work and accepts or refuses it.";
 

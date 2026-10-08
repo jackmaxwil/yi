@@ -41,11 +41,15 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
 /// Invariant: an empty value in a property the schema does not require is a key not sent; models
 /// fill optional fields with `""` or `[]` they do not mean, and a required one is never touched.
 fn unsent_empties(schema: &Value, mut args: Map<String, Value>) -> Map<String, Value> {
+    // A call with no op is read by the keys it carries, so an empty one still names the op.
+    if schema.pointer("/properties/op").is_some() && !args.contains_key("op") {
+        return args;
+    }
     let required = schema.get("required").and_then(Value::as_array);
     let required = |key: &str| required.is_some_and(|keys| keys.iter().any(|name| name == key));
     args.retain(|key, value| {
         let empty = match value {
-            Value::String(text) => text.is_empty(),
+            Value::String(text) => ["", "[]", "{}", "null"].contains(&text.trim()),
             Value::Array(items) => items.is_empty(),
             Value::Object(fields) => fields.is_empty(),
             Value::Null | Value::Bool(_) | Value::Number(_) => false,

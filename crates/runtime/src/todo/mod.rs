@@ -173,8 +173,8 @@ impl TodoError {
             Self::Duplicate { .. }
             | Self::DuplicateOfPlanRow { .. }
             | Self::ParentOpen { .. }
-            | Self::SetClosed { .. }
             | Self::NoEvidence { .. }
+            | Self::SetClosed { .. }
             | Self::Doc(DocError::LabelTooLong { .. })
             | Self::Unanswered(_) => ToolErrorKind::Verdict,
             Self::Ambiguous { .. }
