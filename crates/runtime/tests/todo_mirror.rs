@@ -919,3 +919,102 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the rows a finished plan absorbed from the session's own list lost when the next
+/// plan takes the list: the model's `todo done` on them was refused as stale (stage 5 run 3).
+#[test]
+fn a_row_a_finished_plan_absorbed_returns_to_the_list_when_another_plan_opens() -> TestResult {
+    let mut own = TodoList::default();
+    own.phases.push(yi_types::todo::TodoPhase {
+        name: PhaseName::new("Tasks")?,
+        items: vec![Todo::pending(TodoLabel::new("add mod")?)],
+        extra: Map::new(),
+    });
+    let first = Plan::opening(
+        PlanId::new("first")?,
+        GoalText::new("first")?,
+        PlanTier::Root,
+        vec![Todo::pending(TodoLabel::new("add mod")?)],
+    );
+    let absorbed = yi_runtime::todo::mirror::projected(&first, &own);
+    assert_eq!(
+        absorbed.items().count(),
+        1,
+        "the plan holds the row: {absorbed:?}"
+    );
+    let mut finished = first.clone();
+    for todo in &mut finished.todos {
+        todo.state = TodoState::Done {
+            output: None,
+            resolution: None,
+        };
+    }
+    let absorbed = yi_runtime::todo::mirror::projected(&finished, &absorbed);
+    let second = Plan::opening(
+        PlanId::new("second")?,
+        GoalText::new("second")?,
+        PlanTier::Root,
+        vec![Todo::pending(TodoLabel::new("close out")?)],
+    );
+    let list = yi_runtime::todo::mirror::projected(&second, &absorbed);
+    let rows: Vec<(String, TodoStateName, bool)> = (list.items())
+        .map(|item| {
+            let planned = item.extra.contains_key(yi_runtime::todo::mirror::PLAN_KEY);
+            (
+                item.label.as_str().to_owned(),
+                TodoStateName::of(&item.state),
+                planned,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("add mod".to_owned(), TodoStateName::Done, false),
+            ("close out".to_owned(), TodoStateName::Pending, true)
+        ]
+    );
+    Ok(())
+}
+
+/// Dies with a todo block on a plan's row refused with the plan road: a run-8 session blocked the
+/// plan's own row through the todo tool and was turned away, where a `done` there is carried.
+#[test]
+fn a_todo_block_on_a_plan_row_is_carried_to_the_plan_tool() -> TestResult {
+    use yi_tools::{Tool, ToolContext};
+    let dir = Scratch::new("yi-todo-mirror-block")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let tool = yi_runtime::todo::tool::TodoTool::new(Arc::clone(&todos));
+    let call = |args: Value| {
+        let output = tool.execute(
+            args.as_object().cloned().unwrap_or_default(),
+            &ToolContext::new(dir.to_path_buf()),
+        );
+        let text: String = output
+            .result
+            .content
+            .iter()
+            .map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        (output.is_error, text)
+    };
+    let options =
+        json!([{"id": "a", "label": "A"}, {"id": "b", "label": "B"}, {"id": "c", "label": "C"}]);
+    let (refused, text) = call(
+        json!({"op": "block", "id": "t2", "on": "user", "note": "which?", "options": options}),
+    );
+    assert!(!refused, "{text}");
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let gate = plan.todo(&TodoLabel::new("gate")?).ok_or("gate")?;
+    assert_eq!(
+        TodoStateName::of(&gate.state),
+        TodoStateName::Blocked,
+        "{text}"
+    );
+    Ok(())
+}
