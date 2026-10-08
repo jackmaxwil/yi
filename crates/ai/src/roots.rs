@@ -2,27 +2,34 @@ use ureq::rustls::RootCertStore;
 use ureq::rustls::pki_types::CertificateDer;
 use ureq::rustls::pki_types::pem::PemObject;
 
-/// System trust-store PEM for the cursor handshake and the update fetch: the macOS
-/// SystemRootCertificates keychain, or the Linux bundle rustls-native-certs does not load.
-pub fn system_pem() -> Result<Vec<u8>, String> {
-    if cfg!(target_os = "macos") {
+pub fn keychain_pem(path: &str) -> Result<Vec<u8>, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        return Err("no keychain".to_owned());
+    }
+    #[cfg(target_os = "macos")]
+    {
         #[expect(
             clippy::disallowed_methods,
-            reason = "the system trust store is what the handshake verifies against"
+            reason = "the keychain is what the handshake verifies against"
         )]
         let output = std::process::Command::new("security")
-            .args([
-                "find-certificate",
-                "-a",
-                "-p",
-                "/System/Library/Keychains/SystemRootCertificates.keychain",
-            ])
+            .args(["find-certificate", "-a", "-p", path])
             .output()
             .map_err(|error| error.to_string())?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).into_owned());
         }
-        return Ok(output.stdout);
+        Ok(output.stdout)
+    }
+}
+
+/// System trust-store PEM for the cursor handshake and the update fetch: the macOS
+/// SystemRootCertificates keychain, or the Linux bundle rustls-native-certs does not load.
+pub fn system_pem() -> Result<Vec<u8>, String> {
+    if cfg!(target_os = "macos") {
+        return keychain_pem("/System/Library/Keychains/SystemRootCertificates.keychain");
     }
     std::fs::read("/etc/ssl/certs/ca-certificates.crt")
         .or_else(|_| std::fs::read("/etc/ssl/cert.pem"))

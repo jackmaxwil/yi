@@ -14,6 +14,34 @@ use crate::request::{empty_assistant, fail_message};
 
 pub use proto::{CLIENT_VERSION, NAMESPACE};
 
+pub const BASE_URL: &str = "https://agentn.us.api5.cursor.sh";
+pub const MODELS_URL: &str = "https://api2.cursor.sh/aiserver.v1.AiService/AvailableModels";
+
+pub fn model_for(id: &str) -> Model {
+    use yi_types::model::ModelCost;
+    Model {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        api: "cursor-agent".to_owned(),
+        provider: "cursor".to_owned(),
+        base_url: BASE_URL.to_owned(),
+        reasoning: true,
+        input: vec!["text".to_owned()],
+        cost: ModelCost {
+            input: serde_json::Number::from(0),
+            output: serde_json::Number::from(0),
+            cache_read: serde_json::Number::from(0),
+            cache_write: serde_json::Number::from(0),
+            tiers: None,
+        },
+        context_window: 200_000,
+        max_tokens: 16_000,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
+    }
+}
+
 pub type ToolFuture = Pin<Box<dyn Future<Output = String> + Send>>;
 pub type ToolFn = Box<dyn Fn(String, String, Map<String, Value>) -> ToolFuture + Send + Sync>;
 pub type StopFn = Arc<dyn Fn() -> bool + Send + Sync>;

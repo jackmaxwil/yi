@@ -18,6 +18,9 @@ use yi_types::model::{Effort, LlmContext, Model};
 pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
     let catalog = Catalog::shared();
     catalog.get(provider, id).cloned().or_else(|| {
+        if provider == "cursor" {
+            return Some(yi_ai::cursor::model_for(id));
+        }
         let (base, _variant) = id.rsplit_once(':').filter(|_| provider == "openrouter")?;
         let mut model = catalog.get(provider, base)?.clone();
         model.id = id.to_owned();
@@ -467,8 +470,8 @@ mod tests {
 
     #[test]
     fn a_cursor_model_routes_to_cursor_not_faux() -> Result<(), Box<dyn std::error::Error>> {
-        let model = resolve_model("cursor", "composer-2.5-fast")
-            .ok_or("bundled catalog missing composer-2.5-fast")?;
+        let model =
+            resolve_model("cursor", "composer-2.5-fast").ok_or("cursor id did not resolve")?;
         assert_eq!(provider_api(&model.api), Some(ProviderApi::CursorAgent));
         Ok(())
     }

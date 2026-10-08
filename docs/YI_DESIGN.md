@@ -239,8 +239,9 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`. Yi ships no client
   id except `cursor`: `yi login cursor` polls `api2.cursor.sh` and a turn posts Connect protobuf
   over HTTP/2 to `agentn.us.api5.cursor.sh`'s agent `Run` method. Text frames are sent on as they
-  arrive, a native shell frame runs bash, and the stream closes when the session aborts. A profile
-  file at the same id still wins.
+  arrive, a native shell frame runs bash, and the stream closes when the session aborts. The model
+  list is that account's `AvailableModels`, cached under `~/.yi/catalog`; a typed id still runs
+  when the file is absent. A profile file at the same id still wins.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
 - State: `models { primary, summarizer, advisor, autoReview, classifier }` in `~/.yi/config.json`
