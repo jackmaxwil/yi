@@ -8,9 +8,6 @@ esac
 real="$HOME"
 home="$(git rev-parse --show-toplevel)/target/yi-home"
 mkdir -p "$home"
-# The user's gitconfig can carry credentials; tests get a fixed identity instead.
-git config --file "$home/.gitconfig" user.name "Yi"
-git config --file "$home/.gitconfig" user.email "yi-test@localhost"
 # RUSTUP_AUTO_INSTALL=0: a shared RUSTUP_HOME is safe to read but two concurrent installs of one
 # toolchain can corrupt it (rust-lang/rustup#988), so a missing toolchain fails instead.
 exec env HOME="$home" \

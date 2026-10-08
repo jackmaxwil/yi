@@ -207,3 +207,24 @@ fn a_session_start_sweeps_a_home_with_no_stamp() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn a_fresh_stamp_from_a_killed_sweep_does_not_hold_the_hour() -> Result<(), Box<dyn Error>> {
+    let scratch = Scratch::new("yi-retention-killed")?;
+    let home = scratch.join("home");
+    let root = yi_runtime::checkpoint::checkpoint_root(&home);
+    let (gone, orphan) = captured(&scratch, &root, "gone")?;
+    std::fs::remove_dir_all(gone)?;
+    age_dir(&orphan, 8 * DAY)?;
+    std::fs::write(home.join(".yi/retention.stamp"), b"started")?;
+    yi_runtime::retention::sweep_home_hourly(&home);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while orphan.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !orphan.exists(),
+        "a stamp a killed sweep left held the hour"
+    );
+    Ok(())
+}
