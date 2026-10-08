@@ -215,20 +215,23 @@ pub fn unleak(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
 /// the item that has a single reading, so it becomes `op` plus `id` (#474).
 pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
     const ID_OPS: [&str; 6] = ["start", "done", "drop", "block", "unblock", "rm"];
-    if args.contains_key("op") || named(args).is_some() {
+    if args.contains_key("op") {
         return Cow::Borrowed(args);
     }
     let found = args.iter().find_map(|(key, value)| {
         let op = ID_OPS.iter().find(|op| **op == key.as_str())?;
         Some((*op, value.as_str()?.to_owned()))
     });
-    let Some((op, id)) = found else {
+    // A run-5 call named the todo twice, `{"done": X, "label": X}`; a key naming another is no op.
+    let Some((op, id)) = found.filter(|(_, id)| named(args).is_none_or(|name| name == *id)) else {
         return Cow::Borrowed(args);
     };
     let mut fixed = args.clone();
     fixed.remove(op);
     fixed.insert("op".to_owned(), Value::String(op.to_owned()));
-    fixed.insert("id".to_owned(), Value::String(id));
+    if named(args).is_none() {
+        fixed.insert("id".to_owned(), Value::String(id));
+    }
     Cow::Owned(fixed)
 }
 
@@ -372,12 +375,18 @@ impl TodoTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
+        let (mut args, mut said) = (args.clone(), Vec::new());
+        crate::plan::ask::few_options(&mut args, &mut said);
+        let args = &args;
         let op = self.store.aim(parse_op(args)?)?;
-        let inferred = if string(args, "op").as_deref() == Some(op.name()) {
+        let mut inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
         } else {
             format!("(op inferred: {})\n", op.name())
         };
+        for line in said {
+            inferred.push_str(&format!("({line})\n"));
+        }
         if let Some(carried) = self.store.carry(&op) {
             let text = carried.map_err(TodoToolError::Plan)?;
             return Ok(format!(

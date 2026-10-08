@@ -22,12 +22,17 @@ A todo's fields, rendered from the plan tool's schema:
 
 <!-- yi:schema plan /properties/todos/items -->
 - `label` (string, required): the todo's name, imperative, at most 80 chars
-- `state` (string, one of `pending`, `running`, `done`, `blocked`): set: the state the row should reach; done runs its contract first, blocked asks the user (on, note, options as in block); a row the engine cannot move says why in the reply
+- `state` (string, one of `pending`, `running`, `done`, `blocked`, `failed`, `dropped`): the state the row should reach: done runs its contract first; blocked asks (on, note, options); failed records its cause; dropped removes the row; pending or running reopens a failed or blocked row. A row the engine cannot move says why in the reply
 - `after` (list of string): labels of the todos this one waits on
 - `intent` (list of string): user://<n> of each user message it serves; default the latest
 - `waived` (list of object): [{address, reason}]: a user message the plan leaves unserved
 - `delegation` (object): {spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}
 - `contract` (object): what must hold when the todo is done; done runs its items and passes at the threshold
+- `todos` (list of object): the sub-steps this row splits into, rows of its own sub-plan; the row runs while they do
+- `on` (object): blocked: {"child": agent} | {"user": null} | {"external": {"probe": command}} | {"channel": {"address": "clock://at <ISO time>" or an exec://, file:// or channel:// address as in todo, "filter"?}}, unblocked by the first match; default the user
+- `note` (string): blocked: what would unblock it
+- `options` (list of object): blocked on the user: 3 to 5 answers [{id, label, preview?}] the user picks one of by replying with its number, id or label; a preview is light (a line, a small diagram's source, or an address), at most 2048 bytes
+- `cause` (string): failed: what went wrong
 <!-- /yi:schema -->
 
 A contract item's fields:
@@ -44,11 +49,12 @@ judge the work, preferring the repository's own gates; independent todos
 carry no `after`.
 
 The plan is one `op=set` call with a `goal` and every todo as a row in
-`todos`. To change anything, send the whole plan again with each row's new
-`state`. A row the engine could not move, such as an edge that closes a
-cycle or a check that failed, is a `note:` line in the reply: fix that row
-and send the plan again; the rest has landed. A checklist `list` is the
-short form for rows with nothing to verify.
+`todos`. To change it, send `set` again with the rows that change and their
+new `state`; a row it does not name stays as it is, and `dropped` removes
+one. A row the engine could not move, such as an edge that closes a cycle
+or a check that failed, is a `note:` line in the reply: fix that row and
+send it again; the rest has landed. A checklist `list` is the short form
+for rows with nothing to verify.
 
 A task is one coherent change verifiable in isolation. Three real tasks beat
 nine ceremonial ones. Adding tasks later is free; never quietly weaken or
