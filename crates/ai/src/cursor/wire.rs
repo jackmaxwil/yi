@@ -6,10 +6,10 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use ureq::rustls::ClientConnection;
 use ureq::rustls::pki_types::ServerName;
-use ureq::rustls::pki_types::pem::PemObject;
 
 use super::ToolFn;
 use super::proto;
+use crate::roots::{root_store, system_pem};
 
 pub async fn run(
     base: &str,
@@ -154,15 +154,7 @@ async fn connect(host: &str) -> Result<Tls, String> {
 }
 
 fn tls_config() -> Result<ureq::rustls::ClientConfig, String> {
-    let mut roots = ureq::rustls::RootCertStore::empty();
-    let pem = system_roots()?;
-    let ders = ureq::rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let (valid, _) = roots.add_parsable_certificates(ders);
-    if valid == 0 {
-        return Err("no system root certificates".to_owned());
-    }
+    let roots = root_store(&system_pem()?)?;
     let mut config = ureq::rustls::ClientConfig::builder_with_provider(
         ureq::rustls::crypto::ring::default_provider().into(),
     )
@@ -173,32 +165,6 @@ fn tls_config() -> Result<ureq::rustls::ClientConfig, String> {
     config.alpn_protocols = vec![b"h2".to_vec()];
     Ok(config)
 }
-
-fn system_roots() -> Result<Vec<u8>, String> {
-    if cfg!(target_os = "macos") {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the system trust store is what the cursor TLS handshake verifies against"
-        )]
-        let output = std::process::Command::new("security")
-            .args([
-                "find-certificate",
-                "-a",
-                "-p",
-                "/System/Library/Keychains/SystemRootCertificates.keychain",
-            ])
-            .output()
-            .map_err(|error| error.to_string())?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-        }
-        return Ok(output.stdout);
-    }
-    std::fs::read("/etc/ssl/certs/ca-certificates.crt")
-        .or_else(|_| std::fs::read("/etc/ssl/cert.pem"))
-        .map_err(|error| error.to_string())
-}
-
 struct Tls {
     conn: ClientConnection,
     sock: tokio::net::TcpStream,

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
-use yi_types::message::{AgentMessage, Content, StopReason, Usage};
+use yi_types::message::{AgentMessage, CURSOR_TOOL_NAMESPACE, Content, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 use yi_types::subagent::LoopSignal;
 
@@ -118,7 +118,11 @@ fn extract_tool_calls(message: &AgentMessage) -> Vec<ExtractedCall> {
     content
         .iter()
         .filter_map(|block| match block {
-            Content::ToolCall { namespace, .. } if namespace.as_deref() == Some("cursor") => None,
+            Content::ToolCall { namespace, .. }
+                if namespace.as_deref() == Some(CURSOR_TOOL_NAMESPACE) =>
+            {
+                None
+            }
             Content::ToolCall {
                 id,
                 name,
