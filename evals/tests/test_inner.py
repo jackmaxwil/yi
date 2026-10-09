@@ -82,5 +82,20 @@ class RolesArm(unittest.TestCase):
             self.assertIn(pin, prompts[True])
 
 
+class Cost(unittest.TestCase):
+    def test_a_rerun_under_the_same_keep_dir_is_charged_for_its_own_sessions_only(self):
+        import runner
+        fixture = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "session" / "1787544431469_fixture-a.jsonl"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            stub = tmp / "yi"
+            stub.write_text('#!/bin/sh\nwhile [ $# -gt 1 ]; do [ "$1" = --session-dir ] && dir="$2"; shift; done\n'
+                            f'mkdir -p "$dir" && cp {fixture} "$dir/$$.jsonl"\n')
+            stub.chmod(0o755)
+            costs = [runner.one("bugfix:1:1", str(stub), "", tmp / "keep")["costUsd"] for _ in range(2)]
+        self.assertEqual(costs[0], costs[1])
+        self.assertAlmostEqual(costs[1], 0.007432)
+
+
 if __name__ == "__main__":
     unittest.main()
