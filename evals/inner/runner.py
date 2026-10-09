@@ -12,7 +12,7 @@ YI_LEVERS under --eval. Sessions are kept under ~/Development/yi-runs/<run-id>/<
 mining. EVAL_MODEL picks the model (a solo arm); EVAL_ROLES=1 adds the role pins to the prompt (S0, issue 1134).
 INNER_JOBS (default 6) run at once; a call past its hard cap schedules nothing more.
 """
-import concurrent.futures, json, os, pathlib, shutil, subprocess, sys, tempfile, threading, time
+import concurrent.futures, json, os, pathlib, subprocess, sys, tempfile, threading, time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -52,11 +52,6 @@ def one(task_id, binary, levers, keep, roles=False):
         command = [binary, "ask", "--model", MODEL, "--json", "--here", "--cwd", str(workspace),
                    "--session-dir", str(keep / "sessions"), "--deadline", str(task["timeoutSec"])]
         env = {**os.environ, "HOME": fixtures.run_home()}
-        # Incident: the fresh HOME has no catalog, so a model the binary does not bundle (grok-4.7)
-        # was refused as unknown and the trial scored 0 in 12 s.
-        catalog = pathlib.Path.home() / ".yi" / "catalog"
-        if catalog.is_dir():
-            shutil.copytree(catalog, pathlib.Path(env["HOME"]) / ".yi" / "catalog", dirs_exist_ok=True)
         if levers:
             command.append("--eval")
             env[yi_usage.LEVERS_ENV] = levers

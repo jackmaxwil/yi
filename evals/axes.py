@@ -132,13 +132,9 @@ def telemetry(path):
 
 
 def unknown_turns(entries):
-    count = 0
-    for entry in entries:
-        message = entry.get("message") or {}
-        if entry.get("type") == "message" and message.get("role") == "assistant":
-            if (message.get("usage") or {}).get("unknown") is True and not yi_usage._failed_empty(message):
-                count += 1
-    return count
+    return yi_usage.unknown_cost_turns(
+        entry.get("message") for entry in entries
+        if entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "assistant")
 
 
 def score(path, root):
