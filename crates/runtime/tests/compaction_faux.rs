@@ -744,6 +744,47 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Dies with the unknown-window arm of `Compactor::due` dropped: a model whose window is
+/// unknown (0) never passes `should_compact`'s reserve rule, so only the ceiling can compact.
+#[tokio::test]
+async fn a_compaction_ceiling_compacts_when_the_window_is_unknown() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\nCeiling summary")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(0),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session
+        .compactor()
+        .ok_or("no compactor")?
+        .set_ceiling(Some(2_010));
+    session.prompt("first requirement: keep the guardrails green")?;
+    session.wait_idle().await;
+    session.prompt("second ask with enough characters to keep recent")?;
+    session.wait_idle().await;
+    assert!(
+        session.messages().iter().any(|message| matches!(
+            message,
+            AgentMessage::CompactionSummary { summary, .. } if summary.contains("Ceiling summary")
+        )),
+        "a request past the ceiling did not compact on a model whose window is unknown"
+    );
+    Ok(())
+}
+
 /// Dies with the summarizer running unannounced: the turn sat on "Waiting…" for the whole
 /// summary, with nothing to say the context was being condensed.
 #[tokio::test]
