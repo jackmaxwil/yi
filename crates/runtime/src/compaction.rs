@@ -380,9 +380,22 @@ impl Compactor {
         }
     }
 
-    pub fn set_ceiling(&self, tokens: Option<std::num::NonZeroU64>) {
-        let tokens = tokens.map_or(0, std::num::NonZeroU64::get);
-        self.ceiling.store(tokens, Ordering::Relaxed);
+    /// The reason when `tokens` is under what a compaction keeps and was raised to it.
+    pub fn set_ceiling(&self, tokens: Option<u64>) -> Option<String> {
+        let tokens = tokens.unwrap_or(0);
+        // Invariant: a compaction keeps `keep_recent` plus the prefix and summary, which a second
+        // reserve covers; a ceiling under that would compact again on every request.
+        let reserve = self.settings.reserve_tokens.0;
+        let floor = self
+            .settings
+            .keep_recent_tokens
+            .0
+            .saturating_add(reserve.saturating_mul(2));
+        let at = if tokens == 0 { 0 } else { tokens.max(floor) };
+        self.ceiling.store(at, Ordering::Relaxed);
+        (at > tokens && tokens > 0).then(|| {
+            format!("compaction.at {tokens} is under the {floor} tokens a compaction keeps; using {floor}")
+        })
     }
 
     /// Rebuilds the window chain and the stale reply from the latest compaction entry, which
@@ -524,9 +537,13 @@ impl Compactor {
         };
         let window = match self.ceiling.load(Ordering::Relaxed) {
             0 => model.context_window,
-            at => model
-                .context_window
-                .min(at.saturating_add(self.settings.reserve_tokens.0)),
+            at => {
+                let capped = at.saturating_add(self.settings.reserve_tokens.0);
+                match model.context_window {
+                    0 => capped,
+                    window => window.min(capped),
+                }
+            }
         };
         should_compact(sent, Tokens(window), &self.settings)
     }

@@ -610,8 +610,9 @@ fn build_session(
         },
     );
     drop(wiring);
-    if let Some(compactor) = session.compactor() {
-        compactor.set_ceiling(config().compaction.as_ref().and_then(|at| at.at));
+    let at = config().compaction.as_ref().and_then(|at| at.at);
+    if let Some(why) = session.compactor().and_then(|c| c.set_ceiling(at)) {
+        eprintln!("warning: {why}");
     }
     if !faux {
         for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {

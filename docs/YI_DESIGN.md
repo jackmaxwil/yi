@@ -190,7 +190,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
   16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338), or
-  would pass `compaction.at` tokens when that comes first (a root session's ceiling). A
+  would pass `compaction.at` tokens when that comes first (a root session's ceiling, raised with a
+  warning to `keep_recent` plus twice the reserve, which a compaction can get under). A
   usage the latest compaction kept in its tail is stale, and with none the messages count alone
   at bytes/3.
   The cut keeps 20,000 recent tokens, never at a tool result; up to 64,000 tokens of summarized

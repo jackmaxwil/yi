@@ -710,6 +710,26 @@ fn the_primary_role_supplies_the_model() -> TestResult {
     Ok(())
 }
 
+/// Dies with `yi` dropping either cost key between the config file and the session: each is
+/// read at start, so a bad value must be named before the turn runs.
+#[test]
+fn the_cost_keys_reach_the_session_at_start() -> TestResult {
+    let workspace = Workspace::new("cost-keys")?;
+    write_config(
+        &workspace,
+        r#"{"spend":{"alertUsd":-1},"compaction":{"at":5}}"#,
+    )?;
+    let answered = ask(&workspace, "cost check", &[])?;
+    let stderr = String::from_utf8_lossy(&answered.stderr);
+    assert_eq!(answered.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("spend.alertUsd -1 is not a positive amount")
+            && stderr.contains("compaction.at 5 is under the"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
     let workspace = Workspace::new("role-summarizer")?;
