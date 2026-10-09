@@ -79,9 +79,9 @@ def one(task_id, binary, levers, keep, roles=False):
     # Only this attempt's files: a re-run under the same run-id and arm reuses the keep dir.
     kept = [axes.score(path, keep) for path in axes.scored_sessions(keep / "sessions", earlier)]
     if kept:
-        costs = [r["costUsd"] for r in kept]
-        row.update({"rootCostUsd": row["costUsd"], "sessions": len(kept), "familyTurns": sum(r["turns"] for r in kept),
-                    "costUsd": None if None in costs else round(sum(costs), 6)})
+        merged = trials.merge_rows(kept)
+        row.update({"rootCostUsd": row["costUsd"], "sessions": len(kept),
+                    "familyTurns": merged["turns"], "costUsd": merged["costUsd"]})
     return row
 
 
