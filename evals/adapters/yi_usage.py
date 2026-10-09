@@ -34,6 +34,7 @@ TASK_TIMEOUT_SEC = 28800
 # OpenRouter's provider object for a routing A/B, as JSON; never `YI_*`, the harness's name.
 ROUTING_ENV = "EVAL_ROUTING"
 LEVERS_ENV = "YI_LEVERS"
+PLUGINS_ENV = "EVAL_PLUGINS"
 
 
 def with_budget(instruction, deadline_sec):
@@ -80,6 +81,35 @@ def levers_label(environ):
     with open(path, "rb") as handle:
         canonical = json.dumps(json.loads(handle.read()), sort_keys=True, separators=(",", ":"))
     return "+levers" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def local_plugins(environ, home):
+    """The plugins `yi plugin add` installed under `home` that ride into each task container, as
+    (name, version, path), by EVAL_PLUGINS: unset or `all` is every one, `none` is none, else a
+    comma list whose every name must be installed (#1041). Two versions of one plugin are
+    refused: the eval would not say which one ran."""
+    found = {}
+    for binary in sorted(Path(home, ".yi", "plugins").glob("*/*/*")):
+        name, version = binary.parent.parent.name, binary.parent.name
+        if binary.name == name and binary.is_file() and not version.startswith("."):
+            found.setdefault(name, []).append((version, binary))
+    wanted = environ.get(PLUGINS_ENV, "all").strip()
+    if wanted == "none":
+        return []
+    names = sorted(found) if wanted == "all" else [n.strip() for n in wanted.split(",") if n.strip()]
+    missing = [name for name in names if name not in found]
+    if missing:
+        raise ValueError(f"{PLUGINS_ENV} names {', '.join(missing)}; run `yi plugin add` for it first")
+    doubled = [name for name in names if len(found[name]) > 1]
+    if doubled:
+        raise ValueError(f"{', '.join(doubled)}: more than one version under ~/.yi/plugins; run `yi plugin sync`")
+    return [(name, found[name][0][0], found[name][0][1]) for name in names]
+
+
+def plugins_label(plugins):
+    """The plugins as they ride the fingerprint's mode: a run with ripwire and one without are
+    two configs, and `+plugins{}` says none rode along."""
+    return "+plugins{" + ",".join(f"{name}@{version}" for name, version, _ in plugins) + "}"
 
 
 KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")

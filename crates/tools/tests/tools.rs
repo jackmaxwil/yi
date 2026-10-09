@@ -3517,3 +3517,61 @@ fn the_models_bash_runs_the_pinned_plugin_before_one_on_path() -> TestResult {
     }
     Ok(())
 }
+
+/// Yi reads the ripwire it pins, not a recording of it: an edit that adds a parameter names the
+/// caller it broke, and `get_context` lists that caller. `just journeys` runs it after a plugin add.
+#[cfg(unix)]
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn the_pinned_ripwire_answers_in_the_shapes_yi_reads() -> TestResult {
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    let home = yi_tools::plugin::home().ok_or("no HOME")?;
+    let binary = ripwire
+        .installed(&home)
+        .ok_or("ripwire is not at the version yi pins: run `yi plugin add ripwire`")?;
+    let dir = temp_dir("live-ripwire")?;
+    fs::write(dir.join("calc.py"), "def add(a, b):\n    return a + b\n")?;
+    fs::write(
+        dir.join("main.py"),
+        "from calc import add\n\nprint(add(1, 2))\n",
+    )?;
+    let git = |words: &[&str]| {
+        yi_tools::command("git")
+            .args(words)
+            .current_dir(&*dir)
+            .output()
+    };
+    git(&["init", "-q"])?;
+    git(&["add", "-A"])?;
+    git(&[
+        "-c",
+        "user.email=yi@test",
+        "-c",
+        "user.name=yi",
+        "commit",
+        "-qm",
+        "seed",
+    ])?;
+    // The edit check answers within 3 s or names itself unavailable; a first index can take longer.
+    yi_tools::command(&binary)
+        .args([".", "--for=add"])
+        .current_dir(&*dir)
+        .output()?;
+    let edit = output_text(&edit_with(
+        &dir,
+        "calc.py",
+        "PUT 1.=1:\n+def add(a, b, c):\n",
+    ));
+    assert!(edit.contains("[ripwire check]"), "{edit}");
+    assert!(
+        edit.contains("params 2 -> 3")
+            && edit.contains("main.py:1")
+            && edit.contains("1 incompatible"),
+        "{edit}"
+    );
+    let context = ToolContext::new(dir.to_path_buf());
+    let packet =
+        output_text(&yi_tools::GetContextTool.execute(args(&[("symbol", json!("add"))]), &context));
+    assert!(packet.contains("main.py"), "{packet}");
+    Ok(())
+}

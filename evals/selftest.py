@@ -923,6 +923,35 @@ def check_mutate():
     result = unittest.TextTestRunner(stream=report).run(unittest.TestSuite([load(test_mutate), load(test_revert)]))
     assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
 
+def check_plugins():
+    """#1041: the plugins `yi plugin add` installed ride into the container by EVAL_PLUGINS, the
+    fingerprint names each with its version, and an arm with none says `+plugins{}`."""
+    with tempfile.TemporaryDirectory() as home:
+        pinned = Path(home, ".yi", "plugins", "ripwire", "0.6.5")
+        pinned.mkdir(parents=True)
+        (pinned / "ripwire").write_text("#!/bin/sh\n")
+        Path(home, ".yi", "plugins", "ripwire", ".staging-1-0").mkdir()
+        carried = yi_usage.local_plugins({}, home)
+        assert [(n, v) for n, v, _ in carried] == [("ripwire", "0.6.5")], carried
+        assert yi_usage.plugins_label(carried) == "+plugins{ripwire@0.6.5}"
+        none = yi_usage.local_plugins({yi_usage.PLUGINS_ENV: "none"}, home)
+        assert none == [] and yi_usage.plugins_label(none) == "+plugins{}"
+        named = yi_usage.local_plugins({yi_usage.PLUGINS_ENV: "ripwire"}, home)
+        assert [n for n, _, _ in named] == ["ripwire"]
+        for environ, stale in (({yi_usage.PLUGINS_ENV: "grid"}, False), ({}, True)):
+            if stale:
+                older = Path(home, ".yi", "plugins", "ripwire", "0.6.4")
+                older.mkdir()
+                (older / "ripwire").write_text("#!/bin/sh\n")
+            try:
+                yi_usage.local_plugins(environ, home)
+            except ValueError:
+                continue
+            raise AssertionError(f"{environ} with stale={stale} must be refused")
+    source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
+    assert "plugins_label(carried_plugins())" in source, "the harbor fingerprint must name the plugins"
+
+
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
@@ -957,6 +986,7 @@ CHECKS = (
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_plugins,
     check_inner,
     check_mutate,
     check_skill_labels,

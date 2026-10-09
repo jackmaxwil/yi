@@ -18,7 +18,7 @@ run and gated is in evals/README.md.
 | date | UTC date the run finished |
 | suite@rev | dataset and its pinned revision, e.g. `tb21@a3f1c2d` |
 | model | `provider/model` plus reasoning effort |
-| config-fp | `yi_usage.config_fingerprint` — adapter version, model, mode (with `+routing{…}` under `EVAL_ROUTING`), suite |
+| config-fp | `yi_usage.config_fingerprint` — adapter version, model, mode (with `+routing{…}` under `EVAL_ROUTING`; harbor rows from 2026-10-09 add `+plugins{name@version,…}`, the plugins `EVAL_PLUGINS` carried, `{}` for none), suite |
 | pass | passed / attempted tasks (A axis) |
 | pass@k | attempts per task and the resulting pass@k (A axis) |
 | tokens | input / cached / output (B axis; input is the uncached part, cache reads are the second number) |
