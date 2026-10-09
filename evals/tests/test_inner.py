@@ -63,5 +63,24 @@ class Generators(unittest.TestCase):
             gen.parse("nope:1")
 
 
+class RolesArm(unittest.TestCase):
+    def test_only_the_roles_arm_is_told_which_model_each_duty_takes(self):
+        import stat
+        import runner
+        prompts = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            stub = tmp / "yi"
+            stub.write_text('#!/bin/sh\nfor a; do last="$a"; done\nprintf %s "$last" > "$0.prompt"\n')
+            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+            for roles in (False, True):
+                row = runner.one("bugfix:1:1", str(stub), "", tmp / f"keep{roles}", roles)
+                prompts[roles] = pathlib.Path(f"{stub}.prompt").read_text()
+                self.assertEqual((row["roles"], row["model"]), (roles, runner.MODEL))
+        for pin in ("deepseek-v4.1-flash", "glm-5.3-flash"):
+            self.assertNotIn(pin, prompts[False])
+            self.assertIn(pin, prompts[True])
+
+
 if __name__ == "__main__":
     unittest.main()
