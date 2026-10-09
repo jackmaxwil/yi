@@ -331,7 +331,7 @@ fn plugins_pinned(site: &Site) -> Finding {
     let (mut installed, mut stale) = (Vec::new(), Vec::new());
     for plugin in &PLUGINS {
         match state(plugin, &site.home) {
-            State::Installed => installed.push(format!("{} {}", plugin.name, plugin.version)),
+            State::Installed(_) => installed.push(format!("{} {}", plugin.name, plugin.version)),
             State::Stale(versions) => {
                 stale.push(format!("{} {}", plugin.name, stale_line(plugin, &versions)))
             }

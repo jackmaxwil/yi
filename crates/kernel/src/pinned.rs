@@ -21,6 +21,18 @@ pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
     crate::tarball::read_capped(response.into_reader())
 }
 
+/// The digest check behind every pin: `subject` names the file or URL, `remedy` what to do
+/// about a mismatch.
+pub fn checked(subject: &str, bytes: &[u8], pinned_sha: &str, remedy: &str) -> Result<(), String> {
+    let digest = crate::tarball::sha256_hex(bytes);
+    if digest != pinned_sha {
+        return Err(format!(
+            "{subject} has sha256 {digest}, yi pins {pinned_sha}{remedy}"
+        ));
+    }
+    Ok(())
+}
+
 /// Downloads through `fetch`, checks the digest before reading a byte of the archive, and
 /// publishes the member as `dir/file` by one directory rename; the archive's paths are never used.
 pub fn install(
@@ -29,13 +41,7 @@ pub fn install(
 ) -> Result<PathBuf, String> {
     let archive =
         fetch(pin.url).map_err(|error| format!("couldn't download {}: {error}", pin.label))?;
-    let digest = crate::tarball::sha256_hex(&archive);
-    if digest != pin.sha256 {
-        return Err(format!(
-            "{} has sha256 {digest}, yi pins {}; not installing",
-            pin.url, pin.sha256
-        ));
-    }
+    checked(pin.url, &archive, pin.sha256, "; not installing")?;
     let tar = crate::tarball::gunzip(&archive)
         .map_err(|error| format!("the {} archive {error}", pin.label))?;
     let binary = crate::tarball::entries(&tar)

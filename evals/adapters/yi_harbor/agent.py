@@ -8,6 +8,7 @@ Register out of tree:
 import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -68,11 +69,29 @@ def mode_label():
 
 
 def carried_plugins():
-    """#1041: path mode carries the plugins `yi plugin add` installed on this host; URL mode
-    carries none, since its network reaches only the provider, and its fingerprint says so."""
+    """#1041: path mode carries the plugins `yi plugin add` installed on this host, as the
+    binary itself reports them; URL mode carries none, since its network reaches only the
+    provider, and its fingerprint says so."""
     if os.environ.get(BINARY_URL_ENV):
         return []
-    return local_plugins(os.environ, Path.home())
+    return local_plugins(os.environ, plugin_report())
+
+
+def plugin_report():
+    """`yi plugin list` is the one reader of the layout `yi plugin add` writes, so the
+    adapter carries what yi itself reports, never a second copy of the layout."""
+    binary = os.environ.get(BINARY_PATH_ENV)
+    if not binary:
+        raise ValueError(
+            f"set {BINARY_URL_ENV} (release URL) or {BINARY_PATH_ENV} "
+            "(local x86_64 musl build) before running the Yi adapter"
+        )
+    result = subprocess.run([binary, "plugin", "list"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError(
+            f"{binary} plugin list exited {result.returncode}: {result.stderr.strip()}"
+        )
+    return result.stdout
 
 
 def config_command():
