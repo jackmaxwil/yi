@@ -61,6 +61,15 @@ impl MissCause {
             Self::Unexplained => "unexplained",
         }
     }
+
+    /// The causes the total-miss tripwire counts. A named miss (a gap, a key change, a TTL or
+    /// an upstream switch) is never evidence the route wastes its writes.
+    pub fn is_unexplained(self) -> bool {
+        matches!(
+            self,
+            Self::WriteNotRead | Self::NothingCached | Self::Unexplained
+        )
+    }
 }
 
 struct Request {
@@ -217,10 +226,7 @@ impl MissTracker {
                     MissCause::Unexplained
                 }
             });
-        let unexplained = matches!(
-            cause,
-            Some(MissCause::WriteNotRead | MissCause::NothingCached | MissCause::Unexplained)
-        );
+        let unexplained = cause.is_some_and(MissCause::is_unexplained);
         self.total_misses = if unexplained && read == 0 && billed && prompt >= MIN_CACHEABLE {
             self.total_misses.saturating_add(1)
         } else {
@@ -239,11 +245,7 @@ impl MissTracker {
             });
         }
         // A miss a gap, a key change or a switch explains is not the route wasting its writes.
-        let explained = matches!(
-            cause,
-            Some(MissCause::ModelSwitch | MissCause::StableKeyChanged | MissCause::Expired)
-        );
-        if billed && !explained {
+        if billed && cause.is_none_or(MissCause::is_unexplained) {
             if self.reuse.len() == REUSE_WINDOW {
                 self.reuse.pop_front();
             }
