@@ -26,7 +26,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 def job_secs(workflow):
     """A bot job's time limit, from the one place it is set: its workflow's `timeout-minutes`.
-    The runner's own cap (the infra repository `CI_RUNNER_JOB_TIMEOUT`, 45m) must not be below it."""
+    The runner's own cap (the infra repository `CI_RUNNER_JOB_TIMEOUT`, 120m) must not be below it."""
     text = (ROOT / ".forgejo/workflows" / f"{workflow}.yml").read_text()
     found = re.search(r"^\s+timeout-minutes:\s*(\d+)\s*$", text, re.M)
     if not found:
