@@ -1,9 +1,8 @@
 //! Cross-session spend: every assistant reply under a sessions directory, read off the JSONL
 //! ledgers themselves. No index and no collector; the files are the ledger.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
@@ -191,21 +190,9 @@ pub fn day_label(zone: &Zone, at_ms: u64) -> String {
 }
 
 /// Billed dollars since local midnight across `dir`, and whether a reply lacked usage (a lower
-/// bound). Scanned once per process and day: every attach asks, and a daemon attaches on a worker.
+/// bound). Each call reads the files afresh: a daemon's later sessions must see earlier spend.
 pub fn spent_today(dir: &Path, now_ms: u64) -> (f64, bool) {
-    type Seen = HashMap<PathBuf, (u64, (f64, bool))>;
-    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
-    let midnight = local_midnight_ms(now_ms);
-    let mut seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
-    let seen = seen.get_or_insert_with(HashMap::new);
-    if let Some((day, total)) = seen.get(dir)
-        && *day == midnight
-    {
-        return *total;
-    }
-    let scan = scan(dir, midnight);
+    let scan = scan(dir, local_midnight_ms(now_ms));
     let unknown = scan.requests.iter().any(|request| request.usage.unknown);
-    let total = (scan.requests.iter().map(Request::billed).sum(), unknown);
-    seen.insert(dir.to_path_buf(), (midnight, total));
-    total
+    (scan.requests.iter().map(Request::billed).sum(), unknown)
 }

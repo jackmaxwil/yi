@@ -1224,6 +1224,33 @@ fn a_day_alert_keeps_its_running_total_across_a_reattach() -> TestResult {
     Ok(())
 }
 
+/// Dies when a later alarm seeds from a snapshot of the day taken for an earlier one: a daemon
+/// attaches its sessions one after another, and spend written in between (the 4th reply below)
+/// is what carries the second alarm past the $0.041 multiple.
+#[test]
+fn an_alarm_seeding_after_new_spend_was_written_sees_it() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let seeded = || -> Result<_, Box<dyn Error>> {
+        let mut alarm = yi_runtime::spend::SpendAlarm::day_usd(0.041, &dir)
+            .ok_or("a positive amount refused")?;
+        alarm.seed("live", &yi_types::wire::SessionStats::zero());
+        Ok(alarm)
+    };
+    let mut first = seeded()?;
+    assert_eq!(first.observe(&priced(turn_of(10), 0.001)), None);
+    let now = yi_runtime::rollup::now_ms().to_string();
+    let fourth = CHILD_FIXTURE
+        .replace("R8jG4wschDCyIUWXZMx1", "recorded-in-between")
+        .replace(FIXTURE_STAMP, &now);
+    std::fs::write(dir.join("--p--/late.jsonl"), fourth)?;
+    let mut second = seeded()?;
+    assert!(
+        second.observe(&priced(turn_of(10), 0.001)).is_some(),
+        "$0.0419 today crossed $0.041 and the second alarm seeded from a stale day"
+    );
+    Ok(())
+}
+
 /// Dies when a process alive past local midnight carries yesterday's total into the new day:
 /// the first reply after midnight would then alert early.
 #[test]
