@@ -50,6 +50,7 @@ fn update(status: ChildStatus, flag: Option<ChildFlag>) -> ChildUpdate {
         activity: ChildActivity::Waiting,
         tool_use_count: 1,
         token_count: 40,
+        cost: None,
         answer_preview: None,
         error: None,
         exit: None,

@@ -70,6 +70,7 @@ impl App {
                 activity: yi_types::subagent::ChildActivity::Waiting,
                 tool_use_count: u64::from(state.cell.toolcalls),
                 token_count: state.cell.tokens,
+                cost: None,
                 answer_preview: None,
                 error: Some(GONE.to_owned()),
                 exit: None,

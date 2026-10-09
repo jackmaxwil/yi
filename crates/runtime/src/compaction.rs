@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
@@ -246,6 +246,9 @@ pub struct Compactor {
     /// The newest reply with a usage that the latest compaction kept: its count is the history
     /// before that compaction, so `due` does not read it (D338).
     stale: Mutex<Option<AgentMessage>>,
+    /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
+    /// before the window's reserve.
+    ceiling: AtomicU64,
 }
 
 struct Raised<'a>(&'a AtomicBool);
@@ -373,7 +376,13 @@ impl Compactor {
             standing: Mutex::new(None),
             opening: Mutex::new(None),
             stale: Mutex::new(None),
+            ceiling: AtomicU64::new(0),
         }
+    }
+
+    pub fn set_ceiling(&self, tokens: Option<std::num::NonZeroU64>) {
+        let tokens = tokens.map_or(0, std::num::NonZeroU64::get);
+        self.ceiling.store(tokens, Ordering::Relaxed);
     }
 
     /// Rebuilds the window chain and the stale reply from the latest compaction entry, which
@@ -513,7 +522,13 @@ impl Compactor {
                     .fold(Tokens(0), Tokens::saturating_add),
             )
         };
-        should_compact(sent, Tokens(model.context_window), &self.settings)
+        let window = match self.ceiling.load(Ordering::Relaxed) {
+            0 => model.context_window,
+            at => model
+                .context_window
+                .min(at.saturating_add(self.settings.reserve_tokens.0)),
+        };
+        should_compact(sent, Tokens(window), &self.settings)
     }
 
     /// No summary, no room (D337): keep the first user message, the work's opening and the earlier
