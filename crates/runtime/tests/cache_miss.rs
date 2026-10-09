@@ -113,6 +113,26 @@ fn writes_that_expired_between_requests_raise_no_reuse_notice() -> Result<(), Bo
     Ok(())
 }
 
+/// Dies with the reuse alarm blaming the catalog for host hops: twelve requests alternating
+/// between two upstreams each write the prompt to a cache the other host never saw.
+#[test]
+fn writes_lost_to_an_upstream_switch_raise_no_reuse_notice() -> Result<(), Box<dyn Error>> {
+    let entries: Vec<Entry> = (0..12u64)
+        .map(|n| {
+            let host = if n % 2 == 0 {
+                "Amazon Bedrock"
+            } else {
+                "Google Vertex"
+            };
+            request(CLAUDE, (500, 0, 40_000), n * 1000, host)
+        })
+        .collect::<Result<_, _>>()?;
+    let (causes, notices) = fold(&entries);
+    assert_eq!(causes, ["upstream switch"; 11]);
+    assert_eq!(notices, Vec::<String>::new());
+    Ok(())
+}
+
 /// Dies with the reuse alarm firing on a healthy cache: twelve requests that each read the
 /// whole previous prompt back and write only the turn's growth.
 #[test]
