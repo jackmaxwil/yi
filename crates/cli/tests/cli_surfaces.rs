@@ -1378,7 +1378,8 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "daemon-ledger",
             "lanes",
             "cache",
-            "sandbox-listeners"
+            "sandbox-listeners",
+            "plugins"
         ]
     );
     assert_eq!(rows[11]["detail"], "no session here", "{rows}");
@@ -1802,4 +1803,52 @@ fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// A plugin yi installed at a version it no longer pins is off, and both `yi plugin list` and
+/// `yi doctor` name the one call that brings it to the pin; a name not in the table is refused.
+#[test]
+fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
+    let workspace = Workspace::new("plugin-stale")?;
+    let home = workspace.0.join("home");
+    let stale = home.join(".yi/plugins/ripwire/0.0.1");
+    std::fs::create_dir_all(&stale)?;
+    std::fs::write(stale.join("ripwire"), "#!/bin/sh\n")?;
+    let plugin = |args: &[&str]| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        command
+            .arg("plugin")
+            .args(args)
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+    };
+    let list = plugin(&["list"])?;
+    let first = stdout(&list).lines().next().unwrap_or_default().to_owned();
+    assert!(
+        first.starts_with("ripwire ")
+            && first.ends_with("0.0.1 installed, this yi pins 0.6.5: yi plugin sync"),
+        "{first}"
+    );
+    let doctor = workspace.yi_env(&["doctor"], &[("PATH", "/usr/bin:/bin")])?;
+    let row = stdout(&doctor)
+        .lines()
+        .find(|line| line.contains(" plugins "))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        row.starts_with("FAIL") && row.ends_with("yi plugin sync"),
+        "{row}"
+    );
+    let unknown = plugin(&["add", "grid"])?;
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("no plugin named grid"),
+        "{unknown:?}"
+    );
+    Ok(())
 }

@@ -9,6 +9,7 @@ mod fetch;
 mod lanes;
 mod memory;
 mod plan;
+mod plugin;
 mod rpc;
 mod sessions;
 mod setup;
@@ -1036,6 +1037,7 @@ fn mcp_fast_path() {
 fn main() {
     doctor::early();
     update::early();
+    plugin::early();
     if let Err(error) = load_config() {
         eprintln!("error: {error}");
         std::process::exit(2);

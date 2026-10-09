@@ -30,6 +30,7 @@ pub mod memory;
 pub mod node;
 pub mod permission;
 pub mod plan;
+pub mod plugin;
 pub mod provider;
 pub mod rewind;
 pub mod rules;
