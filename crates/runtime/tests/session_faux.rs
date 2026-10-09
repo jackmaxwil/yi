@@ -941,7 +941,7 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
     use yi_runtime::session::user_input;
     let skill = |name: &str, needle: &str| RuleDoc {
         name: name.to_owned(),
-        body: format!("skill://{name}"),
+        body: format!("yi://skills/{name}"),
         path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
         needles: vec![needle.to_owned()],
         scope: RuleScope::Text,
@@ -984,13 +984,13 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
         transcript(&session),
         [
             "user: run cargo nextest",
-            "reminder: Relevant: skill://gate (matched \"cargo nextest\")",
+            "reminder: Relevant: yi://skills/gate (matched \"cargo nextest\")",
             "assistant",
             "user: then review the work",
-            "reminder: Relevant: skill://review (matched \"review the work\")",
+            "reminder: Relevant: yi://skills/review (matched \"review the work\")",
             "assistant",
             "user: write a plan",
-            "reminder: Relevant: skill://plan (matched \"write a plan\")",
+            "reminder: Relevant: yi://skills/plan (matched \"write a plan\")",
             "assistant",
         ]
     );

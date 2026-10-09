@@ -1,3 +1,4 @@
+mod docs;
 mod log;
 mod read;
 mod schemes;
@@ -17,6 +18,7 @@ use crate::ext::sanitize;
 use crate::kernel::{VariableName, VariableReadError};
 use crate::wall::Wall;
 
+pub(crate) use docs::table_schema;
 pub use log::{
     FetchLog, PinError, Relevance, TerminalRecordError, as_served, relevance_of, rows_of,
 };
@@ -391,6 +393,7 @@ pub struct Resolver {
     transcripts: Option<Arc<dyn Transcripts>>,
     family_dir: Option<PathBuf>,
     member_trees: Option<Arc<dyn MemberTrees>>,
+    home: Option<PathBuf>,
     log: Arc<FetchLog>,
 }
 
@@ -410,6 +413,7 @@ impl Resolver {
             transcripts: None,
             family_dir: None,
             member_trees: None,
+            home: None,
             log: Arc::new(FetchLog::new()),
         }
     }
@@ -503,6 +507,15 @@ impl Resolver {
         self
     }
 
+    pub fn with_home(mut self, home: PathBuf) -> Self {
+        self.home = Some(home);
+        self
+    }
+
+    pub(super) fn home(&self) -> &Path {
+        self.home.as_deref().unwrap_or(&self.workspace)
+    }
+
     pub(super) fn family_dir(&self) -> Option<&std::path::Path> {
         self.family_dir.as_deref()
     }
@@ -590,6 +603,7 @@ impl Resolver {
             Scheme::User => whole(self.resolve_user(url)),
             Scheme::External(scheme) if scheme == "family" => whole(self.resolve_family(url)),
             Scheme::External(scheme) if scheme == "tree" => whole(self.resolve_tree(url)),
+            Scheme::External(scheme) if scheme == "yi" => whole(self.resolve_docs(url)),
             Scheme::External(scheme) => Err(FetchError::External {
                 url: url.to_string(),
                 scheme: scheme.clone(),

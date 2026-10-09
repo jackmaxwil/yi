@@ -273,7 +273,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
-  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
+  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
   With `models.classifier` set, a local sidecar is also asked which triggered skill the message
   calls for (`classify` entry); it points only at or above `classifier.threshold`.
@@ -307,6 +307,11 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `plan`, `todo`, `ask_user`. `check_request_budget.py` prices system block plus tool
   table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
+- Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
+  never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
+  (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
+  the whole guide; `read`, `grep`, `bash`, `write`, `get_context` and `ipython` stay whole. An
+  edit refusal names the address. There is no dispatcher tool.
 - `Tool { name, description, schema, kind, kind_for, freeform, irreversible, validate, preview,
   execute -> ToolOutput }`. `kind_for` decides per call; Read runs parallel, the rest sequential.
   The adapter runs rule check, reviewer wall, permission gate (§8), next-step lines (§6).
@@ -374,8 +379,9 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
 `<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
 `~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
-child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
-`trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
+child's lists none of those. Frontmatter at discovery; the catalog clips each description at 60 chars and the
+whole skill is `read("yi://skills/<name>")`; `$name` or a `trigger:` needle in a message the
+user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
@@ -501,6 +507,7 @@ A persistent IPython process per session that reaches the host only through host
 | `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session id of any lane of this repository resolves too |
 | `checkpoint` / `mcp` | `<tree>/<path>` / `<server>/<uri>` | a checkpoint-tree file (§7.7) / an MCP resource (§7.6) |
 | `family` / `tree` | `<name>` / `<agent>/<path>` | a blackboard sidecar / a member's checkout file, under `deny_read` |
+| `yi` | `tools/<name>` / `skills/<name>` | a deferred tool guide (§7.1) / a skill's `SKILL.md` (§7.8), under `deny_read` |
 
 - Owner: [`runtime/src/fetch/mod.rs`](../crates/runtime/src/fetch/mod.rs),
   [`runtime/src/fetch/schemes.rs`](../crates/runtime/src/fetch/schemes.rs)

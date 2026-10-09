@@ -53,6 +53,10 @@ fn input_hash(input: &str) -> u64 {
     u64::from(xxhash_rust::xxh32::xxh32(input.as_bytes(), 0))
 }
 
+pub const EDIT_GUIDE: &str = include_str!("prompt.md");
+const EDIT_DESCRIPTION: &str = "Edit existing files with a line-anchored patch (new files: write). A section opens `[PATH#TAG]`, TAG from the read/grep/write/edit output your line numbers came from. `PUT N.=M:` replaces original lines N-M with the `+TEXT` body rows under it; `PUT <N:` / `PUT >N:` insert before/after line N; `CUT N.=M` deletes. Every body row starts `+` and is final content: no `-` or context rows. Full guide (blocks, registers, moves, rules, examples): read(\"yi://tools/edit\") before your first edit.";
+const GUIDE_POINTER: &str = "\nThe patch grammar: read(\"yi://tools/edit\").";
+
 const READ_DESCRIPTION: &str = "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match; when that line defines a name, the references to it in files of the same type follow. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones.";
 
 /// How one text is shown. `on_disk`: the text is the file itself, so clipping guards its anchors
@@ -839,7 +843,7 @@ impl Tool for HashlineEditTool {
     }
 
     fn description(&self) -> &str {
-        include_str!("prompt.md")
+        EDIT_DESCRIPTION
     }
 
     fn schema(&self) -> Value {
@@ -903,7 +907,7 @@ impl Tool for HashlineEditTool {
             Ok(patch) => patch,
             Err(message) => {
                 return crate::tool::error_output_kind(
-                    message,
+                    format!("{message}{GUIDE_POINTER}"),
                     yi_types::event::ToolErrorKind::InvalidArgs,
                 );
             }
@@ -935,12 +939,17 @@ impl Tool for HashlineEditTool {
         let results = match results {
             Ok(results) => results,
             Err(message) => {
-                let kind = if message.starts_with(super::mismatch::EDIT_REJECTED_PREFIX) {
+                let stale = message.starts_with(super::mismatch::EDIT_REJECTED_PREFIX);
+                let grammar = message
+                    .strip_prefix("line ")
+                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+                let kind = if stale {
                     yi_types::event::ToolErrorKind::StaleTag
                 } else {
                     yi_types::event::ToolErrorKind::ToolError
                 };
-                return crate::tool::error_output_kind(message, kind);
+                let pointer = if stale || grammar { GUIDE_POINTER } else { "" };
+                return crate::tool::error_output_kind(format!("{message}{pointer}"), kind);
             }
         };
 

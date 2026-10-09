@@ -10,8 +10,10 @@ use crate::fetch::FetchLog;
 use crate::goal::DeliverFn;
 
 // Incident: always-on skill bodies were the cost regression; two pointers a message is the budget.
-// It caps `skill://` pointers only: a user's rule is their words, and a typed `$name` a request.
+// It caps skill pointers only: a user's rule is their words, and a typed `$name` a request.
 const POINTER_CAP: usize = 2;
+/// A skill pointer is this prefix plus the skill's name, an address `read` serves.
+pub(crate) const SKILL_ADDRESS: &str = "yi://skills/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleScope {
@@ -118,7 +120,7 @@ fn skill_rules(cwd: &Path, home: &Path) -> Vec<Result<(RuleDoc, Vec<String>), St
 /// Keys that aim a rule at tools drop; only a lost deny is announced, as the model reads notices.
 fn skill_as_rule(skill: &crate::skills::Skill) -> Result<(RuleDoc, Vec<String>), String> {
     let mention = format!("${}", skill.name);
-    let body = format!("skill://{}", skill.name);
+    let body = format!("{SKILL_ADDRESS}{}", skill.name);
     let mut fields = skill.frontmatter.clone();
     fields.remove("scope");
     fields.remove("paths");
@@ -399,7 +401,7 @@ fn paths_ok(rule: &RuleDoc, path: &str) -> bool {
 }
 
 fn skill_name(rule: &RuleDoc) -> Option<&str> {
-    rule.body.strip_prefix("skill://")
+    rule.body.strip_prefix(SKILL_ADDRESS)
 }
 
 /// ASCII case folds on both sides: a capital at the start of a sentence is the same request.
@@ -594,7 +596,7 @@ impl RuleEngine {
         denial
     }
 
-    // Incident: `read` never writes FetchLog; `loaded` is the suppress. FetchLog is the skill:// path.
+    // Incident: `read` once bypassed FetchLog; `loaded` is the suppress beside the logged skill reads.
     fn skill_already_loaded(&self, state: &FireState, rule: &RuleDoc) -> bool {
         let Some(name) = skill_name(rule) else {
             return false;
@@ -608,7 +610,7 @@ impl RuleEngine {
         let Some(log) = slot.as_ref() else {
             return false;
         };
-        let needle = format!("skill://{name}");
+        let needle = format!("{SKILL_ADDRESS}{name}");
         log.records()
             .iter()
             .any(|record| record.url.contains(&needle))
@@ -616,7 +618,7 @@ impl RuleEngine {
 
     fn render_reminder(&self, rule: &RuleDoc, needle: &str) -> String {
         if let Some(name) = skill_name(rule) {
-            format!("Relevant: skill://{name} (matched \"{needle}\")")
+            format!("Relevant: {SKILL_ADDRESS}{name} (matched \"{needle}\")")
         } else {
             format!("<rule name=\"{}\">\n{}\n</rule>", rule.name, rule.body)
         }
@@ -683,7 +685,7 @@ impl RuleEngine {
             if !named {
                 // A dropped pointer is not latched, so the next message that matches it delivers.
                 if counted >= POINTER_CAP {
-                    dropped.push(format!("skill://{name}"));
+                    dropped.push(format!("{SKILL_ADDRESS}{name}"));
                     continue;
                 }
                 if classifier.as_ref().is_some_and(|c| !c.claim(name)) {
