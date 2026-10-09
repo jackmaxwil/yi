@@ -703,10 +703,9 @@ async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Dies with `compaction.at` ignored: a 5,000-token request in a 100,000-token window is far
-/// from its 1,000-token reserve, so only the ceiling of 2,000 can make it compact.
-#[tokio::test]
-async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dyn Error>> {
+/// Whether a 5,000-token request past a 2,010-token `compaction.at` compacted a session whose
+/// model's window is `window` tokens, with a 1,000-token reserve.
+async fn compacts_past_a_ceiling(window: u64) -> Result<bool, Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
@@ -719,7 +718,7 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
-            model: faux_model(100_000),
+            model: faux_model(window),
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
@@ -734,11 +733,20 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
     session.wait_idle().await;
     session.prompt("second ask with enough characters to keep recent")?;
     session.wait_idle().await;
-    assert!(
-        session.messages().iter().any(|message| matches!(
+    Ok(session.messages().iter().any(|message| {
+        matches!(
             message,
             AgentMessage::CompactionSummary { summary, .. } if summary.contains("Ceiling summary")
-        )),
+        )
+    }))
+}
+
+/// Dies with `compaction.at` ignored: a 5,000-token request in a 100,000-token window is far
+/// from its reserve, so only the ceiling can make it compact.
+#[tokio::test]
+async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dyn Error>> {
+    assert!(
+        compacts_past_a_ceiling(100_000).await?,
         "a request past the ceiling did not compact"
     );
     Ok(())
@@ -748,38 +756,8 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
 /// unknown (0) never passes `should_compact`'s reserve rule, so only the ceiling can compact.
 #[tokio::test]
 async fn a_compaction_ceiling_compacts_when_the_window_is_unknown() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None));
-    provider.queue_faux(vec![
-        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
-        faux_assistant_message(
-            vec![faux_text("## Goal\nCeiling summary")],
-            StopReason::Stop,
-        ),
-        reply_with_usage("second answer", 50, 300),
-    ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(0),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
-    session.enable_compaction_with(tight_settings());
-    session
-        .compactor()
-        .ok_or("no compactor")?
-        .set_ceiling(Some(2_010));
-    session.prompt("first requirement: keep the guardrails green")?;
-    session.wait_idle().await;
-    session.prompt("second ask with enough characters to keep recent")?;
-    session.wait_idle().await;
     assert!(
-        session.messages().iter().any(|message| matches!(
-            message,
-            AgentMessage::CompactionSummary { summary, .. } if summary.contains("Ceiling summary")
-        )),
+        compacts_past_a_ceiling(0).await?,
         "a request past the ceiling did not compact on a model whose window is unknown"
     );
     Ok(())
