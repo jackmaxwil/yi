@@ -52,7 +52,7 @@ pub const SPEND_ALERT_TYPE: &str = "spend_alert";
 /// What a [`SpendAlarm`] counts: `total_tokens` (`spend.alertTokens`) or billed dollars
 /// (`spend.alertUsd`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Measure {
+enum Measure {
     Tokens,
     Usd,
 }
@@ -67,6 +67,8 @@ pub struct SpendAlarm {
     children: HashMap<String, (String, f64)>,
     session: String,
     announced: u64,
+    /// A reply in the total came back without usage, so its dollars are a lower bound.
+    unpriced: bool,
 }
 
 impl SpendAlarm {
@@ -87,13 +89,20 @@ impl SpendAlarm {
             children: HashMap::new(),
             session: String::new(),
             announced: 0,
+            unpriced: false,
         }
     }
 
-    fn amount(&self, value: f64) -> String {
+    /// Invariant: ten $0.10 replies sum to 0.999…9 in binary, so an exact multiple needs the
+    /// epsilon to count as crossed.
+    fn multiples(&self) -> u64 {
+        (self.total / self.every + 1e-9) as u64
+    }
+
+    fn amount(&self, value: f64, lower_bound: bool) -> String {
         match self.measure {
             Measure::Tokens => format!("{value:.0} tokens"),
-            Measure::Usd => format!("${value:.2}"),
+            Measure::Usd => yi_types::message::fmt_cost(value, lower_bound),
         }
     }
 
@@ -103,10 +112,13 @@ impl SpendAlarm {
         let grown = match event {
             AgentEvent::MessageEnd {
                 message: AgentMessage::Assistant { usage, .. },
-            } => match measure {
-                Measure::Tokens => u64::try_from(usage.total_tokens).unwrap_or(0) as f64,
-                Measure::Usd => usage.cost.total.as_f64().unwrap_or(0.0),
-            },
+            } => {
+                self.unpriced |= usage.unknown;
+                match measure {
+                    Measure::Tokens => u64::try_from(usage.total_tokens).unwrap_or(0) as f64,
+                    Measure::Usd => usage.cost.total.as_f64().unwrap_or(0.0),
+                }
+            }
             AgentEvent::ChildUpdate { update } => {
                 let count = match measure {
                     Measure::Tokens => update.token_count as f64,
@@ -131,7 +143,7 @@ impl SpendAlarm {
             _ => return None,
         };
         self.total += grown.max(0.0);
-        let reached = (self.total / self.every) as u64;
+        let reached = self.multiples();
         if reached <= self.announced {
             return None;
         }
@@ -147,9 +159,9 @@ impl SpendAlarm {
         };
         Some(format!(
             "[spend] this session and its children have used {}, past the alert at {} (spend.{key} {every}); the next alert is at {}. `{call}` breaks it down by model.",
-            self.amount(self.total),
-            self.amount(reached as f64 * self.every),
-            self.amount(reached.saturating_add(1) as f64 * self.every),
+            self.amount(self.total, self.unpriced),
+            self.amount(reached as f64 * self.every, false),
+            self.amount(reached.saturating_add(1) as f64 * self.every, false),
         ))
     }
 
@@ -165,7 +177,9 @@ impl SpendAlarm {
         } else {
             0
         };
-        (self.total, self.announced) = (total, floor.max((total / self.every) as u64));
+        self.total = total;
+        self.unpriced = stats.unknown_usage;
+        self.announced = floor.max(self.multiples());
         self.session = session.to_owned();
     }
 }

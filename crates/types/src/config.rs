@@ -120,11 +120,11 @@ pub struct SpendConfig {
 }
 
 /// `compaction.at`: compact once a request passes this many tokens, when that comes before the
-/// window's reserve; absent, only the reserve decides.
+/// window's reserve; absent or 0, only the reserve decides.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionConfig {
-    pub at: Option<std::num::NonZeroU64>,
+    pub at: Option<u64>,
 }
 
 /// Keys an older Yi read that this one does not, each with why it went: D182 deleted the

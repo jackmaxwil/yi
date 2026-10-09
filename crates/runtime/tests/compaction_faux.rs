@@ -729,7 +729,7 @@ async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dy
     session
         .compactor()
         .ok_or("no compactor")?
-        .set_ceiling(std::num::NonZeroU64::new(2_000));
+        .set_ceiling(Some(2_010));
     session.prompt("first requirement: keep the guardrails green")?;
     session.wait_idle().await;
     session.prompt("second ask with enough characters to keep recent")?;

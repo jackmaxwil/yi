@@ -192,12 +192,6 @@ impl MissTracker {
         {
             self.reuse.clear();
         }
-        if billed {
-            if self.reuse.len() == REUSE_WINDOW {
-                self.reuse.pop_front();
-            }
-            self.reuse.push_back((read, write));
-        }
         let cause = self
             .last
             .as_ref()
@@ -243,6 +237,17 @@ impl MissTracker {
                     cause.label(),
                 )
             });
+        }
+        // A miss a gap, a key change or a switch explains is not the route wasting its writes.
+        let explained = matches!(
+            cause,
+            Some(MissCause::ModelSwitch | MissCause::StableKeyChanged | MissCause::Expired)
+        );
+        if billed && !explained {
+            if self.reuse.len() == REUSE_WINDOW {
+                self.reuse.pop_front();
+            }
+            self.reuse.push_back((read, write));
         }
         self.reuse_alarm(&request.route);
         self.last = Some(request);

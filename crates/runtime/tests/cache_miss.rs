@@ -85,9 +85,31 @@ fn a_write_no_request_reads_back_names_the_previous_write() -> Result<(), Box<dy
     );
     let notice = notice.ok_or("a route that read back less than it wrote raised nothing")?;
     assert!(
-        notice.contains("gpt-sol-latest") && notice.contains("over its last 10 requests"),
+        notice.contains("gpt-sol-latest")
+            && notice.contains("over its last 10 requests")
+            && !notice.contains("has read 0 cached tokens"),
         "{notice}"
     );
+    Ok(())
+}
+
+/// Dies with the reuse alarm blaming the catalog for idle gaps: twelve single requests each past
+/// the five-minute TTL write the whole prompt and read nothing, a cause the fold already names.
+#[test]
+fn writes_that_expired_between_requests_raise_no_reuse_notice() -> Result<(), Box<dyn Error>> {
+    let entries: Vec<Entry> = (0..12u64)
+        .map(|n| {
+            request(
+                CLAUDE,
+                (500, 0, 40_000),
+                n * 6 * 60 * 1000,
+                "Amazon Bedrock",
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let (causes, notices) = fold(&entries);
+    assert_eq!(causes, ["gap exceeded TTL"; 11]);
+    assert_eq!(notices, Vec::<String>::new());
     Ok(())
 }
 
