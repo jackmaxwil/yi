@@ -75,11 +75,7 @@ fn list(home: &Path) -> i32 {
     for plugin in &PLUGINS {
         let state = match plugin::state(plugin, home) {
             State::Installed => "installed".to_owned(),
-            State::Stale(versions) => format!(
-                "{} installed, this yi pins {}: yi plugin sync",
-                versions.join(", "),
-                plugin.version
-            ),
+            State::Stale(versions) => plugin::stale_line(plugin, &versions),
             State::OnPath(path) => format!(
                 "on PATH at {}, a version yi did not install: yi plugin add {}",
                 path.display(),

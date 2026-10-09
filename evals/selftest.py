@@ -948,12 +948,120 @@ def check_plugins():
             except ValueError:
                 continue
             raise AssertionError(f"{environ} with stale={stale} must be refused")
-    source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
-    assert "plugins_label(carried_plugins())" in source, "the harbor fingerprint must name the plugins"
+        broken = Path(tempfile.mkdtemp(), ".yi", "plugins", "odd")
+        broken.mkdir(parents=True)
+        try:
+            yi_usage.local_plugins({}, broken.parent.parent.parent)
+            raise AssertionError("a layout yi did not write must be refused")
+        except ValueError as error:
+            assert "layout" in str(error), error
 
+
+def check_plugin_upload():
+    """#1041: install uploads each carried plugin into the container and runs it there, and
+    URL mode carries none while its fingerprint still says `+plugins{}`."""
+    import asyncio
+    import importlib
+    import types as types_mod
+
+    if "harbor.agents.installed.base" not in sys.modules:
+        def module(name):
+            mod = types_mod.ModuleType(name)
+            sys.modules[name] = mod
+            return mod
+
+        harbor = module("harbor")
+        agents = module("harbor.agents")
+        harbor.agents = agents
+        installed = module("harbor.agents.installed")
+        agents.installed = installed
+        environments = module("harbor.environments")
+        harbor.environments = environments
+        models = module("harbor.models")
+        harbor.models = models
+        connection = module("harbor.agents.model_connection")
+        class ModelConnectionSpec:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+        connection.ModelConnectionSpec = ModelConnectionSpec
+        agents.model_connection = connection
+        base = module("harbor.agents.installed.base")
+        class BaseInstalledAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+        base.BaseInstalledAgent = BaseInstalledAgent
+        installed.base = base
+        env_base = module("harbor.environments.base")
+        class BaseEnvironment:
+            pass
+        env_base.BaseEnvironment = BaseEnvironment
+        environments.base = env_base
+        agent_models = module("harbor.models.agent")
+        models.agent = agent_models
+        context = module("harbor.models.agent.context")
+        class AgentContext:
+            pass
+        context.AgentContext = AgentContext
+        agent_models.context = context
+    agent = importlib.import_module("yi_harbor.agent")
+
+    class Result:
+        stdout = None
+
+    class Recording(agent.Yi):
+        def __init__(self):
+            self.uploads = []
+            self.roots = []
+        async def exec_as_root(self, environment, command):
+            self.roots.append(command)
+            return Result()
+        async def exec_as_agent(self, environment, command):
+            return Result()
+        async def upload_ca_bundle(self, environment):
+            pass
+        async def upload_levers(self, environment):
+            pass
+        async def warm_kernel(self, environment):
+            pass
+
+    class Env:
+        def __init__(self):
+            self.uploads = []
+        async def upload_file(self, src, dst):
+            self.uploads.append((str(src), str(dst)))
+
+    saved = {key: os.environ.get(key) for key in ("HOME", "EVAL_BINARY", "EVAL_BINARY_URL")}
+    try:
+        with tempfile.TemporaryDirectory() as home:
+            pinned = Path(home, ".yi", "plugins", "ripwire", "0.6.5")
+            pinned.mkdir(parents=True)
+            (pinned / "ripwire").write_text("#!/bin/sh\n")
+            os.environ["HOME"] = home
+            os.environ["EVAL_BINARY"] = "/bin/sh"
+            os.environ.pop("EVAL_BINARY_URL", None)
+            yi = Recording()
+            env = Env()
+            asyncio.run(yi.install(env))
+            assert any(dst == "/usr/local/bin/ripwire" for _, dst in env.uploads), env.uploads
+            assert any(
+                "chmod +x /usr/local/bin/ripwire" in command for command in yi.roots
+            ), yi.roots
+            os.environ.pop("EVAL_BINARY", None)
+            os.environ["EVAL_BINARY_URL"] = "https://example.invalid/yi"
+            yi = Recording()
+            env = Env()
+            asyncio.run(yi.install(env))
+            assert not any(dst == "/usr/local/bin/ripwire" for _, dst in env.uploads), env.uploads
+            assert agent.carried_plugins() == []
+            assert yi_usage.plugins_label(agent.carried_plugins()) == "+plugins{}"
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 def check_levers():
-    """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
     suite = unittest.defaultTestLoader.loadTestsFromModule(test_levers)
     result = unittest.TextTestRunner(stream=report).run(suite)
@@ -987,6 +1095,7 @@ CHECKS = (
     check_graph_refiner,
     check_levers,
     check_plugins,
+    check_plugin_upload,
     check_inner,
     check_mutate,
     check_skill_labels,
