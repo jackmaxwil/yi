@@ -1,4 +1,3 @@
-use serde_json::Value;
 use yi_types::url::Url;
 
 use super::{FetchError, Resolver};
@@ -20,30 +19,6 @@ fn plan_guide() -> String {
         "{}\n\nEvery parameter, documented:\n{fields}",
         crate::plan::tool::GUIDE
     )
-}
-
-/// Invariant: every type, enum, bound and required key stays, so validation and argument
-/// decoding are unchanged; only the field prose below the top level moves to the guide.
-pub(crate) fn table_schema(mut schema: Value) -> Value {
-    fn strip(value: &mut Value) {
-        match value {
-            Value::Object(map) => {
-                map.retain(|key, nested| key != "description" || !nested.is_string());
-                map.values_mut().for_each(strip);
-            }
-            Value::Array(items) => items.iter_mut().for_each(strip),
-            _ => {}
-        }
-    }
-    if let Some(Value::Object(properties)) = schema.get_mut("properties") {
-        for property in properties.values_mut().filter_map(Value::as_object_mut) {
-            property
-                .iter_mut()
-                .filter(|(key, _)| *key != "description")
-                .for_each(|(_, nested)| strip(nested));
-        }
-    }
-    schema
 }
 
 impl Resolver {
@@ -72,18 +47,8 @@ impl Resolver {
                     .iter()
                     .find(|skill| skill.name == name)
                     .ok_or_else(|| not_found(format!("skill {name}")))?;
-                if let Some(refusal) = self.wall().check_read_path(&skill.path) {
-                    return Err(FetchError::Denied {
-                        url: url.to_string(),
-                        refusal,
-                    });
-                }
-                std::fs::read_to_string(&skill.path)
+                super::read_text(url, &skill.path, self.workspace(), &self.wall().deny_read)
                     .map(|text| (text, "skill".to_owned()))
-                    .map_err(|error| FetchError::Backend {
-                        url: url.to_string(),
-                        message: error.to_string(),
-                    })
             }
             _ => Err(FetchError::BadAddress {
                 url: url.to_string(),

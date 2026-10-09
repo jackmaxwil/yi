@@ -18,7 +18,6 @@ use crate::ext::sanitize;
 use crate::kernel::{VariableName, VariableReadError};
 use crate::wall::Wall;
 
-pub(crate) use docs::table_schema;
 pub use log::{
     FetchLog, PinError, Relevance, TerminalRecordError, as_served, relevance_of, rows_of,
 };
