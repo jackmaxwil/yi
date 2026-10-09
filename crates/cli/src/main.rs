@@ -57,6 +57,7 @@ struct Args {
     deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
+    stats: stats::Query,
     prompt: String,
 }
 
@@ -75,8 +76,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    // Auto is the default: reads and known-safe commands run, destructive ones ask.
-    // `--yolo` removes the gate, `--confirm` asks for everything.
     let mut mode = match config()
         .permissions
         .as_ref()
@@ -105,22 +104,15 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
+    let mut stats_flags = stats::Flags::default();
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
         match argument {
-            Long("version") => {
-                command = "version".to_owned();
-            }
+            Long("version") => command = "version".to_owned(),
             Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
-            Long("thinking") => {
-                let raw = parser.value()?.string()?;
-                thinking = Some(
-                    raw.parse()
-                        .map_err(|error: UnknownEffort| lexopt::Error::Custom(Box::new(error)))?,
-                );
-            }
+            Long("thinking") => thinking = Some(parse_effort(&parser.value()?.string()?)?),
             Long("json") => json = true,
             Long("yolo") => mode = yi_runtime::PermissionMode::Yolo,
             Long("auto") => mode = yi_runtime::PermissionMode::Auto,
@@ -144,6 +136,11 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
+            Long("since") if command == "stats" => {
+                stats_flags.since = Some(parser.value()?.string()?)
+            }
+            Long("by") if command == "stats" => stats_flags.by = Some(parser.value()?.string()?),
+            Long("top") if command == "stats" => stats_flags.top = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -189,7 +186,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         model_pinned: model.is_some(),
         model: model.or_else(configured_model).unwrap_or_default(),
         system,
-        thinking: thinking.or_else(configured_thinking),
+        thinking: thinking.or(config().thinking),
         json,
         mode,
         session_dir,
@@ -213,8 +210,14 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             (None, false) => Resume::Fresh,
         },
         schema,
+        stats: stats_flags.typed()?,
         prompt: prompt_parts.join(" "),
     })
+}
+
+fn parse_effort(raw: &str) -> Result<Effort, lexopt::Error> {
+    raw.parse()
+        .map_err(|error: UnknownEffort| lexopt::Error::Custom(Box::new(error)))
 }
 
 /// `COLSxROWS` within 20..=1000 by 8..=500: the drive's own floor, and a screen that fits in memory.
@@ -339,11 +342,6 @@ fn config() -> &'static yi_types::config::UserConfig {
 /// Invariant: the HOME [`load_config`] checked, except under `doctor`, which reports it raw.
 fn home() -> &'static std::path::Path {
     HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
-}
-
-/// The `thinking` field in the user config, overridden by `--thinking`.
-fn configured_thinking() -> Option<Effort> {
-    config().thinking
 }
 
 fn configured_roles() -> yi_types::config::ModelRoles {
@@ -611,18 +609,18 @@ fn build_session(
         },
     );
     drop(wiring);
+    let at = config().compaction.as_ref().and_then(|at| at.at);
+    if let Some(why) = session.compactor().and_then(|c| c.set_ceiling(at)) {
+        eprintln!("warning: {why}");
+    }
     if !faux {
         for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
             eprintln!("warning: {why}");
         }
     }
-    if let Some(every) = config()
-        .spend
-        .as_ref()
-        .and_then(|spend| spend.alert_tokens)
-        .and_then(std::num::NonZeroU64::new)
-    {
-        yi_runtime::spend::attach(&session, every);
+    let sessions = default_session_dir(args);
+    for why in yi_runtime::spend::attach_configured(&session, config().spend.as_ref(), &sessions) {
+        eprintln!("warning: {why}");
     }
     yi_runtime::cache_miss::attach(&session);
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
@@ -1160,6 +1158,7 @@ fn dispatch(args: Args) {
                 session_dir: default_session_dir(&args),
                 cwd: effective_cwd(&args).display().to_string(),
                 json: args.json,
+                query: args.stats.clone(),
             };
             std::process::exit(stats::run(&args.prompt, &options));
         }

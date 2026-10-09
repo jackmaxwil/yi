@@ -85,9 +85,15 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Kernel | A persistent Python process that reaches the host only through named host requests | §9 |
 | Url | The one reference type, `scheme://path#fragment`, resolved by `fetch` | §10 |
 | Child | A family member admitted under a lease, ending in one typed exit | §11 |
+| Lease | The tokens and deadline a child draws from its parent's own, never more | §11 |
+| Wall | A hereditary deny set over paths and URLs that only narrows down the family | §11 |
 | Envelope | A message written to the receiver's session store before delivery | §12 |
+| Todo | One unit of work, the same type in a session list and in a plan | §13, D282 |
 | Plan and contract | A hash-chained op journal over todos; a done-predicate over a frozen attempt | §13 |
 | Lane | A leased git-worktree slot with a moving hand-back | §14 |
+| Node | One machine's card of kernel slots, which every live kernel is admitted against | §9, D285 |
+| Schedule | A clock subscription whose tick creates a todo | §15.2, D283 |
+| Channel | A durable JSONL buffer that adapters append to and a blocked todo waits on | §15.2, D287 |
 
 | Capability | Composed from | Settled by |
 |---|---|---|
@@ -102,7 +108,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Shared family objects | Kernel `rlm.put` / `rlm.get` + Url (`family://`) | D164 |
 | Paged reading of anything | Url + `fetch` pages | D213 |
 | Checker after every covered write | Contract (`covers`) + Tool | D228 |
-| Heartbeat | Schedule + Session run queue (steer or follow-up) | |
+| Heartbeat | Schedule + Todo + Session run queue (steer or follow-up) | D283 |
 | Next-step hints | Tool result + procedural graph | D219 |
 
 ## 4. Session
@@ -183,7 +189,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
-  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338). A
+  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338), or
+  would pass `compaction.at` tokens when that comes first (a root session's ceiling, raised with a
+  warning to `keep_recent` plus twice the reserve, which a compaction can get under). A
   usage the latest compaction kept in its tail is stale, and with none the messages count alone
   at bytes/3.
   The cut keeps 20,000 recent tokens, never at a tool result; up to 64,000 tokens of summarized
@@ -621,8 +629,9 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
   Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
-- `OpKind`, 23 kinds; the `plan` tool schema shows the first 15 (`MODEL_OPS`): `set, init, append,
-  drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view`.
+- `OpKind`, 23 kinds; the `plan` tool schema shows the first 16 (`MODEL_OPS`): `set, init, append,
+  drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view,
+  accepted_by_user`.
 - `Actor { Owner, Child, User, Host, Engine }`. User may apply every op; Owner every op but
   `fuse_reset`, `resolve`, `accepted_by_user` and a resolving `repair`; Host `unblock, reconcile`;
   Child `view, submit`; Engine `start, submit, done, fail, retry`.
@@ -749,7 +758,11 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   re-arms every wait from the rehydrated list.
 - `/heartbeat halt` holds every job of every interned store (`halted`) and every bound session's
   turn and machine wakes; `/heartbeat resume` lifts it, and only it while it is in effect. Both are `custom{halt}` records.
-  `spend.alertTokens` queues a shown `spend_alert` notice per multiple crossed.
+  `spend.alertTokens` and `spend.alertUsd` each queue a shown `spend_alert` notice per multiple
+  of tokens or billed dollars crossed, children counted by their `ChildUpdate`. `spend.dayAlertUsd`
+  does the same for the local day's billed dollars across every session: the total is seeded at each alarm's first attach from
+  the day's session files, grows with the live session's replies and children, and
+  restarts from zero past local midnight; it counts replies only, so it runs late, never early.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
@@ -806,7 +819,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask` |
 | `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
-| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed |
+| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |

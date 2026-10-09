@@ -629,14 +629,20 @@ fn every_plan_refusal_names_its_class() -> TestResult {
         "a reorder naming a label the plan no longer holds is the model's view gone stale"
     );
     assert_eq!(
-        kind(json!({"op": "append", "todos": [{"label": "x".repeat(200)}]})),
-        "verdict",
-        "a label past its cap is the cap saying no, as the change file's decision files it"
-    );
-    assert_eq!(
         kind(json!({"op": "view", "actor": "owner"})),
         "invalid_args",
         "an actor argument is a misread of the call, not a safety refusal"
+    );
+    let stated = json!({"spec": {"isolation": "worktree"}, "accept": {"stated": "it is done"}});
+    assert_eq!(
+        kind(json!({"op": "set", "todos": [{"label": "c", "delegation": stated}]})),
+        "verdict",
+        "a set whose every row a rule left out is the rule's answer"
+    );
+    assert_eq!(
+        kind(json!({"op": "set", "todos": [{"label": "d", "contarct": {}}]})),
+        "invalid_args",
+        "a set whose rows did not read is a misread"
     );
     Ok(())
 }
@@ -718,7 +724,10 @@ fn a_whole_plan_set_lands_and_each_unreachable_row_says_why() -> TestResult {
         text.contains("Document it: a second row with this name was left out"),
         "{text}"
     );
-    assert!(text.contains("label is 81 chars, the cap is 80"), "{text}");
+    assert!(
+        text.contains("a label of 81 chars was cut to 80, the label cap"),
+        "{text}"
+    );
     assert_eq!(
         state_of(&rig, "Fix calc.divide")?,
         "Running",
@@ -751,7 +760,8 @@ fn a_row_left_out_of_a_whole_plan_set_does_not_move() -> TestResult {
     opened(&rig, json!([{"label": "a"}, {"label": "b"}]))?;
     let passing = json!({"class": "inline",
         "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
-    let rows = json!([{"label": "a", "state": "done", "contract": passing, "bogus": 1},
+    let stated = json!({"spec": {"isolation": "worktree"}, "accept": {"stated": "it is done"}});
+    let rows = json!([{"label": "a", "state": "done", "delegation": stated},
         {"label": "b"}, {"label": "b", "state": "done", "contract": passing}]);
     let (refused, text) = call(&rig, json!({"op": "set", "goal": "ship it", "todos": rows}));
     assert!(!refused && text.contains("note: a: left out"), "{text}");
@@ -762,6 +772,75 @@ fn a_row_left_out_of_a_whole_plan_set_does_not_move() -> TestResult {
         "Pending",
         "the left-out twin's done moved b"
     );
+    Ok(())
+}
+
+/// Dies with a finished row abbreviated to its state refusing the whole set: a contracted
+/// todo re-sent as `{"state": "done"}` lands through the engine's own done, never through
+/// `set`'s completion, which has no resolution to author.
+#[test]
+fn a_done_row_that_omits_its_contract_lands_through_the_engine() -> TestResult {
+    let rig = rig("apply-abbreviated")?;
+    let passing = json!({"class": "inline",
+        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "harden calc.py", "todos": [
+            {"label": "Fix calc.divide", "contract": passing},
+            {"label": "Add power(a, b)"},
+        ]}),
+    );
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Pending");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "harden calc.py", "todos": [
+            {"label": "Fix calc.divide", "state": "done"},
+            {"label": "Add power(a, b)"},
+        ]}),
+    );
+    assert!(!refused, "{text}");
+
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Done");
+    assert_eq!(state_of(&rig, "Add power(a, b)")?, "Pending");
+    Ok(())
+}
+
+/// Dies with a failed row abbreviated to done erasing its failure: the whole-plan set
+/// once reset a Failed contracted todo to pending and start-firsted it, swallowing the
+/// contract's refusal into a note, so a re-sent plan silently un-failed the todo.
+#[test]
+fn a_done_row_for_a_failed_todo_keeps_the_failure() -> TestResult {
+    let rig = rig("apply-abbreviated-failed")?;
+    let passing = json!({"class": "inline",
+        "items": [{"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    opened(
+        &rig,
+        json!([
+            {"label": "Fix calc.divide", "contract": passing},
+            {"label": "Add power(a, b)"},
+        ]),
+    )?;
+    call(&rig, json!({"op": "start", "label": "Fix calc.divide"}));
+    call(
+        &rig,
+        json!({"op": "fail", "label": "Fix calc.divide", "cause": "the fix broke power"}),
+    );
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Failed");
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "goal": "ship it", "todos": [
+            {"label": "Fix calc.divide", "state": "done"},
+            {"label": "Add power(a, b)"},
+        ]}),
+    );
+    assert!(!refused, "{text}");
+    assert!(
+        text.contains("it was failed, so the done was left out"),
+        "{text}"
+    );
+    assert_eq!(state_of(&rig, "Fix calc.divide")?, "Failed");
+    assert_eq!(state_of(&rig, "Add power(a, b)")?, "Pending");
     Ok(())
 }
 
@@ -794,5 +873,80 @@ fn a_whole_plan_set_on_a_sub_plan_moves_the_sub_plans_row() -> TestResult {
     };
     assert_eq!(state(&sub)?, "Blocked", "{text}");
     assert_eq!(state(&root)?, "Pending", "{text}");
+    Ok(())
+}
+
+/// Dies with a set that deletes the rows it does not name: a model whose view was stale sent the
+/// rows it changed and lost the rest, done work included. A struck checklist row still leaves.
+#[test]
+fn a_set_keeps_the_rows_it_does_not_name_and_drops_a_struck_one() -> TestResult {
+    let rig = rig("keep-omitted")?;
+    opened(
+        &rig,
+        json!([{"label": "a"}, {"label": "b"}, {"label": "c"}]),
+    )?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [{"label": "a", "state": "done"}]}),
+    );
+    assert!(!refused, "{text}");
+    assert!(text.contains("2 rows not named stay as they are"), "{text}");
+    assert_eq!(state_of(&rig, "a")?, "Done");
+    assert_eq!(state_of(&rig, "b")?, "Pending");
+    let (refused, text) = call(&rig, json!({"op": "set", "list": "- [-] b"}));
+    assert!(!refused, "{text}");
+    assert!(text.contains("b was struck, so it was dropped"), "{text}");
+    assert_eq!(state_of(&rig, "b")?, "Abandoned");
+    assert_eq!(state_of(&rig, "c")?, "Pending", "the row not named stays");
+    Ok(())
+}
+
+/// Dies with a row state the set cannot reach: with only set shown, failing, reopening, unblocking
+/// and splitting a todo are row states, and each must land through the engine's own op.
+#[test]
+fn a_set_row_fails_reopens_unblocks_and_splits_a_todo() -> TestResult {
+    let rig = rig("row-states")?;
+    opened(&rig, json!([{"label": "a"}, {"label": "b"}]))?;
+    let set = |rows: Value| call(&rig, json!({"op": "set", "todos": rows}));
+    let (refused, text) = set(json!([{"label": "a", "state": "failed", "cause": "red"}]));
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "a")?, "Failed");
+    let (refused, text) = set(json!([{"label": "a", "state": "running"}]));
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "a")?, "Running", "a failed row reopens");
+    let options =
+        json!([{"id": "x", "label": "X"}, {"id": "y", "label": "Y"}, {"id": "z", "label": "Z"}]);
+    let (refused, text) = set(json!([{"label": "b", "state": "blocked", "options": options}]));
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "b")?, "Blocked");
+    let (refused, text) = set(json!([{"label": "b", "state": "pending"}]));
+    assert!(!refused, "{text}");
+    assert_eq!(state_of(&rig, "b")?, "Pending", "a blocked row reopens");
+    let (refused, text) = set(json!([{"label": "a", "todos": [{"label": "a1"}, {"label": "a2"}]}]));
+    assert!(!refused, "{text}");
+    let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
+    let plan = rig.store.read(&id)?;
+    assert!(todo_of(&plan, "a")?.subplan.is_some(), "{text}");
+    Ok(())
+}
+
+/// Dies with an op the model is shown besides set, view and accepted_by_user: every other change
+/// is a row's state, and a wider op list is where the misread shapes came from.
+#[test]
+fn the_model_is_shown_set_view_and_accepted_by_user() -> TestResult {
+    let rig = rig("shown-ops")?;
+    let schema = yi_tools::Tool::schema(&rig.tool);
+    assert_eq!(
+        schema["properties"]["op"]["enum"],
+        json!(["set", "view", "accepted_by_user"])
+    );
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "init", "goal": "g", "todos": [{"label": "a"}]}),
+    );
+    assert!(
+        !refused,
+        "an op written for the wider surface still lands: {text}"
+    );
     Ok(())
 }
