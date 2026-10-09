@@ -703,6 +703,47 @@ async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Dies with `compaction.at` ignored: a 5,000-token request in a 100,000-token window is far
+/// from its 1,000-token reserve, so only the ceiling of 2,000 can make it compact.
+#[tokio::test]
+async fn a_compaction_ceiling_compacts_before_the_reserve() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\nCeiling summary")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(100_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session
+        .compactor()
+        .ok_or("no compactor")?
+        .set_ceiling(std::num::NonZeroU64::new(2_000));
+    session.prompt("first requirement: keep the guardrails green")?;
+    session.wait_idle().await;
+    session.prompt("second ask with enough characters to keep recent")?;
+    session.wait_idle().await;
+    assert!(
+        session.messages().iter().any(|message| matches!(
+            message,
+            AgentMessage::CompactionSummary { summary, .. } if summary.contains("Ceiling summary")
+        )),
+        "a request past the ceiling did not compact"
+    );
+    Ok(())
+}
+
 /// Dies with the summarizer running unannounced: the turn sat on "Waiting…" for the whole
 /// summary, with nothing to say the context was being condensed.
 #[tokio::test]

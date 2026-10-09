@@ -1,6 +1,7 @@
 //! Cache outcomes as a fold over the session JSONL (design C5): a request that reads more than
 //! 1,024 tokens less than the prompt before it gets one named cause, and two unexplained total
-//! misses in a row on a write-billed route raise one shown notice. No LLM, nothing stored.
+//! misses in a row on a write-billed route raise one shown notice, as does a route that read back
+//! less than it wrote over its last ten requests. No LLM, nothing stored.
 //! A cause names only what usage shows: which marks were sent is not in the record.
 //! The same fold estimates the next gap and write for the cost-minimising TTL choice (D315):
 //! [`TtlEstimate::cheapest`] writes a loop request's history for an hour when the hour's write
@@ -22,6 +23,8 @@ use crate::AgentSession;
 pub const CACHE_ALERT_TYPE: &str = "cache_alert";
 
 const SLACK: u64 = 1024;
+/// Requests a route's reads are weighed against its writes over, for the reuse alarm.
+const REUSE_WINDOW: usize = 10;
 /// Below the largest minimum cacheable prompt (Claude Haiku 4.5), a total miss is expected.
 const MIN_CACHEABLE: u64 = 4096;
 const FIVE_MINUTES_MS: u64 = 5 * 60 * 1000;
@@ -84,6 +87,9 @@ pub struct MissTracker {
     system_moved: bool,
     total_misses: u32,
     announced: bool,
+    /// The current route's last [`REUSE_WINDOW`] requests, as (read, written) tokens.
+    reuse: std::collections::VecDeque<(u64, u64)>,
+    reuse_announced: bool,
     notice: Option<String>,
 }
 
@@ -99,7 +105,7 @@ impl MissTracker {
             } => self.observe(message, *timestamp),
             // A declared reset: the history is rewritten, so the next request owes no read.
             Entry::Compaction { .. } | Entry::BranchSummary { .. } => {
-                self.last = None;
+                self.reset();
                 None
             }
             Entry::Custom { custom_type, .. } if custom_type == "ext_state" => {
@@ -179,6 +185,19 @@ impl MissTracker {
         }
         let moved = std::mem::take(&mut self.system_moved);
         let billed = !matches!(engine, Engine::Prefix);
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|last| last.route != request.route)
+        {
+            self.reuse.clear();
+        }
+        if billed {
+            if self.reuse.len() == REUSE_WINDOW {
+                self.reuse.pop_front();
+            }
+            self.reuse.push_back((read, write));
+        }
         let cause = self
             .last
             .as_ref()
@@ -225,8 +244,38 @@ impl MissTracker {
                 )
             });
         }
+        self.reuse_alarm(&request.route);
         self.last = Some(request);
         cause
+    }
+
+    /// Invariant: a write is billed above plain input, so a route that read back less than it
+    /// wrote over a full window paid that premium for nothing; one notice per session.
+    fn reuse_alarm(&mut self, route: &str) {
+        if self.reuse_announced || self.notice.is_some() || self.reuse.len() < REUSE_WINDOW {
+            return;
+        }
+        let (read, written) = self
+            .reuse
+            .iter()
+            .fold((0u64, 0u64), |(r, w), (read, write)| {
+                (r.saturating_add(*read), w.saturating_add(*write))
+            });
+        if written < MIN_CACHEABLE || read >= written {
+            return;
+        }
+        self.reuse_announced = true;
+        self.notice = Some(format!(
+            "[cache] {route} read back {}k of the {}k tokens it wrote to the cache over its last {REUSE_WINDOW} requests; each write is billed above plain input, so most of that premium bought nothing. Check the catalog entry or report it.",
+            read / 1000,
+            written / 1000,
+        ));
+    }
+
+    /// The history was rewritten: the next request owes no read, and the reuse window restarts.
+    fn reset(&mut self) {
+        self.last = None;
+        self.reuse.clear();
     }
 
     /// What the fold knows for the next request's TTL; `None` before a first request and after
@@ -326,6 +375,7 @@ pub fn attach(session: &AgentSession) {
         }
         // The process that wrote the ledger showed its notice; this one alerts on its own misses.
         (folded.notice, folded.announced, folded.total_misses) = (None, false, 0);
+        (folded.reuse_announced, folded.reuse) = (false, Default::default());
         seeded.set_ttl_estimate(folded.estimate());
         *resumed.lock().unwrap_or_else(PoisonError::into_inner) = folded;
     });
@@ -337,7 +387,7 @@ pub fn attach(session: &AgentSession) {
             }
             AgentEvent::Wait {
                 wait: Some(Wait::Compaction { .. }),
-            } => tracker.last = None,
+            } => tracker.reset(),
             _ => return tracker.take_notice(),
         }
         provider.set_ttl_estimate(tracker.estimate());

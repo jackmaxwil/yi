@@ -1019,6 +1019,7 @@ fn child_named(id: &str, tokens: u64) -> yi_types::event::AgentEvent {
             activity: yi_types::subagent::ChildActivity::Executing,
             tool_use_count: 1,
             token_count: tokens,
+            cost: None,
             answer_preview: None,
             error: None,
             exit: None,
@@ -1065,6 +1066,49 @@ fn a_spend_alert_fires_once_per_crossing() -> TestResult {
     Ok(())
 }
 
+fn priced(event: yi_types::event::AgentEvent, dollars: f64) -> yi_types::event::AgentEvent {
+    let mut event = event;
+    let cost = serde_json::Number::from_f64(dollars);
+    match &mut event {
+        yi_types::event::AgentEvent::MessageEnd {
+            message: AgentMessage::Assistant { usage, .. },
+        } => usage.cost.total = cost.unwrap_or_else(|| 0.into()),
+        yi_types::event::AgentEvent::ChildUpdate { update } => update.cost = cost,
+        _ => {}
+    }
+    event
+}
+
+/// Dies with a $87 session going unannounced under `spend.alertUsd`: the session's own billed
+/// turns and each child's billed spend must cross the dollar threshold, once per multiple.
+#[test]
+fn a_dollar_alert_counts_turns_and_children_once_per_crossing() -> TestResult {
+    let mut alarm = yi_runtime::spend::SpendAlarm::usd(10.0).ok_or("a positive amount refused")?;
+    assert!(yi_runtime::spend::SpendAlarm::usd(0.0).is_none());
+    assert_eq!(alarm.observe(&priced(turn_of(10), 6.0)), None);
+    assert_eq!(alarm.observe(&priced(child_at(10), 3.0)), None);
+    let crossed = alarm
+        .observe(&priced(child_at(20), 4.5))
+        .ok_or("$10.50 crossed $10 and nothing fired")?;
+    assert!(
+        crossed.contains("used $10.50, past the alert at $10.00 (spend.alertUsd 10)")
+            && crossed.contains("the next alert is at $20.00"),
+        "{crossed}"
+    );
+    assert_eq!(
+        alarm.observe(&priced(child_at(20), 4.5)),
+        None,
+        "a re-published child's spend was counted twice"
+    );
+    assert!(
+        alarm
+            .observe(&priced(turn_of(10), 9.6))
+            .is_some_and(|text| text.contains("used $20.10")),
+        "the second crossing never fired"
+    );
+    Ok(())
+}
+
 /// A faux session whose spend alarm fires every 1,000 tokens, wired as `yi` wires it.
 fn alarmed() -> Result<AgentSession, Box<dyn Error>> {
     let session = AgentSession::new(
@@ -1076,7 +1120,8 @@ fn alarmed() -> Result<AgentSession, Box<dyn Error>> {
         },
         Arc::new(ProviderStream::new(None)),
     );
-    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    let every = std::num::NonZeroU64::new(1_000).ok_or("zero")?;
+    yi_runtime::spend::attach(&session, yi_runtime::spend::SpendAlarm::new(every));
     Ok(session)
 }
 
