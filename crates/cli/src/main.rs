@@ -57,6 +57,7 @@ struct Args {
     deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
+    stats: stats::Query,
     prompt: String,
 }
 
@@ -105,22 +106,15 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
+    let mut stats_flags = stats::Flags::default();
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
         match argument {
-            Long("version") => {
-                command = "version".to_owned();
-            }
+            Long("version") => command = "version".to_owned(),
             Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
-            Long("thinking") => {
-                let raw = parser.value()?.string()?;
-                thinking = Some(
-                    raw.parse()
-                        .map_err(|error: UnknownEffort| lexopt::Error::Custom(Box::new(error)))?,
-                );
-            }
+            Long("thinking") => thinking = Some(parse_effort(&parser.value()?.string()?)?),
             Long("json") => json = true,
             Long("yolo") => mode = yi_runtime::PermissionMode::Yolo,
             Long("auto") => mode = yi_runtime::PermissionMode::Auto,
@@ -144,6 +138,11 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
+            Long("since") if command == "stats" => {
+                stats_flags.since = Some(parser.value()?.string()?)
+            }
+            Long("by") if command == "stats" => stats_flags.by = Some(parser.value()?.string()?),
+            Long("top") if command == "stats" => stats_flags.top = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -213,8 +212,14 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             (None, false) => Resume::Fresh,
         },
         schema,
+        stats: stats_flags.typed()?,
         prompt: prompt_parts.join(" "),
     })
+}
+
+fn parse_effort(raw: &str) -> Result<Effort, lexopt::Error> {
+    raw.parse()
+        .map_err(|error: UnknownEffort| lexopt::Error::Custom(Box::new(error)))
 }
 
 /// `COLSxROWS` within 20..=1000 by 8..=500: the drive's own floor, and a screen that fits in memory.
@@ -619,7 +624,8 @@ fn build_session(
             eprintln!("warning: {why}");
         }
     }
-    if let Some(why) = yi_runtime::spend::attach_configured(&session, config().spend.as_ref()) {
+    let sessions = default_session_dir(args);
+    for why in yi_runtime::spend::attach_configured(&session, config().spend.as_ref(), &sessions) {
         eprintln!("warning: {why}");
     }
     yi_runtime::cache_miss::attach(&session);
@@ -1149,6 +1155,7 @@ fn dispatch(args: Args) {
                 session_dir: default_session_dir(&args),
                 cwd: effective_cwd(&args).display().to_string(),
                 json: args.json,
+                query: args.stats.clone(),
             };
             std::process::exit(stats::run(&args.prompt, &options));
         }
