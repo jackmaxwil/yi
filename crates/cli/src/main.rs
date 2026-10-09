@@ -610,18 +610,17 @@ fn build_session(
         },
     );
     drop(wiring);
+    let at = config().compaction.as_ref().and_then(|at| at.at);
+    if let Some(why) = session.compactor().and_then(|c| c.set_ceiling(at)) {
+        eprintln!("warning: {why}");
+    }
     if !faux {
         for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
             eprintln!("warning: {why}");
         }
     }
-    if let Some(every) = config()
-        .spend
-        .as_ref()
-        .and_then(|spend| spend.alert_tokens)
-        .and_then(std::num::NonZeroU64::new)
-    {
-        yi_runtime::spend::attach(&session, every);
+    if let Some(why) = yi_runtime::spend::attach_configured(&session, config().spend.as_ref()) {
+        eprintln!("warning: {why}");
     }
     yi_runtime::cache_miss::attach(&session);
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
