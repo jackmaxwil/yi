@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
@@ -246,6 +246,9 @@ pub struct Compactor {
     /// The newest reply with a usage that the latest compaction kept: its count is the history
     /// before that compaction, so `due` does not read it (D338).
     stale: Mutex<Option<AgentMessage>>,
+    /// `compaction.at` in tokens, 0 when unset: due once the request passes it, if that comes
+    /// before the window's reserve.
+    ceiling: AtomicU64,
 }
 
 struct Raised<'a>(&'a AtomicBool);
@@ -373,7 +376,26 @@ impl Compactor {
             standing: Mutex::new(None),
             opening: Mutex::new(None),
             stale: Mutex::new(None),
+            ceiling: AtomicU64::new(0),
         }
+    }
+
+    /// The reason when `tokens` is under what a compaction keeps and was raised to it.
+    pub fn set_ceiling(&self, tokens: Option<u64>) -> Option<String> {
+        let tokens = tokens.unwrap_or(0);
+        // Invariant: a compaction keeps `keep_recent` plus the prefix and summary, which a second
+        // reserve covers; a ceiling under that would compact again on every request.
+        let reserve = self.settings.reserve_tokens.0;
+        let floor = self
+            .settings
+            .keep_recent_tokens
+            .0
+            .saturating_add(reserve.saturating_mul(2));
+        let at = if tokens == 0 { 0 } else { tokens.max(floor) };
+        self.ceiling.store(at, Ordering::Relaxed);
+        (at > tokens && tokens > 0).then(|| {
+            format!("compaction.at {tokens} is under the {floor} tokens a compaction keeps; using {floor}")
+        })
     }
 
     /// Rebuilds the window chain and the stale reply from the latest compaction entry, which
@@ -513,7 +535,17 @@ impl Compactor {
                     .fold(Tokens(0), Tokens::saturating_add),
             )
         };
-        should_compact(sent, Tokens(model.context_window), &self.settings)
+        let window = match self.ceiling.load(Ordering::Relaxed) {
+            0 => model.context_window,
+            at => {
+                let capped = at.saturating_add(self.settings.reserve_tokens.0);
+                match model.context_window {
+                    0 => capped,
+                    window => window.min(capped),
+                }
+            }
+        };
+        should_compact(sent, Tokens(window), &self.settings)
     }
 
     /// No summary, no room (D337): keep the first user message, the work's opening and the earlier

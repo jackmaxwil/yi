@@ -115,6 +115,10 @@ pub struct ChildUpdate {
     pub activity: ChildActivity,
     pub tool_use_count: u64,
     pub token_count: u64,
+    /// Dollars this incarnation's replies were billed; absent before its first priced reply,
+    /// and from a host older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<serde_json::Number>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

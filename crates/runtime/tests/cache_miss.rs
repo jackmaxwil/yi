@@ -83,7 +83,73 @@ fn a_write_no_request_reads_back_names_the_previous_write() -> Result<(), Box<dy
             ("unexplained", 1),
         ])
     );
-    assert_eq!(notice, None, "a partial read is not a total miss");
+    let notice = notice.ok_or("a route that read back less than it wrote raised nothing")?;
+    assert!(
+        notice.contains("gpt-sol-latest")
+            && notice.contains("over its last 10 requests")
+            && !notice.contains("has read 0 cached tokens"),
+        "{notice}"
+    );
+    Ok(())
+}
+
+/// Dies with the reuse alarm blaming the catalog for idle gaps: twelve single requests each past
+/// the five-minute TTL write the whole prompt and read nothing, a cause the fold already names.
+#[test]
+fn writes_that_expired_between_requests_raise_no_reuse_notice() -> Result<(), Box<dyn Error>> {
+    let entries: Vec<Entry> = (0..12u64)
+        .map(|n| {
+            request(
+                CLAUDE,
+                (500, 0, 40_000),
+                n * 6 * 60 * 1000,
+                "Amazon Bedrock",
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let (causes, notices) = fold(&entries);
+    assert_eq!(causes, ["gap exceeded TTL"; 11]);
+    assert_eq!(notices, Vec::<String>::new());
+    Ok(())
+}
+
+/// Dies with the reuse alarm blaming the catalog for host hops: twelve requests alternating
+/// between two upstreams each write the prompt to a cache the other host never saw.
+#[test]
+fn writes_lost_to_an_upstream_switch_raise_no_reuse_notice() -> Result<(), Box<dyn Error>> {
+    let entries: Vec<Entry> = (0..12u64)
+        .map(|n| {
+            let host = if n % 2 == 0 {
+                "Amazon Bedrock"
+            } else {
+                "Google Vertex"
+            };
+            request(CLAUDE, (500, 0, 40_000), n * 1000, host)
+        })
+        .collect::<Result<_, _>>()?;
+    let (causes, notices) = fold(&entries);
+    assert_eq!(causes, ["upstream switch"; 11]);
+    assert_eq!(notices, Vec::<String>::new());
+    Ok(())
+}
+
+/// Dies with the reuse alarm firing on a healthy cache: twelve requests that each read the
+/// whole previous prompt back and write only the turn's growth.
+#[test]
+fn a_cache_that_reads_back_what_it_wrote_raises_no_reuse_notice() -> Result<(), Box<dyn Error>> {
+    let entries: Vec<Entry> = (0..12u64)
+        .map(|n| {
+            let (read, write) = (20_000 + n * 3_000, if n == 0 { 20_000 } else { 3_000 });
+            request(
+                CLAUDE,
+                (500, if n == 0 { 0 } else { read }, write),
+                n * 1000,
+                "Amazon Bedrock",
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let (_, notices) = fold(&entries);
+    assert_eq!(notices, Vec::<String>::new());
     Ok(())
 }
 

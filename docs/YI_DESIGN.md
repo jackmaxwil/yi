@@ -189,7 +189,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
-  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338). A
+  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338), or
+  would pass `compaction.at` tokens when that comes first (a root session's ceiling, raised with a
+  warning to `keep_recent` plus twice the reserve, which a compaction can get under). A
   usage the latest compaction kept in its tail is stale, and with none the messages count alone
   at bytes/3.
   The cut keeps 20,000 recent tokens, never at a tool result; up to 64,000 tokens of summarized
@@ -748,7 +750,8 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   re-arms every wait from the rehydrated list.
 - `/heartbeat halt` holds every job of every interned store (`halted`) and every bound session's
   turn and machine wakes; `/heartbeat resume` lifts it, and only it while it is in effect. Both are `custom{halt}` records.
-  `spend.alertTokens` queues a shown `spend_alert` notice per multiple crossed.
+  `spend.alertTokens` and `spend.alertUsd` each queue a shown `spend_alert` notice per multiple
+  of tokens or billed dollars crossed, children counted by their `ChildUpdate`.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
