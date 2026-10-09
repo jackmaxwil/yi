@@ -96,6 +96,22 @@ class Cost(unittest.TestCase):
         self.assertEqual(costs[0], costs[1])
         self.assertAlmostEqual(costs[1], 0.007432)
 
+    def test_a_request_that_failed_empty_costs_nothing_and_leaves_the_bill_known(self):
+        import runner
+        fixture = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "session" / "1787544431469_fixture-a.jsonl"
+        failed = {"kind": "entry", "type": "message", "message": {"role": "assistant", "content": [], "stopReason": "error",
+                  "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "unknown": True}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            session = tmp / "session.jsonl"
+            session.write_text(fixture.read_text() + __import__("json").dumps(failed) + "\n")
+            stub = tmp / "yi"
+            stub.write_text('#!/bin/sh\nwhile [ $# -gt 1 ]; do [ "$1" = --session-dir ] && dir="$2"; shift; done\n'
+                            f'mkdir -p "$dir" && cp {session} "$dir/s.jsonl"\n')
+            stub.chmod(0o755)
+            cost = runner.one("bugfix:1:1", str(stub), "", tmp / "keep")["costUsd"]
+        self.assertAlmostEqual(cost, 0.007432)
+
 
 if __name__ == "__main__":
     unittest.main()
