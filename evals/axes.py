@@ -136,7 +136,7 @@ def unknown_turns(entries):
     for entry in entries:
         message = entry.get("message") or {}
         if entry.get("type") == "message" and message.get("role") == "assistant":
-            if (message.get("usage") or {}).get("unknown") is True:
+            if (message.get("usage") or {}).get("unknown") is True and not yi_usage._failed_empty(message):
                 count += 1
     return count
 
