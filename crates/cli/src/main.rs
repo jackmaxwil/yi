@@ -337,7 +337,8 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
-/// Invariant: the HOME [`load_config`] checked, except under `doctor`, which reports it raw.
+/// Invariant: the HOME [`load_config`] checked, except under `doctor`, which reports it raw,
+/// and under `plugin`, which refuses a non-absolute one before any verb runs.
 fn home() -> &'static std::path::Path {
     HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
 }

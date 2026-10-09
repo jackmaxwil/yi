@@ -1114,6 +1114,31 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
     Ok(())
 }
 
+/// `yi plugin` writes under HOME like every other surface, so an unset one is refused
+/// before a verb downloads or deletes into the working directory.
+#[test]
+fn a_homeless_plugin_verb_is_refused_and_writes_nothing_here() -> TestResult {
+    let workspace = Workspace::new("plugin-unset-home")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract is the spawned binary's exit code and what it wrote"
+    )]
+    let homeless = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(args)
+            .env_remove("HOME")
+            .envs(NO_KERNEL.iter().copied())
+            .current_dir(workspace.project())
+            .output()
+    };
+    let refused = homeless(&["plugin", "add", "ripwire"])?;
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert!(!workspace.project().join(".yi").exists(), "{complaint}");
+    assert_eq!(refused.status.code(), Some(2), "{complaint}");
+    assert!(complaint.contains("HOME is not set"), "{complaint}");
+    Ok(())
+}
+
 /// With no HOME every `~/.yi` path resolved against the working directory, so a session wrote
 /// `.yi/` into whatever directory yi ran in; an unset HOME is refused like a relative one.
 #[test]

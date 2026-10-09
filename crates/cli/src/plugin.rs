@@ -8,9 +8,21 @@ pub(crate) fn early() {
     if std::env::args().nth(1).as_deref() != Some("plugin") {
         return;
     }
+    let home = crate::home();
+    if home.as_os_str().is_empty() {
+        eprintln!("error: HOME is not set; yi needs an absolute HOME");
+        std::process::exit(2);
+    }
+    if !home.is_absolute() {
+        eprintln!(
+            "error: HOME is relative ({}); yi needs an absolute HOME",
+            home.display()
+        );
+        std::process::exit(2);
+    }
     let args: Vec<String> = std::env::args().skip(2).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
-    std::process::exit(run(crate::home(), &words));
+    std::process::exit(run(home, &words));
 }
 
 fn run(home: &Path, words: &[&str]) -> i32 {
@@ -76,9 +88,8 @@ fn list(home: &Path) -> i32 {
         let state = match plugin::state(plugin, home) {
             State::Installed => "installed".to_owned(),
             State::Stale(versions) => format!(
-                "{} installed, this yi pins {}: yi plugin sync",
-                versions.join(", "),
-                plugin.version
+                "{}: yi plugin sync",
+                plugin::stale_text(&versions, plugin.version)
             ),
             State::OnPath(path) => format!(
                 "on PATH at {}, a version yi did not install: yi plugin add {}",

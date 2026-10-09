@@ -23,7 +23,7 @@ pub const PLUGINS: [Plugin; 1] = [Plugin {
     name: "ripwire",
     version: "0.6.5",
     summary: "a code map: an edit's broken callers, a symbol's callers, the code a task touches",
-    card: include_str!("../../runtime/src/prompts/ripwire.md"),
+    card: include_str!("prompts/ripwire.md"),
     assets: &[
         Asset {
             os: "macos",
@@ -55,10 +55,7 @@ impl Plugin {
     }
 
     pub fn asset(&self) -> Option<&'static Asset> {
-        let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-        self.assets
-            .iter()
-            .find(|asset| asset.os == os && asset.arch == arch)
+        yi_types::target::for_target(self.name, self.assets.iter().map(|a| (a.os, a.arch, a))).ok()
     }
 
     pub fn root(&self, home: &Path) -> PathBuf {
