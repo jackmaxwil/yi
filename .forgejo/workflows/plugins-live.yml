@@ -1,0 +1,31 @@
+# A pinned plugin's output drifts when the pin moves, so the journey that runs the
+# real program also runs before a merge that touches the table or its readers; the
+# postmerge lane runs it after every merge.
+name: plugins-live
+
+on:
+  pull_request:
+    paths:
+      - "crates/tools/src/plugin.rs"
+      - "crates/tools/src/ripwire.rs"
+      - "crates/tools/src/orient.rs"
+      - "crates/tools/tests/fixtures/ripwire/**"
+  workflow_dispatch:
+
+jobs:
+  the-pinned-plugins-answer-as-yi-reads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.yi/plugins
+          key: yi-plugins-${{ hashFiles('crates/tools/src/plugin.rs') }}
+      - run: cargo build -p yi-cli && target/debug/yi plugin add --all
+      - run: cargo test -p yi-tools --test tools the_pinned_ripwire_answers_in_the_shapes_yi_reads -- --ignored --exact
