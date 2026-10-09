@@ -7,6 +7,7 @@ Contracts: evals/README.md (gates E1-E9, emission map, adapters).
 
 import hashlib
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -91,11 +92,24 @@ def local_plugins(environ, home):
     found = {}
     for binary in sorted(Path(home, ".yi", "plugins").glob("*/*/*")):
         name, version = binary.parent.parent.name, binary.parent.name
-        if binary.name == name and binary.is_file() and not version.startswith("."):
+        if (
+            binary.name == name
+            and binary.is_file()
+            and not version.startswith(".")
+            and re.fullmatch(r"[A-Za-z0-9_-]+", name)
+        ):
             found.setdefault(name, []).append((version, binary))
     wanted = environ.get(PLUGINS_ENV, "all").strip()
     if wanted == "none":
         return []
+    root = Path(home, ".yi", "plugins")
+    if not found and root.is_dir() and any(
+        entry.is_dir() and not entry.name.startswith(".") for entry in root.iterdir()
+    ):
+        raise ValueError(
+            f"plugins under {root} are not in the <name>/<version>/<name> layout "
+            "`yi plugin add` writes; this adapter reads only what yi installs"
+        )
     names = sorted(found) if wanted == "all" else [n.strip() for n in wanted.split(",") if n.strip()]
     missing = [name for name in names if name not in found]
     if missing:

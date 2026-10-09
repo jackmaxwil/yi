@@ -138,7 +138,7 @@ class Yi(BaseInstalledAgent):
             remote = f"/usr/local/bin/{name}"
             await environment.upload_file(path, remote)
             await self.exec_as_root(
-                environment, command=f"set -euo pipefail; chmod +x {remote} && {remote} --version"
+                environment, command=f"set -euo pipefail; chmod +x {shlex.quote(remote)} && {shlex.quote(remote)} --version"
             )
             print(f"plugin: {name} {version} at {remote}", file=sys.stderr)
 

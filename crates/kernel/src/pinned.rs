@@ -70,10 +70,15 @@ fn publish(staging: &Path, pin: &Pinned<'_>, binary: &[u8]) -> Result<(), String
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
             .map_err(at(&file))?;
     }
-    // A concurrent installer that won the rename published the same verified bytes.
+    // Incident: the rename can lose to a concurrent installer or find a target written by a
+    // poisoned cache, so an existing file is adopted only when it is the verified bytes.
     match std::fs::rename(staging, pin.dir) {
         Ok(()) => Ok(()),
-        Err(_) if pin.dir.join(pin.file).is_file() => Ok(()),
+        Err(_)
+            if std::fs::read(pin.dir.join(pin.file)).is_ok_and(|existing| existing == binary) =>
+        {
+            Ok(())
+        }
         Err(error) => Err(at(pin.dir)(error)),
     }
 }

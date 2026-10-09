@@ -36,7 +36,7 @@ pub fn add(
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
     let path = match plugin.installed(home) {
-        Some(path) => path,
+        Some(path) => verified(plugin, &path)?,
         None => {
             let asset = plugin.asset().ok_or_else(|| unsupported(plugin))?;
             let pin = yi_kernel::pinned::Pinned {
@@ -84,6 +84,35 @@ pub fn unsupported(plugin: &Plugin) -> String {
         plugin.name,
         std::env::consts::OS,
         std::env::consts::ARCH
+    )
+}
+
+/// Incident: a file already at the pinned path can come from a restored CI cache or any process
+/// with the user's authority, so its digest is re-checked before yi adopts it as the pin.
+fn verified(plugin: &Plugin, path: &Path) -> Result<PathBuf, String> {
+    let Some(asset) = plugin.asset() else {
+        return Ok(path.to_path_buf());
+    };
+    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let digest = yi_kernel::tarball::sha256_hex(&bytes);
+    if digest != asset.member_sha256 {
+        return Err(format!(
+            "{} has sha256 {digest}, yi pins {}: `yi plugin remove {}` then `yi plugin add {}`",
+            path.display(),
+            asset.member_sha256,
+            plugin.name,
+            plugin.name
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// The one sentence naming a stale install and its remedy, wherever a user reads it.
+pub fn stale_line(plugin: &Plugin, versions: &[String]) -> String {
+    format!(
+        "{} installed, this yi pins {}: yi plugin sync",
+        versions.join(", "),
+        plugin.version
     )
 }
 
@@ -135,13 +164,15 @@ mod tests {
         Ok(out)
     }
 
-    fn plugin(bytes: &[u8], here: bool) -> Plugin {
+    fn plugin(bytes: &[u8], member: &[u8], here: bool) -> Plugin {
         let sha256 = Box::leak(yi_kernel::tarball::sha256_hex(bytes).into_boxed_str());
+        let member_sha256 = Box::leak(yi_kernel::tarball::sha256_hex(member).into_boxed_str());
         let assets: &'static [Asset] = Box::leak(Box::new([Asset {
             os: if here { std::env::consts::OS } else { "plan9" },
             arch: std::env::consts::ARCH,
             url: "https://example.invalid/tool-2.0.tar.gz",
             sha256,
+            member_sha256,
             member: "tool-2.0/tool",
         }]));
         Plugin {
@@ -158,7 +189,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("plugin-add")?;
         let home = scratch.home()?;
         let bytes = archive("tool-2.0/tool", b"#!/bin/sh\necho tool\n")?;
-        let tool = plugin(&bytes, true);
+        let tool = plugin(&bytes, b"#!/bin/sh\necho tool\n", true);
         assert!(matches!(state(&tool, &home), State::Missing));
         let old = tool.root(&home).join("1.0");
         std::fs::create_dir_all(&old)?;
@@ -193,13 +224,13 @@ mod tests {
     fn a_tampered_download_or_a_target_with_no_build_installs_nothing() -> TestResult {
         let scratch = crate::scratch::Scratch::new("plugin-refused")?;
         let home = scratch.home()?;
-        let tool = plugin(&archive("tool-2.0/tool", b"genuine")?, true);
+        let tool = plugin(&archive("tool-2.0/tool", b"genuine")?, b"genuine", true);
         let tampered = archive("tool-2.0/tool", b"tampered")?;
         let error = add(&tool, &home, |_| Ok(tampered.clone()))
             .err()
             .ok_or("installed")?;
         assert!(error.contains("not installing"), "{error}");
-        let elsewhere = plugin(&tampered, false);
+        let elsewhere = plugin(&tampered, b"tampered", false);
         let error = add(&elsewhere, &home, |_| Err("never asked".to_owned()))
             .err()
             .ok_or("installed")?;
@@ -209,6 +240,24 @@ mod tests {
         );
         assert!(matches!(state(&elsewhere, &home), State::Unsupported));
         assert!(!tool.root(&home).join("2.0").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_tampered_file_at_the_pinned_path_is_not_adopted() -> TestResult {
+        let scratch = crate::scratch::Scratch::new("plugin-poisoned")?;
+        let home = scratch.home()?;
+        let bytes = archive("tool-2.0/tool", b"#!/bin/sh\necho tool\n")?;
+        let tool = plugin(&bytes, b"#!/bin/sh\necho tool\n", true);
+        let pinned = tool.dir(&home);
+        std::fs::create_dir_all(&pinned)?;
+        std::fs::write(pinned.join("tool"), "poisoned")?;
+        let error = add(&tool, &home, |_| {
+            Err("a download must not be needed".to_owned())
+        })
+        .err()
+        .ok_or("the tampered file was adopted")?;
+        assert!(error.contains("yi pins"), "{error}");
         Ok(())
     }
 }
