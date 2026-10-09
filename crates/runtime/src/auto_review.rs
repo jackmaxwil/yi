@@ -169,6 +169,8 @@ fn question_text(input: &Map<String, Value>) -> Option<String> {
     Some(text)
 }
 
+pub const ASK_USER_GUIDE: &str = "Ask the user something only they can decide, and end the turn on it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose. Block the todo it waits on first. With auto-review on, `request` (the number a denial quoted) puts that denial to the user instead; a denial you do not escalate stays denied.";
+
 impl yi_tools::Tool for AskUserTool {
     fn name(&self) -> &str {
         "ask_user"
@@ -178,7 +180,7 @@ impl yi_tools::Tool for AskUserTool {
         if self.parent.is_some() {
             return "Ask your parent something only it can decide; the call waits for its answer and returns it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose.";
         }
-        "Ask the user something only they can decide, and end the turn on it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose. Block the todo it waits on first. With auto-review on, `request` (the number a denial quoted) puts that denial to the user instead; a denial you do not escalate stays denied."
+        "Ask the user a question only they can decide, with two to four `options` rather than as prose; ends the turn. Guide: read(\"yi://tools/ask_user\")."
     }
 
     fn schema(&self) -> Value {

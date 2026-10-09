@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{Args, McpOneShot, configured_plans_dir, effective_cwd};
+use crate::{Args, McpOneShot, configured_plans_dir, effective_cwd, home};
 
 pub(crate) fn run(args: &Args) -> i32 {
     let target = args.prompt.trim();
@@ -19,7 +19,8 @@ pub(crate) fn run(args: &Args) -> i32 {
     };
     let workspace = effective_cwd(args);
     let mut resolver =
-        yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default());
+        yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default())
+            .with_home(home().to_path_buf());
     if let Some(dir) = configured_plans_dir(&workspace) {
         resolver = resolver.with_plans_dir(dir);
     }

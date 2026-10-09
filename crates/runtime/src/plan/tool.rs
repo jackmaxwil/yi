@@ -775,7 +775,7 @@ impl Tool for PlanTool {
                 },
                 "required": ["op"]
             }),
-            _ => schema(),
+            _ => crate::fetch::table_schema(schema()),
         }
     }
 
@@ -819,9 +819,9 @@ impl Tool for PlanTool {
 /// The ops the model is shown; a change is a row's state, and every other op stays readable.
 const SHOWN_OPS: [&str; 3] = ["set", "view", "accepted_by_user"];
 
-/// Invariant: the request-prefix gate prices this tool through these two
-/// items rather than a live [`PlanTool`], so what is measured is what ships.
-pub const DESCRIPTION: &str = "The plan ledger. op=set writes the plan: a goal and its todos as rows, each with the state it should reach; send set again with the rows that change, and rows it does not name stay as they are. A row's contract and delegation declare it: done runs its contract first, blocked asks the user, failed records its cause, dropped removes it, pending or running reopens a failed or blocked row, and a row's own todos are the sub-steps it splits into; the engine starts, verifies and accepts delegated rows. A row it could not move says why in a note line of the reply, and the rest lands. A markdown checklist list (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. A todo is a unit of decision, not of iteration. Batch with real work; never call it alone.";
+pub const DESCRIPTION: &str = "The plan ledger. op=set writes a goal and its todos as rows, each with the state it should reach; rows it does not name stay as they are. A markdown checklist in `list` (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. Batch with real work; never call it alone. Full guide (states, contracts, delegation, blocking, every field): read(\"yi://tools/plan\") before your first set.";
+
+pub const GUIDE: &str = "The plan ledger. op=set writes the plan: a goal and its todos as rows, each with the state it should reach; send set again with the rows that change, and rows it does not name stay as they are. A row's contract and delegation declare it: done runs its contract first, blocked asks the user, failed records its cause, dropped removes it, pending or running reopens a failed or blocked row, and a row's own todos are the sub-steps it splits into; the engine starts, verifies and accepts delegated rows. A row it could not move says why in a note line of the reply, and the rest lands. A markdown checklist list (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. A todo is a unit of decision, not of iteration. Batch with real work; never call it alone.";
 
 const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=view. When your work is done, end your turn with your answer; the engine takes it as your work and accepts or refuses it.";
 

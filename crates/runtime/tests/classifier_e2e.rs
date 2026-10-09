@@ -18,7 +18,7 @@ const LAND: &str = r#"{"answers":{"skill":{"choice":"land","answer_confidence":0
 fn skill(name: &str, needle: &str) -> RuleDoc {
     RuleDoc {
         name: name.to_owned(),
-        body: format!("skill://{name}"),
+        body: format!("yi://skills/{name}"),
         path: PathBuf::from(format!("/skills/{name}/SKILL.md")),
         needles: vec![needle.to_owned(), format!("${name}")],
         scope: RuleScope::Text,
@@ -218,7 +218,7 @@ async fn at_the_threshold_it_points_and_never_twice() -> TestResult {
     assert!(record.fired);
     assert_eq!(
         delivered(&rig),
-        ["Relevant: skill://land (the classifier, 0.91)"]
+        ["Relevant: yi://skills/land (the classifier, 0.91)"]
     );
     // The classifier pointed at land: its trigger word adds nothing, and neither does it again.
     let pointed = rig.engine.observe_user(&typed("then open a pull request"));
