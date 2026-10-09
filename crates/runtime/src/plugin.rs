@@ -80,11 +80,14 @@ pub fn chosen(plugin: &Plugin, home: &Path) -> bool {
 
 pub fn unsupported(plugin: &Plugin) -> String {
     format!(
-        "yi pins no {} build for {}/{}; build it from source and put it on PATH",
-        plugin.name,
-        std::env::consts::OS,
-        std::env::consts::ARCH
+        "{}; build it from source and put it on PATH",
+        yi_types::target::refusal(plugin.name)
     )
+}
+
+/// The Stale line `yi plugin list` and `yi doctor` both render for versions this yi does not pin.
+pub fn stale_text(versions: &[String], pinned: &str) -> String {
+    format!("{} installed, this yi pins {pinned}", versions.join(", "))
 }
 
 /// Dotted numeric versions compared part by part; anything else is never called older.

@@ -333,10 +333,9 @@ fn plugins_pinned(site: &Site) -> Finding {
         match state(plugin, &site.home) {
             State::Installed => installed.push(format!("{} {}", plugin.name, plugin.version)),
             State::Stale(versions) => stale.push(format!(
-                "{} {} installed, this yi pins {}",
+                "{} {}",
                 plugin.name,
-                versions.join(", "),
-                plugin.version
+                yi_runtime::plugin::stale_text(&versions, plugin.version)
             )),
             State::OnPath(_) | State::Missing | State::Unsupported => {}
         }
