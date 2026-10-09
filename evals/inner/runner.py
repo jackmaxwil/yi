@@ -45,6 +45,7 @@ def one(task_id, binary, levers, keep, roles=False):
     task = module.make(seed, level)
     started = time.monotonic()
     keep.mkdir(parents=True, exist_ok=True)
+    earlier = set(axes.scored_sessions(keep / "sessions"))
     with tempfile.TemporaryDirectory(prefix="yi-inner-") as tmp:
         workspace = gen.materialize(task, pathlib.Path(tmp) / "work")
         events = keep / "events.jsonl"
@@ -70,7 +71,8 @@ def one(task_id, binary, levers, keep, roles=False):
     row.update(yi_usage.parse_events(events))
     # The root's event stream is not the family's bill: a child's turns live in its own session file,
     # under the root's session dir, and S0's roles arm spends most of its money there.
-    kept = [axes.score(path, keep) for path in sorted((keep / "sessions").rglob("*.jsonl")) if axes.is_session(path)]
+    # Only this attempt's files: a re-run under the same run-id and arm reuses the keep dir.
+    kept = [axes.score(path, keep) for path in axes.scored_sessions(keep / "sessions", earlier)]
     if kept:
         costs = [r["costUsd"] for r in kept]
         row.update({"rootCostUsd": row["costUsd"], "sessions": len(kept), "familyTurns": sum(r["turns"] for r in kept),
