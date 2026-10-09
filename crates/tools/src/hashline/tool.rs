@@ -913,7 +913,9 @@ impl Tool for HashlineEditTool {
             }
         };
         if patch.sections.is_empty() {
-            return error_output("Patch input did not produce any sections.");
+            return error_output(format!(
+                "Patch input did not produce any sections.{GUIDE_POINTER}"
+            ));
         }
         let home = documents(&self.state).map(|documents| documents.home);
         if let Some(refusal) = patch.sections.iter().find_map(|section| {

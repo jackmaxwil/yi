@@ -563,6 +563,45 @@ fn skill_pointer_is_one_line_and_a_read_spends_it() -> TestResult {
     Ok(())
 }
 
+/// The log leg of `skill_already_loaded` matches the whole address: a read of
+/// `yi://skills/har-api` must not spend the pointer for `yi://skills/har`.
+#[test]
+fn a_log_read_of_an_extending_skill_name_spends_only_its_own_pointer() -> TestResult {
+    let (engine, _delivered) =
+        engine_with_sink(vec![skill("har", "unwrap", RuleScope::Text, RuleGap::Once)]);
+    let log = Arc::new(yi_runtime::fetch::FetchLog::new());
+    let longer: yi_types::url::Url = "yi://skills/har-api".parse()?;
+    log.record(
+        &longer,
+        yi_runtime::fetch::FetchRecord {
+            url: longer.to_string(),
+            hash: "deadbeef".to_owned(),
+            served_by: "test".to_owned(),
+        },
+    );
+    engine.set_fetch(Arc::clone(&log));
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("unwrap this"))),
+        ["Relevant: yi://skills/har (matched \"unwrap\")"],
+        "a read of the longer skill must not spend the shorter one's pointer"
+    );
+    engine.rearm();
+    let exact: yi_types::url::Url = "yi://skills/har".parse()?;
+    log.record(
+        &exact,
+        yi_runtime::fetch::FetchRecord {
+            url: exact.to_string(),
+            hash: "deadbeef".to_owned(),
+            served_by: "test".to_owned(),
+        },
+    );
+    assert!(
+        engine.observe_user(&typed("unwrap again")).is_empty(),
+        "a read of the exact address does spend it"
+    );
+    Ok(())
+}
+
 fn skill(name: &str, needle: &str, scope: RuleScope, gap: RuleGap) -> RuleDoc {
     let mut doc = rule(name, needle, scope, gap, RuleMode::Remind);
     doc.body = format!("yi://skills/{name}");

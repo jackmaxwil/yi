@@ -611,9 +611,7 @@ impl RuleEngine {
             return false;
         };
         let needle = format!("{SKILL_ADDRESS}{name}");
-        log.records()
-            .iter()
-            .any(|record| record.url.contains(&needle))
+        log.records().iter().any(|record| record.url == needle)
     }
 
     fn render_reminder(&self, rule: &RuleDoc, needle: &str) -> String {
