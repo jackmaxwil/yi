@@ -198,6 +198,13 @@ def _failed_empty(message):
     return message.get("stopReason") == "error" and not any(
         (b.get("text") or b.get("thinking") or "").strip() or b.get("type") == "toolCall" for b in blocks)
 
+def unknown_cost_turns(messages):
+    """Count assistant messages whose usage is unknown, exempting failed-empty requests ($0, owner
+    2026-09-28). parse_events and axes both bill through this one predicate."""
+    return sum(1 for message in messages if isinstance(message, dict)
+               and isinstance(message.get("usage"), dict)
+               and message["usage"].get("unknown") is True and not _failed_empty(message))
+
 
 def parse_events(path):
     """Sum assistant usage over a `yi ask --json` transcript.
@@ -214,7 +221,6 @@ def parse_events(path):
     totals = {key: 0 for key in TOKEN_KEYS}
     cost = 0.0
     assistant = 0
-    unknown = 0
     turns = []
     events, malformed = json_lines(path)
     for event in events:
@@ -227,12 +233,11 @@ def parse_events(path):
         turns.append(message)
         usage = message.get("usage")
         _add_tokens(totals, usage)
-        if isinstance(usage, dict) and usage.get("unknown") is True and not _failed_empty(message):
-            unknown += 1
         if isinstance(usage, dict) and isinstance(usage.get("cost"), dict):
             total = usage["cost"].get("total")
             if isinstance(total, (int, float)) and not isinstance(total, bool):
                 cost += total
+    unknown = unknown_cost_turns(turns)
     result = {
         "nAssistantMessages": assistant,
         "malformedLines": malformed,
