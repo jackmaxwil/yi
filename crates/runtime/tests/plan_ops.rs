@@ -2099,27 +2099,34 @@ mod refusals {
         Ok(())
     }
 
-    /// Dies with the label refused through `Malformed`: one long label refused a whole init
-    /// naming neither its todo nor the cap, and the schema never stated the cap.
+    /// Dies with an over-cap label refused, or cut without a word: one long label refused a whole
+    /// init, and a silent cut would leave a later call naming it in full with nothing to find.
     #[test]
-    fn an_over_long_init_label_names_its_todo_and_the_cap() -> TestResult {
-        let (_temp, tool) = tool()?;
+    fn an_over_long_init_label_is_cut_to_the_cap_and_said() -> TestResult {
+        let (_temp, plan) = tool()?;
         let todos = |label: String| serde_json::json!([{"label": "cut"}, {"label": label}]);
-        let text = refusal(
-            &tool,
-            serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(81))}),
-        );
+        let long = "é".repeat(81);
+        let text = admitted(
+            &plan,
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": todos(long.clone())}),
+        )?;
         assert!(
-            text.contains("init todos[1]: label is 81 chars, the cap is 80"),
+            text.contains("a label of 81 chars was cut to 80, the label cap"),
             "{text}"
         );
+        let done = admitted(&plan, serde_json::json!({"op": "start", "label": long}))?;
+        assert!(
+            done.contains(&"é".repeat(80)),
+            "the full name finds it: {done}"
+        );
         let schema =
-            tool.schema()["properties"]["todos"]["items"]["properties"]["label"]["description"]
+            plan.schema()["properties"]["todos"]["items"]["properties"]["label"]["description"]
                 .to_string();
         assert!(schema.contains("at most 80 chars"), "{schema}");
+        let (_fresh, fresh) = tool()?;
         let at_cap =
             serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(80))});
-        admitted(&tool, at_cap)?;
+        admitted(&fresh, at_cap)?;
         Ok(())
     }
 }

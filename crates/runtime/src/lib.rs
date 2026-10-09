@@ -33,6 +33,7 @@ pub mod plan;
 pub mod provider;
 pub mod retention;
 pub mod rewind;
+pub mod rollup;
 pub mod rules;
 pub mod schedule;
 pub mod schema;

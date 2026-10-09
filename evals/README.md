@@ -199,6 +199,15 @@ A tool-text candidate is judged against its base with `surface.py compare --base
 calls rises, or as `scenario_unclean:<id>` when a scenario clean on every base run is unclean on a
 candidate run; `surface.json` keeps each rollout's `exit`, `timedOut` and `missingFiles` for that.
 
+The gate is the census without the scenarios flagged `provokes` (plan-07 and plan-08 ask the
+model to provoke refusals, so a refusal there is the scenario working), printed on its own `gate,
+without …` line beside the whole census. The plan-tool gate runs with
+`EVAL_ROUTING='{"ignore":["inference-net"]}'`: on glm-5.3-flash the InferenceNet upstream
+delivered plan `set` calls with the nested `todos` array missing from the raw tool-call stream,
+up to 15 a session, while the model's own reasoning said it sent them, and none arrived so on the
+run that ruled it out (2026-10-07, #1077). `surface.py` reads `EVAL_ROUTING` as `run.py` does and
+the routing rides the fingerprint's mode.
+
 `--dry` is faux only and refuses any other provider. `selftest.py::check_surface`
 covers the scenario schema and the census with no binary and no key. A
 real-model run refuses without `OPENROUTER_API_KEY` and without `--cap-usd`,

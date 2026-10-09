@@ -188,6 +188,7 @@
     },
     {
       "id": "plan-07-edge-inputs",
+      "provokes": true,
       "road": "#982 plan dogfood: edge inputs: long, non-ASCII and duplicate labels, empty lists",
       "prompt": "Stress-test the plan tool's input handling and quote each reply verbatim: a todo label of 90 characters; labels with non-ASCII text (é, 中文, emoji); two todos with the same label; an `after` naming a label that does not exist; an empty todos list; a contract with zero items; a contract item missing its weight. After that, make one valid plan that fixes the failing test and finish it.",
       "timeoutSec": 900,
@@ -196,6 +197,7 @@
     },
     {
       "id": "plan-08-all-ops",
+      "provokes": true,
       "road": "#982 plan dogfood: every op the model may call, once",
       "prompt": "On a small real plan for this repo (add a `mod(a, b)` function and its test), use every op the plan tool offers at least once. Whenever the tool refuses a call, quote the refusal verbatim together with the arguments you sent, then correct the call and continue. End with the work done and the plan closed.",
       "timeoutSec": 900,
