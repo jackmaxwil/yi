@@ -1146,8 +1146,8 @@ async fn a_configured_dollar_alert_reaches_the_session() -> TestResult {
     );
     let config: yi_types::config::SpendConfig = serde_json::from_str(r#"{"alertUsd": 1}"#)?;
     assert_eq!(
-        yi_runtime::spend::attach_configured(&session, Some(&config)),
-        None
+        yi_runtime::spend::attach_configured(&session, Some(&config), std::path::Path::new("")),
+        Vec::<String>::new()
     );
     // A live receiver of its own, so the send succeeds whether or not an alarm subscribed.
     let _listener = session.events_sender().subscribe();
@@ -1155,6 +1155,95 @@ async fn a_configured_dollar_alert_reaches_the_session() -> TestResult {
     assert!(
         until(|| session.pending_count() > 0).await,
         "a $1.50 reply crossed the configured $1 and nothing was shown"
+    );
+    Ok(())
+}
+
+const CHILD_FIXTURE: &str = include_str!("fixtures/rollup/child_bedrock.jsonl");
+/// The fixture reply's own stamp, which is 2026-10-01 and so never "today".
+const FIXTURE_STAMP: &str = "1790911735288";
+
+/// A sessions directory holding the fixture reply ($0.010216) as three sessions from this
+/// instant and one from last month.
+fn a_day_of_sessions() -> Result<Scratch, Box<dyn Error>> {
+    let dir = Scratch::new("yi-day-alert")?;
+    let now = yi_runtime::rollup::now_ms().to_string();
+    for (n, stamp) in [&now, &now, &now, &FIXTURE_STAMP.to_owned()]
+        .into_iter()
+        .enumerate()
+    {
+        let text = CHILD_FIXTURE
+            .replace("R8jG4wschDCyIUWXZMx1", &format!("reply{n}"))
+            .replace(FIXTURE_STAMP, stamp);
+        std::fs::create_dir_all(dir.join("--p--"))?;
+        std::fs::write(dir.join(format!("--p--/{n}.jsonl")), text)?;
+    }
+    Ok(dir)
+}
+
+/// Dies when yesterday's session is summed into today (then the seed already sits on the $0.04
+/// multiple, the next reply announces nothing, and the alert is lost), or when a session
+/// recorded before this one started is left out of the day.
+#[test]
+fn a_day_alert_seeds_from_todays_sessions_and_leaves_earlier_days_out() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let mut alarm =
+        yi_runtime::spend::SpendAlarm::day_usd(0.04, &dir).ok_or("a positive amount refused")?;
+    alarm.seed("live", &yi_types::wire::SessionStats::zero());
+    let crossed = alarm
+        .observe(&priced(turn_of(10), 0.01))
+        .ok_or("$0.0406 today crossed $0.04 and nothing fired")?;
+    assert!(
+        crossed.contains(
+            "today's billed spend across every session is $0.041, past the alert at $0.040 (spend.dayAlertUsd 0.04)"
+        ),
+        "{crossed}"
+    );
+    assert!(
+        crossed.contains("`yi stats --since 1d --by model`"),
+        "{crossed}"
+    );
+    Ok(())
+}
+
+/// Dies when a process alive past local midnight carries yesterday's total into the new day:
+/// the first reply after midnight would then alert early.
+#[test]
+fn a_day_alert_starts_the_next_day_from_zero() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let mut alarm =
+        yi_runtime::spend::SpendAlarm::day_usd(0.04, &dir).ok_or("a positive amount refused")?;
+    alarm.seed("live", &yi_types::wire::SessionStats::zero());
+    let tomorrow = yi_runtime::rollup::now_ms() + 2 * yi_runtime::rollup::DAY_MS;
+    assert_eq!(alarm.observe_at(&priced(turn_of(10), 0.01), tomorrow), None);
+    Ok(())
+}
+
+/// Dies with `spend.dayAlertUsd` parsed but never attached, or a non-positive one accepted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_configured_day_alert_reaches_the_session() -> TestResult {
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(ProviderStream::new(None)),
+    );
+    let dir = Scratch::new("yi-day-config")?;
+    let config: yi_types::config::SpendConfig = serde_json::from_str(r#"{"dayAlertUsd": 1}"#)?;
+    assert!(yi_runtime::spend::attach_configured(&session, Some(&config), &dir).is_empty());
+    let _listener = session.events_sender().subscribe();
+    session.events_sender().send(priced(turn_of(10), 1.5))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "a $1.50 reply crossed the configured $1 day alert and nothing was shown"
+    );
+    let bad: yi_types::config::SpendConfig = serde_json::from_str(r#"{"dayAlertUsd": -1}"#)?;
+    assert_eq!(
+        yi_runtime::spend::attach_configured(&session, Some(&bad), &dir),
+        vec!["spend.dayAlertUsd -1 is not a positive amount; no dollar alert".to_owned()]
     );
     Ok(())
 }

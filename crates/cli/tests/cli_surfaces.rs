@@ -1557,6 +1557,108 @@ fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestRe
     Ok(())
 }
 
+const TOGETHER: &str = include_str!("fixtures/prices/together_glm_flash.jsonl");
+const FIREWORKS: &str = include_str!("fixtures/prices/fireworks_glm_flash.jsonl");
+
+/// `text` with every entry stamped `now`, so a `--since` window sees it.
+fn restamped(text: &str, now: u64) -> String {
+    text.lines()
+        .map(|line| match line.rsplit_once("\"timestamp\":") {
+            Some((head, tail)) if line.contains("\"kind\":\"entry\"") => {
+                let rest = tail.trim_start_matches(|c: char| c.is_ascii_digit());
+                format!("{head}\"timestamp\":{now}{rest}\n")
+            }
+            _ => format!("{line}\n"),
+        })
+        .collect()
+}
+
+fn with_priced_sessions(workspace: &Workspace, together: &str) -> TestResult {
+    let dir = workspace.0.join("home/sessions/--p--");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("together.jsonl"), together)?;
+    std::fs::write(dir.join("fireworks.jsonl"), FIREWORKS)?;
+    Ok(())
+}
+
+fn rolled(workspace: &Workspace, args: &[&str]) -> Result<Value, Box<dyn Error>> {
+    let out = workspace.yi_env(args, &[("TZ", "UTC")])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(serde_json::from_str(&stdout(&out))?)
+}
+
+/// `yi stats --by prices` fits each route's price from billed dollars alone. Together's published
+/// glm-5.3-flash price is $0.15 in and $0.50 out per million, which 30 real replies must give
+/// back; Fireworks has 29, one under the floor, and is named as left out.
+#[test]
+fn stats_prices_fits_the_published_price_and_names_the_route_it_left_out() -> TestResult {
+    let workspace = Workspace::new("prices")?;
+    with_priced_sessions(&workspace, TOGETHER)?;
+    let fit = rolled(&workspace, &["stats", "--by", "prices", "--json"])?;
+    let routes = fit["prices"].as_array().ok_or("no prices")?;
+    assert_eq!(routes.len(), 1, "{fit}");
+    assert_eq!(routes[0]["upstream"], "Together", "{fit}");
+    assert_eq!(routes[0]["samples"], 30, "{fit}");
+    let price = |at: usize| routes[0]["observed"][at].as_f64().unwrap_or(f64::NAN);
+    assert!((price(0) - 0.15).abs() < 1e-6, "{fit}");
+    assert!((price(1) - 0.50).abs() < 1e-6, "{fit}");
+    assert_eq!(fit["unfit"], 1, "{fit}");
+    let text = stdout(&workspace.yi(&["stats", "--by", "prices"])?);
+    assert!(
+        text.contains("[1 route(s) not fitted: fewer than 30 priced replies (MIN_SAMPLES)"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// `--by day` buckets on the local calendar and `--since` drops whole days: the dates and
+/// counts below come from reading the fixture's timestamps with Python's datetime, not from Yi.
+#[test]
+fn stats_rolls_sessions_up_by_day_and_window() -> TestResult {
+    let workspace = Workspace::new("rollup-days")?;
+    with_priced_sessions(&workspace, TOGETHER)?;
+    let days = rolled(&workspace, &["stats", "--by", "day", "--json"])?;
+    let counted: Vec<(String, u64)> = days["rows"]
+        .as_array()
+        .ok_or("no rows")?
+        .iter()
+        .map(|row| {
+            (
+                row["key"].as_str().unwrap_or("").to_owned(),
+                row["requests"].as_u64().unwrap_or(0),
+            )
+        })
+        .collect();
+    let want = [
+        ("2026-09-27", 5),
+        ("2026-09-30", 12),
+        ("2026-10-01", 3),
+        ("2026-10-04", 10),
+        ("2026-10-07", 29),
+    ];
+    assert_eq!(counted, want.map(|(day, n)| (day.to_owned(), n)), "{days}");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture is restamped to this instant so a `--since` window sees it"
+    )]
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    let fresh = restamped(TOGETHER, u64::try_from(now.as_millis())?);
+    with_priced_sessions(&workspace, &fresh)?;
+    let recent = rolled(
+        &workspace,
+        &["stats", "--since", "1d", "--by", "upstream", "--json"],
+    )?;
+    assert_eq!(recent["rows"].as_array().map(Vec::len), Some(1), "{recent}");
+    assert_eq!(recent["rows"][0]["key"], "Together", "{recent}");
+    assert_eq!(recent["rows"][0]["requests"], 30, "{recent}");
+    Ok(())
+}
+
 #[test]
 fn memory_imports_lists_checks_and_forgets() -> TestResult {
     let workspace = Workspace::new("memory")?;
