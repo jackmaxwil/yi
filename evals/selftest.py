@@ -926,35 +926,23 @@ def check_mutate():
 def check_plugins():
     """#1041: the plugins `yi plugin add` installed ride into the container by EVAL_PLUGINS, the
     fingerprint names each with its version, and an arm with none says `+plugins{}`."""
-    with tempfile.TemporaryDirectory() as home:
-        pinned = Path(home, ".yi", "plugins", "ripwire", "0.6.5")
-        pinned.mkdir(parents=True)
-        (pinned / "ripwire").write_text("#!/bin/sh\n")
-        Path(home, ".yi", "plugins", "ripwire", ".staging-1-0").mkdir()
-        carried = yi_usage.local_plugins({}, home)
-        assert [(n, v) for n, v, _ in carried] == [("ripwire", "0.6.5")], carried
-        assert yi_usage.plugins_label(carried) == "+plugins{ripwire@0.6.5}"
-        none = yi_usage.local_plugins({yi_usage.PLUGINS_ENV: "none"}, home)
-        assert none == [] and yi_usage.plugins_label(none) == "+plugins{}"
-        named = yi_usage.local_plugins({yi_usage.PLUGINS_ENV: "ripwire"}, home)
-        assert [n for n, _, _ in named] == ["ripwire"]
-        for environ, stale in (({yi_usage.PLUGINS_ENV: "grid"}, False), ({}, True)):
-            if stale:
-                older = Path(home, ".yi", "plugins", "ripwire", "0.6.4")
-                older.mkdir()
-                (older / "ripwire").write_text("#!/bin/sh\n")
-            try:
-                yi_usage.local_plugins(environ, home)
-            except ValueError:
-                continue
-            raise AssertionError(f"{environ} with stale={stale} must be refused")
-        broken = Path(tempfile.mkdtemp(), ".yi", "plugins", "odd")
-        broken.mkdir(parents=True)
-        try:
-            yi_usage.local_plugins({}, broken.parent.parent.parent)
-            raise AssertionError("a layout yi did not write must be refused")
-        except ValueError as error:
-            assert "layout" in str(error), error
+    report = (
+        "ripwire 0.6.5  installed at /home/yi/.yi/plugins/ripwire/0.6.5/ripwire\n"
+        "  a code map: an edit's broken callers, a symbol's callers\n"
+        "other 0.6.5  not installed: yi plugin add other\n"
+    )
+    carried = yi_usage.local_plugins({}, report)
+    assert [(n, v) for n, v, _ in carried] == [("ripwire", "0.6.5")], carried
+    assert yi_usage.plugins_label(carried) == "+plugins{ripwire@0.6.5}"
+    none = yi_usage.local_plugins({yi_usage.PLUGINS_ENV: "none"}, report)
+    assert none == [] and yi_usage.plugins_label(none) == "+plugins{}"
+    named = yi_usage.local_plugins({yi_usage.PLUGINS_ENV: "ripwire"}, report)
+    assert [n for n, _, _ in named] == ["ripwire"]
+    try:
+        yi_usage.local_plugins({yi_usage.PLUGINS_ENV: "grid"}, report)
+        raise AssertionError("a name the binary does not report must be refused")
+    except ValueError as error:
+        assert "grid" in str(error), error
 
 
 def check_plugin_upload():
@@ -1033,11 +1021,15 @@ def check_plugin_upload():
     saved = {key: os.environ.get(key) for key in ("HOME", "EVAL_BINARY", "EVAL_BINARY_URL")}
     try:
         with tempfile.TemporaryDirectory() as home:
-            pinned = Path(home, ".yi", "plugins", "ripwire", "0.6.5")
-            pinned.mkdir(parents=True)
-            (pinned / "ripwire").write_text("#!/bin/sh\n")
+            fake = Path(home, "yi")
+            fake.write_text(
+                "#!/bin/sh\n"
+                "printf 'ripwire 0.6.5  installed at "
+                "%s/.yi/plugins/ripwire/0.6.5/ripwire\\n' \"$HOME\"\n"
+            )
+            fake.chmod(0o755)
             os.environ["HOME"] = home
-            os.environ["EVAL_BINARY"] = "/bin/sh"
+            os.environ["EVAL_BINARY"] = str(fake)
             os.environ.pop("EVAL_BINARY_URL", None)
             yi = Recording()
             env = Env()
@@ -1046,6 +1038,7 @@ def check_plugin_upload():
             assert any(
                 "chmod +x /usr/local/bin/ripwire" in command for command in yi.roots
             ), yi.roots
+            assert agent.mode_label().endswith("+plugins{ripwire@0.6.5}"), agent.mode_label()
             os.environ.pop("EVAL_BINARY", None)
             os.environ["EVAL_BINARY_URL"] = "https://example.invalid/yi"
             yi = Recording()
@@ -1054,6 +1047,7 @@ def check_plugin_upload():
             assert not any(dst == "/usr/local/bin/ripwire" for _, dst in env.uploads), env.uploads
             assert agent.carried_plugins() == []
             assert yi_usage.plugins_label(agent.carried_plugins()) == "+plugins{}"
+            assert agent.mode_label().endswith("+plugins{}"), agent.mode_label()
     finally:
         for key, value in saved.items():
             if value is None:

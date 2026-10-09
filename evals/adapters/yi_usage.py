@@ -84,40 +84,32 @@ def levers_label(environ):
     return "+levers" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def local_plugins(environ, home):
-    """The plugins `yi plugin add` installed under `home` that ride into each task container, as
-    (name, version, path), by EVAL_PLUGINS: unset or `all` is every one, `none` is none, else a
-    comma list whose every name must be installed (#1041). Two versions of one plugin are
-    refused: the eval would not say which one ran."""
+def installed_plugins(report):
+    """(name, version, path) as `yi plugin list` itself reports them: yi is the one reader
+    of the layout `yi plugin add` writes, so the adapter carries what yi carries instead of
+    a second copy of the layout."""
     found = {}
-    for binary in sorted(Path(home, ".yi", "plugins").glob("*/*/*")):
-        name, version = binary.parent.parent.name, binary.parent.name
-        if (
-            binary.name == name
-            and binary.is_file()
-            and not version.startswith(".")
-            and re.fullmatch(r"[A-Za-z0-9_-]+", name)
-        ):
-            found.setdefault(name, []).append((version, binary))
+    for line in str(report).splitlines():
+        match = re.fullmatch(r"(\S+) (\S+)  installed at (.+)", line)
+        if match:
+            name, version, path = match.groups()
+            found[name] = (version, Path(path))
+    return found
+
+
+def local_plugins(environ, report):
+    """The plugins the binary reports installed that ride into each task container, as
+    (name, version, path), by EVAL_PLUGINS: unset or `all` is every one, `none` is none,
+    else a comma list whose every name must be installed (#1041)."""
+    found = installed_plugins(report)
     wanted = environ.get(PLUGINS_ENV, "all").strip()
     if wanted == "none":
         return []
-    root = Path(home, ".yi", "plugins")
-    if not found and root.is_dir() and any(
-        entry.is_dir() and not entry.name.startswith(".") for entry in root.iterdir()
-    ):
-        raise ValueError(
-            f"plugins under {root} are not in the <name>/<version>/<name> layout "
-            "`yi plugin add` writes; this adapter reads only what yi installs"
-        )
     names = sorted(found) if wanted == "all" else [n.strip() for n in wanted.split(",") if n.strip()]
     missing = [name for name in names if name not in found]
     if missing:
         raise ValueError(f"{PLUGINS_ENV} names {', '.join(missing)}; run `yi plugin add` for it first")
-    doubled = [name for name in names if len(found[name]) > 1]
-    if doubled:
-        raise ValueError(f"{', '.join(doubled)}: more than one version under ~/.yi/plugins; run `yi plugin sync`")
-    return [(name, found[name][0][0], found[name][0][1]) for name in names]
+    return [(name, found[name][0], found[name][1]) for name in names]
 
 
 def plugins_label(plugins):

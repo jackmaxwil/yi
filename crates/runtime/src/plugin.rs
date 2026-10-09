@@ -5,7 +5,7 @@ pub use yi_tools::plugin::{PLUGINS, Plugin};
 pub use yi_kernel::pinned::fetch;
 
 pub enum State {
-    Installed,
+    Installed(PathBuf),
     /// Versions on disk, none of them the one this yi pins.
     Stale(Vec<String>),
     OnPath(PathBuf),
@@ -14,8 +14,8 @@ pub enum State {
 }
 
 pub fn state(plugin: &Plugin, home: &Path) -> State {
-    if plugin.installed(home).is_some() {
-        return State::Installed;
+    if let Some(path) = plugin.installed(home) {
+        return State::Installed(path);
     }
     let stale = versions(plugin, home);
     if !stale.is_empty() {
@@ -94,16 +94,16 @@ fn verified(plugin: &Plugin, path: &Path) -> Result<PathBuf, String> {
         return Ok(path.to_path_buf());
     };
     let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let digest = yi_kernel::tarball::sha256_hex(&bytes);
-    if digest != asset.member_sha256 {
-        return Err(format!(
-            "{} has sha256 {digest}, yi pins {}: `yi plugin remove {}` then `yi plugin add {}`",
-            path.display(),
-            asset.member_sha256,
-            plugin.name,
-            plugin.name
-        ));
-    }
+    let remedy = format!(
+        ": `yi plugin remove {}` then `yi plugin add {}`",
+        plugin.name, plugin.name
+    );
+    yi_kernel::pinned::checked(
+        &path.display().to_string(),
+        &bytes,
+        asset.member_sha256,
+        &remedy,
+    )?;
     Ok(path.to_path_buf())
 }
 
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(path, tool.dir(&home).join("tool"));
         assert_eq!(std::fs::read(&path)?, b"#!/bin/sh\necho tool\n");
         assert!(!old.exists(), "the replaced version is deleted");
-        assert!(matches!(state(&tool, &home), State::Installed));
+        assert!(matches!(state(&tool, &home), State::Installed(_)));
         assert!(remove(&tool, &home)?);
         assert!(
             !remove(&tool, &home)?,
