@@ -57,6 +57,7 @@ struct Args {
     deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
+    stats_flags: Vec<(String, String)>,
     prompt: String,
 }
 
@@ -105,13 +106,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
+    let mut flags = Vec::new();
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
         match argument {
-            Long("version") => {
-                command = "version".to_owned();
-            }
+            Long("version") => command = "version".to_owned(),
             Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
             Long("thinking") => {
@@ -144,6 +144,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
+            Long(f @ ("since" | "by" | "top")) => flags.push((f.into(), parser.value()?.string()?)),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -213,6 +214,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             (None, false) => Resume::Fresh,
         },
         schema,
+        stats_flags: flags,
         prompt: prompt_parts.join(" "),
     })
 }
@@ -619,7 +621,8 @@ fn build_session(
             eprintln!("warning: {why}");
         }
     }
-    if let Some(why) = yi_runtime::spend::attach_configured(&session, config().spend.as_ref()) {
+    let sessions = default_session_dir(args);
+    for why in yi_runtime::spend::attach_configured(&session, config().spend.as_ref(), &sessions) {
         eprintln!("warning: {why}");
     }
     yi_runtime::cache_miss::attach(&session);
@@ -1149,6 +1152,7 @@ fn dispatch(args: Args) {
                 session_dir: default_session_dir(&args),
                 cwd: effective_cwd(&args).display().to_string(),
                 json: args.json,
+                flags: args.stats_flags.clone(),
             };
             std::process::exit(stats::run(&args.prompt, &options));
         }
