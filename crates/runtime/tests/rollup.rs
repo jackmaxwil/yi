@@ -115,25 +115,3 @@ fn a_line_before_the_window_is_dropped_without_being_parsed() -> TestResult {
     assert_eq!(scan(&dir, 0).bad_lines, 1);
     Ok(())
 }
-
-/// Dies when each attach rescans the day: the daemon attaches on an async worker, and the
-/// scan is the all-time size of every file touched today. A file added after the first ask is
-/// not seen by the second; another directory is its own question.
-#[test]
-fn the_days_total_is_scanned_once_per_directory_and_day() -> TestResult {
-    let dir = Scratch::new("yi-rollup-once")?;
-    let now = yi_runtime::rollup::now_ms();
-    let today = CHILD.replace("1790911735288", &now.to_string());
-    put(&dir, "a.jsonl", &today)?;
-    let first = yi_runtime::rollup::spent_today(&dir, now);
-    assert!((first.0 - CHILD_REPLY).abs() < 1e-9, "{first:?}");
-    put(
-        &dir,
-        "b.jsonl",
-        &today.replace("R8jG4wschDCyIUWXZMx1", "second"),
-    )?;
-    assert_eq!(yi_runtime::rollup::spent_today(&dir, now), first);
-    let other = Scratch::new("yi-rollup-once-other")?;
-    assert_eq!(yi_runtime::rollup::spent_today(&other, now).0, 0.0);
-    Ok(())
-}

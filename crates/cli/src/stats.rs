@@ -3,7 +3,7 @@
 
 mod rollup;
 
-pub use rollup::Query;
+pub use rollup::{Flags, Query};
 
 use std::collections::BTreeMap;
 

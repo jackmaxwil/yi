@@ -1751,6 +1751,18 @@ fn the_rollup_flags_belong_to_stats_alone_and_refuse_a_session_id() -> TestResul
     Ok(())
 }
 
+/// Dies when the rollup flags are read by a second pass over argv: `--top` here is the value of
+/// `--system`, so it is no flag, and a second parser that skips `--system` as unknown reads
+/// `--top` as one and fails on its missing value instead of reaching the session lookup.
+#[test]
+fn a_flag_name_that_is_another_options_value_is_a_value() -> TestResult {
+    let workspace = Workspace::new("rollup-value")?;
+    let out = workspace.yi(&["stats", "--system", "--top"])?;
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(err.contains("no sessions for this directory"), "{err}");
+    Ok(())
+}
+
 /// `--by day` buckets on the local calendar and `--since` drops whole days: the dates and
 /// counts below come from reading the fixture's timestamps with Python's datetime, not from Yi.
 #[test]

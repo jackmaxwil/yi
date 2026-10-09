@@ -33,48 +33,44 @@ pub struct Query {
     top: Option<usize>,
 }
 
-impl Query {
-    /// The three flags out of the process arguments. `parse_args` skips them for `stats` only,
-    /// so any other command still refuses them as unknown options.
-    pub fn from_env() -> Result<Self, lexopt::Error> {
-        use lexopt::prelude::*;
-        let mut query = Self::default();
-        let mut parser = lexopt::Parser::from_env();
-        while let Some(argument) = parser.next()? {
-            let Long(flag @ ("since" | "by" | "top")) = argument else {
-                continue;
-            };
-            let flag = flag.to_owned();
-            let value = parser.value()?.string()?;
-            let bad =
-                |wants: &str| lexopt::Error::Custom(format!("--{flag} {value}: {wants}").into());
-            match flag.as_str() {
-                "since" => {
-                    let span = span_ms(&value)
-                        .ok_or_else(|| bad("wants a span like 90m, 12h, 7d or 2w"))?;
-                    query.since = Some((value.clone(), span));
-                }
-                "by" => {
-                    query.by = Some(match value.as_str() {
-                        "model" => By::Model,
-                        "upstream" => By::Upstream,
-                        "day" => By::Day,
-                        "prices" => By::Prices,
-                        _ => return Err(bad("wants model, upstream, day or prices")),
-                    });
-                }
-                _ => {
-                    query.top = Some(
-                        value
-                            .parse()
-                            .map_err(|_| bad("wants a number of sessions"))?,
-                    )
-                }
-            }
-        }
-        Ok(query)
-    }
+/// The `--since`, `--by` and `--top` values as `parse_args` collects them, for `stats` only.
+#[derive(Default)]
+pub struct Flags {
+    pub since: Option<String>,
+    pub by: Option<String>,
+    pub top: Option<String>,
+}
 
+impl Flags {
+    pub fn typed(self) -> Result<Query, lexopt::Error> {
+        let bad = |flag: &str, value: &str, wants: &str| {
+            lexopt::Error::Custom(format!("--{flag} {value}: {wants}").into())
+        };
+        let since = self.since.map(|raw| {
+            let span = span_ms(&raw);
+            span.map(|span| (raw.clone(), span))
+                .ok_or_else(|| bad("since", &raw, "wants a span like 90m, 12h, 7d or 2w"))
+        });
+        let by = self.by.map(|raw| match raw.as_str() {
+            "model" => Ok(By::Model),
+            "upstream" => Ok(By::Upstream),
+            "day" => Ok(By::Day),
+            "prices" => Ok(By::Prices),
+            _ => Err(bad("by", &raw, "wants model, upstream, day or prices")),
+        });
+        let top = self.top.map(|raw| {
+            raw.parse()
+                .map_err(|_| bad("top", &raw, "wants a number of sessions"))
+        });
+        Ok(Query {
+            since: since.transpose()?,
+            by: by.transpose()?,
+            top: top.transpose()?,
+        })
+    }
+}
+
+impl Query {
     pub fn asked(&self) -> bool {
         self.since.is_some() || self.by.is_some() || self.top.is_some()
     }
