@@ -432,17 +432,18 @@ def tests_named(findings):
     return frozenset(f.get("path") for f in findings if f.get("lens") == "tests")
 
 
-def prior_fixes(repo, sha, stopped=0.0):
+def prior_fixes(repo, sha, stopped=0.0, signed=SIGNED):
     """How many fix commits in a row the bot already made at the head of this branch, since the
     last stop (a Unix time): a person removing `autofix:failed` restarts the count. Incident: four
-    PRs stopped at two fixes, and lifting the label would have stopped them again at once."""
+    PRs stopped at two fixes, and lifting the label would have stopped them again at once. Only
+    fixes signed `signed` count: #1111's two findings fixes stopped its first gate fix unrun."""
     log = sh(repo, "git", "log", "--first-parent", "-n", "4", "--format=%ct%x00%an%x00%B%x1e", sha, check=False).stdout
     count = 0
     for record in filter(str.strip, log.split("\x1e")):
         when, author, body = (record.strip("\n").split("\x00", 2) + ["", ""])[:3]
         if author != pr_review.BOT or not (SIGNED in body or GATE_SIGNED in body) or float(when or 0) <= stopped:
             break
-        count += 1
+        count += signed in body
     return count
 
 
@@ -466,20 +467,58 @@ def red_lanes(repo, sha):
                   if status == "failure" and (m := re.fullmatch(r"gate \((\w+)\)", name)))
 
 
-def lane_failures(clone, lanes):
+# The test lane as `just lane test` runs it, without stopping at the first failure, so one run
+# names every failing test and the base can be asked about all of them at once.
+TEST_LANE = ["cargo", "nextest", "run", "--workspace", "--no-fail-fast"]
+NEXTEST_FAIL = re.compile(r"\bFAIL \[[^\]]*\] \([^)]*\) (\S+) (\S+)\s*$")
+
+
+def failed_tests(output):
+    """The (binary, test) pairs nextest reported failing."""
+    return {m.groups() for line in output.splitlines() if (m := NEXTEST_FAIL.search(line))}
+
+
+def at_base(clone, base_ref, failed):
+    """Which of `failed` also fail at the base, in the same environment: those are the runner's.
+    Incident: a spill test on a full /tmp, then a documents test under a disk TMPDIR, failed only
+    in the fixer's runs, and #1111's Opus fix was not pushed for a test CI passes."""
+    base = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-base-"))
+    try:
+        sh(clone, "git", "worktree", "add", "-q", "--detach", "-f", str(base), f"origin/{base_ref}")
+        expr = " | ".join(f"(binary_id({b}) & test(={t}))" for b, t in sorted(failed))
+        ran = subprocess.run((*TEST_LANE, "-E", expr), cwd=base, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
+        return failed & failed_tests(ran.stdout + ran.stderr)
+    finally:
+        sh(clone, "git", "worktree", "remove", "--force", str(base), check=False)
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def lane_failures(clone, lanes, base_ref="main"):
     """Each lane run in the clone the way CI runs it, by the host, not inside the model's sandbox:
-    the model's own test runs met the wall and read eight passing tests as failures (#1110)."""
+    the model's own test runs met the wall and read eight passing tests as failures (#1110). A
+    failing test that fails at the base too is left out, and the lane passes when nothing else fails."""
     found = []
     for lane in lanes:
-        ran = subprocess.run(("just", "lane", lane), cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
-        if ran.returncode:
-            lines = (ran.stdout + ran.stderr).splitlines()
-            # nextest indents its FAIL rows and panics, which failures() reads as detail of nothing.
-            tests = [row for i, line in enumerate(lines) if re.search(r"\bFAIL \[|panicked at", line)
-                     for row in (lines[i:i + 8] if "panicked at" in line else [line])]
-            rows = list(dict.fromkeys(tests))
-            text = "\n".join(rows[:80]) + (f"\n[… {len(rows) - 80} more lines cut at 80; the lane's own run holds them]" if len(rows) > 80 else "")
-            found.append(f"`just lane {lane}` failed:\n" + (text if rows else failures(ran.stdout + ran.stderr)))
+        command = TEST_LANE if lane == "test" else ["just", "lane", lane]
+        ran = subprocess.run(command, cwd=clone, capture_output=True, text=True, env=scrubbed(), timeout=LANE_SECS)
+        if not ran.returncode:
+            continue
+        output = ran.stdout + ran.stderr
+        failed = failed_tests(output) if lane == "test" else set()
+        theirs = at_base(clone, base_ref, failed) if failed else set()
+        if failed and failed == theirs:
+            continue
+        mine = {t for _, t in failed - theirs}
+        lines = output.splitlines()
+        # nextest indents its FAIL rows and panics, which failures() reads as detail of nothing.
+        tests = [row for i, line in enumerate(lines)
+                 if (m := NEXTEST_FAIL.search(line)) and m.group(2) in mine
+                 or "panicked at" in line and any(f"'{t}'" in line for t in mine)
+                 for row in (lines[i:i + 8] if "panicked at" in line else [line])]
+        rows = list(dict.fromkeys(tests))
+        text = "\n".join(rows[:80]) + (f"\n[… {len(rows) - 80} more lines cut at 80; the lane's own run holds them]" if len(rows) > 80 else "")
+        skipped = f"\n[{len(theirs)} failing test(s) left out: they fail at origin/{base_ref} here too: {', '.join(sorted(t for _, t in theirs))}]" if theirs else ""
+        found.append(f"`just lane {lane}` failed:\n" + (text if rows else failures(output)) + skipped)
     return "\n\n".join(found)
 
 
@@ -504,7 +543,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
     """Make the red lanes pass in the clone, the deterministic repairs first; a model only for what
     they leave. Returns (summary, model, touched)."""
     reprice(clone, f"origin/{pr['base']['ref']}")
-    refused = lane_failures(clone, lanes)
+    refused = lane_failures(clone, lanes, pr["base"]["ref"])
     staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     if not refused:
         if staged:
@@ -522,7 +561,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
         formatted(clone)
         reprice(clone, f"origin/{pr['base']['ref']}")
         summary = ((said.get("summary") or "").strip() or "the model gave no summary") + note
-        refused = lane_failures(clone, lanes)
+        refused = lane_failures(clone, lanes, pr["base"]["ref"])
         if not refused:
             return summary, model, touched
     raise Missed("the lanes still fail after the fix and one more turn:\n" + refused)
@@ -593,7 +632,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             summary, model, touched = resolve_in(clone, pr, base_ref, answer, tried)
             subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
         elif kind == "gate":
-            if prior_fixes(root, sha, stopped) >= 2:
+            if prior_fixes(root, sha, stopped, GATE_SIGNED) >= 2:
                 raise RuntimeError("two fixes in a row did not clear the gate; a person is next")
             summary, model, touched = gate_in(clone, pr, lanes, answer, tried)
             subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
@@ -793,6 +832,34 @@ def attempt(repo, pr, ids, asked=False):
 
 
 KINDS = {"fix": "conflict", "findings": "findings", "gate": "gate"}
+CITED = re.compile(r"\b(?:Closes|Refs) #(\d+)\.?[ \t]*")
+
+
+def tidied(body, state_of):
+    """The body without its citations of closed issues, or None when it has none or cites
+    nothing open, which is the author's call. Incident: #1110 and #1111 failed `title` on
+    issues their stacked parents' merges had closed, and nothing took the citations out."""
+    cited = {int(m.group(1)) for m in CITED.finditer(body or "")}
+    closed = {n for n in cited if state_of(n) == "closed"}
+    if not closed or closed == cited:
+        return None
+    return CITED.sub(lambda m: "" if int(m.group(1)) in closed else m.group(0), body)
+
+
+def tidy(repo, pr):
+    """When `title` failed on the head, take closed-issue citations out of the body and rerun."""
+    if forge_pr.jobs_of(pr).get("title") != "failure":
+        return False
+    body = tidied(pr.get("body"), lambda n: (forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}") or {}).get("state"))
+    if body is None:
+        return False
+    gone = sorted(set(CITED.findall(pr["body"])) - set(CITED.findall(body)), key=int)
+    forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{pr['number']}", {"body": body})
+    forge_pr.fgj_api("POST", f"repos/{repo}/issues/{pr['number']}/comments", {"body":
+                     f"Autofix took the citations of closed issues {', '.join('#' + n for n in gone)} out of the body; the checks rerun."})
+    forge_pr.cmd_rerun(argparse.Namespace(number=str(pr["number"])))
+    print(f"#{pr['number']}: cited closed issues {', '.join(gone)}; body tidied and checks rerun")
+    return True
 
 
 def room(elapsed):
@@ -830,6 +897,8 @@ def cmd_autofix(args):
         if spent_today(repo) >= CAP_DAY:
             print(f"autofix: today's fixes spent the ${CAP_DAY:.2f} cap; the rest wait for tomorrow")
             break
+        if not any(label["name"] == "autofix:hold" for label in pr.get("labels") or []):
+            tidy(repo, pr)
         said = attempt(repo, pr, ids)
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
@@ -841,14 +910,17 @@ def cmd_autofix(args):
 def gate_selfcheck():
     """A red lane fixed end to end in a scratch repo: the host runs the lane, the model fixes what it
     names, the stacked memo is repriced, and a lane that passes here is a flake, not a fix."""
-    errs, tmp = [], pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-gate-"))
+    global TEST_LANE
+    errs, tmp, saved = [], pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-gate-")), TEST_LANE
     bare = tmp.parent / (tmp.name + "-remote.git")
     git = lambda *a: sh(tmp, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
     try:
         git("init", "-q", "-b", "main")
         (tmp / "justfile").write_text("lane name:\n    sh lane.sh {{name}}\n")
-        (tmp / "lane.sh").write_text("if grep -q bug a.txt; then echo '        FAIL [   0.1s] (1/1) t::t'; "
-                                     "echo \"    thread 't' panicked at a.rs:1:5:\"; echo '    a.txt holds a bug'; exit 1; fi\n")
+        # One test fails everywhere, the base included, as the runner's own failures do.
+        (tmp / "lane.sh").write_text("echo '        FAIL [   0.1s] (1/2) yi t::env'; echo \"    thread 't::env' panicked at e.rs:1:1:\"; "
+                                     "echo '    the runner'; if grep -q bug a.txt; then echo '        FAIL [   0.1s] (2/2) yi t::bug'; "
+                                     "echo \"    thread 't::bug' panicked at a.rs:1:5:\"; echo '    a.txt holds a bug'; fi; exit 1\n")
         (tmp / "scripts/guardrails").mkdir(parents=True)
         (tmp / "scripts/guardrails/check_growth.py").write_text("print('ok   growth (+761 src lines since the fork x, free band +150)')\n")
         (tmp / "a.txt").write_text("ok\n")
@@ -863,6 +935,7 @@ def gate_selfcheck():
         sh(tmp.parent, "git", "init", "-q", "--bare", str(bare))
         git("remote", "add", "origin", str(bare)); git("push", "-q", "origin", "main", "topic", "flaky"); git("fetch", "-q", "origin")
         asked = []
+        TEST_LANE = ["sh", "lane.sh"]
 
         def run(ref, write):
             def model(prompt, schema, cwd, **_):
@@ -879,6 +952,8 @@ def gate_selfcheck():
         stuck = run("topic", "bug again\n")
         if not (isinstance(stuck, RuntimeError) and "still fail" in str(stuck) and len(asked) == 2 and "a.txt holds a bug" in asked[0]):
             errs.append(f"a fix that left the lane red read {stuck!r} after {len(asked)} turn(s)")
+        elif "the runner" in asked[0] or "left out: they fail at origin/main here too: t::env" not in asked[0]:
+            errs.append(f"a test that fails at the base too reached the model: {asked[0][:400]}")
         good = run("topic", "ok\n")
         sh(tmp, "git", "fetch", "-q", "origin")
         body = sh(tmp, "git", "log", "-1", "--format=%B", "origin/topic").stdout
@@ -887,11 +962,14 @@ def gate_selfcheck():
             errs.append(f"a fixed red lane read {good!r}")
         elif "growth: +242 " not in child:
             errs.append(f"the child's memo did not price past the stacked +519 to the measured +761: {child.splitlines()[1]}")
-        elif prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
-            errs.append("a gate fix at the head is not counted as a prior fix")
+        elif prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip(), signed=GATE_SIGNED) != 1:
+            errs.append("a gate fix at the head is not counted as a prior gate fix")
+        elif prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 0:
+            errs.append("a gate fix at the head is counted against the findings fixes' stop")
         if not isinstance(run("flaky", "ok\n"), Flaky):
             errs.append("a lane that passes in the clone was handed to the model instead of rerun")
     finally:
+        TEST_LANE = saved
         shutil.rmtree(tmp, ignore_errors=True)
         shutil.rmtree(bare, ignore_errors=True)
     return errs
@@ -899,6 +977,12 @@ def gate_selfcheck():
 
 def selfcheck():
     errs = gate_selfcheck()
+    states = {1072: "closed", 1076: "open", 1077: "open"}.get
+    body = "Closes #1076. Refs #1072. Stacked on #1098.\nRefs #1077."
+    if tidied(body, states) != "Closes #1076. Stacked on #1098.\nRefs #1077.":
+        errs.append(f"a closed citation was not taken out cleanly: {tidied(body, states)!r}")
+    if tidied("Refs #1072.", states) is not None or tidied("Closes #1076.", states) is not None:
+        errs.append("a body citing only closed issues, or none, was rewritten")
     fresh = {"n": 3, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness"}]}
     if owed_mediums(fresh) or not owed_mediums(dict(fresh, n=2)) or not owed_mediums(dict(fresh, findings=[dict(fresh["findings"][0], since=2)])):
         errs.append("a fresh medium from round 3 on is owed a fix, or a round-2 or carried one is not")
@@ -1252,13 +1336,13 @@ def selfcheck():
         errs.append("a round the review job holds for a merge-only head is not the fixer's round, or an unrelated head is")
     # A pass: PRs already labelled failed are skipped without spending its quota of fixes.
     module, tried_prs = sys.modules[__name__], []
-    keep = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today")}
+    keep = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today", "tidy")}
     keep_api, keep_repo = forge_pr.fgj_api, forge_pr.repo
     try:
         stale = [{"number": n, "labels": [{"name": "autofix:failed"}], "head": {"repo": {"full_name": "o/r"}}} for n in (1, 2, 3)]
         fresh = {"number": 4, "labels": [], "head": {"repo": {"full_name": "o/r"}}}
         forge_pr.fgj_api, forge_pr.repo = (lambda *a, **k: stale + [fresh]), (lambda: "o/r")
-        module.label_ids, module.spent_today = (lambda repo: {}), (lambda repo: 0.0)
+        module.label_ids, module.spent_today, module.tidy = (lambda repo: {}), (lambda repo: 0.0), (lambda repo, pr: False)
         module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
                                                               decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
         cmd_autofix(type("A", (), {"number": None})())

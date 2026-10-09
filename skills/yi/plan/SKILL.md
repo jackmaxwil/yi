@@ -12,7 +12,7 @@ trigger: plan this, create a plan, write a plan
 
 # plan
 
-`plan` → ground → lift the todos → a check per task → `plan` ops → the user reads the DAG
+`plan` → ground → lift the todos → a check per task → `plan set` → the user reads the DAG
 
 ## Ground before you plan
 
@@ -31,12 +31,17 @@ tool's schema:
 
 <!-- yi:schema plan /properties/todos/items -->
 - `label` (string, required): the todo's name, imperative, at most 80 chars
-- `state` (string, one of `pending`, `running`, `done`, `blocked`): set: the state the row should reach; done runs its contract first, blocked asks the user (on, note, options as in block); a row the engine cannot move says why in the reply
+- `state` (string, one of `pending`, `running`, `done`, `blocked`, `failed`, `dropped`): the state the row should reach: done runs its contract first; blocked asks (on, note, options); failed records its cause; dropped removes the row; pending or running reopens a failed or blocked row. A row the engine cannot move says why in the reply
 - `after` (list of string): labels of the todos this one waits on
 - `intent` (list of string): user://<n> of each user message it serves; default the latest
 - `waived` (list of object): [{address, reason}]: a user message the plan leaves unserved
 - `delegation` (object): {spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}
 - `contract` (object): what must hold when the todo is done; done runs its items and passes at the threshold
+- `todos` (list of object): the sub-steps this row splits into, rows of its own sub-plan; the row runs while they do
+- `on` (object): blocked: {"child": agent} | {"user": null} | {"external": {"probe": command}} | {"channel": {"address": "clock://at <ISO time>" or an exec://, file:// or channel:// address as in todo, "filter"?}}, unblocked by the first match; default the user
+- `note` (string): blocked: what would unblock it
+- `options` (list of object): blocked on the user: 3 to 5 answers [{id, label, preview?}] the user picks one of by replying with its number, id or label; a preview is light (a line, a small diagram's source, or an address), at most 2048 bytes
+- `cause` (string): failed: what went wrong
 <!-- /yi:schema -->
 
 Its acceptance is a contract whose items each carry a `decider`, a command
@@ -74,12 +79,17 @@ Bad:
 
 ## The ops
 
-`plan init` with the goal and the todos; `plan start`, `done`, `fail`,
-`block`, `unblock` step one; `plan decompose` opens a sub-plan under a
-running todo; `plan supersede` replaces the cut with a reason. A todo moves
-pending → running → done in order: `done` on a pending todo and several
-`done` at once are refused. The todo tool stays the day-to-day list; a
-plan task may mirror a todo, and the plan steps it.
+`plan set` is the one write. The first set carries the goal and every todo
+as a row; each later set carries the rows that change, and a row it does
+not name stays as it is. A row's `contract`, `after` and `delegation`
+declare it and its `state` moves it: `done` runs the contract first,
+`blocked` asks the user, `failed` records its `cause`, `dropped` removes
+it, and `pending` or `running` reopens a failed or blocked row. A row's
+own `todos` are the sub-steps it splits into. A delegated row's child is
+started and verified by the engine. A row the engine could not move says
+why in a `note:` line of the reply, and the rest lands. `plan view` reads
+it. The todo tool stays the day-to-day list; a plan task may mirror a
+todo, and the plan steps it.
 
 ## Delegation
 
