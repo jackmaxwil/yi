@@ -1557,6 +1557,255 @@ fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestRe
     Ok(())
 }
 
+const TOGETHER: &str = include_str!("fixtures/prices/together_glm_flash.jsonl");
+const FIREWORKS: &str = include_str!("fixtures/prices/fireworks_glm_flash.jsonl");
+
+/// `text` with every entry stamped `now`, so a `--since` window sees it.
+fn restamped(text: &str, now: u64) -> String {
+    text.lines()
+        .map(|line| match line.rsplit_once("\"timestamp\":") {
+            Some((head, tail)) if line.contains("\"kind\":\"entry\"") => {
+                let rest = tail.trim_start_matches(|c: char| c.is_ascii_digit());
+                format!("{head}\"timestamp\":{now}{rest}\n")
+            }
+            _ => format!("{line}\n"),
+        })
+        .collect()
+}
+
+fn with_priced_sessions(workspace: &Workspace, together: &str) -> TestResult {
+    let dir = workspace.0.join("home/sessions/--p--");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("together.jsonl"), together)?;
+    std::fs::write(dir.join("fireworks.jsonl"), FIREWORKS)?;
+    Ok(())
+}
+
+fn rolled(workspace: &Workspace, args: &[&str]) -> Result<Value, Box<dyn Error>> {
+    let out = workspace.yi_env(args, &[("TZ", "UTC")])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(serde_json::from_str(&stdout(&out))?)
+}
+
+/// `yi stats --by prices` fits each route's price from billed dollars alone. Together's published
+/// glm-5.3-flash price is $0.15 in and $0.50 out per million, which 30 real replies must give
+/// back; Fireworks has 29, one under the floor, and is named as left out.
+#[test]
+fn stats_prices_fits_the_published_price_and_names_the_route_it_left_out() -> TestResult {
+    let workspace = Workspace::new("prices")?;
+    with_priced_sessions(&workspace, TOGETHER)?;
+    let fit = rolled(&workspace, &["stats", "--by", "prices", "--json"])?;
+    let routes = fit["prices"].as_array().ok_or("no prices")?;
+    assert_eq!(routes.len(), 1, "{fit}");
+    assert_eq!(routes[0]["upstream"], "Together", "{fit}");
+    assert_eq!(routes[0]["samples"], 30, "{fit}");
+    let price = |at: usize| routes[0]["observed"][at].as_f64().unwrap_or(f64::NAN);
+    assert!((price(0) - 0.15).abs() < 1e-6, "{fit}");
+    assert!((price(1) - 0.50).abs() < 1e-6, "{fit}");
+    assert_eq!(fit["unfit"], 1, "{fit}");
+    let text = stdout(&workspace.yi(&["stats", "--by", "prices"])?);
+    assert!(
+        text.contains("[1 route(s) not fitted: fewer than 30 priced replies (MIN_SAMPLES)"),
+        "{text}"
+    );
+    Ok(())
+}
+
+const GLM_ROOT: &str =
+    include_str!("../../runtime/tests/fixtures/rollup/root_glm_with_child_usage.jsonl");
+const OPUS_CHILD: &str = include_str!("../../runtime/tests/fixtures/rollup/child_bedrock.jsonl");
+
+/// Four sessions of two models: glm-5.3-flash on Together (30 replies), on Fireworks (29), a
+/// root with two, and an Opus child under `children/` with one.
+fn with_four_sessions(workspace: &Workspace) -> TestResult {
+    with_priced_sessions(workspace, TOGETHER)?;
+    let dir = workspace.0.join("home/sessions/--p--");
+    std::fs::write(dir.join("root.jsonl"), GLM_ROOT)?;
+    std::fs::create_dir_all(dir.join("root/children/sub-aa"))?;
+    std::fs::write(dir.join("root/children/sub-aa/c.jsonl"), OPUS_CHILD)?;
+    Ok(())
+}
+
+/// Dies when the default table keys rows by anything but model, mis-sums a model across
+/// sessions, or orders them other than costliest first. Totals and counts are summed from the
+/// fixture lines with Python, not read off Yi's output.
+#[test]
+fn stats_default_table_is_one_row_per_model_costliest_first() -> TestResult {
+    let workspace = Workspace::new("rollup-models")?;
+    with_four_sessions(&workspace)?;
+    let table = rolled(&workspace, &["stats", "--since", "36500d", "--json"])?;
+    let rows = table["rows"].as_array().ok_or("no rows")?;
+    let keys: Vec<&str> = rows.iter().filter_map(|row| row["key"].as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "openrouter/z-ai/glm-5.3-flash",
+            "openrouter/anthropic/claude-opus-5.5"
+        ],
+        "{table}"
+    );
+    assert_eq!(rows[0]["requests"], 61, "{table}");
+    assert!(
+        (rows[0]["billed"].as_f64().unwrap_or(f64::NAN) - 0.134_851_595).abs() < 1e-9,
+        "{table}"
+    );
+    assert_eq!(rows[1]["requests"], 1, "{table}");
+    assert!(
+        (rows[1]["billed"].as_f64().unwrap_or(f64::NAN) - 0.010_216).abs() < 1e-9,
+        "{table}"
+    );
+    assert_eq!(
+        (table["sessions"].clone(), table["files"].clone()),
+        (4.into(), 4.into()),
+        "{table}"
+    );
+    Ok(())
+}
+
+/// Dies when `--top N` ranks by anything but billed dollars, returns more than N, or mislabels
+/// a child; at N = 0 and N past the session count it must still answer, not panic or pad.
+#[test]
+fn stats_top_lists_the_costliest_sessions_and_holds_at_the_edges() -> TestResult {
+    let workspace = Workspace::new("rollup-top")?;
+    with_four_sessions(&workspace)?;
+    let two = rolled(&workspace, &["stats", "--top", "2", "--json"])?;
+    let ids: Vec<&str> = two["top"]
+        .as_array()
+        .ok_or("no top")?
+        .iter()
+        .filter_map(|r| r["key"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "01a00000-0000-7000-8000-fir000000000",
+            "01a00000-0000-7000-8000-tog000000000"
+        ],
+        "{two}"
+    );
+    let all = rolled(&workspace, &["stats", "--top", "9", "--json"])?;
+    let last = all["top"]
+        .as_array()
+        .ok_or("no top")?
+        .last()
+        .cloned()
+        .ok_or("empty")?;
+    assert_eq!(all["top"].as_array().map(Vec::len), Some(4), "{all}");
+    assert_eq!(
+        (last["key"].clone(), last["child"].clone()),
+        ("01a04771-80a2-727b-a35d-9a0bfe11023b".into(), false.into()),
+        "{all}"
+    );
+    let child = all["top"][2].clone();
+    assert_eq!(
+        (child["key"].clone(), child["child"].clone()),
+        ("01a0faa8-5f44-7522-b54f-fef261f76e7f".into(), true.into()),
+        "{all}"
+    );
+    let none = rolled(&workspace, &["stats", "--top", "0", "--json"])?;
+    assert_eq!(none["top"].as_array().map(Vec::len), Some(0), "{none}");
+    let text = stdout(&workspace.yi(&["stats", "--top", "1"])?);
+    assert!(text.contains("costliest 1 session(s)"), "{text}");
+    Ok(())
+}
+
+/// Dies when the rollup flags leak past `stats` (each used to be an unknown option, and
+/// `yi ask --top 3` now runs with the 3 swallowed), when a session id or `telemetry` rides along
+/// with them and is silently ignored, or when a malformed value is not named.
+#[test]
+fn the_rollup_flags_belong_to_stats_alone_and_refuse_a_session_id() -> TestResult {
+    let workspace = Workspace::new("rollup-scope")?;
+    with_four_sessions(&workspace)?;
+    let refused = |args: &[&str], needle: &str| -> TestResult {
+        let out = workspace.yi(args)?;
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && err.contains(needle),
+            "{args:?}: {err}"
+        );
+        Ok(())
+    };
+    refused(&["ask", "--top", "3", "hi"], "--top")?;
+    refused(&["sessions", "--by", "model"], "--by")?;
+    refused(
+        &[
+            "stats",
+            "01a04771-80a2-727b-a35d-9a0bfe11023b",
+            "--since",
+            "1d",
+        ],
+        "fold every session",
+    )?;
+    refused(
+        &["stats", "telemetry", "/tmp", "--since", "1d"],
+        "fold every session",
+    )?;
+    refused(&["stats", "--top", "x"], "--top x")?;
+    refused(&["stats", "--since", "7q"], "--since 7q")?;
+    refused(&["stats", "--by", "role"], "--by role")?;
+    Ok(())
+}
+
+/// Dies when the rollup flags are read by a second pass over argv: `--top` here is the value of
+/// `--system`, so it is no flag, and a second parser that skips `--system` as unknown reads
+/// `--top` as one and fails on its missing value instead of reaching the session lookup.
+#[test]
+fn a_flag_name_that_is_another_options_value_is_a_value() -> TestResult {
+    let workspace = Workspace::new("rollup-value")?;
+    let out = workspace.yi(&["stats", "--system", "--top"])?;
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(err.contains("no sessions for this directory"), "{err}");
+    Ok(())
+}
+
+/// `--by day` buckets on the local calendar and `--since` drops whole days: the dates and
+/// counts below come from reading the fixture's timestamps with Python's datetime, not from Yi.
+#[test]
+fn stats_rolls_sessions_up_by_day_and_window() -> TestResult {
+    let workspace = Workspace::new("rollup-days")?;
+    with_priced_sessions(&workspace, TOGETHER)?;
+    let days = rolled(&workspace, &["stats", "--by", "day", "--json"])?;
+    let counted: Vec<(String, u64)> = days["rows"]
+        .as_array()
+        .ok_or("no rows")?
+        .iter()
+        .map(|row| {
+            (
+                row["key"].as_str().unwrap_or("").to_owned(),
+                row["requests"].as_u64().unwrap_or(0),
+            )
+        })
+        .collect();
+    let want = [
+        ("2026-09-27", 5),
+        ("2026-09-30", 12),
+        ("2026-10-01", 3),
+        ("2026-10-04", 10),
+        ("2026-10-07", 29),
+    ];
+    assert_eq!(counted, want.map(|(day, n)| (day.to_owned(), n)), "{days}");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture is restamped to this instant so a `--since` window sees it"
+    )]
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    let fresh = restamped(TOGETHER, u64::try_from(now.as_millis())?);
+    with_priced_sessions(&workspace, &fresh)?;
+    let recent = rolled(
+        &workspace,
+        &["stats", "--since", "1d", "--by", "upstream", "--json"],
+    )?;
+    assert_eq!(recent["rows"].as_array().map(Vec::len), Some(1), "{recent}");
+    assert_eq!(recent["rows"][0]["key"], "Together", "{recent}");
+    assert_eq!(recent["rows"][0]["requests"], 30, "{recent}");
+    Ok(())
+}
+
 #[test]
 fn memory_imports_lists_checks_and_forgets() -> TestResult {
     let workspace = Workspace::new("memory")?;
