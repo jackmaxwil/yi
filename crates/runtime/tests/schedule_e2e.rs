@@ -1206,6 +1206,24 @@ fn a_day_alert_seeds_from_todays_sessions_and_leaves_earlier_days_out() -> TestR
     Ok(())
 }
 
+/// Dies when a second attach (a session switch in a daemon) starts the day over from the files,
+/// dropping what this process already watched being spent: the 0.005 before the switch must
+/// still count toward the $0.04 multiple the 0.005 after it crosses.
+#[test]
+fn a_day_alert_keeps_its_running_total_across_a_reattach() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let mut alarm =
+        yi_runtime::spend::SpendAlarm::day_usd(0.04, &dir).ok_or("a positive amount refused")?;
+    alarm.seed("first", &yi_types::wire::SessionStats::zero());
+    assert_eq!(alarm.observe(&priced(turn_of(10), 0.005)), None);
+    alarm.seed("second", &yi_types::wire::SessionStats::zero());
+    assert!(
+        alarm.observe(&priced(turn_of(10), 0.005)).is_some(),
+        "$0.0406 crossed $0.04 and the switch had forgotten the first 0.005"
+    );
+    Ok(())
+}
+
 /// Dies when a process alive past local midnight carries yesterday's total into the new day:
 /// the first reply after midnight would then alert early.
 #[test]

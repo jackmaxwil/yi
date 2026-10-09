@@ -57,7 +57,6 @@ struct Args {
     deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
-    stats_flags: Vec<(String, String)>,
     prompt: String,
 }
 
@@ -106,7 +105,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
-    let mut flags = Vec::new();
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
@@ -144,7 +142,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
-            Long(f @ ("since" | "by" | "top")) => flags.push((f.into(), parser.value()?.string()?)),
+            Long("since" | "by" | "top") if command == "stats" => drop(parser.value()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -214,7 +212,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             (None, false) => Resume::Fresh,
         },
         schema,
-        stats_flags: flags,
         prompt: prompt_parts.join(" "),
     })
 }
@@ -1152,7 +1149,10 @@ fn dispatch(args: Args) {
                 session_dir: default_session_dir(&args),
                 cwd: effective_cwd(&args).display().to_string(),
                 json: args.json,
-                flags: args.stats_flags.clone(),
+                query: stats::Query::from_env().unwrap_or_else(|error| {
+                    eprintln!("error: {error}");
+                    std::process::exit(2)
+                }),
             };
             std::process::exit(stats::run(&args.prompt, &options));
         }

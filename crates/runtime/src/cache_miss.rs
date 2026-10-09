@@ -84,6 +84,16 @@ struct Request {
     ttl: Ttl,
 }
 
+/// The string `key` of the first `kind` diagnostic a reply carries, if it carries one.
+pub(crate) fn diagnostic_detail(
+    diagnostics: Option<&[yi_types::message::AssistantMessageDiagnostic]>,
+    kind: &str,
+    key: &str,
+) -> Option<String> {
+    let note = diagnostics?.iter().find(|d| d.diagnostic_type == kind)?;
+    Some(note.details.as_ref()?.get(key)?.as_str()?.to_owned())
+}
+
 #[derive(Default)]
 pub struct MissTracker {
     last: Option<Request>,
@@ -144,13 +154,7 @@ impl MissTracker {
         if prompt == 0 || usage.unknown {
             return None;
         }
-        let detail = |kind: &str, key: &str| {
-            let note = diagnostics
-                .iter()
-                .flatten()
-                .find(|d| d.diagnostic_type == kind)?;
-            Some(note.details.as_ref()?.get(key)?.as_str()?.to_owned())
-        };
+        let detail = |kind: &str, key: &str| diagnostic_detail(diagnostics.as_deref(), kind, key);
         let elapsed = diagnostics
             .iter()
             .flatten()

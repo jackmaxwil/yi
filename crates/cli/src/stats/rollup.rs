@@ -16,11 +16,68 @@ const MIN_SAMPLES: usize = 30;
 /// A component further than this from its catalog price is drift.
 const DRIFT: f64 = 0.2;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum By {
     Model,
     Upstream,
     Day,
+    Prices,
+}
+
+/// What `--since`, `--by` and `--top` asked for; all unset means `yi stats` is the one-session view.
+#[derive(Clone, Default)]
+pub struct Query {
+    /// The span as typed, for the table's heading, and in milliseconds.
+    since: Option<(String, u64)>,
+    by: Option<By>,
+    top: Option<usize>,
+}
+
+impl Query {
+    /// The three flags out of the process arguments. `parse_args` skips them for `stats` only,
+    /// so any other command still refuses them as unknown options.
+    pub fn from_env() -> Result<Self, lexopt::Error> {
+        use lexopt::prelude::*;
+        let mut query = Self::default();
+        let mut parser = lexopt::Parser::from_env();
+        while let Some(argument) = parser.next()? {
+            let Long(flag @ ("since" | "by" | "top")) = argument else {
+                continue;
+            };
+            let flag = flag.to_owned();
+            let value = parser.value()?.string()?;
+            let bad =
+                |wants: &str| lexopt::Error::Custom(format!("--{flag} {value}: {wants}").into());
+            match flag.as_str() {
+                "since" => {
+                    let span = span_ms(&value)
+                        .ok_or_else(|| bad("wants a span like 90m, 12h, 7d or 2w"))?;
+                    query.since = Some((value.clone(), span));
+                }
+                "by" => {
+                    query.by = Some(match value.as_str() {
+                        "model" => By::Model,
+                        "upstream" => By::Upstream,
+                        "day" => By::Day,
+                        "prices" => By::Prices,
+                        _ => return Err(bad("wants model, upstream, day or prices")),
+                    });
+                }
+                _ => {
+                    query.top = Some(
+                        value
+                            .parse()
+                            .map_err(|_| bad("wants a number of sessions"))?,
+                    )
+                }
+            }
+        }
+        Ok(query)
+    }
+
+    pub fn asked(&self) -> bool {
+        self.since.is_some() || self.by.is_some() || self.top.is_some()
+    }
 }
 
 fn span_ms(raw: &str) -> Option<u64> {
@@ -113,7 +170,7 @@ fn grouped(scan: &Scan, by: By, zone: &Zone) -> Vec<(String, Group)> {
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     for request in &scan.requests {
         let key = match by {
-            By::Model => route(request).0,
+            By::Model | By::Prices => route(request).0,
             By::Upstream => route(request).1,
             By::Day => day_label(zone, request.at_ms),
         };
@@ -393,51 +450,22 @@ fn prices_view(scanned: &Scan, window: &str, skipped: Option<String>, json_out: 
     0
 }
 
-pub fn run(flags: &[(String, String)], dir: &std::path::Path, json_out: bool) -> i32 {
-    let flag = |name: &str| {
-        flags
-            .iter()
-            .rev()
-            .find(|(given, _)| given == name)
-            .map(|(_, value)| value.as_str())
-    };
-    let by = match flag("by") {
-        None | Some("model" | "prices") => By::Model,
-        Some("upstream") => By::Upstream,
-        Some("day") => By::Day,
-        Some(other) => {
-            eprintln!("error: --by {other} is not one of model, upstream, day, prices");
-            return 2;
-        }
-    };
-    let now = now_ms();
-    let since = match flag("since") {
-        None => None,
-        Some(raw) => match span_ms(raw) {
-            Some(span) => Some(now.saturating_sub(span)),
-            None => {
-                eprintln!("error: --since {raw} is not a span like 90m, 12h, 7d or 2w");
-                return 2;
-            }
-        },
-    };
-    let top = match flag("top").map(str::parse::<usize>) {
-        None => None,
-        Some(Ok(top)) => Some(top),
-        Some(Err(_)) => {
-            eprintln!("error: --top needs a number of sessions");
-            return 2;
-        }
-    };
+pub fn run(query: &Query, dir: &std::path::Path, json_out: bool) -> i32 {
+    let by = query.by.unwrap_or(By::Model);
+    let since = query
+        .since
+        .as_ref()
+        .map(|(_, span)| now_ms().saturating_sub(*span));
+    let top = query.top;
     let scanned = scan(dir, since.unwrap_or(0));
-    let window = flag("since").unwrap_or("all time");
+    let window = query.since.as_ref().map_or("all time", |(raw, _)| raw);
     let skipped = (scanned.unreadable > 0 || scanned.bad_lines > 0).then(|| {
         format!(
             "[skipped {} unreadable file(s) and {} unparseable line(s) of {} file(s) read; every figure leaves them out]",
             scanned.unreadable, scanned.bad_lines, scanned.files
         )
     });
-    if flag("by") == Some("prices") {
+    if by == By::Prices {
         return prices_view(&scanned, window, skipped, json_out);
     }
     let zone = Zone::local();

@@ -752,8 +752,8 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   turn and machine wakes; `/heartbeat resume` lifts it, and only it while it is in effect. Both are `custom{halt}` records.
   `spend.alertTokens` and `spend.alertUsd` each queue a shown `spend_alert` notice per multiple
   of tokens or billed dollars crossed, children counted by their `ChildUpdate`. `spend.dayAlertUsd`
-  does the same for the local day's billed dollars across every session: the total is seeded from
-  the day's session files at attach, grows with the live session's replies and children, and
+  does the same for the local day's billed dollars across every session: the total is seeded once per process from
+  the day's session files, grows with the live session's replies and children, and
   restarts from zero past local midnight; it counts replies only, so it runs late, never early.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
