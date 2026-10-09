@@ -1,13 +1,15 @@
 //! Cross-session spend: every assistant reply under a sessions directory, read off the JSONL
 //! ledgers themselves. No index and no collector; the files are the ledger.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
+use crate::cache_miss::diagnostic_detail;
 use crate::schedule::Zone;
 
 pub use yi_session::now_ms;
@@ -86,6 +88,14 @@ fn jsonl_files(dir: &Path, since_ms: u64, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The entry's own `timestamp`, read off the line's tail without parsing it: an entry ends
+/// `"seq":N,"timestamp":N}`. `None` when the tail is anything else, and the line is parsed whole.
+fn entry_stamp(line: &str) -> Option<u64> {
+    let tail = line.trim_end().strip_suffix('}')?;
+    let (_, digits) = tail.rsplit_once("\"timestamp\":")?;
+    digits.parse().ok()
+}
+
 /// Every reply dated `since_ms` or later under `dir`, children and legacy `rlm-*/sub-*` files
 /// included, each counted once by its response id.
 pub fn scan(dir: &Path, since_ms: u64) -> Scan {
@@ -114,6 +124,9 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
             })
         });
         for line in lines.filter(|line| line.contains("\"assistant\"")) {
+            if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
+                continue;
+            }
             let parsed = match serde_json::from_str::<Mutation>(line) {
                 Ok(parsed) => parsed,
                 Err(_) => {
@@ -151,12 +164,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
             if at_ms < since_ms || !seen.insert(key) {
                 continue;
             }
-            let upstream = diagnostics
-                .iter()
-                .flatten()
-                .find(|note| note.diagnostic_type == "upstream")
-                .and_then(|note| note.details.as_ref()?.get("provider")?.as_str())
-                .map(str::to_owned);
+            let upstream = diagnostic_detail(diagnostics.as_deref(), "upstream", "provider");
             scan.requests.push(Request {
                 session: header.id.clone(),
                 child,
@@ -182,10 +190,22 @@ pub fn day_label(zone: &Zone, at_ms: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// Billed dollars since local midnight across `dir`, and whether any of those replies came back
-/// without usage, which makes the sum a lower bound.
+/// Billed dollars since local midnight across `dir`, and whether a reply lacked usage (a lower
+/// bound). Scanned once per process and day: every attach asks, and a daemon attaches on a worker.
 pub fn spent_today(dir: &Path, now_ms: u64) -> (f64, bool) {
-    let scan = scan(dir, local_midnight_ms(now_ms));
+    type Seen = HashMap<PathBuf, (u64, (f64, bool))>;
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    let midnight = local_midnight_ms(now_ms);
+    let mut seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+    let seen = seen.get_or_insert_with(HashMap::new);
+    if let Some((day, total)) = seen.get(dir)
+        && *day == midnight
+    {
+        return *total;
+    }
+    let scan = scan(dir, midnight);
     let unknown = scan.requests.iter().any(|request| request.usage.unknown);
-    (scan.requests.iter().map(Request::billed).sum(), unknown)
+    let total = (scan.requests.iter().map(Request::billed).sum(), unknown);
+    seen.insert(dir.to_path_buf(), (midnight, total));
+    total
 }

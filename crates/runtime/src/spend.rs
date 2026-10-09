@@ -63,6 +63,7 @@ enum Measure {
 struct Day {
     dir: PathBuf,
     ends_ms: u64,
+    seeded: bool,
 }
 
 /// Invariant: arithmetic alone decides an alert, never a model: the session's own turns plus
@@ -96,6 +97,7 @@ impl SpendAlarm {
         alarm.day = Some(Day {
             dir: dir.to_path_buf(),
             ends_ms: 0,
+            seeded: false,
         });
         Some(alarm)
     }
@@ -222,10 +224,14 @@ impl SpendAlarm {
     /// reaches no ledger a re-attach reads; one recorded mid-re-attach counts its last step twice.
     pub fn seed(&mut self, session: &str, stats: &yi_types::wire::SessionStats) {
         if let Some(day) = self.day.as_mut() {
-            // The day's files already hold this session up to now; replies after the seed arrive live.
-            let now = now_ms();
-            (self.total, self.unpriced) = crate::rollup::spent_today(&day.dir, now);
-            day.ends_ms = crate::rollup::local_midnight_ms(now).saturating_add(DAY_MS);
+            // The day's files already hold this session up to now; replies after the seed arrive
+            // live, so a later attach keeps the running total instead of starting over from files.
+            if !day.seeded {
+                let now = now_ms();
+                (self.total, self.unpriced) = crate::rollup::spent_today(&day.dir, now);
+                day.ends_ms = crate::rollup::local_midnight_ms(now).saturating_add(DAY_MS);
+                day.seeded = true;
+            }
             self.announced = self.announced.max(self.multiples());
             self.session = session.to_owned();
             return;

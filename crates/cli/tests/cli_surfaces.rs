@@ -1616,6 +1616,141 @@ fn stats_prices_fits_the_published_price_and_names_the_route_it_left_out() -> Te
     Ok(())
 }
 
+const GLM_ROOT: &str =
+    include_str!("../../runtime/tests/fixtures/rollup/root_glm_with_child_usage.jsonl");
+const OPUS_CHILD: &str = include_str!("../../runtime/tests/fixtures/rollup/child_bedrock.jsonl");
+
+/// Four sessions of two models: glm-5.3-flash on Together (30 replies), on Fireworks (29), a
+/// root with two, and an Opus child under `children/` with one.
+fn with_four_sessions(workspace: &Workspace) -> TestResult {
+    with_priced_sessions(workspace, TOGETHER)?;
+    let dir = workspace.0.join("home/sessions/--p--");
+    std::fs::write(dir.join("root.jsonl"), GLM_ROOT)?;
+    std::fs::create_dir_all(dir.join("root/children/sub-aa"))?;
+    std::fs::write(dir.join("root/children/sub-aa/c.jsonl"), OPUS_CHILD)?;
+    Ok(())
+}
+
+/// Dies when the default table keys rows by anything but model, mis-sums a model across
+/// sessions, or orders them other than costliest first. Totals and counts are summed from the
+/// fixture lines with Python, not read off Yi's output.
+#[test]
+fn stats_default_table_is_one_row_per_model_costliest_first() -> TestResult {
+    let workspace = Workspace::new("rollup-models")?;
+    with_four_sessions(&workspace)?;
+    let table = rolled(&workspace, &["stats", "--since", "36500d", "--json"])?;
+    let rows = table["rows"].as_array().ok_or("no rows")?;
+    let keys: Vec<&str> = rows.iter().filter_map(|row| row["key"].as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "openrouter/z-ai/glm-5.3-flash",
+            "openrouter/anthropic/claude-opus-5.5"
+        ],
+        "{table}"
+    );
+    assert_eq!(rows[0]["requests"], 61, "{table}");
+    assert!(
+        (rows[0]["billed"].as_f64().unwrap_or(f64::NAN) - 0.134_851_595).abs() < 1e-9,
+        "{table}"
+    );
+    assert_eq!(rows[1]["requests"], 1, "{table}");
+    assert!(
+        (rows[1]["billed"].as_f64().unwrap_or(f64::NAN) - 0.010_216).abs() < 1e-9,
+        "{table}"
+    );
+    assert_eq!(
+        (table["sessions"].clone(), table["files"].clone()),
+        (4.into(), 4.into()),
+        "{table}"
+    );
+    Ok(())
+}
+
+/// Dies when `--top N` ranks by anything but billed dollars, returns more than N, or mislabels
+/// a child; at N = 0 and N past the session count it must still answer, not panic or pad.
+#[test]
+fn stats_top_lists_the_costliest_sessions_and_holds_at_the_edges() -> TestResult {
+    let workspace = Workspace::new("rollup-top")?;
+    with_four_sessions(&workspace)?;
+    let two = rolled(&workspace, &["stats", "--top", "2", "--json"])?;
+    let ids: Vec<&str> = two["top"]
+        .as_array()
+        .ok_or("no top")?
+        .iter()
+        .filter_map(|r| r["key"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "01a00000-0000-7000-8000-fir000000000",
+            "01a00000-0000-7000-8000-tog000000000"
+        ],
+        "{two}"
+    );
+    let all = rolled(&workspace, &["stats", "--top", "9", "--json"])?;
+    let last = all["top"]
+        .as_array()
+        .ok_or("no top")?
+        .last()
+        .cloned()
+        .ok_or("empty")?;
+    assert_eq!(all["top"].as_array().map(Vec::len), Some(4), "{all}");
+    assert_eq!(
+        (last["key"].clone(), last["child"].clone()),
+        ("01a04771-80a2-727b-a35d-9a0bfe11023b".into(), false.into()),
+        "{all}"
+    );
+    let child = all["top"][2].clone();
+    assert_eq!(
+        (child["key"].clone(), child["child"].clone()),
+        ("01a0faa8-5f44-7522-b54f-fef261f76e7f".into(), true.into()),
+        "{all}"
+    );
+    let none = rolled(&workspace, &["stats", "--top", "0", "--json"])?;
+    assert_eq!(none["top"].as_array().map(Vec::len), Some(0), "{none}");
+    let text = stdout(&workspace.yi(&["stats", "--top", "1"])?);
+    assert!(text.contains("costliest 1 session(s)"), "{text}");
+    Ok(())
+}
+
+/// Dies when the rollup flags leak past `stats` (each used to be an unknown option, and
+/// `yi ask --top 3` now runs with the 3 swallowed), when a session id or `telemetry` rides along
+/// with them and is silently ignored, or when a malformed value is not named.
+#[test]
+fn the_rollup_flags_belong_to_stats_alone_and_refuse_a_session_id() -> TestResult {
+    let workspace = Workspace::new("rollup-scope")?;
+    with_four_sessions(&workspace)?;
+    let refused = |args: &[&str], needle: &str| -> TestResult {
+        let out = workspace.yi(args)?;
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && err.contains(needle),
+            "{args:?}: {err}"
+        );
+        Ok(())
+    };
+    refused(&["ask", "--top", "3", "hi"], "--top")?;
+    refused(&["sessions", "--by", "model"], "--by")?;
+    refused(
+        &[
+            "stats",
+            "01a04771-80a2-727b-a35d-9a0bfe11023b",
+            "--since",
+            "1d",
+        ],
+        "fold every session",
+    )?;
+    refused(
+        &["stats", "telemetry", "/tmp", "--since", "1d"],
+        "fold every session",
+    )?;
+    refused(&["stats", "--top", "x"], "--top x")?;
+    refused(&["stats", "--since", "7q"], "--since 7q")?;
+    refused(&["stats", "--by", "role"], "--by role")?;
+    Ok(())
+}
+
 /// `--by day` buckets on the local calendar and `--since` drops whole days: the dates and
 /// counts below come from reading the fixture's timestamps with Python's datetime, not from Yi.
 #[test]

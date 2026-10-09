@@ -93,3 +93,47 @@ fn an_unreadable_file_and_a_torn_line_are_counted_not_swallowed() -> TestResult 
     assert_eq!(found.requests.len(), 5);
     Ok(())
 }
+
+/// Dies when an out-of-window line is fully parsed before it is dropped: a line stamped before
+/// the window and torn past repair counts as a bad line only if the window did not drop it first.
+#[test]
+fn a_line_before_the_window_is_dropped_without_being_parsed() -> TestResult {
+    let dir = Scratch::new("yi-rollup-cheap")?;
+    let torn = "{\"kind\":\"entry\",\"message\":{\"role\":\"assistant\",\"model\":,\"seq\":9,\"timestamp\":5}\n";
+    put(
+        &dir,
+        "a.jsonl",
+        &format!(
+            "{}{torn}",
+            CHILD
+                .lines()
+                .next()
+                .map_or_else(String::new, |h| format!("{h}\n"))
+        ),
+    )?;
+    assert_eq!(scan(&dir, 1_000).bad_lines, 0);
+    assert_eq!(scan(&dir, 0).bad_lines, 1);
+    Ok(())
+}
+
+/// Dies when each attach rescans the day: the daemon attaches on an async worker, and the
+/// scan is the all-time size of every file touched today. A file added after the first ask is
+/// not seen by the second; another directory is its own question.
+#[test]
+fn the_days_total_is_scanned_once_per_directory_and_day() -> TestResult {
+    let dir = Scratch::new("yi-rollup-once")?;
+    let now = yi_runtime::rollup::now_ms();
+    let today = CHILD.replace("1790911735288", &now.to_string());
+    put(&dir, "a.jsonl", &today)?;
+    let first = yi_runtime::rollup::spent_today(&dir, now);
+    assert!((first.0 - CHILD_REPLY).abs() < 1e-9, "{first:?}");
+    put(
+        &dir,
+        "b.jsonl",
+        &today.replace("R8jG4wschDCyIUWXZMx1", "second"),
+    )?;
+    assert_eq!(yi_runtime::rollup::spent_today(&dir, now), first);
+    let other = Scratch::new("yi-rollup-once-other")?;
+    assert_eq!(yi_runtime::rollup::spent_today(&other, now).0, 0.0);
+    Ok(())
+}
