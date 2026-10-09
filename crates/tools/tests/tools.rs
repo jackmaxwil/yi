@@ -2734,6 +2734,7 @@ fn a_grammar_or_stale_tag_refusal_names_the_edit_guide() -> TestResult {
     for patch in [
         "[p.py]\nPUT 1.=1:\nx = 2\n",
         "[p.py#9F3C]\nPUT 1.=1:\n+x = 2\n",
+        "[p.py#9F3C]\n",
     ] {
         let refused = edit.execute(args(&[("patch", json!(patch))]), &context);
         let text = output_text(&refused);
