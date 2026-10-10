@@ -339,8 +339,9 @@ The interpreter is `bash` if `command -v bash` succeeds, else `sh`, probed once.
 default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = exit ≠ 0 or
 cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
 past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines; else head 80/tail 40), kept
-only if shorter. Lossy output is tee'd to `~/.yi/spills/<session>/` and ends
-`[full output: <path>]`; with nowhere to tee, raw text returns. A contained call runs under
+only if shorter. Lossy output is tee'd, secrets redacted line for line, to the family board's
+`spills/`, kept until `yi sessions rm`, and ends `[full output: <path>]`; with nowhere to tee,
+raw text returns. A contained call runs under
 Seatbelt (§8).
 
 - Owner: [`jobs.rs`](../crates/tools/src/jobs.rs), [`reduce.rs`](../crates/tools/src/reduce.rs).
@@ -567,8 +568,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
-  A walled session also walls the spill root and every session store and spares its own spill
-  dir and transcript, at the read gate and in its contained profile (D340, D345).
+  A walled session also walls the old spill root and every session store and spares its
+  family's spill dir and its own transcript, at the read gate and in its contained profile (D345).
 - A lease is drawn under the roster lock; an ask past the parent's deadline less 30 s or its
   unreserved tokens is refused with both numbers. `rlm.revoke` journals `custom{lease}` and
   sends `cancel`; at grace expiry the child is `Repossessed` with its lane `Retained`.

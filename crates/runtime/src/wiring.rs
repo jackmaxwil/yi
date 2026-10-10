@@ -138,6 +138,11 @@ pub struct RuntimeWiring {
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
+/// Where a family keeps its members' cut tool output: written by the host alone, read by all.
+pub(crate) fn board_spills(board: &std::path::Path) -> PathBuf {
+    board.join(yi_tools::SPILLS)
+}
+
 pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
     let mut dir = rlm_dir;
     while dir
@@ -250,21 +255,15 @@ impl RuntimeWiring {
         Some(sandbox)
     }
 
-    /// A walled session's own spill dir, transcript and kernel state, named as a kernel boots or a
-    /// job spawns (a child's store attaches after its wiring); a root's state is not its corpus.
+    /// A walled session's family spills, own transcript and kernel state, named as a kernel boots
+    /// or a job spawns (a child's store attaches after its wiring); a root's state is not its corpus.
     fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
-        let (key, store, wall) = (
-            session.store_id_hook(),
-            session.store_handle(),
-            self.wall.clone(),
-        );
+        let (store, wall) = (session.store_handle(), self.wall.clone());
+        let spills = board_spills(&self.family_dir());
         let own = move |state: Option<&Path>| {
-            let root = crate::tools::default_spill_root();
-            let spills = crate::tools::own_spill_dir(root.as_deref(), key());
             let file =
                 store().and_then(|store| yi_session::lock_session(&store).file_path().cloned());
-            (spills
-                .into_iter()
+            (std::iter::once(spills.clone())
                 .chain(file)
                 .chain(state.map(Path::to_path_buf)))
             .filter(|dir| crate::tools::unwalled(&wall, dir))
@@ -997,6 +996,9 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     session.set_rules_engine(Arc::clone(&engine));
     wire_compacted(session, &service, &plans_dir, engine);
     session.set_wall(wiring.wall.clone());
+    // Owner, overriding D340's per-session spills: "I accept the security hole. It has more
+    // value than this esoteric risk"; the board is the family's, so every member reads them.
+    session.set_spills(board_spills(&wiring.family_dir()));
     session.use_tools_with_background(
         tools,
         wiring.cwd.clone(),
