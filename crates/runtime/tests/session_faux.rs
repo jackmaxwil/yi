@@ -1644,3 +1644,79 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
     );
     Ok(())
 }
+
+/// Stage 9: a cut bash output gets the lines `models.selector` named, verbatim under a row that
+/// names the model; its input cap, at the limit and one past it, and a selector giving prose.
+#[tokio::test]
+async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-select")?;
+    let run = |command: &str, answer: &str| {
+        let provider = Arc::new(ProviderStream::new(None));
+        let args = serde_json::json!({"command": command})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        provider.queue_faux(vec![
+            faux_assistant_message(
+                vec![faux_tool_call("c1", "bash", args)],
+                StopReason::ToolUse,
+            ),
+            faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+        ]);
+        let picker = Arc::new(ProviderStream::new(None));
+        picker.queue_faux(vec![faux_assistant_message(
+            vec![faux_text(answer)],
+            StopReason::Stop,
+        )]);
+        let mut session = AgentSession::new(
+            SessionConfig {
+                system_prompt: "sys".to_owned(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: ExecutionMode::Sequential,
+            },
+            provider,
+        );
+        session.set_spills(dir.join("spills"));
+        session.set_selector(Some(yi_runtime::select::Selector::new(
+            picker,
+            faux_model(),
+        )));
+        session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
+        session
+    };
+    let result = |session: &AgentSession| {
+        (session.messages().iter())
+            .find_map(|message| match message {
+                AgentMessage::ToolResult { content, .. } => {
+                    Some(yi_types::message::join_text(content, "\n"))
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let session = run("seq 1 4000", r#"{"ranges": [[2000, 2002]]}"#);
+    session.prompt("count")?;
+    session.wait_idle().await;
+    let text = result(&session);
+    assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); 3 not already shown above]\n2000\n2001\n2002"), "{text}");
+    let session = run("seq 1 4001", r#"{"ranges": [[2000, 2002]]}"#);
+    session.prompt("count")?;
+    session.wait_idle().await;
+    let text = result(&session);
+    assert!(
+        text.contains(
+            "[models.selector skipped: the full output has 4001 lines, past LINES_IN 4000]"
+        ),
+        "{text}"
+    );
+    let session = run("seq 1 4000", "the interesting part is the middle");
+    session.prompt("count")?;
+    session.wait_idle().await;
+    let text = result(&session);
+    assert!(
+        text.contains("[models.selector faux-1 gave no lines (not JSON:"),
+        "{text}"
+    );
+    Ok(())
+}
