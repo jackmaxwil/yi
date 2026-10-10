@@ -188,6 +188,12 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   undated `unproven`), every `custom` kind and both summaries arrive as
   `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
+- Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
+  at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
+  `read` of a path) is cut once the tokens dropped × cache-read price × requests so far beat the
+  tokens after the first cut × (write − read price), or the cache lapsed; at least 2,000 tokens.
+  A `custom{reclaim}` entry names the cut results, which render from then on as one
+  `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
   16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338), or
   would pass `compaction.at` tokens when that comes first (a root session's ceiling, raised with a

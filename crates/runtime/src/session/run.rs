@@ -282,7 +282,18 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
     }
     config.tool_execution = tool_execution;
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
-    config.convert_to_llm = Box::new(yi_context::convert_to_llm);
+    // A cut names `read` as its restore, so a session without it, a narrow reader, cuts nothing.
+    let reads = (context.tools.iter()).any(|tool| tool.definition().name == "read");
+    let stores = Arc::clone(&shared);
+    let overlay = crate::reclaim::Overlay::new(
+        Arc::clone(&shared.reclaimed),
+        Box::new(move || super::store_of(&stores)),
+        model.clone(),
+    );
+    config.convert_to_llm = match reads {
+        true => Box::new(move |messages| overlay.view(yi_context::convert_to_llm(messages))),
+        false => Box::new(yi_context::convert_to_llm),
+    };
     if let Some(compactor) = compactor.clone() {
         compactor.open_run(&prompt);
         let stores = Arc::clone(&shared);
