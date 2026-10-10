@@ -110,13 +110,14 @@ pub struct NodeConfig {
     pub isolation: Option<Vec<String>>,
 }
 
-/// `spend.alertTokens` and `spend.alertUsd`: a notice each time a session's tokens, or its
-/// billed dollars, its children's included, cross another multiple; absent, no alert.
+/// `spend.alertTokens`, `spend.alertUsd` (a session and its children) and `spend.dayAlertUsd`
+/// (the local day, every session): a notice per multiple crossed; absent, no alert.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpendConfig {
     pub alert_tokens: Option<u64>,
     pub alert_usd: Option<serde_json::Number>,
+    pub day_alert_usd: Option<serde_json::Number>,
 }
 
 /// `compaction.at`: compact once a request passes this many tokens, when that comes before the
