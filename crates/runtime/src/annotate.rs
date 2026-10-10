@@ -4,9 +4,9 @@ use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::entry::Entry;
 use yi_types::message::AgentMessage;
-use yi_types::reclaim::{ANNOTATION_ENTRY_TYPE, AnnotationRecord, Reclaimed};
+use yi_types::reclaim::{AnnotationRecord, Reclaimed};
 
-use crate::reclaim::{Cut, brief, calls, hash};
+use crate::reclaim::{Cut, annotations, brief, calls, hash, never_cut, newest_reads};
 
 const NOTE_CAP: usize = 280;
 const KINDS: [&str; 3] = ["pin", "discard", "finding"];
@@ -49,10 +49,7 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
             _ => None,
         })
         .collect();
-    let messages: Vec<AgentMessage> = stored
-        .iter()
-        .map(|(_, message)| (*message).clone())
-        .collect();
+    let messages: Vec<&AgentMessage> = stored.iter().map(|(_, message)| *message).collect();
     let pairs = calls(&messages);
     let full = |name: &str, args: &Map<String, Value>| {
         let values = args.values().filter_map(Value::as_str);
@@ -87,37 +84,12 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         entry,
         result @ AgentMessage::ToolResult {
             tool_call_id,
-            tool_name,
             content,
             ..
         },
     )) = stored.get(*index)
     else {
         return Err(format!("`{wanted}` names no tool result"));
-    };
-    let path = |index: usize| {
-        pairs
-            .get(index)
-            .copied()
-            .flatten()
-            .filter(|(name, _)| *name == "read")
-            .and_then(|(_, args)| args.get("path")?.as_str())
-    };
-    let reread = path(*index)
-        .is_some_and(|read| (index + 1..pairs.len()).any(|later| path(later) == Some(read)));
-    let kept = if crate::reclaim::NEVER.contains(&tool_name.as_str()) {
-        Some(
-            "plan, todo and ask_user results carry live state or the user's words and are never cut",
-        )
-    } else if !content
-        .iter()
-        .all(|part| matches!(part, yi_types::message::Content::Text { .. }))
-    {
-        Some("a result with an image is never cut, since its placeholder could not say so")
-    } else if tool_name == "read" && path(*index).is_some() && !reread {
-        Some("the newest read of a file is never cut, since an edit needs its line tags")
-    } else {
-        None
     };
     Ok(Target {
         item: Reclaimed {
@@ -127,23 +99,13 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         },
         call: call.clone(),
         result: (*result).clone(),
-        kept,
+        kept: never_cut(result, newest_reads(&pairs).contains(index)),
     })
 }
 
 /// Every finding on the branch, oldest first, as the compaction view lists them.
 pub(crate) fn findings(entries: &[Entry]) -> Vec<String> {
-    let records = entries.iter().filter_map(|entry| match entry {
-        Entry::Custom {
-            custom_type,
-            data: Some(data),
-            ..
-        } if custom_type == ANNOTATION_ENTRY_TYPE => {
-            serde_json::from_value::<AnnotationRecord>(data.clone()).ok()
-        }
-        _ => None,
-    });
-    let found = records.filter(|record| record.kind == "finding");
+    let found = annotations(entries).filter(|record| record.kind == "finding");
     (found.filter_map(|record| {
         let on = record
             .call
@@ -285,19 +247,7 @@ mod tests {
     type Fallible = Result<(), Box<dyn std::error::Error>>;
 
     fn context() -> ToolContext {
-        ToolContext {
-            cwd: std::path::PathBuf::from("."),
-            cancelled: Arc::new(|| false),
-            recovery_dir: None,
-            transcript: None,
-            auto_background: None,
-            sandbox: None,
-            deny_read: Vec::new(),
-            deny_write: Vec::new(),
-            container: None,
-            call_id: String::new(),
-            job_owner: None,
-        }
+        ToolContext::new(std::path::PathBuf::from("."))
     }
 
     /// A store holding a `read src/lib.rs` and a `bash ls`, each answered; the read's entry id.
