@@ -445,7 +445,8 @@ impl AgentTool for ToolAdapter {
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
         let spills = self.spills.clone();
         let store = (self.transcript.as_ref()).and_then(|store| store());
-        let (selector, ledger) = (self.selector.clone(), store.clone());
+        let (selector, ledger, spills_dir) =
+            (self.selector.clone(), store.clone(), self.spills.clone());
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
         let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
@@ -623,8 +624,17 @@ impl AgentTool for ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
-                    if let Some(selector) = selector.as_deref().filter(|_| name == "bash") {
-                        crate::select::widen(selector, ledger, &command, &mut output.result).await;
+                    if let (Some(selector), Some(spills)) =
+                        (selector.as_deref().filter(|_| name == "bash"), &spills_dir)
+                    {
+                        crate::select::widen(
+                            selector,
+                            ledger,
+                            spills,
+                            &command,
+                            &mut output.result,
+                        )
+                        .await;
                     }
                     let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {

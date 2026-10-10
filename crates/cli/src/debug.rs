@@ -70,7 +70,7 @@ fn select(args: &Args, rest: &[&str]) -> i32 {
         &lines,
     ));
     let (ranges, error) = match ranges {
-        Ok(ranges) => (ranges, None),
+        Ok((ranges, _)) => (ranges, None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
     let row = json!({"ranges": ranges, "error": error, "ms": started.elapsed().as_millis(), "cost": usage.cost.total});

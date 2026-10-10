@@ -49,7 +49,12 @@ def run(yi: str, model: str, reps: int) -> dict:
                 [yi, "debug", "select", str(FIXTURES / fixture), command, "--model", model],
                 capture_output=True, text=True, check=False,
             )
-            answer = json.loads(out.stdout.strip().splitlines()[-1]) if out.stdout.strip() else {}
+            try:
+                answer = json.loads(out.stdout.strip().splitlines()[-1])
+            except (IndexError, json.JSONDecodeError):
+                answer = {"error": f"exit {out.returncode}: {out.stderr.strip()[-200:]}"}
+            if out.returncode != 0:
+                answer.setdefault("error", f"exit {out.returncode}")
             picked = [tuple(pair) for pair in answer.get("ranges", [])]
             rows.append({
                 "case": fixture, "rep": rep, "recall": recall(gold, picked), "ms": answer.get("ms", 0),
@@ -58,7 +63,7 @@ def run(yi: str, model: str, reps: int) -> dict:
     score = {
         "model": model, "runs": len(rows),
         "recall": sum(row["recall"] for row in rows) / len(rows),
-        "p95_ms": p95([row["ms"] for row in rows]),
+        "p95_ms": p95([row["ms"] for row in rows if row["ms"]] or [0]),
         "cost": sum(row["cost"] for row in rows),
         "errors": sum(1 for row in rows if row["error"]),
     }

@@ -1699,14 +1699,14 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
     session.prompt("count")?;
     session.wait_idle().await;
     let text = result(&session);
-    assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); 3 not already shown above]\n2000\n2001\n2002"), "{text}");
+    assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); kept 3 of 3 selected lines (LINES_OUT 200)]\n2000| 2000\n2001| 2001\n2002| 2002"), "{text}");
     let session = run("seq 1 4001", r#"{"ranges": [[2000, 2002]]}"#);
     session.prompt("count")?;
     session.wait_idle().await;
     let text = result(&session);
     assert!(
         text.contains(
-            "[models.selector skipped: the full output has 4001 lines, past LINES_IN 4000]"
+            "[models.selector skipped: the full output is past LINES_IN 4000 lines or BYTES_IN 262144 bytes]"
         ),
         "{text}"
     );
