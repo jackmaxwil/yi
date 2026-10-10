@@ -10,7 +10,12 @@ pub struct Pinned<'a> {
     pub member: &'a str,
     pub dir: &'a Path,
     pub file: &'a str,
+    /// Directories beside the member, by path under its archive root, published with it.
+    pub dirs: &'a [String],
 }
+
+const TREE_FILES: usize = 512;
+const TREE_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let response = crate::tarball::agent()
@@ -38,12 +43,13 @@ pub fn install(
     }
     let tar = crate::tarball::gunzip(&archive)
         .map_err(|error| format!("the {} archive {error}", pin.label))?;
-    let binary = crate::tarball::entries(&tar)
-        .map_err(|error| format!("the {} archive: {error}", pin.label))?
-        .into_iter()
+    let entries = crate::tarball::entries(&tar)
+        .map_err(|error| format!("the {} archive: {error}", pin.label))?;
+    let binary = (entries.iter())
         .find(|entry| entry.regular && entry.name == pin.member)
         .map(|entry| entry.bytes)
         .ok_or_else(|| format!("the {} archive carries no {}", pin.label, pin.member))?;
+    let tree = tree(pin, &entries)?;
     let parent = pin
         .dir
         .parent()
@@ -51,7 +57,7 @@ pub fn install(
     std::fs::create_dir_all(parent).map_err(at(parent))?;
     let tick = STAGING.fetch_add(1, Ordering::Relaxed);
     let staging = parent.join(format!(".staging-{}-{tick}", std::process::id()));
-    let published = publish(&staging, pin, binary);
+    let published = publish(&staging, pin, binary, &tree);
     let _ = std::fs::remove_dir_all(&staging);
     published?;
     let path = pin.dir.join(pin.file);
@@ -60,8 +66,68 @@ pub fn install(
         .ok_or_else(|| format!("{} published but not executable", pin.label))
 }
 
-fn publish(staging: &Path, pin: &Pinned<'_>, binary: &[u8]) -> Result<(), String> {
+/// Each regular file under one of `pin.dirs`, by its path under the member's archive root; a
+/// part that could leave the staging directory, or a tree past its caps, refuses the install.
+fn tree<'t>(
+    pin: &Pinned<'_>,
+    entries: &[crate::tarball::Entry<'t>],
+) -> Result<Vec<(String, &'t [u8])>, String> {
+    let root = pin
+        .member
+        .rsplit_once('/')
+        .map_or_else(String::new, |(base, _)| format!("{base}/"));
+    let mut files = Vec::new();
+    let mut bytes = 0usize;
+    for dir in pin.dirs {
+        let prefix = format!("{root}{dir}/");
+        let before = files.len();
+        for entry in entries.iter().filter(|entry| entry.regular) {
+            let Some(relative) = entry.name.strip_prefix(&root) else {
+                continue;
+            };
+            if !entry.name.starts_with(&prefix) {
+                continue;
+            }
+            if relative
+                .split('/')
+                .any(|part| matches!(part, "" | "." | ".."))
+            {
+                return Err(format!(
+                    "the {} archive entry {} leaves it",
+                    pin.label, entry.name
+                ));
+            }
+            bytes = bytes.saturating_add(entry.bytes.len());
+            files.push((relative.to_owned(), entry.bytes));
+        }
+        if files.len() == before {
+            return Err(format!("the {} archive carries no {prefix}", pin.label));
+        }
+    }
+    if files.len() > TREE_FILES || bytes > TREE_BYTES {
+        return Err(format!(
+            "the {} archive's {} files and {bytes} bytes pass the {TREE_FILES}-file, {TREE_BYTES}-byte cap",
+            pin.label,
+            files.len()
+        ));
+    }
+    Ok(files)
+}
+
+fn publish(
+    staging: &Path,
+    pin: &Pinned<'_>,
+    binary: &[u8],
+    tree: &[(String, &[u8])],
+) -> Result<(), String> {
     std::fs::create_dir_all(staging).map_err(at(staging))?;
+    for (relative, bytes) in tree {
+        let path = staging.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(at(parent))?;
+        }
+        std::fs::write(&path, bytes).map_err(at(&path))?;
+    }
     let file = staging.join(pin.file);
     std::fs::write(&file, binary).map_err(at(&file))?;
     #[cfg(unix)]
@@ -124,6 +190,7 @@ pub(crate) mod tests {
             member: "tool-1.0/tool",
             dir: &dir,
             file: "tool",
+            dirs: &[],
         };
         let results: Vec<Result<PathBuf, String>> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..16)
