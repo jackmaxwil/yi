@@ -2284,7 +2284,8 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
     (model.id, model.cost.input) = ("openai/gpt-5.5".to_owned(), serde_json::Number::from(1u64));
     session.set_model(model);
     session.set_tools(vec![Arc::new(LongResult("read"))]);
-    session.attach_store(crate::support::memory_store("reclaim-bytes"))?;
+    let store = crate::support::memory_store("reclaim-bytes");
+    session.attach_store(Arc::clone(&store))?;
     session.prompt("read the probe eight times")?;
     session.wait_idle().await;
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
@@ -2318,5 +2319,22 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
     let whole = "\"tool_call_id\":\"call_0\",\"content\":\"probe line";
     let sent = bodies.get(first).ok_or("no body")?;
     assert!(!sent.contains(whole), "call_0 still sent whole");
+    // A resumed session folds the ledger at attach and sends the cut lines as they were.
+    let (port, served) = openrouter_stand_in(vec![sse_reply(
+        &serde_json::json!({"content": "ok"}),
+        "stop",
+    )])?;
+    let mut resumed = openrouter_session_with(port, 200_000, Settings::default())?;
+    resumed.set_model(session.model());
+    resumed.set_tools(vec![Arc::new(LongResult("read"))]);
+    resumed.attach_store(store)?;
+    resumed.prompt("again")?;
+    resumed.wait_idle().await;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let again = cut(bodies.first().ok_or("no resumed request")?)?;
+    assert!(
+        at.iter().all(|line| again.contains(line)),
+        "{at:?} then {again:?}"
+    );
     Ok(())
 }

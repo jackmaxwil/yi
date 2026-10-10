@@ -13,10 +13,6 @@ pub struct ReclaimRecord {
     pub reason: String,
     /// Requests the session had sent when the cut was made.
     pub turn: u64,
-    /// Estimated tokens the cut drops from every later request.
-    pub dropped: u64,
-    /// Estimated tokens after the first cut result, which the next request writes again.
-    pub rewritten: u64,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
