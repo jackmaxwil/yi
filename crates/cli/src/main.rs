@@ -289,6 +289,19 @@ static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new(
 /// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
+    let home = absolute_home()?;
+    let home = HOME.get_or_init(|| home);
+
+    setup::early();
+    yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
+    let (config, migrations) = read_config(home)?;
+    for migration in migrations {
+        eprintln!("warning: {migration}");
+    }
+    set_config(config)
+}
+
+pub(crate) fn absolute_home() -> Result<std::path::PathBuf, String> {
     let home = std::path::PathBuf::from(
         std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
     );
@@ -300,14 +313,7 @@ fn load_config() -> Result<(), String> {
             home.display()
         ));
     }
-    let home = HOME.get_or_init(|| home);
-    setup::early();
-    yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
-    let (config, migrations) = read_config(home)?;
-    for migration in migrations {
-        eprintln!("warning: {migration}");
-    }
-    set_config(config)
+    Ok(home)
 }
 
 /// A relative home would read `<cwd>/.yi/config.json`, which is §17.1's project
