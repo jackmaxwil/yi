@@ -20,7 +20,7 @@ pub struct Sandbox {
     /// rules replay from): denied to writes, save a writable root nested inside one.
     pub host_owned: Vec<PathBuf>,
     /// Paths reads reach again under a broader denied one, never a denial inside them: a walled
-    /// session's own spills and transcript, its kernel's dir and board, which as roots take writes.
+    /// session's family spills and own transcript, its kernel's dir and board, roots taking writes.
     pub spared: Vec<PathBuf>,
 }
 
@@ -176,7 +176,7 @@ impl Sandbox {
                 })
                 .collect();
             sections.push(format!(
-                "; a walled session's own spills, transcript, kernel dir and board\n(allow file-read*{spared})"
+                "; a walled session's family spills, transcript, kernel dir and board\n(allow file-read*{spared})"
             ));
             let inside: String = (0..self.deny_read.len())
                 .filter(|index| self.inside_spare(*index))
