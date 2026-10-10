@@ -33,6 +33,11 @@ PASS_AT_KS = (2, 3, 4, 5)
 CI95_Z = 1.96
 
 
+def scored_sessions(root, skip=()):
+    """The session files under `root`, children included, less the paths in `skip`."""
+    return sorted(path for path in Path(root).rglob("*.jsonl") if path not in skip and is_session(path))
+
+
 def is_session(path):
     if path.name.endswith(".telemetry.jsonl"):
         return False
@@ -127,13 +132,9 @@ def telemetry(path):
 
 
 def unknown_turns(entries):
-    count = 0
-    for entry in entries:
-        message = entry.get("message") or {}
-        if entry.get("type") == "message" and message.get("role") == "assistant":
-            if (message.get("usage") or {}).get("unknown") is True:
-                count += 1
-    return count
+    return yi_usage.unknown_cost_turns(
+        entry.get("message") for entry in entries
+        if entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "assistant")
 
 
 def score(path, root):
@@ -256,7 +257,7 @@ def main(argv=None):
     parser.add_argument("--json", type=Path, help="write the per-trial rows here as well")
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    sessions = sorted(path for path in root.rglob("*.jsonl") if is_session(path))
+    sessions = scored_sessions(root)
     if not sessions:
         print(f"no session files under {root}", file=sys.stderr)
         return 2

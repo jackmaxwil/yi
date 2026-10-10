@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -225,21 +226,27 @@ def ledger_row(rows, model, fingerprint, suite, note="evals/run.py"):
         ]
     )
 
-
 _RUN_HOME = []
-
+_RUN_HOME_LOCK = threading.Lock()
 
 def run_home():
     """A fresh absolute HOME per process: a run is a harness, never the caller's ~/.yi."""
-    if not _RUN_HOME:
-        _RUN_HOME.append(tempfile.mkdtemp(prefix="yi-evals-home-"))
-        # Incident: each run left its HOME behind, ~650 MB of kernel venv and uv cache;
-        # 95 of them filled the disk.
-        atexit.register(shutil.rmtree, _RUN_HOME[0], True)
-        config = Path(_RUN_HOME[0]) / ".yi" / "config.json"
-        config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(json.dumps(yi_usage.eval_config(os.environ)))
-    return _RUN_HOME[0]
+    with _RUN_HOME_LOCK:
+        if not _RUN_HOME:
+            _RUN_HOME.append(tempfile.mkdtemp(prefix="yi-evals-home-"))
+            # Incident: each run left its HOME behind, ~650 MB of kernel venv and uv cache;
+            # 95 of them filled the disk.
+            atexit.register(shutil.rmtree, _RUN_HOME[0], True)
+            config = Path(_RUN_HOME[0]) / ".yi" / "config.json"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(json.dumps(yi_usage.eval_config(os.environ)))
+            # Incident: the fresh HOME has no catalog, so a model the binary does not bundle
+            # (grok-4.7) was refused as unknown and the trial scored 0 in 12 s. Copied once per
+            # process here, not per task: the inner runner's six threads share this HOME.
+            catalog = Path.home() / ".yi" / "catalog"
+            if catalog.is_dir():
+                shutil.copytree(catalog, Path(_RUN_HOME[0]) / ".yi" / "catalog", dirs_exist_ok=True)
+        return _RUN_HOME[0]
 
 
 INCONCLUSIVE_MARKS = ("HTTP 5", "timed out", "rate limit", "overloaded", "connection")

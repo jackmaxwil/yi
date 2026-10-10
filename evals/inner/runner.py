@@ -9,7 +9,8 @@ with `yi ask` in auto mode, so Seatbelt contains bash (no network, writes only i
 yolo gives bash no containment (crates/permission/src/decide.rs, Yolo). The grader lives in the
 generator, never in the workspace. `{}` overrides run the defaults; anything else rides in as
 YI_LEVERS under --eval. Sessions are kept under ~/Development/yi-runs/<run-id>/<arm>/<task>/ for
-mining. INNER_JOBS (default 6) run at once; a call past its hard cap schedules nothing more.
+mining. EVAL_MODEL picks the model (a solo arm); EVAL_ROLES=1 adds the role pins to the prompt (S0, issue 1134).
+INNER_JOBS (default 6) run at once; a call past its hard cap schedules nothing more.
 """
 import concurrent.futures, json, os, pathlib, subprocess, sys, tempfile, threading, time
 
@@ -19,22 +20,32 @@ sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
 sys.path.insert(0, str(ROOT / "inner"))
 
+import axes  # noqa: E402
 import gen  # noqa: E402
 import run as fixtures  # noqa: E402
 import trials  # noqa: E402
 import yi_usage  # noqa: E402
 
 MODEL = os.environ.get("EVAL_MODEL", "openrouter/z-ai/glm-5.3-flash")
+# S0 roles arm (EVAL_ROLES=1): the orchestrator is told which model each duty takes. Config cannot
+# pin a model per role (`models` has no reader or worker key), so the pins ride in the prompt.
+ROLES = (
+    "\n\nWork as an orchestrator and delegate through ipython. Locate and read code with readers: "
+    "`await rlm.run(question, role=\"reader\", model=\"openrouter/deepseek/deepseek-v4.1-flash\", "
+    "partition=[...])`. Hand a well-specified mechanical edit to a worker: `await rlm.run(brief, "
+    "role=\"worker\", model=\"openrouter/z-ai/glm-5.3-flash\")`. Do the hard reasoning, the design of "
+    "the change and the final check yourself on your own model.")
 # One inner trial, measured by the inner A/A; predicts a call before it starts.
 TRIAL_USD = float(os.environ.get("INNER_TRIAL_USD", "0.03"))
 
 
-def one(task_id, binary, levers, keep):
+def one(task_id, binary, levers, keep, roles=False):
     family, seed, level = gen.parse(task_id)
     module = gen.FAMILIES[family]
     task = module.make(seed, level)
     started = time.monotonic()
     keep.mkdir(parents=True, exist_ok=True)
+    earlier = set(axes.scored_sessions(keep / "sessions"))
     with tempfile.TemporaryDirectory(prefix="yi-inner-") as tmp:
         workspace = gen.materialize(task, pathlib.Path(tmp) / "work")
         events = keep / "events.jsonl"
@@ -47,7 +58,7 @@ def one(task_id, binary, levers, keep):
         timed_out, code = False, None
         with events.open("w") as sink:
             try:
-                code = subprocess.run(command + [task["prompt"]], stdout=sink, stderr=subprocess.DEVNULL,
+                code = subprocess.run(command + [task["prompt"] + (ROLES if roles else "")], stdout=sink, stderr=subprocess.DEVNULL,
                                       stdin=subprocess.DEVNULL, env=env, timeout=task["timeoutSec"] + 60).returncode
             except subprocess.TimeoutExpired:
                 timed_out = True
@@ -56,8 +67,16 @@ def one(task_id, binary, levers, keep):
            "testsPassed": passed, "testsTotal": total, "traceScored": False, "partialScore": None,
            "verifierUnmeasured": passed is None,
            "timedOut": timed_out, "errored": code not in (0, None) and not timed_out, "exit": code,
-           "wallSec": round(time.monotonic() - started, 2)}
+           "wallSec": round(time.monotonic() - started, 2), "model": MODEL, "roles": roles}
     row.update(yi_usage.parse_events(events))
+    # The root's event stream is not the family's bill: a child's turns live in its own session file,
+    # under the root's session dir, and S0's roles arm spends most of its money there.
+    # Only this attempt's files: a re-run under the same run-id and arm reuses the keep dir.
+    kept = [axes.score(path, keep) for path in axes.scored_sessions(keep / "sessions", earlier)]
+    if kept:
+        merged = trials.merge_rows(kept)
+        row.update({"rootCostUsd": row["costUsd"], "sessions": len(kept),
+                    "familyTurns": merged["turns"], "costUsd": merged["costUsd"]})
     return row
 
 
@@ -91,7 +110,7 @@ def main(argv):
         with lock:
             if spent >= hard:
                 return None
-        row = one(task, binary, levers, root / task.replace(":", "-"))
+        row = one(task, binary, levers, root / task.replace(":", "-"), os.environ.get("EVAL_ROLES") == "1")
         row.update({"arm": arm, "at": int(time.time())})
         with lock:
             spent += trials.cost(row)
