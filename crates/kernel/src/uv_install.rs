@@ -79,6 +79,7 @@ pub fn install(
         member: &format!("uv-{}/uv", release.triple),
         dir: &home.join(".yi").join("uv").join(UV_VERSION),
         file: "uv",
+        dirs: &[],
     };
     crate::pinned::install(&pin, fetch).map_err(|error| format!("{error}; {REMEDY}"))
 }

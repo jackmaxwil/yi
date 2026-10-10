@@ -46,6 +46,9 @@ pub fn add(
                 member: asset.member,
                 dir: &plugin.dir(home),
                 file: plugin.name,
+                dirs: &(plugin.skills.iter())
+                    .map(|skill| format!("skills/{skill}"))
+                    .collect::<Vec<_>>(),
             };
             yi_kernel::pinned::install(&pin, fetch)?
         }
@@ -119,16 +122,21 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// One ustar member in a gzip of stored deflate blocks, which is what a release tarball is
-    /// to the unpacker; the digest, not the CRC, is what yi checks.
-    fn archive(member: &str, body: &[u8]) -> Result<Vec<u8>, std::num::TryFromIntError> {
-        let mut tar = vec![0u8; 512];
-        tar[..member.len()].copy_from_slice(member.as_bytes());
-        tar[124..136].copy_from_slice(format!("{:011o}\0", body.len()).as_bytes());
-        tar[156] = b'0';
-        tar[257..262].copy_from_slice(b"ustar");
-        tar.extend_from_slice(body);
-        tar.resize(tar.len().div_ceil(512) * 512 + 1024, 0);
+    /// Ustar members in a gzip of stored deflate blocks, which is what a release tarball is to
+    /// the unpacker; the digest, not the CRC, is what yi checks.
+    fn archive(members: &[(&str, &[u8])]) -> Result<Vec<u8>, std::num::TryFromIntError> {
+        let mut tar = Vec::new();
+        for (member, body) in members {
+            let mut header = vec![0u8; 512];
+            header[..member.len()].copy_from_slice(member.as_bytes());
+            header[124..136].copy_from_slice(format!("{:011o}\0", body.len()).as_bytes());
+            header[156] = b'0';
+            header[257..262].copy_from_slice(b"ustar");
+            tar.extend(header);
+            tar.extend_from_slice(body);
+            tar.resize(tar.len().div_ceil(512) * 512, 0);
+        }
+        tar.extend([0; 1024]);
         let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 1];
         let len = u16::try_from(tar.len())?;
         out.extend(len.to_le_bytes());
@@ -137,6 +145,12 @@ mod tests {
         out.extend([0; 8]);
         Ok(out)
     }
+
+    const BINARY: (&str, &[u8]) = ("tool-2.0/tool", b"#!/bin/sh\necho tool\n");
+    const SKILL: (&str, &[u8]) = (
+        "tool-2.0/skills/tool-map/SKILL.md",
+        b"---\nname: tool-map\n---\n",
+    );
 
     fn plugin(bytes: &[u8], here: bool) -> Plugin {
         let sha256 = Box::leak(yi_kernel::tarball::sha256_hex(bytes).into_boxed_str());
@@ -152,6 +166,7 @@ mod tests {
             version: "2.0",
             summary: "a test tool",
             card: "tool card",
+            skills: &["tool-map"],
             assets,
         }
     }
@@ -160,7 +175,9 @@ mod tests {
     fn add_publishes_the_pin_and_deletes_the_older_version_it_replaces() -> TestResult {
         let scratch = crate::scratch::Scratch::new("plugin-add")?;
         let home = scratch.home()?;
-        let bytes = archive("tool-2.0/tool", b"#!/bin/sh\necho tool\n")?;
+        let notes = ("tool-2.0/skills/tool-map/notes.md", &b"notes"[..]);
+        let other = ("tool-2.0/skills/tool-mcp/SKILL.md", &b"unlisted"[..]);
+        let bytes = archive(&[BINARY, SKILL, notes, other])?;
         let tool = plugin(&bytes, true);
         assert!(matches!(state(&tool, &home), State::Missing));
         let old = tool.root(&home).join("1.0");
@@ -180,6 +197,12 @@ mod tests {
         );
         assert_eq!(path, tool.dir(&home).join("tool"));
         assert_eq!(std::fs::read(&path)?, b"#!/bin/sh\necho tool\n");
+        let skills = tool.skill_root(&home).ok_or("no skill root")?;
+        assert_eq!(std::fs::read(skills.join("tool-map/notes.md"))?, b"notes");
+        assert!(
+            !skills.join("tool-mcp").exists(),
+            "only the listed skills are published"
+        );
         assert!(!old.exists(), "the replaced version is deleted");
         assert!(matches!(state(&tool, &home), State::Installed));
         assert!(remove(&tool, &home)?);
@@ -196,8 +219,8 @@ mod tests {
     fn a_tampered_download_or_a_target_with_no_build_installs_nothing() -> TestResult {
         let scratch = crate::scratch::Scratch::new("plugin-refused")?;
         let home = scratch.home()?;
-        let tool = plugin(&archive("tool-2.0/tool", b"genuine")?, true);
-        let tampered = archive("tool-2.0/tool", b"tampered")?;
+        let tool = plugin(&archive(&[("tool-2.0/tool", b"genuine"), SKILL])?, true);
+        let tampered = archive(&[("tool-2.0/tool", b"tampered"), SKILL])?;
         let error = add(&tool, &home, |_| Ok(tampered.clone()))
             .err()
             .ok_or("installed")?;
@@ -212,6 +235,26 @@ mod tests {
         );
         assert!(matches!(state(&elsewhere, &home), State::Unsupported));
         assert!(!tool.root(&home).join("2.0").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_skill_path_leaving_the_archive_or_a_missing_skill_installs_nothing() -> TestResult {
+        let scratch = crate::scratch::Scratch::new("plugin-skill-refused")?;
+        let home = scratch.home()?;
+        let escape = ("tool-2.0/skills/tool-map/../../../escape", &b"out"[..]);
+        for (members, why) in [
+            (vec![BINARY, SKILL, escape], "leaves it"),
+            (vec![BINARY], "carries no tool-2.0/skills/tool-map/"),
+        ] {
+            let bytes = archive(&members)?;
+            let error = add(&plugin(&bytes, true), &home, |_| Ok(bytes.clone()))
+                .err()
+                .ok_or("installed")?;
+            assert!(error.contains(why), "{error}");
+            assert!(!home.join(".yi/plugins/tool/2.0").exists(), "{why}");
+        }
+        assert!(!home.join(".yi/escape").exists() && !home.join("escape").exists());
         Ok(())
     }
 }
