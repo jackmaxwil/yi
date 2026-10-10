@@ -13,6 +13,7 @@ pub mod jobs;
 mod orient;
 pub mod plugin;
 mod process;
+mod redact;
 pub mod reduce;
 pub mod ripwire;
 pub mod sandbox;
@@ -43,7 +44,11 @@ pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
     outcome_note, sandbox_refusal,
 };
-pub use spill::{FLAT_SPILLS, SPILLS};
+/// The spill root's name under `~/.yi`, one dir per session inside it, before spills moved into
+/// the family board; walled sessions still may not read it (D340).
+pub const SPILLS: &str = "spills";
+/// The dir beside it every session shared before spills were per session (D316).
+pub const FLAT_SPILLS: &str = "tool-output";
 pub use tool::{
     CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output,
     error_output_kind, glob_head, text_output,

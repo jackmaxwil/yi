@@ -300,13 +300,8 @@ fn the_catalog_lists_both_roots_and_the_project_shadows_the_global() -> TestResu
         catalog.text
     );
     assert!(
-        catalog.text.contains(
-            &project
-                .join(".yi/skills/shared/SKILL.md")
-                .display()
-                .to_string()
-        ),
-        "the catalog must locate the file: {}",
+        catalog.text.contains("read(\"yi://skills/<name>\")"),
+        "the catalog must say where the whole skill is: {}",
         catalog.text
     );
 
@@ -364,9 +359,9 @@ fn a_folded_description_reads_as_its_sentence() -> TestResult {
     let catalog =
         yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(16_384)).ok_or("no catalog")?;
     assert!(
-        catalog.text.contains(
-            "review: Verify finished work against its acceptance criteria with a cold-context reviewer. Use before declaring a goal or large task complete: not a code-style review."
-        ),
+        catalog
+            .text
+            .contains("review: Verify finished work against its acceptance criteria with a…\n"),
         "{}",
         catalog.text
     );
@@ -429,7 +424,10 @@ fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestRes
     let full =
         yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(1 << 20)).ok_or("no catalog")?;
     assert!(!full.truncated);
-    assert_eq!(full.text.matches(&long).count(), 40);
+    assert_eq!(
+        full.text.matches(&format!("{}…\n", "x".repeat(59))).count(),
+        40
+    );
 
     let clipped =
         yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(8_192)).ok_or("no catalog")?;
@@ -518,5 +516,98 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
     );
     assert!(!stdout.contains(".yi"), "a reply leaked a path: {stdout}");
     service.dispose().await;
+    Ok(())
+}
+
+/// Yi's `ripwire` index, the shipped file, stands in for ripwire's own skills: one catalog line
+/// while ripwire is installed by yi, none otherwise, and the skills it points at are never listed.
+#[test]
+fn the_ripwire_index_is_the_one_line_for_an_installed_plugins_skills() -> TestResult {
+    let root = Scratch::new("yi-skills-plugin")?;
+    let (project, home) = (root.join("project"), root.join("home"));
+    std::fs::create_dir_all(&project)?;
+    let index = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/ripwire");
+    let shipped = home.join(".yi/skills/yi/ripwire");
+    std::fs::create_dir_all(&shipped)?;
+    std::fs::copy(index.join("SKILL.md"), shipped.join("SKILL.md"))?;
+    let catalog = || {
+        yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
+            .map(|catalog| catalog.text)
+            .unwrap_or_default()
+    };
+    assert!(!catalog().contains("- ripwire:"), "{}", catalog());
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    std::fs::create_dir_all(ripwire.dir(&home))?;
+    std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
+    for skill in ripwire.skills {
+        skill_dir(
+            &ripwire.dir(&home).join("skills"),
+            skill,
+            &format!("---\nname: {skill}\ndescription: {skill} text.\n---\n"),
+        )?;
+    }
+    let text = catalog();
+    assert_eq!(text.matches("- ripwire").count(), 1, "{text}");
+    assert!(
+        text.contains("- ripwire: Which ripwire skill fits"),
+        "{text}"
+    );
+    let found = yi_runtime::skills::discover(&project, &home);
+    assert!(found.iter().any(|skill| skill.name == "ripwire-orient"));
+    Ok(())
+}
+
+/// The index names exactly the skills the plugin row publishes, so a pin bump that renames or
+/// adds one fails here rather than leaving a pointer to nothing.
+#[test]
+fn the_ripwire_index_names_every_published_skill_and_no_other() -> TestResult {
+    let index =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/yi/ripwire/SKILL.md");
+    let text = std::fs::read_to_string(index)?;
+    let mut named: Vec<&str> = text
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("| ")?
+                .rsplit_once("| `")?
+                .1
+                .strip_suffix("` |")
+        })
+        .collect();
+    named.sort_unstable();
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    let mut published = ripwire.skills.to_vec();
+    published.sort_unstable();
+    assert_eq!(named, published);
+    Ok(())
+}
+
+/// The skills the pinned ripwire release publishes are byte for byte the recorded ones, and the
+/// installed copy is read by address; `just journeys` runs it after `yi plugin add ripwire`.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
+    let dir = ripwire
+        .skill_root(&home)
+        .ok_or("ripwire's skills are not installed: run `yi plugin add ripwire`")?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tools/tests/fixtures/ripwire")
+        .join(format!("skills-{}.sha256", ripwire.version));
+    let recorded = std::fs::read_to_string(fixture)?;
+    for line in recorded.lines() {
+        let (sha256, path) = line.split_once("  ").ok_or("not a sha256sum line")?;
+        let relative = path.strip_prefix("skills/").ok_or("not under skills/")?;
+        let bytes = std::fs::read(dir.join(relative))?;
+        assert_eq!(yi_runtime::tarball::sha256_hex(&bytes), sha256, "{path}");
+    }
+    let resolver =
+        yi_runtime::fetch::Resolver::new(home.clone(), yi_runtime::Wall::default()).with_home(home);
+    let orient = resolver.fetch(&"yi://skills/ripwire-orient".parse()?)?;
+    assert!(
+        orient.text.contains("name: ripwire-orient"),
+        "{}",
+        orient.text
+    );
     Ok(())
 }

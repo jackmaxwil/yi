@@ -49,6 +49,7 @@ pub struct UserConfig {
     /// `rlm.maxDepth`, how deep a family may nest (default 1, ceiling 3) (D165).
     pub rlm: Option<RlmConfig>,
     pub spend: Option<SpendConfig>,
+    pub compaction: Option<CompactionConfig>,
     pub node: Option<NodeConfig>,
     pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
@@ -109,12 +110,22 @@ pub struct NodeConfig {
     pub isolation: Option<Vec<String>>,
 }
 
-/// `spend.alertTokens`: a notice each time a session's tokens, its children's included, cross
-/// another multiple of it; absent, no alert.
+/// `spend.alertTokens`, `spend.alertUsd` (a session and its children) and `spend.dayAlertUsd`
+/// (the local day, every session): a notice per multiple crossed; absent, no alert.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpendConfig {
     pub alert_tokens: Option<u64>,
+    pub alert_usd: Option<serde_json::Number>,
+    pub day_alert_usd: Option<serde_json::Number>,
+}
+
+/// `compaction.at`: compact once a request passes this many tokens, when that comes before the
+/// window's reserve; absent or 0, only the reserve decides.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactionConfig {
+    pub at: Option<u64>,
 }
 
 /// Keys an older Yi read that this one does not, each with why it went: D182 deleted the

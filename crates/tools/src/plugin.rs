@@ -18,6 +18,8 @@ pub struct Plugin {
     pub version: &'static str,
     pub summary: &'static str,
     pub card: &'static str,
+    /// Skill directories in the release, published beside the program and read on demand.
+    pub skills: &'static [&'static str],
     pub assets: &'static [Asset],
 }
 
@@ -26,7 +28,26 @@ pub const PLUGINS: [Plugin; 1] = [Plugin {
     name: "ripwire",
     version: "0.6.5",
     summary: "a code map: an edit's broken callers, a symbol's callers, the code a task touches",
-    card: include_str!("../../runtime/src/prompts/ripwire.md"),
+    card: include_str!("prompts/ripwire.md"),
+    // Every skill the release ships but `ripwire-mcp`, which drives an MCP server Yi does not run.
+    skills: &[
+        "ripwire-before-you-build",
+        "ripwire-change-check",
+        "ripwire-find-bug",
+        "ripwire-fresh-eyes",
+        "ripwire-graph-query",
+        "ripwire-handoff",
+        "ripwire-layers",
+        "ripwire-navigate",
+        "ripwire-opt-remarks",
+        "ripwire-orient",
+        "ripwire-perf-target",
+        "ripwire-quality-bar",
+        "ripwire-reuse-first",
+        "ripwire-router",
+        "ripwire-security-scan",
+        "ripwire-write-tests",
+    ],
     assets: &[
         Asset {
             os: "macos",
@@ -61,10 +82,7 @@ impl Plugin {
     }
 
     pub fn asset(&self) -> Option<&'static Asset> {
-        let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-        self.assets
-            .iter()
-            .find(|asset| asset.os == os && asset.arch == arch)
+        yi_types::target::for_target(self.name, self.assets.iter().map(|a| (a.os, a.arch, a))).ok()
     }
 
     pub fn root(&self, home: &Path) -> PathBuf {
@@ -79,6 +97,13 @@ impl Plugin {
     /// The program at the version this yi pins; another version on disk is not it.
     pub fn installed(&self, home: &Path) -> Option<PathBuf> {
         Some(self.dir(home).join(self.name)).filter(|path| path.is_file())
+    }
+
+    /// The installed skill directories; a copy found only on PATH brings none Yi can vouch for.
+    pub fn skill_root(&self, home: &Path) -> Option<PathBuf> {
+        self.installed(home)
+            .map(|_| self.dir(home).join("skills"))
+            .filter(|root| root.is_dir())
     }
 
     pub fn found(&self, home: &Path) -> Option<PathBuf> {

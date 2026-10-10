@@ -37,12 +37,14 @@ pub struct Release {
 
 impl Release {
     pub fn pinned() -> Result<Self, String> {
-        let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-        PINNED
-            .iter()
-            .find(|(o, a, _, _)| *o == os && *a == arch)
-            .map(|(_, _, triple, sha256)| Self { triple, sha256 })
-            .ok_or_else(|| format!("yi pins no uv build for {os}/{arch}; {REMEDY}"))
+        let (triple, sha256) = yi_types::target::for_target(
+            "uv",
+            PINNED
+                .iter()
+                .map(|(os, arch, triple, sha256)| (*os, *arch, (*triple, *sha256))),
+        )
+        .map_err(|error| format!("{error}; {REMEDY}"))?;
+        Ok(Self { triple, sha256 })
     }
 
     fn url(&self) -> String {
@@ -77,6 +79,7 @@ pub fn install(
         member: &format!("uv-{}/uv", release.triple),
         dir: &home.join(".yi").join("uv").join(UV_VERSION),
         file: "uv",
+        dirs: &[],
     };
     crate::pinned::install(&pin, fetch).map_err(|error| format!("{error}; {REMEDY}"))
 }
