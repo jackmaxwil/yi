@@ -75,6 +75,7 @@ struct Shared {
     waits: Mutex<Option<Arc<dyn Fn() -> u64 + Send + Sync>>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     reuse: Mutex<yi_types::model::Reuse>,
+    reclaimed: Arc<Mutex<crate::reclaim::Cut>>,
     /// The system bytes the first request sent; every later request must send the same (D310).
     first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
@@ -190,6 +191,7 @@ impl AgentSession {
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
                 reuse: Mutex::new(yi_types::model::Reuse::Loop),
+                reclaimed: Arc::default(),
                 first_system_prompt: OnceLock::new(),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
@@ -647,6 +649,12 @@ impl AgentSession {
         };
         let loaded = yi_context::project(&entries);
         let count = loaded.len();
+        *self
+            .shared
+            .reclaimed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            crate::reclaim::Cut::fold(&entries);
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = loaded;
         }
