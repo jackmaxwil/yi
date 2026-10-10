@@ -101,11 +101,17 @@ impl Spill {
 
     /// The pointer to a file with every byte written, or `None` with no dir or a failed write.
     pub fn keep(&mut self) -> Option<String> {
+        let mut tail = Vec::new();
         for redactor in self.redactors.take().into_iter().flatten() {
-            let mut tail = Vec::new();
-            redactor.finish(&mut tail);
-            self.store(&tail);
+            let mut open = Vec::new();
+            redactor.finish(&mut open);
+            // Invariant: each stream's open last line stays a line of its own.
+            if !tail.is_empty() && !open.is_empty() {
+                tail.push(b'\n');
+            }
+            tail.append(&mut open);
         }
+        self.store(&tail);
         if self.part.is_none() && self.dir.is_some() {
             self.open_part().ok()?;
         }

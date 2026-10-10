@@ -214,12 +214,13 @@ fn a_key_split_across_stdout_reads_is_redacted_whole() -> Fallible {
 }
 
 /// Review of #1147: source code that names a token, and a grep hit on a key's first line, came
-/// back mangled; a PGP key block, whose fence ends `BLOCK-----`, came back in clear.
+/// back mangled; a PGP key block and a digit-less `.env` passphrase came back in clear.
 #[test]
 fn the_redactor_leaves_code_alone_and_catches_every_key_block() -> Fallible {
     let fence = |end: &str, kind: &str| format!("-----{end} {kind}-----");
     let code = [
         "let max_tokens = budget.remaining_tokens();".to_owned(),
+        "api_key = load_api_key_from_environment()".to_owned(),
         "tokenizer = Tokenizer.from_pretrained(\"bert-base-uncased\")".to_owned(),
         format!(
             "src/a.rs:3:const HDR: &str = \"{}\";",
@@ -235,7 +236,8 @@ fn the_redactor_leaves_code_alone_and_catches_every_key_block() -> Fallible {
         "=x0Ab".to_owned(),
         fence("END", "PGP PRIVATE KEY BLOCK"),
     ];
-    let source = format!("{}\n{}\n", code.join("\n"), pgp.join("\n"));
+    let env = "export DB_PASSWORD=correcthorsebatterystaple";
+    let source = format!("{}\n{}\n{env}\n", code.join("\n"), pgp.join("\n"));
     let mut out = Vec::new();
     let mut redactor = redact::Redactor::new().ok_or("no redactor")?;
     redactor.push(source.as_bytes(), &mut out);
@@ -243,13 +245,29 @@ fn the_redactor_leaves_code_alone_and_catches_every_key_block() -> Fallible {
     let kept = String::from_utf8(out)?;
     let lines: Vec<&str> = kept.lines().collect();
     assert_eq!(
-        lines.get(..4),
+        lines.get(..code.len()),
         Some(&code.iter().map(String::as_str).collect::<Vec<_>>()[..])
     );
     assert!(
         !kept.contains("lQOYBGVd") && !kept.contains("=x0Ab"),
         "{kept}"
     );
-    assert_eq!(lines.len(), code.len() + pgp.len(), "{kept}");
+    assert_eq!(lines.len(), code.len() + pgp.len() + 1, "{kept}");
+    assert!(
+        !kept.contains("correcthorse"),
+        "an upper-case name needs no digit: {kept}"
+    );
+    Ok(())
+}
+
+/// Review of #1148: both streams ending mid-line had their open lines joined into one at keep.
+#[test]
+fn each_streams_open_last_line_stays_its_own_line() -> Fallible {
+    let root = Scratch::new("yi-spill-tails")?;
+    let mut spill = Spill::new(Some(&root));
+    spill.write_to(Stream::Out, b"compiled 3 crates\nout tail");
+    spill.write_to(Stream::Err, b"err tail");
+    let kept = fs::read_to_string(kept_path(&mut spill)?)?;
+    assert_eq!(kept, "compiled 3 crates\nout tail\nerr tail");
     Ok(())
 }

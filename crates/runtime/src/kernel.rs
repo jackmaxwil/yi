@@ -232,7 +232,7 @@ pub(crate) fn kernel_profile(
         .extend(family_dir.map(std::path::Path::to_path_buf));
     // Invariant: only the host writes the board's spills, so no cell swaps the dir for a link
     // between the host's check and its open, and no child rewrites a parent's kept output.
-    (profile.deny_write).extend(family_dir.map(|board| board.join("spills")));
+    (profile.deny_write).extend(family_dir.map(crate::wiring::board_spills));
     profile.writable.sort();
     profile.writable.dedup();
     profile

@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use regex::bytes::{Captures, Regex};
 
 /// Key-shaped tokens, named in the mark that replaces them. A value under a secret-looking name
-/// needs 16 token characters and a digit, so `max_tokens = budget.remaining_tokens()` passes.
+/// needs 16 token characters, and a digit unless the name is upper case as `.env` writes it.
 const SHAPES: [(&str, &str); 9] = [
     (
         "private-key",
@@ -27,7 +28,7 @@ const SHAPES: [(&str, &str); 9] = [
     ),
     (
         "assigned-secret",
-        r#"(?i)\b[A-Z0-9_]*(?:secret|token|passw(?:or)?d|api_?key|access_?key|private_?key)[A-Z0-9_]*["']?\s*[=:]\s*["']?(?P<value>[A-Za-z0-9_/+=-]{16,})"#,
+        r#"(?i)\b(?P<name>[A-Z0-9_]*(?:secret|token|passw(?:or)?d|api_?key|access_?key|private_?key)[A-Z0-9_]*)["']?\s*[=:]\s*["']?(?P<value>[A-Za-z0-9_/+=-]{16,})"#,
     ),
 ];
 
@@ -45,6 +46,7 @@ const LINE_CAP: usize = 1 << 20;
 /// Secrets out of a byte stream before it is kept, a line at a time, so a kept file has the line
 /// count the model saw and every `#L` pointer into it lands on the line it named.
 pub struct Redactor {
+    shapes: &'static [(&'static str, Regex)],
     line: Vec<u8>,
     in_key: bool,
 }
@@ -52,8 +54,8 @@ pub struct Redactor {
 impl Redactor {
     /// `None` when a pattern fails to build: a caller then keeps nothing rather than keep secrets.
     pub fn new() -> Option<Self> {
-        COMPILED.as_ref()?;
         Some(Self {
+            shapes: COMPILED.as_deref()?,
             line: Vec::new(),
             in_key: false,
         })
@@ -88,7 +90,7 @@ impl Redactor {
             out.extend_from_slice(&mark("private-key", body.len()));
         } else {
             self.in_key = begins && !ends;
-            out.extend_from_slice(&redact_line(body));
+            out.extend_from_slice(&redact_line(body, self.shapes));
         }
         out.extend_from_slice(end);
     }
@@ -115,22 +117,21 @@ fn has(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-fn redact_line(line: &[u8]) -> Vec<u8> {
-    let Some(shapes) = COMPILED.as_ref() else {
-        return mark("unscanned", line.len());
-    };
-    let mut line = line.to_vec();
+fn redact_line<'a>(line: &'a [u8], shapes: &[(&str, Regex)]) -> Cow<'a, [u8]> {
+    let mut line = Cow::Borrowed(line);
     for (name, regex) in shapes {
         if regex.is_match(&line) {
             let marked = |hit: &Captures<'_>| {
                 let all = hit.get(0).map_or(&[][..], |all| all.as_bytes());
+                let named = hit.name("name").map(|name| name.as_bytes());
+                let loud = named.is_none_or(|name| name.iter().any(u8::is_ascii_uppercase));
                 let value = hit.name("value").map(|value| value.as_bytes());
                 match value {
-                    Some(value) if !value.iter().any(u8::is_ascii_digit) => all.to_vec(),
+                    Some(value) if !loud && !value.iter().any(u8::is_ascii_digit) => all.to_vec(),
                     _ => mark(name, all.len()),
                 }
             };
-            line = regex.replace_all(&line, marked).into_owned();
+            line = Cow::Owned(regex.replace_all(&line, marked).into_owned());
         }
     }
     line
