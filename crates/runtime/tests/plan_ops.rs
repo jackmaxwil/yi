@@ -2119,10 +2119,8 @@ mod refusals {
             done.contains(&"é".repeat(80)),
             "the full name finds it: {done}"
         );
-        let schema =
-            plan.schema()["properties"]["todos"]["items"]["properties"]["label"]["description"]
-                .to_string();
-        assert!(schema.contains("at most 80 chars"), "{schema}");
+        let label = &plan.schema()["properties"]["todos"]["items"]["properties"]["label"];
+        assert_eq!(label["maxLength"], 80, "{label}");
         let (_fresh, fresh) = tool()?;
         let at_cap =
             serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(80))});

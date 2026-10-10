@@ -113,19 +113,6 @@ where
     ))
 }
 
-fn absolute_home() -> Result<PathBuf, String> {
-    let home = PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
-    );
-    if !home.is_absolute() {
-        return Err(format!(
-            "HOME is relative ({}); yi needs an absolute HOME",
-            home.display()
-        ));
-    }
-    Ok(home)
-}
-
 fn prefix_dir(home: &Path) -> Result<PathBuf, String> {
     match std::env::var_os("YI_PREFIX") {
         Some(value) => {
@@ -618,6 +605,21 @@ fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {
 
 fn io(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
+}
+
+pub(crate) fn absolute_home() -> Result<std::path::PathBuf, String> {
+    let home = std::path::PathBuf::from(
+        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
+    );
+    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
+    // that followed failed to spawn, naming the wrong step.
+    if !home.is_absolute() {
+        return Err(format!(
+            "HOME is relative ({}); yi needs an absolute HOME",
+            home.display()
+        ));
+    }
+    Ok(home)
 }
 
 #[cfg(test)]

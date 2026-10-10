@@ -29,3 +29,4 @@ jobs:
           key: yi-plugins-${{ hashFiles('crates/tools/src/plugin.rs') }}
       - run: cargo build -p yi-cli && target/debug/yi plugin add --all
       - run: cargo test -p yi-tools --test tools the_pinned_ripwire_answers_in_the_shapes_yi_reads -- --ignored --exact
+      - run: cargo test -p yi-runtime --test integration skills_e2e::the_installed_ripwire_skills_match_the_recorded_release -- --ignored --exact

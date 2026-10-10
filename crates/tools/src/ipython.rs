@@ -6,7 +6,7 @@ use yi_types::image::image_defect;
 use yi_types::kernel::{ExecuteResult, ExecuteStatus};
 use yi_types::message::Content;
 
-use crate::spill::Spill;
+use crate::spill::{Spill, Stream};
 use crate::tool::{
     CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, detail_text, error_output, require_str,
     text_output,
@@ -44,16 +44,16 @@ impl CellSpill {
     pub fn sink(&self) -> Box<StreamSink> {
         let spill = self.clone();
         Box::new(move |name, text| {
-            let slot = match name {
-                "stdout" => 0,
-                "stderr" => 1,
+            let (slot, stream) = match name {
+                "stdout" => (0, Stream::Out),
+                "stderr" => (1, Stream::Err),
                 _ => return,
             };
             if let Ok(mut held) = spill.0.lock()
                 && let Some(chars) = held.1.get_mut(slot)
             {
                 *chars = chars.saturating_add(text.chars().count());
-                held.0.write(text.as_bytes());
+                held.0.write_to(stream, text.as_bytes());
             }
         })
     }

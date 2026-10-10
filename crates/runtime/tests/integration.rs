@@ -68,6 +68,7 @@ mod reap_kernel;
 mod recursion_e2e;
 mod requests_e2e;
 mod rewind_branch;
+mod rollup;
 mod route_record;
 mod rules_e2e;
 mod sandbox_seam;
