@@ -138,6 +138,11 @@ pub struct RuntimeWiring {
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
+/// Where a family keeps its members' cut tool output: written by the host alone, read by all.
+pub(crate) fn board_spills(board: &std::path::Path) -> PathBuf {
+    board.join("spills")
+}
+
 pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
     let mut dir = rlm_dir;
     while dir
@@ -254,7 +259,7 @@ impl RuntimeWiring {
     /// or a job spawns (a child's store attaches after its wiring); a root's state is not its corpus.
     fn own_paths(&self, session: &AgentSession) -> Option<OwnPathsFn> {
         let (store, wall) = (session.store_handle(), self.wall.clone());
-        let spills = self.family_dir().join("spills");
+        let spills = board_spills(&self.family_dir());
         let own = move |state: Option<&Path>| {
             let file =
                 store().and_then(|store| yi_session::lock_session(&store).file_path().cloned());
@@ -993,7 +998,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     session.set_wall(wiring.wall.clone());
     // Owner, overriding D340's per-session spills: "I accept the security hole. It has more
     // value than this esoteric risk"; the board is the family's, so every member reads them.
-    session.set_spills(wiring.family_dir().join("spills"));
+    session.set_spills(board_spills(&wiring.family_dir()));
     session.use_tools_with_background(
         tools,
         wiring.cwd.clone(),
