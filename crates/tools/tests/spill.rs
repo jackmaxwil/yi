@@ -7,9 +7,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "../src/redact.rs"]
+mod redact;
 #[path = "../src/spill.rs"]
 mod spill;
-use spill::Spill;
+use spill::{Spill, Stream};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -46,6 +48,10 @@ static ALLOCATOR: CountingAlloc = CountingAlloc;
 fn kept(dir: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
     let mut spill = Spill::new(Some(dir));
     spill.write(bytes);
+    kept_path(&mut spill)
+}
+
+fn kept_path(spill: &mut Spill) -> Result<PathBuf, String> {
     let note = spill.keep().ok_or("not kept")?;
     let path = note
         .strip_prefix("[full output: ")
@@ -107,7 +113,7 @@ fn a_taken_name_is_neither_followed_nor_overwritten() -> Fallible {
     Ok(())
 }
 
-/// #881: a linked spill root is refused, so neither a spill nor the sweep reaches its target.
+/// #881: a linked spill root is refused, so no spill reaches its target.
 #[test]
 fn a_linked_spill_root_is_refused_and_its_target_left_alone() -> Fallible {
     let root = Scratch::new("yi-spill-link")?;
@@ -188,57 +194,62 @@ fn a_taken_name_is_compared_in_bounded_memory() -> Fallible {
     Ok(())
 }
 
-/// D316: a keep sweeps every session's dir under the root, not only its own. The sweep runs
-/// once an hour per process, so this holds under nextest, which gives each test its own.
+/// Review of #1147: stdout and stderr share one file, and one redactor joined a stdout line left
+/// open with the stderr line that closed, so a key's tail arrived as a fresh line in clear.
 #[test]
-fn a_keep_sweeps_other_sessions_old_spills() -> Fallible {
-    let root = Scratch::new("yi-spill-sweep-all")?;
-    let old = root.join("spills/s2/old.txt");
-    fs::create_dir_all(root.join("spills/s2"))?;
-    fs::write(&old, "a week old")?;
-    let file = fs::OpenOptions::new().write(true).open(&old)?;
-    file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
-    kept(&root.join("spills/s1"), b"output")?;
-    assert!(
-        !old.exists(),
-        "another session's old spill outlived the sweep"
+fn a_key_split_across_stdout_reads_is_redacted_whole() -> Fallible {
+    let root = Scratch::new("yi-spill-streams")?;
+    let mut spill = Spill::new(Some(&root));
+    spill.write_to(
+        Stream::Out,
+        format!("API_KEY=sk-{}-0123456789", "or-v1").as_bytes(),
     );
+    spill.write_to(Stream::Err, b"warning: retrying\n");
+    spill.write_to(Stream::Out, b"abcdef0123456789abcdef\n");
+    let path = kept_path(&mut spill)?;
+    let kept = fs::read_to_string(path)?;
+    assert!(!kept.contains("0123456789"), "{kept}");
+    assert!(kept.contains("warning: retrying\n"), "{kept}");
     Ok(())
 }
 
-/// #881: the flat dir every session shared is swept by the same rule, made 0700 again, and
-/// removed once empty. Run alone, as nextest does, since the sweep runs once an hour.
+/// Review of #1147: source code that names a token, and a grep hit on a key's first line, came
+/// back mangled; a PGP key block, whose fence ends `BLOCK-----`, came back in clear.
 #[test]
-fn the_flat_dir_is_made_private_and_swept() -> Fallible {
-    let root = Scratch::new("yi-spill-flat")?;
-    let flat = root.join(spill::FLAT_SPILLS);
-    fs::create_dir_all(&flat)?;
-    fs::set_permissions(&flat, fs::Permissions::from_mode(0o755))?;
-    for name in ["old.txt", "young.txt"] {
-        fs::write(flat.join(name), name)?;
-    }
-    let old = fs::OpenOptions::new()
-        .write(true)
-        .open(flat.join("old.txt"))?;
-    old.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
-    kept(&root.join(spill::SPILLS).join("s1"), b"output")?;
-    assert_eq!(mode(&flat)?, 0o700);
-    assert!(!flat.join("old.txt").exists() && flat.join("young.txt").exists());
-    Ok(())
-}
-
-#[test]
-fn an_emptied_flat_dir_is_removed() -> Fallible {
-    let root = Scratch::new("yi-spill-flat-empty")?;
-    let old = root.join(spill::FLAT_SPILLS).join("old.txt");
-    fs::create_dir_all(root.join(spill::FLAT_SPILLS))?;
-    fs::write(&old, "a week old")?;
-    let file = fs::OpenOptions::new().write(true).open(&old)?;
-    file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
-    kept(&root.join(spill::SPILLS).join("s1"), b"output")?;
-    assert!(
-        !root.join(spill::FLAT_SPILLS).exists(),
-        "the emptied flat dir stayed"
+fn the_redactor_leaves_code_alone_and_catches_every_key_block() -> Fallible {
+    let fence = |end: &str, kind: &str| format!("-----{end} {kind}-----");
+    let code = [
+        "let max_tokens = budget.remaining_tokens();".to_owned(),
+        "tokenizer = Tokenizer.from_pretrained(\"bert-base-uncased\")".to_owned(),
+        format!(
+            "src/a.rs:3:const HDR: &str = \"{}\";",
+            fence("BEGIN", "RSA PRIVATE KEY")
+        ),
+        "src/b.rs:9:fn main() {}".to_owned(),
+    ];
+    let pgp = [
+        fence("BEGIN", "PGP PRIVATE KEY BLOCK"),
+        "Version: GnuPG v2".to_owned(),
+        String::new(),
+        "lQOYBGVdB5wBCADKq0nJvCh1Xo3s9mVb".to_owned(),
+        "=x0Ab".to_owned(),
+        fence("END", "PGP PRIVATE KEY BLOCK"),
+    ];
+    let source = format!("{}\n{}\n", code.join("\n"), pgp.join("\n"));
+    let mut out = Vec::new();
+    let mut redactor = redact::Redactor::new().ok_or("no redactor")?;
+    redactor.push(source.as_bytes(), &mut out);
+    redactor.finish(&mut out);
+    let kept = String::from_utf8(out)?;
+    let lines: Vec<&str> = kept.lines().collect();
+    assert_eq!(
+        lines.get(..4),
+        Some(&code.iter().map(String::as_str).collect::<Vec<_>>()[..])
     );
+    assert!(
+        !kept.contains("lQOYBGVd") && !kept.contains("=x0Ab"),
+        "{kept}"
+    );
+    assert_eq!(lines.len(), code.len() + pgp.len(), "{kept}");
     Ok(())
 }

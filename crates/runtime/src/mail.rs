@@ -535,6 +535,14 @@ impl SubagentHost {
 }
 
 impl SubagentHost {
+    /// The family board the wiring named, else the one beside the parent's session dir.
+    pub(crate) fn board(&self) -> std::path::PathBuf {
+        self.family
+            .get()
+            .cloned()
+            .unwrap_or_else(|| crate::wiring::family_dir_of(&self.options.parent_session_dir))
+    }
+
     pub fn answer(
         &self,
         child: &str,
@@ -641,11 +649,7 @@ impl SubagentHost {
             return (text, None);
         }
         let name = format!("reply-{id}");
-        let dir = self
-            .family
-            .get()
-            .cloned()
-            .unwrap_or_else(|| crate::wiring::family_dir_of(&self.options.parent_session_dir));
+        let dir = self.board();
         #[expect(
             clippy::cast_precision_loss,
             reason = "rlm.put's `at` is float seconds"

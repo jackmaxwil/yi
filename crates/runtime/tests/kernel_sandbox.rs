@@ -572,8 +572,9 @@ async fn a_kernel_bash_job_takes_a_grant_kept_after_wiring() -> TestResult {
 /// Incident: a child kernel's writable roots stopped at its own `sub-*` directory, so its
 /// `rlm.put` to the family board it shares with its parent failed with EPERM. Then (#757) the
 /// profile granted `family/<id>` while nothing made `family/`, so the kernel's mkdir was denied.
+/// Review of #1147: the board's `spills/` stays the host's, so no cell writes or moves it.
 #[tokio::test]
-async fn a_contained_kernel_can_write_its_family_board() -> TestResult {
+async fn a_contained_kernel_can_write_its_family_board_but_not_its_spills() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
@@ -583,20 +584,35 @@ async fn a_contained_kernel_can_write_its_family_board() -> TestResult {
     let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
     let sessions = probe.join(format!("yi-family-{}", std::process::id()));
     let family = sessions.join("family").join("01test");
+    let spills = family.join("spills");
+    std::fs::create_dir_all(&spills)?;
     let kernel = service(project, home, sandbox, Some(family.clone()));
     let put = cell(
         &kernel,
         "print(rlm.put('shard', [1, 2])['name'])".to_owned(),
     )
     .await;
+    let tamper = format!(
+        "import os\nfor act in (lambda: open({x:?}, 'w').write('x'), lambda: os.rename({s:?}, {m:?})):\n    try:\n        act()\n        print('did')\n    except OSError as e:\n        print('denied', e.errno)",
+        x = spills.join("x.txt").display().to_string(),
+        s = spills.display().to_string(),
+        m = family.join("moved").display().to_string(),
+    );
+    let tampered = cell(&kernel, tamper).await;
     kernel.dispose().await;
     let written = family.join("shard.dill").is_file();
+    let untouched = spills.is_dir() && !spills.join("x.txt").exists();
     let _ = std::fs::remove_dir_all(&sessions);
-    let put = put?;
+    let (put, tampered) = (put?, tampered?);
     assert!(
         written,
         "the board refused the put: {} {:?}",
         put.result.stderr, put.result.error
+    );
+    assert!(
+        untouched && tampered.result.stdout.matches("denied").count() == 2,
+        "a cell wrote or moved the board's spills: {}",
+        tampered.result.stdout
     );
     Ok(())
 }
@@ -795,10 +811,10 @@ async fn a_kernel_connect_runs_on_the_host_from_the_home_config() -> TestResult 
 }
 
 /// #889: a walled session's kernel read every other session's spills and transcripts, since
-/// its profile carried the wall but not the walled roots the tool seam adds (D340, #971). Its
-/// own spill, transcript, state and the family board still read; an unwalled kernel reads all.
+/// its profile carried the wall but not the walled roots the tool seam adds (#971). Its family's
+/// spill, its transcript, state and the family board still read; an unwalled kernel reads all.
 #[tokio::test]
-async fn a_walled_kernel_reads_its_own_spill_and_transcript_and_no_other() -> TestResult {
+async fn a_walled_kernel_reads_its_familys_spill_and_transcript_and_no_other() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
@@ -890,7 +906,10 @@ async fn walled_roots_probe(
         (store.metadata().id.clone(), store.file_path().cloned())
     };
     let transcript = transcript.ok_or("no transcript file")?;
-    let own_spill = spills.join(&id).join("0001.txt");
+    let own_spill = planted
+        .own_dir
+        .with_file_name("family")
+        .join("spills/0001.txt");
     std::fs::create_dir_all(own_spill.parent().ok_or("no parent")?)?;
     std::fs::write(&own_spill, "OWN SPILL")?;
     let author = planted.author.display().to_string();

@@ -159,6 +159,7 @@ pub struct AgentSession {
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
     wall: Mutex<crate::wall::Wall>,
+    spills: Mutex<Option<std::path::PathBuf>>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
@@ -219,6 +220,7 @@ impl AgentSession {
             plan: Mutex::new(None),
             memory: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
+            spills: Mutex::new(None),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
         }
@@ -410,6 +412,13 @@ impl AgentSession {
         }
     }
 
+    /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.
+    pub fn set_spills(&self, dir: std::path::PathBuf) {
+        if let Ok(mut slot) = self.spills.lock() {
+            *slot = Some(dir);
+        }
+    }
+
     pub fn wall(&self) -> crate::wall::Wall {
         self.wall
             .lock()
@@ -582,13 +591,7 @@ impl AgentSession {
         if let Some(broker) = &permission {
             broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
         }
-        // A session with no store yet still spills under a dir of its own (D340).
-        let (store_id, unsaved) = (
-            self.store_id_hook(),
-            yi_session::IdGenerator::new().next_id(),
-        );
-        let spill_key: Arc<dyn Fn() -> Option<String> + Send + Sync> =
-            Arc::new(move || store_id().or_else(|| Some(unsaved.clone())));
+        let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -607,7 +610,7 @@ impl AgentSession {
                     .with_rules(self.rules_engine())
                     .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
-                    .with_spill_key(Arc::clone(&spill_key))
+                    .with_spills(spills.clone())
                     .with_transcript(self.store_handle())
                     .with_job_owner(self.shared.job_owner)
                     .with_extensions(Some(self.ext_hook())),

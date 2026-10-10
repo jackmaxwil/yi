@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::jobs::LiveOutput;
-use crate::spill::Spill;
+use crate::spill::{Spill, Stream};
 use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
@@ -204,7 +204,7 @@ fn drain_capped(
     mut reader: impl Read,
     cap: usize,
     live: Option<&LiveOutput>,
-    spill: &Mutex<Spill>,
+    (spill, stream): (&Mutex<Spill>, Stream),
 ) -> (String, Option<(usize, usize)>) {
     let head_cap = cap / 2;
     let tail_cap = cap.saturating_sub(head_cap);
@@ -221,7 +221,7 @@ fn drain_capped(
                     live.push(bytes);
                 }
                 if let Ok(mut spill) = spill.lock() {
-                    spill.write(bytes);
+                    spill.write_to(stream, bytes);
                 }
                 let room = head_cap.saturating_sub(head.len());
                 head.extend(bytes.iter().take(room));
@@ -349,11 +349,16 @@ pub(crate) fn run_captured_live(
     let spill = Arc::new(Mutex::new(Spill::new(spill_dir)));
     let stderr_spill = Arc::clone(&spill);
     let stderr_reader = std::thread::spawn(move || match stderr_pipe {
-        Some(pipe) => drain_capped(pipe, cap, stderr_live.as_deref(), &stderr_spill),
+        Some(pipe) => drain_capped(
+            pipe,
+            cap,
+            stderr_live.as_deref(),
+            (&stderr_spill, Stream::Err),
+        ),
         None => (String::new(), None),
     });
     let (stdout, stdout_cut) = match stdout_pipe {
-        Some(pipe) => drain_capped(pipe, cap, live.as_deref(), &spill),
+        Some(pipe) => drain_capped(pipe, cap, live.as_deref(), (&spill, Stream::Out)),
         None => (String::new(), None),
     };
     let (stderr, stderr_cut) = stderr_reader
@@ -422,7 +427,7 @@ mod tests {
         let text = "é".repeat(12);
         let spill = Mutex::new(Spill::new(None));
         assert_eq!(
-            drain_capped(text.as_bytes(), 35, None, &spill),
+            drain_capped(text.as_bytes(), 35, None, (&spill, Stream::Out)),
             (text, None)
         );
     }
