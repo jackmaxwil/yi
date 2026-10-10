@@ -1,0 +1,734 @@
+crates/acp/src/cells.rs:66:        for cell in self.by_session.remove(session).unwrap_or_default() {
+crates/acp/src/cells.rs:82:        .unwrap_or_default();
+crates/acp/src/daemon.rs:159:        .unwrap_or_default()
+crates/acp/src/forward.rs:174:            let fields = workdir.as_object().cloned().unwrap_or_default();
+crates/acp/src/lib.rs:142:                    tool_call_id: ask.tool_call_id.unwrap_or_default().to_owned(),
+crates/acp/src/lib.rs:452:            .unwrap_or_default();
+crates/acp/src/lib.rs:834:                    .unwrap_or_default();
+crates/acp/src/lib.rs:986:        let tail = entries.get(skip..).unwrap_or_default();
+crates/acp/src/lib.rs:1044:        let tail = entries.get(skip..).unwrap_or_default();
+crates/acp/src/review.rs:72:        .unwrap_or_default();
+crates/acp/src/update.rs:540:        .unwrap_or_default();
+crates/acp/tests/acp_unit.rs:202:                    .unwrap_or_default()
+crates/acp/tests/acp_unit.rs:507:            let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
+crates/ai/src/anthropic.rs:550:                        .unwrap_or_default();
+crates/ai/src/anthropic.rs:679:                        .unwrap_or_default();
+crates/ai/src/auth.rs:159:        .unwrap_or_default();
+crates/ai/src/catalog.rs:153:    for tier in model.cost.tiers.as_deref().unwrap_or_default() {
+crates/ai/src/leak.rs:70:                kept.push_str(rest.get(..start).unwrap_or_default());
+crates/ai/src/leak.rs:73:            None => kept.push_str(rest.get(..after).unwrap_or_default()),
+crates/ai/src/leak.rs:75:        rest = rest.get(after..).unwrap_or_default();
+crates/ai/src/openai_responses.rs:940:        let content = self.content_mut().cloned().unwrap_or_default();
+crates/ai/src/request.rs:64:                .unwrap_or_default()
+crates/ai/src/request.rs:87:    let rest = url.get(start..).unwrap_or_default();
+crates/ai/src/request.rs:92:    let scheme = url.get(..start).unwrap_or_default();
+crates/ai/src/request.rs:93:    let host = rest.get(at.saturating_add(1)..).unwrap_or_default();
+crates/ai/src/request.rs:206:                    let text = response.into_string().unwrap_or_default();
+crates/ai/src/request.rs:281:        pending.extend_from_slice(buffer.get(..read).unwrap_or_default());
+crates/ai/src/request.rs:572:        .unwrap_or_default();
+crates/ai/src/request.rs:575:        .unwrap_or_default();
+crates/ai/src/schema.rs:100:        .unwrap_or_default();
+crates/ai/tests/openrouter.rs:274:            let parts = message["content"].as_array().cloned().unwrap_or_default();
+crates/ai/tests/strict_tools.rs:26:            name: tool["name"].as_str().unwrap_or_default().to_owned(),
+crates/ai/tests/strict_tools.rs:62:                tool["name"].as_str().unwrap_or_default().to_owned(),
+crates/cli/src/catalog.rs:22:    let workspace = std::env::current_dir().unwrap_or_default();
+crates/cli/src/catalog.rs:65:        .unwrap_or_default();
+crates/cli/src/debug.rs:21:    let verb = words.next().unwrap_or_default();
+crates/cli/src/debug.rs:56:    let env = |name: &str| std::env::var(name).unwrap_or_default();
+crates/cli/src/debug.rs:147:        serde_json::to_string_pretty(&shown).unwrap_or_default()
+crates/cli/src/debug.rs:158:        .unwrap_or_default();
+crates/cli/src/debug.rs:281:                    .unwrap_or_default()
+crates/cli/src/debug.rs:289:                .unwrap_or_default()
+crates/cli/src/debug.rs:401:            .unwrap_or_default();
+crates/cli/src/debug.rs:523:                "process": trace.processes.get(&event.pid).cloned().unwrap_or_default(),
+crates/cli/src/debug.rs:551:            .unwrap_or_default()
+crates/cli/src/debug.rs:557:            .unwrap_or_default()
+crates/cli/src/debug.rs:617:            args.map(Value::to_string).unwrap_or_default()
+crates/cli/src/doctor.rs:111:        .unwrap_or_default();
+crates/cli/src/doctor.rs:316:    let name = path.file_stem().unwrap_or_default().to_string_lossy();
+crates/cli/src/lanes.rs:6:    config().lanes.clone().unwrap_or_default()
+crates/cli/src/main.rs:189:        model: model.or_else(configured_model).unwrap_or_default(),
+crates/cli/src/main.rs:346:    HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
+crates/cli/src/main.rs:355:    config().models.clone().unwrap_or_default()
+crates/cli/src/main.rs:438:    yi_runtime::node::configure(config().node.clone().unwrap_or_default());
+crates/cli/src/main.rs:1127:                    effort: args.thinking.unwrap_or_default(),
+crates/cli/src/plan.rs:46:    (parts.next().unwrap_or_default(), parts.next())
+crates/cli/src/plan.rs:152:            .unwrap_or_default()
+crates/cli/src/plan.rs:229:            .unwrap_or_default()
+crates/cli/src/plan.rs:247:                .unwrap_or_default()
+crates/cli/src/rpc.rs:392:                        .unwrap_or_default()
+crates/cli/src/sessions.rs:87:    let verb = parts.next().unwrap_or_default();
+crates/cli/src/sessions.rs:187:        Some((cut, _)) => format!("{}…", trimmed.get(..cut).unwrap_or_default()),
+crates/cli/src/shells.rs:152:        .unwrap_or_default()
+crates/cli/src/shells.rs:332:            .unwrap_or_default(),
+crates/cli/src/stats.rs:535:                        .entry(span.tool.clone().unwrap_or_default())
+crates/cli/src/update.rs:338:    std::fs::read_to_string(format!("{home}/.config/fgj/config.yaml")).unwrap_or_default()
+crates/cli/tests/acp_protocol.rs:1104:    let cwd = workdir["cwd"].as_str().unwrap_or_default().to_owned();
+crates/cli/tests/acp_protocol.rs:1189:                        turn["args"].as_object().cloned().unwrap_or_default(),
+crates/cli/tests/cli_surfaces.rs:271:                .unwrap_or_default(),
+crates/cli/tests/cli_surfaces.rs:1093:    let message = reply["error"]["message"].as_str().unwrap_or_default();
+crates/cli/tests/cli_surfaces.rs:1871:            faux_tool_call(&id, tool, args.as_object().cloned().unwrap_or_default())
+crates/cli/tests/journeys.rs:127:    frame["error"].as_str().unwrap_or_default().to_owned()
+crates/cli/tests/journeys.rs:186:    let call = faux_tool_call("c1", "write", args.as_object().cloned().unwrap_or_default());
+crates/cli/tests/journeys.rs:535:                message["content"].as_str().unwrap_or_default()
+crates/cli/tests/journeys.rs:583:        faux_tool_call(id, name, args.as_object().cloned().unwrap_or_default())
+crates/cli/tests/mcp_cli.rs:346:                    .unwrap_or_default();
+crates/cli/tests/python_client.rs:302:                    .unwrap_or_default(),
+crates/cli/tests/python_client.rs:382:        .map(|answer| answer["text"].as_str().unwrap_or_default())
+crates/cli/tests/serve_daemon.rs:369:            .unwrap_or_default();
+crates/cli/tests/serve_daemon.rs:802:        .unwrap_or_default()
+crates/cli/tests/serve_daemon.rs:834:        let minted = stored["access"].as_str().unwrap_or_default();
+crates/cli/tests/serve_daemon.rs:909:            .unwrap_or_default()
+crates/cli/tests/serve_daemon.rs:950:            .unwrap_or_default()
+crates/cli/tests/serve_daemon.rs:953:    let said = std::fs::read_to_string(&log).unwrap_or_default();
+crates/cli/tests/tui_drive.rs:702:            let line = String::from_utf8_lossy(head.get(..read).unwrap_or_default());
+crates/cli/tests/tui_drive.rs:704:                log.push(line.lines().next().unwrap_or_default().to_owned());
+crates/console/src/app/chat.rs:307:        let effort = config.effort.unwrap_or_default();
+crates/console/src/app/diffs.rs:267:            .unwrap_or_default()
+crates/console/src/app/notebook.rs:30:                .unwrap_or_default()
+crates/console/src/app/notebook.rs:48:                    .unwrap_or_default()
+crates/console/src/app/port.rs:192:        status: string(value.get("status")).unwrap_or_default(),
+crates/console/src/app/port.rs:292:                .unwrap_or_default(),
+crates/console/src/app/port.rs:308:                .unwrap_or_default();
+crates/console/src/app.rs:124:        let label = kind.split('(').next().unwrap_or_default();
+crates/console/src/app.rs:523:                            serde_json::from_value(subplans).unwrap_or_default();
+crates/console/src/client.rs:187:            let unread = pending.get(scanned..).unwrap_or_default();
+crates/console/src/kitty.rs:32:        let chunk = bytes.get(offset..end).unwrap_or_default();
+crates/console/src/lib.rs:331:        .unwrap_or_default();
+crates/console/src/model.rs:246:            .unwrap_or_default()
+crates/console/src/panes.rs:133:                    .unwrap_or_default();
+crates/console/src/panes.rs:144:                        .unwrap_or_default();
+crates/console/src/render.rs:293:    let claims = chat.port.claims(false).unwrap_or_default();
+crates/console/src/render.rs:490:        .unwrap_or_default()
+crates/console/src/select.rs:187:            let row = row.get(indent..).unwrap_or_default();
+crates/console/tests/copy.rs:110:            .unwrap_or_default()
+crates/console/tests/drive.rs:1840:    let last = frame.lines().last().unwrap_or_default();
+crates/console/tests/drive.rs:2318:        .unwrap_or_default();
+crates/console/tests/drive.rs:2838:        .unwrap_or_default();
+crates/console/tests/drive.rs:3519:    let column = top.get(..at).unwrap_or_default().chars().count();
+crates/context/src/serialize.rs:55:                        format!("{key}={}", serde_json::to_string(value).unwrap_or_default())
+crates/context/src/view.rs:312:        .unwrap_or_default();
+crates/kernel/build.rs:29:            .unwrap_or_default();
+crates/kernel/src/bootstrap.rs:101:                let version = output(python, &["-c", PYTHON_VERSION_PRINT]).unwrap_or_default();
+crates/kernel/src/bootstrap.rs:635:        .unwrap_or_default()
+crates/kernel/src/bootstrap.rs:651:        .unwrap_or_default();
+crates/kernel/src/client.rs:215:        .unwrap_or_default();
+crates/kernel/src/client.rs:372:            .unwrap_or_default();
+crates/kernel/src/client.rs:945:        let content = content.as_object().cloned().unwrap_or_default();
+crates/kernel/src/client.rs:1039:                .unwrap_or_default();
+crates/kernel/src/client.rs:1109:            .unwrap_or_default();
+crates/kernel/src/framing.rs:53:        serde_json::to_vec(&message.header).unwrap_or_default(),
+crates/kernel/src/framing.rs:54:        serde_json::to_vec(&message.parent_header).unwrap_or_default(),
+crates/kernel/src/framing.rs:55:        serde_json::to_vec(&message.metadata).unwrap_or_default(),
+crates/kernel/src/framing.rs:56:        serde_json::to_vec(&message.content).unwrap_or_default(),
+crates/kernel/src/lock.rs:11:        .unwrap_or_default();
+crates/kernel/src/pump.rs:428:            .unwrap_or_default();
+crates/kernel/src/reduce.rs:129:                .unwrap_or_default();
+crates/kernel/src/reduce.rs:134:                .unwrap_or_default();
+crates/kernel/src/tarball.rs:79:        let size = octal(header.get(124..136).unwrap_or_default())
+crates/kernel/src/tarball.rs:94:        tar = rest.get(padded..).unwrap_or_default();
+crates/kernel/src/tarball.rs:113:    let raw = header.get(at..at.saturating_add(len)).unwrap_or_default();
+crates/kernel/src/tarball.rs:115:    let bytes = raw.get(..end).unwrap_or_default();
+crates/kernel/tests/framing.rs:7:    value.as_object().cloned().unwrap_or_default()
+crates/kernel/tests/kernel_e2e.rs:65:        .unwrap_or_default()
+crates/kernel/tests/kernel_e2e.rs:185:            .unwrap_or_default()
+crates/kernel/tests/reduce.rs:20:        content: content.as_object().cloned().unwrap_or_default(),
+crates/loop/src/run.rs:607:        .unwrap_or_default();
+crates/loop/src/run.rs:750:            let tail = source.map(crate::reasoning::tail).unwrap_or_default();
+crates/loop/tests/loop_events.rs:70:            .unwrap_or_default()
+crates/loop/tests/loop_events.rs:480:            .unwrap_or_default()
+crates/loop/tests/loop_events.rs:585:        .unwrap_or_default();
+crates/loop/tests/loop_events.rs:694:            .unwrap_or_default()
+crates/loop/tests/loop_events.rs:969:                .unwrap_or_default()
+crates/loop/tests/loop_events.rs:1025:            .unwrap_or_default()
+crates/loop/tests/loop_events.rs:1033:            .unwrap_or_default();
+crates/loop/tests/loop_events.rs:1173:            .unwrap_or_default()
+crates/loop/tests/loop_events.rs:1669:            .unwrap_or_default()
+crates/loop/tests/loop_events.rs:1887:        .unwrap_or_default();
+crates/loop/tests/loop_events.rs:1985:                .unwrap_or_default();
+crates/loop/tests/turn_effort.rs:369:    seen.lock().map(|seen| seen.clone()).unwrap_or_default()
+crates/loop/tests/turn_effort.rs:444:    let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+crates/loop/tests/turn_effort.rs:510:        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+crates/loop/tests/turn_effort.rs:582:        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+crates/loop/tests/turn_effort.rs:672:    let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+crates/mcp-cli/examples/reference_server.rs:73:            .unwrap_or_default()
+crates/mcp-cli/src/args.rs:265:                    .unwrap_or_default(),
+crates/mcp-cli/src/config.rs:25:        .unwrap_or_default();
+crates/mcp-cli/src/config.rs:30:        .unwrap_or_default();
+crates/mcp-cli/src/grep.rs:23:        .unwrap_or_default()
+crates/mcp-cli/src/lib.rs:248:                &json!({"tools": listing.get("tools").cloned().unwrap_or_default()}),
+crates/mcp-cli/src/output.rs:26:        println!("{}", serde_json::to_string(value).unwrap_or_default());
+crates/mcp-cli/src/output.rs:36:        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+crates/mcp-cli/src/profiles.rs:18:            .unwrap_or_default();
+crates/mcp-cli/src/sessions.rs:27:            .unwrap_or_default();
+crates/mcp-cli/src/tokens.rs:147:        let lock = dir.join(lock.file_name().unwrap_or_default());
+crates/oauth/src/flow.rs:100:            let body = resp.into_string().unwrap_or_default();
+crates/oauth/src/loopback.rs:77:            .unwrap_or_default();
+crates/oauth/src/registry.rs:92:        scopes: file.scopes.unwrap_or_default(),
+crates/orb/src/kitty.rs:8:    let term = std::env::var("TERM").unwrap_or_default();
+crates/orb/tests/kitty.rs:41:    let placement = wire.get(place_at..).unwrap_or_default();
+crates/permission/src/catastrophic.rs:684:    let rest = |after: usize| glob.get(after..).unwrap_or_default();
+crates/permission/src/catastrophic.rs:686:        (0..=name.len()).any(|at| wildcard(rest(after), name.get(at..).unwrap_or_default()))
+crates/permission/src/catastrophic.rs:702:            same && !name.is_empty() && wildcard(rest(width), name.get(1..).unwrap_or_default())
+crates/permission/src/safety.rs:381:        return classify(argv.get(2..).unwrap_or_default());
+crates/permission/src/safety.rs:436:                        git_subcommand(argv).unwrap_or_default()
+crates/permission/src/safety.rs:526:        .unwrap_or_default()
+crates/permission/src/safety.rs:539:        let from = command.get(at..).unwrap_or_default();
+crates/runtime/src/advisor/mod.rs:131:        .unwrap_or_default();
+crates/runtime/src/advisor/mod.rs:383:                    let canonical = serde_json::to_string(arguments).unwrap_or_default();
+crates/runtime/src/advisor/review.rs:69:                .unwrap_or_default()
+crates/runtime/src/advisor/review.rs:131:                .unwrap_or_default();
+crates/runtime/src/affordance.rs:26:        serde_json::from_str(include_str!("prompts/graph.json")).unwrap_or_default()
+crates/runtime/src/affordance.rs:76:        .unwrap_or_default();
+crates/runtime/src/annotate.rs:113:            .unwrap_or_default();
+crates/runtime/src/annotate.rs:145:        let kind = text(input, "kind").unwrap_or_default();
+crates/runtime/src/annotate.rs:171:        let kind = text(&input, "kind").unwrap_or_default().to_owned();
+crates/runtime/src/annotate.rs:181:                    .unwrap_or_default();
+crates/runtime/src/annotate.rs:225:        let call = call.unwrap_or_default();
+crates/runtime/src/annotate.rs:271:                args.as_object().cloned().unwrap_or_default(),
+crates/runtime/src/annotate.rs:300:        let input: Map<String, Value> = input.as_object().cloned().unwrap_or_default();
+crates/runtime/src/annotate.rs:330:            .unwrap_or_default();
+crates/runtime/src/annotate.rs:414:                .unwrap_or_default(),
+crates/runtime/src/auto_review.rs:69:        .unwrap_or_default();
+crates/runtime/src/auto_review.rs:126:            .unwrap_or_default();
+crates/runtime/src/auto_review.rs:162:        .unwrap_or_default();
+crates/runtime/src/checkpoint.rs:106:        .unwrap_or_default();
+crates/runtime/src/checkpoint.rs:133:    let after = entries.get(at..).unwrap_or_default().iter();
+crates/runtime/src/checkpoint.rs:134:    let before = entries.get(..at).unwrap_or_default().iter().rev();
+crates/runtime/src/checkpoint.rs:149:        .unwrap_or_default();
+crates/runtime/src/checkpoint.rs:271:        .unwrap_or_default();
+crates/runtime/src/classifier.rs:492:    let block = config.classifier.clone().unwrap_or_default();
+crates/runtime/src/compaction.rs:580:            .unwrap_or_default();
+crates/runtime/src/compaction.rs:674:            .unwrap_or_default();
+crates/runtime/src/environment.rs:112:            .unwrap_or_default();
+crates/runtime/src/environment.rs:225:        .unwrap_or_default();
+crates/runtime/src/environment.rs:261:            .unwrap_or_default();
+crates/runtime/src/environment.rs:267:            .unwrap_or_default();
+crates/runtime/src/ext/pack.rs:58:        .unwrap_or_default()
+crates/runtime/src/ext/project.rs:48:            .unwrap_or_default()
+crates/runtime/src/family.rs:143:    let line = text.lines().next().unwrap_or_default();
+crates/runtime/src/family.rs:253:    let note = || view.and_then(|view| view.note.clone()).unwrap_or_default();
+crates/runtime/src/family.rs:292:        .unwrap_or_default()
+crates/runtime/src/family.rs:372:                    .unwrap_or_default();
+crates/runtime/src/fetch/docs.rs:17:    let fields = serde_json::to_string_pretty(&crate::plan::tool::schema()).unwrap_or_default();
+crates/runtime/src/fetch/mod.rs:341:        let page = text.get(start..end).unwrap_or_default().to_owned();
+crates/runtime/src/fetch/schemes.rs:76:                Some(_) => serde_json::to_string(entry).unwrap_or_default(),
+crates/runtime/src/goal/mod.rs:287:        let text = |key| params.str_of(key).unwrap_or_default();
+crates/runtime/src/history.rs:49:        .unwrap_or_default();
+crates/runtime/src/history.rs:82:        .unwrap_or_default();
+crates/runtime/src/host.rs:99:    let vendor = dmi(root, "sys_vendor").unwrap_or_default();
+crates/runtime/src/host.rs:100:    let product = dmi(root, "product_name").unwrap_or_default();
+crates/runtime/src/host.rs:101:    let tag = dmi(root, "chassis_asset_tag").unwrap_or_default();
+crates/runtime/src/kernel.rs:320:                Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
+crates/runtime/src/kernel.rs:472:            Some(manager.restore_state().await.unwrap_or_default())
+crates/runtime/src/kernel.rs:547:            .unwrap_or_default();
+crates/runtime/src/kernel.rs:634:        let now = manager.list_namespace_names().await.unwrap_or_default();
+crates/runtime/src/kernel.rs:957:        let payload = payload.as_object().cloned().unwrap_or_default();
+crates/runtime/src/kernel.rs:1118:                .unwrap_or_default(),
+crates/runtime/src/kernel_state.rs:103:        .unwrap_or_default();
+crates/runtime/src/kernel_state.rs:165:        let payload = payload.as_object().cloned().unwrap_or_default();
+crates/runtime/src/kernel_state.rs:204:        let calls = host.0.lock().map(|calls| calls.clone()).unwrap_or_default();
+crates/runtime/src/lane/land.rs:238:                .unwrap_or_default()
+crates/runtime/src/lane/land.rs:272:                .unwrap_or_default()
+crates/runtime/src/lane/land.rs:383:            .unwrap_or_default();
+crates/runtime/src/lane/land.rs:475:            .unwrap_or_default()
+crates/runtime/src/lane/mod.rs:286:        .unwrap_or_default();
+crates/runtime/src/lane/mod.rs:580:                Some(self.read_state(slot)?.session.unwrap_or_default()),
+crates/runtime/src/lane/mod.rs:940:            let found = self.read_state(slot)?.session.unwrap_or_default();
+crates/runtime/src/lane/toolchain.rs:184:    let base = state.base.clone().unwrap_or_default();
+crates/runtime/src/lease.rs:265:            let (target, reason) = (text("target"), text("reason").unwrap_or_default());
+crates/runtime/src/lease.rs:295:            .unwrap_or_default();
+crates/runtime/src/lease.rs:329:            .unwrap_or_default();
+crates/runtime/src/lease.rs:400:            .unwrap_or_default();
+crates/runtime/src/mail.rs:59:        let target = text_of("target").unwrap_or_default().to_owned();
+crates/runtime/src/mail.rs:492:                    .unwrap_or_default()
+crates/runtime/src/mail.rs:531:            serde_json::to_value(&answer).unwrap_or_default(),
+crates/runtime/src/mail.rs:676:        let head = text.get(..cut).unwrap_or_default();
+crates/runtime/src/mail.rs:764:            .unwrap_or_default();
+crates/runtime/src/mail.rs:861:        let note = desk.asking().remove("writer").unwrap_or_default();
+crates/runtime/src/mailbox.rs:188:                    reply.get("reply").and_then(Value::as_str).unwrap_or_default().to_owned()
+crates/runtime/src/mailbox.rs:199:            .unwrap_or_default()
+crates/runtime/src/mailbox.rs:265:                    .unwrap_or_default();
+crates/runtime/src/mailbox.rs:514:            .unwrap_or_default();
+crates/runtime/src/mailbox.rs:565:            for name in asking.unwrap_or_default().into_keys() {
+crates/runtime/src/mailbox.rs:663:                last_assistant_text(&record.session.messages()).unwrap_or_default(),
+crates/runtime/src/memory/doc.rs:38:            slug = slug.get(..cut).unwrap_or_default().to_owned();
+crates/runtime/src/memory/mod.rs:70:            .unwrap_or_default()
+crates/runtime/src/memory/rank.rs:38:        let token: String = lower.get(start..at).unwrap_or_default().iter().collect();
+crates/runtime/src/memory/store.rs:131:        .unwrap_or_default();
+crates/runtime/src/memory/store.rs:153:    let mut text = serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_default();
+crates/runtime/src/memory/store.rs:214:        let replay = self.journal().replay().unwrap_or_default();
+crates/runtime/src/memory/store.rs:256:            .unwrap_or_default())
+crates/runtime/src/memory/store.rs:269:        self.usage_strict().unwrap_or_default()
+crates/runtime/src/memory/store.rs:466:        let hash = Digest::of(self.read_text(&name.file())?.unwrap_or_default().as_bytes());
+crates/runtime/src/node.rs:174:                    let text = format!("{holder}\n{}", family.as_deref().unwrap_or_default());
+crates/runtime/src/node.rs:195:                        lines.next().unwrap_or_default()
+crates/runtime/src/permission/kept.rs:28:            session_rules: Mutex::new(SessionRules::load(rules).unwrap_or_default()),
+crates/runtime/src/permission.rs:189:        for section in parsed.map(|patch| patch.sections).unwrap_or_default() {
+crates/runtime/src/permission.rs:499:                    serde_json::to_string(&Value::Object(args.clone())).unwrap_or_default();
+crates/runtime/src/permission.rs:545:            .unwrap_or_default();
+crates/runtime/src/permission.rs:857:            .unwrap_or_default()
+crates/runtime/src/plan/acceptance.rs:273:            .unwrap_or_default();
+crates/runtime/src/plan/acceptance.rs:341:                .unwrap_or_default(),
+crates/runtime/src/plan/acceptance.rs:1061:                .unwrap_or_default();
+crates/runtime/src/plan/apply.rs:120:            .unwrap_or_default()
+crates/runtime/src/plan/apply.rs:145:            let want = row.get("state").and_then(Value::as_str).unwrap_or_default();
+crates/runtime/src/plan/apply.rs:213:        let label = op.get("label").and_then(Value::as_str).unwrap_or_default();
+crates/runtime/src/plan/apply.rs:284:        .unwrap_or_default();
+crates/runtime/src/plan/apply.rs:331:            let own = label_of(row).unwrap_or_default();
+crates/runtime/src/plan/apply.rs:615:    let op = args.get("op").and_then(Value::as_str).unwrap_or_default();
+crates/runtime/src/plan/ask.rs:84:    let typed = crate::fetch::user_entries(store).unwrap_or_default();
+crates/runtime/src/plan/ask.rs:88:        .unwrap_or_default();
+crates/runtime/src/plan/ask.rs:155:            store.map(|store| said(&store)).unwrap_or_default()
+crates/runtime/src/plan/authority.rs:182:            .unwrap_or_default(),
+crates/runtime/src/plan/declare.rs:105:        note.get(..cut).unwrap_or_default()
+crates/runtime/src/plan/declare.rs:131:            .unwrap_or_default();
+crates/runtime/src/plan/dispatch.rs:623:            .unwrap_or_default()
+crates/runtime/src/plan/done.rs:545:            .unwrap_or_default()
+crates/runtime/src/plan/finish.rs:342:        let refusal = match self.accept_finish(&held, product.as_deref().unwrap_or_default()) {
+crates/runtime/src/plan/judge.rs:235:            crate::subagent::last_assistant_text(&record.session.messages()).unwrap_or_default();
+crates/runtime/src/plan/judge.rs:238:        vote_of(&answer, &rows.unwrap_or_default(), evidence)
+crates/runtime/src/plan/judge.rs:270:                let kwargs = kwargs.as_object().cloned().unwrap_or_default();
+crates/runtime/src/plan/mod.rs:78:    std::env::current_dir().unwrap_or_default().join(PLANS_DIR)
+crates/runtime/src/plan/natural.rs:47:        .unwrap_or_default()
+crates/runtime/src/plan/natural.rs:277:                let rest = text.get(stream.byte_offset()..).unwrap_or_default();
+crates/runtime/src/plan/natural.rs:491:            .unwrap_or_default();
+crates/runtime/src/plan/natural.rs:541:    let op = args.get("op").and_then(Value::as_str).unwrap_or_default();
+crates/runtime/src/plan/ops.rs:462:            cwd: std::env::current_dir().unwrap_or_default(),
+crates/runtime/src/plan/ops.rs:750:                    .unwrap_or_default()
+crates/runtime/src/plan/program.rs:118:            let rest = text.get(walked..).unwrap_or_default();
+crates/runtime/src/plan/render.rs:97:            let parent = parent.as_ref().map(ToString::to_string).unwrap_or_default();
+crates/runtime/src/plan/schedule.rs:41:        .unwrap_or_default();
+crates/runtime/src/plan/state.rs:533:            .unwrap_or_default()
+crates/runtime/src/plan/store.rs:67:    #[error("lease {path} is held{}", pid.map(|pid| format!(" by pid {pid}")).unwrap_or_default())]
+crates/runtime/src/plan/store.rs:79:        seq.map(|seq| format!(" (record {seq})")).unwrap_or_default()
+crates/runtime/src/plan/store.rs:99:        seq.map(|seq| format!(" naming journal record {seq}")).unwrap_or_default()
+crates/runtime/src/plan/tool.rs:108:    #[error("{}{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), todo.map(|at| format!(" todos[{at}]")).unwrap_or_default(), misplaced(*op, todo.is_some(), key).unwrap_or(field_hint(key)))]
+crates/runtime/src/plan/tool.rs:399:                let (chars, max) = (label.unwrap_or_default().chars().count(), TODO_LABEL_MAX);
+crates/runtime/src/plan/tool.rs:407:            after: opt(spec, op, "after")?.unwrap_or_default(),
+crates/runtime/src/plan/tool.rs:412:                intent: opt(spec, op, "intent")?.unwrap_or_default(),
+crates/runtime/src/plan/tool.rs:413:                waived: opt(spec, op, "waived")?.unwrap_or_default(),
+crates/runtime/src/plan/tool.rs:496:            resolutions: opt::<Vec<Resolution>>(args, kind, "resolutions")?.unwrap_or_default(),
+crates/runtime/src/plan/tool.rs:1144:            let mut args = extra.as_object().cloned().unwrap_or_default();
+crates/runtime/src/plan/tool.rs:1155:                .unwrap_or_default();
+crates/runtime/src/plan/trace.rs:167:        for ((row, now), was) in ROWS.iter().zip(now).zip(was.unwrap_or_default()) {
+crates/runtime/src/plan/why.rs:103:    let subject = body.lines().next().unwrap_or_default().trim().to_owned();
+crates/runtime/src/provider.rs:318:            .unwrap_or_default();
+crates/runtime/src/reclaim.rs:149:        .unwrap_or_default()
+crates/runtime/src/reclaim.rs:334:            .unwrap_or_default()
+crates/runtime/src/reclaim.rs:494:            arguments: args.as_object().cloned().unwrap_or_default(),
+crates/runtime/src/reclaim.rs:631:            .unwrap_or_default();
+crates/runtime/src/reclaim.rs:639:            .unwrap_or_default();
+crates/runtime/src/reclaim.rs:802:            .unwrap_or_default();
+crates/runtime/src/rollup.rs:110:        let mut lines = text.as_deref().unwrap_or_default().lines();
+crates/runtime/src/rules.rs:190:        .unwrap_or_default();
+crates/runtime/src/rules.rs:392:        .unwrap_or_default()
+crates/runtime/src/rules.rs:471:            .unwrap_or_default()
+crates/runtime/src/schedule/adapter.rs:84:        .unwrap_or_default();
+crates/runtime/src/schedule/adapter.rs:103:        .unwrap_or_default();
+crates/runtime/src/schedule/adapter.rs:225:                    |data| data.get("ok").cloned().unwrap_or_default(),
+crates/runtime/src/schedule/adapter.rs:462:        .unwrap_or_default();
+crates/runtime/src/schedule/channel.rs:152:            .unwrap_or_default()
+crates/runtime/src/schedule/channel.rs:296:        .unwrap_or_default()
+crates/runtime/src/schedule/kernel.rs:142:                .unwrap_or_default();
+crates/runtime/src/schedule/mod.rs:718:            .unwrap_or_default();
+crates/runtime/src/schedule/shared.rs:115:                let cadence = job.schedule.interval_ms.unwrap_or_default();
+crates/runtime/src/schedule/zone.rs:52:            let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
+crates/runtime/src/schedule/zone.rs:80:            .unwrap_or_default()
+crates/runtime/src/schema.rs:238:    let candidate = trimmed.get(start..).unwrap_or_default();
+crates/runtime/src/session/deadline.rs:185:        let call = faux_tool_call("c1", "bash", args.as_object().cloned().unwrap_or_default());
+crates/runtime/src/session/deadline.rs:197:            .unwrap_or_default();
+crates/runtime/src/session/hooks.rs:223:            crate::mail::received(store_of(&shared), taken.unwrap_or_default())
+crates/runtime/src/session/hooks.rs:272:                .unwrap_or_default()
+crates/runtime/src/session/run.rs:67:        .unwrap_or_default();
+crates/runtime/src/session/run.rs:272:            .unwrap_or_default(),
+crates/runtime/src/session/run.rs:273:        tools: shared.tools.lock().as_deref().cloned().unwrap_or_default(),
+crates/runtime/src/session/run.rs:284:    config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
+crates/runtime/src/session/run.rs:564:            .unwrap_or_default();
+crates/runtime/src/session/run.rs:573:            .unwrap_or_default()
+crates/runtime/src/session.rs:122:        .unwrap_or_default();
+crates/runtime/src/session.rs:178:                        .clamp_effort(config.thinking_level.unwrap_or_default()),
+crates/runtime/src/session.rs:314:            .unwrap_or_default()
+crates/runtime/src/session.rs:432:            .unwrap_or_default()
+crates/runtime/src/session.rs:573:        slot.as_deref().cloned().unwrap_or_default()
+crates/runtime/src/session.rs:715:            .unwrap_or_default()
+crates/runtime/src/session.rs:999:            .unwrap_or_default()
+crates/runtime/src/session.rs:1038:        .unwrap_or_default()
+crates/runtime/src/session.rs:1048:        .unwrap_or_default();
+crates/runtime/src/skills.rs:163:        description: fields.get("description").cloned().unwrap_or_default(),
+crates/runtime/src/slash.rs:33:        .unwrap_or_default();
+crates/runtime/src/slash.rs:205:                .unwrap_or_default();
+crates/runtime/src/slash.rs:210:                .unwrap_or_default();
+crates/runtime/src/subagent/reader.rs:362:        return Ok((None, format!("{}{prompt}", fenced.unwrap_or_default())));
+crates/runtime/src/subagent/record.rs:88:        messages.get(self.billed_from..).unwrap_or_default()
+crates/runtime/src/subagent/runs.rs:132:            for message in messages.get(billed..).unwrap_or_default() {
+crates/runtime/src/subagent/runs.rs:189:                error.unwrap_or_default()
+crates/runtime/src/subagent/service.rs:81:    reply.as_object().cloned().unwrap_or_default()
+crates/runtime/src/subagent/service.rs:168:        let cause = error.clone().unwrap_or_default();
+crates/runtime/src/subagent/service.rs:280:                host.service(&name, prompt, kwargs.unwrap_or_default(), restart)
+crates/runtime/src/subagent.rs:525:            .unwrap_or_default()
+crates/runtime/src/subagent.rs:809:            .unwrap_or_default();
+crates/runtime/src/subagent.rs:821:                            .unwrap_or_default();
+crates/runtime/src/subagent.rs:853:            .unwrap_or_default()
+crates/runtime/src/subagent.rs:925:            .unwrap_or_default();
+crates/runtime/src/subagent.rs:1086:                .unwrap_or_default();
+crates/runtime/src/subagent.rs:1139:            let reply = host.find_models(query.unwrap_or_default(), limit);
+crates/runtime/src/subagent.rs:1155:            .unwrap_or_default();
+crates/runtime/src/tape.rs:88:        .unwrap_or_default();
+crates/runtime/src/telemetry.rs:79:        let session = self.session.lock().map(|s| s.clone()).unwrap_or_default();
+crates/runtime/src/title.rs:50:        .unwrap_or_default();
+crates/runtime/src/todo/claims.rs:46:        .unwrap_or_default();
+crates/runtime/src/todo/coupling.rs:18:        .unwrap_or_default()
+crates/runtime/src/todo/coupling.rs:305:            let figure: String = chars.get(start..at).unwrap_or_default().iter().collect();
+crates/runtime/src/todo/coupling.rs:330:        .unwrap_or_default();
+crates/runtime/src/todo/coupling.rs:457:            let number: String = chars.get(start..at).unwrap_or_default().iter().collect();
+crates/runtime/src/todo/coupling.rs:477:        .unwrap_or_default();
+crates/runtime/src/todo/mod.rs:306:                .unwrap_or_default()
+crates/runtime/src/todo/mod.rs:358:            .map(Option::unwrap_or_default),
+crates/runtime/src/todo/mod.rs:405:            .unwrap_or_default()
+crates/runtime/src/todo/text.rs:166:        .unwrap_or_default();
+crates/runtime/src/todo/tool.rs:432:                plan.as_str().unwrap_or_default(),
+crates/runtime/src/tools.rs:161:    let json = serde_json::to_string(&args).unwrap_or_default();
+crates/runtime/src/tools.rs:281:        .unwrap_or_default();
+crates/runtime/src/tools.rs:478:            let args_json = serde_json::to_string(&args).unwrap_or_default();
+crates/runtime/src/tools.rs:576:                .unwrap_or_default()
+crates/runtime/src/wiring.rs:718:                        .unwrap_or_default()
+crates/runtime/tests/advisor_e2e.rs:199:        .unwrap_or_default();
+crates/runtime/tests/auto_review.rs:432:    journal.lock().map(|by| by.clone()).unwrap_or_default()
+crates/runtime/tests/auto_review.rs:531:            .unwrap_or_default();
+crates/runtime/tests/behavior.rs:196:        .unwrap_or_default();
+crates/runtime/tests/behavior.rs:412:            .unwrap_or_default();
+crates/runtime/tests/behavior.rs:478:            let got = std::fs::read_to_string(root.join(&rel)).unwrap_or_default();
+crates/runtime/tests/behavior.rs:512:                .unwrap_or_default();
+crates/runtime/tests/behavior.rs:626:            .unwrap_or_default();
+crates/runtime/tests/breakpoints.rs:272:    let messages = body["messages"].as_array().cloned().unwrap_or_default();
+crates/runtime/tests/channel_e2e.rs:293:        payload.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/channel_e2e.rs:774:        .unwrap_or_default(),
+crates/runtime/tests/channel_e2e.rs:818:        tool.execute(args.as_object().cloned().unwrap_or_default(), &context)
+crates/runtime/tests/channel_e2e.rs:893:            let output = tool.execute(args.as_object().cloned().unwrap_or_default(), &context);
+crates/runtime/tests/channel_e2e.rs:1002:        adapter.execute("c1", args.as_object().cloned().unwrap_or_default(), &signal)
+crates/runtime/tests/channel_e2e.rs:1119:        *data = serde_json::Value::String(format!("{}y", data.as_str().unwrap_or_default()));
+crates/runtime/tests/child_trail.rs:108:        .unwrap_or_default()
+crates/runtime/tests/child_transcript.rs:223:            .unwrap_or_default(),
+crates/runtime/tests/classifier_e2e.rs:152:        .unwrap_or_default()
+crates/runtime/tests/compaction_faux.rs:79:        .unwrap_or_default()
+crates/runtime/tests/compaction_faux.rs:306:    let error = session.store_error().unwrap_or_default();
+crates/runtime/tests/compaction_faux.rs:336:            serde_json::to_string(content).unwrap_or_default()
+crates/runtime/tests/compaction_faux.rs:562:        .unwrap_or_default();
+crates/runtime/tests/compaction_faux.rs:2294:        let messages = body["messages"].as_array().cloned().unwrap_or_default();
+crates/runtime/tests/documents.rs:102:    let header = lines.next().unwrap_or_default();
+crates/runtime/tests/documents.rs:867:    let third = body.lines().nth(2).unwrap_or_default();
+crates/runtime/tests/ext_e2e.rs:77:        .unwrap_or_default()
+crates/runtime/tests/ext_e2e.rs:1118:                    .unwrap_or_default()
+crates/runtime/tests/family_cache.rs:130:        kwargs.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/family_cache.rs:346:        .unwrap_or_default();
+crates/runtime/tests/goal_e2e.rs:661:        .unwrap_or_default();
+crates/runtime/tests/injection_canary.rs:111:    let yard = blocks.last().copied().unwrap_or_default();
+crates/runtime/tests/ipython_faux.rs:43:        .unwrap_or_default()
+crates/runtime/tests/judge.rs:82:        let url = input.get("url").and_then(Value::as_str).unwrap_or_default();
+crates/runtime/tests/judge.rs:119:                let arguments = json!({"url": url}).as_object().cloned().unwrap_or_default();
+crates/runtime/tests/judge.rs:348:        let name = row["name"].as_str().unwrap_or_default();
+crates/runtime/tests/judge.rs:651:            .unwrap_or_default();
+crates/runtime/tests/judge.rs:657:        .unwrap_or_default();
+crates/runtime/tests/kept_rules.rs:109:    yi_runtime::slash::run(session, "permissions", "").unwrap_or_default()
+crates/runtime/tests/kept_rules.rs:603:        let ledger = std::fs::read_to_string(&file).unwrap_or_default();
+crates/runtime/tests/kernel_across_sessions.rs:102:                .unwrap_or_default(),
+crates/runtime/tests/kernel_across_sessions.rs:181:                .unwrap_or_default(),
+crates/runtime/tests/kernel_data_surface.rs:233:            .unwrap_or_default(),
+crates/runtime/tests/kernel_data_surface.rs:808:            reply(serde_json::json!({"text": "", "json": said(name.unwrap_or_default())}))
+crates/runtime/tests/kernel_lane.rs:23:            .unwrap_or_default(),
+crates/runtime/tests/kernel_lane.rs:47:        .unwrap_or_default()
+crates/runtime/tests/kernel_lane.rs:208:            .unwrap_or_default()
+crates/runtime/tests/kernel_sandbox.rs:107:            .unwrap_or_default()
+crates/runtime/tests/kernel_sandbox.rs:446:    let asked = asks.lock().map(|count| *count).unwrap_or_default();
+crates/runtime/tests/kernel_sandbox.rs:690:    let kept = std::fs::read_to_string(outside.join("config.json")).unwrap_or_default();
+crates/runtime/tests/kernel_sandbox.rs:800:    let seen = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+crates/runtime/tests/lanes.rs:921:        std::fs::read_to_string(parent.join("scratch.txt")).unwrap_or_default(),
+crates/runtime/tests/lanes.rs:1965:            .unwrap_or_default();
+crates/runtime/tests/node.rs:637:            .unwrap_or_default()
+crates/runtime/tests/permission_scope.rs:175:    let auto = refused(PermissionMode::Auto).unwrap_or_default();
+crates/runtime/tests/permission_scope.rs:205:        .unwrap_or_default();
+crates/runtime/tests/plan_declare.rs:66:    let input = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/plan_declare.rs:227:            .unwrap_or_default();
+crates/runtime/tests/plan_declare.rs:291:        missing: Phase::Disposed.missing().unwrap_or_default(),
+crates/runtime/tests/plan_declare.rs:666:    let input = |args: Value| args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/plan_journal.rs:702:    let good = std::fs::read(fixtures().join("journal/records.jsonl")).unwrap_or_default();
+crates/runtime/tests/plan_ledger.rs:275:    let live = said.split("finished").next().unwrap_or_default();
+crates/runtime/tests/plan_ops.rs:1903:        let input = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/plan_ops.rs:1947:                .unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:1955:                .unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:1974:                step.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:1983:                .unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:2022:                .unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:2043:                .unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:2058:            .unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:2066:        let input = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/plan_ops.rs:2243:                blob["digest"].as_str().unwrap_or_default(),
+crates/runtime/tests/plan_ops.rs:2490:                .unwrap_or_default()
+crates/runtime/tests/plan_ops.rs:2718:                .unwrap_or_default()
+crates/runtime/tests/plan_ops.rs:2741:                .unwrap_or_default()
+crates/runtime/tests/plan_ops.rs:2819:            .unwrap_or_default()
+crates/runtime/tests/plan_ops.rs:4215:            .unwrap_or_default()
+crates/runtime/tests/plan_ops.rs:4480:            .unwrap_or_default();
+crates/runtime/tests/plan_trace.rs:76:                init.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/plan_trace.rs:85:                drop.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/plan_trace.rs:233:    let args = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/plan_walkthrough.rs:1267:                &args.unwrap_or_default(),
+crates/runtime/tests/plan_walkthrough.rs:1295:                    .unwrap_or_default(),
+crates/runtime/tests/prompt_drift.rs:141:        .unwrap_or_default();
+crates/runtime/tests/prompt_drift.rs:153:        .unwrap_or_default();
+crates/runtime/tests/prompts.rs:69:            let token = token.split('.').next().unwrap_or_default();
+crates/runtime/tests/prompts.rs:128:            let args = rest.split(')').next().unwrap_or_default();
+crates/runtime/tests/provider_keys.rs:181:        kwargs.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/reader_e2e.rs:119:            provider.queue_faux(queued.unwrap_or_default());
+crates/runtime/tests/reader_e2e.rs:191:    value.as_object().cloned().unwrap_or_default()
+crates/runtime/tests/reap_kernel.rs:56:            .unwrap_or_default(),
+crates/runtime/tests/recursion_e2e.rs:291:                .unwrap_or_default()
+crates/runtime/tests/recursion_e2e.rs:683:        .unwrap_or_default();
+crates/runtime/tests/recursion_e2e.rs:743:    reply["receipts"][0]["state"].as_str().unwrap_or_default()
+crates/runtime/tests/recursion_e2e.rs:758:        .map(|entry| serde_json::to_string(entry).unwrap_or_default())
+crates/runtime/tests/recursion_e2e.rs:1304:            let question = question.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/recursion_e2e.rs:1362:    let body = asked["body"].as_str().unwrap_or_default();
+crates/runtime/tests/recursion_e2e.rs:1405:        .map(|message| serde_json::to_string(message).unwrap_or_default())
+crates/runtime/tests/recursion_e2e.rs:1989:    let members = status["members"].as_array().cloned().unwrap_or_default();
+crates/runtime/tests/recursion_e2e.rs:1991:    found.unwrap_or_default()
+crates/runtime/tests/recursion_e2e.rs:2063:    let refused = parked.await?.err().unwrap_or_default();
+crates/runtime/tests/recursion_e2e.rs:2157:                code.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/recursion_e2e.rs:2170:                    .unwrap_or_default(),
+crates/runtime/tests/recursion_e2e.rs:2754:            .unwrap_or_default(),
+crates/runtime/tests/recursion_e2e.rs:2925:        .unwrap_or_default()
+crates/runtime/tests/recursion_e2e.rs:3200:        .unwrap_or_default()
+crates/runtime/tests/recursion_e2e.rs:3349:            .unwrap_or_default(),
+crates/runtime/tests/recursion_e2e.rs:3554:    let read = notice_texts(messages.get(..answer).unwrap_or_default());
+crates/runtime/tests/recursion_e2e.rs:3990:            .unwrap_or_default(),
+crates/runtime/tests/request_budget.rs:526:        .unwrap_or_default()
+crates/runtime/tests/requests_e2e.rs:63:                    let question = question.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:74:                        .unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:196:    let body = envelope["body"].as_str().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:221:    let hint = row["hint"].as_str().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:278:        let payload = payload.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:339:        host.send("parent", &mail.as_object().cloned().unwrap_or_default())
+crates/runtime/tests/requests_e2e.rs:343:    let refused = send("billing").err().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:378:    let text = |key: &str| texts[key].as_str().unwrap_or_default().to_owned();
+crates/runtime/tests/requests_e2e.rs:383:    let running = host.result("asker", None).err().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:392:    let refused = again.err().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:429:    let presented = row["presented"].as_str().unwrap_or_default();
+crates/runtime/tests/requests_e2e.rs:436:        .unwrap_or_default();
+crates/runtime/tests/rewind_branch.rs:102:        .unwrap_or_default()
+crates/runtime/tests/schedule_e2e.rs:649:    let payload = payload.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/schedule_e2e.rs:820:        .unwrap_or_default();
+crates/runtime/tests/schedule_e2e.rs:979:        .unwrap_or_default();
+crates/runtime/tests/schedule_unit.rs:236:        .unwrap_or_default();
+crates/runtime/tests/session_faux.rs:547:        .unwrap_or_default();
+crates/runtime/tests/session_faux.rs:625:    log.lock().map(|log| log.clone()).unwrap_or_default()
+crates/runtime/tests/session_faux.rs:689:    let at_end = log.lock().map(|log| log.clone()).unwrap_or_default();
+crates/runtime/tests/session_faux.rs:1019:                text.split(['.', '\n']).next().unwrap_or_default()
+crates/runtime/tests/session_faux.rs:1230:        let args = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/session_faux.rs:1368:            input.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/session_faux.rs:1543:    let arguments = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/session_faux.rs:1604:            let args = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/skills_e2e.rs:118:        .unwrap_or_default();
+crates/runtime/tests/skills_e2e.rs:127:            .unwrap_or_default(),
+crates/runtime/tests/skills_e2e.rs:489:            .unwrap_or_default(),
+crates/runtime/tests/snapshot_e2e.rs:69:                .unwrap_or_default(),
+crates/runtime/tests/snapshot_e2e.rs:131:            .unwrap_or_default(),
+crates/runtime/tests/snapshot_e2e.rs:184:        .unwrap_or_default();
+crates/runtime/tests/snapshot_e2e.rs:288:        .unwrap_or_default();
+crates/runtime/tests/support/family.rs:19:    let input = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/support/family.rs:183:            .unwrap_or_default()
+crates/runtime/tests/title.rs:26:    let long = clean(&"word ".repeat(30)).unwrap_or_default();
+crates/runtime/tests/todo_coupling.rs:127:        .unwrap_or_default()
+crates/runtime/tests/todo_e2e.rs:42:    let input = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/todo_e2e.rs:58:                    .unwrap_or_default(),
+crates/runtime/tests/todo_e2e.rs:958:            (id.unwrap_or_default(), TodoStateName::of(&item.state))
+crates/runtime/tests/todo_e2e.rs:1204:    let input = args.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/todo_e2e.rs:1605:            .unwrap_or_default(),
+crates/runtime/tests/todo_mirror.rs:175:                    .unwrap_or_default(),
+crates/runtime/tests/todo_mirror.rs:548:        args.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/todo_mirror.rs:750:            args.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/todo_mirror.rs:806:            args.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/todo_mirror.rs:992:            args.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/wall_e2e.rs:1125:        let payload = payload.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/wall_e2e.rs:1163:        let payload = payload.as_object().cloned().unwrap_or_default();
+crates/runtime/tests/worker_prompt.rs:36:        kwargs.as_object().cloned().unwrap_or_default(),
+crates/runtime/tests/worker_prompt.rs:118:        kwargs.as_object().cloned().unwrap_or_default(),
+crates/session/src/jsonl.rs:89:    let parsed = parse_lines(lines.get(1..).unwrap_or_default());
+crates/session/src/jsonl.rs:159:    let name = path.file_name().unwrap_or_default().to_string_lossy();
+crates/session/src/listing.rs:89:        .unwrap_or_default();
+crates/session/src/listing.rs:150:    let text = fs::read_to_string(dir.join(INDEX)).unwrap_or_default();
+crates/session/src/state.rs:381:            .unwrap_or_default();
+crates/session/src/store.rs:233:        let entries = self.find_entries(&query).unwrap_or_default();
+crates/tools/src/builtins.rs:64:        let before = opened.and_then(std::io::read_to_string).unwrap_or_default();
+crates/tools/src/builtins.rs:161:        Ok(_) => Some(std::io::read_to_string(&mut file).unwrap_or_default()),
+crates/tools/src/builtins.rs:761:            .unwrap_or_default();
+crates/tools/src/builtins.rs:795:                let after = background_after.unwrap_or_default();
+crates/tools/src/builtins.rs:931:    let tail = tail.unwrap_or_default().join("\n");
+crates/tools/src/checkpoint.rs:209:                    command: args.first().copied().unwrap_or_default().to_owned(),
+crates/tools/src/checkpoint.rs:223:        let verb = args.first().copied().unwrap_or_default();
+crates/tools/src/checkpoint.rs:242:                command: args.first().copied().unwrap_or_default().to_owned(),
+crates/tools/src/diff.rs:229:    let before_tail = before.get(prefix..).unwrap_or_default();
+crates/tools/src/diff.rs:230:    let after_tail = after.get(prefix..).unwrap_or_default();
+crates/tools/src/diff.rs:239:        .unwrap_or_default();
+crates/tools/src/diff.rs:242:        .unwrap_or_default();
+crates/tools/src/document.rs:282:    rest.get(start..).unwrap_or_default()
+crates/tools/src/document.rs:448:        source.pages.unwrap_or_default()
+crates/tools/src/document.rs:508:        let age = now.duration_since(modified).unwrap_or_default();
+crates/tools/src/document.rs:747:        .unwrap_or_default();
+crates/tools/src/grep.rs:769:            .unwrap_or_default();
+crates/tools/src/grep.rs:779:        let wrote = out.get(start..).unwrap_or_default().matches('\n').count();
+crates/tools/src/hashline/apply.rs:181:        let current = file_lines.get(index).cloned().unwrap_or_default();
+crates/tools/src/hashline/clipboard.rs:13:    let reg = register.map(|name| format!(" @{name}")).unwrap_or_default();
+crates/tools/src/hashline/clipboard.rs:200:                                .unwrap_or_default();
+crates/tools/src/hashline/messages.rs:131:    register.map(|name| format!(" @{name}")).unwrap_or_default()
+crates/tools/src/hashline/mismatch.rs:9:        .unwrap_or_default();
+crates/tools/src/hashline/patcher.rs:86:        .unwrap_or_default();
+crates/tools/src/hashline/patcher.rs:231:                .unwrap_or_default();
+crates/tools/src/hashline/tool.rs:439:            let bytes = opened.and_then(crate::tool::read_all).unwrap_or_default();
+crates/tools/src/hashline/tool.rs:464:            let text = String::from_utf8(bytes).unwrap_or_default();
+crates/tools/src/ipython.rs:235:        "result": detail_text(result.result.as_deref().unwrap_or_default()),
+crates/tools/src/jobs.rs:370:                + &cut.unwrap_or_default()
+crates/tools/src/jobs.rs:371:                + &failed.unwrap_or_default()
+crates/tools/src/orient.rs:146:    let kept = body.get(..end).unwrap_or_default();
+crates/tools/src/orient.rs:311:            .unwrap_or_default();
+crates/tools/src/orient.rs:466:            capture.stderr.lines().next().unwrap_or_default()
+crates/tools/src/orient.rs:571:        let (kept, marker) = clamped.rsplit_once('\n').unwrap_or_default();
+crates/tools/src/process.rs:381:            let (kept, total) = out.unwrap_or_default();
+crates/tools/src/process.rs:382:            let (err_kept, err_total) = err.unwrap_or_default();
+crates/tools/src/redact.rs:108:            let name = line.get(..at).unwrap_or_default();
+crates/tools/src/reduce.rs:216:        .any(|(at, line)| is_header(line) && located(lines.get(at..).unwrap_or_default()))
+crates/tools/src/reduce.rs:252:        .unwrap_or_default();
+crates/tools/src/reduce.rs:254:    let before = lines.get(..tail_start).unwrap_or_default();
+crates/tools/src/reduce.rs:292:    let tail = lines.get(tail_start..).unwrap_or_default().join("\n");
+crates/tools/src/reduce.rs:357:                .unwrap_or_default()
+crates/tools/src/reduce.rs:436:    let mut out: Vec<&str> = lines.get(..head).unwrap_or_default().to_vec();
+crates/tools/src/reduce.rs:439:    out.extend(lines.get(first_tail..).unwrap_or_default());
+crates/tools/src/sandbox.rs:545:                    let rest = text.get(at..).unwrap_or_default();
+crates/tools/src/sandbox.rs:689:        let before = at.and_then(|at| line.get(..at)).unwrap_or_default();
+crates/tools/src/sandbox.rs:744:        error.unwrap_or_default()
+crates/tools/src/spill.rs:72:        let bytes = bytes.get(..room.min(bytes.len())).unwrap_or_default();
+crates/tools/src/spill.rs:127:                let stem = part.file_stem().unwrap_or_default().to_string_lossy();
+crates/tools/src/spill.rs:136:            clip.unwrap_or_default(),
+crates/tools/src/syntax.rs:131:        .unwrap_or_default()
+crates/tools/src/tool.rs:187:        .unwrap_or_default();
+crates/tools/src/tool.rs:194:            format!("{}\u{2026}", line.get(..end).unwrap_or_default()),
+crates/tools/src/tool.rs:256:    Some(rooted(raw, &parts.get(..at).unwrap_or_default().join("/")))
+crates/tools/tests/orient.rs:116:                body.lines().next().unwrap_or_default().to_owned(),
+crates/tools/tests/orient.rs:138:    let header = packet.lines().nth(1).unwrap_or_default();
+crates/tools/tests/orient.rs:183:    let last = layer.trim_end().lines().last().unwrap_or_default();
+crates/tools/tests/orient.rs:216:        .unwrap_or_default()
+crates/tools/tests/orient.rs:627:        .unwrap_or_default();
+crates/tools/tests/paths.rs:198:    let upper = scratch.with_file_name(name.unwrap_or_default());
+crates/tools/tests/sandbox.rs:133:            .unwrap_or_default()
+crates/tools/tests/sandbox.rs:803:            .unwrap_or_default();
+crates/tools/tests/tools.rs:2321:        .unwrap_or_default();
+crates/tools/tests/tools.rs:3140:        fs::write(dir.join("answer"), answer.unwrap_or_default())?;
+crates/tui/src/app/children.rs:154:                let folded = state.cell.answer.as_deref().unwrap_or_default();
+crates/tui/src/app/children.rs:167:                    .unwrap_or_default()
+crates/tui/src/app/stream.rs:110:    let head = |at: usize| rows(source.get(..at).unwrap_or_default());
+crates/tui/src/app/stream.rs:130:            let rest = source.get(cut.at..).unwrap_or_default();
+crates/tui/src/app/stream.rs:269:    let marker = crate::markdown::item_marker(source.get(at..).unwrap_or_default()).unwrap_or("-");
+crates/tui/src/app/stream.rs:295:    format!("{}{escape}", seam.stub.as_deref().unwrap_or_default())
+crates/tui/src/app/stream.rs:334:            (self.pacing.thought_scan).scan(self.live_thought.get(..shown).unwrap_or_default());
+crates/tui/src/app/stream.rs:343:            .unwrap_or_default();
+crates/tui/src/app/stream.rs:369:            .unwrap_or_default()
+crates/tui/src/app/stream.rs:432:            (self.pacing.prose_scan).scan(self.live_markdown.get(..shown).unwrap_or_default());
+crates/tui/src/app/stream.rs:447:            .unwrap_or_default();
+crates/tui/src/app/stream.rs:475:            .unwrap_or_default()
+crates/tui/src/app/stream.rs:544:        let open = content.get(self.segment..).unwrap_or_default();
+crates/tui/src/app/stream.rs:556:            let open = content.get(self.segment..).unwrap_or_default();
+crates/tui/src/app/stream.rs:566:            let head = open.get(..split).unwrap_or_default();
+crates/tui/src/app.rs:875:                let open = content.get(self.segment..).unwrap_or_default();
+crates/tui/src/approval.rs:81:            .unwrap_or_default()
+crates/tui/src/capture.rs:90:            .unwrap_or_default()
+crates/tui/src/cell.rs:252:        .unwrap_or_default()
+crates/tui/src/cell.rs:309:        let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
+crates/tui/src/cell.rs:753:                prev.unwrap_or_default(),
+crates/tui/src/cell.rs:773:            .unwrap_or_default()
+crates/tui/src/cell.rs:815:        Some(start) if cut > 0 => text.get(start..).unwrap_or_default().to_owned(),
+crates/tui/src/cell.rs:830:        .unwrap_or_default();
+crates/tui/src/composer.rs:314:        let line = self.textarea.lines().get(row).cloned().unwrap_or_default();
+crates/tui/src/composer.rs:319:            let head = prefix.get(..start).unwrap_or_default();
+crates/tui/src/composer.rs:367:            let draft = self.draft.take().unwrap_or_default();
+crates/tui/src/diffview.rs:107:            text: show_controls(line.get(1..).unwrap_or_default()),
+crates/tui/src/focus.rs:52:            .unwrap_or_default();
+crates/tui/src/highlight.rs:60:        syntect::dumps::from_reader(dump).unwrap_or_default()
+crates/tui/src/highlight.rs:286:            let text = line.get(at..end).unwrap_or_default();
+crates/tui/src/history.rs:303:            join(cells.get(from..).unwrap_or_default(), first, keep)
+crates/tui/src/history.rs:329:            let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
+crates/tui/src/hud.rs:175:            let first = text.lines().next().unwrap_or_default();
+crates/tui/src/hud.rs:181:        let preview = preview.unwrap_or_default();
+crates/tui/src/hud.rs:324:        format!(" {}", header.unwrap_or_default()),
+crates/tui/src/logos.rs:18:    MASKS.get_or_init(|| miniz_oxide::inflate::decompress_to_vec_zlib(PACKED).unwrap_or_default())
+crates/tui/src/markdown.rs:114:        .unwrap_or_default();
+crates/tui/src/markdown.rs:147:        let rest = source.get(self.from..).unwrap_or_default();
+crates/tui/src/markdown.rs:295:        .unwrap_or_default()
+crates/tui/src/markdown.rs:333:    let marker = item_marker(source.get(start..).unwrap_or_default()).unwrap_or("-");
+crates/tui/src/markdown.rs:350:        .unwrap_or_default()
+crates/tui/src/markdown.rs:402:        self.styles.last().copied().unwrap_or_default()
+crates/tui/src/markdown.rs:849:        plain.push_str(word.get(..at).unwrap_or_default());
+crates/tui/src/markdown.rs:857:                .unwrap_or_default(),
+crates/tui/src/markdown.rs:1095:        let doc = format!("{}{text}", open.as_deref().unwrap_or_default());
+crates/tui/src/markdown.rs:1144:                (text, reopen) = (text.get(after..).unwrap_or_default(), None);
+crates/tui/src/pen.rs:22:            name: name.unwrap_or_default(),
+crates/tui/src/pen.rs:36:            .unwrap_or_default();
+crates/tui/src/port.rs:147:        .unwrap_or_default()
+crates/tui/src/port.rs:160:        .unwrap_or_default();
+crates/tui/src/port.rs:541:        .unwrap_or_default()
+crates/tui/src/pycell.rs:72:    let rest = token.get(at.saturating_add(3)..).unwrap_or_default();
+crates/tui/src/pycell.rs:133:            text.get(..at).unwrap_or_default(),
+crates/tui/src/pycell.rs:134:            text.get(at..).unwrap_or_default(),
+crates/tui/src/pycell.rs:144:        .unwrap_or_default()
+crates/tui/src/pycell.rs:209:        .unwrap_or_default();
+crates/tui/src/pycell.rs:271:        .unwrap_or_default();
+crates/tui/src/pycell.rs:278:        .unwrap_or_default();
+crates/tui/src/pycell.rs:282:        .unwrap_or_default();
+crates/tui/src/reflow.rs:18:    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+crates/tui/src/reflow.rs:19:    let term = std::env::var("TERM").unwrap_or_default();
+crates/tui/src/render.rs:119:            .unwrap_or_default();
+crates/tui/src/render.rs:128:            .unwrap_or_default();
+crates/tui/src/render.rs:465:        let shown = column.get(start..end).unwrap_or_default().to_vec();
+crates/tui/src/render.rs:468:            .unwrap_or_default()
+crates/tui/src/reveal.rs:90:    let rest = text.get(at..).unwrap_or_default();
+crates/tui/src/reveal.rs:103:                    .unwrap_or_default(),
+crates/tui/src/reveal.rs:193:        let tail = text.get(self.shown..).unwrap_or_default();
+crates/tui/src/reveal.rs:215:            let unit = text.get(at..end).unwrap_or_default();
+crates/tui/src/table.rs:109:            .unwrap_or_default();
+crates/tui/src/table.rs:343:                .unwrap_or_default();
+crates/tui/src/terminal.rs:249:                .unwrap_or_default()
+crates/tui/src/transcript.rs:105:            .unwrap_or_default();
+crates/tui/src/transcript.rs:194:        let number = rest.get(..rest.len() - mark.len()).unwrap_or_default();
+crates/tui/src/transcript.rs:236:    let chars: Vec<char> = tail.get(from..).unwrap_or_default().chars().collect();
+crates/tui/src/transcript.rs:243:            .unwrap_or_default()
+crates/tui/src/transcript.rs:280:    closed.push_str(tail.get(body.len()..).unwrap_or_default());
+crates/tui/src/transcript.rs:293:            let kept = lines.get(lines.len() - rows..).unwrap_or_default().concat();
+crates/tui/src/transcript.rs:296:                lines.get(at).copied().unwrap_or_default()
+crates/tui/src/tree.rs:119:            .unwrap_or_default();
+crates/tui/tests/asks.rs:282:            let question = question.as_object().cloned().unwrap_or_default();
+crates/tui/tests/cards.rs:410:            .unwrap_or_default())
+crates/tui/tests/common/mod.rs:67:            .unwrap_or_default()
+crates/tui/tests/common/mod.rs:88:            .unwrap_or_default();
+crates/tui/tests/common/mod.rs:104:            .unwrap_or_default()
+crates/tui/tests/diffview.rs:32:        .unwrap_or_default()
+crates/tui/tests/diffview.rs:106:        .unwrap_or_default();
+crates/tui/tests/model_picker.rs:59:    let hint = advanced_hint(&model).unwrap_or_default();
+crates/tui/tests/pane_scroll.rs:113:    let anchor = before.first().cloned().unwrap_or_default();
+crates/tui/tests/pane_scroll.rs:120:            (both.get(..at).unwrap_or_default(), "")
+crates/tui/tests/pane_scroll.rs:122:            (thinking, both.get(thinking.len()..at).unwrap_or_default())
+crates/tui/tests/pycell.rs:144:            .unwrap_or_default()
+crates/tui/tests/tui_e2e.rs:1255:    let column = ratatui::text::Line::from(row.get(..at).unwrap_or_default()).width();
+crates/tui/tests/tui_e2e.rs:1315:            .unwrap_or_default()
+crates/tui/tests/tui_e2e.rs:2053:        .unwrap_or_default()
+crates/tui/tests/tui_e2e.rs:2195:            .unwrap_or_default();
+crates/tui/tests/tui_e2e.rs:2222:                .unwrap_or_default()
+crates/tui/tests/tui_e2e.rs:2228:                .unwrap_or_default()
+crates/tui/tests/tui_e2e.rs:2271:                .unwrap_or_default()
+crates/tui/tests/tui_e2e.rs:2283:            .unwrap_or_default();
+crates/tui/tests/tui_e2e.rs:2373:    let last = prompts.last().cloned().unwrap_or_default();
+crates/tui/tests/tui_unit.rs:942:        let slice = source.get(cut..stream.cut).unwrap_or_default();
+crates/tui/tests/tui_unit.rs:2107:        payloads.push(event[2].as_str().unwrap_or_default().to_owned());
+crates/types/src/event.rs:121:                name: name.clone().unwrap_or_default(),
+crates/types/src/todo.rs:286:                note: note.take().unwrap_or_default(),
+crates/types/src/todo.rs:293:                cause: note.take().unwrap_or_default(),
+crates/types/src/url.rs:346:        let text = error.unwrap_or_default();
+crates/types/tests/child_result.rs:13:        .unwrap_or_default();
+crates/types/tests/plan_doc.rs:356:        .unwrap_or_default();

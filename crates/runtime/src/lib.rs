@@ -2,6 +2,7 @@
 
 pub mod advisor;
 pub mod affordance;
+mod annotate;
 mod args;
 pub mod auto_review;
 pub mod cache_miss;
@@ -32,7 +33,9 @@ pub mod permission;
 pub mod plan;
 pub mod plugin;
 pub mod provider;
+mod reclaim;
 pub mod rewind;
+pub mod rollup;
 pub mod rules;
 pub mod schedule;
 pub mod schema;

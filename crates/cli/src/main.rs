@@ -58,6 +58,7 @@ struct Args {
     deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
+    stats: stats::Query,
     prompt: String,
 }
 
@@ -106,22 +107,15 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
+    let mut stats_flags = stats::Flags::default();
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
         match argument {
-            Long("version") => {
-                command = "version".to_owned();
-            }
+            Long("version") => command = "version".to_owned(),
             Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
-            Long("thinking") => {
-                let raw = parser.value()?.string()?;
-                thinking = Some(
-                    raw.parse()
-                        .map_err(|error: UnknownEffort| lexopt::Error::Custom(Box::new(error)))?,
-                );
-            }
+            Long("thinking") => thinking = Some(parse_effort(&parser.value()?.string()?)?),
             Long("json") => json = true,
             Long("yolo") => mode = yi_runtime::PermissionMode::Yolo,
             Long("auto") => mode = yi_runtime::PermissionMode::Auto,
@@ -145,6 +139,11 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
+            Long("since") if command == "stats" => {
+                stats_flags.since = Some(parser.value()?.string()?)
+            }
+            Long("by") if command == "stats" => stats_flags.by = Some(parser.value()?.string()?),
+            Long("top") if command == "stats" => stats_flags.top = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -214,8 +213,14 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             (None, false) => Resume::Fresh,
         },
         schema,
+        stats: stats_flags.typed()?,
         prompt: prompt_parts.join(" "),
     })
+}
+
+fn parse_effort(raw: &str) -> Result<Effort, lexopt::Error> {
+    raw.parse()
+        .map_err(|error: UnknownEffort| lexopt::Error::Custom(Box::new(error)))
 }
 
 /// `COLSxROWS` within 20..=1000 by 8..=500: the drive's own floor, and a screen that fits in memory.
@@ -289,9 +294,8 @@ static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new(
 /// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
-    let home = absolute_home()?;
+    let home = update::absolute_home()?;
     let home = HOME.get_or_init(|| home);
-
     setup::early();
     yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
     let (config, migrations) = read_config(home)?;
@@ -299,21 +303,6 @@ fn load_config() -> Result<(), String> {
         eprintln!("warning: {migration}");
     }
     set_config(config)
-}
-
-pub(crate) fn absolute_home() -> Result<std::path::PathBuf, String> {
-    let home = std::path::PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
-    );
-    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
-    // that followed failed to spawn, naming the wrong step.
-    if !home.is_absolute() {
-        return Err(format!(
-            "HOME is relative ({}); yi needs an absolute HOME",
-            home.display()
-        ));
-    }
-    Ok(home)
 }
 
 /// A relative home would read `<cwd>/.yi/config.json`, which is §17.1's project
@@ -343,8 +332,7 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
-/// Invariant: the HOME [`load_config`] checked, except under `doctor`, which reports it raw,
-/// and under `plugin`, which refuses a non-absolute one before any verb runs.
+/// Invariant: the HOME [`load_config`] checked; `doctor` reports it raw, `plugin` checks it itself.
 fn home() -> &'static std::path::Path {
     HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
 }
@@ -618,18 +606,18 @@ fn build_session(
         },
     );
     drop(wiring);
+    let at = config().compaction.as_ref().and_then(|at| at.at);
+    if let Some(why) = session.compactor().and_then(|c| c.set_ceiling(at)) {
+        eprintln!("warning: {why}");
+    }
     if !faux {
         for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
             eprintln!("warning: {why}");
         }
     }
-    if let Some(every) = config()
-        .spend
-        .as_ref()
-        .and_then(|spend| spend.alert_tokens)
-        .and_then(std::num::NonZeroU64::new)
-    {
-        yi_runtime::spend::attach(&session, every);
+    let sessions = default_session_dir(args);
+    for why in yi_runtime::spend::attach_configured(&session, config().spend.as_ref(), &sessions) {
+        eprintln!("warning: {why}");
     }
     yi_runtime::cache_miss::attach(&session);
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
@@ -1159,6 +1147,7 @@ fn dispatch(args: Args) {
                 session_dir: default_session_dir(&args),
                 cwd: effective_cwd(&args).display().to_string(),
                 json: args.json,
+                query: args.stats.clone(),
             };
             std::process::exit(stats::run(&args.prompt, &options));
         }

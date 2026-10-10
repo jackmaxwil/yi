@@ -505,8 +505,8 @@ fn the_todo_schema_carries_the_parsers_label_cap_and_list_shapes() -> TestResult
     Ok(())
 }
 
-/// Dies on the schema's own example: `{cmd: {checker, timeout_ms}}` is how the decider text says
-/// to set a check's deadline, and the deadline it names must be the one frozen.
+/// Dies on the plan guide's own example: `{cmd: {checker, timeout_ms}}` is how the decider text
+/// says to set a check's deadline, and the deadline it names must be the one frozen.
 #[test]
 fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
     let rig = rig("cmd-object")?;
@@ -536,12 +536,13 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
     };
     let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
     assert_eq!((*timeout_ms, manifest.timeout_ms), (300_000, 300_000));
-    let decider = rig.tool.schema()["properties"]["todos"]["items"]["properties"]["contract"]
-        ["properties"]["items"]["items"]["properties"]["decider"]["description"]
-        .to_string();
+    let guide =
+        yi_runtime::fetch::Resolver::new(rig.temp.to_path_buf(), yi_runtime::Wall::default())
+            .fetch(&"yi://tools/plan".parse()?)?
+            .text;
     assert!(
-        decider.contains("{cmd: {checker: command, timeout_ms}}"),
-        "{decider}"
+        guide.contains("{cmd: {checker: command, timeout_ms}}"),
+        "{guide}"
     );
     Ok(())
 }

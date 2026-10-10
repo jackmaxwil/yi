@@ -8,7 +8,7 @@ pub(crate) fn early() {
     if std::env::args().nth(1).as_deref() != Some("plugin") {
         return;
     }
-    let home = match crate::absolute_home() {
+    let home = match crate::update::absolute_home() {
         Ok(home) => home,
         Err(complaint) => {
             eprintln!("error: {complaint}");

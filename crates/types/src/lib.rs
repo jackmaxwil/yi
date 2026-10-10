@@ -44,6 +44,7 @@ pub mod node;
 pub mod oauth;
 pub mod permission;
 pub mod plan;
+pub mod reclaim;
 pub mod record;
 pub mod schedule;
 pub mod status_mark;

@@ -20,7 +20,7 @@ Resolve every question the repository or the environment can answer with
 reads and non-mutating commands: entry points, existing helpers, current
 behaviour, build and test commands. Present discoverable facts as
 candidates with a recommendation. Ask the user only a preference between
-real tradeoffs, as two to four options with a default, through `ask_user`,
+real tradeoffs, as two to four options with a default, in your reply (`ask_user` in a child or with auto-review on),
 and proceed on the default if unanswered, saying so.
 
 ## Decision-complete

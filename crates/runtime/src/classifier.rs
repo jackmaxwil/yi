@@ -224,7 +224,8 @@ impl SkillClassifier {
             })
         {
             (self.deliver)(crate::rules::reminder(format!(
-                "Relevant: skill://{name} (the classifier, {confidence:.2})"
+                "Relevant: {}{name} (the classifier, {confidence:.2})",
+                crate::rules::SKILL_ADDRESS
             )));
             record.fired = true;
         }
