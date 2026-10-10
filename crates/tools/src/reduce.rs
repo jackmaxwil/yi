@@ -107,10 +107,38 @@ enum Numbering {
     CutCapture,
 }
 
+impl Numbering {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::File => "",
+            Self::CutCapture => " of the cut capture, not the file",
+        }
+    }
+}
+
 /// One shown line and the 1-based line of the source it came from.
 struct Row {
     text: String,
     line: usize,
+    /// The first source line a counted row stands for; `line` is its last.
+    first: usize,
+}
+
+impl Row {
+    fn new(text: String, line: usize) -> Self {
+        Self {
+            text,
+            line,
+            first: line,
+        }
+    }
+
+    fn copy(&self) -> Self {
+        Self {
+            text: self.text.clone(),
+            ..*self
+        }
+    }
 }
 
 fn select(
@@ -129,7 +157,8 @@ fn select(
     match program(command) {
         Some("cargo") => cargo(&rows, exit_code, budget, numbering),
         Some("grep" | "rg" | "ag") => {
-            cap_lines(&per_file(&rows), max_lines.unwrap_or(GREP_LINES), numbering)
+            let rows = per_file(&rows, numbering);
+            cap_lines(&rows, max_lines.unwrap_or(GREP_LINES), numbering, false)
         }
         _ => generic(&rows, budget, numbering),
     }
@@ -170,7 +199,7 @@ fn program(command: &str) -> Option<&str> {
 /// is diagnostics, and dropping those to save bytes is how a reducer lies.
 fn cargo(rows: &[Row], exit_code: i32, budget: usize, numbering: Numbering) -> String {
     if exit_code != 0 {
-        return cap_lines(&collapse_passes(rows), budget, numbering);
+        return cap_lines(&collapse_passes(rows), budget, numbering, true);
     }
     let kept: Vec<&str> = rows
         .iter()
@@ -191,7 +220,12 @@ fn cargo(rows: &[Row], exit_code: i32, budget: usize, numbering: Numbering) -> S
 }
 
 fn generic(rows: &[Row], budget: usize, numbering: Numbering) -> String {
-    cap_lines(&collapse_passes(&collapse_repeats(rows)), budget, numbering)
+    cap_lines(
+        &collapse_passes(&collapse_repeats(rows)),
+        budget,
+        numbering,
+        true,
+    )
 }
 
 /// A line naming an error or a failure: kept from the middle a head and tail would drop.
@@ -210,14 +244,14 @@ fn is_signal(line: &str) -> bool {
     .any(|word| lower.contains(word))
 }
 
-/// A test runner's line for one passing test: cargo, pytest -v, go test -v, jest.
+/// A test runner's line for one passing test: cargo, pytest, jest; never one naming a failure.
 fn is_pass(line: &str) -> bool {
     let line = line.trim();
-    (line.starts_with("test ") && line.ends_with(" ... ok"))
+    let pass = (line.starts_with("test ") && line.ends_with(" ... ok"))
         || line.contains(" PASSED")
-        || line.starts_with("--- PASS: ")
         || line.starts_with('✓')
-        || line.starts_with('✔')
+        || line.starts_with('✔');
+    pass && !is_signal(line)
 }
 
 /// Runs of passing-test lines as one counted row; a failure among them stays a line of its own.
@@ -227,18 +261,16 @@ fn collapse_passes(rows: &[Row]) -> Vec<Row> {
     let flush = |run: &mut Vec<&Row>, out: &mut Vec<Row>| {
         match run.as_slice() {
             [] => {}
-            [only] => out.push(Row {
-                text: only.text.clone(),
-                line: only.line,
-            }),
+            [only] => out.push(only.copy()),
             [first, .., last] => out.push(Row {
                 text: format!(
                     "[{} passing tests omitted: {}-{}]",
                     run.len(),
-                    first.line,
+                    first.first,
                     last.line
                 ),
                 line: last.line,
+                first: first.first,
             }),
         }
         run.clear();
@@ -248,21 +280,23 @@ fn collapse_passes(rows: &[Row]) -> Vec<Row> {
             run.push(row);
         } else {
             flush(&mut run, &mut out);
-            out.push(Row {
-                text: row.text.clone(),
-                line: row.line,
-            });
+            out.push(row.copy());
         }
     }
     flush(&mut run, &mut out);
     out
 }
 
-/// grep's matches grouped by file, at most [`GREP_PER_FILE`] each, so one busy file cannot
-/// push every other out of the head.
-fn per_file(rows: &[Row]) -> Vec<Row> {
-    let file = |text: &str| text.split_once(':').map(|(path, _)| path.to_owned());
-    let mut out: Vec<Row> = Vec::new();
+/// grep's `path:line:text` matches grouped by file, at most [`GREP_PER_FILE`] each, so one busy
+/// file cannot push every other out of the head; output naming no file is left as it is.
+fn per_file(rows: &[Row], numbering: Numbering) -> Vec<Row> {
+    let file = |text: &str| {
+        let (path, rest) = text.split_once(':')?;
+        let (number, _) = rest.split_once(':')?;
+        let numbered = !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+        (numbered && !path.contains(char::is_whitespace)).then(|| path.to_owned())
+    };
+    let mut groups: Vec<(Option<String>, &[Row])> = Vec::new();
     let mut index = 0;
     while let Some(row) = rows.get(index) {
         let path = file(&row.text);
@@ -270,27 +304,34 @@ fn per_file(rows: &[Row]) -> Vec<Row> {
             .take_while(|next| path.is_some() && file(&next.text) == path)
             .count()
             .max(1);
-        let group = rows
-            .get(index..index.saturating_add(count))
-            .unwrap_or_default();
-        out.extend(group.iter().take(GREP_PER_FILE).map(|row| Row {
-            text: row.text.clone(),
-            line: row.line,
-        }));
+        groups.push((
+            path,
+            rows.get(index..index.saturating_add(count))
+                .unwrap_or_default(),
+        ));
+        index = index.saturating_add(count);
+    }
+    if groups.iter().filter(|(path, _)| path.is_some()).count() < 2 {
+        return rows.iter().map(Row::copy).collect();
+    }
+    let of = numbering.suffix();
+    let mut out: Vec<Row> = Vec::new();
+    for (path, group) in groups {
+        out.extend(group.iter().take(GREP_PER_FILE).map(Row::copy));
         if let (Some(path), Some(first), Some(last)) =
             (&path, group.get(GREP_PER_FILE), group.last())
         {
-            let more = count.saturating_sub(GREP_PER_FILE);
+            let more = group.len().saturating_sub(GREP_PER_FILE);
             let text = format!(
-                "[+{more} more in {path} (GREP_PER_FILE {GREP_PER_FILE}): lines {}-{}]",
-                first.line, last.line
+                "[+{more} more in {path} (GREP_PER_FILE {GREP_PER_FILE}): output lines {}-{}{of}]",
+                first.first, last.line
             );
             out.push(Row {
                 text,
                 line: last.line,
+                first: first.first,
             });
         }
-        index = index.saturating_add(count);
     }
     out
 }
@@ -442,13 +483,15 @@ fn compress(text: &str, first_line: usize) -> Vec<Row> {
     kept.into_iter()
         .enumerate()
         .filter(|(index, (line, _, _))| !line.is_empty() || last_progress != Some(*index))
-        .map(|(_, (line, count, number))| Row {
-            text: if count > 0 {
-                format!("{line} [×{}]", count.saturating_add(1))
-            } else {
-                line
-            },
-            line: number,
+        .map(|(_, (line, count, number))| {
+            Row::new(
+                if count > 0 {
+                    format!("{line} [×{}]", count.saturating_add(1))
+                } else {
+                    line
+                },
+                number,
+            )
         })
         .collect()
 }
@@ -480,29 +523,29 @@ fn is_progress(line: &str) -> bool {
 fn collapse_repeats(rows: &[Row]) -> Vec<Row> {
     let mut out: Vec<Row> = Vec::new();
     let mut previous: Option<&str> = None;
-    let mut repeats: Option<(usize, usize)> = None;
-    let repeated = |(count, line): (usize, usize)| Row {
+    let mut repeats: Option<(usize, usize, usize)> = None;
+    let repeated = |(count, first, line): (usize, usize, usize)| Row {
         text: format!("[previous line repeated {count} more times]"),
         line,
+        first,
     };
     for row in rows {
         if Some(row.text.as_str()) == previous {
-            let count = repeats.map_or(1, |(count, _)| count.saturating_add(1));
-            repeats = Some((count, row.line));
+            repeats = Some(match repeats {
+                Some((count, first, _)) => (count.saturating_add(1), first, row.line),
+                None => (1, row.first, row.line),
+            });
             continue;
         }
         out.extend(repeats.take().map(repeated));
-        out.push(Row {
-            text: row.text.clone(),
-            line: row.line,
-        });
+        out.push(row.copy());
         previous = Some(&row.text);
     }
     out.extend(repeats.map(repeated));
     out
 }
 
-fn cap_lines(rows: &[Row], cap: usize, numbering: Numbering) -> String {
+fn cap_lines(rows: &[Row], cap: usize, numbering: Numbering, signals_kept: bool) -> String {
     let lines: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
     // Incident: a fixed HEAD/TAIL split let GREP_LINES 60 emit 120 lines; the byte
     // budget widens both ends instead (a 700-line dump at 40 chars shows 200).
@@ -533,12 +576,10 @@ fn cap_lines(rows: &[Row], cap: usize, numbering: Numbering) -> String {
     let first_tail = lines.len().saturating_sub(tail);
     // Incident: a syntax error at line 814 of 1,506 sat in the middle the head and tail dropped.
     let mut kept: Vec<usize> = Vec::new();
-    let mut signals = 0_usize;
     for (at, line) in lines.iter().enumerate().take(first_tail).skip(head) {
-        if !is_signal(line) {
+        if !signals_kept || !is_signal(line) {
             continue;
         }
-        signals = signals.saturating_add(1);
         let from = at.saturating_sub(SIGNAL_CONTEXT).max(head);
         let to = at
             .saturating_add(SIGNAL_CONTEXT)
@@ -550,15 +591,12 @@ fn cap_lines(rows: &[Row], cap: usize, numbering: Numbering) -> String {
     }
     let shown = kept.len().min(SIGNAL_ROWS);
     let over = kept.split_off(shown);
-    let of = match numbering {
-        Numbering::File => "",
-        Numbering::CutCapture => " of the cut capture, not the file",
-    };
+    let of = numbering.suffix();
     let gap = |start: usize, end: usize| {
         let from = (start.checked_sub(1).and_then(|last| rows.get(last)))
             .map_or(1, |row| row.line.saturating_add(1));
         let to = match rows.get(end).filter(|_| end < lines.len()) {
-            Some(row) => row.line.saturating_sub(1),
+            Some(row) => row.first.saturating_sub(1),
             None => rows.last().map_or(from, |row| row.line),
         };
         let dropped = to.saturating_add(1).saturating_sub(from);
@@ -576,7 +614,9 @@ fn cap_lines(rows: &[Row], cap: usize, numbering: Numbering) -> String {
         next = index.saturating_add(1);
     }
     if !over.is_empty() {
-        let lines_naming = signals.saturating_sub(shown.min(signals));
+        let lines_naming = (over.iter())
+            .filter(|index| lines.get(**index).is_some_and(|line| is_signal(line)))
+            .count();
         out.push(format!("[{shown} lines around errors and failures kept of {} (SIGNAL_ROWS {SIGNAL_ROWS}); {lines_naming} more such lines follow in the full output]", shown.saturating_add(over.len())));
     }
     if first_tail > next {
