@@ -522,6 +522,12 @@ def yi_bin():
         (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()), "yi")
 
 
+# Incident: rounds on #1138 and #1145 hit the job's limit and posted nothing; a round's retries had
+# no shared window, so a slow host outlasted the job. Its calls now share the job's time.
+POST_SECS = 5 * 60
+JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS
+
+
 class Unanswered(Exception):
     """A model call that did not answer. A round missing a lens is not a clean round."""
 
@@ -531,7 +537,8 @@ def repair_prompt(schema):
             f"before or after it, matching this schema: {json.dumps(schema)}")
 
 
-def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None, meter=None):
+def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None, meter=None,
+        until=None):
     """One `yi ask` answering `schema`; raises Unanswered. A reader runs under --confirm
     with no terminal, so every write and command that would ask is refused; the fixer runs
     --yolo (owner, 2026-10-04): --auto asked about a network or install command, which a
@@ -558,9 +565,12 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     # A whole diff passes Linux's 128 KiB cap on one argument, so the prompt goes on stdin.
     def run(extra, text):
         left = ends - time.monotonic() if write else deadline + 120
+        spent = f"the fix's {deadline}s budget is spent"
+        if until is not None and until - time.monotonic() < left:
+            left, spent = until - time.monotonic(), "the job's time for this round is spent"
         # Under a tenth of the budget is no attempt: it could only time out.
         if left < (deadline + 120) / 10:
-            return subprocess.CompletedProcess(command, 124, "", f"the fix's {deadline}s budget is spent")
+            return subprocess.CompletedProcess(command, 124, "", spent)
         try:
             return subprocess.run(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], input=text,
                                   capture_output=True, text=True, timeout=left, check=False,
@@ -731,7 +741,7 @@ def read_pr(repo, number, allowed):
             kept, dropped, outside, unanswered, cleared = [], 0, 0, [], 0
         else:
             kept, dropped, outside, unanswered, cleared = read_round(
-                pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING),
+                pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING, until=JOB_ENDS),
                 load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds, mine), fix_note=fix_note)
     finally:
         discard(tree)
@@ -886,7 +896,6 @@ def promote(repo, pr, rounds):
 # A round at thinking high took 19m20s on #1101, so a sweep starts no new one once a round would
 # outrun the job's limit (review.yml), reads at most three heads, and the next sweep takes the rest.
 ROUND_SECS, SWEEP_HEADS = 20 * 60, 3
-SWEEP_SECS = forge_pr.job_secs("review") - ROUND_SECS
 
 
 def cmd_sweep(args):
@@ -906,7 +915,7 @@ def cmd_sweep(args):
         if promote(repo, pr, rounds):
             continue
         if skip_reason(rounds, pr["head"]["sha"]) is None:
-            if read >= SWEEP_HEADS or time.monotonic() - started > SWEEP_SECS:
+            if read >= SWEEP_HEADS or JOB_ENDS - time.monotonic() < ROUND_SECS:
                 print(f"sweep: {read} head(s) read in {int(time.monotonic() - started)}s; the rest wait for the next sweep")
                 break
             cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False))
@@ -1140,6 +1149,12 @@ def selfcheck():
                 raise AssertionError("a writer that never answers returned")
             except Unanswered as err:
                 assert time.monotonic() - began < 9 and "budget is spent" in str(err), (time.monotonic() - began, err)
+            began = time.monotonic()
+            try:
+                ask("p", LENS_SCHEMA, tree, sessions=tree / "s", deadline=-110, until=time.monotonic() + 3)
+                raise AssertionError("a reader past the job's time returned")
+            except Unanswered as err:
+                assert time.monotonic() - began < 9 and "job's time" in str(err), (time.monotonic() - began, err)
         finally:
             del os.environ["YI_BIN"]
         repair = pathlib.Path(tree) / "yi"

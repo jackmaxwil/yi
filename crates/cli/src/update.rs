@@ -36,7 +36,7 @@ fn run() -> i32 {
 }
 
 fn installed() -> Result<String, String> {
-    let home = crate::absolute_home()?;
+    let home = absolute_home()?;
     let prefix = prefix_dir(&home)?;
     let exe = std::env::current_exe().map_err(|error| format!("current exe: {error}"))?;
     apply(Apply {
@@ -605,6 +605,21 @@ fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {
 
 fn io(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
+}
+
+pub(crate) fn absolute_home() -> Result<std::path::PathBuf, String> {
+    let home = std::path::PathBuf::from(
+        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
+    );
+    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
+    // that followed failed to spawn, naming the wrong step.
+    if !home.is_absolute() {
+        return Err(format!(
+            "HOME is relative ({}); yi needs an absolute HOME",
+            home.display()
+        ));
+    }
+    Ok(home)
 }
 
 #[cfg(test)]

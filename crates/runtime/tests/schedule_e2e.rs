@@ -1019,6 +1019,7 @@ fn child_named(id: &str, tokens: u64) -> yi_types::event::AgentEvent {
             activity: yi_types::subagent::ChildActivity::Executing,
             tool_use_count: 1,
             token_count: tokens,
+            cost: None,
             answer_preview: None,
             error: None,
             exit: None,
@@ -1065,6 +1066,233 @@ fn a_spend_alert_fires_once_per_crossing() -> TestResult {
     Ok(())
 }
 
+fn priced(event: yi_types::event::AgentEvent, dollars: f64) -> yi_types::event::AgentEvent {
+    let mut event = event;
+    let cost = serde_json::Number::from_f64(dollars);
+    match &mut event {
+        yi_types::event::AgentEvent::MessageEnd {
+            message: AgentMessage::Assistant { usage, .. },
+        } => usage.cost.total = cost.unwrap_or_else(|| 0.into()),
+        yi_types::event::AgentEvent::ChildUpdate { update } => update.cost = cost,
+        _ => {}
+    }
+    event
+}
+
+/// Dies with a $87 session going unannounced under `spend.alertUsd`: the session's own billed
+/// turns and each child's billed spend must cross the dollar threshold, once per multiple.
+#[test]
+fn a_dollar_alert_counts_turns_and_children_once_per_crossing() -> TestResult {
+    let mut alarm = yi_runtime::spend::SpendAlarm::usd(10.0).ok_or("a positive amount refused")?;
+    assert!(yi_runtime::spend::SpendAlarm::usd(0.0).is_none());
+    assert_eq!(alarm.observe(&priced(turn_of(10), 6.0)), None);
+    assert_eq!(alarm.observe(&priced(child_at(10), 3.0)), None);
+    let crossed = alarm
+        .observe(&priced(child_at(20), 4.5))
+        .ok_or("$10.50 crossed $10 and nothing fired")?;
+    assert!(
+        crossed.contains("used $10.50, past the alert at $10.00 (spend.alertUsd 10)")
+            && crossed.contains("the next alert is at $20.00"),
+        "{crossed}"
+    );
+    assert_eq!(
+        alarm.observe(&priced(child_at(20), 4.5)),
+        None,
+        "a re-published child's spend was counted twice"
+    );
+    assert!(
+        alarm
+            .observe(&priced(turn_of(10), 9.6))
+            .is_some_and(|text| text.contains("used $20.10")),
+        "the second crossing never fired"
+    );
+    Ok(())
+}
+
+/// Dies with ten $0.10 replies summing to 0.999…9 and missing the $1 alert, or with a total
+/// that holds an unpriced reply printed as exact rather than as `yi stats`'s lower bound.
+#[test]
+fn a_dollar_alert_crosses_an_exact_multiple_and_marks_a_lower_bound() -> TestResult {
+    let mut alarm = yi_runtime::spend::SpendAlarm::usd(1.0).ok_or("a positive amount refused")?;
+    let mut unpriced = turn_of(10);
+    if let yi_types::event::AgentEvent::MessageEnd {
+        message: AgentMessage::Assistant { usage, .. },
+    } = &mut unpriced
+    {
+        usage.unknown = true;
+    }
+    assert_eq!(alarm.observe(&unpriced), None);
+    let fired = (0..10).find_map(|_| alarm.observe(&priced(turn_of(10), 0.1)));
+    let text = fired.ok_or("ten $0.10 replies never crossed $1")?;
+    assert!(
+        text.contains("used ≥$1.00, past the alert at $1.00"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// Dies with `spend.alertUsd` parsed but never attached: the config a user writes, handed to
+/// the runtime as `yi` hands it, must turn a priced reply into a shown notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_configured_dollar_alert_reaches_the_session() -> TestResult {
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(ProviderStream::new(None)),
+    );
+    let config: yi_types::config::SpendConfig = serde_json::from_str(r#"{"alertUsd": 1}"#)?;
+    assert_eq!(
+        yi_runtime::spend::attach_configured(&session, Some(&config), std::path::Path::new("")),
+        Vec::<String>::new()
+    );
+    // A live receiver of its own, so the send succeeds whether or not an alarm subscribed.
+    let _listener = session.events_sender().subscribe();
+    session.events_sender().send(priced(turn_of(10), 1.5))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "a $1.50 reply crossed the configured $1 and nothing was shown"
+    );
+    Ok(())
+}
+
+const CHILD_FIXTURE: &str = include_str!("fixtures/rollup/child_bedrock.jsonl");
+/// The fixture reply's own stamp, which is 2026-10-01 and so never "today".
+const FIXTURE_STAMP: &str = "1790911735288";
+
+/// A sessions directory holding the fixture reply ($0.010216) as three sessions from this
+/// instant and one from last month.
+fn a_day_of_sessions() -> Result<Scratch, Box<dyn Error>> {
+    let dir = Scratch::new("yi-day-alert")?;
+    let now = yi_runtime::rollup::now_ms().to_string();
+    for (n, stamp) in [&now, &now, &now, &FIXTURE_STAMP.to_owned()]
+        .into_iter()
+        .enumerate()
+    {
+        let text = CHILD_FIXTURE
+            .replace("R8jG4wschDCyIUWXZMx1", &format!("reply{n}"))
+            .replace(FIXTURE_STAMP, stamp);
+        std::fs::create_dir_all(dir.join("--p--"))?;
+        std::fs::write(dir.join(format!("--p--/{n}.jsonl")), text)?;
+    }
+    Ok(dir)
+}
+
+/// Dies when yesterday's session is summed into today (then the seed already sits on the $0.04
+/// multiple, the next reply announces nothing, and the alert is lost), or when a session
+/// recorded before this one started is left out of the day.
+#[test]
+fn a_day_alert_seeds_from_todays_sessions_and_leaves_earlier_days_out() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let mut alarm =
+        yi_runtime::spend::SpendAlarm::day_usd(0.04, &dir).ok_or("a positive amount refused")?;
+    alarm.seed("live", &yi_types::wire::SessionStats::zero());
+    let crossed = alarm
+        .observe(&priced(turn_of(10), 0.01))
+        .ok_or("$0.0406 today crossed $0.04 and nothing fired")?;
+    assert!(
+        crossed.contains(
+            "today's billed spend across every session is $0.041, past the alert at $0.040 (spend.dayAlertUsd 0.04)"
+        ),
+        "{crossed}"
+    );
+    assert!(
+        crossed.contains("`yi stats --since 1d --by model`"),
+        "{crossed}"
+    );
+    Ok(())
+}
+
+/// Dies when a second attach (a session switch in a daemon) starts the day over from the files,
+/// dropping what this process already watched being spent: the 0.005 before the switch must
+/// still count toward the $0.04 multiple the 0.005 after it crosses.
+#[test]
+fn a_day_alert_keeps_its_running_total_across_a_reattach() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let mut alarm =
+        yi_runtime::spend::SpendAlarm::day_usd(0.04, &dir).ok_or("a positive amount refused")?;
+    alarm.seed("first", &yi_types::wire::SessionStats::zero());
+    assert_eq!(alarm.observe(&priced(turn_of(10), 0.005)), None);
+    alarm.seed("second", &yi_types::wire::SessionStats::zero());
+    assert!(
+        alarm.observe(&priced(turn_of(10), 0.005)).is_some(),
+        "$0.0406 crossed $0.04 and the switch had forgotten the first 0.005"
+    );
+    Ok(())
+}
+
+/// Dies when a later alarm seeds from a snapshot of the day taken for an earlier one: a daemon
+/// attaches its sessions one after another, and spend written in between (the 4th reply below)
+/// is what carries the second alarm past the $0.041 multiple.
+#[test]
+fn an_alarm_seeding_after_new_spend_was_written_sees_it() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let seeded = || -> Result<_, Box<dyn Error>> {
+        let mut alarm = yi_runtime::spend::SpendAlarm::day_usd(0.041, &dir)
+            .ok_or("a positive amount refused")?;
+        alarm.seed("live", &yi_types::wire::SessionStats::zero());
+        Ok(alarm)
+    };
+    let mut first = seeded()?;
+    assert_eq!(first.observe(&priced(turn_of(10), 0.001)), None);
+    let now = yi_runtime::rollup::now_ms().to_string();
+    let fourth = CHILD_FIXTURE
+        .replace("R8jG4wschDCyIUWXZMx1", "recorded-in-between")
+        .replace(FIXTURE_STAMP, &now);
+    std::fs::write(dir.join("--p--/late.jsonl"), fourth)?;
+    let mut second = seeded()?;
+    assert!(
+        second.observe(&priced(turn_of(10), 0.001)).is_some(),
+        "$0.0419 today crossed $0.041 and the second alarm seeded from a stale day"
+    );
+    Ok(())
+}
+
+/// Dies when a process alive past local midnight carries yesterday's total into the new day:
+/// the first reply after midnight would then alert early.
+#[test]
+fn a_day_alert_starts_the_next_day_from_zero() -> TestResult {
+    let dir = a_day_of_sessions()?;
+    let mut alarm =
+        yi_runtime::spend::SpendAlarm::day_usd(0.04, &dir).ok_or("a positive amount refused")?;
+    alarm.seed("live", &yi_types::wire::SessionStats::zero());
+    let tomorrow = yi_runtime::rollup::now_ms() + 2 * yi_runtime::rollup::DAY_MS;
+    assert_eq!(alarm.observe_at(&priced(turn_of(10), 0.01), tomorrow), None);
+    Ok(())
+}
+
+/// Dies with `spend.dayAlertUsd` parsed but never attached, or a non-positive one accepted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_configured_day_alert_reaches_the_session() -> TestResult {
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(ProviderStream::new(None)),
+    );
+    let dir = Scratch::new("yi-day-config")?;
+    let config: yi_types::config::SpendConfig = serde_json::from_str(r#"{"dayAlertUsd": 1}"#)?;
+    assert!(yi_runtime::spend::attach_configured(&session, Some(&config), &dir).is_empty());
+    let _listener = session.events_sender().subscribe();
+    session.events_sender().send(priced(turn_of(10), 1.5))?;
+    assert!(
+        until(|| session.pending_count() > 0).await,
+        "a $1.50 reply crossed the configured $1 day alert and nothing was shown"
+    );
+    let bad: yi_types::config::SpendConfig = serde_json::from_str(r#"{"dayAlertUsd": -1}"#)?;
+    assert_eq!(
+        yi_runtime::spend::attach_configured(&session, Some(&bad), &dir),
+        vec!["spend.dayAlertUsd -1 is not a positive amount; no dollar alert".to_owned()]
+    );
+    Ok(())
+}
+
 /// A faux session whose spend alarm fires every 1,000 tokens, wired as `yi` wires it.
 fn alarmed() -> Result<AgentSession, Box<dyn Error>> {
     let session = AgentSession::new(
@@ -1076,7 +1304,8 @@ fn alarmed() -> Result<AgentSession, Box<dyn Error>> {
         },
         Arc::new(ProviderStream::new(None)),
     );
-    yi_runtime::spend::attach(&session, std::num::NonZeroU64::new(1_000).ok_or("zero")?);
+    let every = std::num::NonZeroU64::new(1_000).ok_or("zero")?;
+    yi_runtime::spend::attach(&session, yi_runtime::spend::SpendAlarm::new(every));
     Ok(session)
 }
 

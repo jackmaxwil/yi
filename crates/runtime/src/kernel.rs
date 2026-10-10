@@ -230,6 +230,9 @@ pub(crate) fn kernel_profile(
     profile
         .writable
         .extend(family_dir.map(std::path::Path::to_path_buf));
+    // Invariant: only the host writes the board's spills, so no cell swaps the dir for a link
+    // between the host's check and its open, and no child rewrites a parent's kept output.
+    (profile.deny_write).extend(family_dir.map(crate::wiring::board_spills));
     profile.writable.sort();
     profile.writable.dedup();
     profile
@@ -898,11 +901,9 @@ mod tests {
             cell_ceiling: None,
         };
         let path_of = |home: &std::path::Path| {
-            KernelService::new(options(home))
-                .kernel_env(None)
-                .into_iter()
-                .find(|(key, _)| key == "PATH")
-                .map(|(_, value)| value)
+            let env = KernelService::new(options(home)).kernel_env(None);
+            env.into_iter()
+                .find_map(|(key, value)| (key == "PATH").then_some(value))
         };
         assert_eq!(path_of(&home), None);
         let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;

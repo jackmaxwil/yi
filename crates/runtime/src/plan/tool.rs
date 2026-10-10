@@ -775,7 +775,7 @@ impl Tool for PlanTool {
                 },
                 "required": ["op"]
             }),
-            _ => schema(),
+            _ => table_schema(schema()),
         }
     }
 
@@ -819,9 +819,9 @@ impl Tool for PlanTool {
 /// The ops the model is shown; a change is a row's state, and every other op stays readable.
 const SHOWN_OPS: [&str; 3] = ["set", "view", "accepted_by_user"];
 
-/// Invariant: the request-prefix gate prices this tool through these two
-/// items rather than a live [`PlanTool`], so what is measured is what ships.
-pub const DESCRIPTION: &str = "The plan ledger. op=set writes the plan: a goal and its todos as rows, each with the state it should reach; send set again with the rows that change, and rows it does not name stay as they are. A row's contract and delegation declare it: done runs its contract first, blocked asks the user, failed records its cause, dropped removes it, pending or running reopens a failed or blocked row, and a row's own todos are the sub-steps it splits into; the engine starts, verifies and accepts delegated rows. A row it could not move says why in a note line of the reply, and the rest lands. A markdown checklist list (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. A todo is a unit of decision, not of iteration. Batch with real work; never call it alone.";
+pub const DESCRIPTION: &str = "The plan ledger. op=set writes a goal and its todos as rows, each with the state it should reach; rows it does not name stay as they are. A markdown checklist in `list` (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. Batch with real work; never call it alone. Full guide (states, contracts, delegation, blocking, every field): read(\"yi://tools/plan\") before your first set.";
+
+pub const GUIDE: &str = "The plan ledger. op=set writes the plan: a goal and its todos as rows, each with the state it should reach; send set again with the rows that change, and rows it does not name stay as they are. A row's contract and delegation declare it: done runs its contract first, blocked asks the user, failed records its cause, dropped removes it, pending or running reopens a failed or blocked row, and a row's own todos are the sub-steps it splits into; the engine starts, verifies and accepts delegated rows. A row it could not move says why in a note line of the reply, and the rest lands. A markdown checklist list (`- [ ] todo`, `- [>] running`, `- [x] done`, `- [-] dropped`) is the short form for rows with nothing to verify. A todo is a unit of decision, not of iteration. Batch with real work; never call it alone.";
 
 const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=view. When your work is done, end your turn with your answer; the engine takes it as your work and accepts or refuses it.";
 
@@ -862,6 +862,29 @@ pub fn schema() -> Value {
     })
 }
 
+/// Invariant: every type, enum, bound and required key stays, so validation and argument
+/// decoding are unchanged; only the field prose below the top level moves to the guide.
+fn table_schema(mut schema: Value) -> Value {
+    fn strip(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                map.retain(|key, nested| key != "description" || !nested.is_string());
+                map.values_mut().for_each(strip);
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    if let Some(Value::Object(properties)) = schema.get_mut("properties") {
+        for property in properties.values_mut().filter_map(Value::as_object_mut) {
+            property
+                .iter_mut()
+                .filter(|(key, _)| *key != "description")
+                .for_each(|(_, nested)| strip(nested));
+        }
+    }
+    schema
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,7 +972,6 @@ mod tests {
             .map(|_| ())
             .map_err(|error| format!("{shape:?}: {error}"))
     }
-
     /// Incident: the template printed a submit without `attempt`, a key the flat schema does not
     /// name, so the surface taught the one call its own parser refuses (#478).
     #[test]
@@ -966,7 +988,6 @@ mod tests {
         templated(&args)?;
         Ok(())
     }
-
     #[test]
     fn schema_is_byte_identical_between_calls() -> Fallible {
         assert_eq!(
@@ -975,7 +996,6 @@ mod tests {
         );
         Ok(())
     }
-
     #[test]
     fn an_unknown_argument_key_is_refused() -> Fallible {
         let cases = [
@@ -1001,7 +1021,6 @@ mod tests {
         }
         Ok(())
     }
-
     #[test]
     fn an_unknown_op_names_the_legal_ones() -> Fallible {
         let mut input = Map::new();
@@ -1014,7 +1033,6 @@ mod tests {
         assert!(message.contains("supersede"), "{message}");
         Ok(())
     }
-
     #[test]
     fn a_checklist_parses_into_nested_rows_with_states() -> Fallible {
         let rows = parse_checklist(
@@ -1033,16 +1051,13 @@ mod tests {
             rows[1].spec.children[0].state,
             TodoState::Done { .. }
         ));
-
-        let bad = parse_checklist("- mapper\n");
-        assert!(bad.is_err());
+        assert!(parse_checklist("- mapper\n").is_err());
         let mut input = Map::new();
         input.insert("op".to_owned(), Value::String("set".to_owned()));
         input.insert("list".to_owned(), Value::String("- [ ] a\n".to_owned()));
         assert!(matches!(parse_op(&input)?, Op::Set { .. }));
         Ok(())
     }
-
     /// Guards the actor refusal in `request`: drop the `actor` key check and the child's
     /// `view` below is honoured as the owner.
     #[test]
@@ -1087,7 +1102,6 @@ mod tests {
         );
         Ok(())
     }
-
     #[test]
     fn a_childs_plan_tool_views_and_is_refused_before_the_parse() -> Fallible {
         let dir = crate::scratch::Scratch::new("yi-plan-tool-child")?;
@@ -1113,7 +1127,6 @@ mod tests {
         );
         Ok(())
     }
-
     /// Dies with the `try_from` on `TodoSpec`: build the fields straight and an uncontracted
     /// worktree todo lands through `init`, `append`, `decompose` and `supersede` on both roads.
     #[test]
@@ -1160,9 +1173,7 @@ mod tests {
         );
         Ok(())
     }
-
     struct NoChildren;
-
     impl super::super::ops::Delegate for NoChildren {
         fn spawn(
             &self,
@@ -1171,7 +1182,6 @@ mod tests {
         ) -> Result<yi_types::plan::doc::AgentId, String> {
             Err("no children in this test".to_owned())
         }
-
         fn reap(
             &self,
             _agent: &yi_types::plan::doc::AgentId,

@@ -63,5 +63,55 @@ class Generators(unittest.TestCase):
             gen.parse("nope:1")
 
 
+class RolesArm(unittest.TestCase):
+    def test_only_the_roles_arm_is_told_which_model_each_duty_takes(self):
+        import stat
+        import runner
+        prompts = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            stub = tmp / "yi"
+            stub.write_text('#!/bin/sh\nfor a; do last="$a"; done\nprintf %s "$last" > "$0.prompt"\n')
+            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+            for roles in (False, True):
+                row = runner.one("bugfix:1:1", str(stub), "", tmp / f"keep{roles}", roles)
+                prompts[roles] = pathlib.Path(f"{stub}.prompt").read_text()
+                self.assertEqual((row["roles"], row["model"]), (roles, runner.MODEL))
+        for pin in ("deepseek-v4.1-flash", "glm-5.3-flash"):
+            self.assertNotIn(pin, prompts[False])
+            self.assertIn(pin, prompts[True])
+
+
+class Cost(unittest.TestCase):
+    def test_a_rerun_under_the_same_keep_dir_is_charged_for_its_own_sessions_only(self):
+        import runner
+        fixture = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "session" / "1787544431469_fixture-a.jsonl"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            stub = tmp / "yi"
+            stub.write_text('#!/bin/sh\nwhile [ $# -gt 1 ]; do [ "$1" = --session-dir ] && dir="$2"; shift; done\n'
+                            f'mkdir -p "$dir" && cp {fixture} "$dir/$$.jsonl"\n')
+            stub.chmod(0o755)
+            costs = [runner.one("bugfix:1:1", str(stub), "", tmp / "keep")["costUsd"] for _ in range(2)]
+        self.assertEqual(costs[0], costs[1])
+        self.assertAlmostEqual(costs[1], 0.007432)
+
+    def test_a_request_that_failed_empty_costs_nothing_and_leaves_the_bill_known(self):
+        import runner
+        fixture = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "session" / "1787544431469_fixture-a.jsonl"
+        failed = {"kind": "entry", "type": "message", "message": {"role": "assistant", "content": [], "stopReason": "error",
+                  "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "unknown": True}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            session = tmp / "session.jsonl"
+            session.write_text(fixture.read_text() + __import__("json").dumps(failed) + "\n")
+            stub = tmp / "yi"
+            stub.write_text('#!/bin/sh\nwhile [ $# -gt 1 ]; do [ "$1" = --session-dir ] && dir="$2"; shift; done\n'
+                            f'mkdir -p "$dir" && cp {session} "$dir/s.jsonl"\n')
+            stub.chmod(0o755)
+            cost = runner.one("bugfix:1:1", str(stub), "", tmp / "keep")["costUsd"]
+        self.assertAlmostEqual(cost, 0.007432)
+
+
 if __name__ == "__main__":
     unittest.main()

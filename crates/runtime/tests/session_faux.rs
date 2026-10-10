@@ -941,7 +941,7 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
     use yi_runtime::session::user_input;
     let skill = |name: &str, needle: &str| RuleDoc {
         name: name.to_owned(),
-        body: format!("skill://{name}"),
+        body: format!("yi://skills/{name}"),
         path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
         needles: vec![needle.to_owned()],
         scope: RuleScope::Text,
@@ -984,13 +984,13 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
         transcript(&session),
         [
             "user: run cargo nextest",
-            "reminder: Relevant: skill://gate (matched \"cargo nextest\")",
+            "reminder: Relevant: yi://skills/gate (matched \"cargo nextest\")",
             "assistant",
             "user: then review the work",
-            "reminder: Relevant: skill://review (matched \"review the work\")",
+            "reminder: Relevant: yi://skills/review (matched \"review the work\")",
             "assistant",
             "user: write a plan",
-            "reminder: Relevant: skill://plan (matched \"write a plan\")",
+            "reminder: Relevant: yi://skills/plan (matched \"write a plan\")",
             "assistant",
         ]
     );
@@ -1587,5 +1587,60 @@ async fn an_empty_optional_argument_is_not_sent_and_a_required_one_is() -> Resul
             .any(|(tool, _, text)| tool == "read" && text.contains("return a + b"))
     );
     assert_eq!(std::fs::read(dir.join("empty.txt"))?.len(), 0);
+    Ok(())
+}
+
+/// Stage 6 of the model-duties plan: a long tool loop on a route with no cache pays to drop old
+/// results at once, and the cut lands in the ledger with each result's entry, which the
+/// placeholder names as the read that restores it.
+#[tokio::test]
+async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
+-> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-reclaim")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut script: Vec<AgentMessage> = (0..8)
+        .map(|turn| {
+            let args = serde_json::json!({"command": format!("seq 1 1500 # {turn}")});
+            let args = args.as_object().cloned().unwrap_or_default();
+            let call = faux_tool_call(&format!("call-{turn}"), "bash", args);
+            faux_assistant_message(vec![call], StopReason::ToolUse)
+        })
+        .collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("done")],
+        StopReason::Stop,
+    ));
+    provider.queue_faux(script);
+    let mut model = faux_model();
+    model.cost.input = serde_json::Number::from(1u64);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model,
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let store = crate::support::memory_store("reclaim");
+    session.attach_store(Arc::clone(&store))?;
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
+    session.prompt("count")?;
+    session.wait_idle().await;
+    let records: Vec<yi_types::reclaim::ReclaimRecord> =
+        yi_session::lock_session(&store).custom_records(yi_session::EntryOrder::OldestFirst, None);
+    let first = records.first().ok_or("no cut was recorded")?;
+    let ids: Vec<&str> = (first.items.iter())
+        .map(|item| item.tool_call_id.as_str())
+        .collect();
+    assert_eq!(ids.first(), Some(&"call-0"), "{records:?}");
+    assert!(
+        !ids.contains(&"call-7"),
+        "the newest results stay: {records:?}"
+    );
+    assert!(
+        first.items.iter().all(|item| item.entry_id.is_some()),
+        "{records:?}"
+    );
     Ok(())
 }
