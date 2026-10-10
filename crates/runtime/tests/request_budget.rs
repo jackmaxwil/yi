@@ -867,3 +867,79 @@ fn the_plan_table_keeps_every_key_but_the_nested_prose() -> TestResult {
     }
     Ok(())
 }
+
+/// Every tool a root session's model can call and every plugin is covered by a skill (a shipped
+/// `SKILL.md` saying `covers:`, or a `yi://tools/` guide) or sits in `PENDING`, which only shrinks.
+#[test]
+fn every_model_tool_and_plugin_is_covered_by_a_skill_or_pending() -> Result<(), Box<dyn Error>> {
+    const PENDING: [&str; 7] = [
+        "tool:annotate",
+        "tool:bash",
+        "tool:get_context",
+        "tool:grep",
+        "tool:ipython",
+        "tool:read",
+        "tool:write",
+    ];
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut declared = std::collections::BTreeSet::new();
+    let mut dirs = vec![repo.join("skills"), repo.join("python/skills")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                let text = std::fs::read_to_string(&path)?;
+                let head = text.split("\n---").next().unwrap_or_default();
+                for line in head.lines().filter_map(|line| line.strip_prefix("covers:")) {
+                    declared.extend(line.split(',').map(|item| item.trim().to_owned()));
+                }
+            }
+        }
+    }
+    let major: std::collections::BTreeSet<String> = (tool_defs()?.iter())
+        .map(|def| format!("tool:{}", def.name))
+        .chain(
+            yi_tools::plugin::PLUGINS
+                .iter()
+                .map(|plugin| format!("plugin:{}", plugin.name)),
+        )
+        .collect();
+    let resolver = yi_runtime::fetch::Resolver::new(repo.clone(), yi_runtime::Wall::default());
+    let guided = |item: &str| {
+        item.strip_prefix("tool:").is_some_and(|tool| {
+            (format!("yi://tools/{tool}").parse()).is_ok_and(|url| resolver.fetch(&url).is_ok())
+        })
+    };
+    let covered = |item: &str| declared.contains(item) || guided(item);
+    let missing: Vec<&String> = (major.iter())
+        .filter(|item| !covered(item) && !PENDING.contains(&item.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "add a skill whose frontmatter says `covers: ` one of {missing:?}"
+    );
+    let gone: Vec<&&str> = PENDING
+        .iter()
+        .filter(|item| !major.contains(**item))
+        .collect();
+    assert!(
+        gone.is_empty(),
+        "remove {gone:?} from PENDING: no such tool or plugin"
+    );
+    let settled: Vec<&&str> = PENDING.iter().filter(|item| covered(item)).collect();
+    assert!(
+        settled.is_empty(),
+        "remove {settled:?} from PENDING: it has a skill now"
+    );
+    let stale: Vec<&String> = declared
+        .iter()
+        .filter(|item| !major.contains(*item))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "a skill covers {stale:?}, which no longer exists: delete or retarget it"
+    );
+    Ok(())
+}
