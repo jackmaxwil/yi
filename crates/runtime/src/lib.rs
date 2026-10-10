@@ -2,6 +2,7 @@
 
 pub mod advisor;
 pub mod affordance;
+mod annotate;
 mod args;
 pub mod auto_review;
 pub mod cache_miss;

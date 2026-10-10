@@ -29,6 +29,8 @@ pub struct CompiledView {
     pub outstanding: Vec<String>,
     pub brief: Vec<BriefLine>,
     pub earlier: Vec<String>,
+    /// The model's recorded findings, every one, read from the ledger at each compaction.
+    pub findings: Vec<String>,
 }
 
 impl BriefLine {
@@ -48,6 +50,14 @@ impl CompiledView {
             for line in &self.outstanding {
                 block.push('\n');
                 block.push_str(line);
+            }
+            sections.push(block);
+        }
+        if !self.findings.is_empty() {
+            let mut block = String::from("[Findings, as the model recorded them]");
+            for line in &self.findings {
+                block.push('\n');
+                block.push_str(&one_line(line));
             }
             sections.push(block);
         }
@@ -121,6 +131,7 @@ pub fn compile_view(attributed: &[Attributed], previous: Option<&CompiledView>) 
         outstanding,
         brief,
         earlier,
+        findings: Vec::new(),
     }
 }
 
@@ -311,5 +322,6 @@ pub fn view_from_extra(extra: &serde_json::Map<String, serde_json::Value>) -> Op
             })
             .collect(),
         earlier,
+        findings: Vec::new(),
     })
 }

@@ -28,7 +28,8 @@ refinement or self-extension · embeddings and semantic search · resident LSP o
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6) · a GUI · browser automation, computer use, email, or any capability that
-is not a coding agent · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
+is not a coding agent · an `ask_user` tool on a root session with no reviewer (a root asks in
+its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
@@ -194,6 +195,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   tokens after the first cut × (write − read price), or the cache lapsed; at least 2,000 tokens.
   A `custom{reclaim}` entry names the cut results, which render from then on as one
   `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
+- `annotate` writes `custom{annotation}`: `pin` keeps the newest result whose call contains
+  `call` out of every cut, `discard` waives its age and size floors, and a `finding` (note ≤ 280
+  chars) is listed whole under `[Findings]` in every compaction view.
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
   16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338), or
   would pass `compaction.at` tokens when that comes first (a root session's ceiling, raised with a
@@ -307,11 +311,11 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 ### 7.1 Table and trait
 | Read | Write | Exec | Ledger |
 |---|---|---|---|
-| `read`, `grep`, `get_context`, `ask_user` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
+| `read`, `grep`, `get_context`, `ask_user`, `annotate` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
 
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
-  `ipython`, `plan`, `todo`, `ask_user`. `check_request_budget.py` prices system block plus tool
+  `ipython`, `annotate`, `plan`, `todo`, and `ask_user` in a child or with auto-review on. `check_request_budget.py` prices system block plus tool
   table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
