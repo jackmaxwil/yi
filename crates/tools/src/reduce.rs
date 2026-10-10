@@ -244,14 +244,14 @@ fn is_signal(line: &str) -> bool {
     .any(|word| lower.contains(word))
 }
 
-/// A test runner's line for one passing test: cargo, pytest, jest; never one naming a failure.
+/// A test runner's line for one passing test: cargo, pytest, jest. A `PASSED` that shares its
+/// line with a failure is not one; a test named for errors that ends `... ok` is.
 fn is_pass(line: &str) -> bool {
     let line = line.trim();
-    let pass = (line.starts_with("test ") && line.ends_with(" ... ok"))
-        || line.contains(" PASSED")
+    (line.starts_with("test ") && line.ends_with(" ... ok"))
+        || (line.contains(" PASSED") && !is_signal(line))
         || line.starts_with('✓')
-        || line.starts_with('✔');
-    pass && !is_signal(line)
+        || line.starts_with('✔')
 }
 
 /// Runs of passing-test lines as one counted row; a failure among them stays a line of its own.
@@ -294,7 +294,9 @@ fn per_file(rows: &[Row], numbering: Numbering) -> Vec<Row> {
         let (path, rest) = text.split_once(':')?;
         let (number, _) = rest.split_once(':')?;
         let numbered = !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
-        (numbered && !path.contains(char::is_whitespace)).then(|| path.to_owned())
+        // A log's `2026-10-10T11:30:` reads as `path:line:` too; a path has a `/` or a `.`.
+        let pathlike = path.contains(['/', '.']) && !path.contains(char::is_whitespace);
+        (numbered && pathlike).then(|| path.to_owned())
     };
     let mut groups: Vec<(Option<String>, &[Row])> = Vec::new();
     let mut index = 0;
