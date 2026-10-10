@@ -540,10 +540,10 @@ async fn run_turns(
     Ok(seen)
 }
 
-/// #888: spills are kept per session, and a walled session reads back its own spill but
-/// neither another session's nor one from before spills were per session.
+/// The owner overrode D340's per-session spills: the wiring gives a family one spill dir on its
+/// board, so a walled member reads a spill another member wrote, and still no other session's.
 #[tokio::test]
-async fn a_walled_session_reads_back_its_own_spill_and_no_other() -> TestResult {
+async fn a_walled_member_reads_its_familys_spill_and_no_other() -> TestResult {
     let root = Scratch::new("yi-wall-spill")?;
     let home = root.home()?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
@@ -554,28 +554,13 @@ async fn a_walled_session_reads_back_its_own_spill_and_no_other() -> TestResult 
         std::fs::create_dir_all(planted.parent().ok_or("no parent")?)?;
         std::fs::write(planted, "WALLED OUTPUT\n")?;
     }
-    let provider = Arc::new(ProviderStream::new(None));
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: "sys".to_owned(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        Arc::clone(&provider),
+    let (yolo, auto) = (
+        yi_permission::PermissionMode::Yolo,
+        yi_permission::PermissionMode::Auto,
     );
-    session.attach_store(Arc::new(std::sync::Mutex::new(
-        yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
-            id: "juror".to_owned(),
-            created_at: 0,
-            parent_session_id: None,
-            name: None,
-        }),
-    )))?;
-    session.set_wall(read_walled(&root));
-    session.use_tools(yi_tools::builtin_tools(), root.to_path_buf(), None);
+    let (author, provider) = wired_child(&root, &root, Wall::default(), yolo, None);
     let cut = run_turns(
-        &session,
+        &author,
         &provider,
         vec![("bash", args(&[("command", "seq 1 20000")]))],
     );
@@ -583,10 +568,12 @@ async fn a_walled_session_reads_back_its_own_spill_and_no_other() -> TestResult 
     let pointer = (text.split("[full output: ").nth(1))
         .and_then(|rest| rest.split(']').next())
         .ok_or_else(|| format!("no pointer: {text}"))?;
+    let board = family_board(&home).join("spills").display().to_string();
     assert!(
-        pointer.starts_with(&home.join(".yi/spills/juror/").display().to_string()),
-        "the spill is not under the session's own dir: {pointer}"
+        pointer.starts_with(&board),
+        "the spill is not on the family's board: {pointer}"
     );
+    let (session, provider) = wired_child(&root, &root, read_walled(&root), auto, None);
     let (other_path, flat_path) = (other.display().to_string(), legacy.display().to_string());
     let mut calls = [pointer, &other_path, &flat_path]
         .map(|path| ("read", args(&[("path", path)])))
@@ -597,10 +584,13 @@ async fn a_walled_session_reads_back_its_own_spill_and_no_other() -> TestResult 
         return Err(format!("four calls, got {seen:?}").into());
     };
     let head: String = own.0.chars().take(300).collect();
-    assert!(!own.1 && own.0.contains("\n20:20\n"), "own spill: {head}");
+    assert!(
+        !own.1 && own.0.contains("\n20:20\n"),
+        "the family's spill: {head}"
+    );
     assert!(
         grep.0.contains("20000"),
-        "grep of its own spill: {}",
+        "grep of the family's spill: {}",
         grep.0
     );
     for (name, (text, is_error)) in [("another session's", author), ("a flat", flat)] {
@@ -915,7 +905,7 @@ fn wired_child(
             depth: 1,
             max_depth: 2,
             rlm_dir: root.join("rlm"),
-            family_dir: None,
+            family_dir: Some(family_board(&root.join("home"))),
             summarizer: None,
             advisor: None,
             auto_review: None,
@@ -959,8 +949,13 @@ async fn a_wired_walled_fetch_reaches_no_transcript_in_the_session_dir() -> Test
     Ok(())
 }
 
+/// The board a wired child's family keeps under the session store, which a wall walls whole.
+fn family_board(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".yi/sessions/family/fam")
+}
+
 /// Another session's spill under a fake HOME, and a store holding the author's transcript and
-/// the walled session's own, whose spill dir holds one file; returns the store and own paths.
+/// the walled session's own, its family's spill dir holding one file; returns the store and paths.
 fn plant_own(
     home: &std::path::Path,
     project: &std::path::Path,
@@ -971,14 +966,10 @@ fn plant_own(
         project.to_string_lossy(),
         Some("author".to_owned()),
     )?;
-    let (id, transcript) = {
-        let store = yi_session::lock_session(&store);
-        (store.metadata().id.clone(), store.file_path().cloned())
-    };
-    let spills = home.join(".yi/spills");
-    let own_spill = spills.join(id).join("0001.txt");
+    let transcript = yi_session::lock_session(&store).file_path().cloned();
+    let own_spill = family_board(home).join("spills/0001.txt");
     for (path, text) in [
-        (spills.join("author/0123.txt"), "WALLED OUTPUT\n"),
+        (home.join(".yi/spills/author/0123.txt"), "WALLED OUTPUT\n"),
         (own_spill.clone(), "OWN SPILL\n"),
     ] {
         std::fs::create_dir_all(path.parent().ok_or("no parent")?)?;
@@ -990,7 +981,7 @@ fn plant_own(
 
 /// #1001: a walled session's bash call that leaves the sandbox (yolo here, as an approval, a
 /// rule or Linux sends one) met the wall only as command text, which named no spill root or
-/// store; it now reads its own spill and transcript and no other session's, by any spelling.
+/// store; it now reads its family's spill and its transcript, no other session's, by any spelling.
 #[tokio::test]
 async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> TestResult {
     let root = Scratch::new("yi-wall-outside")?;
@@ -1041,8 +1032,11 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
         );
     }
     assert!(spill.0.contains("OWN SPILL"), "own spill: {}", spill.0);
-    let id = (own_spill.parent().and_then(std::path::Path::file_name)).ok_or("no id")?;
-    let header = format!("\"id\":\"{}\"", id.to_string_lossy());
+    let stem = (transcript.file_stem())
+        .ok_or("no transcript name")?
+        .to_string_lossy();
+    let id = stem.split_once('_').ok_or("no id in the name")?.1;
+    let header = format!("\"id\":\"{id}\"");
     assert!(own.0.contains(&header), "own transcript: {}", own.0);
     let open = wired_child(&root, &project, Wall::default(), yolo, None);
     let calls = vec![("bash", args(&[("command", &commands[0])]))];
@@ -1118,7 +1112,7 @@ async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
     heartbeats.bind_session("juror".to_owned());
     let mut host = yi_runtime::HostRegistry::default();
     heartbeats.register(&mut host);
-    // Its own spill is spared, as its tools' is.
+    // Its family's spill is spared, as its tools' is.
     for (path, walled) in [
         (project.join("secret/key.txt"), true),
         (planted.author, true),

@@ -18,8 +18,8 @@ pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
-    /// The session's own spill dir, `<root>/<session>`, whose root the spill sweeps; None
-    /// means a reducer must hand back the raw text instead.
+    /// The family board's spill dir, kept until the session is removed; None means a reducer
+    /// must hand back the raw text instead.
     pub recovery_dir: Option<PathBuf>,
     /// The session's own transcript, which its wall spares under the session stores (#971).
     pub transcript: Option<PathBuf>,

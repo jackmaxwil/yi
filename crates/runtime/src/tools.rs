@@ -15,8 +15,7 @@ pub struct ToolAdapter {
     cwd: PathBuf,
     cancelled: CancelFlag,
     permission: Option<Arc<PermissionBroker>>,
-    spill_root: Option<PathBuf>,
-    spill_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    spills: Option<PathBuf>,
     transcript: Option<crate::goal::StoreHandle>,
     auto_background: Option<std::time::Duration>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
@@ -273,15 +272,6 @@ pub(crate) fn default_spill_root() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi").join(yi_tools::SPILLS))
 }
 
-/// A session's own spill dir under `root`, when its key is a valid session id.
-pub(crate) fn own_spill_dir(
-    root: Option<&std::path::Path>,
-    key: Option<String>,
-) -> Option<PathBuf> {
-    let key = key.filter(|key| yi_session::validate_session_id(key).is_ok())?;
-    Some(root?.join(key))
-}
-
 /// Every session store: `~/.yi/sessions` and the `--session-dir` in use, which the broker holds
 /// as host-owned (D335).
 pub(crate) fn session_stores(broker: Option<&PermissionBroker>) -> Vec<PathBuf> {
@@ -309,8 +299,8 @@ pub(crate) fn spill_roots_and_stores(
         .collect()
 }
 
-/// Invariant: a walled session reads only its own spills and transcript: the spill roots and
-/// session stores are walled, its own spill dir and transcript spared (D340, D345).
+/// Invariant: a walled session reads only its family's spills and its own transcript: the spill
+/// roots and session stores are walled, the board's spill dir and the transcript spared (D345).
 pub(crate) fn walled_roots(
     wall: &crate::wall::Wall,
     broker: Option<&PermissionBroker>,
@@ -339,8 +329,7 @@ impl ToolAdapter {
             cwd,
             cancelled,
             permission,
-            spill_root: default_spill_root(),
-            spill_key: None,
+            spills: None,
             transcript: None,
             auto_background: None,
             rules: None,
@@ -357,18 +346,9 @@ impl ToolAdapter {
         self
     }
 
-    /// The session's key names its spill dir, read per call: the store may attach after wiring.
-    pub fn with_spill_key(mut self, key: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Self {
-        self.spill_key = Some(key);
+    pub fn with_spills(mut self, dir: Option<PathBuf>) -> Self {
+        self.spills = dir;
         self
-    }
-
-    /// The session's own spill dir, when its key is a valid session id.
-    fn session_spills(&self) -> Option<PathBuf> {
-        own_spill_dir(
-            self.spill_root.as_deref(),
-            self.spill_key.as_ref().and_then(|key| key()),
-        )
     }
 
     /// The store whose file is the session's own transcript, read per call like its spill key.
@@ -456,7 +436,7 @@ impl AgentTool for ToolAdapter {
         let tool = Arc::clone(&self.tool);
         let args = unsent_empties(&tool.schema(), args);
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
-        let spills = self.session_spills();
+        let spills = self.spills.clone();
         let store = (self.transcript.as_ref()).and_then(|store| store());
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
