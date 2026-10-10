@@ -223,7 +223,10 @@ pub fn session(
     )
     .with_home(home.to_path_buf());
     let resolver = match build.link.host.upgrade() {
-        Some(host) => resolver.with_plans_dir(host.options.plans_dir.clone()),
+        Some(host) => {
+            child.set_spills(crate::wiring::board_spills(&host.board()));
+            resolver.with_plans_dir(host.options.plans_dir.clone())
+        }
         None => resolver,
     };
     crate::fetch::route_urls(&mut named, &Arc::new(resolver));

@@ -1,23 +1,24 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
-/// The spill root's name under `~/.yi`, one dir per session inside it (D340).
-pub const SPILLS: &str = "spills";
-/// The dir beside it every session shared before spills were per session (D316).
-pub const FLAT_SPILLS: &str = "tool-output";
+use crate::redact::Redactor;
+
 const HELD: usize = 64 * 1024;
 const CEILING: u64 = 256 * 1024 * 1024;
-/// The sweep deletes a kept spill after a week, and a `.part` file, whose writer died, after a day.
-const KEPT_FOR: Duration = Duration::from_secs(7 * 24 * 3600);
-const PART_FOR: Duration = Duration::from_secs(24 * 3600);
 
-/// Every byte a producer shows the model a cut of (D316): 64 KiB held, then a `.part` file 0600 in
-/// one session's 0700 dir under the swept root; kept as `<xxh3-128>.txt` by [`Spill::keep`].
+#[derive(Clone, Copy)]
+pub enum Stream {
+    Out,
+    Err,
+}
+
+/// Every byte a producer shows the model a cut of (D316), secrets redacted: 64 KiB held, then a
+/// `.part` file 0600 in a 0700 dir; kept as `<xxh3-128>.txt` by [`Spill::keep`].
 pub struct Spill {
     dir: Option<PathBuf>,
+    /// Invariant: one per stream, since a line stdout leaves open is not closed by stderr's.
+    redactors: Option<[Redactor; 2]>,
     held: Vec<u8>,
     part: Option<(PathBuf, File)>,
     hash: xxhash_rust::xxh3::Xxh3,
@@ -27,10 +28,14 @@ pub struct Spill {
 }
 
 impl Spill {
-    /// `None` keeps nothing.
+    /// `None` keeps nothing, and so does a redactor that cannot build.
     pub fn new(dir: Option<&Path>) -> Self {
+        let redactors = Redactor::new()
+            .zip(Redactor::new())
+            .map(<[Redactor; 2]>::from);
         Self {
-            dir: dir.map(Path::to_path_buf),
+            dir: dir.filter(|_| redactors.is_some()).map(Path::to_path_buf),
+            redactors,
             held: Vec::new(),
             part: None,
             hash: xxhash_rust::xxh3::Xxh3::new(),
@@ -40,8 +45,25 @@ impl Spill {
         }
     }
 
-    /// Stops at the ceiling; a failed write disables the spill, so `keep` names no partial file.
     pub fn write(&mut self, bytes: &[u8]) {
+        self.write_to(Stream::Out, bytes);
+    }
+
+    pub fn write_to(&mut self, stream: Stream, bytes: &[u8]) {
+        let (Some([out, err]), Some(_)) = (&mut self.redactors, &self.dir) else {
+            return;
+        };
+        let redactor = match stream {
+            Stream::Out => out,
+            Stream::Err => err,
+        };
+        let mut clean = Vec::with_capacity(bytes.len());
+        redactor.push(bytes, &mut clean);
+        self.store(&clean);
+    }
+
+    /// Stops at the ceiling; a failed write disables the spill, so `keep` names no partial file.
+    fn store(&mut self, bytes: &[u8]) {
         if self.dir.is_none() {
             return;
         }
@@ -79,12 +101,22 @@ impl Spill {
 
     /// The pointer to a file with every byte written, or `None` with no dir or a failed write.
     pub fn keep(&mut self) -> Option<String> {
+        let mut tail = Vec::new();
+        for redactor in self.redactors.take().into_iter().flatten() {
+            let mut open = Vec::new();
+            redactor.finish(&mut open);
+            // Invariant: each stream's open last line stays a line of its own.
+            if !tail.is_empty() && !open.is_empty() {
+                tail.push(b'\n');
+            }
+            tail.append(&mut open);
+        }
+        self.store(&tail);
         if self.part.is_none() && self.dir.is_some() {
             self.open_part().ok()?;
         }
         let dir = self.dir.take()?;
         let (part, file) = self.part.take()?;
-        sweep_hourly(dir.parent()?);
         let name = format!("{:032x}", self.hash.digest128());
         let path = dir.join(format!("{name}.txt"));
         // Invariant: a taken name is replaced only by equal bytes; a link there is never followed.
@@ -176,63 +208,9 @@ fn same_bytes(path: &Path, part: &File) -> bool {
     regular && compare().unwrap_or(false)
 }
 
-/// At most once an hour per process, so a long session's directory stays bounded too.
-fn sweep_hourly(dir: &Path) {
-    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
-    let Ok(mut last) = LAST.lock() else { return };
-    if last.is_some_and(|at| at.elapsed() < Duration::from_secs(3600)) {
-        return;
-    }
-    *last = Some(Instant::now());
-    drop(last);
-    sweep(dir);
-}
-
-/// Each session's dir under `root`, never through a link: spills older than a week, `.part`
-/// files older than a day, and a dir nothing entered for a week once that empties it.
-fn sweep(root: &Path) {
-    if !fs::symlink_metadata(root).is_ok_and(|meta| meta.is_dir()) {
-        return;
-    }
-    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let idle = older(entry.metadata(), KEPT_FOR);
-        sweep_files(&entry.path());
-        if idle {
-            let _written_again_or_not_empty = fs::remove_dir(entry.path());
-        }
-    }
-    let flat = root.with_file_name(FLAT_SPILLS);
-    if root.file_name().is_some_and(|name| name == SPILLS) && keep_private(&flat).is_ok() {
-        sweep_files(&flat);
-        let _still_holds_a_young_spill = fs::remove_dir(flat);
-    }
-}
-
-fn sweep_files(dir: &Path) {
-    for file in fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = file.path();
-        let age = match path.extension().and_then(|ext| ext.to_str()) {
-            Some("txt") => KEPT_FOR,
-            Some("part") => PART_FOR,
-            _ => continue,
-        };
-        if older(file.metadata(), age) {
-            let _raced_by_another_sweep = fs::remove_file(path);
-        }
-    }
-}
-
-fn older(meta: io::Result<fs::Metadata>, age: Duration) -> bool {
-    let modified = meta.and_then(|meta| meta.modified());
-    modified.is_ok_and(|at| at.elapsed().is_ok_and(|elapsed| elapsed > age))
-}
-
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{HELD, OpenOptions, Spill, fs, sweep};
+    use super::{HELD, Spill, fs};
     use crate::scratch::Scratch;
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -253,44 +231,33 @@ mod tests {
         Ok(())
     }
 
+    /// A key printed by a tool reaches every model that reads the kept file, so it is cut
+    /// before the file is written; one line per line, so `#L` pointers still land.
     #[test]
-    fn the_sweep_takes_old_spills_and_dead_parts_only() -> Fallible {
-        let root = Scratch::new("yi-spill-sweep")?;
-        let (live, idle) = (root.join("s1"), root.join("s2"));
-        fs::create_dir_all(&live)?;
-        fs::create_dir_all(&idle)?;
-        for name in ["old.txt", ".1-1.part", "fresh.txt", "keep.me"] {
-            fs::write(live.join(name), name)?;
-        }
-        for path in ["old.txt", ".1-1.part", "keep.me"].map(|name| live.join(name)) {
-            let file = OpenOptions::new().write(true).open(path)?;
-            file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
-        }
-        fs::File::open(&idle)?.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
-        std::os::unix::fs::symlink(&root, root.join("linked"))?;
-        sweep(&root.join("linked"));
+    fn a_kept_spill_holds_no_planted_secret_and_keeps_its_lines() -> Fallible {
+        let root = Scratch::new("yi-spill-redact")?;
+        // Assembled, so the public mirror's scan of the tree finds no key-shaped literal.
+        let token = format!("sk-{}-{}", "or-v1", "0123456789abcdef".repeat(2));
+        let fence = |end: &str| format!("-----{end} OPENSSH PRIVATE KEY-----");
+        let body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAE\nbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn";
+        let key = format!("{}\n{body}\n{}\n", fence("BEGIN"), fence("END"));
+        let source = format!("log line one\nexport OPENROUTER_API_KEY={token}\n{key}tail");
+        let mut spill = Spill::new(Some(&root));
+        let (head, rest) = source.split_at(30);
+        spill.write(head.as_bytes());
+        spill.write(rest.as_bytes());
+        let note = spill.keep().ok_or("not kept")?;
+        let path = (note.strip_prefix("[full output: "))
+            .and_then(|rest| rest.strip_suffix(']'))
+            .ok_or_else(|| note.clone())?;
+        let kept = fs::read_to_string(path)?;
+        assert!(!kept.contains("0123456789abcdef"), "{kept}");
+        assert!(!kept.contains("b3BlbnNzaC1rZXkt"), "{kept}");
+        assert_eq!(kept.lines().count(), source.lines().count(), "{kept}");
+        assert!(kept.starts_with("log line one\n"), "{kept}");
         assert!(
-            live.join("old.txt").exists(),
-            "the sweep went through a linked root"
-        );
-        let elsewhere = Scratch::new("yi-spill-sweep-elsewhere")?;
-        fs::write(elsewhere.join("old.txt"), "old")?;
-        let file = OpenOptions::new()
-            .write(true)
-            .open(elsewhere.join("old.txt"))?;
-        file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
-        std::os::unix::fs::symlink(&*elsewhere, root.join("s3"))?;
-        sweep(&root);
-        let mut left: Vec<String> = fs::read_dir(&live)?
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        left.sort();
-        assert_eq!(left, ["fresh.txt", "keep.me"]);
-        assert!(!idle.exists(), "an emptied dir idle for a week stays");
-        assert!(
-            elsewhere.join("old.txt").exists(),
-            "the sweep followed a linked session dir"
+            kept.ends_with("-----END OPENSSH PRIVATE KEY-----\ntail"),
+            "{kept}"
         );
         Ok(())
     }

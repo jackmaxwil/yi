@@ -311,8 +311,8 @@ pub struct ReadGate {
     /// The trees, the roots other users' homes sit under, and every directory above a store,
     /// each guarded as itself.
     ids: Vec<FileId>,
-    /// Paths no wall covers, with all under them: a session's own spills and transcript under
-    /// the roots its wall holds (D340, #971).
+    /// Paths no wall covers, with all under them: a session's family spills and own transcript
+    /// under the roots its wall holds (#971).
     spared: Vec<PathBuf>,
 }
 
