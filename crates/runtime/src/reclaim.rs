@@ -1,13 +1,13 @@
 //! Incident: replaying one Opus session, a watermark that cut old tool results every turn lost
 //! $316-466 in cache rewrites; a cut here is made only when the reads it saves pay for one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::entry::{CustomRecord, Entry};
 use yi_types::message::{AgentMessage, Content};
 use yi_types::model::{CACHE_DIAGNOSTIC, Model, Ttl};
-use yi_types::reclaim::{ReclaimRecord, Reclaimed};
+use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
 const KEEP_TURNS: u64 = 5;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
@@ -15,16 +15,21 @@ const MIN_DROPPED: u64 = 2_000;
 const MIN_RESULT_CHARS: usize = 1_200;
 const PLACEHOLDER_TOKENS: u64 = 40;
 /// Results that carry the user's own words or live plan state, which a cut would hide.
-const NEVER: [&str; 3] = ["ask_user", "plan", "todo"];
+pub(crate) const NEVER: [&str; 3] = ["ask_user", "plan", "todo"];
 const FIVE_MINUTES_MS: u64 = 5 * 60 * 1000;
 const HOUR_MS: u64 = 60 * 60 * 1000;
 
 type Args = serde_json::Map<String, serde_json::Value>;
 type Key = (String, String);
 
-/// Every result cut so far on this branch, by call id and text hash; a resume folds the same.
+/// Every result cut so far on this branch, by call id and text hash, and the model's pins and
+/// discards; a resume folds the same.
 #[derive(Default)]
-pub(crate) struct Cut(BTreeMap<Key, Mark>);
+pub(crate) struct Cut {
+    marks: BTreeMap<Key, Mark>,
+    pins: BTreeMap<Key, ()>,
+    discards: BTreeMap<Key, ()>,
+}
 
 struct Mark {
     entry: Option<String>,
@@ -34,17 +39,19 @@ struct Mark {
 impl Cut {
     pub(crate) fn fold(entries: &[Entry]) -> Self {
         let mut cut = Self::default();
-        let records = entries.iter().filter_map(|entry| match entry {
-            Entry::Custom {
+        for entry in entries {
+            if let Entry::Custom {
                 custom_type,
                 data: Some(data),
                 ..
-            } if custom_type == ReclaimRecord::TYPE => {
-                serde_json::from_value::<ReclaimRecord>(data.clone()).ok()
+            } = entry
+                && custom_type == ReclaimRecord::TYPE
+                && let Ok(record) = serde_json::from_value::<ReclaimRecord>(data.clone())
+            {
+                cut.add(&record);
             }
-            _ => None,
-        });
-        records.for_each(|record| cut.add(&record));
+        }
+        annotations(entries).for_each(|record| cut.note(&record));
         cut
     }
 
@@ -54,33 +61,53 @@ impl Cut {
                 entry: item.entry_id.clone(),
                 turn: record.turn,
             };
-            self.0
-                .insert((item.tool_call_id.clone(), item.hash.clone()), mark);
+            (self.marks).insert((item.tool_call_id.clone(), item.hash.clone()), mark);
+        }
+    }
+
+    pub(crate) fn note(&mut self, record: &AnnotationRecord) {
+        let Some(target) = &record.target else {
+            return;
+        };
+        let key = (target.tool_call_id.clone(), target.hash.clone());
+        // The model's last mark on a result wins: a discard lets go of an earlier pin.
+        match record.kind.as_str() {
+            "pin" => drop((self.discards.remove(&key), self.pins.insert(key, ()))),
+            "discard" => drop((self.pins.remove(&key), self.discards.insert(key, ()))),
+            _ => {}
         }
     }
 
     fn get(&self, message: &AgentMessage) -> Option<&Mark> {
-        let AgentMessage::ToolResult {
-            tool_call_id,
-            content,
-            ..
-        } = message
-        else {
-            return None;
-        };
-        // Hashing every stored result on every request is the cost; probe the id first.
-        let start = (tool_call_id.clone(), String::new());
-        let mut same = self
-            .0
-            .range(start..)
-            .take_while(|((id, _), _)| id == tool_call_id);
-        let first = same.next()?;
-        let text = hash(content);
-        std::iter::once(first)
-            .chain(same)
-            .find(|((_, at), _)| *at == text)
-            .map(|(_, mark)| mark)
+        find(&self.marks, message)
     }
+
+    pub(crate) fn cut_at(&self, message: &AgentMessage) -> Option<u64> {
+        self.get(message).map(|mark| mark.turn)
+    }
+}
+
+/// A message's entry in `map`; hashing every stored result on every request is the cost, so
+/// the call id is probed first.
+fn find<'a, V>(map: &'a BTreeMap<Key, V>, message: &AgentMessage) -> Option<&'a V> {
+    let AgentMessage::ToolResult {
+        tool_call_id,
+        content,
+        ..
+    } = message
+    else {
+        return None;
+    };
+    let start = (tool_call_id.clone(), String::new());
+    let mut same = map
+        .range(start..)
+        .take_while(|((id, _), _)| id == tool_call_id);
+    let first = same.next()?;
+    let text = hash(content);
+    std::iter::once(first)
+        .chain(same)
+        .find(|((_, at), _)| *at == text)
+        .map(|(_, value)| value)
 }
 
 type StoreFn = dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync;
@@ -158,18 +185,20 @@ fn chars(content: &[Content]) -> usize {
     texts(content).map(|text| text.chars().count()).sum()
 }
 
-fn hash(content: &[Content]) -> String {
-    let text: String = texts(content).collect();
+pub(crate) fn hash(content: &[Content]) -> String {
+    let text = yi_types::message::join_text(content, "");
     crate::ext::content_hash(&text).chars().take(16).collect()
 }
 
 /// The call each tool result answers, by index: looked up in the nearest assistant message
 /// before it, since a call id repeats across messages.
-fn calls(messages: &[AgentMessage]) -> Vec<Option<(&str, &Args)>> {
+pub(crate) fn calls<M: std::borrow::Borrow<AgentMessage>>(
+    messages: &[M],
+) -> Vec<Option<(&str, &Args)>> {
     let mut asked: Vec<(&str, &str, &Args)> = Vec::new();
     messages
         .iter()
-        .map(|message| match message {
+        .map(|message| match message.borrow() {
             AgentMessage::Assistant { content, .. } => {
                 asked = content
                     .iter()
@@ -197,6 +226,56 @@ fn path_of(arguments: &Args) -> Option<&str> {
     arguments.get("path").and_then(serde_json::Value::as_str)
 }
 
+/// Every annotation on the branch, in the order the model wrote them.
+pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationRecord> + '_ {
+    entries.iter().filter_map(|entry| match entry {
+        Entry::Custom {
+            custom_type,
+            data: Some(data),
+            ..
+        } if custom_type == AnnotationRecord::TYPE => serde_json::from_value(data.clone()).ok(),
+        _ => None,
+    })
+}
+
+/// The results that are the newest read of their path, by index: an edit needs their tags.
+pub(crate) fn newest_reads(calls: &[Option<(&str, &Args)>]) -> BTreeSet<usize> {
+    let mut latest = BTreeMap::new();
+    for (index, call) in calls.iter().enumerate() {
+        if let Some(path) = call
+            .filter(|(name, _)| *name == "read")
+            .and_then(|(_, args)| path_of(args))
+        {
+            latest.insert(path, index);
+        }
+    }
+    latest.into_values().collect()
+}
+
+/// Why no cut ever takes this result, whatever its age or the model's discard.
+pub(crate) fn never_cut(message: &AgentMessage, newest_read: bool) -> Option<&'static str> {
+    let AgentMessage::ToolResult {
+        tool_name, content, ..
+    } = message
+    else {
+        return Some("it is not a tool result");
+    };
+    if NEVER.contains(&tool_name.as_str()) {
+        Some(
+            "plan, todo and ask_user results carry live state or the user's words and are never cut",
+        )
+    } else if !content
+        .iter()
+        .all(|part| matches!(part, Content::Text { .. }))
+    {
+        Some("a result with an image is never cut, since its placeholder could not say so")
+    } else if newest_read {
+        Some("the newest read of a file is never cut, since an edit needs its line tags")
+    } else {
+        None
+    }
+}
+
 /// A new cut, when one pays; pure over the messages, the cut so far, the prices and the clock.
 pub(crate) fn decide(
     messages: &[AgentMessage],
@@ -205,46 +284,31 @@ pub(crate) fn decide(
     now: u64,
 ) -> Option<ReclaimRecord> {
     let calls = calls(messages);
-    let mut latest_read = BTreeMap::new();
+    let newest = newest_reads(&calls);
     let (mut turn, mut turns) = (0_u64, Vec::with_capacity(messages.len()));
-    for (index, message) in messages.iter().enumerate() {
+    for message in messages {
         if matches!(message, AgentMessage::Assistant { .. }) {
             turn = turn.saturating_add(1);
-        }
-        let read = calls
-            .get(index)
-            .copied()
-            .flatten()
-            .filter(|(name, _)| *name == "read");
-        if let Some(path) = read.and_then(|(_, args)| path_of(args)) {
-            latest_read.insert(path, index);
         }
         turns.push(turn);
     }
     let eligible = |index: usize| -> bool {
-        let message = messages.get(index);
-        let Some(AgentMessage::ToolResult {
-            tool_name, content, ..
-        }) = message
-        else {
+        let Some(message) = messages.get(index) else {
             return false;
         };
-        let read = calls
-            .get(index)
-            .copied()
-            .flatten()
-            .and_then(|(_, args)| path_of(args));
-        let newest_read =
-            tool_name == "read" && read.and_then(|path| latest_read.get(path)) == Some(&index);
+        let AgentMessage::ToolResult { content, .. } = message else {
+            return false;
+        };
         let aged = turns
             .get(index)
             .is_some_and(|at| turn.saturating_sub(*at) >= KEEP_TURNS);
-        let text_only = content
-            .iter()
-            .all(|part| matches!(part, Content::Text { .. }));
-        let kept = NEVER.contains(&tool_name.as_str())
-            || message.and_then(|message| cut.get(message)).is_some();
-        aged && text_only && !kept && !newest_read && chars(content) >= MIN_RESULT_CHARS
+        let marked = |map| find(map, message).is_some();
+        let kept = never_cut(message, newest.contains(&index)).is_some()
+            || cut.get(message).is_some()
+            || marked(&cut.pins);
+        // The model's discard waives the age and size floors, never the rest.
+        let floors = (aged && chars(content) >= MIN_RESULT_CHARS) || marked(&cut.discards);
+        floors && !kept
     };
     // A result already cut costs its placeholder, so a new cut's rewrite is the view's own size.
     let sizes: Vec<u64> = (messages.iter())
@@ -351,7 +415,7 @@ fn reason(
 /// Every cut result as its placeholder: kept nothing of how much, the rule, and the read
 /// that restores it, all from the stored result, so the line is the same on every request.
 pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMessage> {
-    if cut.0.is_empty() {
+    if cut.marks.is_empty() {
         return messages;
     }
     let briefs: Vec<Option<String>> = (calls(&messages).into_iter())
@@ -361,6 +425,13 @@ pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMess
         let Some(mark) = cut.get(message) else {
             continue;
         };
+        // A discard is refused once its result is cut, so this reads the same on every request.
+        let rule = match find(&cut.discards, message) {
+            Some(()) => "you discarded it".to_owned(),
+            None => format!(
+                "results older than {KEEP_TURNS} requests are cut once dropping them costs less than resending them"
+            ),
+        };
         if let AgentMessage::ToolResult { content, .. } = message {
             let call = call.as_deref().unwrap_or("a tool call");
             let restore = match &mark.entry {
@@ -368,7 +439,7 @@ pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMess
                 None => "it is not in this session's store".to_owned(),
             };
             let text = format!(
-                "[reclaimed: {call} → none of {} chars kept; results older than {KEEP_TURNS} requests are cut once dropping them costs less than resending them (cut at request {}); {restore}]",
+                "[reclaimed: {call} → none of {} chars kept; {rule} (cut at request {}); {restore}]",
                 chars(content),
                 mark.turn,
             );
@@ -381,7 +452,7 @@ pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMess
     messages
 }
 
-fn brief(name: &str, args: &Args) -> String {
+pub(crate) fn brief(name: &str, args: &Args) -> String {
     let field = ["path", "command", "pattern", "url"]
         .iter()
         .find_map(|key| args.get(*key).and_then(serde_json::Value::as_str));
@@ -402,7 +473,7 @@ mod tests {
     use yi_types::entry::{CustomRecord, Entry};
     use yi_types::message::{AgentMessage, Content, UserContent};
     use yi_types::model::Model;
-    use yi_types::reclaim::ReclaimRecord;
+    use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -664,6 +735,74 @@ mod tests {
                 .iter()
                 .any(|item| item.tool_call_id == "call-0"),
             "{record:?}"
+        );
+        Ok(())
+    }
+
+    /// Stage 4: the model's pin keeps a result the price rule would cut, its discard cuts one too
+    /// young and short for the floors, and a later discard lets go of a pin.
+    #[test]
+    fn a_pin_keeps_an_old_result_and_a_discard_takes_a_young_one() -> Fallible {
+        let mut messages = bash_session(30);
+        messages.push(assistant(
+            &[("young".to_owned(), "bash", json!({"command": "ls"}))],
+            60_000 * 29,
+        ));
+        messages.push(result("young", "bash", 400));
+        let note = |kind: &str, id: &str, chars: usize| AnnotationRecord {
+            kind: kind.to_owned(),
+            target: Some(Reclaimed {
+                tool_call_id: id.to_owned(),
+                hash: super::hash(&[Content::Text {
+                    text: "build output line\n".repeat(chars / 18),
+                    text_signature: None,
+                }]),
+                entry_id: None,
+            }),
+            call: None,
+            note: None,
+            extra: serde_json::Map::new(),
+        };
+        // Through the ledger, as a resume folds it; the last mark on `call-1` lets go of its pin.
+        let marks = [
+            ("pin", "call-0", 10_000),
+            ("discard", "young", 400),
+            ("pin", "call-1", 10_000),
+            ("discard", "call-1", 10_000),
+        ];
+        let entries: Vec<Entry> = (marks.iter().enumerate())
+            .map(|(seq, (kind, id, chars))| {
+                Ok(Entry::Custom {
+                    id: format!("a{seq}"),
+                    custom_type: AnnotationRecord::TYPE.to_owned(),
+                    data: Some(serde_json::to_value(note(kind, id, *chars))?),
+                    parent_id: None,
+                    seq: seq as u64,
+                    timestamp: 0,
+                })
+            })
+            .collect::<Result<_, serde_json::Error>>()?;
+        let mut cut = Cut::fold(&entries);
+        let record = decide(&messages, &cut, &opus()?, 60_000 * 29 + 1_000).ok_or("no cut")?;
+        let ids: Vec<&str> = record
+            .items
+            .iter()
+            .map(|item| item.tool_call_id.as_str())
+            .collect();
+        assert!(
+            !ids.contains(&"call-0") && ids.contains(&"call-1"),
+            "{ids:?}"
+        );
+        assert!(ids.contains(&"young"), "{ids:?}");
+        cut.add(&record);
+        let shown = apply(messages, &cut);
+        let young = shown
+            .last()
+            .map(AgentMessage::plain_text)
+            .unwrap_or_default();
+        assert!(
+            young.contains("; you discarded it (cut at request 31)"),
+            "{young}"
         );
         Ok(())
     }

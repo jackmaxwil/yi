@@ -668,10 +668,15 @@ impl Compactor {
                 .ok(),
             None => Some(synthesize_entries(messages)),
         };
+        let findings = entries
+            .as_deref()
+            .map(crate::annotate::findings)
+            .unwrap_or_default();
         let prepared = entries.and_then(|entries| prepare_compaction(&entries, &self.settings));
-        let Some(prepared) = prepared else {
+        let Some(mut prepared) = prepared else {
             return Ok(None);
         };
+        prepared.view.findings = findings;
         let inputs = store.and_then(|store| crate::fetch::user_inputs(store).ok());
         let summarizer = self.summarizer.as_ref().unwrap_or(model);
         let warm = summarizer == model;

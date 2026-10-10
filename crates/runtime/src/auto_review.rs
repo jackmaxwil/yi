@@ -287,7 +287,11 @@ pub fn wire_role(
     parent: Option<crate::mailbox::ParentLink>,
 ) {
     let (Some(model), Some(broker)) = (role, broker) else {
-        tools.push(Arc::new(AskUserTool::new(None).asking(parent)));
+        // Demoted for annotations (one in, one out): with no reviewer it serves only a child,
+        // whose parent answers; a root asks in its reply, which ends the turn the same way.
+        if parent.is_some() {
+            tools.push(Arc::new(AskUserTool::new(None).asking(parent)));
+        }
         return;
     };
     broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(provider), model)));

@@ -970,6 +970,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let mut tools = (wiring.tools)();
     crate::fetch::route_urls(&mut tools, &resolver);
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
+    let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
+    tools.push(Arc::new(annotate));
     crate::auto_review::wire(session, &wiring, &mut tools);
     if let Some(broker) = &wiring.broker {
         broker.set_journal(journal_into(session.store_handle()));

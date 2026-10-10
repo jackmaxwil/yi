@@ -414,6 +414,10 @@ impl AgentSession {
         }
     }
 
+    pub(crate) fn reclaimed(&self) -> Arc<Mutex<crate::reclaim::Cut>> {
+        Arc::clone(&self.shared.reclaimed)
+    }
+
     /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.
     pub fn set_spills(&self, dir: std::path::PathBuf) {
         if let Ok(mut slot) = self.spills.lock() {
