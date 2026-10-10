@@ -188,6 +188,12 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   undated `unproven`), every `custom` kind and both summaries arrive as
   `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
+- Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
+  at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
+  `read` of a path) is cut once the tokens dropped × cache-read price × requests so far beat the
+  tokens after the first cut × (write − read price), or the cache lapsed; at least 2,000 tokens.
+  A `custom{reclaim}` entry names the cut results, which render from then on as one
+  `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
   16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338), or
   would pass `compaction.at` tokens when that comes first (a root session's ceiling, raised with a
@@ -273,7 +279,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
-  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
+  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
   With `models.classifier` set, a local sidecar is also asked which triggered skill the message
   calls for (`classify` entry); it points only at or above `classifier.threshold`.
@@ -307,6 +313,11 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `plan`, `todo`, `ask_user`. `check_request_budget.py` prices system block plus tool
   table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
+- Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
+  never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
+  (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
+  the whole guide; `read`, `grep`, `bash`, `write`, `get_context` and `ipython` stay whole. An
+  edit refusal names the address. There is no dispatcher tool.
 - `Tool { name, description, schema, kind, kind_for, freeform, irreversible, validate, preview,
   execute -> ToolOutput }`. `kind_for` decides per call; Read runs parallel, the rest sequential.
   The adapter runs rule check, reviewer wall, permission gate (§8), next-step lines (§6).
@@ -328,8 +339,9 @@ The interpreter is `bash` if `command -v bash` succeeds, else `sh`, probed once.
 default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = exit ≠ 0 or
 cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
 past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines; else head 80/tail 40), kept
-only if shorter. Lossy output is tee'd to `~/.yi/spills/<session>/` and ends
-`[full output: <path>]`; with nowhere to tee, raw text returns. A contained call runs under
+only if shorter. Lossy output is tee'd, secrets redacted line for line, to the family board's
+`spills/`, kept until `yi sessions rm`, and ends `[full output: <path>]`; with nowhere to tee,
+raw text returns. A contained call runs under
 Seatbelt (§8).
 
 - Owner: [`jobs.rs`](../crates/tools/src/jobs.rs), [`reduce.rs`](../crates/tools/src/reduce.rs).
@@ -382,8 +394,9 @@ preview) or `yi gc --fix`, one `kept of found, removed, trimmed` line per store.
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
 `<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
 `~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
-child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
-`trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
+child's lists none of those. Frontmatter at discovery; the catalog clips each description at 60 chars and the
+whole skill is `read("yi://skills/<name>")`; `$name` or a `trigger:` needle in a message the
+user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
@@ -509,6 +522,7 @@ A persistent IPython process per session that reaches the host only through host
 | `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session id of any lane of this repository resolves too |
 | `checkpoint` / `mcp` | `<tree>/<path>` / `<server>/<uri>` | a checkpoint-tree file (§7.7) / an MCP resource (§7.6) |
 | `family` / `tree` | `<name>` / `<agent>/<path>` | a blackboard sidecar / a member's checkout file, under `deny_read` |
+| `yi` | `tools/<name>` / `skills/<name>` | a deferred tool guide (§7.1) / a skill's `SKILL.md` (§7.8), under `deny_read` |
 
 - Owner: [`runtime/src/fetch/mod.rs`](../crates/runtime/src/fetch/mod.rs),
   [`runtime/src/fetch/schemes.rs`](../crates/runtime/src/fetch/schemes.rs)
@@ -562,8 +576,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
-  A walled session also walls the spill root and every session store and spares its own spill
-  dir and transcript, at the read gate and in its contained profile (D340, D345).
+  A walled session also walls the old spill root and every session store and spares its
+  family's spill dir and its own transcript, at the read gate and in its contained profile (D345).
 - A lease is drawn under the roster lock; an ask past the parent's deadline less 30 s or its
   unreserved tokens is refused with both numbers. `rlm.revoke` journals `custom{lease}` and
   sends `cancel`; at grace expiry the child is `Repossessed` with its lane `Retained`.
