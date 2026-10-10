@@ -36,7 +36,7 @@ fn run() -> i32 {
 }
 
 fn installed() -> Result<String, String> {
-    let home = absolute_home()?;
+    let home = crate::absolute_home()?;
     let prefix = prefix_dir(&home)?;
     let exe = std::env::current_exe().map_err(|error| format!("current exe: {error}"))?;
     apply(Apply {
@@ -111,19 +111,6 @@ where
         release.version,
         prefix.display()
     ))
-}
-
-fn absolute_home() -> Result<PathBuf, String> {
-    let home = PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
-    );
-    if !home.is_absolute() {
-        return Err(format!(
-            "HOME is relative ({}); yi needs an absolute HOME",
-            home.display()
-        ));
-    }
-    Ok(home)
 }
 
 fn prefix_dir(home: &Path) -> Result<PathBuf, String> {

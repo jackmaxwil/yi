@@ -1114,8 +1114,8 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
     Ok(())
 }
 
-/// `yi plugin` writes under HOME like every other surface, so an unset one is refused
-/// before a verb downloads or deletes into the working directory.
+/// `yi plugin` writes under HOME like every other surface, so an unset or relative one
+/// is refused before a verb downloads or deletes into the working directory.
 #[test]
 fn a_homeless_plugin_verb_is_refused_and_writes_nothing_here() -> TestResult {
     let workspace = Workspace::new("plugin-unset-home")?;
@@ -1136,6 +1136,11 @@ fn a_homeless_plugin_verb_is_refused_and_writes_nothing_here() -> TestResult {
     assert!(!workspace.project().join(".yi").exists(), "{complaint}");
     assert_eq!(refused.status.code(), Some(2), "{complaint}");
     assert!(complaint.contains("HOME is not set"), "{complaint}");
+    let relative = workspace.yi_env(&["plugin", "add", "ripwire"], &[("HOME", "../elsewhere")])?;
+    let complaint = String::from_utf8_lossy(&relative.stderr);
+    assert_eq!(relative.status.code(), Some(2), "{complaint}");
+    assert!(complaint.contains("HOME is relative"), "{complaint}");
+    assert!(!workspace.project().join(".yi").exists(), "{complaint}");
     Ok(())
 }
 
