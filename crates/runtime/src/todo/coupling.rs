@@ -415,7 +415,7 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     let moves = open_moves(list);
     match rung {
         1 => format!(
-            "The turn ended with open todos. Continue the running item, or move each open item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason. Do not restate your answer.\n{moves}"
+            "The turn ended with open todos. Continue the running item, or move each open item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason. If you are waiting on the user, `block` the item on user and ask in the same message. Do not restate your answer.\n{moves}"
         ),
         2 => format!(
             "No todo moved since the last stop. A clean stop needs every open item done, blocked on someone else with the blocker named, or dropped with a reason. If you are waiting on the user, `block` the item on user and ask in the same message.\n{moves}"
