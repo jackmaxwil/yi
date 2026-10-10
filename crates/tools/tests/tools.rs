@@ -3505,3 +3505,176 @@ fn bash_inherits_no_provider_key() -> TestResult {
     );
     Ok(())
 }
+
+/// Every line the reducer shows that is not one of its own `[…]` rows, verbatim from `source`.
+fn shown_verbatim(reduced: &str, source: &str) -> Result<(), String> {
+    let lines: std::collections::HashSet<&str> = source.lines().map(str::trim_end).collect();
+    // The reducer's own count of a repeated line rides on its first occurrence: ` [×N]`.
+    let unmarked = |line: &str| -> String {
+        match line.rsplit_once(" [×") {
+            Some((text, count)) if count.trim_end_matches(']').parse::<usize>().is_ok() => {
+                text.to_owned()
+            }
+            _ => line.trim_end().to_owned(),
+        }
+    };
+    let invented: Vec<&str> = (reduced.lines())
+        .filter(|line| !line.starts_with('[') && !line.trim().is_empty())
+        .filter(|line| !lines.contains(unmarked(line).as_str()))
+        .collect();
+    match invented.as_slice() {
+        [] => Ok(()),
+        _ => Err(format!("lines not in the source: {invented:?}")),
+    }
+}
+
+/// Stage 7: pytest -v ends every line `[ 54%]`, which read as a progress bar, so each line
+/// overwrote the one before and the FAILED line at 223 of 419 never reached the model.
+#[test]
+fn a_pytest_failure_amid_passes_survives_and_the_passes_are_counted() -> TestResult {
+    let dir = temp_dir("reduce-pytest")?;
+    let raw = fs::read_to_string(reduce_fixture("pytest-verbose-one-failure.txt"))?;
+    // `-v` on the command line asks for every line; here it came from the project's addopts.
+    let reduced = yi_tools::reduce("python -m pytest", &raw, "", 1, None, Some(&dir), None);
+    let text = &reduced.text;
+    assert!(
+        text.contains("test_ledger.py::test_case_217 FAILED"),
+        "{text}"
+    );
+    assert!(
+        text.contains("E       AssertionError: ledger total drifted"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[217 passing tests omitted: 6-222]"),
+        "{text}"
+    );
+    assert!(
+        reduced.out_bytes * 4 < reduced.raw_bytes,
+        "{} of {}",
+        reduced.out_bytes,
+        reduced.raw_bytes
+    );
+    shown_verbatim(text, &raw)?;
+    Ok(())
+}
+
+#[test]
+fn a_cargo_test_failure_keeps_its_line_its_panic_and_its_summary() -> TestResult {
+    let dir = temp_dir("reduce-cargo-test")?;
+    let raw = fs::read_to_string(reduce_fixture("cargo-test-one-failure.txt"))?;
+    let reduced = yi_tools::reduce("cargo test", &raw, "", 101, None, Some(&dir), None);
+    let text = &reduced.text;
+    for kept in [
+        "test tests::ledger_case_151 ... FAILED",
+        "panicked at src/lib.rs:308:9:",
+        "test result: FAILED. 299 passed; 1 failed;",
+    ] {
+        assert!(text.contains(kept), "{kept}: {text}");
+    }
+    assert!(text.contains(" passing tests omitted: "), "{text}");
+    shown_verbatim(text, &raw)?;
+    Ok(())
+}
+
+/// A syntax error at line 814 of a 1,506-line log: the head and tail alone dropped it; the
+/// rows that skip around it name the exact lines of the file they skip.
+#[test]
+fn an_error_in_the_middle_of_a_long_log_is_kept_with_its_context() -> TestResult {
+    let dir = temp_dir("reduce-compileall")?;
+    let raw = fs::read_to_string(reduce_fixture("compileall-one-syntax-error.txt"))?;
+    let reduced = yi_tools::reduce(
+        "python3 -m compileall -f pkg",
+        &raw,
+        "",
+        1,
+        None,
+        Some(&dir),
+        None,
+    );
+    let text = &reduced.text;
+    assert!(text.contains("SyntaxError: invalid syntax"), "{text}");
+    assert!(
+        text.contains("***   File \"pkg/module_0811.py\", line 1"),
+        "{text}"
+    );
+    let source: Vec<&str> = raw.lines().collect();
+    let shown: Vec<&str> = text.lines().collect();
+    for (at, line) in shown.iter().enumerate() {
+        let Some(range) = line
+            .split_once(" lines omitted: ")
+            .and_then(|(_, rest)| rest.strip_suffix(']'))
+        else {
+            continue;
+        };
+        let (from, to) = range.split_once('-').ok_or("no range")?;
+        let (from, to): (usize, usize) = (from.parse()?, to.parse()?);
+        let before = at
+            .checked_sub(1)
+            .and_then(|index| shown.get(index))
+            .ok_or("no line before")?;
+        assert_eq!(source.get(from - 2), Some(before), "the row before {line}");
+        if let Some(after) = shown.get(at + 1).filter(|after| !after.starts_with('[')) {
+            assert_eq!(source.get(to), Some(after), "the row after {line}");
+        }
+    }
+    shown_verbatim(text, &raw)?;
+    Ok(())
+}
+
+/// One busy file once filled grep's head; at most three matches a file now show, and the rest
+/// is a row naming the file, the count and the lines.
+#[test]
+fn grep_shows_at_most_three_matches_a_file_and_names_the_rest() -> TestResult {
+    let dir = temp_dir("reduce-rg")?;
+    let raw = fs::read_to_string(reduce_fixture("rg-many-files.txt"))?;
+    let reduced = yi_tools::reduce(
+        "rg -n unwrap_or_default crates",
+        &raw,
+        "",
+        0,
+        None,
+        Some(&dir),
+        None,
+    );
+    let text = &reduced.text;
+    let mut per_file: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for line in text.lines().filter(|line| !line.starts_with('[')) {
+        if let Some((path, _)) = line.split_once(':') {
+            *per_file.entry(path).or_default() += 1;
+        }
+    }
+    assert!(per_file.values().all(|count| *count <= 3), "{per_file:?}");
+    let more = text
+        .lines()
+        .find(|line| line.starts_with("[+") && line.contains("(GREP_PER_FILE 3): lines "));
+    assert!(more.is_some(), "{text}");
+    shown_verbatim(text, &raw)?;
+    Ok(())
+}
+
+/// The cap on lines kept from the middle, tripped: the row names what it kept of how many,
+/// the cap, and that the rest is in the full output; at the cap nothing is said.
+#[test]
+fn the_middle_signal_cap_names_itself_only_when_it_cuts() -> TestResult {
+    let dir = temp_dir("reduce-signal-cap")?;
+    // A run of error lines in the middle keeps itself and three lines either side: 54 + 6 = 60.
+    let log = |errors: usize| {
+        let mut lines: Vec<String> = (0..1200).map(|n| format!("step {n:04} done")).collect();
+        for n in 0..errors {
+            lines.insert(600 + n, format!("error: probe {n} broke"));
+        }
+        lines.join("\n")
+    };
+    let at_cap = yi_tools::reduce("make", &log(54), "", 2, None, Some(&dir), None);
+    assert!(!at_cap.text.contains("SIGNAL_ROWS"), "{}", at_cap.text);
+    assert!(
+        at_cap.text.contains("error: probe 53 broke"),
+        "{}",
+        at_cap.text
+    );
+    let over = yi_tools::reduce("make", &log(55), "", 2, None, Some(&dir), None);
+    let row = "[60 lines around errors and failures kept of 61 (SIGNAL_ROWS 60);";
+    assert!(over.text.contains(row), "{}", over.text);
+    Ok(())
+}
