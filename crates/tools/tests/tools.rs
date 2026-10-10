@@ -3730,7 +3730,7 @@ fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
     let mut lines: Vec<String> = (0..300)
         .map(|n| format!("   Compiling crate-{n:03} v0.1.0"))
         .collect();
-    lines.extend((0..300).map(|n| format!("test tests::case_{n:03} ... ok")));
+    lines.extend((0..300).map(|n| format!("test tests::error_case_{n:03} ... ok")));
     // Two lines between the passes and the failure put the counted row at the gap's edge.
     lines.extend([
         "   Doc-tests skipped".to_owned(),
@@ -3741,6 +3741,13 @@ fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
     lines.push("stage alpha PASSED, stage beta FAILED".to_owned());
     let raw = lines.join("\n");
     let reduced = yi_tools::reduce("cargo test", &raw, "", 101, None, Some(&dir), None);
+    assert!(
+        reduced
+            .text
+            .contains("[300 passing tests omitted: 301-600]"),
+        "{}",
+        reduced.text
+    );
     assert!(
         reduced.text.contains("test tests::case_300 ... FAILED"),
         "{}",
@@ -3771,7 +3778,13 @@ fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
     assert_eq!(gaps, 1, "grep kept middle rows: {}", grepped.text);
     // One file's matches name no file, so they are not grouped as one.
     let one: Vec<String> = (0..400)
-        .map(|n| format!("2026-10-10T11:{:02}:00Z ERROR probe {n}", n % 60))
+        .map(|n| {
+            format!(
+                "2026-10-10T{:02}:{:02}:00Z ERROR probe {n}",
+                11 + n / 200,
+                n % 60
+            )
+        })
         .collect();
     let single = yi_tools::reduce(
         "grep ERROR app.log",
