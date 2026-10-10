@@ -1,6 +1,7 @@
 //! Stage 9 line selection: after the reducer cut a bash output, a cheap model names the line
 //! ranges of the full output that explain it, and those lines ride verbatim after the cut.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use crate::provider::ProviderStream;
 /// A selector slower than this costs the turn more than its lines are worth.
 const DEADLINE: Duration = Duration::from_secs(5);
 const LINES_IN: usize = 4_000;
+const BYTES_IN: usize = 256 * 1024;
 const LINES_OUT: usize = 200;
 
 pub struct Selector {
@@ -37,14 +39,14 @@ fn schema() -> serde_json::Value {
     })
 }
 
-/// The model's 1-based inclusive ranges over `lines`, those in bounds only, at most
-/// [`LINES_OUT`] lines in all; the reason when it gave none.
+/// The model's 1-based inclusive ranges over `lines` with the lines it asked for in all; the
+/// reason when it gave none.
 pub async fn select_ranges(
     selector: &Selector,
     command: &str,
     exit: Option<i64>,
     lines: &[&str],
-) -> (Result<Vec<(usize, usize)>, String>, Usage) {
+) -> (Result<(Vec<(usize, usize)>, usize), String>, Usage) {
     let numbered: Vec<String> = (lines.iter().enumerate())
         .map(|(at, line)| format!("{}| {line}", at + 1))
         .collect();
@@ -79,8 +81,13 @@ pub async fn select_ranges(
     let (reply, usage) = match tokio::time::timeout(DEADLINE, call).await {
         Ok(answered) => answered,
         Err(_) => {
+            // The stream's thread runs on unless told; a late answer is a bill for nothing.
+            signal.cut();
             return (
-                Err(format!("no answer in {} s", DEADLINE.as_secs())),
+                Err(format!(
+                    "no answer in {} s; its cost is not known",
+                    DEADLINE.as_secs()
+                )),
                 Usage::zero(),
             );
         }
@@ -89,13 +96,12 @@ pub async fn select_ranges(
     (ranges, usage)
 }
 
-fn parse(text: &str, total: usize) -> Result<Vec<(usize, usize)>, String> {
+/// The ranges inside the output, merged where they overlap, and the lines they asked for in
+/// all; at most [`LINES_OUT`] lines are kept.
+fn parse(text: &str, total: usize) -> Result<(Vec<(usize, usize)>, usize), String> {
     let value: serde_json::Value =
         serde_json::from_str(text.trim()).map_err(|error| format!("not JSON: {error}"))?;
-    let pairs = value
-        .get("ranges")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("no `ranges`")?;
+    let pairs = (value.get("ranges").and_then(serde_json::Value::as_array)).ok_or("no `ranges`")?;
     let mut ranges: Vec<(usize, usize)> = pairs
         .iter()
         .filter_map(|pair| {
@@ -105,9 +111,20 @@ fn parse(text: &str, total: usize) -> Result<Vec<(usize, usize)>, String> {
         .filter(|(from, to)| (1..=*to).contains(from) && *to <= total)
         .collect();
     ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (from, to) in ranges {
+        match merged.last_mut() {
+            Some((_, end)) if from <= end.saturating_add(1) => *end = (*end).max(to),
+            _ => merged.push((from, to)),
+        }
+    }
+    let asked = merged
+        .iter()
+        .map(|(from, to)| to.saturating_add(1).saturating_sub(*from))
+        .sum();
     let mut kept = Vec::new();
     let mut budget = LINES_OUT;
-    for (from, to) in ranges {
+    for (from, to) in merged {
         let to = to.min(from.saturating_add(budget).saturating_sub(1));
         if budget == 0 || to < from {
             break;
@@ -117,48 +134,82 @@ fn parse(text: &str, total: usize) -> Result<Vec<(usize, usize)>, String> {
     }
     match kept.is_empty() {
         true => Err("no range inside the output".to_owned()),
-        false => Ok(kept),
+        false => Ok((kept, asked)),
     }
 }
 
-/// The full output a cut result points at, when the reducer or the capture cut it.
-fn full_output(text: &str) -> Option<&str> {
-    let cut = text.contains(" lines omitted: ") || text.contains("[capture cut: ");
+/// The spill a result points at, when the tool itself says it cut the output and the pointer
+/// lies in this session's spill dir: output can print a pointer of its own to any file.
+fn full_output(result: &ToolResult, spills: &Path) -> Option<PathBuf> {
+    let details = &result.details;
+    let count = |key: &str| details.get(key).and_then(serde_json::Value::as_u64);
+    let truncated = details
+        .get("truncated")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let reduced =
+        matches!((count("outBytes"), count("rawBytes")), (Some(out), Some(raw)) if out < raw);
+    let text = yi_types::message::join_text(&result.content, "\n");
     let pointer = text
         .lines()
         .rev()
         .find_map(|line| line.strip_prefix("[full output")?.strip_suffix(']'));
-    pointer
-        .and_then(|rest| rest.split_once(": "))
-        .map(|(_, path)| path)
-        .filter(|_| cut)
+    let path = PathBuf::from(pointer?.split_once(": ")?.1);
+    let inside = |path: &Path| std::fs::canonicalize(path).ok();
+    let within = inside(&path)
+        .zip(inside(spills))
+        .is_some_and(|(file, dir)| file.starts_with(dir));
+    ((truncated || reduced) && within).then_some(path)
 }
 
-/// The selected lines of a cut bash result's full output, appended under a row naming the model
-/// and the ranges; a selector that gives none says why, and the cut stands alone.
+/// At most [`LINES_IN`] lines and [`BYTES_IN`] bytes of `path`, or why the selector skips it.
+fn read_bounded(path: &Path) -> Result<Vec<String>, String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("cannot read the full output: {error}"))?;
+    let mut lines = Vec::new();
+    let mut bytes = 0_usize;
+    for line in std::io::BufReader::new(file).split(b'\n') {
+        let line = line.map_err(|error| format!("cannot read the full output: {error}"))?;
+        bytes = bytes.saturating_add(line.len()).saturating_add(1);
+        if lines.len() >= LINES_IN || bytes > BYTES_IN {
+            return Err(format!(
+                "the full output is past LINES_IN {LINES_IN} lines or BYTES_IN {BYTES_IN} bytes"
+            ));
+        }
+        lines.push(String::from_utf8_lossy(&line).into_owned());
+    }
+    Ok(lines)
+}
+
+/// The selected lines of a cut bash result's full output, each with its line number, appended
+/// under a row naming the model; a selector that gives none says why, and the cut stands alone.
 pub(crate) async fn widen(
     selector: &Selector,
     store: Option<yi_session::SharedSession>,
+    spills: &Path,
     command: &str,
     result: &mut ToolResult,
 ) {
-    let text = yi_types::message::join_text(&result.content, "\n");
-    let Some(path) = full_output(&text) else {
+    let cancelled = result
+        .details
+        .get("cancelled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let Some(path) = full_output(result, spills).filter(|_| !cancelled) else {
         return;
     };
-    let Ok(full) = std::fs::read_to_string(path) else {
-        return;
+    let model = selector.model.id.clone();
+    let read = tokio::task::spawn_blocking(move || read_bounded(&path)).await;
+    let lines = match read {
+        Ok(Ok(lines)) => lines,
+        Ok(Err(reason)) => {
+            crate::affordance::append(result, &format!("[models.selector skipped: {reason}]"));
+            return;
+        }
+        Err(_) => return,
     };
-    let lines: Vec<&str> = full.lines().collect();
-    let model = selector.model.id.as_str();
-    if lines.len() > LINES_IN {
-        let row = format!(
-            "[models.selector skipped: the full output has {} lines, past LINES_IN {LINES_IN}]",
-            lines.len()
-        );
-        crate::affordance::append(result, &row);
-        return;
-    }
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
     let exit = result
         .details
         .get("exitCode")
@@ -168,8 +219,8 @@ pub(crate) async fn widen(
         // A lost cost row must not cost the call its lines.
         crate::spend::book_side_call(store, "side:select", usage).ok();
     }
-    let ranges = match ranges {
-        Ok(ranges) => ranges,
+    let (ranges, asked) = match ranges {
+        Ok(picked) => picked,
         Err(reason) => {
             let row = format!(
                 "[models.selector {model} gave no lines ({reason}); the cut above is the reducer's alone]"
@@ -182,41 +233,87 @@ pub(crate) async fn widen(
         .iter()
         .map(|(from, to)| format!("{from}-{to}"))
         .collect();
-    let shown: std::collections::HashSet<&str> = text.lines().collect();
-    let picked: Vec<&str> = (ranges.iter())
-        .flat_map(|(from, to)| lines.get(from.saturating_sub(1)..*to).unwrap_or_default())
-        .copied()
-        .filter(|line| !shown.contains(line))
-        .collect();
+    let kept: usize = ranges
+        .iter()
+        .map(|(from, to)| to.saturating_add(1).saturating_sub(*from))
+        .sum();
     let mut block = vec![format!(
-        "[lines {} of the full output, selected by {model} (models.selector); {} not already shown above]",
-        named.join(", "),
-        picked.len()
+        "[lines {} of the full output, selected by {model} (models.selector); kept {kept} of {asked} selected lines (LINES_OUT {LINES_OUT})]",
+        named.join(", ")
     )];
-    block.extend(picked.iter().map(|line| (*line).to_owned()));
+    for (from, to) in &ranges {
+        let picked = lines.get(from.saturating_sub(1)..*to).unwrap_or_default();
+        block.extend(
+            (*from..)
+                .zip(picked)
+                .map(|(at, line)| format!("{at}| {line}")),
+        );
+    }
     crate::affordance::append(result, &block.join("\n"));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{full_output, parse};
+    use super::{LINES_IN, full_output, parse, read_bounded};
+    use yi_types::event::ToolResult;
+    use yi_types::message::Content;
 
     #[test]
-    fn ranges_out_of_bounds_are_dropped_and_the_total_is_capped() {
-        let text = r#"{"ranges": [[0, 2], [5, 3], [8, 12], [3, 4], [9000, 9001]]}"#;
-        assert_eq!(parse(text, 10), Ok(vec![(3, 4)]));
-        let wide = r#"{"ranges": [[1, 150], [151, 400]]}"#;
-        assert_eq!(parse(wide, 1000), Ok(vec![(1, 150), (151, 200)]));
+    fn ranges_are_bounded_merged_and_capped() {
+        let text = r#"{"ranges": [[0, 2], [5, 3], [8, 12], [3, 4], [9000, 9001], [4, 6]]}"#;
+        assert_eq!(parse(text, 10), Ok((vec![(3, 6)], 4)));
+        let wide = r#"{"ranges": [[1, 150], [140, 400]]}"#;
+        assert_eq!(parse(wide, 1000), Ok((vec![(1, 200)], 400)));
         assert!(parse("the failure is on line 4", 10).is_err());
     }
 
     #[test]
-    fn only_a_cut_result_names_its_full_output() {
-        let cut = "a\n[3 lines omitted: 2-4]\nz\n[full output: /tmp/x.txt]";
-        assert_eq!(full_output(cut), Some("/tmp/x.txt"));
-        let clipped =
-            "a\n[capture cut: kept 1 of 2 bytes]\n[full output, first 256 MiB: /tmp/y.txt]";
-        assert_eq!(full_output(clipped), Some("/tmp/y.txt"));
-        assert_eq!(full_output("whole\n[full output: /tmp/z.txt]"), None);
+    fn a_read_stops_at_its_line_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-select-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let write = |lines: usize| -> std::io::Result<std::path::PathBuf> {
+            let path = dir.join(format!("{lines}.txt"));
+            std::fs::write(&path, "x\n".repeat(lines))?;
+            Ok(path)
+        };
+        assert_eq!(
+            read_bounded(&write(LINES_IN)?).map(|lines| lines.len()),
+            Ok(LINES_IN)
+        );
+        assert!(
+            read_bounded(&write(LINES_IN + 1)?)
+                .is_err_and(|reason| reason.contains("LINES_IN 4000"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_cut_result_pointing_into_the_spill_dir_is_read()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-select-pointer-{}", std::process::id()));
+        let spills = root.join("spills");
+        std::fs::create_dir_all(&spills)?;
+        let (inside, planted) = (spills.join("bash-1.out"), root.join("secrets.env"));
+        std::fs::write(&inside, "full\n")?;
+        std::fs::write(&planted, "KEY=1\n")?;
+        let result = |path: &std::path::Path, details: serde_json::Value| ToolResult {
+            content: vec![Content::Text {
+                text: format!("out\n[full output: {}]", path.display()),
+                text_signature: None,
+            }],
+            details,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        };
+        let cut = serde_json::json!({"truncated": false, "rawBytes": 9000, "outBytes": 800});
+        assert_eq!(
+            full_output(&result(&inside, cut.clone()), &spills),
+            Some(inside.clone())
+        );
+        assert_eq!(full_output(&result(&planted, cut), &spills), None);
+        let whole = serde_json::json!({"truncated": false, "rawBytes": 800, "outBytes": 800});
+        assert_eq!(full_output(&result(&inside, whole), &spills), None);
+        Ok(())
     }
 }

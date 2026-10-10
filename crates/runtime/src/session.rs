@@ -420,7 +420,6 @@ impl AgentSession {
         Arc::clone(&self.shared.reclaimed)
     }
 
-    /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.
     /// The model that picks the lines of a cut bash output, read when tools are installed.
     pub fn set_selector(&self, selector: Option<crate::select::Selector>) {
         if let Ok(mut slot) = self.selector.lock() {
@@ -428,6 +427,7 @@ impl AgentSession {
         }
     }
 
+    /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.
     pub fn set_spills(&self, dir: std::path::PathBuf) {
         if let Ok(mut slot) = self.spills.lock() {
             *slot = Some(dir);
