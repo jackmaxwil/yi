@@ -161,6 +161,7 @@ pub struct AgentSession {
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
     wall: Mutex<crate::wall::Wall>,
     spills: Mutex<Option<std::path::PathBuf>>,
+    selector: Mutex<Option<Arc<crate::select::Selector>>>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
@@ -223,6 +224,7 @@ impl AgentSession {
             memory: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
             spills: Mutex::new(None),
+            selector: Mutex::new(None),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
         }
@@ -419,6 +421,13 @@ impl AgentSession {
     }
 
     /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.
+    /// The model that picks the lines of a cut bash output, read when tools are installed.
+    pub fn set_selector(&self, selector: Option<crate::select::Selector>) {
+        if let Ok(mut slot) = self.selector.lock() {
+            *slot = selector.map(Arc::new);
+        }
+    }
+
     pub fn set_spills(&self, dir: std::path::PathBuf) {
         if let Ok(mut slot) = self.spills.lock() {
             *slot = Some(dir);
@@ -598,6 +607,7 @@ impl AgentSession {
             broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
         }
         let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
+        let selector = self.selector.lock().ok().and_then(|slot| slot.clone());
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -617,6 +627,7 @@ impl AgentSession {
                     .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
                     .with_spills(spills.clone())
+                    .with_selector(selector.clone())
                     .with_transcript(self.store_handle())
                     .with_job_owner(self.shared.job_owner)
                     .with_extensions(Some(self.ext_hook())),

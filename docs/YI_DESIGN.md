@@ -344,7 +344,10 @@ default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = 
 cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
 past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines, 3 a file; else head 80/tail
 40), kept only if shorter. Runs of passing-test lines become one counted row, and a line naming an
-error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`). Lossy output is tee'd, secrets redacted line for line, to the family board's
+error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`).
+With `models.selector` named, a cut output's full text (at most 4,000 lines) goes to that model,
+which answers 1-based line ranges only; within 5 s the lines it names follow the cut verbatim under
+a row naming it, else a row says it gave none (`side:select` books its cost). Lossy output is tee'd, secrets redacted line for line, to the family board's
 `spills/`, kept until `yi sessions rm`, and ends `[full output: <path>]`; with nowhere to tee,
 raw text returns. A contained call runs under
 Seatbelt (§8).
