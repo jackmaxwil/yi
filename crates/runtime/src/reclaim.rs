@@ -1,7 +1,7 @@
 //! Incident: replaying one Opus session, a watermark that cut old tool results every turn lost
 //! $316-466 in cache rewrites; a cut here is made only when the reads it saves pay for one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use yi_types::entry::{CustomRecord, Entry};
@@ -40,24 +40,18 @@ impl Cut {
     pub(crate) fn fold(entries: &[Entry]) -> Self {
         let mut cut = Self::default();
         for entry in entries {
-            let Entry::Custom {
+            if let Entry::Custom {
                 custom_type,
                 data: Some(data),
                 ..
             } = entry
-            else {
-                continue;
-            };
-            if custom_type == ReclaimRecord::TYPE
+                && custom_type == ReclaimRecord::TYPE
                 && let Ok(record) = serde_json::from_value::<ReclaimRecord>(data.clone())
             {
                 cut.add(&record);
-            } else if custom_type == AnnotationRecord::TYPE
-                && let Ok(record) = serde_json::from_value::<AnnotationRecord>(data.clone())
-            {
-                cut.note(&record);
             }
         }
+        annotations(entries).for_each(|record| cut.note(&record));
         cut
     }
 
@@ -76,9 +70,10 @@ impl Cut {
             return;
         };
         let key = (target.tool_call_id.clone(), target.hash.clone());
+        // The model's last mark on a result wins: a discard lets go of an earlier pin.
         match record.kind.as_str() {
-            "pin" => drop(self.pins.insert(key, ())),
-            "discard" => drop(self.discards.insert(key, ())),
+            "pin" => drop((self.discards.remove(&key), self.pins.insert(key, ()))),
+            "discard" => drop((self.pins.remove(&key), self.discards.insert(key, ()))),
             _ => {}
         }
     }
@@ -89,10 +84,6 @@ impl Cut {
 
     pub(crate) fn cut_at(&self, message: &AgentMessage) -> Option<u64> {
         self.get(message).map(|mark| mark.turn)
-    }
-
-    fn get_any(&self, message: Option<&AgentMessage>) -> bool {
-        message.and_then(|message| self.get(message)).is_some()
     }
 }
 
@@ -201,11 +192,13 @@ pub(crate) fn hash(content: &[Content]) -> String {
 
 /// The call each tool result answers, by index: looked up in the nearest assistant message
 /// before it, since a call id repeats across messages.
-pub(crate) fn calls(messages: &[AgentMessage]) -> Vec<Option<(&str, &Args)>> {
+pub(crate) fn calls<M: std::borrow::Borrow<AgentMessage>>(
+    messages: &[M],
+) -> Vec<Option<(&str, &Args)>> {
     let mut asked: Vec<(&str, &str, &Args)> = Vec::new();
     messages
         .iter()
-        .map(|message| match message {
+        .map(|message| match message.borrow() {
             AgentMessage::Assistant { content, .. } => {
                 asked = content
                     .iter()
@@ -233,6 +226,56 @@ fn path_of(arguments: &Args) -> Option<&str> {
     arguments.get("path").and_then(serde_json::Value::as_str)
 }
 
+/// Every annotation on the branch, in the order the model wrote them.
+pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationRecord> + '_ {
+    entries.iter().filter_map(|entry| match entry {
+        Entry::Custom {
+            custom_type,
+            data: Some(data),
+            ..
+        } if custom_type == AnnotationRecord::TYPE => serde_json::from_value(data.clone()).ok(),
+        _ => None,
+    })
+}
+
+/// The results that are the newest read of their path, by index: an edit needs their tags.
+pub(crate) fn newest_reads(calls: &[Option<(&str, &Args)>]) -> BTreeSet<usize> {
+    let mut latest = BTreeMap::new();
+    for (index, call) in calls.iter().enumerate() {
+        if let Some(path) = call
+            .filter(|(name, _)| *name == "read")
+            .and_then(|(_, args)| path_of(args))
+        {
+            latest.insert(path, index);
+        }
+    }
+    latest.into_values().collect()
+}
+
+/// Why no cut ever takes this result, whatever its age or the model's discard.
+pub(crate) fn never_cut(message: &AgentMessage, newest_read: bool) -> Option<&'static str> {
+    let AgentMessage::ToolResult {
+        tool_name, content, ..
+    } = message
+    else {
+        return Some("it is not a tool result");
+    };
+    if NEVER.contains(&tool_name.as_str()) {
+        Some(
+            "plan, todo and ask_user results carry live state or the user's words and are never cut",
+        )
+    } else if !content
+        .iter()
+        .all(|part| matches!(part, Content::Text { .. }))
+    {
+        Some("a result with an image is never cut, since its placeholder could not say so")
+    } else if newest_read {
+        Some("the newest read of a file is never cut, since an edit needs its line tags")
+    } else {
+        None
+    }
+}
+
 /// A new cut, when one pays; pure over the messages, the cut so far, the prices and the clock.
 pub(crate) fn decide(
     messages: &[AgentMessage],
@@ -241,48 +284,31 @@ pub(crate) fn decide(
     now: u64,
 ) -> Option<ReclaimRecord> {
     let calls = calls(messages);
-    let mut latest_read = BTreeMap::new();
+    let newest = newest_reads(&calls);
     let (mut turn, mut turns) = (0_u64, Vec::with_capacity(messages.len()));
-    for (index, message) in messages.iter().enumerate() {
+    for message in messages {
         if matches!(message, AgentMessage::Assistant { .. }) {
             turn = turn.saturating_add(1);
-        }
-        let read = calls
-            .get(index)
-            .copied()
-            .flatten()
-            .filter(|(name, _)| *name == "read");
-        if let Some(path) = read.and_then(|(_, args)| path_of(args)) {
-            latest_read.insert(path, index);
         }
         turns.push(turn);
     }
     let eligible = |index: usize| -> bool {
-        let message = messages.get(index);
-        let Some(AgentMessage::ToolResult {
-            tool_name, content, ..
-        }) = message
-        else {
+        let Some(message) = messages.get(index) else {
             return false;
         };
-        let read = calls
-            .get(index)
-            .copied()
-            .flatten()
-            .and_then(|(_, args)| path_of(args));
-        let newest_read =
-            tool_name == "read" && read.and_then(|path| latest_read.get(path)) == Some(&index);
+        let AgentMessage::ToolResult { content, .. } = message else {
+            return false;
+        };
         let aged = turns
             .get(index)
             .is_some_and(|at| turn.saturating_sub(*at) >= KEEP_TURNS);
-        let text_only = content
-            .iter()
-            .all(|part| matches!(part, Content::Text { .. }));
-        let marked = |map| message.and_then(|message| find(map, message)).is_some();
-        let kept = NEVER.contains(&tool_name.as_str()) || cut.get_any(message) || marked(&cut.pins);
+        let marked = |map| find(map, message).is_some();
+        let kept = never_cut(message, newest.contains(&index)).is_some()
+            || cut.get(message).is_some()
+            || marked(&cut.pins);
         // The model's discard waives the age and size floors, never the rest.
         let floors = (aged && chars(content) >= MIN_RESULT_CHARS) || marked(&cut.discards);
-        floors && text_only && !kept && !newest_read
+        floors && !kept
     };
     // A result already cut costs its placeholder, so a new cut's rewrite is the view's own size.
     let sizes: Vec<u64> = (messages.iter())
@@ -713,8 +739,8 @@ mod tests {
         Ok(())
     }
 
-    /// Stage 4: the model's pin keeps a result the price rule would cut, and its discard cuts a
-    /// result too young and too short for the floors, at the same priced cut.
+    /// Stage 4: the model's pin keeps a result the price rule would cut, its discard cuts one too
+    /// young and short for the floors, and a later discard lets go of a pin.
     #[test]
     fn a_pin_keeps_an_old_result_and_a_discard_takes_a_young_one() -> Fallible {
         let mut messages = bash_session(30);
@@ -737,9 +763,26 @@ mod tests {
             note: None,
             extra: serde_json::Map::new(),
         };
-        let mut cut = Cut::default();
-        cut.note(&note("pin", "call-0", 10_000));
-        cut.note(&note("discard", "young", 400));
+        // Through the ledger, as a resume folds it; the last mark on `call-1` lets go of its pin.
+        let marks = [
+            ("pin", "call-0", 10_000),
+            ("discard", "young", 400),
+            ("pin", "call-1", 10_000),
+            ("discard", "call-1", 10_000),
+        ];
+        let entries: Vec<Entry> = (marks.iter().enumerate())
+            .map(|(seq, (kind, id, chars))| {
+                Ok(Entry::Custom {
+                    id: format!("a{seq}"),
+                    custom_type: AnnotationRecord::TYPE.to_owned(),
+                    data: Some(serde_json::to_value(note(kind, id, *chars))?),
+                    parent_id: None,
+                    seq: seq as u64,
+                    timestamp: 0,
+                })
+            })
+            .collect::<Result<_, serde_json::Error>>()?;
+        let mut cut = Cut::fold(&entries);
         let record = decide(&messages, &cut, &opus()?, 60_000 * 29 + 1_000).ok_or("no cut")?;
         let ids: Vec<&str> = record
             .items
