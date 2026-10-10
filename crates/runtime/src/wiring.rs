@@ -140,7 +140,7 @@ pub struct RuntimeWiring {
 
 /// Where a family keeps its members' cut tool output: written by the host alone, read by all.
 pub(crate) fn board_spills(board: &std::path::Path) -> PathBuf {
-    board.join("spills")
+    board.join(yi_tools::SPILLS)
 }
 
 pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {

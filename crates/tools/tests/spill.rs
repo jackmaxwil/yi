@@ -236,7 +236,7 @@ fn the_redactor_leaves_code_alone_and_catches_every_key_block() -> Fallible {
         "=x0Ab".to_owned(),
         fence("END", "PGP PRIVATE KEY BLOCK"),
     ];
-    let env = "export DB_PASSWORD=correcthorsebatterystaple";
+    let env = "export DB_PASSWORD=correcthorsebatterystaple\ndb_password=batterystaplehorsecorrect";
     let source = format!("{}\n{}\n{env}\n", code.join("\n"), pgp.join("\n"));
     let mut out = Vec::new();
     let mut redactor = redact::Redactor::new().ok_or("no redactor")?;
@@ -252,10 +252,14 @@ fn the_redactor_leaves_code_alone_and_catches_every_key_block() -> Fallible {
         !kept.contains("lQOYBGVd") && !kept.contains("=x0Ab"),
         "{kept}"
     );
-    assert_eq!(lines.len(), code.len() + pgp.len() + 1, "{kept}");
+    assert_eq!(lines.len(), code.len() + pgp.len() + 2, "{kept}");
     assert!(
         !kept.contains("correcthorse"),
         "an upper-case name needs no digit: {kept}"
+    );
+    assert!(
+        !kept.contains("batterystaplehorse"),
+        "nor does a `.env` line: {kept}"
     );
     Ok(())
 }
