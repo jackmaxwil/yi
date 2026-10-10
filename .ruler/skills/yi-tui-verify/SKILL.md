@@ -45,5 +45,12 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    The headless screen is 80x24; `--size COLSxROWS` renders another, and
    `just console-proof <script> <out> 254x40` passes it through, for a
    layout that only shows on a wide screen.
-   `scripts/proof/demo.drive` is the worked example. A test replays both
+   `scripts/proof/demo.drive` is the worked example.
+7. To see what a change did, diff snaps rather than eyeballing whole frames:
+   `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
+   `just tui-see diff target/see/<scene>/base target/see/<scene>/head`. The summary lists every
+   changed row with its text and style changes (`cols 25-25: plain → reverse`), the changed
+   regions, and 1:1 crops of each region before and after; Read the crops, not the whole frame.
+   Scenes live beside the proofs: `#! solo|console <flags>` on top, `snap <name>` where a frame
+   matters, `--seed <session.jsonl>` in the `#!` line to start from a real session. A test replays both
    casts and asserts they land on the frame the assertions ran against.

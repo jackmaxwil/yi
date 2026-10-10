@@ -472,6 +472,76 @@ fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
     Ok(())
 }
 
+/// A scene names the moment it wants seen: each `snap` keeps the frame drawn at its own step, as
+/// text and as a still cast, not whatever the script ended on.
+#[test]
+fn a_snap_keeps_the_frame_of_its_own_step() -> TestResult {
+    let dir = Scratch::new("yi-tui-snap")?;
+    let home = dir.home()?;
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 5000 faux-1\ntype first\nsnap early\ntype  second\nsnap late\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let early = std::fs::read_to_string(frames.join("snap-early.txt"))?;
+    let late = std::fs::read_to_string(frames.join("snap-late.txt"))?;
+    assert!(
+        early.contains("│first ") && !early.contains("second"),
+        "{early}"
+    );
+    assert!(late.contains("│first second"), "{late}");
+    let still = std::fs::read_to_string(frames.join("snap-early.cast"))?;
+    assert!(still.starts_with("{\"version\":2"), "{still}");
+    for (script, why) in [
+        ("snap ../escape\nquit\n", "is not [a-z0-9_-]+"),
+        ("snap a\nsnap a\nquit\n", "appears twice"),
+    ] {
+        std::fs::write(&keys, script)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the script is parsed by the spawned binary; tests must run the real process"
+        )]
+        let refused = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(["tui", "--headless", "--model", "faux/faux-1", "--keys"])
+            .arg(&keys)
+            .arg("--frames")
+            .arg(&frames)
+            .env("HOME", &home)
+            .output()?;
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            !refused.status.success() && stderr.contains(why),
+            "{script:?}: {stderr}"
+        );
+    }
+    Ok(())
+}
+
 /// One path for `--record` and `--snap` left the still truncating the
 /// recording still open on it, and the run exited 0 having lost it.
 #[test]
