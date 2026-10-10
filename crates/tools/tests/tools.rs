@@ -3528,6 +3528,55 @@ fn shown_verbatim(reduced: &str, source: &str) -> Result<(), String> {
     }
 }
 
+/// The `a-b` a reducer row ends with: what it omitted, counted or pointed at.
+fn row_range(row: &str) -> Option<(usize, usize)> {
+    let inner = row.strip_prefix('[')?.strip_suffix(']')?;
+    let inner = inner
+        .strip_suffix(" of the cut capture, not the file")
+        .unwrap_or(inner);
+    let (_, range) = inner.rsplit_once(": ")?;
+    let range = range.strip_prefix("output lines ").unwrap_or(range);
+    let (from, to) = range.split_once('-')?;
+    Some((from.parse().ok()?, to.parse().ok()?))
+}
+
+/// Each `[N lines omitted: a-b]` row names exactly the lines between its neighbours: a shown
+/// line is source line a-1 or b+1, and a counted row ends at a-1 or starts at b+1.
+fn assert_gaps(text: &str, raw: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let source: Vec<&str> = raw.lines().map(str::trim_end).collect();
+    let shown: Vec<&str> = text.lines().collect();
+    for (at, line) in shown.iter().enumerate() {
+        if !line.contains(" lines omitted: ") {
+            continue;
+        }
+        let (from, to) = row_range(line).ok_or_else(|| format!("no range in {line}"))?;
+        let rows = [
+            at.checked_sub(1).and_then(|index| shown.get(index)),
+            shown.get(at + 1),
+        ];
+        for (side, neighbour) in rows.into_iter().enumerate() {
+            let Some(neighbour) = neighbour.filter(|row| !row.starts_with("[full output")) else {
+                continue;
+            };
+            match (row_range(neighbour), side) {
+                (Some((_, end)), 0) => assert_eq!(end + 1, from, "{neighbour} then {line}"),
+                (Some((start, _)), _) => assert_eq!(to + 1, start, "{line} then {neighbour}"),
+                (None, 0) => assert_eq!(
+                    source.get(from - 2).copied(),
+                    Some(neighbour.trim_end()),
+                    "before {line}"
+                ),
+                (None, _) => assert_eq!(
+                    source.get(to).copied(),
+                    Some(neighbour.trim_end()),
+                    "after {line}"
+                ),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Stage 7: pytest -v ends every line `[ 54%]`, which read as a progress bar, so each line
 /// overwrote the one before and the FAILED line at 223 of 419 never reached the model.
 #[test]
@@ -3573,6 +3622,7 @@ fn a_cargo_test_failure_keeps_its_line_its_panic_and_its_summary() -> TestResult
         assert!(text.contains(kept), "{kept}: {text}");
     }
     assert!(text.contains(" passing tests omitted: "), "{text}");
+    assert_gaps(text, &raw)?;
     shown_verbatim(text, &raw)?;
     Ok(())
 }
@@ -3598,26 +3648,7 @@ fn an_error_in_the_middle_of_a_long_log_is_kept_with_its_context() -> TestResult
         text.contains("***   File \"pkg/module_0811.py\", line 1"),
         "{text}"
     );
-    let source: Vec<&str> = raw.lines().collect();
-    let shown: Vec<&str> = text.lines().collect();
-    for (at, line) in shown.iter().enumerate() {
-        let Some(range) = line
-            .split_once(" lines omitted: ")
-            .and_then(|(_, rest)| rest.strip_suffix(']'))
-        else {
-            continue;
-        };
-        let (from, to) = range.split_once('-').ok_or("no range")?;
-        let (from, to): (usize, usize) = (from.parse()?, to.parse()?);
-        let before = at
-            .checked_sub(1)
-            .and_then(|index| shown.get(index))
-            .ok_or("no line before")?;
-        assert_eq!(source.get(from - 2), Some(before), "the row before {line}");
-        if let Some(after) = shown.get(at + 1).filter(|after| !after.starts_with('[')) {
-            assert_eq!(source.get(to), Some(after), "the row after {line}");
-        }
-    }
+    assert_gaps(text, &raw)?;
     shown_verbatim(text, &raw)?;
     Ok(())
 }
@@ -3647,7 +3678,7 @@ fn grep_shows_at_most_three_matches_a_file_and_names_the_rest() -> TestResult {
     assert!(per_file.values().all(|count| *count <= 3), "{per_file:?}");
     let more = text
         .lines()
-        .find(|line| line.starts_with("[+") && line.contains("(GREP_PER_FILE 3): lines "));
+        .find(|line| line.starts_with("[+") && line.contains("(GREP_PER_FILE 3): output lines "));
     assert!(more.is_some(), "{text}");
     shown_verbatim(text, &raw)?;
     Ok(())
@@ -3676,5 +3707,94 @@ fn the_middle_signal_cap_names_itself_only_when_it_cuts() -> TestResult {
     let over = yi_tools::reduce("make", &log(55), "", 2, None, Some(&dir), None);
     let row = "[60 lines around errors and failures kept of 61 (SIGNAL_ROWS 60);";
     assert!(over.text.contains(row), "{}", over.text);
+    // Round 1 of #1154: twelve errors ten lines apart keep 84 rows; the three cut are errors.
+    let mut spread: Vec<String> = (0..1200).map(|n| format!("step {n:04} done")).collect();
+    for n in 0..12 {
+        spread.insert(600 + n * 10, format!("error: probe {n} broke"));
+    }
+    let cut = yi_tools::reduce("make", &spread.join("\n"), "", 2, None, Some(&dir), None);
+    assert!(
+        cut.text
+            .contains("kept of 84 (SIGNAL_ROWS 60); 3 more such lines follow"),
+        "{}",
+        cut.text
+    );
+    Ok(())
+}
+
+/// Review of #1154: a gap beside a counted row took its `to` from the row's last line, so the
+/// lines the row counted were claimed twice; and grep's own matches never take the error pass.
+#[test]
+fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
+    let dir = temp_dir("reduce-gap-counted")?;
+    let mut lines: Vec<String> = (0..300)
+        .map(|n| format!("   Compiling crate-{n:03} v0.1.0"))
+        .collect();
+    lines.extend((0..300).map(|n| format!("test tests::error_case_{n:03} ... ok")));
+    // Two lines between the passes and the failure put the counted row at the gap's edge.
+    lines.extend([
+        "   Doc-tests skipped".to_owned(),
+        "   Summary pending".to_owned(),
+    ]);
+    lines.push("test tests::case_300 ... FAILED".to_owned());
+    lines.extend((0..300).map(|n| format!("   Running step {n:03}")));
+    lines.push("stage alpha PASSED, stage beta FAILED".to_owned());
+    let raw = lines.join("\n");
+    let reduced = yi_tools::reduce("cargo test", &raw, "", 101, None, Some(&dir), None);
+    assert!(
+        reduced
+            .text
+            .contains("[300 passing tests omitted: 301-600]"),
+        "{}",
+        reduced.text
+    );
+    assert!(
+        reduced.text.contains("test tests::case_300 ... FAILED"),
+        "{}",
+        reduced.text
+    );
+    assert!(
+        reduced
+            .text
+            .contains("stage alpha PASSED, stage beta FAILED"),
+        "{}",
+        reduced.text
+    );
+    assert_gaps(&reduced.text, &raw)?;
+    let matches: Vec<String> = (0..400)
+        .map(|n| format!("src/f{}.rs:{n}:    return Err(Error::Probe);", n / 4))
+        .collect();
+    let grepped = yi_tools::reduce(
+        "rg -n Error src",
+        &matches.join("\n"),
+        "",
+        0,
+        None,
+        Some(&dir),
+        None,
+    );
+    assert!(!grepped.text.contains("SIGNAL_ROWS"), "{}", grepped.text);
+    let gaps = grepped.text.matches(" lines omitted: ").count();
+    assert_eq!(gaps, 1, "grep kept middle rows: {}", grepped.text);
+    // One file's matches name no file, so they are not grouped as one.
+    let one: Vec<String> = (0..400)
+        .map(|n| {
+            format!(
+                "2026-10-10T{:02}:{:02}:00Z ERROR probe {n}",
+                11 + n / 200,
+                n % 60
+            )
+        })
+        .collect();
+    let single = yi_tools::reduce(
+        "grep ERROR app.log",
+        &one.join("\n"),
+        "",
+        0,
+        None,
+        Some(&dir),
+        None,
+    );
+    assert!(!single.text.contains("GREP_PER_FILE"), "{}", single.text);
     Ok(())
 }
