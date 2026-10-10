@@ -2051,6 +2051,32 @@ fn the_turn_timer_wakes_on_the_spinner_boundary_not_a_fixed_interval() -> TestRe
     Ok(())
 }
 
+/// A still is replayed by a real emulator, which advances two columns after a wide symbol; text
+/// after it must land where the buffer has it, or every still shifts right past a CJK glyph.
+#[test]
+fn a_frame_dump_keeps_text_after_a_wide_symbol_in_its_column() -> TestResult {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 30, 1));
+    buffer.set_string(0, 0, "│make the rail calmer 易 x", Style::default());
+    let ansi = yi_tui::capture::buffer_to_ansi(&buffer)?;
+    // A spare row: the unfixed dump writes one cell past the edge and wraps onto it.
+    let mut parser = vt100::Parser::new(2, 30, 0);
+    parser.process(&ansi);
+    let column = |symbol: &str| {
+        (0..30).find(|&col| {
+            parser
+                .screen()
+                .cell(0, col)
+                .is_some_and(|cell| cell.contents() == symbol)
+        })
+    };
+    assert_eq!(column("易"), Some(22));
+    assert_eq!(column("x"), Some(25), "{:?}", parser.screen().contents());
+    Ok(())
+}
+
 /// The still image a reviewer sees is rendered from this dump, so it has to
 /// carry the styling — a frame that serializes to bare text proves nothing
 /// about how the UI looks.
