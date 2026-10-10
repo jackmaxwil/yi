@@ -558,10 +558,10 @@ fn a_typed_dollar_name_points_at_the_skill_before_the_first_reply() -> TestResul
         trace(&journey)?,
         [
             "user",
-            "reminder: Relevant: skill://gate (matched \"$gate\")",
+            "reminder: Relevant: yi://skills/gate (matched \"$gate\")",
             "assistant",
             "user",
-            "reminder: Relevant: skill://review (matched \"review the work\")",
+            "reminder: Relevant: yi://skills/review (matched \"review the work\")",
             "assistant",
         ],
         "each pointer sits between the message that asked for it and the first reply"

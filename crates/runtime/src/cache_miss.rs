@@ -127,6 +127,12 @@ impl MissTracker {
                 self.reset();
                 None
             }
+            Entry::Custom { custom_type, .. }
+                if custom_type == yi_types::reclaim::RECLAIM_ENTRY_TYPE =>
+            {
+                self.reset();
+                None
+            }
             Entry::Custom { custom_type, .. } if custom_type == "ext_state" => {
                 self.system_moved = self.last.is_some();
                 None

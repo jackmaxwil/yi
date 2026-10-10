@@ -100,6 +100,13 @@ const RECORDED_DOCUMENT_FORMATS: [&str; 11] = [
 /// the gate that exists to catch prefix growth, and the surface lock must pin
 /// what a model call can actually name.
 fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
+    let (_root, tools) = session_tools()?;
+    Ok(tools.iter().map(|tool| tool.definition()).collect())
+}
+
+type SessionTools = Vec<std::sync::Arc<dyn yi_loop::tool::AgentTool>>;
+
+fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -163,12 +170,8 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
-    let defs = session
-        .tools()
-        .iter()
-        .map(|tool| tool.definition())
-        .collect();
-    Ok(defs)
+    let tools = session.tools().to_vec();
+    Ok((root, tools))
 }
 
 fn tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
@@ -761,6 +764,110 @@ fn a_tool_loop_keeps_its_prefix_and_reads_the_previous_tail_on_both_dialects() -
                 "{dialect}: the tail moves forward: {tail:?} then {next:?}"
             );
         }
+    }
+    Ok(())
+}
+
+/// The session's own `read`, as the loop calls it.
+fn read_through(tools: &SessionTools, path: &str) -> Result<(bool, String), Box<dyn Error>> {
+    let read = tools
+        .iter()
+        .find(|tool| tool.definition().name == "read")
+        .ok_or("no read tool")?;
+    let mut input = Map::new();
+    input.insert("path".to_owned(), json!(path));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let outcome = runtime.block_on(read.execute("call-1", input, &signal));
+    let text = match outcome.result.content.first() {
+        Some(Content::Text { text, .. }) => text.clone(),
+        _ => String::new(),
+    };
+    Ok((outcome.is_error, text))
+}
+
+/// A description that defers its guide is only honest if the session's own `read` serves the
+/// address it names; the edit guide is the grammar file itself, byte for byte.
+#[test]
+fn every_deferred_guide_is_one_read_away() -> TestResult {
+    let (root, tools) = session_tools()?;
+    let mut pointed: Vec<String> = Vec::new();
+    for tool in &tools {
+        let description = tool.definition().description;
+        for rest in description.split("yi://tools/").skip(1) {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let address = format!("yi://tools/{name}");
+            let (failed, guide) = read_through(&tools, &address)?;
+            assert!(!failed, "{address}: {guide}");
+            assert!(
+                guide.len() > description.len(),
+                "{address} serves less than the summary pointing at it: {guide}"
+            );
+            if address == "yi://tools/edit" {
+                let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../tools/src/hashline/prompt.md");
+                assert_eq!(guide, std::fs::read_to_string(source)?);
+            }
+            pointed.push(address);
+        }
+    }
+    let skill = root.join("home/.yi/skills/probe/SKILL.md");
+    std::fs::create_dir_all(skill.parent().ok_or("no parent")?)?;
+    std::fs::write(
+        &skill,
+        "---\nname: probe\ndescription: A probe.\n---\nStep one.\n",
+    )?;
+    let (failed, served) = read_through(&tools, "yi://skills/probe")?;
+    assert!(!failed, "{served}");
+    assert_eq!(served, std::fs::read_to_string(&skill)?);
+    pointed.sort();
+    assert_eq!(
+        pointed,
+        [
+            "yi://tools/ask_user",
+            "yi://tools/edit",
+            "yi://tools/plan",
+            "yi://tools/todo"
+        ]
+    );
+    Ok(())
+}
+
+fn without_prose(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, nested)| *key != "description" || !nested.is_string())
+                .map(|(key, nested)| (key.clone(), without_prose(nested)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_prose).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The plan table drops field prose to its guide; a type, enum, bound or required key dropped
+/// with it would change what the provider validates and decodes.
+#[test]
+fn the_plan_table_keeps_every_key_but_the_nested_prose() -> TestResult {
+    let full = yi_runtime::plan::tool::schema();
+    let table = tool_defs()?
+        .into_iter()
+        .find(|def| def.name == "plan")
+        .ok_or("no plan tool")?
+        .parameters;
+    assert_eq!(without_prose(&table), without_prose(&full));
+    for (name, property) in table["properties"].as_object().ok_or("no properties")? {
+        let mut bare = without_prose(property);
+        if let (Some(own), Some(map)) = (property.get("description"), bare.as_object_mut()) {
+            map.insert("description".to_owned(), own.clone());
+        }
+        assert_eq!(&bare, property, "{name} keeps prose below the top level");
     }
     Ok(())
 }

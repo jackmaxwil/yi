@@ -335,3 +335,30 @@ fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Err
     );
     Ok(())
 }
+
+/// Dies with a repository skill linked into a guarded tree served through `yi://skills/`: the
+/// address opened the file directly, where every other host-file scheme goes through the read gate.
+#[cfg(unix)]
+#[test]
+fn a_skill_linked_into_a_guarded_tree_is_refused() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-skill-link")?;
+    let (workspace, home) = (root.join("repo"), root.join("home"));
+    std::fs::create_dir_all(workspace.join(".git"))?;
+    std::fs::write(
+        workspace.join(".git/config"),
+        "[remote \"origin\"]\n\ttoken = s3cret\n",
+    )?;
+    let skill = workspace.join(".yi/skills/leak");
+    std::fs::create_dir_all(&skill)?;
+    std::os::unix::fs::symlink(workspace.join(".git/config"), skill.join("SKILL.md"))?;
+    std::fs::create_dir_all(&home)?;
+    let fetched = Resolver::new(workspace, Wall::default())
+        .with_home(home)
+        .fetch(&"yi://skills/leak".parse()?);
+    assert!(
+        matches!(fetched, Err(FetchError::Denied { .. })),
+        "{:?}",
+        fetched.map(|fetched| fetched.text)
+    );
+    Ok(())
+}

@@ -300,13 +300,8 @@ fn the_catalog_lists_both_roots_and_the_project_shadows_the_global() -> TestResu
         catalog.text
     );
     assert!(
-        catalog.text.contains(
-            &project
-                .join(".yi/skills/shared/SKILL.md")
-                .display()
-                .to_string()
-        ),
-        "the catalog must locate the file: {}",
+        catalog.text.contains("read(\"yi://skills/<name>\")"),
+        "the catalog must say where the whole skill is: {}",
         catalog.text
     );
 
@@ -364,9 +359,9 @@ fn a_folded_description_reads_as_its_sentence() -> TestResult {
     let catalog =
         yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(16_384)).ok_or("no catalog")?;
     assert!(
-        catalog.text.contains(
-            "review: Verify finished work against its acceptance criteria with a cold-context reviewer. Use before declaring a goal or large task complete: not a code-style review."
-        ),
+        catalog
+            .text
+            .contains("review: Verify finished work against its acceptance criteria with a…\n"),
         "{}",
         catalog.text
     );
@@ -429,7 +424,10 @@ fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestRes
     let full =
         yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(1 << 20)).ok_or("no catalog")?;
     assert!(!full.truncated);
-    assert_eq!(full.text.matches(&long).count(), 40);
+    assert_eq!(
+        full.text.matches(&format!("{}…\n", "x".repeat(59))).count(),
+        40
+    );
 
     let clipped =
         yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(8_192)).ok_or("no catalog")?;

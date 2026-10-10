@@ -2720,6 +2720,42 @@ fn a_placeholder_tag_refusal_names_where_the_tag_comes_from() -> TestResult {
     Ok(())
 }
 
+/// The grammar left the tool table for a guide, so a model that skipped it meets the address in
+/// the two refusals it trips first, and never under a refusal the grammar cannot explain.
+#[test]
+fn a_grammar_or_stale_tag_refusal_names_the_edit_guide() -> TestResult {
+    let dir = temp_dir("edit-guide-refusal")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    fs::write(dir.join("p.py"), "x = 1\n")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: yi_tools::hashline::tool::shared_hashline_state(),
+        freeform_grammar: false,
+    };
+    for patch in [
+        "[p.py]\nPUT 1.=1:\nx = 2\n",
+        "[p.py#9F3C]\nPUT 1.=1:\n+x = 2\n",
+        "[p.py#9F3C]\n",
+    ] {
+        let refused = edit.execute(args(&[("patch", json!(patch))]), &context);
+        let text = output_text(&refused);
+        assert!(refused.is_error, "{text}");
+        assert!(
+            text.contains("read(\"yi://tools/edit\")"),
+            "{patch:?}: {text}"
+        );
+    }
+    let missing = edit.execute(
+        args(&[("patch", json!("[gone.py]\nPUT 1.=1:\n+x = 2\n"))]),
+        &context,
+    );
+    let text = output_text(&missing);
+    assert!(
+        missing.is_error && !text.contains("yi://tools/edit"),
+        "{text}"
+    );
+    Ok(())
+}
+
 /// Incident: 10 F0e edits anchored to lines the model had seen under the previous tag and
 /// the edit result's 3-line hunk windows did not repeat, which read as never shown (#473).
 #[test]

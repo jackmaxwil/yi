@@ -1050,12 +1050,13 @@ fn anthropic_sse(block: &serde_json::Value, stop: &str) -> String {
 }
 
 /// A tool whose result is long enough to make the next boundary compact.
-struct LongResult;
+/// A tool whose every result is 4,400 chars; named `read`, a session may cut its old results.
+struct LongResult(&'static str);
 
 impl yi_loop::AgentTool for LongResult {
     fn definition(&self) -> yi_types::model::ToolDef {
         yi_types::model::ToolDef {
-            name: "probe".to_owned(),
+            name: self.0.to_owned(),
             description: "Reads the probe.".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             freeform: None,
@@ -1132,7 +1133,7 @@ fn openrouter_session_with(
         },
         Arc::new(provider),
     );
-    session.set_tools(vec![Arc::new(LongResult)]);
+    session.set_tools(vec![Arc::new(LongResult("probe"))]);
     session.enable_compaction_with(settings);
     Ok(session)
 }
@@ -1421,7 +1422,7 @@ async fn a_cold_attempt_on_anthropic_sends_no_tool_block_without_tools()
         result,
         reply_with_usage("done", 900, 950),
     ];
-    let tools: Vec<Arc<dyn yi_loop::AgentTool>> = vec![Arc::new(LongResult)];
+    let tools: Vec<Arc<dyn yi_loop::AgentTool>> = vec![Arc::new(LongResult("probe"))];
     let replaced = compactor
         .maybe_compact(
             &messages,
@@ -2161,7 +2162,7 @@ async fn an_in_loop_compaction_sends_the_effort_of_the_request_before_it()
         };
         compactor
     });
-    let tools: Vec<Arc<dyn yi_loop::AgentTool>> = vec![Arc::new(LongResult)];
+    let tools: Vec<Arc<dyn yi_loop::AgentTool>> = vec![Arc::new(LongResult("probe"))];
     let mut config = yi_loop::LoopConfig::new(model.clone());
     config.effort = Effort::Medium;
     config.convert_to_llm = Box::new(yi_context::convert_to_llm);
@@ -2261,5 +2262,79 @@ fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> 
     let unread = note(yi_loop::REPEAT_BREAK_CUSTOM_TYPE);
     let tail = [reply.clone(), unread.clone()];
     assert_eq!(yi_context::drop_internal(&tail), tail);
+    Ok(())
+}
+
+/// Stage 6: once dropping old results costs less than resending them, the request carries each
+/// as one `[reclaimed: …]` line, and the next request carries the same bytes, so the cut is
+/// paid once; here no cache is priced, so the cut lands as soon as two results are old enough.
+#[tokio::test(flavor = "multi_thread")]
+async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
+-> Result<(), Box<dyn Error>> {
+    let call = |n: usize| {
+        let call = serde_json::json!({"tool_calls": [{"index": 0, "id": format!("call_{n}"),
+            "type": "function", "function": {"name": "read", "arguments": format!("{{\"n\":{n}}}")}}]});
+        sse_reply(&call, "tool_calls")
+    };
+    let mut replies: Vec<String> = (0..8).map(call).collect();
+    replies.push(sse_reply(&serde_json::json!({"content": "done"}), "stop"));
+    let (port, served) = openrouter_stand_in(replies)?;
+    let mut session = openrouter_session_with(port, 200_000, Settings::default())?;
+    let mut model = session.model();
+    (model.id, model.cost.input) = ("openai/gpt-5.5".to_owned(), serde_json::Number::from(1u64));
+    session.set_model(model);
+    session.set_tools(vec![Arc::new(LongResult("read"))]);
+    let store = crate::support::memory_store("reclaim-bytes");
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("read the probe eight times")?;
+    session.wait_idle().await;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let cut = |body: &String| -> Result<Vec<String>, serde_json::Error> {
+        let body: serde_json::Value = serde_json::from_str(body)?;
+        let messages = body["messages"].as_array().cloned().unwrap_or_default();
+        let parts = messages
+            .iter()
+            .flat_map(|message| match &message["content"] {
+                serde_json::Value::Array(parts) => parts.clone(),
+                text => vec![serde_json::json!({ "text": text })],
+            });
+        let lines = parts.filter_map(|part| part["text"].as_str().map(str::to_owned));
+        Ok(lines
+            .filter(|text| text.starts_with("[reclaimed: read"))
+            .collect())
+    };
+    let shown: Vec<Vec<String>> = bodies.iter().map(cut).collect::<Result<_, _>>()?;
+    let first = shown
+        .iter()
+        .position(|lines| !lines.is_empty())
+        .ok_or("no request carried a cut")?;
+    let at = shown.get(first).ok_or("no cut")?;
+    let next = shown.get(first + 1).ok_or("no request after the cut")?;
+    assert!(at.len() >= 2 && next.starts_with(at), "{shown:?}");
+    assert!(
+        at.iter()
+            .all(|line| line.contains("get it: read(\"history://self/")),
+        "{at:?}"
+    );
+    let whole = "\"tool_call_id\":\"call_0\",\"content\":\"probe line";
+    let sent = bodies.get(first).ok_or("no body")?;
+    assert!(!sent.contains(whole), "call_0 still sent whole");
+    // A resumed session folds the ledger at attach and sends the cut lines as they were.
+    let (port, served) = openrouter_stand_in(vec![sse_reply(
+        &serde_json::json!({"content": "ok"}),
+        "stop",
+    )])?;
+    let mut resumed = openrouter_session_with(port, 200_000, Settings::default())?;
+    resumed.set_model(session.model());
+    resumed.set_tools(vec![Arc::new(LongResult("read"))]);
+    resumed.attach_store(store)?;
+    resumed.prompt("again")?;
+    resumed.wait_idle().await;
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let again = cut(bodies.first().ok_or("no resumed request")?)?;
+    assert!(
+        at.iter().all(|line| again.contains(line)),
+        "{at:?} then {again:?}"
+    );
     Ok(())
 }

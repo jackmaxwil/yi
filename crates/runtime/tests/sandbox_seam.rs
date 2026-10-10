@@ -107,7 +107,7 @@ struct BrokerSetup {
     rules: Vec<ConfigRule>,
     asker: Option<Asker>,
     wall: Wall,
-    /// The attached store's id, which names the session's spill dir.
+    /// The attached store's id, which names its family board and so its spill dir.
     session: Option<&'static str>,
     /// A store attached instead, whose file is the session's own transcript.
     store: Option<yi_session::SharedSession>,
@@ -186,6 +186,12 @@ async fn run_held(
         };
         let store = yi_session::SessionStore::in_memory(metadata);
         session.attach_store(Arc::new(std::sync::Mutex::new(store)))?;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        session.set_spills(family_spills(
+            Path::new(&home),
+            gate.session.unwrap_or("root"),
+        ));
     }
     session.set_wall(gate.wall);
     session.use_tools(builtin_tools(), holder.to_path_buf(), Some(broker));
@@ -880,13 +886,18 @@ fn a_proven_command_is_allowed_and_contained() -> TestResult {
     Ok(())
 }
 
+/// Where production keeps a family's cut output: its board under the session store.
+fn family_spills(home: &Path, family: &str) -> PathBuf {
+    home.join(".yi/sessions/family").join(family).join("spills")
+}
+
 /// A walled session `juror` under a fake HOME, its commands contained by the production profile.
 async fn run_walled_juror(
     root: &Path,
     commands: &[&str],
 ) -> Result<(Vec<String>, PathBuf), Box<dyn Error>> {
     let home = root.join("home");
-    std::fs::create_dir_all(home.join(".yi/spills/juror"))?;
+    std::fs::create_dir_all(family_spills(&home, "juror"))?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
     let project = root.join("project");
@@ -908,18 +919,18 @@ async fn run_walled_juror(
     ))
 }
 
-/// #888: the profile walls the whole spill root and spares the session's own dir, so a dir
-/// another session makes while a command runs is walled from it too.
+/// #888: the profile walls the whole session store and spares the family's spill dir, so a
+/// board another family makes while a command runs is walled from it too.
 #[tokio::test]
-async fn a_walled_command_reads_its_own_spill_and_no_dir_made_while_it_runs() -> TestResult {
+async fn a_walled_command_reads_its_familys_spill_and_no_dir_made_while_it_runs() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
     let root = Scratch::new("yi-seam-spill-race")?;
-    let spills = root.join("home/.yi/spills");
-    std::fs::create_dir_all(spills.join("juror"))?;
-    std::fs::write(spills.join("juror/own.txt"), "OWN SPILL\n")?;
-    let late = spills.join("late/9999.txt");
+    let own_spill = family_spills(&root.join("home"), "juror").join("own.txt");
+    std::fs::create_dir_all(own_spill.parent().ok_or("no parent")?)?;
+    std::fs::write(&own_spill, "OWN SPILL\n")?;
+    let late = family_spills(&root.join("home"), "late").join("9999.txt");
     let plant = late.clone();
     let planter = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(800));
@@ -929,7 +940,7 @@ async fn a_walled_command_reads_its_own_spill_and_no_dir_made_while_it_runs() ->
             std::fs::write(&plant, "WALLED LATE\n").is_ok(),
         )
     });
-    let own = format!("cat {}", spills.join("juror/own.txt").display());
+    let own = format!("cat {}", own_spill.display());
     let racing = format!("sleep 2; cat {}", late.display());
     let (results, _) = run_walled_juror(&root, &[&own, &racing]).await?;
     assert_eq!(
@@ -1149,7 +1160,7 @@ async fn a_glob_under_a_walled_ancestor_reaches_no_spared_spill() -> TestResult 
     Ok(())
 }
 
-/// Whether a session walled off `denied` reads its own spill (by a glob) and its own transcript,
+/// Whether a session walled off `denied` reads its family's spill (by a glob) and its transcript,
 /// each spelled through `/./`, which the wall's text check misses.
 async fn own_reads_under(
     project: &Path,
@@ -1169,7 +1180,7 @@ async fn own_reads_under(
         .ok_or("no transcript file")?
         .display()
         .to_string();
-    let spill = home.join(".yi/spills").join(&id);
+    let spill = family_spills(home, "root");
     std::fs::create_dir_all(&spill)?;
     std::fs::write(spill.join("own.txt"), "OWN SPILL\n")?;
     // Only the transcript file is spared, never its dir, so no glob can list it.
