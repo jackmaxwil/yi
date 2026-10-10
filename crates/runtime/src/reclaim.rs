@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use sha2::{Digest, Sha256};
 use yi_types::entry::{CustomRecord, Entry};
 use yi_types::message::{AgentMessage, Content};
 use yi_types::model::{CACHE_DIAGNOSTIC, Model, Ttl};
@@ -69,7 +68,18 @@ impl Cut {
         else {
             return None;
         };
-        self.0.get(&(tool_call_id.clone(), hash(content)))
+        // Hashing every stored result on every request is the cost; probe the id first.
+        let start = (tool_call_id.clone(), String::new());
+        let mut same = self
+            .0
+            .range(start..)
+            .take_while(|((id, _), _)| id == tool_call_id);
+        let first = same.next()?;
+        let text = hash(content);
+        std::iter::once(first)
+            .chain(same)
+            .find(|((_, at), _)| *at == text)
+            .map(|(_, mark)| mark)
     }
 }
 
@@ -149,14 +159,8 @@ fn chars(content: &[Content]) -> usize {
 }
 
 fn hash(content: &[Content]) -> String {
-    let mut digest = Sha256::new();
-    texts(content).for_each(|text| digest.update(text.as_bytes()));
-    let hex: String = digest
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    hex.chars().take(16).collect()
+    let text: String = texts(content).collect();
+    crate::ext::content_hash(&text).chars().take(16).collect()
 }
 
 /// The call each tool result answers, by index: looked up in the nearest assistant message
@@ -285,8 +289,6 @@ pub(crate) fn decide(
                 items: items.collect(),
                 reason: reason.to_owned(),
                 turn,
-                dropped,
-                rewritten,
                 extra: serde_json::Map::new(),
             });
         }
