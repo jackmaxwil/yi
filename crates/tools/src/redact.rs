@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use regex::bytes::{Captures, Regex};
 
 /// Key-shaped tokens, named in the mark that replaces them. A value under a secret-looking name
-/// needs 16 token characters, and a digit unless the name is upper case as `.env` writes it.
+/// needs 16 token characters, and a digit unless it is written as `.env` writes it (`NAME=v`).
 const SHAPES: [(&str, &str); 9] = [
     (
         "private-key",
@@ -28,7 +28,7 @@ const SHAPES: [(&str, &str); 9] = [
     ),
     (
         "assigned-secret",
-        r#"(?i)\b(?P<name>[A-Z0-9_]*(?:secret|token|passw(?:or)?d|api_?key|access_?key|private_?key)[A-Z0-9_]*)["']?\s*[=:]\s*["']?(?P<value>[A-Za-z0-9_/+=-]{16,})"#,
+        r#"(?i)\b(?P<name>[A-Z0-9_]*(?:secret|token|passw(?:or)?d|api_?key|access_?key|private_?key)[A-Z0-9_]*)["']?(?P<sep>\s*[=:]\s*)["']?(?P<value>[A-Za-z0-9_/+=-]{16,})"#,
     ),
 ];
 
@@ -124,7 +124,9 @@ fn redact_line<'a>(line: &'a [u8], shapes: &[(&str, Regex)]) -> Cow<'a, [u8]> {
             let marked = |hit: &Captures<'_>| {
                 let all = hit.get(0).map_or(&[][..], |all| all.as_bytes());
                 let named = hit.name("name").map(|name| name.as_bytes());
-                let loud = named.is_none_or(|name| name.iter().any(u8::is_ascii_uppercase));
+                let shell = hit.name("sep").is_some_and(|sep| sep.as_bytes() == b"=");
+                let loud =
+                    shell || named.is_none_or(|name| name.iter().any(u8::is_ascii_uppercase));
                 let value = hit.name("value").map(|value| value.as_bytes());
                 match value {
                     Some(value) if !loud && !value.iter().any(u8::is_ascii_digit) => all.to_vec(),
