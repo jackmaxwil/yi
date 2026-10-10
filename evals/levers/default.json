@@ -42,5 +42,6 @@
  "loop.reasoning_cap": 48000,
  "tools.reduce_floor": 8192,
  "review.timeout_s": 30,
- "graph.next_lines": 3
+ "graph.next_lines": 3,
+ "reclaim.keep_turns": 5
 }
