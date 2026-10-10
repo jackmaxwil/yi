@@ -273,7 +273,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
-  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
+  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
   With `models.classifier` set, a local sidecar is also asked which triggered skill the message
   calls for (`classify` entry); it points only at or above `classifier.threshold`.
@@ -307,6 +307,11 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `plan`, `todo`, `ask_user`. `check_request_budget.py` prices system block plus tool
   table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
+- Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
+  never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
+  (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
+  the whole guide; `read`, `grep`, `bash`, `write`, `get_context` and `ipython` stay whole. An
+  edit refusal names the address. There is no dispatcher tool.
 - `Tool { name, description, schema, kind, kind_for, freeform, irreversible, validate, preview,
   execute -> ToolOutput }`. `kind_for` decides per call; Read runs parallel, the rest sequential.
   The adapter runs rule check, reviewer wall, permission gate (§8), next-step lines (§6).
@@ -374,8 +379,9 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
 `<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
 `~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
-child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
-`trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
+child's lists none of those. Frontmatter at discovery; the catalog clips each description at 60 chars and the
+whole skill is `read("yi://skills/<name>")`; `$name` or a `trigger:` needle in a message the
+user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
@@ -501,6 +507,7 @@ A persistent IPython process per session that reaches the host only through host
 | `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session id of any lane of this repository resolves too |
 | `checkpoint` / `mcp` | `<tree>/<path>` / `<server>/<uri>` | a checkpoint-tree file (§7.7) / an MCP resource (§7.6) |
 | `family` / `tree` | `<name>` / `<agent>/<path>` | a blackboard sidecar / a member's checkout file, under `deny_read` |
+| `yi` | `tools/<name>` / `skills/<name>` | a deferred tool guide (§7.1) / a skill's `SKILL.md` (§7.8), under `deny_read` |
 
 - Owner: [`runtime/src/fetch/mod.rs`](../crates/runtime/src/fetch/mod.rs),
   [`runtime/src/fetch/schemes.rs`](../crates/runtime/src/fetch/schemes.rs)
@@ -751,7 +758,10 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
 - `/heartbeat halt` holds every job of every interned store (`halted`) and every bound session's
   turn and machine wakes; `/heartbeat resume` lifts it, and only it while it is in effect. Both are `custom{halt}` records.
   `spend.alertTokens` and `spend.alertUsd` each queue a shown `spend_alert` notice per multiple
-  of tokens or billed dollars crossed, children counted by their `ChildUpdate`.
+  of tokens or billed dollars crossed, children counted by their `ChildUpdate`. `spend.dayAlertUsd`
+  does the same for the local day's billed dollars across every session: the total is seeded at each alarm's first attach from
+  the day's session files, grows with the live session's replies and children, and
+  restarts from zero past local midnight; it counts replies only, so it runs late, never early.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
@@ -808,7 +818,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask` |
 | `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
-| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed |
+| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog |
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |

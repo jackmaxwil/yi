@@ -1,6 +1,10 @@
 //! `yi stats [session-id]` — replay one session's JSONL for per-tool latency, failure kinds,
 //! truncation, shell categories, edit mix and tokens. No collector: the file is the ledger.
 
+mod rollup;
+
+pub use rollup::{Flags, Query};
+
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
@@ -199,12 +203,27 @@ pub struct Options {
     pub session_dir: std::path::PathBuf,
     pub cwd: String,
     pub json: bool,
+    pub query: Query,
 }
 
 pub fn run(id_arg: &str, options: &Options) -> i32 {
+    if options.query.asked() {
+        if !id_arg.trim().is_empty() {
+            eprintln!(
+                "error: --since, --by and --top fold every session, not `{}`",
+                id_arg.trim()
+            );
+            return 2;
+        }
+        return rollup::run(&options.query, &options.session_dir, options.json);
+    }
     if let Some(dir) = id_arg.trim().strip_prefix("telemetry") {
         return telemetry_rollup(std::path::Path::new(dir.trim()), options.json);
     }
+    one_session(id_arg, options)
+}
+
+fn one_session(id_arg: &str, options: &Options) -> i32 {
     let mut repo = JsonlRepo::new(options.session_dir.clone(), options.cwd.clone());
     let id = if id_arg.trim().is_empty() {
         match crate::sessions::latest_id(&mut repo) {
