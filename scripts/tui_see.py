@@ -57,7 +57,7 @@ NAME = re.compile(r"^[a-z0-9_-]+$")
 
 def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem") -> Path:
     surface, extra = header(scene)
-    if not NAME.match(label):
+    if not NAME.fullmatch(label):
         sys.exit(f"label {label!r} is not [a-z0-9_-]+")
     run_dir = (out / scene.stem / label).resolve()
     shutil.rmtree(run_dir, ignore_errors=True)
