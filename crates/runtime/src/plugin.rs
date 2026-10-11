@@ -36,30 +36,28 @@ pub fn add(
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
     let whole = plugin.skills.is_empty() || plugin.skill_root(home).is_some();
-    if !whole && plugin.installed(home).is_some() {
-        // Incident: an install from before the row named skills holds the program alone, and the
-        // publish rename cannot land beside it, so the version is published afresh.
-        let dir = plugin.dir(home);
-        std::fs::remove_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let dir = plugin.dir(home);
+    let aside = dir.with_file_name(format!(".legacy-{}", std::process::id()));
+    let legacy = !whole && plugin.installed(home).is_some();
+    if legacy {
+        // Incident: a program-only install from before the row named skills blocks the publish
+        // rename; deleting it first lost a working install to a refused download.
+        std::fs::rename(&dir, &aside).map_err(|error| format!("{}: {error}", dir.display()))?;
     }
-    let path = match plugin.installed(home) {
-        Some(path) => verified(plugin, &path)?,
-        None => {
-            let asset = plugin.asset().ok_or_else(|| unsupported(plugin))?;
-            let pin = yi_kernel::pinned::Pinned {
-                label: &format!("{} {}", plugin.name, plugin.version),
-                url: asset.url,
-                sha256: asset.sha256,
-                member: asset.member,
-                dir: &plugin.dir(home),
-                file: plugin.name,
-                dirs: &(plugin.skills.iter())
-                    .map(|skill| format!("skills/{skill}"))
-                    .collect::<Vec<_>>(),
-            };
-            yi_kernel::pinned::install(&pin, fetch)?
+    let installed = pinned(plugin, home, fetch);
+    if legacy {
+        let settled = match installed {
+            Ok(_) => std::fs::remove_dir_all(&aside),
+            Err(_) => std::fs::rename(&aside, &dir),
+        };
+        if let Err(error) = settled {
+            let why = installed
+                .err()
+                .map_or_else(String::new, |why| format!("{why}; "));
+            return Err(format!("{why}{}: {error}", aside.display()));
         }
-    };
+    }
+    let path = installed?;
     for version in versions(plugin, home) {
         if older(&version, plugin.version) {
             let old = plugin.root(home).join(&version);
@@ -72,6 +70,29 @@ pub fn add(
         }
     }
     Ok(path)
+}
+
+fn pinned(
+    plugin: &Plugin,
+    home: &Path,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = plugin.installed(home) {
+        return verified(plugin, &path);
+    }
+    let asset = plugin.asset().ok_or_else(|| unsupported(plugin))?;
+    let pin = yi_kernel::pinned::Pinned {
+        label: &format!("{} {}", plugin.name, plugin.version),
+        url: asset.url,
+        sha256: asset.sha256,
+        member: asset.member,
+        dir: &plugin.dir(home),
+        file: plugin.name,
+        dirs: &(plugin.skills.iter())
+            .map(|skill| format!("skills/{skill}"))
+            .collect::<Vec<_>>(),
+    };
+    yi_kernel::pinned::install(&pin, fetch)
 }
 
 pub fn remove(plugin: &Plugin, home: &Path) -> Result<bool, String> {
@@ -321,7 +342,8 @@ mod tests {
     }
 
     #[test]
-    fn an_install_without_its_skills_gains_them_on_the_next_add() -> TestResult {
+    fn an_install_without_its_skills_keeps_it_through_a_refused_download_then_gains_them()
+    -> TestResult {
         let scratch = crate::scratch::Scratch::new("plugin-skills-later")?;
         let home = scratch.home()?;
         let bytes = archive(&[BINARY, SKILL])?;
@@ -329,6 +351,16 @@ mod tests {
         std::fs::create_dir_all(tool.dir(&home))?;
         std::fs::write(tool.dir(&home).join("tool"), BINARY.1)?;
         assert!(tool.skill_root(&home).is_none());
+        let tampered = archive(&[("tool-2.0/tool", b"tampered"), SKILL])?;
+        let error = add(&tool, &home, |_| Ok(tampered.clone()))
+            .err()
+            .ok_or("installed")?;
+        assert!(error.contains("not installing"), "{error}");
+        assert_eq!(
+            std::fs::read(tool.dir(&home).join("tool"))?,
+            BINARY.1,
+            "a refused download keeps the working install"
+        );
         add(&tool, &home, |_| Ok(bytes.clone()))?;
         let skills = tool
             .skill_root(&home)
