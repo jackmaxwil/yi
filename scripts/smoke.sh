@@ -26,10 +26,17 @@ grep -q '"text":"faux: ping"' "$work/unpacked.json" || {
 }
 
 # Installed: the tree is gone, so only the ~/.yi fallback can carry the sources.
+# A stale skill directory a past release shipped but this one dropped, beside
+# a directory the user owns, is what the update loop in install.sh must judge.
+mkdir -p "$HOME/.yi/skills/yi/grid" "$HOME/.yi/skills/mine"
+printf 'dropped' > "$HOME/.yi/skills/yi/grid/SKILL.md"
+printf 'mine' > "$HOME/.yi/skills/mine/SKILL.md"
 ( cd "$tree" && YI_PREFIX="$HOME/bin" ./install.sh )
 rm -rf "$tree"
 [ -d "$HOME/.yi/python/yi_runtime" ] || { echo "install.sh did not place the runtime"; exit 1; }
 [ -d "$HOME/.yi/skills/yi" ] || { echo "install.sh did not place the skills"; exit 1; }
+[ ! -e "$HOME/.yi/skills/yi/grid" ] || { echo "install.sh kept a skill the release dropped"; exit 1; }
+[ -f "$HOME/.yi/skills/mine/SKILL.md" ] || { echo "install.sh removed a user skill"; exit 1; }
 
 # An empty directory, not the repo and not `/`: nothing above it is a checkout,
 # which is the property under test. (`/` would work too, but `yi` walks its cwd
