@@ -331,12 +331,12 @@ fn run_frames_with(
     let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
     run_opts(
         name,
-        fixture,
+        Some(fixture),
         script,
         false,
         sidebar,
         Some(dir.to_path_buf()),
-        width,
+        (width, 30),
     )?;
     last_frame(&dir)
 }
@@ -360,21 +360,33 @@ fn run_sidebar(
     autostart: bool,
     sidebar: SidebarMode,
 ) -> TestResult {
-    run_opts(name, fixture, script, autostart, sidebar, None, 100)
+    run_opts(
+        name,
+        Some(fixture),
+        script,
+        autostart,
+        sidebar,
+        None,
+        (100, 30),
+    )
 }
 
+/// `fixture` None runs with no daemon listening at all.
 fn run_opts(
     name: &str,
-    fixture: Vec<Step>,
+    fixture: Option<Vec<Step>>,
     script: &str,
     autostart: bool,
     sidebar: SidebarMode,
     frames: Option<PathBuf>,
-    width: u16,
+    (width, height): (u16, u16),
 ) -> TestResult {
-    let (_dir, socket) = scratch_socket(name)?;
-    let server = spawn_fixture(socket.clone(), fixture);
+    let (dir, socket) = scratch_socket(name)?;
+    let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
+    // Incident: the flaky drive tests fail by error or by an assertion after this returns, and
+    // took their frames with them; every run's frames stay at target/tmp/drive/<name>.
+    let frames = frames.unwrap_or_else(|| dir.join("frames"));
     let code = run_headless(
         &ConsoleOptions {
             socket,
@@ -385,18 +397,18 @@ fn run_opts(
         },
         DriveOptions {
             script: steps,
-            frames_dir: frames
-                .or_else(|| std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from)),
+            frames_dir: Some(frames.clone()),
             record: None,
             width,
-            height: 30,
+            height,
         },
     );
+    scratch::keep(&frames, "drive", name.as_ref());
     // The console shut the socket down; the fixture thread ends with it.
-    match server.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(format!("fixture: {error}").into()),
-        Err(_) => return Err("fixture thread panicked".into()),
+    match server.map(JoinHandle::join) {
+        None | Some(Ok(Ok(()))) => {}
+        Some(Ok(Err(error))) => return Err(format!("fixture: {error}").into()),
+        Some(Err(_)) => return Err("fixture thread panicked".into()),
     }
     if code != 0 {
         return Err(format!("console exited {code}").into());
@@ -509,6 +521,29 @@ fn permission_answer(frame: &Value) -> Vec<Value> {
     frames
 }
 
+/// A drive run that times out fails by error, not by panic; its frames still stay behind.
+#[test]
+fn a_failed_drive_run_leaves_its_frames() -> TestResult {
+    let kept = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("drive/kept-after-a-timeout");
+    let _ = std::fs::remove_dir_all(&kept);
+    let failed = run(
+        "kept-after-a-timeout",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         wait-frame 200 a row this console never draws\n\
+         quit\n",
+    );
+    assert!(failed.is_err(), "the timed-out wait must fail the run");
+    assert!(
+        last_frame(&kept)?.contains("s-alpha"),
+        "the kept frame is the one the run drew"
+    );
+    Ok(())
+}
+
 #[test]
 fn attach_lists_sessions_with_ledger_status() -> TestResult {
     run(
@@ -589,35 +624,20 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
 fn prompt_rejected_while_daemon_unreachable() -> TestResult {
     // No listener at all: the client keeps retrying and the composer submit
     // is refused with a visible status note, never queued.
-    let (_dir, socket) = scratch_socket("unreachable")?;
-    let steps = parse_script(
+    run_opts(
+        "unreachable",
+        None,
         "wait-frame 5000 disconnected\n\
          key tab\n\
          type lost words\n\
          key enter\n\
          wait-frame 5000 not connected\n\
          quit\n",
-    )?;
-    let code = run_headless(
-        &ConsoleOptions {
-            socket,
-            root: "/tmp/demo-root".to_owned(),
-            autostart: false,
-            auto_side: true,
-            sidebar: SidebarMode::Full,
-        },
-        DriveOptions {
-            script: steps,
-            frames_dir: None,
-            record: None,
-            width: 100,
-            height: 30,
-        },
-    );
-    if code != 0 {
-        return Err(format!("console exited {code}").into());
-    }
-    Ok(())
+        false,
+        SidebarMode::Full,
+        None,
+        (100, 30),
+    )
 }
 
 #[test]
@@ -782,16 +802,13 @@ fn navigator_filters_and_opens() -> TestResult {
 
 #[test]
 fn tiny_terminal_survives_splits() -> TestResult {
-    let (_dir, socket) = scratch_socket("tiny")?;
-    let server = spawn_fixture(
-        socket.clone(),
-        vec![
+    run_opts(
+        "tiny",
+        Some(vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
-        ],
-    );
-    let steps = parse_script(
+        ]),
         "wait-frame 5000 !connecting…\n\
          key alt-v\n\
          key alt-s\n\
@@ -802,32 +819,11 @@ fn tiny_terminal_survives_splits() -> TestResult {
          key alt-z\n\
          wait 50\n\
          quit\n",
-    )?;
-    let code = run_headless(
-        &ConsoleOptions {
-            socket,
-            root: "/tmp/demo-root".to_owned(),
-            autostart: false,
-            auto_side: true,
-            sidebar: SidebarMode::Full,
-        },
-        DriveOptions {
-            script: steps,
-            frames_dir: None,
-            record: None,
-            width: 20,
-            height: 8,
-        },
-    );
-    match server.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(format!("fixture: {error}").into()),
-        Err(_) => return Err("fixture thread panicked".into()),
-    }
-    if code != 0 {
-        return Err(format!("console exited {code}").into());
-    }
-    Ok(())
+        false,
+        SidebarMode::Full,
+        None,
+        (20, 8),
+    )
 }
 
 #[test]
@@ -1205,9 +1201,9 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
     )
 }
 
-/// ⌘J beside a session opens that session's notebook to the right; ⌘J on it closes it.
+/// ⌘I beside a session opens that session's notebook to the right; ⌘I on it closes it.
 #[test]
-fn cmd_j_toggles_the_notebook_pane() -> TestResult {
+fn cmd_i_toggles_the_notebook_pane() -> TestResult {
     run(
         "cmd-notebook",
         vec![
@@ -1220,10 +1216,10 @@ fn cmd_j_toggles_the_notebook_pane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 nb:s-alpha\n\
          wait-frame 3000 no kernel cells yet\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 !nb:s-alpha\n\
          wait-frame 3000 replayed world\n\
          quit\n",
@@ -1372,7 +1368,7 @@ fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
     )
 }
 
-/// An edit outside git accumulates but opens nothing; ⌘G shows it on demand.
+/// An edit outside git accumulates but opens nothing; ⌘R shows it on demand.
 #[test]
 fn untracked_edit_accumulates_without_opening() -> TestResult {
     run(
@@ -1391,9 +1387,9 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
          wait-frame 5000 replayed world\n\
          wait-frame 3000 brand new line\n\
          wait-frame 2000 !Review ·\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 Review · session · 1 file +1 −0\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 !Review ·\n\
          quit\n",
     )
@@ -1472,7 +1468,7 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
     // Read before the exit code: the drive guard fails the run on the frame this asserts.
     let run = run_opts(
         "card-tabs",
-        vec![
+        Some(vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
@@ -1480,7 +1476,7 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
             Step::Expect("_yi/seen", seen_ok),
             Step::Push(makefile_push),
             Step::Expect("_yi/tracked", tracked_no),
-        ],
+        ]),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
@@ -1490,7 +1486,7 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
         false,
         SidebarMode::Full,
         Some(dir.to_path_buf()),
-        100,
+        (100, 30),
     );
     let frame = last_frame(&dir)?;
     let control = frame.chars().find(|c| c.is_control() && *c != '\n');
@@ -1565,7 +1561,7 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1604,7 +1600,7 @@ fn an_untitled_session_does_not_land_from_review() -> TestResult {
         "wait-frame 5000 untitled\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1755,7 +1751,7 @@ fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 nb:s-alpha\n\
          wait-frame 3000 ⇧↩ runs\n\
          type print(1)\n\
@@ -1783,7 +1779,7 @@ fn esc_cancels_running_user_cell() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 nb:s-alpha\n\
          type sleep()\n\
          key shift-enter\n\
@@ -1842,6 +1838,47 @@ fn the_hint_row_keeps_whole_keys() -> TestResult {
     assert!(
         last.ends_with("   ⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥g diff   ⌥? keys"),
         "the notebook drops whole and ⌥? keys stays: {last:?}"
+    );
+    Ok(())
+}
+
+/// Ghostty's defaults take ⌘1..9, ⌘⇧T, ⌘J, ⌘G, ⌘E and ⌘? before the console sees them, so
+/// held rows name their ⌥ chord and the panes moved to ⌘I, ⌘R, ⌘O and ⌘/, which it delivers.
+#[test]
+fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
+    let frame = run_frames(
+        "cmd-held",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-/\n\
+         wait-frame 3000 any key closes\n\
+         quit\n",
+    )?;
+    let row = |what: &str| {
+        frame
+            .lines()
+            .find(|line| line.contains(what))
+            .unwrap_or_default()
+    };
+    for (what, key) in [
+        ("notebook pane", "⌘I"),
+        ("review pane", "⌘R"),
+        ("open a file in a pane", "⌘O"),
+        ("all keys", "⌘/"),
+        ("jump to rail slot 1..9", "⌥1..9"),
+        ("new tab · next · previous", "⌥t ⌥] ⌥["),
+        ("command palette", "⌘P"),
+        ("close pane", "⌘X"),
+    ] {
+        let want = format!(" {what:<32}{key} ");
+        assert!(row(what).contains(&want), "{want:?} in {:?}", row(what));
+    }
+    let hints = frame.lines().last().unwrap_or_default();
+    assert!(
+        hints.contains("⌘P command palette") && hints.contains("   ⌘R diff   ⌘/ keys"),
+        "the hint row names only chords Ghostty delivers: {hints:?}"
     );
     Ok(())
 }
@@ -3447,6 +3484,30 @@ fn only_a_sent_prompt_returns_a_scrolled_pane_to_the_bottom() -> TestResult {
          wait-frame 1000 !row 59\n\
          key enter\n\
          wait-frame 2000 row 59\n\
+         quit\n",
+    )
+}
+
+/// Dies with the sidebar gone and `X` typed at the end: Ghostty sends Option+Left as alt+b,
+/// the console's sidebar chord, so word-left over a draft hid the sidebar instead.
+#[test]
+fn option_left_over_a_draft_moves_by_word_in_ghostty() -> TestResult {
+    run(
+        "alt-b-draft",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         type hello world\n\
+         key alt-b\n\
+         type X\n\
+         wait-frame 2000 hello Xworld\n\
          quit\n",
     )
 }
