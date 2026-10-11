@@ -145,7 +145,7 @@ boundary moves.
 | converted | `~/.yi/converted` | newer than 30 d | 30 d, then size cap 256 MiB | evict oldest | ✓ `tools/src/document.rs:496` |
 | kernel venvs | `~/.yi/kernel-venv-*` **and the legacy `kernel-venv`** | flock held, or `ps` names it, or mtime < 24 h | 24 h | delete dir | ✓ `kernel/src/lock.rs:152`, ✚ legacy name |
 | kernel connections | `~/.yi/kernel-connections/<pid>-…` | pid alive | none | delete dir | ✓ `kernel/src/connection.rs:104` |
-| checkpoints, orphan | `~/.yi/checkpoints/<xxh32>` | `core.worktree` dir exists; kept when it cannot be stat'd or its nearest surviving ancestor is a mount root (unmounted volume) | 7 d since last capture | rename aside, then delete | ✚ |
+| checkpoints, orphan | `~/.yi/checkpoints/<xxh32>` | `core.worktree` dir exists; kept when it cannot be stat'd or its nearest surviving ancestor is a mount root or a dir directly under one (unmounted volume) | 7 d since last capture | rename aside, then delete | ✚ |
 | checkpoints, live | same, live repos | object mtime < 30 d | 30 d | `git prune --expire=30.days.ago`, never a delete (review: a delete raced a session starting there) | ✚ |
 | lane slots | `~/.yi/lanes/<hash>/<n>` | `.held` flock taken, or tree dirty, or branch unmerged | 14 d since release | `git worktree remove`, drop `N.json` | ✚ (liveness ✓ `abandoned` `lane/mod.rs:890`) |
 | uv binaries | `~/.yi/uv/<ver>` | `ver == UV_VERSION` | none | delete dir | ✚ |
@@ -184,8 +184,9 @@ The existing sweeps (spills, converted documents, stale venvs, kernel connection
 triggers and did not move into the table: moving them would buy no behavior. A short-lived
 process such as `yi ask` can exit before its background sweep finishes; the sweep is idempotent,
 and the stamp is written only once a sweep finishes, so the next session picks up where it
-stopped. Known limit: a persistent Linux mount point (`/mnt/data`) left empty by an unmount
-reads as a deleted project, and its repos go after 7 days.
+stopped. A sweep in flight holds `~/.yi/retention.flock`, which the OS drops with a killed
+holder, so a second session skips it. A mount point left directly under a mount root
+(`/mnt/data` after an unmount) reads as unmounted, and its repos are kept.
 
 ## 4. Test homes: inside the worktree
 
