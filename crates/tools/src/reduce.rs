@@ -254,6 +254,15 @@ fn is_pass(line: &str) -> bool {
         || line.starts_with('✔')
 }
 
+const PASSES_OMITTED: &str = " passing tests omitted: ";
+
+/// The span of a row that counts passing tests: the count accounts for every line in it.
+pub fn passes_span(row: &str) -> Option<(usize, usize)> {
+    row.contains(PASSES_OMITTED)
+        .then(|| omitted_span(row))
+        .flatten()
+}
+
 /// Runs of passing-test lines as one counted row; a failure among them stays a line of its own.
 fn collapse_passes(rows: &[Row]) -> Vec<Row> {
     let mut out: Vec<Row> = Vec::new();
@@ -264,7 +273,7 @@ fn collapse_passes(rows: &[Row]) -> Vec<Row> {
             [only] => out.push(only.copy()),
             [first, .., last] => out.push(Row {
                 text: format!(
-                    "[{} passing tests omitted: {}-{}]",
+                    "[{}{PASSES_OMITTED}{}-{}]",
                     run.len(),
                     first.first,
                     last.line
