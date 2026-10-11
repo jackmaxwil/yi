@@ -1,0 +1,12 @@
+#! solo --size 100x40 --seed scripts/proof/tui_see/harvest-pyshell-end.jsonl --faux scripts/proof/tui_see/harvest-pyshell-end.reply.jsonl
+# Harvested from 01a0648f.jsonl by `tui_see.py harvest`: view end.
+wait-frame 5000 faux-1
+snap end
+type Test the ipython tooling
+key enter
+wait-frame 10000 Composing
+tick 30000
+wait-idle 30000
+wait-frame 10000 !Composing
+snap continued
+quit
