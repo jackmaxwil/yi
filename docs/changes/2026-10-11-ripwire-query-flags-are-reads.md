@@ -1,5 +1,7 @@
 ---
 issue: Closes #1177
-raise: crate permission +39, tests +28, comments +1
+raise: crate permission +145, tests +53, comments +3
 ---
 A ripwire command made only of query flags now runs as a read in auto mode instead of in the sandbox. Every command in ripwire's skills spells `--legend=compact`, and neither the bash tool nor the permission check knew that flag, so about 150 of the skills' 174 commands ran contained and were labelled exec. The flag table moved into the permission crate and grew from 38 to 136 flags. Each new flag was checked against ripwire 0.6.5's own help text and run on a scratch repository, which it left byte for byte unchanged. `--quality-delta` stays exec because it deletes a stale sidecar from the working tree; the edit, baseline, note, export, `--html`, `--cache`, server and run-trace flags stay exec as before. `yi gate` needed no change: it and a real bash call both take the permission check's verdict, so both now say `allow` for `ripwire . --hotspots --legend=compact`.
+
+A bare word is the tree root and only the root: the classifier stats it once from the classifying cwd (a blocking syscall on the async path that a cold mount can stall), while a value belonging to a known `--flag value` pair (top-k, for, grep, ...) is accepted as that flag's value and `wrap`, ripwire's setup verb, is unknown regardless of what the working tree happens to name. The bash screen now splits a segment the way the shell does, so a quoted flag value like `--for='fix the bold split'` is one word instead of three bare words the root check rejects.

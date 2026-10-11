@@ -140,16 +140,122 @@ const RIPWIRE_READ: [&str; 136] = [
     "scan-skill",
 ];
 
-/// Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write, and
-/// `ripwire wrap` is setup; so a bare word is a read only when it is a path or an `=`-flag.
+const RIPWIRE_SETUP: [&str; 1] = ["wrap"];
+
+const RIPWIRE_VALUE: [&str; 51] = [
+    "for",
+    "pack-task",
+    "callers",
+    "callees",
+    "uses",
+    "around",
+    "path",
+    "at",
+    "from-trace",
+    "cochange",
+    "expand",
+    "impact",
+    "verify",
+    "mentions",
+    "limit",
+    "offset",
+    "token-budget",
+    "max-tokens",
+    "top-k",
+    "sections",
+    "order",
+    "around-depth",
+    "around-fanout",
+    "slice-depth",
+    "pack-top-n",
+    "pack-budget-bytes",
+    "exclude",
+    "max-file-size",
+    "max-memory",
+    "scip",
+    "legend",
+    "format",
+    "rank-by",
+    "in",
+    "since",
+    "scope",
+    "zoom",
+    "grep",
+    "grep-in",
+    "grep-context",
+    "grep-before",
+    "grep-after",
+    "grep-scope",
+    "regex",
+    "query",
+    "pattern",
+    "match",
+    "exemplar",
+    "graph-query",
+    "lint-select",
+    "lint-ignore",
+];
+
+/// Incident: a git-URL root makes ripwire `git clone` it, and `wrap` is setup; a bare word is a
+/// read only as the root positional (one stat from the classifying cwd) or a value flag.
 pub fn ripwire_reads<'w>(mut args: impl Iterator<Item = &'w str>) -> bool {
+    let mut value_flag = false;
     args.all(|word| match word.strip_prefix("--") {
-        Some(flag) => RIPWIRE_READ.contains(&flag.split('=').next().unwrap_or(flag)),
+        Some(flag) => {
+            let name = flag.split('=').next().unwrap_or(flag);
+            value_flag = !flag.contains('=') && RIPWIRE_VALUE.contains(&name);
+            RIPWIRE_READ.contains(&name)
+        }
         None => {
-            !(word.starts_with('-') || word.contains(':') || word.contains('@'))
+            if value_flag {
+                value_flag = false;
+                return true;
+            }
+            !(word.starts_with('-')
+                || word.contains(':')
+                || word.contains('@')
+                || RIPWIRE_SETUP.contains(&word))
                 && std::path::Path::new(word).exists()
         }
     })
+}
+
+/// A quoted span is one word to the shell, not three: re-splitting `'fix the bold split'` on
+/// whitespace turned a flag value into bare words the read screen then rejected.
+pub fn shell_words(segment: &str) -> Option<Vec<String>> {
+    let (mut words, mut word, mut quote, mut quoted_word) = (Vec::new(), String::new(), ' ', false);
+    for ch in segment.chars() {
+        if quote != ' ' {
+            if ch == quote {
+                quote = ' ';
+            } else {
+                word.push(ch);
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = ch;
+            quoted_word = quoted_word || word.is_empty();
+        } else if ch.is_whitespace() {
+            if !word.is_empty() {
+                if quoted_word {
+                    word.insert(0, '\0');
+                }
+                words.push(std::mem::take(&mut word));
+            }
+            quoted_word = false;
+        } else {
+            word.push(ch);
+        }
+    }
+    if quote != ' ' {
+        return None;
+    }
+    if quoted_word {
+        word.insert(0, '\0');
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    Some(words)
 }
 
 const CARGO_READ: [&str; 9] = [
