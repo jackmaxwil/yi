@@ -4,7 +4,8 @@ Each call is judged as the model's own call is, by the user's rules, the wall an
 permission check, and the cell's ``ipython`` result lists it, so an edit made here is an edit
 compaction and the todo list see. A call returns a ``Result`` (``text`` is the view the model
 would have read, ``details`` the tool's own fields) and raises on failure: ``UnknownTool``,
-``InvalidInput``, ``Refused`` (a gate said no) or ``ToolFailure``.
+``InvalidInput``, ``Refused`` (a gate said no) or ``ToolFailure`` (its ``kind`` is
+``cancelled`` for a call made after the cell that started it ended).
 
 ``search("edit")`` finds a tool, ``help(yi.tools.grep)`` shows its parameters, and
 ``excluded()`` names the tools a cell cannot call and why. An edit cites the ``[path#TAG]``
@@ -16,6 +17,7 @@ headers a read printed:
 from __future__ import annotations
 
 import inspect
+import keyword
 from typing import Any
 
 import rlm
@@ -134,7 +136,7 @@ def _signature(tool: dict[str, Any]) -> inspect.Signature:
     required = set(schema.get("required") or [])
     params = []
     for key, prop in (schema.get("properties") or {}).items():
-        if not key.isidentifier():
+        if not key.isidentifier() or keyword.iskeyword(key):
             continue
         kind = (prop or {}).get("type")
         annotation = _TYPES.get(kind, inspect.Parameter.empty) if isinstance(kind, str) else inspect.Parameter.empty

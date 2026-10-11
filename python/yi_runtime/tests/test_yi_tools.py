@@ -14,7 +14,7 @@ CATALOG = {
         {"name": "grep", "description": "Search file contents with a regex.",
          "parameters": {"type": "object", "required": ["pattern"],
                         "properties": {"pattern": {"type": "string"}, "path": {"type": "string"},
-                                       "context": {"type": "integer"}}}},
+                                       "context": {"type": "integer"}, "def": {"type": "string"}}}},
         {"name": "edit", "description": "Apply a hashline patch.",
          "parameters": {"type": "object", "required": ["patch"],
                         "properties": {"patch": {"type": "string"}}}},
@@ -72,7 +72,8 @@ class Tools(unittest.TestCase):
 
     def test_a_tool_reads_as_a_function_with_its_own_parameters(self) -> None:
         signature = inspect.signature(yi.tools.grep)
-        self.assertEqual(list(signature.parameters), ["pattern", "path", "context"])
+        self.assertEqual(list(signature.parameters), ["pattern", "path", "context"],
+                         "grep's real schema names a `def` parameter; a keyword is passed by **{}")
         self.assertIs(signature.parameters["pattern"].default, inspect.Parameter.empty)
         self.assertIs(signature.parameters["context"].annotation, int)
         self.assertEqual(yi.tools.grep.__doc__, "Search file contents with a regex.")

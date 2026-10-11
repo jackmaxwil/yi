@@ -131,7 +131,7 @@ pub struct ExecuteResult {
 }
 
 /// One tool a cell called through `tool.call`, listed on that cell's `ipython` result (design
-/// §9.2). `args` is kept for a call that writes or runs and `answer` for a person's reply.
+/// §9.2): the files a write named, a command it ran, a person's reply; never the content.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NestedCall {
@@ -139,8 +139,10 @@ pub struct NestedCall {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<Map<String, Value>>,
+    pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     pub duration_ms: u64,
@@ -148,6 +150,10 @@ pub struct NestedCall {
 
 /// The `ipython` result's `details` key holding its cell's [`NestedCall`] rows.
 pub const NESTED_CALLS: &str = "calls";
+/// The `details` key counting read rows a cell made past [`NESTED_READS_KEPT`].
+pub const NESTED_READS_DROPPED: &str = "callsDropped";
+/// Read rows one cell keeps; a write's row is always kept, its paths are what compaction lists.
+pub const NESTED_READS_KEPT: usize = 256;
 
 /// `.bootstrap-version` marker (design §9.1): any mismatch forces a full venv
 /// rebuild.

@@ -14,7 +14,7 @@ pub struct FileOps {
 }
 
 /// An edit carries no `path`: its files are the `[path#TAG]` section headers of its `patch`.
-pub(crate) fn call_paths(name: &str, arguments: &Map<String, Value>) -> Vec<String> {
+pub fn call_paths(name: &str, arguments: &Map<String, Value>) -> Vec<String> {
     let argument = |key| arguments.get(key).and_then(Value::as_str);
     match name {
         "read" | "write" => argument("path").map(str::to_owned).into_iter().collect(),
@@ -26,14 +26,14 @@ pub(crate) fn call_paths(name: &str, arguments: &Map<String, Value>) -> Vec<Stri
     }
 }
 
-fn note_call(name: &str, arguments: &Map<String, Value>, file_ops: &mut FileOps) {
+fn note_paths(name: &str, paths: impl IntoIterator<Item = String>, file_ops: &mut FileOps) {
     let set = match name {
         "read" => &mut file_ops.read,
         "write" => &mut file_ops.written,
         "edit" => &mut file_ops.edited,
         _ => return,
     };
-    set.extend(call_paths(name, arguments));
+    set.extend(paths);
 }
 
 /// A cell's own calls ride its `ipython` result: a program's edit is still an edit.
@@ -45,15 +45,13 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
                     name, arguments, ..
                 } = block
                 {
-                    note_call(name, arguments, file_ops);
+                    note_paths(name, call_paths(name, arguments), file_ops);
                 }
             }
         }
         AgentMessage::ToolResult { details, .. } => {
             for call in nested_calls(details.as_ref()) {
-                if let Some(arguments) = &call.args {
-                    note_call(&call.tool, arguments, file_ops);
-                }
+                note_paths(&call.tool, call.paths, file_ops);
             }
         }
         _ => {}
