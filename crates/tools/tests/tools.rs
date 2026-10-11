@@ -1576,6 +1576,7 @@ fn a_kernel_edit_arrives_as_a_real_patch() -> TestResult {
             error: None,
             duration_ms: 12,
         })),
+        calls: None,
     };
 
     let output = tool.execute(args(&[("code", json!("edit()"))]), &context);

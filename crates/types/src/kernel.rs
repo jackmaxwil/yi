@@ -130,6 +130,25 @@ pub struct ExecuteResult {
     pub duration_ms: u64,
 }
 
+/// One tool a cell called through `tool.call`, listed on that cell's `ipython` result (design
+/// §9.2). `args` is kept for a call that writes or runs and `answer` for a person's reply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedCall {
+    pub tool: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// The `ipython` result's `details` key holding its cell's [`NestedCall`] rows.
+pub const NESTED_CALLS: &str = "calls";
+
 /// `.bootstrap-version` marker (design §9.1): any mismatch forces a full venv
 /// rebuild.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

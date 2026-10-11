@@ -43,6 +43,7 @@ mod kernel_across_sessions;
 mod kernel_data_surface;
 mod kernel_lane;
 mod kernel_sandbox;
+mod kernel_tools;
 mod lanes;
 mod levers;
 mod node;
