@@ -1912,6 +1912,23 @@ fn editor_opens_types_and_saves() -> TestResult {
     Ok(())
 }
 
+/// ⌘U undoes the last edit and ⌘⇧U redoes it; Ghostty holds ⌘Z and ⌘⇧Z for its own undo.
+#[test]
+fn cmd_u_undoes_and_cmd_shift_u_redoes() -> TestResult {
+    let path = seed_editor_file("undo", "fn main() {}\n")?;
+    run(
+        "editor-undo",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 fn main\nkey end\ntype  // gone\nwait-frame 3000 // gone\n\
+             cmd-u\nwait-frame 3000 !// gone\ncmd-shift-u\nwait-frame 3000 // gone\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
 /// A click places the cursor on that cell; a drag selects, and backspace removes the run.
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
@@ -2004,9 +2021,9 @@ fn dirty_editor_shows_reload_bar_and_r_reloads() -> TestResult {
     Ok(())
 }
 
-/// ⌘F then `/needle` scrolls the editor to the match.
+/// ⌘L then `/needle` scrolls the editor to the match; Ghostty holds ⌘F for its own search.
 #[test]
-fn cmd_f_scrolls_to_match() -> TestResult {
+fn cmd_l_scrolls_to_match() -> TestResult {
     let body: String = (1..=60)
         .map(|n| {
             if n == 55 {
@@ -2022,7 +2039,7 @@ fn cmd_f_scrolls_to_match() -> TestResult {
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-f\ntype needle\nkey enter\n\
+            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-l\ntype needle\nkey enter\n\
              wait-frame 3000 let needle = 1;\nquit\n",
         ),
     )?;
