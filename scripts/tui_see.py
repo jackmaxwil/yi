@@ -5,9 +5,12 @@ A scene is a drive script (crates/tui/src/drive.rs grammar) whose `#!` lines car
 the surface first, then flags, e.g. `#! solo --size 80x24 --faux replies.jsonl --seed s.jsonl`
 or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking at.
 
-  tui_see.py run SCENE [--label head] [--out target/see] [--bin target/debug/yi]
+  tui_see.py run SCENE [--label head] [--out target/see] [--bin target/debug/yi] [--host term]
   tui_see.py diff RUN_A RUN_B          # two run dirs; writes RUN_B/diff-vs-<A>/summary.md
   tui_see.py --selfcheck
+
+`--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
+so the pictures carry kitty images and true colour; it needs `just yi-term` built first.
 
 What an agent reads, in order: the cell diff as text (exact), then 1:1 crops of each changed
 region before and after, then the whole frame. Pictures never gate anything.
@@ -52,9 +55,9 @@ def encoded(cwd: Path) -> str:
 NAME = re.compile(r"^[a-z0-9_-]+$")
 
 
-def run(scene: Path, label: str, out: Path, binary: Path) -> Path:
+def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem") -> Path:
     surface, extra = header(scene)
-    if not NAME.match(label):
+    if not NAME.fullmatch(label):
         sys.exit(f"label {label!r} is not [a-z0-9_-]+")
     run_dir = (out / scene.stem / label).resolve()
     shutil.rmtree(run_dir, ignore_errors=True)
@@ -109,6 +112,8 @@ def run(scene: Path, label: str, out: Path, binary: Path) -> Path:
             log.close()
             shutil.rmtree(sock.parent, ignore_errors=True)
     rendered = render(run_dir)
+    if host == "term" and not code:
+        code = term(scene, run_dir, surface, extra)
     snaps = sorted(p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.txt"))
     print(f"run: {run_dir} (exit {code})")
     print(f"snaps: {', '.join(snaps) or 'none: add `snap <name>` steps'}")
@@ -117,6 +122,275 @@ def run(scene: Path, label: str, out: Path, binary: Path) -> Path:
     if code:
         sys.exit(code)
     return run_dir
+
+
+IMAGE = "yi-term:dev"
+# The image and the binary follow the host: Ghostty under amd64 emulation took 30 s to map a window.
+ARCH = "aarch64" if os.uname().machine in ("arm64", "aarch64") else "x86_64"
+LINUX_YI = f"target/{ARCH}-unknown-linux-musl/debug/yi"
+SCREEN = "1920x1200"
+
+
+def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
+    """Plays the scene in Ghostty in the yi-term container; its grabs replace the agg pictures."""
+    linux, host = ROOT / LINUX_YI, ROOT / "target/debug/yi"
+    if not linux.exists():
+        sys.exit(f"--host term needs {LINUX_YI}: run `just yi-term`")
+    if host.exists() and linux.stat().st_mtime < host.stat().st_mtime:
+        sys.exit(f"{LINUX_YI} is older than target/debug/yi, so its pictures would show older code: "
+                 "run `just yi-term`")
+    if not scene.resolve().is_relative_to(ROOT):
+        sys.exit(f"--host term mounts the repo, so the scene must live in it: {scene}")
+    name = f"yi-term-{os.getpid()}"
+    platform = "linux/arm64" if ARCH == "aarch64" else "linux/amd64"
+    argv = ["docker", "run", "--rm", "--name", name, "--platform", platform,
+            "-v", f"{ROOT}:/repo:ro", "-v", f"{run_dir}:/out", "-w", "/repo", IMAGE,
+            "python3", "/repo/scripts/tui_see.py", "term-inner",
+            str(scene.resolve().relative_to(ROOT)), surface, *extra]
+    try:
+        code = subprocess.run(argv, timeout=900).returncode
+    except subprocess.TimeoutExpired:
+        subprocess.run(["docker", "kill", name], capture_output=True)
+        code = 124
+    for note in sorted((run_dir / "term").glob("snap-*.note")):
+        print(f"[… {note.stem}: {note.read_text()}; the grab may catch a frame mid-draw]")
+    pictures = sorted((run_dir / "term").glob("snap-*.png"))
+    for png in pictures:
+        shutil.copy(png, run_dir / "frames" / png.name)
+    if code:
+        print(f"[… term host failed (exit {code}); kept {len(pictures)} Ghostty grabs, the rest "
+              f"of the pictures are agg's: {run_dir / 'term'}]")
+    else:
+        print(f"pictures: Ghostty in {IMAGE} ({run_dir / 'term'})")
+    return code
+
+
+NAMED = {"enter": "\r", "return": "\r", "esc": "\x1b", "escape": "\x1b", "tab": "\t",
+         "backspace": "\x7f", "space": " "}
+# xterm's CSI forms take a modifier parameter; the final byte names the key.
+CSI = {"up": "A", "down": "B", "right": "C", "left": "D", "home": "H", "end": "F",
+       "f1": "P", "f2": "Q", "f3": "R", "f4": "S"}
+TILDE = {"delete": 3, "del": 3, "pageup": 5, "pagedown": 6, "f5": 15, "f6": 17, "f7": 18,
+         "f8": 19, "f9": 20, "f10": 21, "f11": 23, "f12": 24}
+
+
+def key_bytes(spec: str, cmd: bool = False) -> bytes:
+    """A drive `key` spec as the bytes a terminal sends: C0 codes and ESC prefixes for plain
+    keys, xterm's modifier parameter for named keys, kitty's CSI u for `cmd` (super = 8)."""
+    *mods, name = spec.lower().split("-") if spec != "-" else ["-"]
+    unknown = set(mods) - {"ctrl", "alt", "shift"}
+    if unknown:
+        raise ValueError(f"key {spec!r}: unknown modifier {sorted(unknown)}")
+    mask = 1 + 1 * ("shift" in mods) + 2 * ("alt" in mods) + 4 * ("ctrl" in mods) + 8 * cmd
+    if name in CSI or name in TILDE:
+        if name in TILDE:
+            return f"\x1b[{TILDE[name]}{f';{mask}' if mask > 1 else ''}~".encode()
+        if mask == 1:
+            return f"\x1b[{CSI[name]}".encode() if name not in ("f1", "f2", "f3", "f4") \
+                else f"\x1bO{CSI[name]}".encode()
+        return f"\x1b[1;{mask}{CSI[name]}".encode()
+    key = NAMED.get(name, name)
+    if len(key) != 1:
+        raise ValueError(f"key {spec!r}: no terminal encoding for {name!r}")
+    if cmd:
+        return f"\x1b[{ord(key)};{mask}u".encode()
+    if name == "tab" and "shift" in mods:
+        return b"\x1b[Z"
+    if "shift" in mods:
+        key = key.upper()
+    if "ctrl" in mods:
+        if key.upper() not in "@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_ " :
+            raise ValueError(f"key {spec!r}: ctrl has no C0 code for {key!r}")
+        key = chr(ord(key.upper()) & 0x1F)
+    return (("\x1b" if "alt" in mods else "") + key).encode()
+
+
+def term_inner(scene: str, surface: str, extra: list[str]) -> None:
+    """Inside the container: Xvfb, then Ghostty running the real binary behind `proxy`."""
+    out = Path("/out/term")
+    shutil.rmtree(out, ignore_errors=True)
+    (out / "home/.yi").mkdir(parents=True)
+    (out / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
+    cols, rows = "80", "24"
+    if "--size" in extra:
+        at = extra.index("--size")
+        cols, rows = extra[at + 1].split("x")
+        del extra[at:at + 2]
+    if "--session" in extra:
+        seed = next(Path("/out/sessions").glob(f"*/*_{extra[extra.index('--session') + 1]}.jsonl"))
+        (out / "sessions" / encoded(Path("/repo"))).mkdir(parents=True)
+        shutil.copy(seed, out / "sessions" / encoded(Path("/repo")) / seed.name)
+    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": ":99"}
+    display = subprocess.Popen(["Xvfb", ":99", "-screen", "0", f"{SCREEN}x24"],
+                               stderr=subprocess.DEVNULL)
+    if not wait_for(lambda: Path("/tmp/.X11-unix/X99").exists(), 10):
+        sys.exit("term: Xvfb did not start")
+    yi = f"/repo/{LINUX_YI}"
+    serve = None
+    if surface == "solo":
+        argv = [yi, "tui", "--here", "--model", "faux/faux-1", "--session-dir",
+                str(out / "sessions"), *extra]
+    else:
+        sock = "/tmp/yi-term.sock"
+        serve = subprocess.Popen([yi, "serve", "--socket", sock, "--model", "faux/faux-1",
+                                  "--session-dir", str(out / "sessions")], env=env,
+                                 stderr=open(out / "serve.log", "w"))
+        if not wait_for(lambda: Path(sock).exists() or serve.poll() is not None, 10) \
+                or serve.poll() is not None:
+            sys.exit(f"term: yi serve did not listen; see {out / 'serve.log'}")
+        argv = [yi, "console", "--socket", sock, *extra]
+    ghostty = subprocess.Popen(
+        ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
+         "--font-family=JetBrains Mono", f"--window-width={cols}", f"--window-height={rows}",
+         "--background-opacity=1", "--confirm-close-surface=false", "-e", "python3",
+         str(ROOT / "scripts/tui_see.py"), "proxy", scene, str(out), "--", *argv],
+        env=env, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
+    wait_for(lambda: (out / "done").exists() or ghostty.poll() is not None, 600)
+    for proc in (ghostty, serve, display):
+        if proc is not None:
+            proc.kill()
+    done = (out / "done").read_text() if (out / "done").exists() else "no done marker"
+    print(f"term: {done}")
+    sys.exit(0 if done == "ok" else 1)
+
+
+def wait_for(ready, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while not ready():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def grab(path: Path, box: list[str]) -> None:
+    """One keyframe of the Ghostty window: the screen cropped to the box found on the first grab."""
+    base = ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "0",
+            "-video_size", SCREEN, "-i", ":99"]
+    deadline = time.monotonic() + 60
+    probe = None
+    while not box and time.monotonic() < deadline:
+        # cropdetect skips 2 frames by default, and its limit is absolute above 1: the root
+        # window is black, Ghostty's background is not.
+        probe = subprocess.run(["ffmpeg", "-f", "x11grab", "-draw_mouse", "0", "-video_size",
+                                SCREEN, "-i", ":99", "-frames:v", "3", "-vf",
+                                "cropdetect=limit=8:round=2:reset=0:skip=0", "-f", "null", "-"],
+                               capture_output=True, text=True)
+        box += re.findall(r"crop=(\d+:\d+:\d+:\d+)", probe.stderr)[-1:]
+        time.sleep(0.5)
+    if not box:
+        raise RuntimeError("no Ghostty window on the virtual screen within 60 s:\n"
+                           + (probe.stderr[-600:] if probe else ""))
+    subprocess.run(base + ["-frames:v", "1", "-vf", f"crop={box[0]}", str(path)], check=True)
+
+
+def proxy(scene: Path, out: Path, argv: list[str]) -> None:
+    """Runs inside Ghostty: the binary in a pty, Ghostty's bytes passed both ways, the scene's
+    steps sent as key bytes, `wait-frame` read off a pyte screen fed the same bytes, and a grab
+    at each `snap` once the output has been quiet."""
+    import fcntl
+    import pty
+    import select
+    import termios
+    import tty
+
+    import pyte
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp(argv[0], argv)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))
+    saved = termios.tcgetattr(0)
+    tty.setraw(0)
+    rows, cols = struct.unpack("HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+    screen = pyte.Screen(cols, rows)
+    stream = pyte.ByteStream(screen)
+    cast = open(out / "run.cast", "w")
+    cast.write(json.dumps({"version": 2, "width": cols, "height": rows}) + "\n")
+    began = last = time.monotonic()
+    box: list[str] = []
+    alive = True
+
+    def pump(seconds: float, until=lambda: False) -> bool:
+        nonlocal last, alive
+        stop = time.monotonic() + seconds
+        while alive and time.monotonic() < stop:
+            if until():
+                return True
+            ready, _, _ = select.select([fd, 0], [], [], 0.02)
+            if fd in ready:
+                try:
+                    data = os.read(fd, 65536)
+                except OSError:
+                    data = b""
+                if not data:
+                    alive = False
+                    break
+                os.write(1, data)
+                stream.feed(data)
+                cast.write(json.dumps([round(time.monotonic() - began, 6), "o",
+                                       data.decode("utf-8", "replace")]) + "\n")
+                last = time.monotonic()
+            if 0 in ready:
+                os.write(fd, os.read(0, 65536))
+        return until()
+
+    def shown(needle: str) -> bool:
+        return any(needle in row for row in screen.display)
+
+    status = "ok"
+    type_ms = 0
+    # The binary must be drawing before keys arrive, or the tty's cooked mode eats them.
+    if not pump(30, lambda: last > began):
+        status = "the binary drew nothing within 30 s"
+    for line in scene.read_text().splitlines() if status == "ok" else []:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        word, _, rest = line.partition(" ")
+        sent = last
+        if word == "key":
+            os.write(fd, key_bytes(rest))
+            pump(0.05)
+        elif word.startswith("cmd-"):
+            os.write(fd, key_bytes(word[4:], cmd=True))
+            pump(0.05)
+        elif word == "type":
+            for ch in rest:
+                os.write(fd, ch.encode())
+                pump(max(type_ms, 5) / 1000)
+        elif word == "type-ms":
+            type_ms = int(rest)
+        elif word == "wait":
+            pump(int(rest) / 1000)
+        elif word == "wait-idle":
+            # The real binary's turn state is not visible here: output that started after the
+            # step and then stopped for a second stands in for it.
+            if not pump(int(rest) / 1000, lambda: last > sent and time.monotonic() - last >= 1.0):
+                status = f"wait-idle {rest} ms timed out"
+        elif word == "wait-frame":
+            ms, _, needle = rest.partition(" ")
+            gone = needle.startswith("!")
+            needle = needle[1:] if gone else needle
+            if not pump(int(ms) / 1000, lambda: shown(needle) != gone):
+                status = f"wait-frame {rest!r} timed out; the screen it saw: {out / 'screen.txt'}"
+                (out / "screen.txt").write_text("\n".join(screen.display))
+        elif word == "snap":
+            if not pump(5, lambda: time.monotonic() - last >= 0.3):
+                (out / f"snap-{rest}.note").write_text("output never paused for 0.3 s within 5 s")
+            grab(out / f"snap-{rest}.png", box)
+        elif word == "quit":
+            break
+        else:
+            status = f"the term host cannot play {word!r} steps"
+        if status != "ok" or not alive:
+            break
+    if not alive and status == "ok":
+        status = f"{argv[0]} exited before the scene ended"
+    os.kill(pid, signal.SIGTERM)
+    termios.tcsetattr(0, termios.TCSADRAIN, saved)
+    cast.close()
+    (out / "done").write_text(status)
 
 
 def render(run_dir: Path) -> bool:
@@ -346,6 +620,19 @@ def selfcheck() -> None:
         cursor = f"cols {2 + typed}-{2 + typed}: plain → reverse"
         assert cursor in summary, "the cursor's style-only move went unreported"
         assert diff(a, a).read_text().count("no cell changed") == 1
+    # The bytes a terminal sends: C0 control codes, xterm's CSI Z, kitty's CSI u with super = 8.
+    for spec, cmd, want in [("ctrl-c", False, b"\x03"), ("alt-n", False, b"\x1bn"),
+                            ("shift-tab", False, b"\x1b[Z"), ("enter", False, b"\r"),
+                            ("alt-down", False, b"\x1b[1;3B"), ("ctrl-up", False, b"\x1b[1;5A"),
+                            ("f2", False, b"\x1bOQ"), ("pageup", False, b"\x1b[5~"),
+                            ("b", True, b"\x1b[98;9u"), ("shift-p", True, b"\x1b[112;10u")]:
+        assert key_bytes(spec, cmd) == want, f"{spec}: {key_bytes(spec, cmd)!r}"
+    for refused in ("ctrl-1", "hyper-x", "f13"):
+        try:
+            key_bytes(refused)
+        except ValueError:
+            continue
+        raise AssertionError(f"{refused} was encoded instead of refused")
     print("tui_see selfcheck: ok")
 
 
@@ -355,13 +642,24 @@ def main(argv: list[str]) -> None:
     if argv[:1] == ["diff"] and len(argv) == 3:
         diff(Path(argv[1]).resolve(), Path(argv[2]).resolve())
         return None
+    if argv[:1] == ["term-inner"]:
+        return term_inner(argv[1], argv[2], argv[3:])
+    if argv[:1] == ["proxy"]:
+        out = Path(argv[2])
+        try:
+            return proxy(Path(argv[1]), out, argv[argv.index("--") + 1:])
+        except Exception:
+            import traceback
+            # Ghostty owns this process's stderr, and its surface closes with the error on it.
+            (out / "done").write_text(traceback.format_exc())
+            raise
     if argv[:1] == ["run"] and len(argv) >= 2:
         opts = dict(zip(argv[2::2], argv[3::2]))
-        unknown = set(opts) - {"--label", "--out", "--bin"}
+        unknown = set(opts) - {"--label", "--out", "--bin", "--host"}
         if unknown or len(argv[2:]) % 2:
             sys.exit(f"run: unknown or valueless flags {sorted(unknown) or argv[-1:]}")
         run(Path(argv[1]), opts.get("--label", "head"), Path(opts.get("--out", "target/see")),
-            Path(opts.get("--bin", "target/debug/yi")).resolve())
+            Path(opts.get("--bin", "target/debug/yi")).resolve(), opts.get("--host", "mem"))
         return None
     print(__doc__)
     sys.exit(2)
