@@ -373,6 +373,9 @@ impl KernelService {
                 .into_owned(),
         ));
         env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
+        if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
+            env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
+        }
         // Set but never read by Python; the host-side depth check is
         // authoritative (design §9).
         env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));
@@ -877,6 +880,40 @@ mod tests {
     use std::error::Error;
 
     type TestResult = Result<(), Box<dyn Error>>;
+
+    /// A kernel `bash()` finds an installed plugin by name, as the bash tool does; a home with
+    /// none leaves the kernel's PATH to the process.
+    #[test]
+    fn the_kernel_puts_an_installed_plugin_first_on_its_path() -> TestResult {
+        let scratch = crate::scratch::Scratch::new("kernel-plugin-path")?;
+        let home = scratch.home()?;
+        let options = |home: &std::path::Path| KernelServiceOptions {
+            cwd: home.to_path_buf(),
+            home: home.to_path_buf(),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(HostRegistry::default()),
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        };
+        let path_of = |home: &std::path::Path| {
+            let env = KernelService::new(options(home)).kernel_env(None);
+            env.into_iter()
+                .find_map(|(key, value)| (key == "PATH").then_some(value))
+        };
+        assert_eq!(path_of(&home), None);
+        let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+        std::fs::create_dir_all(ripwire.dir(&home))?;
+        std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
+        let path = path_of(&home).ok_or("no PATH for the kernel")?;
+        let first = std::env::split_paths(&path).next();
+        assert_eq!(first, Some(ripwire.dir(&home)));
+        Ok(())
+    }
 
     #[test]
     fn only_a_bare_ascii_identifier_is_a_variable_name() -> TestResult {

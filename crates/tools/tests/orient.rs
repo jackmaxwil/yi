@@ -301,8 +301,8 @@ fn took_turns(args: &str) -> bool {
     asked.len() == 3 && done.is_some_and(|done| asked.get(1).is_some_and(|&next| done < next))
 }
 
-/// Reruns `name` with PATH holding only a fake `ripwire` that answers each verb with the real
-/// ripwire 0.6.5 answer recorded under tests/fixtures/ripwire; `slow` makes each answer take 1 s.
+/// Reruns `name` with PATH and HOME holding only a fake `ripwire` (a pinned install would win)
+/// that answers each verb with a recorded ripwire 0.6.5 answer; `slow` makes each take 1 s.
 #[cfg(unix)]
 fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestResult {
     use std::os::unix::fs::PermissionsExt;
@@ -343,6 +343,7 @@ fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestRe
     let rerun = yi_tools::command(std::env::current_exe()?)
         .args(["--exact", name])
         .env("PATH", &*dir)
+        .env("HOME", &*dir)
         .env("YI_FAKE_RIPWIRE", &*dir)
         .output()?;
     let stdout = String::from_utf8_lossy(&rerun.stdout);

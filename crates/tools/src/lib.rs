@@ -11,6 +11,7 @@ mod ignore;
 mod ipython;
 pub mod jobs;
 mod orient;
+pub mod plugin;
 mod process;
 mod redact;
 pub mod reduce;

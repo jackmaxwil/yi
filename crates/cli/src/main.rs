@@ -9,6 +9,7 @@ mod fetch;
 mod lanes;
 mod memory;
 mod plan;
+mod plugin;
 mod roles;
 mod rpc;
 mod sessions;
@@ -294,17 +295,7 @@ static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new(
 /// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
-    let home = std::path::PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
-    );
-    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
-    // that followed failed to spawn, naming the wrong step.
-    if !home.is_absolute() {
-        return Err(format!(
-            "HOME is relative ({}); yi needs an absolute HOME",
-            home.display()
-        ));
-    }
+    let home = update::absolute_home()?;
     let home = HOME.get_or_init(|| home);
     setup::early();
     yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
@@ -342,7 +333,7 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
-/// Invariant: the HOME [`load_config`] checked, except under `doctor`, which reports it raw.
+/// Invariant: the HOME [`load_config`] checked; `doctor` reports it raw, `plugin` checks it itself.
 fn home() -> &'static std::path::Path {
     HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
 }
@@ -1018,6 +1009,7 @@ fn mcp_fast_path() {
 fn main() {
     doctor::early();
     update::early();
+    plugin::early();
     if let Err(error) = load_config() {
         eprintln!("error: {error}");
         std::process::exit(2);

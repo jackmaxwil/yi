@@ -113,19 +113,6 @@ where
     ))
 }
 
-fn absolute_home() -> Result<PathBuf, String> {
-    let home = PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
-    );
-    if !home.is_absolute() {
-        return Err(format!(
-            "HOME is relative ({}); yi needs an absolute HOME",
-            home.display()
-        ));
-    }
-    Ok(home)
-}
-
 fn prefix_dir(home: &Path) -> Result<PathBuf, String> {
     match std::env::var_os("YI_PREFIX") {
         Some(value) => {
@@ -480,10 +467,7 @@ fn classify(path: &str) -> Result<Member, String> {
     if relative.is_empty() || relative.ends_with('/') {
         return Ok(Member::Skip);
     }
-    if relative
-        .split('/')
-        .any(|part| part.is_empty() || part == "." || part == "..")
-    {
+    if !tarball::stays_inside(relative) {
         return Err(format!("archive entry {path} leaves the archive"));
     }
     Ok(Member::Skill(relative.to_owned()))
@@ -575,16 +559,12 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn skill_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
-    let mut path = root.to_path_buf();
-    for part in relative.split('/') {
-        if part.is_empty() || part == "." || part == ".." {
-            return Err(format!(
-                "archive entry skills/{relative} leaves the archive"
-            ));
-        }
-        path.push(part);
+    if !tarball::stays_inside(relative) {
+        return Err(format!(
+            "archive entry skills/{relative} leaves the archive"
+        ));
     }
-    Ok(path)
+    Ok(root.join(relative))
 }
 
 fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {
@@ -599,6 +579,21 @@ fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {
 
 fn io(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
+}
+
+pub(crate) fn absolute_home() -> Result<std::path::PathBuf, String> {
+    let home = std::path::PathBuf::from(
+        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
+    );
+    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
+    // that followed failed to spawn, naming the wrong step.
+    if !home.is_absolute() {
+        return Err(format!(
+            "HOME is relative ({}); yi needs an absolute HOME",
+            home.display()
+        ));
+    }
+    Ok(home)
 }
 
 #[cfg(test)]

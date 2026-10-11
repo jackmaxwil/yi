@@ -31,6 +31,7 @@ pub mod memory;
 pub mod node;
 pub mod permission;
 pub mod plan;
+pub mod plugin;
 pub mod provider;
 mod reclaim;
 pub mod rewind;
