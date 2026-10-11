@@ -10,9 +10,9 @@ const DONE: &str = "done";
 const STAMP: &str = ".yi/retention.stamp";
 const LOCK: &str = ".yi/retention.flock";
 const TOMB: &str = "gone";
-/// A project whose nearest surviving ancestor is one of these sat on a volume now unmounted.
+/// A project whose nearest surviving ancestor is one of these, or a mount point left under one,
+/// sat on a volume now unmounted.
 const MOUNT_ROOTS: [&str; 4] = ["/Volumes", "/mnt", "/media", "/run/media"];
-const USER_MOUNTS: [&str; 2] = ["/media", "/run/media"];
 
 enum Fate {
     Keep,
@@ -24,7 +24,7 @@ struct Row {
     store: &'static str,
     root: fn(&Path) -> PathBuf,
     judge: fn(&Path, Duration) -> Fate,
-    trim: fn(&Path),
+    trim: fn(&Path) -> bool,
 }
 
 const ROWS: [Row; 1] = [Row {
@@ -44,10 +44,9 @@ fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
         .ancestors()
         .find(|up| up.exists())
         .is_some_and(|up| {
-            MOUNT_ROOTS.iter().any(|root| up == Path::new(root))
-                || up
-                    .parent()
-                    .is_some_and(|parent| USER_MOUNTS.iter().any(|root| parent == Path::new(root)))
+            MOUNT_ROOTS
+                .iter()
+                .any(|root| up == Path::new(root) || up.parent() == Some(Path::new(root)))
         });
     match project.try_exists() {
         Ok(false) if !unmounted && idle > ORPHAN_AFTER => Fate::Remove,
@@ -57,8 +56,8 @@ fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
     }
 }
 
-fn trim_checkpoint(dir: &Path) {
-    let _kept_whole_on_failure = yi_tools::checkpoint::prune(dir, SNAPSHOTS_KEPT);
+fn trim_checkpoint(dir: &Path) -> bool {
+    yi_tools::checkpoint::prune(dir, SNAPSHOTS_KEPT).is_ok()
 }
 
 /// One store's sweep, printed by `yi gc`: kept over found is what survived.
@@ -117,9 +116,8 @@ fn sweep_row(row: &Row, home: &Path, dry_run: bool) -> Report {
         match (row.judge)(&entry.path(), idle.unwrap_or_default()) {
             Fate::Keep => {}
             Fate::Trim => {
-                report.trimmed = report.trimmed.saturating_add(1);
-                if !dry_run {
-                    (row.trim)(&entry.path());
+                if dry_run || (row.trim)(&entry.path()) {
+                    report.trimmed = report.trimmed.saturating_add(1);
                 }
             }
             Fate::Remove => {
