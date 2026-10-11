@@ -57,7 +57,7 @@ fn report() -> String {
 }
 
 struct Family {
-    _root: Scratch,
+    root: Scratch,
     cwd: std::path::PathBuf,
     transcripts: Arc<SessionTranscripts>,
     parent: yi_session::SharedSession,
@@ -85,6 +85,16 @@ fn family() -> Result<Family, Box<dyn Error>> {
     };
     yi_session::lock_session(&parent).append_message("main", asked)?;
     yi_session::lock_session(&parent).append_message("main", bash_result(report()))?;
+    let mut spawn = serde_json::Map::new();
+    spawn.insert(
+        "code".to_owned(),
+        "rlm.run('What release_id = line did it print?')".into(),
+    );
+    let spawn = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_tool_call("c1", "ipython", spawn)],
+        yi_types::message::StopReason::ToolUse,
+    );
+    yi_session::lock_session(&parent).append_message("main", spawn)?;
     let child = repo.create(yi_session::CreateOptions {
         parent_session_id: Some(parent_id),
         ..yi_session::CreateOptions::default()
@@ -92,7 +102,7 @@ fn family() -> Result<Family, Box<dyn Error>> {
     let host = crate::support::family(root.to_path_buf(), cwd.clone(), child.clone(), None).host;
     let transcripts = Arc::new(SessionTranscripts::new(host, Some(sessions), &cwd));
     Ok(Family {
-        _root: root,
+        root,
         cwd,
         transcripts,
         parent,
@@ -127,9 +137,17 @@ fn a_child_greps_its_parents_tool_output_by_alias() -> TestResult {
         ask.clone(),
     )?;
     assert!(!is_error, "{text}");
-    assert_eq!(text.lines().count(), 1, "{text}");
+    assert_eq!(text.lines().count(), 2, "{text}");
     assert!(
-        text.ends_with(" result bash: release_id = rel-09d88875"),
+        text.lines()
+            .next()
+            .is_some_and(|line| line.ends_with(" result bash: release_id = rel-09d88875")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .nth(1)
+            .is_some_and(|line| line.contains(" call ipython: ")),
         "{text}"
     );
     let address = hit_address(&text, "release_id")?;
@@ -175,6 +193,9 @@ fn a_child_greps_its_parents_tool_output_by_alias() -> TestResult {
 #[test]
 fn history_repo_greps_this_repositorys_other_sessions() -> TestResult {
     let family = family()?;
+    let gone = family.root.join("gone").to_string_lossy().into_owned();
+    yi_session::JsonlRepo::new(family.root.join("sessions"), gone)
+        .create(yi_session::CreateOptions::default())?;
     let ask = json!({"pattern": "release_id", "path": "history://repo"});
     let (text, is_error) = tool_text(
         resolver(&family, &family.parent, Wall::default()),
@@ -182,6 +203,12 @@ fn history_repo_greps_this_repositorys_other_sessions() -> TestResult {
         ask.clone(),
     )?;
     assert!(!is_error, "{text}");
+    assert_eq!(
+        text.lines().last(),
+        Some(
+            "[… 1 not searched: session directories whose checkout is gone, and unreadable session files]"
+        )
+    );
     let rows: Vec<&str> = text
         .lines()
         .filter(|line| line.contains("release_id"))
@@ -274,7 +301,7 @@ fn a_history_grep_names_every_cut_it_makes() -> TestResult {
     let ask = |input: Value| tool_text(resolver(&family, store, Wall::default()), "grep", input);
     let (none, _) = ask(json!({"pattern": "no such words", "path": "history://parent"}))?;
     assert!(
-        none.starts_with("[no hits in 2 entries of 1 sessions;"),
+        none.starts_with("[no hits in 3 entries of 1 sessions;"),
         "{none}"
     );
     let (refused, is_error) =

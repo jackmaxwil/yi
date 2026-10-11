@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 use yi_session::{EntryOrder, EntryQuery};
 use yi_tools::{ToolOutput, error_output, text_output};
 use yi_types::entry::Entry;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Content};
 use yi_types::url::{Scheme, Url};
 
 use super::{FetchError, Resolver};
@@ -26,13 +26,31 @@ fn kind(message: &AgentMessage) -> String {
     }
 }
 
-fn searchable(entry: &Entry) -> Option<(String, String)> {
+/// Incident: a pattern a parent passed to its own call matched as an `assistant` line, beside
+/// the output it was after; a call's arguments are searched, but labelled as the call.
+fn searchable(entry: &Entry) -> Vec<(String, String)> {
     match entry {
-        Entry::Message { message, .. } => Some((kind(message), message.plain_text())),
+        Entry::Message {
+            message: AgentMessage::Assistant { content, .. },
+            ..
+        } => content
+            .iter()
+            .filter_map(|block| match block {
+                Content::Text { text, .. } => Some(("assistant".to_owned(), text.clone())),
+                Content::ToolCall {
+                    name, arguments, ..
+                } => Some((
+                    format!("call {name}"),
+                    Value::Object(arguments.clone()).to_string(),
+                )),
+                _ => None,
+            })
+            .collect(),
+        Entry::Message { message, .. } => vec![(kind(message), message.plain_text())],
         Entry::Compaction { summary, .. } | Entry::BranchSummary { summary, .. } => {
-            Some(("summary".to_owned(), summary.clone()))
+            vec![("summary".to_owned(), summary.clone())]
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -80,11 +98,12 @@ impl Resolver {
                 })
                 .map_err(|error| backend(error.to_string()))?;
             for entry in &found {
-                let Some((kind, text)) = searchable(entry) else {
-                    continue;
-                };
-                entries = entries.saturating_add(1);
-                for line in text.lines().filter(|line| hit(line)) {
+                let parts = searchable(entry);
+                entries = entries.saturating_add(usize::from(!parts.is_empty()));
+                let lines = parts
+                    .iter()
+                    .flat_map(|(kind, text)| text.lines().map(move |line| (kind, line)));
+                for (kind, line) in lines.filter(|(_, line)| hit(line)) {
                     total = total.saturating_add(1);
                     if total <= offset || rows.len() == HITS {
                         continue;
@@ -120,7 +139,7 @@ impl Resolver {
         }
         if skipped > 0 {
             rows.push(format!(
-                "[… {skipped} session files not searched: unreadable, or of an unknown repository]"
+                "[… {skipped} not searched: session directories whose checkout is gone, and unreadable session files]"
             ));
         }
         Ok(rows.join("\n"))
