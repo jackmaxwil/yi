@@ -376,8 +376,9 @@ Verification (the phase-7 lessons, paid for once):
   `--label base`, again after, then `just tui-see diff <base run> <head run>`. Read the cell diff
   first, then the region crops it names. A scene is a drive script whose `#!` line carries its
   setup (`#! solo --size 80x24`, `#! console --size 120x34`) and whose `snap <name>` steps mark
-  the frames worth seeing. Agg stills have no kitty images and headless draws the 16-colour tier,
-  so judge the orb, avatars and true colour in a real terminal. Nothing here gates a build.
+  the frames worth seeing. Agg stills have no kitty images and headless draws the 16-colour tier:
+  for the orb, avatars and true colour add `--host term`, which plays the scene in real Ghostty in
+  the yi-term image (`just yi-term` builds it) and uses its grabs. Nothing here gates a build.
 - vt100 tests for viewport code must include a nonzero-offset case: an
   inline viewport at row 0 hides every coordinate-origin bug (the blank-frame
   draw-offset bug shipped exactly this way).
