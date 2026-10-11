@@ -10,9 +10,9 @@ const DONE: &str = "done";
 const STAMP: &str = ".yi/retention.stamp";
 const LOCK: &str = ".yi/retention.flock";
 const TOMB: &str = "gone";
-/// A project whose nearest surviving ancestor is one of these, or a mount point left under one,
-/// sat on a volume now unmounted.
+/// A project whose nearest surviving ancestor is one of these sat on a volume now unmounted.
 const MOUNT_ROOTS: [&str; 4] = ["/Volumes", "/mnt", "/media", "/run/media"];
+const USER_MOUNTS: [&str; 2] = ["/media", "/run/media"];
 
 enum Fate {
     Keep,
@@ -44,9 +44,10 @@ fn checkpoint_fate(dir: &Path, idle: Duration) -> Fate {
         .ancestors()
         .find(|up| up.exists())
         .is_some_and(|up| {
-            MOUNT_ROOTS
-                .iter()
-                .any(|root| up == Path::new(root) || up.parent() == Some(Path::new(root)))
+            MOUNT_ROOTS.iter().any(|root| up == Path::new(root))
+                || up
+                    .parent()
+                    .is_some_and(|parent| USER_MOUNTS.iter().any(|root| parent == Path::new(root)))
         });
     match project.try_exists() {
         Ok(false) if !unmounted && idle > ORPHAN_AFTER => Fate::Remove,
@@ -145,13 +146,7 @@ pub fn sweep_home_hourly(home: &Path) -> Option<std::thread::JoinHandle<()>> {
     if fresh && std::fs::read_to_string(&stamp).is_ok_and(|mark| mark == DONE) {
         return None;
     }
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(home.join(LOCK))
-        .ok()?;
-    lock.try_lock().ok()?;
+    let lock = yi_session::try_lock_file(&home.join(LOCK)).ok()?.ok()?;
     let home = home.to_path_buf();
     Some(std::thread::spawn(move || {
         drop(sweep(&home, false));
