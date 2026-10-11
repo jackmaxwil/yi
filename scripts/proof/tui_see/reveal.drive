@@ -1,0 +1,15 @@
+#! solo --size 80x18 --faux scripts/proof/tui_see/reply.jsonl
+# A held turn, then the streaming reveal frame by frame on a frozen clock.
+wait-frame 5000 faux-1
+hold text_delta 3
+type make the rail calmer
+key enter
+wait 300
+tick 400
+snap held
+release
+snap-strip reveal 4 160
+tick 8000
+wait-idle 10000
+snap done
+quit
