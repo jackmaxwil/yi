@@ -32,8 +32,37 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        // Incident: a drive test that flaked on the forge left nothing to read, its frames and
+        // session gone with this dir; a panicking integration test keeps a copy under target/tmp.
+        if std::thread::panicking()
+            && let Some(kept) = keep(&self.0)
+        {
+            eprintln!("kept the failing test's scratch dir: {}", kept.display());
+        }
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A copy, not a rename: the system temp dir and the target dir are different filesystems on
+/// the forge's runners. Sockets and symlinks are skipped.
+fn keep(dir: &Path) -> Option<PathBuf> {
+    let kept = Path::new(option_env!("CARGO_TARGET_TMPDIR")?)
+        .join("failed")
+        .join(dir.file_name()?);
+    let mut stack = vec![(dir.to_path_buf(), kept.clone())];
+    while let Some((from, to)) = stack.pop() {
+        std::fs::create_dir_all(&to).ok()?;
+        for entry in std::fs::read_dir(&from).ok()?.flatten() {
+            let kind = entry.file_type().ok()?;
+            let dest = to.join(entry.file_name());
+            if kind.is_dir() {
+                stack.push((entry.path(), dest));
+            } else if kind.is_file() {
+                std::fs::copy(entry.path(), dest).ok()?;
+            }
+        }
+    }
+    Some(kept)
 }
 
 impl std::ops::Deref for Scratch {
