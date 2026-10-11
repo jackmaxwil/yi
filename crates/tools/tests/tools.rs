@@ -3603,14 +3603,7 @@ fn the_pinned_ripwire_answers_in_the_shapes_yi_reads() -> TestResult {
 fn shown_verbatim(reduced: &str, source: &str) -> Result<(), String> {
     let lines: std::collections::HashSet<&str> = source.lines().map(str::trim_end).collect();
     // The reducer's own count of a repeated line rides on its first occurrence: ` [×N]`.
-    let unmarked = |line: &str| -> String {
-        match line.rsplit_once(" [×") {
-            Some((text, count)) if count.trim_end_matches(']').parse::<usize>().is_ok() => {
-                text.to_owned()
-            }
-            _ => line.trim_end().to_owned(),
-        }
-    };
+    let unmarked = |line: &str| yi_tools::reduce::source_form(line).trim_end().to_owned();
     let invented: Vec<&str> = (reduced.lines())
         .filter(|line| !line.starts_with('[') && !line.trim().is_empty())
         .filter(|line| !lines.contains(unmarked(line).as_str()))
@@ -3621,16 +3614,9 @@ fn shown_verbatim(reduced: &str, source: &str) -> Result<(), String> {
     }
 }
 
-/// The `a-b` a reducer row ends with: what it omitted, counted or pointed at.
+/// The `a-b` a reducer row ends with, in either numbering.
 fn row_range(row: &str) -> Option<(usize, usize)> {
-    let inner = row.strip_prefix('[')?.strip_suffix(']')?;
-    let inner = inner
-        .strip_suffix(" of the cut capture, not the file")
-        .unwrap_or(inner);
-    let (_, range) = inner.rsplit_once(": ")?;
-    let range = range.strip_prefix("output lines ").unwrap_or(range);
-    let (from, to) = range.split_once('-')?;
-    Some((from.parse().ok()?, to.parse().ok()?))
+    yi_tools::reduce::row_span(&row.replace(" of the cut capture, not the file", ""))
 }
 
 /// Each `[N lines omitted: a-b]` row names exactly the lines between its neighbours: a shown
