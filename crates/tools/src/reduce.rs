@@ -241,7 +241,10 @@ fn is_signal(line: &str) -> bool {
     ];
     // Incident: a HOME under `.yi-homes/keep-failed` made every line naming a path in it a signal.
     (line.to_ascii_lowercase().split_whitespace())
-        .map(|word| word.rsplit('/').next().unwrap_or(word))
+        .map(|word| {
+            (word.strip_prefix(['/', '~']))
+                .map_or(word, |path| path.rsplit('/').next().unwrap_or(path))
+        })
         .any(|word| SIGNALS.iter().any(|signal| word.contains(signal)))
 }
 
