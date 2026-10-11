@@ -25,6 +25,9 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
   NEXTEST_TEST_THREADS: "5"
+  # Incident: upload-artifact runs on Node, which ignores the system store, and failed every
+  # chunk with "unable to get local issuer certificate" against the forge's internal CA.
+  NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
 
 jobs:
   gate:
@@ -63,16 +66,15 @@ jobs:
           # only by later runs of that PR and costs the shared disk every push.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just lane ${{ matrix.lane }}
-      # A failing test keeps a copy of its scratch dir (frames, casts, sessions) under target/tmp.
+      # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
+      # drive run its frames under target/tmp/drive.
       - uses: actions/upload-artifact@v3
         if: failure() && matrix.lane == 'test'
-        env:
-          # Incident: upload-artifact runs on Node, which ignores the system store and refused
-          # the forge's internal CA on every chunk.
-          NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
         with:
           name: failed-tests
-          path: target/tmp/failed/
+          path: |
+            target/tmp/failed/
+            target/tmp/drive/
           if-no-files-found: ignore
           retention-days: 7
 

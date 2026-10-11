@@ -35,7 +35,8 @@ impl Drop for Scratch {
         // Incident: a drive test that flaked on the forge left nothing to read, its frames and
         // session gone with this dir; a panicking integration test keeps a copy under target/tmp.
         if std::thread::panicking()
-            && let Some(kept) = keep(&self.0)
+            && let Some(name) = self.0.file_name()
+            && let Some(kept) = keep(&self.0, "failed", name)
         {
             eprintln!("kept the failing test's scratch dir: {}", kept.display());
         }
@@ -43,26 +44,46 @@ impl Drop for Scratch {
     }
 }
 
+/// Copies `dir` to `target/tmp/<shelf>/<name>` over any older copy; None outside an
+/// integration test, or when the copy failed, which is said and leaves no partial copy.
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn keep(dir: &Path, shelf: &str, name: &std::ffi::OsStr) -> Option<PathBuf> {
+    let kept = Path::new(option_env!("CARGO_TARGET_TMPDIR")?)
+        .join(shelf)
+        .join(name);
+    let _ = std::fs::remove_dir_all(&kept);
+    match copy_tree(dir, &kept) {
+        Ok(()) => Some(kept),
+        Err(error) => {
+            eprintln!(
+                "could not keep {} at {}: {error}",
+                dir.display(),
+                kept.display()
+            );
+            let _ = std::fs::remove_dir_all(&kept);
+            None
+        }
+    }
+}
+
 /// A copy, not a rename: the system temp dir and the target dir are different filesystems on
 /// the forge's runners. Sockets and symlinks are skipped.
-fn keep(dir: &Path) -> Option<PathBuf> {
-    let kept = Path::new(option_env!("CARGO_TARGET_TMPDIR")?)
-        .join("failed")
-        .join(dir.file_name()?);
-    let mut stack = vec![(dir.to_path_buf(), kept.clone())];
+fn copy_tree(dir: &Path, to: &Path) -> std::io::Result<()> {
+    let mut stack = vec![(dir.to_path_buf(), to.to_path_buf())];
     while let Some((from, to)) = stack.pop() {
-        std::fs::create_dir_all(&to).ok()?;
-        for entry in std::fs::read_dir(&from).ok()?.flatten() {
-            let kind = entry.file_type().ok()?;
+        std::fs::create_dir_all(&to)?;
+        for entry in std::fs::read_dir(&from)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
             let dest = to.join(entry.file_name());
             if kind.is_dir() {
                 stack.push((entry.path(), dest));
             } else if kind.is_file() {
-                std::fs::copy(entry.path(), dest).ok()?;
+                std::fs::copy(entry.path(), dest)?;
             }
         }
     }
-    Some(kept)
+    Ok(())
 }
 
 impl std::ops::Deref for Scratch {
