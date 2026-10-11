@@ -222,10 +222,6 @@ pub(crate) fn calls<M: std::borrow::Borrow<AgentMessage>>(
         .collect()
 }
 
-fn path_of(arguments: &Args) -> Option<&str> {
-    arguments.get("path").and_then(serde_json::Value::as_str)
-}
-
 /// Every annotation on the branch, in the order the model wrote them.
 pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationRecord> + '_ {
     entries.iter().filter_map(|entry| match entry {
@@ -238,18 +234,45 @@ pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationR
     })
 }
 
-/// The results that are the newest read of their path, by index: an edit needs their tags.
-pub(crate) fn newest_reads(calls: &[Option<(&str, &Args)>]) -> BTreeSet<usize> {
-    let mut latest = BTreeMap::new();
+/// The newest read of each file the session edited, by the `[path#TAG]` headers the read, edit
+/// and write results print: an edit needs its file's tags, a file only read is cut like any result.
+pub(crate) fn newest_reads<M: std::borrow::Borrow<AgentMessage>>(
+    calls: &[Option<(&str, &Args)>],
+    messages: &[M],
+) -> BTreeSet<usize> {
+    let shown = |index: usize| -> Vec<String> {
+        let Some(AgentMessage::ToolResult { content, .. }) =
+            messages.get(index).map(|message| message.borrow())
+        else {
+            return Vec::new();
+        };
+        let text = yi_types::message::join_text(content, "\n");
+        let sections =
+            yi_tools::hashline::input::Patch::parse(&text, None).map(|patch| patch.sections);
+        sections
+            .unwrap_or_default()
+            .into_iter()
+            .map(|section| section.path)
+            .collect()
+    };
+    let (mut edited, mut latest) = (Vec::new(), BTreeMap::new());
     for (index, call) in calls.iter().enumerate() {
-        if let Some(path) = call
-            .filter(|(name, _)| *name == "read")
-            .and_then(|(_, args)| path_of(args))
-        {
-            latest.insert(path, index);
+        match call.map(|(name, _)| name) {
+            Some("read") => latest.extend(shown(index).into_iter().map(|path| (path, index))),
+            Some("edit" | "write") => edited.extend(shown(index)),
+            _ => {}
         }
     }
-    latest.into_values().collect()
+    // ponytail: no cwd here, so `/abs/src/lib.rs` and `src/lib.rs` are one file by suffix; a
+    // same-named file elsewhere keeps its read too, which costs tokens, never an edit's tags.
+    let same = |read: &str| {
+        let read = std::path::Path::new(read);
+        (edited.iter())
+            .any(|path: &String| read.ends_with(path) || std::path::Path::new(path).ends_with(read))
+    };
+    (latest.into_iter())
+        .filter_map(|(path, index)| same(&path).then_some(index))
+        .collect()
 }
 
 /// Why no cut ever takes this result, whatever its age or the model's discard.
@@ -270,7 +293,9 @@ pub(crate) fn never_cut(message: &AgentMessage, newest_read: bool) -> Option<&'s
     {
         Some("a result with an image is never cut, since its placeholder could not say so")
     } else if newest_read {
-        Some("the newest read of a file is never cut, since an edit needs its line tags")
+        Some(
+            "the newest read of a file this session edited is never cut, since an edit needs its line tags",
+        )
     } else {
         None
     }
@@ -284,7 +309,7 @@ pub(crate) fn decide(
     now: u64,
 ) -> Option<ReclaimRecord> {
     let calls = calls(messages);
-    let newest = newest_reads(&calls);
+    let newest = newest_reads(&calls, messages);
     let (mut turn, mut turns) = (0_u64, Vec::with_capacity(messages.len()));
     for message in messages {
         if matches!(message, AgentMessage::Assistant { .. }) {
@@ -573,21 +598,67 @@ mod tests {
     }
 
     /// An edit needs the line tags of the newest read of its file, and `ask_user` carries the
-    /// user's own words: neither is ever cut, however old.
+    /// user's own words: neither is ever cut, however old. A file only read is cut once aged.
     #[test]
-    fn the_newest_read_of_a_file_and_the_users_answers_stay() -> Fallible {
+    fn the_newest_read_of_an_edited_file_and_the_users_answers_stay() -> Fallible {
         let mut messages = vec![AgentMessage::user_input(
             UserContent::Text("tidy lib.rs".to_owned()),
             0,
         )];
+        // Result heads as the read, edit and write tools print them (a `yi ask` dogfood session).
         let calls = [
-            ("old-read", "read", json!({"path": "src/lib.rs"})),
-            ("asked", "ask_user", json!({"question": "Which style?"})),
-            ("new-read", "read", json!({"path": "src/lib.rs"})),
+            (
+                "old-read",
+                "read",
+                "src/lib.rs",
+                "[src/lib.rs#BDF3]\n1:fn tidy() {}",
+            ),
+            (
+                "glob-read",
+                "read",
+                "src/**/*.rs",
+                "[src/main.rs#11AA]\n1:fn main() {}",
+            ),
+            (
+                "doc-read",
+                "read",
+                "docs/style.md",
+                "[docs/style.md#F464]\n1:# style",
+            ),
+            ("asked", "ask_user", "", "Tabs."),
+            (
+                "new-read",
+                "read",
+                "src/lib.rs",
+                "[src/lib.rs#BDF3]\n1:fn tidy() {}",
+            ),
+            (
+                "edited",
+                "edit",
+                "",
+                "[/work/src/lib.rs#9A42]\nupdated; first change at line 1\nsyntax: ok",
+            ),
+            (
+                "written",
+                "write",
+                "src/main.rs",
+                "[src/main.rs#22BB]\nWrote 13 bytes to src/main.rs",
+            ),
         ];
-        for (id, name, args) in calls {
-            messages.push(assistant(&[(id.to_owned(), name, args)], 0));
-            messages.push(result(id, name, 20_000));
+        for (id, name, path, head) in calls {
+            messages.push(assistant(
+                &[(id.to_owned(), name, json!({"path": path}))],
+                0,
+            ));
+            let mut answer = result(id, name, 20_000);
+            if let AgentMessage::ToolResult { content, .. } = &mut answer {
+                let head = Content::Text {
+                    text: format!("{head}\n"),
+                    text_signature: None,
+                };
+                content.insert(0, head);
+            }
+            messages.push(answer);
         }
         messages.extend(bash_session(6).into_iter().skip(1));
         let record = decide(&messages, &Cut::default(), &opus()?, 3_600_000).ok_or("no cut")?;
@@ -596,11 +667,12 @@ mod tests {
             .iter()
             .map(|item| item.tool_call_id.as_str())
             .collect();
-        assert!(cut.contains(&"old-read"), "{cut:?}");
         assert!(
-            !cut.contains(&"asked") && !cut.contains(&"new-read"),
+            cut.contains(&"old-read") && cut.contains(&"doc-read"),
             "{cut:?}"
         );
+        let kept = ["asked", "new-read", "glob-read"];
+        assert!(!kept.iter().any(|id| cut.contains(id)), "{cut:?}");
         Ok(())
     }
 
