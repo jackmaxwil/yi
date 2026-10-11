@@ -45,6 +45,11 @@ MAX_CROP_PX = 1200
 MARGIN_ROWS, MARGIN_COLS = 2, 8
 
 
+def cap_notice(kept: int, total: int, unit: str, holder: str) -> str:
+    """The loud-cap row (045-loud-caps): what was kept of what total, the cap, and where the rest lives."""
+    return f"[… kept {kept} of {total} {unit} (cap {kept}); {holder}]"
+
+
 def header(scene: Path) -> tuple[str, list[str]]:
     words = []
     for line in scene.read_text().splitlines():
@@ -697,8 +702,7 @@ def diff(a: Path, b: Path) -> Path:
         boxes = regions(changed)
         out.append(f"{len(boxes)} changed region(s)")
         if len(boxes) > MAX_REGIONS:
-            out.append(f"[… kept {MAX_REGIONS} of {len(boxes)} changed regions (cap {MAX_REGIONS}) "
-                       f"— the full frames below hold the rest]")
+            out.append(cap_notice(MAX_REGIONS, len(boxes), "changed regions", "the full frames below hold the rest"))
         png_a, png_b = a / "frames" / f"{stem}.png", b / "frames" / f"{stem}.png"
         if png_a.exists() and png_b.exists():
             rows, cols = len(after), len(after[0])
@@ -868,6 +872,8 @@ def watch(scene: Path, host: str) -> None:
 MAX_PICTURES = 24
 MAX_DIFF_LINES = 40
 MARKER = "TUI snapshots for this pull request (scripts/tui_see.py)"
+# The review bot reads the comment only when this names the head it reads (scripts/pr_review.py).
+HEAD_MARK = "<!-- tui-see head={} -->"
 
 
 def ci(base_bin: Path, head_bin: Path) -> None:
@@ -934,9 +940,8 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
             text = [l for l in body.strip().splitlines()
                     if not l.startswith(("region ", "whole frame"))]
             if len(text) > MAX_DIFF_LINES:
-                text = text[:MAX_DIFF_LINES] + [
-                    f"[… kept {MAX_DIFF_LINES} of {len(text)} lines (cap {MAX_DIFF_LINES}); "
-                    f"the job's tui-gallery artifact holds the whole diff]"]
+                text = text[:MAX_DIFF_LINES] + [cap_notice(
+                    MAX_DIFF_LINES, len(text), "lines", "the job's tui-gallery artifact holds the whole diff")]
             lines += [f"### {scene} · {name}", "", *fence(text)]
             drive = SCENES / f"{scene}.drive"
             if drive.exists() and header(drive)[0] == "console":
@@ -954,10 +959,9 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
         lines.append("No snap changed between the base and the head." if not failed
                      else "No snap changed among the runs that finished.")
     if cut_at is not None:
-        lines.insert(cut_at, f"[… kept {MAX_PICTURES} of {len(pictures)} crops (cap "
-                     f"{MAX_PICTURES}); the job's tui-gallery artifact holds every one]")
+        lines.insert(cut_at, cap_notice(
+            MAX_PICTURES, len(pictures), "crops", "the job's tui-gallery artifact holds every one"))
     return "\n".join(lines) + "\n", pictures[:MAX_PICTURES]
-
 
 def post(out: Path) -> None:
     """Upserts the PR's one snapshot comment, its crops uploaded as the comment's own assets so a
@@ -972,6 +976,8 @@ def post(out: Path) -> None:
         print(f"[… no forge to post to; the comment is {out / 'comment.md'}]")
         return
     api, repo, pr = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY", "FORGEJO_PR"))
+    if os.environ.get("FORGEJO_HEAD"):
+        body = body.replace(f"{MARKER}\n", f"{MARKER}\n{HEAD_MARK.format(os.environ['FORGEJO_HEAD'])}\n", 1)
     bare = re.sub(r"^@@crop-\d+@@\n", "", body, flags=re.M)
     comment = forge.upsert(forge.send, api, repo, pr, bare)
     assets = f"{api}/repos/{repo}/issues/comments/{comment['id']}/assets"
@@ -1104,9 +1110,10 @@ def selfcheck() -> None:
         keep = forge.send, globals()["upload"], dict(os.environ)
         forge.send, globals()["upload"] = fake, lambda url, path: f"https://x/{path.name}"
         os.environ.update(FORGEJO_API_URL="https://f/api", FORGEJO_REPOSITORY="o/r",
-                          FORGEJO_PR="3", FORGEJO_TOKEN="t")
+                          FORGEJO_PR="3", FORGEJO_TOKEN="t", FORGEJO_HEAD="ab12")
         try:
             post(out)
+            assert calls[1][2]["body"].startswith(f"{MARKER}\n{HEAD_MARK.format('ab12')}\n"), calls[1]
             assert all("@@crop" not in str(payload) for _, _, payload in calls), calls
             assert calls[-1][2]["body"].count("](https://x/") == MAX_PICTURES, calls[-1]
             assert ("DELETE", "https://f/api/repos/o/r/issues/comments/9/assets/5", None) in calls

@@ -112,6 +112,7 @@ jobs:
           FORGEJO_API_URL: ${{ github.api_url }}
           FORGEJO_REPOSITORY: ${{ github.repository }}
           FORGEJO_PR: ${{ github.event.pull_request.number }}
+          FORGEJO_HEAD: ${{ github.event.pull_request.head.sha }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # A base older than the `post` verb answers with its usage (exit 2): the comment waits
         # for a base that has it rather than turning the run red.
