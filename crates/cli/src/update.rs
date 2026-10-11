@@ -23,7 +23,11 @@ fn run() -> i32 {
         eprintln!("usage: yi update");
         return 2;
     }
-    match installed() {
+    report(installed())
+}
+
+fn report(installed: Result<(String, PathBuf), String>) -> i32 {
+    match installed {
         Ok((line, binary)) => {
             println!("{line}");
             sync(&binary)
@@ -652,7 +656,7 @@ mod tests {
     }
 
     /// A release that moved a plugin's pin is only half applied until the installed binary
-    /// syncs; its failure is the update's exit code, its own stderr the reason.
+    /// syncs; its failure is the update's exit code, and a failed update spawns nothing.
     #[cfg(unix)]
     #[test]
     fn the_installed_binary_is_asked_to_sync_its_plugins() -> Result<(), Box<dyn std::error::Error>>
@@ -668,10 +672,16 @@ mod tests {
             );
             std::fs::write(&binary, script)?;
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))?;
-            assert_eq!(sync(&binary), code);
+            assert_eq!(report(Ok(("installed".to_owned(), binary))), code);
             assert_eq!(std::fs::read_to_string(&argv)?, "plugin sync\n");
+            std::fs::remove_file(&argv)?;
         }
-        assert_eq!(sync(&tmp.0.join("gone")), 1);
+        assert_eq!(report(Ok(("installed".to_owned(), tmp.0.join("gone")))), 1);
+        assert_eq!(
+            report(Err("the release digest does not match".to_owned())),
+            1
+        );
+        assert!(!argv.exists(), "a failed update asked nothing to sync");
         Ok(())
     }
 
@@ -952,6 +962,11 @@ mod tests {
             format!("installed 0.1.0 → 0.2.0 at {}", prefix.display())
         );
         assert_eq!(std::fs::read(&exe)?, b"new");
+        assert_eq!(
+            installed_binary(&prefix, read_receipt(&home)?.as_ref()),
+            exe,
+            "the binary asked to sync is the one just published"
+        );
         assert_eq!(
             std::fs::read(home.join(".yi/skills/yi/SKILL.md"))?,
             b"skill body"
