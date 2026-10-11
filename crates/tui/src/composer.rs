@@ -620,12 +620,15 @@ fn clear_line(textarea: &mut TextArea<'_>) -> bool {
 }
 
 impl crate::app::App {
-    /// Invariant: a quote lands whole at the cursor; a long one never folds into a paste marker.
+    /// Invariant: a quote lands whole on its own lines; a long one never folds into a paste marker.
     pub fn quote(&mut self, text: &str) {
         let quoted: String = sanitize_paste(text)
             .lines()
             .map(|line| format!("> {line}\n"))
             .collect();
+        if self.composer.textarea.cursor().1 != 0 {
+            self.composer.textarea.insert_newline();
+        }
         self.composer.textarea.insert_str(quoted);
     }
 }

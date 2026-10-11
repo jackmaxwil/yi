@@ -88,7 +88,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('y') => Some(Action::ToggleTape),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('?') => Some(Action::Keys),
-        KeyCode::Char('m') => Some(Action::Menu),
+        KeyCode::Char('c') => Some(Action::Menu),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
@@ -208,8 +208,8 @@ pub const CHORDS: [Chord; 22] = [
     chord("zoom pane", "⌥z", "⌘⇧M", "z", Some(Action::Zoom)),
     chord(
         "menu for the pane or session",
-        "⌥m",
-        "⌥m",
+        "⌥c",
+        "⌥c",
         "m",
         Some(Action::Menu),
     ),

@@ -102,25 +102,24 @@ impl App {
         Some((row, col))
     }
 
+    fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {
+        let hits = self.hits.as_ref()?;
+        let (pane, _) = hits
+            .closers
+            .iter()
+            .find(|(_, rect)| rect.contains(Position::new(x, y)))?;
+        Some(*pane)
+    }
+
     fn press(&mut self, outbound: &Outbound, x: u16, y: u16) {
         // Any new click drops the last drag's highlight.
         if self.selection.take().is_some() {
             self.dirty = true;
         }
         let Some(hits) = &self.hits else { return };
-        if let Some((pane, _)) = hits
-            .closers
-            .iter()
-            .find(|(_, rect)| rect.contains(Position::new(x, y)))
-        {
-            let pane = *pane;
-            if let Some(tab) = self.state.tab_mut() {
-                tab.layout.focus_pane(pane);
-            }
-            self.apply_action(outbound, Action::ClosePane);
-            self.dirty = true;
-            return;
-        }
+        // Incident: a lower pane's mark sits on the split it can be dragged by, and a press meant
+        // as a resize closed the pane; a mark closes on a release over it that did not drag.
+        self.pending_close = self.closer_at(x, y);
         if let Some((_, index)) = hits
             .tabs
             .iter()
@@ -162,6 +161,9 @@ impl App {
         });
         if let Some(border) = split {
             self.drag = Some((self.state.active_tab, border.path.clone()));
+            return;
+        }
+        if self.pending_close.is_some() {
             return;
         }
         if let Some((pane_id, _)) = hits
@@ -234,6 +236,7 @@ impl App {
             MouseKind::RightDown => self.right_click(x, y),
             MouseKind::Moved => {}
             MouseKind::Drag => {
+                self.pending_close = None;
                 if self.editor_drag {
                     let cell = self
                         .state
@@ -283,6 +286,18 @@ impl App {
             }
             MouseKind::Up => {
                 self.drag = None;
+                if let Some(pane) = self
+                    .pending_close
+                    .take()
+                    .filter(|pane| self.closer_at(x, y) == Some(*pane))
+                {
+                    if let Some(tab) = self.state.tab_mut() {
+                        tab.layout.focus_pane(pane);
+                    }
+                    self.apply_action(outbound, Action::ClosePane);
+                    self.dirty = true;
+                    return;
+                }
                 if std::mem::take(&mut self.editor_drag) {
                     let copied = self.editor_mut().and_then(Editor::release);
                     if let Some(text) = copied {
