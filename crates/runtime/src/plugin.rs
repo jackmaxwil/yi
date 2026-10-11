@@ -343,9 +343,8 @@ mod tests {
         std::fs::write(tool.dir(&home).join("tool"), BINARY.1)?;
         assert!(tool.skill_root(&home).is_none());
         let tampered = archive(&[("tool-2.0/tool", b"tampered"), SKILL])?;
-        let error = add(&tool, &home, |_| Ok(tampered.clone()))
-            .err()
-            .ok_or("installed")?;
+        let outcome = add(&tool, &home, |_| Ok(tampered.clone()));
+        let error = outcome.err().ok_or("installed")?;
         assert!(error.contains("not installing"), "{error}");
         assert_eq!(
             std::fs::read(tool.dir(&home).join("tool"))?,
@@ -357,6 +356,54 @@ mod tests {
             .skill_root(&home)
             .ok_or("the skills were not published")?;
         assert!(skills.join("tool-map/SKILL.md").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn a_concurrent_publish_survives_this_session_s_failed_restore() -> TestResult {
+        let scratch = crate::scratch::Scratch::new("plugin-concurrent")?;
+        let home = scratch.home()?;
+        let tampered = archive(&[("tool-2.0/tool", b"tampered"), SKILL])?;
+        let tool = plugin(&archive(&[BINARY, SKILL])?, BINARY.1, true);
+        let dir = tool.dir(&home);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("tool"), b"previous")?;
+        let outcome = add(&tool, &home, |_| {
+            std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+            std::fs::write(dir.join("tool"), BINARY.1).map_err(|error| error.to_string())?;
+            Ok(tampered.clone())
+        });
+        let error = outcome.err().ok_or("installed")?;
+        assert!(error.contains("not installing"), "{error}");
+        assert_eq!(
+            std::fs::read(dir.join("tool"))?,
+            BINARY.1,
+            "a failed restore must not delete the concurrent publish"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_aside_left_behind_by_a_dead_process_is_not_a_published_version() -> TestResult {
+        let scratch = crate::scratch::Scratch::new("plugin-aside-visible")?;
+        let home = scratch.home()?;
+        let bytes = archive(&[BINARY, SKILL])?;
+        let tool = plugin(&bytes, BINARY.1, true);
+        let dir = tool.dir(&home);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("tool"), b"previous")?;
+        let _ = yi_kernel::tarball::set_aside(&dir)?;
+        assert!(
+            matches!(state(&tool, &home), State::Missing),
+            "a dead process's aside must not read as a published version"
+        );
+        assert!(!chosen(&tool, &home));
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        let aside = dir.with_file_name(format!(".{}-aside-{}", name, std::process::id()));
+        assert!(
+            aside.join("tool").is_file(),
+            "the aside kept the working install"
+        );
         Ok(())
     }
 }
