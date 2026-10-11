@@ -74,7 +74,10 @@ fn select(args: &Args, rest: &[&str]) -> i32 {
         Ok(picked) => (picked.ranges, None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
-    let row = json!({"ranges": ranges, "error": error, "ms": started.elapsed().as_millis(), "cost": usage.cost.total});
+    let cost: f64 = (usage.iter())
+        .filter_map(|usage| usage.cost.total.as_f64())
+        .sum();
+    let row = json!({"ranges": ranges, "error": error, "ms": started.elapsed().as_millis(), "cost": cost});
     println!("{row}");
     0
 }
