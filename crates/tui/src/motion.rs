@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
@@ -15,8 +17,37 @@ pub fn elapsed_of(phase: usize) -> u128 {
     u128::try_from(phase).unwrap_or(0).saturating_mul(TICK_MS)
 }
 
-pub(crate) fn elapsed_ms(since: std::time::Instant) -> u64 {
-    u64::try_from(since.elapsed().as_millis()).unwrap_or(0)
+pub(crate) fn elapsed_ms(since: Instant, now: Instant) -> u64 {
+    u64::try_from(now.saturating_duration_since(since).as_millis()).unwrap_or(0)
+}
+
+/// What every on-screen duration and animation reads. A drive script that steps time freezes it,
+/// so a spinner, a reveal or an elapsed label lands on the same frame on every run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Clock {
+    #[default]
+    Real,
+    Fixed(Instant),
+}
+
+impl Clock {
+    pub fn now(self) -> Instant {
+        match self {
+            Self::Real => Instant::now(),
+            Self::Fixed(at) => at,
+        }
+    }
+
+    pub fn since(self, at: Instant) -> Duration {
+        self.now().saturating_duration_since(at)
+    }
+
+    /// A step that would overflow `Instant` holds still rather than panic.
+    pub fn advance(&mut self, by: Duration) {
+        if let Self::Fixed(at) = self {
+            *at = at.checked_add(by).unwrap_or(*at);
+        }
+    }
 }
 
 /// Starburst. Every glyph is one cell wide — a width change would reflow the

@@ -45,7 +45,8 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    The headless screen is 80x24; `--size COLSxROWS` renders another, and
    `just console-proof <script> <out> 254x40` passes it through, for a
    layout that only shows on a wide screen.
-   `scripts/proof/demo.drive` is the worked example.
+   `scripts/proof/demo.drive` is the worked example. A test replays both
+   casts and asserts they land on the frame the assertions ran against.
 7. To see what a change did, diff snaps rather than eyeballing whole frames:
    `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
    `just tui-see diff target/see/<scene>/base target/see/<scene>/head`. The summary lists every
@@ -53,9 +54,14 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    regions, and crops of each region before and after (agg pads its stills, so a crop is within
    half a row of exact); Read the crops, not the whole frame.
    Scenes live beside the proofs: `#! solo|console <flags>` on top, `snap <name>` where a frame
-   matters, `--seed <session.jsonl>` in the `#!` line to start from a real session.
+   matters, `--seed <session.jsonl>` in the `#!` line to start from a real session (without one,
+   a solo scene starts from an empty session under a fixed id, so its badge colour is stable).
    `--host term` replays the scene in real Ghostty inside the yi-term container (Xvfb, software
    GL) and swaps in its grabs, so kitty images, the orb and true colour are in the crops. Build it
    once with `just yi-term`; it matches the host's architecture, because Ghostty under emulation
-   took 30 s to map a window. On that host `wait-idle` means a second without output. A test replays both
-   casts and asserts they land on the frame the assertions ran against.
+   took 30 s to map a window. On that host `wait-idle` means a second without output.
+8. Motion and in-flight states: put `--faux <cassette.jsonl>` in the `#!` line, `hold
+   text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
+   80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
+   past the reveal before waiting. Hold is solo only; the console's model lives in the daemon,
+   and the term host refuses `tick` and `hold`.
