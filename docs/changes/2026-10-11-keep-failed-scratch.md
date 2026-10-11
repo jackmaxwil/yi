@@ -1,5 +1,5 @@
 ---
 issue: Closes #1214
-raise: tests +55
+raise: tests +110
 ---
-A failing test now leaves something to read. When an integration test panics, its scratch directory (frames, casts, session files, the fake HOME) is copied to `target/tmp/failed/<name>` before the temp copy is removed, and the test's stderr names the path. The `pr` workflow's test lane uploads that directory as the `failed-tests` artifact for seven days when the lane fails, so a drive test that flakes on the forge can be read from its frames rather than its log. A test that fails by returning an error rather than panicking is not kept.
+A failing test now leaves something to read. Every console drive run keeps its frames at `target/tmp/drive/<name>`, replacing the last run's copy. That covers the two shapes the known flakes fail in: a timed-out wait that returns an error, and an assertion on a frame read after the run's scratch dir is gone. Any integration test that panics also keeps a copy of its scratch dir at `target/tmp/failed/<name>`, and its stderr names the path. A copy that fails partway says so and leaves nothing behind. The `pr` workflow's test lane uploads both directories as the `failed-tests` artifact for seven days when the lane fails.

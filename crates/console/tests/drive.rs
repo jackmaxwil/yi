@@ -372,9 +372,14 @@ fn run_opts(
     frames: Option<PathBuf>,
     width: u16,
 ) -> TestResult {
-    let (_dir, socket) = scratch_socket(name)?;
+    let (dir, socket) = scratch_socket(name)?;
     let server = spawn_fixture(socket.clone(), fixture);
     let steps = parse_script(script)?;
+    // Incident: the flaky drive tests fail by error or by an assertion after this returns, and
+    // took their frames with them; every run's frames stay at target/tmp/drive/<name>.
+    let frames = frames
+        .or_else(|| std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from))
+        .unwrap_or_else(|| dir.join("frames"));
     let code = run_headless(
         &ConsoleOptions {
             socket,
@@ -385,13 +390,13 @@ fn run_opts(
         },
         DriveOptions {
             script: steps,
-            frames_dir: frames
-                .or_else(|| std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from)),
+            frames_dir: Some(frames.clone()),
             record: None,
             width,
             height: 30,
         },
     );
+    scratch::keep(&frames, "drive", name.as_ref());
     // The console shut the socket down; the fixture thread ends with it.
     match server.join() {
         Ok(Ok(())) => {}
@@ -507,6 +512,34 @@ fn permission_answer(frame: &Value) -> Vec<Value> {
         json!({"sessionUpdate": "state_update", "state": "idle"}),
     ));
     frames
+}
+
+/// A drive run that times out fails by error, not by panic; its frames still stay behind.
+#[test]
+fn a_failed_drive_run_leaves_its_frames() -> TestResult {
+    let kept = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("drive/kept-after-a-timeout");
+    let _ = std::fs::remove_dir_all(&kept);
+    let failed = run(
+        "kept-after-a-timeout",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         wait-frame 200 a row this console never draws\n\
+         quit\n",
+    );
+    assert!(failed.is_err(), "the timed-out wait must fail the run");
+    let frames = std::fs::read_dir(&kept)?.filter_map(Result::ok);
+    let last = frames
+        .map(|entry| entry.path())
+        .max()
+        .ok_or("no frame was kept")?;
+    assert!(
+        std::fs::read_to_string(last)?.contains("s-alpha"),
+        "the kept frame is the one the run drew"
+    );
+    Ok(())
 }
 
 #[test]
@@ -782,7 +815,7 @@ fn navigator_filters_and_opens() -> TestResult {
 
 #[test]
 fn tiny_terminal_survives_splits() -> TestResult {
-    let (_dir, socket) = scratch_socket("tiny")?;
+    let (dir, socket) = scratch_socket("tiny")?;
     let server = spawn_fixture(
         socket.clone(),
         vec![
@@ -813,12 +846,13 @@ fn tiny_terminal_survives_splits() -> TestResult {
         },
         DriveOptions {
             script: steps,
-            frames_dir: None,
+            frames_dir: Some(dir.join("frames")),
             record: None,
             width: 20,
             height: 8,
         },
     );
+    scratch::keep(&dir.join("frames"), "drive", "tiny".as_ref());
     match server.join() {
         Ok(Ok(())) => {}
         Ok(Err(error)) => return Err(format!("fixture: {error}").into()),
