@@ -196,11 +196,10 @@ fn a_session_start_sweeps_a_home_with_no_stamp() -> Result<(), Box<dyn Error>> {
     let (gone, orphan) = captured(&scratch, &root, "gone")?;
     std::fs::remove_dir_all(gone)?;
     age_dir(&orphan, 8 * DAY)?;
-    yi_runtime::retention::sweep_home_hourly(&home);
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while orphan.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    yi_runtime::retention::sweep_home_hourly(&home)
+        .ok_or("the sweep was skipped")?
+        .join()
+        .map_err(|_| "the sweep panicked")?;
     assert!(
         !orphan.exists(),
         "the first session of the hour swept nothing"
@@ -217,14 +216,39 @@ fn a_fresh_stamp_from_a_killed_sweep_does_not_hold_the_hour() -> Result<(), Box<
     std::fs::remove_dir_all(gone)?;
     age_dir(&orphan, 8 * DAY)?;
     std::fs::write(home.join(".yi/retention.stamp"), b"started")?;
-    yi_runtime::retention::sweep_home_hourly(&home);
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while orphan.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    yi_runtime::retention::sweep_home_hourly(&home)
+        .ok_or("the sweep was skipped")?
+        .join()
+        .map_err(|_| "the sweep panicked")?;
     assert!(
         !orphan.exists(),
         "a stamp a killed sweep left held the hour"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_sweep_in_flight_holds_off_a_second_session() -> Result<(), Box<dyn Error>> {
+    let scratch = Scratch::new("yi-retention-in-flight")?;
+    let home = scratch.join("home");
+    let root = yi_runtime::checkpoint::checkpoint_root(&home);
+    let (gone, orphan) = captured(&scratch, &root, "gone")?;
+    std::fs::remove_dir_all(gone)?;
+    age_dir(&orphan, 8 * DAY)?;
+    let held = std::fs::File::create(home.join(".yi/retention.flock"))?;
+    held.try_lock()?;
+    assert!(
+        yi_runtime::retention::sweep_home_hourly(&home).is_none(),
+        "a second session swept beside one in flight"
+    );
+    drop(held);
+    yi_runtime::retention::sweep_home_hourly(&home)
+        .ok_or("a released lock still held the sweep off")?
+        .join()
+        .map_err(|_| "the sweep panicked")?;
+    assert!(
+        !orphan.exists(),
+        "the sweep after the release swept nothing"
     );
     Ok(())
 }

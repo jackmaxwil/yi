@@ -393,7 +393,7 @@ fn build_session(
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
     drop(levers);
-    yi_runtime::retention::sweep_home_hourly(home());
+    drop(yi_runtime::retention::sweep_home_hourly(home()));
     yi_runtime::node::configure(config().node.clone().unwrap_or_default());
     if args.model.is_empty() {
         return Err(Refused {
