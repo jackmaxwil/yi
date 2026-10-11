@@ -456,10 +456,12 @@ def settled_notes(pr, notes, wait=SNAPSHOTS_WAIT):
         started = [jobs.get(job) for job in ("build", "shots", "comment") if job in jobs]
         return bool(started) and jobs.get("comment") not in ENDED and not set(started) & {"failure", "cancelled"}
 
+    waited = False
     while posting() and time.monotonic() < deadline:
         time.sleep(forge_pr.POLL)
-        notes = comments(forge_pr.repo(), pr["number"])
-    return notes
+        waited = True
+    # The comment can land between a read and the status that ends the wait, so read after it.
+    return comments(forge_pr.repo(), pr["number"]) if waited else notes
 
 
 def lens_prompt(probe, pr, diff, base, sha, full_read, shots=""):
@@ -1318,7 +1320,7 @@ def selfcheck():
                    {"build": "success", "shots": "success", "comment": "running"},
                    {"build": "success", "shots": "success", "comment": "success"}])
     fresh = [{"user": {"login": ACTIONS}, "body": shot}]
-    keep = forge_pr.jobs_of, globals()["comments"], time.sleep
+    keep = forge_pr.jobs_of, globals()["comments"], time.sleep, JOB_ENDS
     forge_pr.jobs_of, time.sleep = (lambda pr: next(states)), (lambda secs: None)
     globals()["comments"] = lambda repo, n: fresh
     try:
@@ -1330,8 +1332,13 @@ def selfcheck():
         assert settled_notes({"number": 1}, []) == [], "a failed tui run posts nothing to wait for"
         forge_pr.jobs_of = lambda pr: {}
         assert settled_notes({"number": 1}, []) == [], "a PR the tui workflow skips does not wait"
+        polls = iter([{"build": "running"}])
+        forge_pr.jobs_of = lambda pr: next(polls)
+        globals()["JOB_ENDS"] = time.monotonic() + ROUND_SECS
+        assert settled_notes({"number": 1}, []) == [], "no wait runs into the round the job still owes"
     finally:
-        forge_pr.jobs_of, globals()["comments"], time.sleep = keep
+        forge_pr.jobs_of, globals()["comments"], time.sleep = keep[:3]
+        globals()["JOB_ENDS"] = keep[3]
     assert "older head" in snapshots(posted, "0" * 40) and snapshots([], head) == ""
     prompt = lens_prompt(probes["tests"], {"number": 1, "title": "t", "body": body}, "x", "a" * 8, "b" * 8, True, text)
     assert "<tui-snapshots>\n" + text in prompt, "the lens reads what the head drew"
