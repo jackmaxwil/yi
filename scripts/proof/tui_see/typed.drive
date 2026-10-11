@@ -1,0 +1,8 @@
+#! solo --size 60x12
+wait 200
+type make the rail calmer 易
+snap composer
+key enter
+wait-idle 30000
+snap answered
+quit

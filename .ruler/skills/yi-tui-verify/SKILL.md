@@ -45,5 +45,17 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    The headless screen is 80x24; `--size COLSxROWS` renders another, and
    `just console-proof <script> <out> 254x40` passes it through, for a
    layout that only shows on a wide screen.
-   `scripts/proof/demo.drive` is the worked example. A test replays both
+   `scripts/proof/demo.drive` is the worked example.
+7. To see what a change did, diff snaps rather than eyeballing whole frames:
+   `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
+   `just tui-see diff target/see/<scene>/base target/see/<scene>/head`. The summary lists every
+   changed row with its text and style changes (`cols 25-25: plain → reverse`), the changed
+   regions, and crops of each region before and after (agg pads its stills, so a crop is within
+   half a row of exact); Read the crops, not the whole frame.
+   Scenes live beside the proofs: `#! solo|console <flags>` on top, `snap <name>` where a frame
+   matters, `--seed <session.jsonl>` in the `#!` line to start from a real session.
+   `--host term` replays the scene in real Ghostty inside the yi-term container (Xvfb, software
+   GL) and swaps in its grabs, so kitty images, the orb and true colour are in the crops. Build it
+   once with `just yi-term`; it matches the host's architecture, because Ghostty under emulation
+   took 30 s to map a window. On that host `wait-idle` means a second without output. A test replays both
    casts and asserts they land on the frame the assertions ran against.
