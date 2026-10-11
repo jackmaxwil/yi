@@ -75,6 +75,7 @@ struct Shared {
     waits: Mutex<Option<Arc<dyn Fn() -> u64 + Send + Sync>>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     reuse: Mutex<yi_types::model::Reuse>,
+    reclaimed: Arc<Mutex<crate::reclaim::Cut>>,
     /// The system bytes the first request sent; every later request must send the same (D310).
     first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
@@ -144,6 +145,7 @@ struct RunParts {
     tool_execution: ExecutionMode,
     compactor: Option<Arc<crate::compaction::Compactor>>,
     on_compacted: Option<Arc<dyn Fn() + Send + Sync>>,
+    tool_cwd: Option<std::path::PathBuf>,
 }
 
 pub struct AgentSession {
@@ -159,6 +161,9 @@ pub struct AgentSession {
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
     wall: Mutex<crate::wall::Wall>,
+    spills: Mutex<Option<std::path::PathBuf>>,
+    tool_cwd: Mutex<Option<std::path::PathBuf>>,
+    selector: Mutex<Option<Arc<crate::select::Selector>>>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
 }
@@ -190,6 +195,7 @@ impl AgentSession {
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
                 reuse: Mutex::new(yi_types::model::Reuse::Loop),
+                reclaimed: Arc::default(),
                 first_system_prompt: OnceLock::new(),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
@@ -219,6 +225,9 @@ impl AgentSession {
             plan: Mutex::new(None),
             memory: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
+            spills: Mutex::new(None),
+            tool_cwd: Mutex::new(None),
+            selector: Mutex::new(None),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
         }
@@ -410,6 +419,24 @@ impl AgentSession {
         }
     }
 
+    pub(crate) fn reclaimed(&self) -> Arc<Mutex<crate::reclaim::Cut>> {
+        Arc::clone(&self.shared.reclaimed)
+    }
+
+    /// The model that picks the lines of a cut bash output, read when tools are installed.
+    pub fn set_selector(&self, selector: Option<crate::select::Selector>) {
+        if let Ok(mut slot) = self.selector.lock() {
+            *slot = selector.map(Arc::new);
+        }
+    }
+
+    /// Where cut tool output is kept whole, read when tools are installed; unset keeps nothing.
+    pub fn set_spills(&self, dir: std::path::PathBuf) {
+        if let Ok(mut slot) = self.spills.lock() {
+            *slot = Some(dir);
+        }
+    }
+
     pub fn wall(&self) -> crate::wall::Wall {
         self.wall
             .lock()
@@ -579,16 +606,14 @@ impl AgentSession {
         if let Ok(mut slot) = self.permission.lock() {
             slot.clone_from(&permission);
         }
+        if let Ok(mut slot) = self.tool_cwd.lock() {
+            *slot = Some(cwd.clone());
+        }
         if let Some(broker) = &permission {
             broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
         }
-        // A session with no store yet still spills under a dir of its own (D340).
-        let (store_id, unsaved) = (
-            self.store_id_hook(),
-            yi_session::IdGenerator::new().next_id(),
-        );
-        let spill_key: Arc<dyn Fn() -> Option<String> + Send + Sync> =
-            Arc::new(move || store_id().or_else(|| Some(unsaved.clone())));
+        let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
+        let selector = self.selector.lock().ok().and_then(|slot| slot.clone());
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -607,7 +632,8 @@ impl AgentSession {
                     .with_rules(self.rules_engine())
                     .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
-                    .with_spill_key(Arc::clone(&spill_key))
+                    .with_spills(spills.clone())
+                    .with_selector(selector.clone())
                     .with_transcript(self.store_handle())
                     .with_job_owner(self.shared.job_owner)
                     .with_extensions(Some(self.ext_hook())),
@@ -647,6 +673,12 @@ impl AgentSession {
         };
         let loaded = yi_context::project(&entries);
         let count = loaded.len();
+        *self
+            .shared
+            .reclaimed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            crate::reclaim::Cut::fold(&entries);
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = loaded;
         }
@@ -905,6 +937,7 @@ impl AgentSession {
             tool_execution: self.config.tool_execution,
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
+            tool_cwd: self.tool_cwd.lock().ok().and_then(|slot| slot.clone()),
         }
     }
 

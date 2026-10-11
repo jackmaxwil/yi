@@ -50,7 +50,7 @@ import run as runner  # noqa: E402
 import yi_usage  # noqa: E402
 
 SCENARIOS = ROOT / "fixtures" / "surface" / "scenarios.json"
-SCENARIO_KEYS = {"id", "road", "prompt", "timeoutSec", "seed", "clean", "levers"}
+SCENARIO_KEYS = {"id", "road", "prompt", "timeoutSec", "seed", "clean", "levers", "provokes"}
 REQUIRED_KEYS = {"id", "road", "prompt", "timeoutSec", "seed", "clean"}
 CLEAN_KEYS = {"files", "noRefusalsFrom"}
 QUOTE_CHARS = 220
@@ -104,7 +104,7 @@ def run_scenario(scenario, binary, model, out, cap_usd=None, spent=0.0):
         config.parent.mkdir(parents=True, exist_ok=True)
         # yi_usage.eval_config is the one writer of a trial HOME's config, as it is
         # for run.py and the harbor adapter.
-        config.write_text(json.dumps(yi_usage.eval_config({})))
+        config.write_text(json.dumps(yi_usage.eval_config(os.environ)))
         workspace = Path(work) / "repo"
         workspace.mkdir()
         for relative, body in scenario["seed"].items():
@@ -161,10 +161,10 @@ def run_scenario(scenario, binary, model, out, cap_usd=None, spent=0.0):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def collect_sessions(out):
+def collect_sessions(out, keep=None, name="sessions"):
     """Every session file the rollouts wrote, named by the scenario that wrote it,
-    in one directory the extractor can sweep."""
-    corpus = Path(out) / "sessions"
+    in one directory the extractor can sweep; `keep` narrows it to those scenario ids."""
+    corpus = Path(out) / name
     if corpus.exists():
         shutil.rmtree(corpus)
     corpus.mkdir(parents=True)
@@ -172,13 +172,14 @@ def collect_sessions(out):
         if path.name.endswith(".telemetry.jsonl"):
             continue
         scenario = path.relative_to(out).parts[0]
-        shutil.copy(path, corpus / f"{scenario}--{path.name}")
+        if keep is None or scenario in keep:
+            shutil.copy(path, corpus / f"{scenario}--{path.name}")
     return corpus
 
 
-def mine(corpus, out):
+def mine(corpus, out, name="mining"):
     """The extractor owns the schema; this reads its store rather than the sessions."""
-    store = Path(out) / "mining"
+    store = Path(out) / name
     result = subprocess.run(
         [sys.executable, str(ROOT.parent / "skills/yi/session-mining/extract.py"),
          "--sessions", str(corpus), "--out", str(store)],
@@ -405,13 +406,23 @@ def main(argv=None):
         corpus = collect_sessions(out)
         store = mine(corpus, out)
         counts = census(store)
+        # A scenario that asks the model to provoke refusals is counted apart from the gate,
+        # which is the census of the scenarios where a refusal means Yi missed a real intent.
+        provoking = [s["id"] for s in chosen if s.get("provokes")]
+        gate = counts
+        if provoking:
+            kept = {row["scenario"] for row in rows} - set(provoking)
+            gate = census(mine(collect_sessions(out, kept, "gate-sessions"), out, "gate-mining"))
         machine = {"scenarios": len(rows), "model": args.model, "toolSurface": counts,
+                   "gate": {"without": provoking, "toolSurface": gate},
                    "spentUsd": round(spent, 4), "stopped": stopped,
                    "rows": [{key: row.get(key) for key in ("scenario", "exit", "timedOut", "missingFiles")}
                             for row in rows]}
         (out / "surface.json").write_text(json.dumps(machine, indent=1) + "\n")
         print(json.dumps(machine), flush=True)
         print(report(rows, store, corpus))
+        if provoking:
+            print(f"gate, without {', '.join(provoking)}: {ledger_cell(gate)}")
         if stopped:
             print(f"stopped: {stopped}", file=sys.stderr)
         if args.dry:
@@ -425,7 +436,8 @@ def main(argv=None):
                 print("ok   surface_dry (faux called no tool, as it never does)")
             return 0
         fingerprint = yi_usage.config_fingerprint(
-            runner._capture([args.binary, "--version"]), args.model, "surface", "surface"
+            runner._capture([args.binary, "--version"]), args.model,
+            "surface" + yi_usage.routing_label(os.environ), "surface",
         )
         print(runner.ledger_row(rows, args.model, fingerprint, "surface", "evals/surface.py"))
     return 0

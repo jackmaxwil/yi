@@ -3,13 +3,24 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tokio::sync::Notify;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InterruptSignal {
-    fired: AtomicBool,
+    fired: Arc<AtomicBool>,
     epoch: AtomicU64,
     wake: Notify,
     /// The loop's own cut of one request (D163): the provider pump reads it between events.
     cut: Arc<AtomicBool>,
+}
+
+impl Default for InterruptSignal {
+    fn default() -> Self {
+        Self {
+            fired: Arc::new(AtomicBool::new(false)),
+            epoch: AtomicU64::new(0),
+            wake: Notify::new(),
+            cut: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl InterruptSignal {
@@ -23,6 +34,10 @@ impl InterruptSignal {
 
     pub fn cut_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cut)
+    }
+
+    pub fn fired_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.fired)
     }
 
     pub fn fire(&self) {

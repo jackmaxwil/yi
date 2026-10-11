@@ -1,0 +1,4 @@
+#! solo --size 60x12
+wait 200
+snap composer
+quit

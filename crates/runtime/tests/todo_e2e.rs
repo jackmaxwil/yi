@@ -809,7 +809,7 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
 }
 
 /// Dies with the options dropped between the call and the list a parent reads, or with a two-option
-/// question let through: the child's own list is where its `needs_you` note is read from.
+/// question refused instead of asked open: the child's own list is where `needs_you` is read from.
 #[test]
 fn a_block_on_the_user_carries_three_to_five_options() -> TestResult {
     let (_root, session) = session("asks")?;
@@ -819,9 +819,10 @@ fn a_block_on_the_user_carries_three_to_five_options() -> TestResult {
     let block = |options: Vec<Value>| json!({"op": "block", "id": "t1", "on": "user", "note": "which name?", "options": options});
     let (is_error, text) = call(&tool, block(vec![option("a"), option("b")]));
     assert!(
-        is_error && text.contains("offers 3 to 5 options, not 2"),
+        !is_error && text.contains("this one had 2, so it is asked open"),
         "{text}"
     );
+    call(&tool, json!({"op": "unblock", "id": "t1"}));
     let (is_error, text) = call(&tool, block(vec![option("a"), option("b"), option("c")]));
     assert!(!is_error, "{text}");
     assert!(
@@ -1420,6 +1421,11 @@ fn an_op_passed_as_a_key_lands_as_that_op() -> TestResult {
     let list = latest_record(&session).ok_or("no record")?.list;
     let first = list.items().next().ok_or("no items")?;
     assert_eq!(TodoStateName::of(&first.state), TodoStateName::Done);
+    // A stage 6 surface call named the todo twice, under the op's key and as `label`, with no
+    // evidence: it is a done that owes its evidence, never a call with no op.
+    let (_, text) = call(&tool, json!({"done": "two", "label": "two"}));
+    assert!(!text.contains("op is required"), "{text}");
+    assert!(text.contains("evidence"), "{text}");
     // A set's own argument is not an id, so the repair stays off the ops that take a list.
     let (is_error, text) = call(&tool, json!({"set": "- [ ] rebuilt"}));
     assert!(
@@ -1463,6 +1469,30 @@ fn a_done_naming_no_item_lands_on_the_running_one() -> TestResult {
     let (is_error, text) = call(&tool, json!({"op": "done", "evidence": "`make` ok"}));
     assert!(
         is_error && text.contains("t1") && text.contains("t3"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A repeated done for an item already done lands as a view with a note, not the
+/// TodoError::Illegal the store alone returns.
+#[test]
+fn a_done_sent_again_for_a_done_item_is_a_view_with_a_note() -> TestResult {
+    let (_root, session) = session("done-again")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(store.clone());
+    call(&tool, json!({"op": "init", "items": ["one"]}));
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "label": "t1", "evidence": "`make` ok"}),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "label": "t1", "evidence": "`make` ok"}),
+    );
+    assert!(
+        !is_error && text.contains("it was already done, so nothing changed"),
         "{text}"
     );
     Ok(())
@@ -1592,5 +1622,50 @@ fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
         "verdict",
         "a phase name past its cap is a cap saying no, as the plan tool's label cap is"
     );
+    Ok(())
+}
+
+/// Incident: a GLM 5.3 flash session sent this evidence alone ten times while t2 ran; each
+/// refusal showed a done for t1 with other evidence, and repeats echoed the failing call back.
+#[test]
+fn an_evidence_only_call_is_shown_the_done_for_the_running_item() -> TestResult {
+    let (_root, session) = session("evidence-only")?;
+    let store = store_for(&session);
+    let adapter = yi_runtime::tools::ToolAdapter::new(
+        Arc::new(TodoTool::new(store.clone())),
+        std::env::temp_dir(),
+        Arc::new(|| false),
+        None,
+    );
+    store.apply(
+        Op::Set {
+            list: "- [x] scout: run git-log child\n- [>] walled: run deny_url child\n".to_owned(),
+        },
+        None,
+    )?;
+    let evidence = "transcript sub-b34d03ba: bash `git log --oneline` exit 0, output \"03d7bf5 skill3 / fce1ecb skill2 / 46b7a62 init\"; final message \"3 commits.\"";
+    let sent = json!({"evidence": evidence});
+    let input = sent.as_object().cloned().unwrap_or_default();
+    let first = yi_loop::AgentTool::validate(&adapter, &input)
+        .err()
+        .ok_or("taken")?;
+    let again = yi_loop::AgentTool::validate(&adapter, &input)
+        .err()
+        .ok_or("taken")?;
+    assert!(
+        !again.contains("call todo as"),
+        "the refused call echoed: {again}"
+    );
+    let (_, example) = first.split_once(" looks like ").ok_or(first.clone())?;
+    let shown: Value = serde_json::from_str(example)?;
+    assert_eq!(shown["evidence"], evidence, "{first}");
+    let (is_error, text) = call(&TodoTool::new(store.clone()), shown);
+    assert!(!is_error, "{text}");
+    let list = store.list();
+    let running_done = list.items().any(|item| {
+        item.label.as_str() == "walled: run deny_url child"
+            && TodoStateName::of(&item.state) == TodoStateName::Done
+    });
+    assert!(running_done, "{:?}", states(&list));
     Ok(())
 }

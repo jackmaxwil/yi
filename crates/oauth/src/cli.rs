@@ -102,6 +102,7 @@ fn login(args: &[String]) -> i32 {
         return 2;
     }
     let result = match kind {
+        registry::Kind::Cursor => crate::cursor::login_ureq(no_browser, proxy.as_ref()),
         registry::Kind::OauthCode(spec) => {
             eprintln!(
                 "warning: {provider} logs in with a profile you supplied ({}). Yi ships no client id or wire identity: whatever that file carries is sent as-is, and a provider's terms may forbid it. API keys remain the supported path.",

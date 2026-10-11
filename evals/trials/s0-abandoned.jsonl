@@ -1,0 +1,6 @@
+{"arm": "glm53-solo", "at": 1791589156, "costUsd": 0.2196, "note": "killed mid-trial when the session ended; spend read from the partial session files", "reward": null, "run": "s0-screen-a", "task": "revert:2:3"}
+{"arm": "glm53-solo", "at": 1791589156, "costUsd": 0.0597, "note": "killed mid-trial when the session ended; spend read from the partial session files", "reward": null, "run": "s0-screen-a", "task": "revert:5:3"}
+{"arm": "glm53-solo", "at": 1791589156, "costUsd": 0.059, "note": "killed mid-trial when the session ended; spend read from the partial session files", "reward": null, "run": "s0-screen-a", "task": "revert:10:3"}
+{"arm": "roles-glm53", "at": 1791589156, "costUsd": 0.089, "note": "killed mid-trial when the session ended; spend read from the partial session files", "reward": null, "run": "s0-screen-c", "task": "revert:2:3"}
+{"arm": "roles-glm53", "at": 1791589156, "costUsd": 0.1576, "note": "killed mid-trial when the session ended; spend read from the partial session files", "reward": null, "run": "s0-screen-c", "task": "revert:5:3"}
+{"arm": "roles-glm53", "at": 1791589156, "costUsd": 0.2196, "note": "killed mid-trial when the session ended; spend read from the partial session files", "reward": null, "run": "s0-screen-c", "task": "revert:0:3"}

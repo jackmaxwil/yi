@@ -96,6 +96,7 @@ impl ChildRecord {
             activity: self.activity,
             tool_use_count: self.tool_use_count,
             token_count: self.token_count,
+            cost: serde_json::Number::from_f64(self.cost).filter(|_| self.cost > 0.0),
             answer_preview: self.answer_preview.clone(),
             error: self.error.clone(),
             exit: self.exit,

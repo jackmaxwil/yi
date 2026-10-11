@@ -515,7 +515,10 @@ impl App {
             AssistantMessageEvent::ToolCallStart {
                 content_index,
                 name,
-            } => self.pen = Some(crate::pen::Pen::new(*content_index, name.clone())),
+            } => {
+                let now = self.clock.now();
+                self.pen = Some(crate::pen::Pen::new(*content_index, name.clone(), now));
+            }
             AssistantMessageEvent::ToolCallDelta {
                 content_index,
                 delta,
@@ -539,7 +542,7 @@ impl App {
     /// A snapshot of the message so far: the arrival feeds the rate, the cursors move on
     /// their own clock, and nothing commits before the reader has seen it.
     fn arrive(&mut self, content: &[Content]) {
-        let now = Instant::now();
+        let now = self.clock.now();
         self.close_segments(content);
         let open = content.get(self.segment..).unwrap_or_default();
         self.live_markdown = crate::transcript::prose_of(open);
@@ -674,7 +677,7 @@ impl App {
         let elapsed = self
             .tool_started
             .remove(&tool_call_id)
-            .map(elapsed_ms)
+            .map(|since| elapsed_ms(since, self.clock.now()))
             .unwrap_or(0);
         let index = self
             .live_tools

@@ -97,6 +97,8 @@ pub struct App {
     pub selection: Option<crate::select::Drag>,
     pub selected: String,
     pub flash: Option<(String, Instant)>,
+    /// What animations and the copy flash read; deadlines and polls stay on real time.
+    pub clock: yi_tui::motion::Clock,
     pub avatars: crate::avatar::Avatars,
     pub accents: HashMap<String, usize>,
     /// Split path under an active border drag, pinned to its tab so a
@@ -158,6 +160,7 @@ impl App {
             selection: None,
             selected: String::new(),
             flash: None,
+            clock: yi_tui::motion::Clock::Real,
             hits: None,
             avatars: crate::avatar::Avatars::default(),
             accents: HashMap::new(),
@@ -260,12 +263,13 @@ impl App {
             self.next_list_poll = now + LIST_POLL;
             self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
         }
-        self.tick_animations(now);
+        let shown = self.clock.now();
+        self.tick_animations(shown);
         self.scroll_drag();
         if self
             .flash
             .as_ref()
-            .is_some_and(|(_, at)| now.saturating_duration_since(*at) > FLASH)
+            .is_some_and(|(_, at)| shown.saturating_duration_since(*at) > FLASH)
         {
             self.flash = None;
             self.dirty = true;
@@ -999,7 +1003,7 @@ impl App {
             self.animations.push(Anim {
                 tab,
                 path,
-                start: Instant::now(),
+                start: self.clock.now(),
             });
         }
     }

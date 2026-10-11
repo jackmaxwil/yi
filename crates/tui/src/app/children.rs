@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use yi_runtime::{ChildFeed, ChildStatus, ChildUpdate};
 use yi_types::message::{AgentMessage, Content};
 
@@ -70,6 +68,7 @@ impl App {
                 activity: yi_types::subagent::ChildActivity::Waiting,
                 tool_use_count: u64::from(state.cell.toolcalls),
                 token_count: state.cell.tokens,
+                cost: None,
                 answer_preview: None,
                 error: Some(GONE.to_owned()),
                 exit: None,
@@ -105,7 +104,7 @@ impl App {
                         activity: update.activity,
                         flag: None,
                     },
-                    started: Instant::now(),
+                    started: self.clock.now(),
                     finished: None,
                     born_under: self.spawning_call(),
                     session,
@@ -137,7 +136,7 @@ impl App {
         {
             if status == TaskStatus::Running && state.finished.is_some() {
                 state.finished = None;
-                state.started = Instant::now();
+                state.started = self.clock.now();
                 state.cell.answer = None;
                 self.committed_tasks.remove(id);
             }
@@ -147,7 +146,7 @@ impl App {
             state.cell.error = update.error.clone();
             state.cell.toolcalls = toolcalls;
             state.cell.tokens = update.token_count;
-            state.cell.elapsed_ms = elapsed_ms(state.started);
+            state.cell.elapsed_ms = elapsed_ms(state.started, self.clock.now());
             // The record's preview outranks a folded stream that lost events to a gap.
             if let Some(preview) = &update.answer_preview {
                 let folded = state.cell.answer.as_deref().unwrap_or_default();
@@ -158,7 +157,7 @@ impl App {
                 }
             }
             if status != TaskStatus::Running && state.finished.is_none() {
-                state.finished = Some(Instant::now());
+                state.finished = Some(self.clock.now());
                 let answer = state
                     .session
                     .as_ref()

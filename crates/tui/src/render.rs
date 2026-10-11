@@ -134,7 +134,8 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
         live_lines.extend(app.prose_block(&tail).0);
     }
     if let Some(pen) = &app.pen {
-        live_lines.extend(Cell::Tool(pen.card()).lines(content_width, theme, app.mode, spinner));
+        let card = pen.card(app.clock.now());
+        live_lines.extend(Cell::Tool(card).lines(content_width, theme, app.mode, spinner));
     }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(content_width, theme, app.mode, spinner));
@@ -145,7 +146,7 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
         {
             let mut cell = state.cell.clone();
             if state.finished.is_none() {
-                cell.elapsed_ms = elapsed_ms(state.started);
+                cell.elapsed_ms = elapsed_ms(state.started, app.clock.now());
             }
             let rows = cell.lines(content_width, theme, app.mode, spinner);
             join_live(&mut live_lines, !app.pane && app.last_commit_blank, rows);
@@ -228,7 +229,7 @@ pub fn layout_chat(
         lane: app.options.lane.clone(),
         branch: app.branch.clone(),
         landing: app.landing.as_ref().and_then(|landing| {
-            crate::status::landing_segment(landing, app.landing_at.map(|at| at.elapsed()))
+            crate::status::landing_segment(landing, app.landing_at.map(|at| app.clock.since(at)))
         }),
         cost: app.spent.label(),
         cache: app.session_tokens.cache_label(expected),

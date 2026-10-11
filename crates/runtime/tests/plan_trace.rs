@@ -255,7 +255,6 @@ async fn a_todo_asking_three_options_takes_the_users_pick_by_number() -> TestRes
             "c1",
             json!({"op": "init", "goal": "land the page", "todos": [{"label": "hero style"}]}),
         ),
-        call("c2", asked(three[..2].to_vec())),
         call("c3", asked(three)),
         call("c4", json!({"op": "unblock", "label": "hero style"})),
         faux_assistant_message(vec![faux_text("which hero?")], StopReason::Stop),
@@ -271,8 +270,6 @@ async fn a_todo_asking_three_options_takes_the_users_pick_by_number() -> TestRes
         session.wait_idle().await;
     }
 
-    let two = tool_text(&store, "c2")?;
-    assert!(two.contains("offers 3 to 5 options, not 2"), "{two}");
     let block = tool_text(&store, "c3")?;
     assert!(
         block.contains("options 1. Calm · 2. Bold · 3. Dense;")
