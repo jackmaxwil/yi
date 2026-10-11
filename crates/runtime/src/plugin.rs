@@ -284,7 +284,8 @@ mod tests {
         let bytes = archive(&[BINARY, SKILL])?;
         let tool = plugin(&bytes, BINARY.1, true);
         let pinned = tool.dir(&home);
-        std::fs::create_dir_all(&pinned)?;
+        std::fs::create_dir_all(pinned.join("skills/tool-map"))?;
+        std::fs::write(pinned.join("skills/tool-map/SKILL.md"), SKILL.1)?;
         std::fs::write(pinned.join("tool"), "poisoned")?;
         let error = add(&tool, &home, |_| {
             Err("a download must not be needed".to_owned())
