@@ -39,8 +39,9 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    `freeze` was tried and dropped — it re-renders text in its own font and chrome, so
    the still was not 1:1 (the composer border ran off the edge) and `-c full` wrote a
    0-byte file while exiting 0. Pace the typing with `type-ms <n>` (0 by default, so
-   assertion scripts stay instant), and put `--deadline <secs>` in the `#!` line when
-   the beats outlast the 60 s default. A wide layout is `#! console --size 254x40`.
+   assertion scripts stay instant), and put `--deadline <secs>` in a solo scene's `#!`
+   line when the beats outlast the 60 s default; the console's headless run always stops at
+   60 s. A wide layout is `#! console --size 254x40`.
    `scripts/proof/demo.drive` is the worked example.
 7. To see what a change did, diff snaps rather than eyeballing whole frames:
    `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
