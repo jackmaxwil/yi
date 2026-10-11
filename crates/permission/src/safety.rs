@@ -114,6 +114,41 @@ const GIT_READ: [&str; 10] = [
     "status",
 ];
 
+/// Ripwire's query flags read the tree; the edit, baseline, note, export, server, run-trace and
+/// quality-delta (it deletes a stale sidecar) flags write or execute, so any other flag is `Exec`.
+#[rustfmt::skip]
+const RIPWIRE_READ: [&str; 136] = [
+    "for", "pack-task", "callers", "callees", "uses", "around", "expand", "outline", "path",
+    "connect", "impact", "verify", "mentions", "affected", "exercises", "situ", "test-gate",
+    "edit-check", "safe-delete", "slice", "at", "from-trace", "cochange", "whereis", "tree",
+    "recall", "lego", "json", "limit", "offset", "detail", "signatures-only", "pack-signatures",
+    "token-budget", "max-tokens", "compress", "help", "version",
+    "legend", "legend-dict", "format", "with-graph", "partition", "batch", "top-k", "sections",
+    "auto-bodies", "no-route", "adaptive", "no-mention-boost", "no-doc-mention", "order",
+    "around-depth", "around-fanout", "slice-flow", "slice-depth", "pack-top-n", "pack-budget-bytes",
+    "exclude", "ignore-tests", "no-ignore", "no-cache", "max-file-size", "max-memory", "scip",
+    "hotspots", "metrics", "deps", "communities", "community", "clones", "dead-code",
+    "external-surface", "biggest-first", "context-ratio", "dmm", "ensemble", "owners", "rank-by",
+    "in", "since", "scope", "zoom", "mermaid", "report", "skipped", "seams", "layout",
+    "field-affinity", "grep", "grep-in", "grep-context", "grep-before", "grep-after", "and", "not",
+    "grep-scope", "handles", "regex", "query", "pattern", "match", "exemplar", "graph-query",
+    "lint", "lint-rules", "lint-select", "lint-ignore", "lint-catalog", "sarif", "arch",
+    "naming-consistency", "naming-locals", "naming-calibration", "nonlocal-state",
+    "comment-coherence", "doc-drift", "gateability", "with-history", "plan-lint", "quality-panel",
+    "with-profile", "pr-context", "map-diff", "merge-scout", "stray-content", "abi",
+    "cochange-groups", "cochange-recur", "flags", "flip", "notes", "handoff", "help-task", "doctor",
+    "scan-skill",
+];
+
+/// Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write, so a
+/// bare word with `:` or `@` is never a read.
+pub fn ripwire_reads<'w>(mut args: impl Iterator<Item = &'w str>) -> bool {
+    args.all(|word| match word.strip_prefix("--") {
+        Some(flag) => RIPWIRE_READ.contains(&flag.split('=').next().unwrap_or(flag)),
+        None => !(word.starts_with('-') || word.contains(':') || word.contains('@')),
+    })
+}
+
 const CARGO_READ: [&str; 9] = [
     "build",
     "check",
@@ -390,6 +425,7 @@ pub fn classify(argv: &[String]) -> Class {
         "git" => git_class(argv),
         "cargo" => cargo_class(argv),
         "find" => find_class(argv),
+        "ripwire" if ripwire_reads(argv.iter().skip(1).map(String::as_str)) => Class::Safe,
         "curl" | "wget" | "http" => network_class(argv),
         "sed" => {
             if flags(argv).iter().any(|flag| flag.starts_with("-i")) {
