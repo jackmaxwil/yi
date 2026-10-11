@@ -145,6 +145,7 @@ struct RunParts {
     tool_execution: ExecutionMode,
     compactor: Option<Arc<crate::compaction::Compactor>>,
     on_compacted: Option<Arc<dyn Fn() + Send + Sync>>,
+    tool_cwd: Option<std::path::PathBuf>,
 }
 
 pub struct AgentSession {
@@ -161,6 +162,7 @@ pub struct AgentSession {
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
     wall: Mutex<crate::wall::Wall>,
     spills: Mutex<Option<std::path::PathBuf>>,
+    tool_cwd: Mutex<Option<std::path::PathBuf>>,
     selector: Mutex<Option<Arc<crate::select::Selector>>>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
     on_attach: Mutex<Vec<Box<hooks::LedgerFold>>>,
@@ -224,6 +226,7 @@ impl AgentSession {
             memory: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
             spills: Mutex::new(None),
+            tool_cwd: Mutex::new(None),
             selector: Mutex::new(None),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
@@ -603,6 +606,9 @@ impl AgentSession {
         if let Ok(mut slot) = self.permission.lock() {
             slot.clone_from(&permission);
         }
+        if let Ok(mut slot) = self.tool_cwd.lock() {
+            *slot = Some(cwd.clone());
+        }
         if let Some(broker) = &permission {
             broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
         }
@@ -931,6 +937,7 @@ impl AgentSession {
             tool_execution: self.config.tool_execution,
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
+            tool_cwd: self.tool_cwd.lock().ok().and_then(|slot| slot.clone()),
         }
     }
 

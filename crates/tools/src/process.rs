@@ -27,7 +27,11 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         clippy::disallowed_methods,
         reason = "process spawns live in yi-tools; every spawn routes through run_captured via this constructor"
     )]
-    Command::new(program)
+    let mut process = Command::new(program);
+    if let Some(path) = crate::plugin::home().and_then(|home| crate::plugin::search_path(&home)) {
+        process.env("PATH", path);
+    }
+    process
 }
 
 /// [`command`] for a command the model wrote, whose output it reads: yi's provider keys never

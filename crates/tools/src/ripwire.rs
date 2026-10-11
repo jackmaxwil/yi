@@ -81,7 +81,13 @@ impl CheckLayer {
 }
 
 pub fn installed() -> bool {
-    crate::syntax::on_path("ripwire").is_some()
+    match (
+        crate::plugin::home(),
+        crate::plugin::Plugin::named("ripwire"),
+    ) {
+        (Some(home), Some(ripwire)) => ripwire.found(&home).is_some(),
+        _ => crate::syntax::on_path("ripwire").is_some(),
+    }
 }
 
 pub(crate) fn root(cwd: &Path) -> PathBuf {
