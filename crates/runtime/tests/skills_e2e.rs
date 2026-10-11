@@ -578,5 +578,17 @@ fn the_ripwire_index_names_every_published_skill_and_no_other() -> TestResult {
     let mut published = ripwire.skills.to_vec();
     published.sort_unstable();
     assert_eq!(named, published);
+    let digest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/tools/tests/fixtures/ripwire/skills-0.6.5.sha256");
+    let manifest = std::fs::read_to_string(digest)?;
+    let mut shipped: Vec<&str> = manifest
+        .lines()
+        .filter_map(|line| line.split_once("  skills/")?.1.strip_suffix("/SKILL.md"))
+        .collect();
+    shipped.sort_unstable();
+    assert_eq!(
+        shipped, published,
+        "the pinned manifest and the table disagree"
+    );
     Ok(())
 }

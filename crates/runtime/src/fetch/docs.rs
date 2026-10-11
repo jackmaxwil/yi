@@ -50,7 +50,7 @@ impl Resolver {
                     .ok_or_else(|| not_found(format!("skill {name}")))?;
                 let mut path = skill.path.clone();
                 if !file.is_empty() {
-                    if file.split('/').any(|part| matches!(part, "" | "." | "..")) {
+                    if yi_types::path::escaping_part(file).is_some() {
                         return Err(FetchError::BadAddress {
                             url: url.to_string(),
                             detail: format!("{file} is not a path under the skill's directory"),

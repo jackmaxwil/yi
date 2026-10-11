@@ -88,10 +88,7 @@ fn tree<'t>(
             if !entry.name.starts_with(&prefix) {
                 continue;
             }
-            if relative
-                .split('/')
-                .any(|part| matches!(part, "" | "." | ".."))
-            {
+            if yi_types::path::escaping_part(relative).is_some() {
                 return Err(format!(
                     "the {} archive entry {} leaves it",
                     pin.label, entry.name

@@ -891,9 +891,8 @@ fn every_model_tool_and_plugin_is_covered_by_a_skill_or_pending() -> Result<(), 
                 dirs.push(path);
             } else if path.file_name().is_some_and(|name| name == "SKILL.md") {
                 let text = std::fs::read_to_string(&path)?;
-                let head = text.split("\n---").next().unwrap_or_default();
-                for line in head.lines().filter_map(|line| line.strip_prefix("covers:")) {
-                    declared.extend(line.split(',').map(|item| item.trim().to_owned()));
+                if let Some(covers) = yi_runtime::skills::frontmatter(&text).get("covers") {
+                    declared.extend(covers.split(',').map(|item| item.trim().to_owned()));
                 }
             }
         }
