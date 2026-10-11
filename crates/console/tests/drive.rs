@@ -3584,3 +3584,123 @@ fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
     );
     Ok(())
 }
+
+const UNICODE_REPLY: &str = "Naïve café — the **ünïcode** answer.";
+
+fn resume_unicode(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("hello agent")),
+                entry("e2", Some("e1"), 2, &assistant(UNICODE_REPLY)),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+fn opened_unicode() -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_unicode),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+fn osc_log(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    Ok(std::fs::read_to_string(dir.join(".osc.log")).unwrap_or_default())
+}
+
+/// A right-click was a left-click: the button was dropped, so it focused and began a drag.
+/// It opens the menu now, and Copy hands that one reply's markdown to the clipboard.
+#[test]
+fn a_right_click_on_a_reply_copies_that_reply() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-copy")?;
+    run_opts(
+        "menu-copy",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nkey enter\n\
+         wait-frame 3000 copied 1 line\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    assert!(
+        log.contains(&yi_console::select::osc52(UNICODE_REPLY)),
+        "no clipboard write of the reply in {log:?}"
+    );
+    Ok(())
+}
+
+/// Plain text is the reply as read: the bold marks go, the words and accents stay.
+#[test]
+fn copy_as_plain_text_drops_the_markdown() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-plain")?;
+    run_opts(
+        "menu-plain",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nkey down\nkey right\n\
+         wait-frame 3000 Plain text\nkey enter\nwait-frame 3000 copied 1 line\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    let plain = "Naïve café — the ünïcode answer.";
+    assert!(
+        log.contains(&yi_console::select::osc52(plain)),
+        "no plain copy in {log:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn quote_puts_the_message_in_the_composer() -> TestResult {
+    run(
+        "menu-quote",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 25 2\nwait-frame 3000 Quote\nkey up\nkey enter\n\
+         wait-frame 3000 > hello agent\nquit\n",
+    )
+}
+
+/// Two panes: each title carries the close mark and its key, and a click on it closes that
+/// pane. One pane is the last, and the last pane cannot close, so it carries none.
+#[test]
+fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
+    let frame = run_frames(
+        "close-mark",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         key alt-v\nwait-frame 3000 ✕ ⌥x\nmouse down 97 0\n\
+         wait-frame 3000 !✕ ⌥x\nquit\n",
+    )?;
+    assert!(
+        !frame.contains('✕'),
+        "a lone pane drew a close mark:\n{frame}"
+    );
+    Ok(())
+}
+
+/// The last pane cannot close, so its menu greys Close and says why rather than hiding it.
+#[test]
+fn the_last_panes_menu_greys_close_with_the_reason() -> TestResult {
+    run(
+        "menu-last-pane",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 60 20\nwait-frame 3000 Close pane\n\
+         wait-frame 3000 last pane\nkey esc\nwait-frame 3000 !Close pane\nquit\n",
+    )
+}

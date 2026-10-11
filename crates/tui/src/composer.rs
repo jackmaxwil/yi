@@ -618,3 +618,14 @@ fn clear_line(textarea: &mut TextArea<'_>) -> bool {
         .is_some_and(|text| !text.is_empty())
         && textarea.delete_line_by_end()
 }
+
+impl crate::app::App {
+    /// Invariant: a quote lands whole at the cursor; a long one never folds into a paste marker.
+    pub fn quote(&mut self, text: &str) {
+        let quoted: String = sanitize_paste(text)
+            .lines()
+            .map(|line| format!("> {line}\n"))
+            .collect();
+        self.composer.textarea.insert_str(quoted);
+    }
+}
