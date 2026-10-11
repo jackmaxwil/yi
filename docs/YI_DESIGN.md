@@ -959,7 +959,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   session's avatar plays its state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
-- ⌘G opens Review beside a session: its scope is the lane's branch against its merge base with
+- ⌘R opens Review beside a session: its scope is the lane's branch against its merge base with
   main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
   session with no git base shows its own edits). Each file names the todo that was running when
   it changed, reads that changed nothing are counted, the header carries the claims and the
