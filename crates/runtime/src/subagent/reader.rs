@@ -221,14 +221,17 @@ pub fn session(
         child.store_handle(),
         broker.as_deref(),
     )
-    .with_home(home.to_path_buf())
-    .with_transcripts(Arc::new(crate::fetch::ParentTranscript(
-        build.link.host.clone(),
-    )));
+    .with_home(home.to_path_buf());
     let resolver = match build.link.host.upgrade() {
         Some(host) => {
             child.set_spills(crate::wiring::board_spills(&host.board()));
-            resolver.with_plans_dir(host.options.plans_dir.clone())
+            resolver
+                .with_transcripts(Arc::new(crate::fetch::SessionTranscripts::new(
+                    Arc::clone(&host),
+                    None,
+                    &cwd,
+                )))
+                .with_plans_dir(host.options.plans_dir.clone())
         }
         None => resolver,
     };

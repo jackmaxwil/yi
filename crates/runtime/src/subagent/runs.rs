@@ -66,11 +66,7 @@ impl SubagentHost {
     ) {
         // Incident: told only the doctrine, a child sent to find what its parent was told walked
         // the tree and gave up in two runs of three; a wall that denies history is never told it.
-        let walled = session
-            .wall()
-            .deny_url
-            .iter()
-            .any(|url| url.starts_with("history://"));
+        let walled = session.wall().denies_history();
         let header = match walled {
             true => "[task from parent]",
             false => "[task from parent]\n[its transcript: history://parent/since/0]",

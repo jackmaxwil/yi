@@ -55,28 +55,19 @@ fn capped(url: &Url, served_by: &str, text: String) -> String {
     } else {
         ""
     };
+    let tail = if kept < total {
+        format!(
+            "read {url} with offset={} and limit to page on",
+            kept.saturating_add(1)
+        )
+    } else {
+        "the one entry alone exceeds the cap and cannot be paged smaller; its id names a whole \
+         entry read"
+            .to_owned()
+    };
     format!(
-        "{}\n[… {kept} of {total} entries shown{clipped} · unpaged history cap {LISTING_BYTES} bytes · read {url} with offset={} and limit to page on]",
+        "{}\n[… {kept} of {total} entries shown{clipped} · unpaged history cap {LISTING_BYTES} bytes · {tail}]",
         shown.get(..cut).unwrap_or_default(),
-        kept.saturating_add(1)
-    )
-}
-
-/// Incident: a fact past the cut of a compact line took a child four guessed offsets before it
-/// read the entry whole.
-fn compact_note(url: &Url, served_by: &str, text: String) -> String {
-    let compact = matches!(served_by, "session-since" | "session-tail");
-    if !compact || !text.lines().any(|line| line.ends_with('…')) {
-        return text;
-    }
-    let full = url.to_string();
-    let base = ["/since/", "/tail/"]
-        .iter()
-        .find_map(|window| full.split_once(window).map(|(base, _)| base))
-        .unwrap_or(&full);
-    let (note, user) = (crate::family::NOTE_CHARS, crate::family::USER_CHARS);
-    format!(
-        "{text}\n[… a line ending in … is cut at {note} chars (NOTE_CHARS), a user line at {user} (USER_CHARS) · read {base} with offset=<#seq> and limit=1 for that entry whole]"
     )
 }
 
@@ -132,10 +123,7 @@ impl Tool for UrlRead {
                     next.saturating_add(1),
                     unit(&fetched.url)
                 )),
-                None => {
-                    let text = capped(&fetched.url, &fetched.served_by, fetched.text);
-                    text_output(compact_note(&fetched.url, &fetched.served_by, text))
-                }
+                None => text_output(capped(&fetched.url, &fetched.served_by, fetched.text)),
             },
             Err(message) => error_output(message),
         }
