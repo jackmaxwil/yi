@@ -20,6 +20,9 @@ clippy:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Incident: one suite run left 23 checkpoint repos in the real ~/.yi, 11,633 of them by
+    # 2026-10-07. The suite's HOME is the worktree's target/yi-home, deleted with the worktree.
+    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test
     if command -v cargo-nextest >/dev/null; then
       cargo nextest run --workspace
       cargo test --workspace --doc
@@ -188,6 +191,25 @@ console-pty out="target/proof":
     orbs=$(grep -ao $'\x1b_Ga=p,i=78[0-9][0-9],' "$out/pty.raw" | sort -u | wc -l | tr -d ' ')
     echo "avatars placed: $avatars   orbs placed: $orbs"
     [ "$avatars" -ge 1 ] && [ "$orbs" -ge 1 ]
+
+# Snap a scene headless and diff two runs into crops an agent reads (scripts/tui_see.py):
+# `just tui-see run <scene> --label base`, then `just tui-see diff <run a> <run b>`.
+tui-see *args:
+    cargo build -q -p yi-cli
+    python3 scripts/tui_see.py {{args}}
+
+# The term host `just tui-see run <scene> --host term` plays scenes on: real Ghostty in the
+# yi-term image, and a static Linux yi built through zig for it to run.
+yi-term:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    arch=$(uname -m | sed 's/arm64/aarch64/')
+    var=$(echo "$arch" | tr 'a-z' 'A-Z')
+    docker build -t yi-term:dev scripts/yi-term
+    export "CARGO_TARGET_${var}_UNKNOWN_LINUX_MUSL_LINKER=$PWD/scripts/zigcc.sh"
+    export "CC_${arch}_unknown_linux_musl=$PWD/scripts/zigcc.sh" "AR_${arch}_unknown_linux_musl=$PWD/scripts/zigar.sh"
+    export ZIG_TARGET="$arch-linux-musl" RUSTFLAGS="${RUSTFLAGS:-} -C link-self-contained=no"
+    cargo build -q -p yi-cli --target "$arch-unknown-linux-musl"
 
 # A drive script rendered for people: the motion and still GIFs a UI change
 # attaches to its PR, so a reviewer can judge how it looks. `agg` is dev-only

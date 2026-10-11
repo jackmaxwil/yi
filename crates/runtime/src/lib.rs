@@ -34,6 +34,7 @@ pub mod plan;
 pub mod plugin;
 pub mod provider;
 mod reclaim;
+pub mod retention;
 pub mod rewind;
 pub mod rollup;
 pub mod rules;

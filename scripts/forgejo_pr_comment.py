@@ -27,7 +27,9 @@ def send(method, url, payload):
         },
     )
     with urllib.request.urlopen(req, timeout=30) as response:
-        return json.load(response)
+        reply = response.read()
+    # A DELETE answers 204 with no body.
+    return json.loads(reply) if reply else None
 
 
 def upsert(transport, api, repo, pr, body):

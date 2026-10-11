@@ -1,0 +1,11 @@
+#! console --size 120x34
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+snap fresh
+type hello from ghostty
+key enter
+wait-frame 30000 faux:
+wait-idle 15000
+snap answered
+quit

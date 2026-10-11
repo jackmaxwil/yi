@@ -76,6 +76,7 @@ impl App {
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
+        app.set_clock(self.clock);
         app.set_status_name_shown(false);
         app.set_pane();
         Box::new(Chat {
@@ -537,6 +538,7 @@ impl App {
 
     pub(super) fn pump_chats(&mut self, outbound: &Outbound) {
         self.ask_branches(outbound);
+        let clock = self.clock;
         let ids: Vec<PaneId> = self.state.panes.keys().copied().collect();
         for pane_id in ids {
             let Some(session) = self
@@ -558,6 +560,7 @@ impl App {
                 continue;
             };
             let _span = yi_types::trace::span("console.chat_tick");
+            chat.app.set_clock(clock);
             yi_tui::tick(
                 &mut chat.app,
                 &mut chat.port,

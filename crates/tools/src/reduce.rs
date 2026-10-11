@@ -246,10 +246,10 @@ fn is_signal(line: &str) -> bool {
 
 /// A test runner's line for one passing test: cargo, pytest, jest. A `PASSED` that shares its
 /// line with a failure is not one; a test named for errors that ends `... ok` is.
-fn is_pass(line: &str) -> bool {
+pub fn is_pass(line: &str) -> bool {
     let line = line.trim();
     (line.starts_with("test ") && line.ends_with(" ... ok"))
-        || (line.contains(" PASSED") && !is_signal(line))
+        || ((line.contains(" PASSED") || line.starts_with("PASSED ")) && !is_signal(line))
         || line.starts_with('✓')
         || line.starts_with('✔')
 }
@@ -376,9 +376,7 @@ struct Block<'a> {
 /// Every error block whole, a few warnings, the summaries; what follows the last located block
 /// is program output and takes the generic reduction, numbered by its place in `text`.
 fn diagnostics(text: &str, budget: usize, numbering: Numbering) -> String {
-    let lines: Vec<&str> = (text.lines())
-        .map(|line| line.rsplit('\r').next().unwrap_or(line).trim_end())
-        .collect();
+    let lines: Vec<&str> = text.lines().map(frame).collect();
     let mut blocks: Vec<Block<'_>> = Vec::new();
     let mut open: Option<Block<'_>> = None;
     for (at, &line) in lines.iter().enumerate() {
@@ -455,7 +453,7 @@ fn compress(text: &str, first_line: usize) -> Vec<Row> {
     let mut blank_run = false;
     for (at, raw) in text.lines().enumerate() {
         let number = first_line.saturating_add(at).saturating_add(1);
-        let line = raw.rsplit('\r').next().unwrap_or(raw).trim_end();
+        let line = frame(raw);
         if line.is_empty() {
             if !blank_run {
                 kept.push((String::new(), 0, number));
@@ -496,6 +494,52 @@ fn compress(text: &str, first_line: usize) -> Vec<Row> {
             )
         })
         .collect()
+}
+
+/// A source line as a row shows it: the last frame of `\r` progress, trailing blanks dropped;
+/// strip ANSI from the text first, as the reducer does.
+pub fn frame(raw: &str) -> &str {
+    raw.rsplit('\r').next().unwrap_or(raw).trim_end()
+}
+
+/// A line of the raw output as a row shows it: its CRLF end dropped as `str::lines` drops it,
+/// ANSI stripped, then [`frame`].
+pub fn shown_form(raw: &str) -> String {
+    frame(&strip_ansi(raw.strip_suffix('\r').unwrap_or(raw))).to_owned()
+}
+
+/// The span of a row the reducer wrote for lines it left out; any other line, a program's own
+/// `[retry: 1-4]` included, gives none.
+pub fn omitted_span(row: &str) -> Option<(usize, usize)> {
+    let label = row.strip_prefix('[')?.rsplit_once(": ")?.0;
+    let counted = label.starts_with(|c: char| c.is_ascii_digit() || c == '+');
+    let ours = counted && (label.contains(" omitted") || label.contains(" more in "));
+    ours.then(|| row_span(row)).flatten()
+}
+
+/// A shown row as its source line reads, without the `[×N]` count of a repeated line.
+pub fn source_form(row: &str) -> &str {
+    let count = row
+        .strip_suffix(']')
+        .and_then(|rest| rest.rsplit_once(" [×"));
+    match count {
+        Some((line, digits))
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            line
+        }
+        _ => row,
+    }
+}
+
+/// The `a-b` a reducer row ends with, in the file's numbering: what it omitted, counted or
+/// pointed at; a row numbered against the cut capture names no file lines, so it gives none.
+pub fn row_span(row: &str) -> Option<(usize, usize)> {
+    let inner = row.strip_prefix('[')?.strip_suffix(']')?;
+    let (_, range) = inner.rsplit_once(": ")?;
+    let range = range.strip_prefix("output lines ").unwrap_or(range);
+    let (from, to) = range.split_once('-')?;
+    Some((from.parse().ok()?, to.parse().ok()?))
 }
 
 /// A percentage (`42%`) or a bar (`[===>`, `━━`) marks a line its successor overwrites.
