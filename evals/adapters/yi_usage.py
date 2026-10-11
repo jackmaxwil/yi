@@ -7,6 +7,7 @@ Contracts: evals/README.md (gates E1-E9, emission map, adapters).
 
 import hashlib
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -34,6 +35,7 @@ TASK_TIMEOUT_SEC = 28800
 # OpenRouter's provider object for a routing A/B, as JSON; never `YI_*`, the harness's name.
 ROUTING_ENV = "EVAL_ROUTING"
 LEVERS_ENV = "YI_LEVERS"
+PLUGINS_ENV = "EVAL_PLUGINS"
 
 
 def with_budget(instruction, deadline_sec):
@@ -80,6 +82,42 @@ def levers_label(environ):
     with open(path, "rb") as handle:
         canonical = json.dumps(json.loads(handle.read()), sort_keys=True, separators=(",", ":"))
     return "+levers" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def installed_plugins(report):
+    """(name, version, path) from `yi plugin list --json`: yi is the one reader of the layout
+    `yi plugin add` writes. A report that is not that array of rows is refused, never read as
+    zero plugins (the shape is pinned by cli_surfaces' plugin list test)."""
+    try:
+        rows = json.loads(str(report))
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) and {"name", "version", "state", "path"} <= row.keys() for row in rows
+    ):
+        raise ValueError(f"`yi plugin list --json` printed no plugin rows: {str(report)[:200]!r}")
+    return {row["name"]: (row["version"], Path(row["path"])) for row in rows if row["state"] == "installed"}
+
+
+def local_plugins(environ, report):
+    """The plugins the binary reports installed that ride into each task container, as
+    (name, version, path), by EVAL_PLUGINS: unset or `all` is every one, `none` is none,
+    else a comma list whose every name must be installed (#1041)."""
+    found = installed_plugins(report)
+    wanted = environ.get(PLUGINS_ENV, "all").strip()
+    if wanted == "none":
+        return []
+    names = sorted(found) if wanted == "all" else [n.strip() for n in wanted.split(",") if n.strip()]
+    missing = [name for name in names if name not in found]
+    if missing:
+        raise ValueError(f"{PLUGINS_ENV} names {', '.join(missing)}; run `yi plugin add` for it first")
+    return [(name, found[name][0], found[name][1]) for name in names]
+
+
+def plugins_label(plugins):
+    """The plugins as they ride the fingerprint's mode: a run with ripwire and one without are
+    two configs, and `+plugins{}` says none rode along."""
+    return "+plugins{" + ",".join(f"{name}@{version}" for name, version, _ in plugins) + "}"
 
 
 KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")
@@ -198,6 +236,13 @@ def _failed_empty(message):
     return message.get("stopReason") == "error" and not any(
         (b.get("text") or b.get("thinking") or "").strip() or b.get("type") == "toolCall" for b in blocks)
 
+def unknown_cost_turns(messages):
+    """Count assistant messages whose usage is unknown, exempting failed-empty requests ($0, owner
+    2026-09-28). parse_events and axes both bill through this one predicate."""
+    return sum(1 for message in messages if isinstance(message, dict)
+               and isinstance(message.get("usage"), dict)
+               and message["usage"].get("unknown") is True and not _failed_empty(message))
+
 
 def parse_events(path):
     """Sum assistant usage over a `yi ask --json` transcript.
@@ -214,7 +259,6 @@ def parse_events(path):
     totals = {key: 0 for key in TOKEN_KEYS}
     cost = 0.0
     assistant = 0
-    unknown = 0
     turns = []
     events, malformed = json_lines(path)
     for event in events:
@@ -227,12 +271,11 @@ def parse_events(path):
         turns.append(message)
         usage = message.get("usage")
         _add_tokens(totals, usage)
-        if isinstance(usage, dict) and usage.get("unknown") is True and not _failed_empty(message):
-            unknown += 1
         if isinstance(usage, dict) and isinstance(usage.get("cost"), dict):
             total = usage["cost"].get("total")
             if isinstance(total, (int, float)) and not isinstance(total, bool):
                 cost += total
+    unknown = unknown_cost_turns(turns)
     result = {
         "nAssistantMessages": assistant,
         "malformedLines": malformed,

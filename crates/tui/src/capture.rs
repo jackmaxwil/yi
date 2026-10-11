@@ -14,6 +14,7 @@ use std::time::Instant;
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, TestBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Size};
+use unicode_width::UnicodeWidthStr;
 
 /// Crossterm strips colour when its writer is not a terminal, which would
 /// leave every recording monochrome.
@@ -317,9 +318,17 @@ pub fn buffer_to_ansi(buffer: &Buffer) -> io::Result<Vec<u8>> {
     let area = buffer.area();
     let mut cells = Vec::new();
     for y in 0..area.height {
+        // Incident: replaying the cell a wide symbol covers pushed the rest of its row one
+        // column right in every still; an emulator has already advanced past it.
+        let mut covered = 0_usize;
         for x in 0..area.width {
             let source = Position::new(area.x.saturating_add(x), area.y.saturating_add(y));
             if let Some(cell) = buffer.cell(source) {
+                if covered > 0 {
+                    covered -= 1;
+                    continue;
+                }
+                covered = UnicodeWidthStr::width(cell.symbol()).saturating_sub(1);
                 cells.push((x, y, cell));
             }
         }

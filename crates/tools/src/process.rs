@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::jobs::LiveOutput;
-use crate::spill::Spill;
+use crate::spill::{Spill, Stream};
 use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
@@ -27,7 +27,11 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         clippy::disallowed_methods,
         reason = "process spawns live in yi-tools; every spawn routes through run_captured via this constructor"
     )]
-    Command::new(program)
+    let mut process = Command::new(program);
+    if let Some(path) = crate::plugin::home().and_then(|home| crate::plugin::search_path(&home)) {
+        process.env("PATH", path);
+    }
+    process
 }
 
 /// [`command`] for a command the model wrote, whose output it reads: yi's provider keys never
@@ -77,7 +81,7 @@ impl CommandCapture {
 }
 
 /// The label (`every byte`, or the clip) and the path of a `[full output: …]` pointer.
-pub(crate) fn spill_path(pointer: &str) -> Option<(&str, &str)> {
+pub fn spill_path(pointer: &str) -> Option<(&str, &str)> {
     let rest = pointer.strip_prefix("[full output")?.strip_suffix(']')?;
     let (clip, path) = rest.split_once(": ")?;
     Some((clip.strip_prefix(", ").unwrap_or("every byte"), path))
@@ -204,7 +208,7 @@ fn drain_capped(
     mut reader: impl Read,
     cap: usize,
     live: Option<&LiveOutput>,
-    spill: &Mutex<Spill>,
+    (spill, stream): (&Mutex<Spill>, Stream),
 ) -> (String, Option<(usize, usize)>) {
     let head_cap = cap / 2;
     let tail_cap = cap.saturating_sub(head_cap);
@@ -221,7 +225,7 @@ fn drain_capped(
                     live.push(bytes);
                 }
                 if let Ok(mut spill) = spill.lock() {
-                    spill.write(bytes);
+                    spill.write_to(stream, bytes);
                 }
                 let room = head_cap.saturating_sub(head.len());
                 head.extend(bytes.iter().take(room));
@@ -349,11 +353,16 @@ pub(crate) fn run_captured_live(
     let spill = Arc::new(Mutex::new(Spill::new(spill_dir)));
     let stderr_spill = Arc::clone(&spill);
     let stderr_reader = std::thread::spawn(move || match stderr_pipe {
-        Some(pipe) => drain_capped(pipe, cap, stderr_live.as_deref(), &stderr_spill),
+        Some(pipe) => drain_capped(
+            pipe,
+            cap,
+            stderr_live.as_deref(),
+            (&stderr_spill, Stream::Err),
+        ),
         None => (String::new(), None),
     });
     let (stdout, stdout_cut) = match stdout_pipe {
-        Some(pipe) => drain_capped(pipe, cap, live.as_deref(), &spill),
+        Some(pipe) => drain_capped(pipe, cap, live.as_deref(), (&spill, Stream::Out)),
         None => (String::new(), None),
     };
     let (stderr, stderr_cut) = stderr_reader
@@ -422,7 +431,7 @@ mod tests {
         let text = "é".repeat(12);
         let spill = Mutex::new(Spill::new(None));
         assert_eq!(
-            drain_capped(text.as_bytes(), 35, None, &spill),
+            drain_capped(text.as_bytes(), 35, None, (&spill, Stream::Out)),
             (text, None)
         );
     }

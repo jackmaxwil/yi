@@ -491,9 +491,8 @@ async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> Tes
     Ok(())
 }
 
-/// The whole gate in one place: with the role unnamed no reviewer is constructed and
-/// the system prompt pays no bytes for the review sentence; `ask_user` is always there,
-/// in question mode, and gains its `request` mode when the role is named.
+/// The whole gate in one place: with the role unnamed no reviewer is constructed and the
+/// system prompt pays no bytes for the review sentence; a root's `ask_user` comes with the role.
 #[tokio::test]
 async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence() -> TestResult {
     for named in [false, true] {
@@ -530,9 +529,9 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             .extensions()
             .and_then(|host| host.lock().ok().map(|host| host.system_prompt()))
             .unwrap_or_default();
-        assert!(
-            registered,
-            "ask_user is registered whether or not a role is named"
+        assert_eq!(
+            registered, named,
+            "a root with no parent has ask_user only when the role names a reviewer"
         );
         assert_eq!(
             harness.broker.has_reviewer(),

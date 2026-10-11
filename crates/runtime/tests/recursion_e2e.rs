@@ -53,6 +53,7 @@ fn child_reply(text: &str) -> AgentMessage {
         usage.input = 100;
         usage.output = 20;
         usage.total_tokens = 120;
+        usage.cost.total = serde_json::Number::from_f64(0.25).unwrap_or_else(|| 0.into());
     }
     message
 }
@@ -434,6 +435,11 @@ async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestRes
     assert_eq!(last.status, ChildStatus::Completed);
     assert_eq!(last.tool_use_count, 1, "one bash call, counted once");
     assert_eq!(last.token_count, 120, "the child's usage is reported");
+    assert_eq!(
+        last.cost.as_ref().and_then(serde_json::Number::as_f64),
+        Some(0.25),
+        "the child's billed spend crosses, so a dollar alert can count it"
+    );
     assert_eq!(
         last.answer_preview.as_deref(),
         Some("swept the logs"),

@@ -547,7 +547,7 @@ fn skill_pointer_is_one_line_and_a_read_spends_it() -> TestResult {
     )]);
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("fix error[E0502]: cannot borrow"))),
-        ["Relevant: skill://rust-borrowck (matched \"E0502\")"]
+        ["Relevant: yi://skills/rust-borrowck (matched \"E0502\")"]
     );
     engine.rearm();
     engine.check_result(
@@ -563,9 +563,48 @@ fn skill_pointer_is_one_line_and_a_read_spends_it() -> TestResult {
     Ok(())
 }
 
+/// The log leg of `skill_already_loaded` matches the whole address: a read of
+/// `yi://skills/har-api` must not spend the pointer for `yi://skills/har`.
+#[test]
+fn a_log_read_of_an_extending_skill_name_spends_only_its_own_pointer() -> TestResult {
+    let (engine, _delivered) =
+        engine_with_sink(vec![skill("har", "unwrap", RuleScope::Text, RuleGap::Once)]);
+    let log = Arc::new(yi_runtime::fetch::FetchLog::new());
+    let longer: yi_types::url::Url = "yi://skills/har-api".parse()?;
+    log.record(
+        &longer,
+        yi_runtime::fetch::FetchRecord {
+            url: longer.to_string(),
+            hash: "deadbeef".to_owned(),
+            served_by: "test".to_owned(),
+        },
+    );
+    engine.set_fetch(Arc::clone(&log));
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("unwrap this"))),
+        ["Relevant: yi://skills/har (matched \"unwrap\")"],
+        "a read of the longer skill must not spend the shorter one's pointer"
+    );
+    engine.rearm();
+    let exact: yi_types::url::Url = "yi://skills/har".parse()?;
+    log.record(
+        &exact,
+        yi_runtime::fetch::FetchRecord {
+            url: exact.to_string(),
+            hash: "deadbeef".to_owned(),
+            served_by: "test".to_owned(),
+        },
+    );
+    assert!(
+        engine.observe_user(&typed("unwrap again")).is_empty(),
+        "a read of the exact address does spend it"
+    );
+    Ok(())
+}
+
 fn skill(name: &str, needle: &str, scope: RuleScope, gap: RuleGap) -> RuleDoc {
     let mut doc = rule(name, needle, scope, gap, RuleMode::Remind);
-    doc.body = format!("skill://{name}");
+    doc.body = format!("yi://skills/{name}");
     doc
 }
 
@@ -590,7 +629,7 @@ fn tool_output_points_to_no_skill_but_a_pasted_failure_does() -> TestResult {
     );
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("the suite says test result: FAILED"))),
-        ["Relevant: skill://debug (matched \"FAILED\")"]
+        ["Relevant: yi://skills/debug (matched \"FAILED\")"]
     );
     Ok(())
 }
@@ -626,7 +665,7 @@ fn the_agents_own_words_point_to_no_skill_but_a_typed_request_does() -> TestResu
     );
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("verify the goal"))),
-        ["Relevant: skill://review (matched \"verify the goal\")"]
+        ["Relevant: yi://skills/review (matched \"verify the goal\")"]
     );
     Ok(())
 }
@@ -644,7 +683,7 @@ fn only_a_message_the_user_typed_points_to_a_skill() -> TestResult {
     assert!(engine.observe_user(&delegated).is_empty());
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("Verify the goal"))),
-        ["Relevant: skill://review (matched \"verify the goal\")"],
+        ["Relevant: yi://skills/review (matched \"verify the goal\")"],
         "a capital at the start of a sentence is the same request"
     );
     Ok(())
@@ -665,7 +704,7 @@ fn a_typed_dollar_name_skips_the_latch_and_a_needle_does_not() -> TestResult {
     for _ in 0..2 {
         assert_eq!(
             pointer_texts(&engine.observe_user(&typed("$review before you finish"))),
-            ["Relevant: skill://review (matched \"$review\")"],
+            ["Relevant: yi://skills/review (matched \"$review\")"],
             "typing the name is an explicit request, every time"
         );
     }
@@ -686,7 +725,7 @@ fn skill_trigger_compiles_when_the_user_did_not_claim_the_name() -> TestResult {
         .iter()
         .find(|rule| rule.name == "rust-borrowck")
         .ok_or("skill did not compile")?;
-    assert_eq!(rule.body, "skill://rust-borrowck");
+    assert_eq!(rule.body, "yi://skills/rust-borrowck");
     assert_eq!(
         rule.scope,
         RuleScope::Text,
@@ -728,7 +767,7 @@ fn a_skill_never_denies_and_says_so() -> TestResult {
     );
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("rm -rf build first"))),
-        ["Relevant: skill://guard (matched \"rm -rf\")"]
+        ["Relevant: yi://skills/guard (matched \"rm -rf\")"]
     );
     Ok(())
 }
@@ -816,7 +855,7 @@ fn three_user_rules_all_deliver_in_one_scan() -> TestResult {
     assert_eq!(
         delivered.lock().map_err(|_| "lock")?.len(),
         3,
-        "the cap is for skill:// pointers; a user's own words are never dropped"
+        "the cap is for yi://skills/ pointers; a user's own words are never dropped"
     );
     Ok(())
 }
@@ -831,13 +870,13 @@ fn the_cap_names_the_skill_it_dropped_and_leaves_it_armed() -> TestResult {
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("error[E0502] three ways"))),
         [
-            "Relevant: skill://alpha (matched \"E0502\")",
-            "Relevant: skill://beta (matched \"E0502\") [+1 past the cap of 2: skill://gamma]",
+            "Relevant: yi://skills/alpha (matched \"E0502\")",
+            "Relevant: yi://skills/beta (matched \"E0502\") [+1 past the cap of 2: yi://skills/gamma]",
         ]
     );
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("error[E0502] again"))),
-        ["Relevant: skill://gamma (matched \"E0502\")"],
+        ["Relevant: yi://skills/gamma (matched \"E0502\")"],
         "the dropped pointer was never latched"
     );
     Ok(())
@@ -899,13 +938,13 @@ fn a_dollar_name_in_the_prompt_points_at_the_skill_with_or_without_a_trigger() -
         .ok_or("a skill without a trigger still answers to its name")?;
     assert_eq!(quiet.needles, vec!["$quiet".to_owned()]);
     assert_eq!(quiet.scope, RuleScope::Text);
-    assert_eq!(quiet.body, "skill://quiet");
+    assert_eq!(quiet.body, "yi://skills/quiet");
     let engine = RuleEngine::new(set.rules);
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("$quiet then $assess"))),
         [
-            "Relevant: skill://assess (matched \"$assess\")",
-            "Relevant: skill://quiet (matched \"$quiet\")",
+            "Relevant: yi://skills/assess (matched \"$assess\")",
+            "Relevant: yi://skills/quiet (matched \"$quiet\")",
         ]
     );
     Ok(())
@@ -924,20 +963,20 @@ fn a_typed_name_does_not_also_name_its_prefix() -> TestResult {
     let (engine, _delivered) = engine_with_sink(vec![har, api, npm]);
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("fix this with $har-api"))),
-        ["Relevant: skill://har-api (matched \"$har-api\")"]
+        ["Relevant: yi://skills/har-api (matched \"$har-api\")"]
     );
     assert_eq!(engine.observe_user(&typed("unwrap this")).len(), 1);
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("unwrap with $har-api"))),
-        ["Relevant: skill://har-api (matched \"$har-api\")"]
+        ["Relevant: yi://skills/har-api (matched \"$har-api\")"]
     );
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("now $har."))),
-        ["Relevant: skill://har (matched \"$har\")"]
+        ["Relevant: yi://skills/har (matched \"$har\")"]
     );
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("`$ npm install` fails"))),
-        ["Relevant: skill://npm (matched \"$ npm i\")"]
+        ["Relevant: yi://skills/npm (matched \"$ npm i\")"]
     );
     Ok(())
 }

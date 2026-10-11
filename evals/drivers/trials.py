@@ -32,23 +32,26 @@ KEPT = ("task", "trial", "reward", "partialScore", "testsPassed", "testsTotal", 
         "errored", "verifierUnmeasured", "timedOut", "wallSec")
 
 
+def merge_rows(rows):
+    """The SUMMED keys and one costUsd over many scored session rows: an unpriced session (E9,
+    E14) makes the merged cost None, which cost() prices at UNPRICED_USD, never $0."""
+    merged = {key: None for key in SUMMED}
+    for row in rows:
+        for key in SUMMED:
+            merged[key] = (merged[key] or 0) + (row.get(key) or 0)
+    costs = [row["costUsd"] for row in rows]
+    merged["costUsd"] = None if None in costs else round(sum(costs), 6)
+    return merged
+
+
 def trial_rows(job):
     """One row per trial directory under a harbor job: its context once, its sessions summed."""
     job = Path(job).resolve()
-    merged = {}
-    for path in sorted(job.rglob("*.jsonl")):
-        if not axes.is_session(path):
-            continue
+    groups = {}
+    for path in axes.scored_sessions(job):
         row = axes.score(path, job)
-        mine = merged.get(row["trial"])
-        if mine is None:
-            merged[row["trial"]] = {**{k: row.get(k) for k in KEPT + SUMMED}, "costUsd": row["costUsd"]}
-            continue
-        for key in SUMMED:
-            mine[key] = (mine[key] or 0) + (row.get(key) or 0)
-        mine["costUsd"] = None if mine["costUsd"] is None or row["costUsd"] is None \
-            else round(mine["costUsd"] + row["costUsd"], 6)
-    return list(merged.values())
+        groups.setdefault(row["trial"], []).append(row)
+    return [{**{k: rows[0].get(k) for k in KEPT}, **merge_rows(rows)} for rows in groups.values()]
 
 
 def unstarted(job):

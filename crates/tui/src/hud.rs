@@ -220,7 +220,7 @@ pub(crate) fn input(
         landing: app.landing.as_ref().map(yi_runtime::slash::landing_line),
         plan: app.plan_progress.clone(),
         todos: app.todos.clone(),
-        todo_full: app.todo_clock.full(Instant::now()),
+        todo_full: app.todo_clock.full(app.clock.now()),
         live: app.running,
         claims: app.claims.clone(),
         steering: app.steering.clone(),

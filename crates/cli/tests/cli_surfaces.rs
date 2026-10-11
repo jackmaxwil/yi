@@ -710,6 +710,26 @@ fn the_primary_role_supplies_the_model() -> TestResult {
     Ok(())
 }
 
+/// Dies with `yi` dropping either cost key between the config file and the session: each is
+/// read at start, so a bad value must be named before the turn runs.
+#[test]
+fn the_cost_keys_reach_the_session_at_start() -> TestResult {
+    let workspace = Workspace::new("cost-keys")?;
+    write_config(
+        &workspace,
+        r#"{"spend":{"alertUsd":-1},"compaction":{"at":5}}"#,
+    )?;
+    let answered = ask(&workspace, "cost check", &[])?;
+    let stderr = String::from_utf8_lossy(&answered.stderr);
+    assert_eq!(answered.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("spend.alertUsd -1 is not a positive amount")
+            && stderr.contains("compaction.at 5 is under the"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
     let workspace = Workspace::new("role-summarizer")?;
@@ -728,6 +748,23 @@ fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
         stdout(&answered).contains("faux: role check"),
         "{}",
         stdout(&answered)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_named_selector_role_is_resolved_at_session_start() -> TestResult {
+    let workspace = Workspace::new("role-selector")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1","selector":"nope/nope-1"}}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "role check"])?;
+    assert_eq!(answered.status.code(), Some(0));
+    let complaint = String::from_utf8_lossy(&answered.stderr);
+    assert!(
+        complaint.contains("unknown selector model nope/nope-1; the reducer's cut stands alone"),
+        "{complaint}"
     );
     Ok(())
 }
@@ -1103,6 +1140,21 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     Ok(())
 }
 
+/// Cursor's list is the account's own, so a user who never logged in to it must not see every
+/// `yi catalog refresh` fail: the row says what to run and the run stays green.
+#[test]
+fn refreshing_cursor_without_a_login_is_a_skip_not_a_failure() -> TestResult {
+    let workspace = Workspace::new("catalog-cursor-skip")?;
+    let skipped = workspace.yi(&["catalog", "refresh", "cursor"])?;
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    let row = stdout(&skipped)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(row, "cursor no credential (yi login cursor)");
+    Ok(())
+}
+
 /// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
 #[test]
 fn a_relative_home_is_refused_at_boot() -> TestResult {
@@ -1111,6 +1163,36 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
     assert_eq!(refused.status.code(), Some(2));
     let complaint = String::from_utf8_lossy(&refused.stderr);
     assert!(complaint.contains("HOME is relative"), "{complaint}");
+    Ok(())
+}
+
+/// `yi plugin` writes under HOME like every other surface, so an unset or relative one
+/// is refused before a verb downloads or deletes into the working directory.
+#[test]
+fn a_homeless_plugin_verb_is_refused_and_writes_nothing_here() -> TestResult {
+    let workspace = Workspace::new("plugin-unset-home")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract is the spawned binary's exit code and what it wrote"
+    )]
+    let homeless = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(args)
+            .env_remove("HOME")
+            .envs(NO_KERNEL.iter().copied())
+            .current_dir(workspace.project())
+            .output()
+    };
+    let refused = homeless(&["plugin", "add", "ripwire"])?;
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert!(!workspace.project().join(".yi").exists(), "{complaint}");
+    assert_eq!(refused.status.code(), Some(2), "{complaint}");
+    assert!(complaint.contains("HOME is not set"), "{complaint}");
+    let relative = workspace.yi_env(&["plugin", "add", "ripwire"], &[("HOME", "../elsewhere")])?;
+    let complaint = String::from_utf8_lossy(&relative.stderr);
+    assert_eq!(relative.status.code(), Some(2), "{complaint}");
+    assert!(complaint.contains("HOME is relative"), "{complaint}");
+    assert!(!workspace.project().join(".yi").exists(), "{complaint}");
     Ok(())
 }
 
@@ -1378,7 +1460,8 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "daemon-ledger",
             "lanes",
             "cache",
-            "sandbox-listeners"
+            "sandbox-listeners",
+            "plugins"
         ]
     );
     assert_eq!(rows[11]["detail"], "no session here", "{rows}");
@@ -1534,6 +1617,255 @@ fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestRe
     assert_eq!(record["requests"], 1, "{record}");
     assert_eq!(record["turns"], 1, "{record}");
     assert_eq!(record["files"], 1, "{record}");
+    Ok(())
+}
+
+const TOGETHER: &str = include_str!("fixtures/prices/together_glm_flash.jsonl");
+const FIREWORKS: &str = include_str!("fixtures/prices/fireworks_glm_flash.jsonl");
+
+/// `text` with every entry stamped `now`, so a `--since` window sees it.
+fn restamped(text: &str, now: u64) -> String {
+    text.lines()
+        .map(|line| match line.rsplit_once("\"timestamp\":") {
+            Some((head, tail)) if line.contains("\"kind\":\"entry\"") => {
+                let rest = tail.trim_start_matches(|c: char| c.is_ascii_digit());
+                format!("{head}\"timestamp\":{now}{rest}\n")
+            }
+            _ => format!("{line}\n"),
+        })
+        .collect()
+}
+
+fn with_priced_sessions(workspace: &Workspace, together: &str) -> TestResult {
+    let dir = workspace.0.join("home/sessions/--p--");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("together.jsonl"), together)?;
+    std::fs::write(dir.join("fireworks.jsonl"), FIREWORKS)?;
+    Ok(())
+}
+
+fn rolled(workspace: &Workspace, args: &[&str]) -> Result<Value, Box<dyn Error>> {
+    let out = workspace.yi_env(args, &[("TZ", "UTC")])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(serde_json::from_str(&stdout(&out))?)
+}
+
+/// `yi stats --by prices` fits each route's price from billed dollars alone. Together's published
+/// glm-5.3-flash price is $0.15 in and $0.50 out per million, which 30 real replies must give
+/// back; Fireworks has 29, one under the floor, and is named as left out.
+#[test]
+fn stats_prices_fits_the_published_price_and_names_the_route_it_left_out() -> TestResult {
+    let workspace = Workspace::new("prices")?;
+    with_priced_sessions(&workspace, TOGETHER)?;
+    let fit = rolled(&workspace, &["stats", "--by", "prices", "--json"])?;
+    let routes = fit["prices"].as_array().ok_or("no prices")?;
+    assert_eq!(routes.len(), 1, "{fit}");
+    assert_eq!(routes[0]["upstream"], "Together", "{fit}");
+    assert_eq!(routes[0]["samples"], 30, "{fit}");
+    let price = |at: usize| routes[0]["observed"][at].as_f64().unwrap_or(f64::NAN);
+    assert!((price(0) - 0.15).abs() < 1e-6, "{fit}");
+    assert!((price(1) - 0.50).abs() < 1e-6, "{fit}");
+    assert_eq!(fit["unfit"], 1, "{fit}");
+    let text = stdout(&workspace.yi(&["stats", "--by", "prices"])?);
+    assert!(
+        text.contains("[1 route(s) not fitted: fewer than 30 priced replies (MIN_SAMPLES)"),
+        "{text}"
+    );
+    Ok(())
+}
+
+const GLM_ROOT: &str =
+    include_str!("../../runtime/tests/fixtures/rollup/root_glm_with_child_usage.jsonl");
+const OPUS_CHILD: &str = include_str!("../../runtime/tests/fixtures/rollup/child_bedrock.jsonl");
+
+/// Four sessions of two models: glm-5.3-flash on Together (30 replies), on Fireworks (29), a
+/// root with two, and an Opus child under `children/` with one.
+fn with_four_sessions(workspace: &Workspace) -> TestResult {
+    with_priced_sessions(workspace, TOGETHER)?;
+    let dir = workspace.0.join("home/sessions/--p--");
+    std::fs::write(dir.join("root.jsonl"), GLM_ROOT)?;
+    std::fs::create_dir_all(dir.join("root/children/sub-aa"))?;
+    std::fs::write(dir.join("root/children/sub-aa/c.jsonl"), OPUS_CHILD)?;
+    Ok(())
+}
+
+/// Dies when the default table keys rows by anything but model, mis-sums a model across
+/// sessions, or orders them other than costliest first. Totals and counts are summed from the
+/// fixture lines with Python, not read off Yi's output.
+#[test]
+fn stats_default_table_is_one_row_per_model_costliest_first() -> TestResult {
+    let workspace = Workspace::new("rollup-models")?;
+    with_four_sessions(&workspace)?;
+    let table = rolled(&workspace, &["stats", "--since", "36500d", "--json"])?;
+    let rows = table["rows"].as_array().ok_or("no rows")?;
+    let keys: Vec<&str> = rows.iter().filter_map(|row| row["key"].as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "openrouter/z-ai/glm-5.3-flash",
+            "openrouter/anthropic/claude-opus-5.5"
+        ],
+        "{table}"
+    );
+    assert_eq!(rows[0]["requests"], 61, "{table}");
+    assert!(
+        (rows[0]["billed"].as_f64().unwrap_or(f64::NAN) - 0.134_851_595).abs() < 1e-9,
+        "{table}"
+    );
+    assert_eq!(rows[1]["requests"], 1, "{table}");
+    assert!(
+        (rows[1]["billed"].as_f64().unwrap_or(f64::NAN) - 0.010_216).abs() < 1e-9,
+        "{table}"
+    );
+    assert_eq!(
+        (table["sessions"].clone(), table["files"].clone()),
+        (4.into(), 4.into()),
+        "{table}"
+    );
+    Ok(())
+}
+
+/// Dies when `--top N` ranks by anything but billed dollars, returns more than N, or mislabels
+/// a child; at N = 0 and N past the session count it must still answer, not panic or pad.
+#[test]
+fn stats_top_lists_the_costliest_sessions_and_holds_at_the_edges() -> TestResult {
+    let workspace = Workspace::new("rollup-top")?;
+    with_four_sessions(&workspace)?;
+    let two = rolled(&workspace, &["stats", "--top", "2", "--json"])?;
+    let ids: Vec<&str> = two["top"]
+        .as_array()
+        .ok_or("no top")?
+        .iter()
+        .filter_map(|r| r["key"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "01a00000-0000-7000-8000-fir000000000",
+            "01a00000-0000-7000-8000-tog000000000"
+        ],
+        "{two}"
+    );
+    let all = rolled(&workspace, &["stats", "--top", "9", "--json"])?;
+    let last = all["top"]
+        .as_array()
+        .ok_or("no top")?
+        .last()
+        .cloned()
+        .ok_or("empty")?;
+    assert_eq!(all["top"].as_array().map(Vec::len), Some(4), "{all}");
+    assert_eq!(
+        (last["key"].clone(), last["child"].clone()),
+        ("01a04771-80a2-727b-a35d-9a0bfe11023b".into(), false.into()),
+        "{all}"
+    );
+    let child = all["top"][2].clone();
+    assert_eq!(
+        (child["key"].clone(), child["child"].clone()),
+        ("01a0faa8-5f44-7522-b54f-fef261f76e7f".into(), true.into()),
+        "{all}"
+    );
+    let none = rolled(&workspace, &["stats", "--top", "0", "--json"])?;
+    assert_eq!(none["top"].as_array().map(Vec::len), Some(0), "{none}");
+    let text = stdout(&workspace.yi(&["stats", "--top", "1"])?);
+    assert!(text.contains("costliest 1 session(s)"), "{text}");
+    Ok(())
+}
+
+/// Dies when the rollup flags leak past `stats` (each used to be an unknown option, and
+/// `yi ask --top 3` now runs with the 3 swallowed), when a session id or `telemetry` rides along
+/// with them and is silently ignored, or when a malformed value is not named.
+#[test]
+fn the_rollup_flags_belong_to_stats_alone_and_refuse_a_session_id() -> TestResult {
+    let workspace = Workspace::new("rollup-scope")?;
+    with_four_sessions(&workspace)?;
+    let refused = |args: &[&str], needle: &str| -> TestResult {
+        let out = workspace.yi(args)?;
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && err.contains(needle),
+            "{args:?}: {err}"
+        );
+        Ok(())
+    };
+    refused(&["ask", "--top", "3", "hi"], "--top")?;
+    refused(&["sessions", "--by", "model"], "--by")?;
+    refused(
+        &[
+            "stats",
+            "01a04771-80a2-727b-a35d-9a0bfe11023b",
+            "--since",
+            "1d",
+        ],
+        "fold every session",
+    )?;
+    refused(
+        &["stats", "telemetry", "/tmp", "--since", "1d"],
+        "fold every session",
+    )?;
+    refused(&["stats", "--top", "x"], "--top x")?;
+    refused(&["stats", "--since", "7q"], "--since 7q")?;
+    refused(&["stats", "--by", "role"], "--by role")?;
+    Ok(())
+}
+
+/// Dies when the rollup flags are read by a second pass over argv: `--top` here is the value of
+/// `--system`, so it is no flag, and a second parser that skips `--system` as unknown reads
+/// `--top` as one and fails on its missing value instead of reaching the session lookup.
+#[test]
+fn a_flag_name_that_is_another_options_value_is_a_value() -> TestResult {
+    let workspace = Workspace::new("rollup-value")?;
+    let out = workspace.yi(&["stats", "--system", "--top"])?;
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(err.contains("no sessions for this directory"), "{err}");
+    Ok(())
+}
+
+/// `--by day` buckets on the local calendar and `--since` drops whole days: the dates and
+/// counts below come from reading the fixture's timestamps with Python's datetime, not from Yi.
+#[test]
+fn stats_rolls_sessions_up_by_day_and_window() -> TestResult {
+    let workspace = Workspace::new("rollup-days")?;
+    with_priced_sessions(&workspace, TOGETHER)?;
+    let days = rolled(&workspace, &["stats", "--by", "day", "--json"])?;
+    let counted: Vec<(String, u64)> = days["rows"]
+        .as_array()
+        .ok_or("no rows")?
+        .iter()
+        .map(|row| {
+            (
+                row["key"].as_str().unwrap_or("").to_owned(),
+                row["requests"].as_u64().unwrap_or(0),
+            )
+        })
+        .collect();
+    let want = [
+        ("2026-09-27", 5),
+        ("2026-09-30", 12),
+        ("2026-10-01", 3),
+        ("2026-10-04", 10),
+        ("2026-10-07", 29),
+    ];
+    assert_eq!(counted, want.map(|(day, n)| (day.to_owned(), n)), "{days}");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture is restamped to this instant so a `--since` window sees it"
+    )]
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    let fresh = restamped(TOGETHER, u64::try_from(now.as_millis())?);
+    with_priced_sessions(&workspace, &fresh)?;
+    let recent = rolled(
+        &workspace,
+        &["stats", "--since", "1d", "--by", "upstream", "--json"],
+    )?;
+    assert_eq!(recent["rows"].as_array().map(Vec::len), Some(1), "{recent}");
+    assert_eq!(recent["rows"][0]["key"], "Together", "{recent}");
+    assert_eq!(recent["rows"][0]["requests"], 30, "{recent}");
     Ok(())
 }
 
@@ -1802,4 +2134,84 @@ fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// A plugin yi installed at a version it no longer pins is off, and both `yi plugin list` and
+/// `yi doctor` name the one call that brings it to the pin; a name not in the table is refused.
+#[test]
+fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
+    let workspace = Workspace::new("plugin-stale")?;
+    let home = workspace.0.join("home");
+    let stale = home.join(".yi/plugins/ripwire/0.0.1");
+    std::fs::create_dir_all(&stale)?;
+    std::fs::write(stale.join("ripwire"), "#!/bin/sh\n")?;
+    let plugin = |args: &[&str]| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        command
+            .arg("plugin")
+            .args(args)
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+    };
+    let list = plugin(&["list"])?;
+    let first = stdout(&list).lines().next().unwrap_or_default().to_owned();
+    assert!(
+        first.starts_with("ripwire ")
+            && first.ends_with("0.0.1 installed, this yi pins 0.6.5: yi plugin sync"),
+        "{first}"
+    );
+    let doctor = workspace.yi_env(&["doctor"], &[("PATH", "/usr/bin:/bin")])?;
+    let row = stdout(&doctor)
+        .lines()
+        .find(|line| line.contains(" plugins "))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        row.starts_with("FAIL") && row.ends_with("yi plugin sync"),
+        "{row}"
+    );
+    let unknown = plugin(&["add", "grid"])?;
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("no plugin named grid"),
+        "{unknown:?}"
+    );
+    Ok(())
+}
+
+/// `yi plugin list --json` is what the eval adapter reads (`evals/adapters/yi_usage.py`
+/// `installed_plugins`): one row per plugin with `name`, `version`, `state` and `path`.
+#[test]
+fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
+    let workspace = Workspace::new("plugin-json")?;
+    let home = workspace.0.join("home");
+    let pinned = home.join(".yi/plugins/ripwire/0.6.5");
+    std::fs::create_dir_all(&pinned)?;
+    std::fs::write(pinned.join("ripwire"), "#!/bin/sh\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+    )]
+    let listed = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["plugin", "list", "--json"])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .output()?;
+    let rows: Value = serde_json::from_str(&stdout(&listed))?;
+    let ripwire = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "ripwire")
+        .ok_or("no ripwire row")?;
+    assert_eq!(ripwire["state"], "installed", "{rows}");
+    assert_eq!(ripwire["version"], "0.6.5", "{rows}");
+    assert_eq!(
+        ripwire["path"],
+        json!(pinned.join("ripwire").display().to_string()),
+        "{rows}"
+    );
+    Ok(())
 }

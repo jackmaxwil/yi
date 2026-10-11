@@ -15,8 +15,8 @@ pub struct ToolAdapter {
     cwd: PathBuf,
     cancelled: CancelFlag,
     permission: Option<Arc<PermissionBroker>>,
-    spill_root: Option<PathBuf>,
-    spill_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    spills: Option<PathBuf>,
+    selector: Option<Arc<crate::select::Selector>>,
     transcript: Option<crate::goal::StoreHandle>,
     auto_background: Option<std::time::Duration>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
@@ -41,14 +41,19 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
 /// Invariant: an empty value in a property the schema does not require is a key not sent; models
 /// fill optional fields with `""` or `[]` they do not mean, and a required one is never touched.
 fn unsent_empties(schema: &Value, mut args: Map<String, Value>) -> Map<String, Value> {
+    // A call with no op is read by the keys it carries, so an empty one still names the op.
+    if schema.pointer("/properties/op").is_some() && !args.contains_key("op") {
+        return args;
+    }
     let required = schema.get("required").and_then(Value::as_array);
     let required = |key: &str| required.is_some_and(|keys| keys.iter().any(|name| name == key));
     args.retain(|key, value| {
         let empty = match value {
-            Value::String(text) => text.is_empty(),
+            Value::String(text) => ["", "[]", "{}", "null"].contains(&text.trim()),
             Value::Array(items) => items.is_empty(),
             Value::Object(fields) => fields.is_empty(),
-            Value::Null | Value::Bool(_) | Value::Number(_) => false,
+            Value::Null => true,
+            Value::Bool(_) | Value::Number(_) => false,
         };
         !empty || required(key)
     });
@@ -209,7 +214,8 @@ fn walled_root_refusal(
                 return Some(crate::gate::walled_host_refusal(&why));
             }
         }
-        after_cd = matches!(word, "cd" | "pushd");
+        // A flag (`--`, `-P`) between `cd` and its target keeps the next word the target.
+        after_cd = matches!(word, "cd" | "pushd") || after_cd && word.starts_with('-');
     }
     None
 }
@@ -268,15 +274,6 @@ pub(crate) fn default_spill_root() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi").join(yi_tools::SPILLS))
 }
 
-/// A session's own spill dir under `root`, when its key is a valid session id.
-pub(crate) fn own_spill_dir(
-    root: Option<&std::path::Path>,
-    key: Option<String>,
-) -> Option<PathBuf> {
-    let key = key.filter(|key| yi_session::validate_session_id(key).is_ok())?;
-    Some(root?.join(key))
-}
-
 /// Every session store: `~/.yi/sessions` and the `--session-dir` in use, which the broker holds
 /// as host-owned (D335).
 pub(crate) fn session_stores(broker: Option<&PermissionBroker>) -> Vec<PathBuf> {
@@ -304,8 +301,8 @@ pub(crate) fn spill_roots_and_stores(
         .collect()
 }
 
-/// Invariant: a walled session reads only its own spills and transcript: the spill roots and
-/// session stores are walled, its own spill dir and transcript spared (D340, D345).
+/// Invariant: a walled session reads only its family's spills and its own transcript: the spill
+/// roots and session stores are walled, the board's spill dir and the transcript spared (D345).
 pub(crate) fn walled_roots(
     wall: &crate::wall::Wall,
     broker: Option<&PermissionBroker>,
@@ -334,8 +331,8 @@ impl ToolAdapter {
             cwd,
             cancelled,
             permission,
-            spill_root: default_spill_root(),
-            spill_key: None,
+            spills: None,
+            selector: None,
             transcript: None,
             auto_background: None,
             rules: None,
@@ -352,18 +349,14 @@ impl ToolAdapter {
         self
     }
 
-    /// The session's key names its spill dir, read per call: the store may attach after wiring.
-    pub fn with_spill_key(mut self, key: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Self {
-        self.spill_key = Some(key);
+    pub fn with_spills(mut self, dir: Option<PathBuf>) -> Self {
+        self.spills = dir;
         self
     }
 
-    /// The session's own spill dir, when its key is a valid session id.
-    fn session_spills(&self) -> Option<PathBuf> {
-        own_spill_dir(
-            self.spill_root.as_deref(),
-            self.spill_key.as_ref().and_then(|key| key()),
-        )
+    pub fn with_selector(mut self, selector: Option<Arc<crate::select::Selector>>) -> Self {
+        self.selector = selector;
+        self
     }
 
     /// The store whose file is the session's own transcript, read per call like its spill key.
@@ -433,12 +426,20 @@ impl AgentTool for ToolAdapter {
                 *count > 1
             })
             .unwrap_or(false);
-        if !repeated {
+        let schema = self.tool.schema();
+        // Incident: a template that fills no required key is the refused call itself; a todo
+        // session was shown its own failing `{"evidence": …}` as the next call and sent it again.
+        let fills = (schema.get("required").and_then(Value::as_array)).is_some_and(|keys| {
+            keys.iter()
+                .filter_map(Value::as_str)
+                .any(|key| !args.contains_key(key))
+        });
+        if !repeated || !fills {
             return Err(reason);
         }
         Err(format!(
             "{reason}\n{}",
-            crate::affordance::call_template(self.tool.name(), &self.tool.schema(), args)
+            crate::affordance::call_template(self.tool.name(), &schema, args)
         ))
     }
 
@@ -451,8 +452,10 @@ impl AgentTool for ToolAdapter {
         let tool = Arc::clone(&self.tool);
         let args = unsent_empties(&tool.schema(), args);
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
-        let spills = self.session_spills();
+        let spills = self.spills.clone();
         let store = (self.transcript.as_ref()).and_then(|store| store());
+        let (selector, ledger, spills_dir) =
+            (self.selector.clone(), store.clone(), self.spills.clone());
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
         let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
@@ -630,6 +633,18 @@ impl AgentTool for ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
+                    if let (Some(selector), Some(spills)) =
+                        (selector.as_deref().filter(|_| name == "bash"), &spills_dir)
+                    {
+                        crate::select::widen(
+                            selector,
+                            ledger,
+                            spills,
+                            &command,
+                            &mut output.result,
+                        )
+                        .await;
+                    }
                     let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
                         holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -681,5 +696,26 @@ impl AgentTool for ToolAdapter {
                 },
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_flag_after_cd_still_scopes_the_relative_paths_that_follow() {
+        let roots = [PathBuf::from("/home/u/.yi/sessions")];
+        let refused = |command: &str| {
+            super::walled_root_refusal(command, &roots, &[], Path::new("/work")).is_some()
+        };
+        assert!(refused("cd '/home/u/.yi/other' && cat ../sessions/x.jsonl"));
+        assert!(refused(
+            "cd -- '/home/u/.yi/other' && cat ../sessions/x.jsonl"
+        ));
+        assert!(refused(
+            "cd -P /home/u/.yi/other && cat ../sessions/x.jsonl"
+        ));
+        assert!(!refused("cd -- /home/u/.yi/other && cat notes.txt"));
     }
 }

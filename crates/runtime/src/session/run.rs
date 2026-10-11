@@ -257,6 +257,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         tool_execution,
         compactor,
         on_compacted,
+        tool_cwd,
     } = parts.clone();
     let capture = start_capture(&shared);
     let assembling = yi_types::trace::span("turn.context");
@@ -282,7 +283,18 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
     }
     config.tool_execution = tool_execution;
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
-    config.convert_to_llm = Box::new(yi_context::convert_to_llm);
+    // A cut names `read` as its restore, so a session without it, a narrow reader, cuts nothing.
+    let reads = (context.tools.iter()).any(|tool| tool.definition().name == "read");
+    let stores = Arc::clone(&shared);
+    let overlay = crate::reclaim::Overlay::new(
+        Arc::clone(&shared.reclaimed),
+        Box::new(move || super::store_of(&stores)),
+        model.clone(),
+    );
+    config.convert_to_llm = match reads {
+        true => Box::new(move |messages| overlay.view(yi_context::convert_to_llm(messages))),
+        false => Box::new(yi_context::convert_to_llm),
+    };
     if let Some(compactor) = compactor.clone() {
         compactor.open_run(&prompt);
         let stores = Arc::clone(&shared);
@@ -347,13 +359,14 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         return false;
     }
     shared.signal.reset_if_epoch(admitted_epoch);
+    let armed = provider.armed(context.tools.clone(), tool_cwd);
     run_loop(
         &mut context,
         vec![prompt],
         &config,
         &shared.signal,
         &mut emit,
-        provider.as_ref(),
+        &armed,
     )
     .await;
     // The end capture must follow the start capture, or undo pairs the wrong trees.
