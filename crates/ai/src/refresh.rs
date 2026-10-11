@@ -224,6 +224,12 @@ pub fn cursor_catalog(list: &Value) -> Result<Value, String> {
     Ok(json!({ "cursor-agent": by_id, "schema": SCHEMA }))
 }
 
+/// A provider whose list is the account's own: without a login there is nothing to fetch, which
+/// is a skip, not a failed refresh.
+pub fn needs_credential(provider: &str) -> bool {
+    provider == "cursor"
+}
+
 fn refresh_cursor(
     dir: &Path,
     key: Option<&str>,

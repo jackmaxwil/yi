@@ -163,9 +163,7 @@ pub fn transform_messages(
                                 });
                             }
                         }
-                        Content::ToolCall { namespace, .. }
-                            if yi_types::message::cursor_minted(namespace.as_deref()) =>
-                        {
+                        Content::ToolCall { .. } if api == yi_types::message::CURSOR_API => {
                             continue;
                         }
                         Content::ToolCall {

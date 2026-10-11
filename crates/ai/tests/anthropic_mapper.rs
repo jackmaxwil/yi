@@ -521,14 +521,18 @@ fn a_cursor_tool_call_never_reaches_the_anthropic_history() {
         thought_signature: None,
         namespace: namespace.map(str::to_owned),
     };
+    let mut cursor = assistant(
+        vec![call("cursor-1", None), call("cursor-2", Some("cursor"))],
+        StopReason::ToolUse,
+    );
+    if let AgentMessage::Assistant { api, .. } = &mut cursor {
+        *api = "cursor-agent".to_owned();
+    }
     let history = yi_ai::transform::transform_messages(
-        &[assistant(
-            vec![
-                call("cursor-1", Some(yi_ai::cursor::NAMESPACE)),
-                call("own-1", None),
-            ],
-            StopReason::ToolUse,
-        )],
+        &[
+            cursor,
+            assistant(vec![call("own-1", Some("cursor"))], StopReason::ToolUse),
+        ],
         &model(),
         None,
     );

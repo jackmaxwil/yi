@@ -52,8 +52,6 @@ fn env_key(provider: &str) -> Option<Secret> {
         .map(Secret::new)
 }
 
-/// A stored OAuth credential is refreshed before it is handed out, through the
-/// session's proxy; a failed refresh falls back to the disk copy (the 401 names `yi login`).
 fn refresh_cursor(
     store: Store,
     provider: &str,
@@ -63,19 +61,27 @@ fn refresh_cursor(
     if current.kind != Kind::Oauth {
         return (current, Vec::new());
     }
-    let Some(refresh) = current.refresh.clone() else {
+    if current.refresh.is_none() {
         return (current, Vec::new());
-    };
+    }
     let wire = proxy.and_then(|config| {
         config.proxy_for(crate::request::host_of(yi_oauth::cursor::REFRESH_URL))
     });
-    let fresh = flow::refresh_locked(&store, provider, current.clone(), |_| {
-        yi_oauth::cursor::refresh_ureq(&refresh, wire)
+    // The token re-read inside the lock, not the one captured before it: another process may
+    // have rotated it while this one waited.
+    let fresh = flow::refresh_locked(&store, provider, current.clone(), |locked| {
+        let token = locked
+            .refresh
+            .as_deref()
+            .ok_or("cursor: no refresh token")?;
+        yi_oauth::cursor::refresh_ureq(token, wire)
     })
     .unwrap_or(current);
     (fresh, Vec::new())
 }
 
+/// A stored OAuth credential is refreshed before it is handed out, through the
+/// session's proxy; a failed refresh falls back to the disk copy (the 401 names `yi login`).
 fn stored(
     root: std::path::PathBuf,
     provider: &str,

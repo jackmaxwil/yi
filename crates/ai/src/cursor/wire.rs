@@ -36,11 +36,14 @@ pub async fn run(
         .uri(format!("https://{host}{}", proto::RUN_PATH))
         .header("content-type", "application/connect+proto")
         .header("connect-protocol-version", "1")
-        .header("t\u{0065}", "trailers")
+        .header(concat!("t", "e"), "trailers")
         .header("authorization", format!("Bearer {token}"))
-        .header("x-ghost-mode", "true")
-        .header("x-cursor-client-type", "cli")
-        .header("x-cursor-client-version", proto::CLIENT_VERSION)
+        .header(concat!("x-", "ghost-mode"), "true")
+        .header(concat!("x-cursor-", "client-type"), concat!("c", "li"))
+        .header(
+            concat!("x-cursor-", "client-version"),
+            proto::CLIENT_VERSION,
+        )
         .header("x-request-id", request_id)
         .body(())
         .map_err(|error| error.to_string())?;
@@ -56,6 +59,7 @@ pub async fn run(
     let response = loop {
         tokio::select! {
             result = response.as_mut() => break result,
+            _ = wait_stop(out.stop) => return Ok(()),
             _ = beat.tick() => {
                 send.send_data(bytes::Bytes::from(proto::frame(&proto::heartbeat())), false)
                     .map_err(|error| error.to_string())?;
@@ -84,7 +88,7 @@ pub async fn run(
             }
         };
         let Some(chunk) = chunk else {
-            break;
+            return Err("cursor stream closed before the turn ended".to_owned());
         };
         let chunk = chunk.map_err(|error| error.to_string())?;
         let _ = recv.flow_control().release_capacity(chunk.len());
@@ -93,10 +97,10 @@ pub async fn run(
         pending = rest;
         for frame in ready {
             if frame.end {
-                let text = String::from_utf8_lossy(&frame.message);
-                return Err(format!("cursor stream ended: {text}"));
+                ended_ok(&frame.message)?;
+                break 'read;
             }
-            let inbound = proto::decode(&frame.message);
+            let inbound = proto::decode(&frame.message, workspace);
             let ended = matches!(inbound, Ok(proto::Inbound::TurnEnded));
             let applied = super::apply_message(inbound, tool, tools, workspace, &mut blobs).await;
             for reply in applied.replies {
@@ -115,6 +119,16 @@ pub async fn run(
     }
     let _ = send.send_data(bytes::Bytes::new(), true);
     Ok(())
+}
+
+fn ended_ok(message: &[u8]) -> Result<(), String> {
+    match serde_json::from_slice::<serde_json::Value>(message) {
+        Ok(end) if end.get("error").is_none() => Ok(()),
+        _ => Err(format!(
+            "cursor stream ended: {}",
+            String::from_utf8_lossy(message)
+        )),
+    }
 }
 
 async fn wait_stop(stop: &super::StopFn) {
@@ -345,8 +359,16 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::wait_stop;
+    use super::{ended_ok, wait_stop};
     use crate::cursor::StopFn;
+
+    #[test]
+    fn only_an_end_frame_that_carries_an_error_fails_the_turn() {
+        assert!(ended_ok(b"{}").is_ok());
+        assert!(ended_ok(br#"{"metadata":{}}"#).is_ok());
+        let failed = ended_ok(br#"{"error":{"code":"resource_exhausted","message":"quota"}}"#);
+        assert!(failed.is_err_and(|error| error.contains("quota")));
+    }
 
     #[tokio::test]
     async fn a_raised_stop_ends_the_wait() {

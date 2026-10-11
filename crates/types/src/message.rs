@@ -38,13 +38,9 @@ pub enum Content {
     },
 }
 
-/// The namespace tag on a tool call the cursor provider minted itself: the loop drops
-/// it from runs and the history transform drops it from outgoing messages.
-pub const CURSOR_TOOL_NAMESPACE: &str = "cursor";
-
-pub fn cursor_minted(namespace: Option<&str>) -> bool {
-    namespace == Some(CURSOR_TOOL_NAMESPACE)
-}
+/// The `api` of an assistant message whose tool calls the provider already ran: the loop
+/// executes none of them and the history transform sends none on.
+pub const CURSOR_API: &str = "cursor-agent";
 
 /// D25: who a user-role message actually came from. Absent means [`Attribution::Unproven`],
 /// so older messages and host-minted ones are unresolvable by `user://`.

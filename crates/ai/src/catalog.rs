@@ -124,6 +124,10 @@ impl Catalog {
         self.models.get(&(provider.to_owned(), id.to_owned()))
     }
 
+    pub fn has_provider(&self, provider: &str) -> bool {
+        self.models.keys().any(|(held, _)| held == provider)
+    }
+
     pub fn models(&self) -> Vec<Model> {
         let mut listed: Vec<Model> = self.models.values().cloned().collect();
         listed.sort_by(|left, right| (&left.provider, &left.id).cmp(&(&right.provider, &right.id)));
