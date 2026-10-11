@@ -100,6 +100,10 @@ pub(crate) fn run(args: &Args) -> i32 {
                     continue;
                 }
                 let key = yi_ai_key(provider);
+                if key.is_none() && yi_runtime::catalog_needs_credential(provider) {
+                    println!("{provider:<width$} no credential (yi login {provider})");
+                    continue;
+                }
                 match yi_runtime::refresh_catalog(
                     dir,
                     provider,

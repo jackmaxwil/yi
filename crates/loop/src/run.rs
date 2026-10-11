@@ -112,17 +112,15 @@ fn flag_unparsed_markup(mut message: AgentMessage) -> AgentMessage {
 }
 
 fn extract_tool_calls(message: &AgentMessage) -> Vec<ExtractedCall> {
-    let AgentMessage::Assistant { content, .. } = message else {
+    let AgentMessage::Assistant { content, api, .. } = message else {
         return Vec::new();
     };
+    if api == yi_types::message::CURSOR_API {
+        return Vec::new();
+    }
     content
         .iter()
         .filter_map(|block| match block {
-            Content::ToolCall { namespace, .. }
-                if yi_types::message::cursor_minted(namespace.as_deref()) =>
-            {
-                None
-            }
             Content::ToolCall {
                 id,
                 name,
@@ -1126,16 +1124,16 @@ mod tests {
 
     #[test]
     fn a_cursor_call_is_not_run_again_by_the_loop() {
-        let call = |id: &str, namespace: Option<&str>| Content::ToolCall {
+        let call = |id: &str| Content::ToolCall {
             id: id.to_owned(),
             name: "read".to_owned(),
             arguments: Map::new(),
             thought_signature: None,
-            namespace: namespace.map(str::to_owned),
+            namespace: Some("cursor".to_owned()),
         };
-        let message = AgentMessage::Assistant {
-            content: vec![call("cursor-1", Some("cursor")), call("own-1", None)],
-            api: "cursor-agent".to_owned(),
+        let message = |api: &str| AgentMessage::Assistant {
+            content: vec![call("c-1"), call("c-2")],
+            api: api.to_owned(),
             provider: "cursor".to_owned(),
             model: "composer-2.5-fast".to_owned(),
             response_model: None,
@@ -1149,10 +1147,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
         };
-        let ids: Vec<String> = extract_tool_calls(&message)
-            .into_iter()
-            .map(|call| call.id)
-            .collect();
-        assert_eq!(ids, vec!["own-1".to_owned()]);
+        assert!(extract_tool_calls(&message("cursor-agent")).is_empty());
+        assert_eq!(extract_tool_calls(&message("anthropic-messages")).len(), 2);
     }
 }

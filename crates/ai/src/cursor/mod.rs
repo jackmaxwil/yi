@@ -12,7 +12,7 @@ use yi_types::model::{LlmContext, Model};
 
 use crate::request::{empty_assistant, fail_message};
 
-pub use proto::{CLIENT_VERSION, NAMESPACE};
+pub use proto::CLIENT_VERSION;
 
 pub const BASE_URL: &str = "https://agentn.us.api5.cursor.sh";
 pub const MODELS_URL: &str = "https://api2.cursor.sh/aiserver.v1.AiService/AvailableModels";
@@ -119,7 +119,7 @@ fn tool_event(id: &str, name: &str, arguments: Map<String, Value>) -> AssistantM
             name: name.to_owned(),
             arguments,
             thought_signature: None,
-            namespace: Some(NAMESPACE.to_owned()),
+            namespace: None,
         },
     }
 }
@@ -131,28 +131,36 @@ pub fn prompt_of(context: &LlmContext) -> String {
     }
     for message in context.messages.iter().chain(context.transient.iter()) {
         match message {
-            AgentMessage::User { content, .. } => parts.push(user_text(content)),
-            AgentMessage::Assistant { content, .. } => parts.push(assistant_text(content)),
+            AgentMessage::User {
+                content: yi_types::message::UserContent::Text(text),
+                ..
+            } => parts.push(format!("User: {text}")),
+            AgentMessage::User {
+                content: yi_types::message::UserContent::Blocks(blocks),
+                ..
+            } => parts.push(format!("User: {}", blocks_text(blocks))),
+            AgentMessage::Assistant { content, .. } => {
+                parts.push(format!("Assistant: {}", blocks_text(content)));
+            }
+            AgentMessage::ToolResult { tool_name, .. } => parts.push(format!(
+                "[… result of {tool_name} dropped: the cursor provider does not receive tool results]"
+            )),
             _ => {}
         }
     }
     parts.join("\n")
 }
 
-fn user_text(content: &yi_types::message::UserContent) -> String {
-    match content {
-        yi_types::message::UserContent::Text(text) => text.clone(),
-        yi_types::message::UserContent::Blocks(blocks) => assistant_text(blocks),
-    }
-}
-
-fn assistant_text(blocks: &[Content]) -> String {
+fn blocks_text(blocks: &[Content]) -> String {
     blocks
         .iter()
         .filter_map(|block| match block {
             Content::Text { text, .. } => Some(text.clone()),
             Content::ToolCall { name, .. } => Some(format!("[tool {name}]")),
-            _ => None,
+            Content::Image { .. } => {
+                Some("[… image dropped: the cursor provider receives text only]".to_owned())
+            }
+            Content::Thinking { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -183,26 +191,7 @@ fn finish(model: &Model, blocks: Blocks) -> AgentMessage {
         return message;
     };
     *usage = Usage::zero();
-    let Blocks {
-        text,
-        thinking,
-        calls,
-        ..
-    } = blocks;
-    if !thinking.is_empty() {
-        content.push(Content::Thinking {
-            thinking,
-            thinking_signature: None,
-            redacted: None,
-        });
-    }
-    if !text.is_empty() {
-        content.push(Content::Text {
-            text,
-            text_signature: None,
-        });
-    }
-    content.extend(calls);
+    content.extend(blocks.content);
     *stop_reason = if content
         .iter()
         .any(|block| matches!(block, Content::ToolCall { .. }))
@@ -220,13 +209,17 @@ pub fn stream(
     token: &str,
     tool: ToolFn,
     stop: StopFn,
+    cwd: Option<&std::path::Path>,
 ) -> tokio::sync::mpsc::Receiver<AssistantMessageEvent> {
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
     let model = model.clone();
     let tools = tools_of(context);
-    let workspace = std::env::current_dir()
-        .map(|path| format!("file://{}", path.display()))
-        .unwrap_or_else(|_| "file:///".to_owned());
+    let workspace = (cwd.map(std::path::Path::to_path_buf))
+        .or_else(|| std::env::current_dir().ok())
+        .map_or_else(
+            || "file:///".to_owned(),
+            |path| format!("file://{}", path.display()),
+        );
     let body = proto::frame(&proto::run_request(
         &prompt_of(context),
         &model.id,
@@ -269,12 +262,18 @@ pub fn stream(
                     .await;
             }
             Err(error) => {
-                let mut output = empty_assistant(&model);
-                let _ = sender.send(fail_message(&mut output, &error)).await;
+                let _ = sender.send(failed(&model, blocks, &error)).await;
             }
         }
     }));
     receiver
+}
+
+/// Incident: an empty failed message read as nothing delivered, and the loop's stream retry
+/// re-ran tools this turn had already run.
+fn failed(model: &Model, blocks: Blocks, error: &str) -> AssistantMessageEvent {
+    let mut output = finish(model, blocks);
+    fail_message(&mut output, error)
 }
 
 fn stop_of(message: &AgentMessage) -> StopReason {
@@ -290,41 +289,69 @@ pub(super) struct Out<'a> {
     stop: &'a StopFn,
 }
 
+/// Invariant: each block sits at the index its start event carried, so a folded partial is [`finish`].
 #[derive(Default)]
 pub(super) struct Blocks {
-    text_open: bool,
-    thinking_open: bool,
-    text: String,
-    thinking: String,
-    calls: Vec<Content>,
+    text: Option<usize>,
+    thinking: Option<usize>,
+    content: Vec<Content>,
 }
 
 impl Blocks {
+    fn open(&mut self, block: Content) -> usize {
+        self.content.push(block);
+        self.content.len().saturating_sub(1)
+    }
+
     fn stage(&mut self, event: &AssistantMessageEvent) -> Vec<AssistantMessageEvent> {
         let mut out = Vec::new();
         match event {
             AssistantMessageEvent::TextDelta { delta, .. } => {
-                if !self.text_open {
-                    self.text_open = true;
-                    out.push(AssistantMessageEvent::TextStart { content_index: 1 });
+                let index = self.text.unwrap_or_else(|| {
+                    let index = self.open(Content::Text {
+                        text: String::new(),
+                        text_signature: None,
+                    });
+                    out.push(AssistantMessageEvent::TextStart {
+                        content_index: index,
+                    });
+                    index
+                });
+                self.text = Some(index);
+                if let Some(Content::Text { text, .. }) = self.content.get_mut(index) {
+                    text.push_str(delta);
                 }
-                self.text.push_str(delta);
                 out.push(AssistantMessageEvent::TextDelta {
-                    content_index: 1,
+                    content_index: index,
                     delta: delta.clone(),
                 });
             }
             AssistantMessageEvent::ThinkingDelta { delta, .. } => {
-                if !self.thinking_open {
-                    self.thinking_open = true;
-                    out.push(AssistantMessageEvent::ThinkingStart { content_index: 0 });
+                let index = self.thinking.unwrap_or_else(|| {
+                    let index = self.open(Content::Thinking {
+                        thinking: String::new(),
+                        thinking_signature: None,
+                        redacted: None,
+                    });
+                    out.push(AssistantMessageEvent::ThinkingStart {
+                        content_index: index,
+                    });
+                    index
+                });
+                self.thinking = Some(index);
+                if let Some(Content::Thinking { thinking, .. }) = self.content.get_mut(index) {
+                    thinking.push_str(delta);
                 }
-                self.thinking.push_str(delta);
-                out.push(event.clone());
+                out.push(AssistantMessageEvent::ThinkingDelta {
+                    content_index: index,
+                    delta: delta.clone(),
+                });
             }
             AssistantMessageEvent::ToolCallEnd { tool_call, .. } => {
-                self.calls.push(tool_call.clone());
-                out.push(event.clone());
+                out.push(AssistantMessageEvent::ToolCallEnd {
+                    content_index: self.open(tool_call.clone()),
+                    tool_call: tool_call.clone(),
+                });
             }
             other => out.push(other.clone()),
         }
@@ -355,22 +382,23 @@ impl Blocks {
     }
 
     fn closing(&mut self) -> Vec<AssistantMessageEvent> {
-        let mut out = Vec::new();
-        if self.thinking_open {
-            self.thinking_open = false;
-            out.push(AssistantMessageEvent::ThinkingEnd {
-                content_index: 0,
-                content: self.thinking.clone(),
-            });
-        }
-        if self.text_open {
-            self.text_open = false;
-            out.push(AssistantMessageEvent::TextEnd {
-                content_index: 1,
-                content: self.text.clone(),
-            });
-        }
-        out
+        [self.thinking.take(), self.text.take()]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| match self.content.get(index) {
+                Some(Content::Thinking { thinking, .. }) => {
+                    Some(AssistantMessageEvent::ThinkingEnd {
+                        content_index: index,
+                        content: thinking.clone(),
+                    })
+                }
+                Some(Content::Text { text, .. }) => Some(AssistantMessageEvent::TextEnd {
+                    content_index: index,
+                    content: text.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -394,7 +422,76 @@ fn uuid() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssistantMessageEvent, text_events};
+    use super::{
+        AgentMessage, AssistantMessageEvent, Blocks, Map, empty_assistant, failed, finish,
+        model_for, text_events, tool_event,
+    };
+
+    #[test]
+    fn a_stream_that_fails_after_a_tool_ran_still_carries_the_call()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut blocks = Blocks::default();
+        drop(blocks.stage(&tool_event("a", "bash", Map::new())));
+        let event = failed(
+            &model_for("m"),
+            blocks,
+            "cursor stream closed before the turn ended",
+        );
+        let AssistantMessageEvent::Error {
+            error: AgentMessage::Assistant { content, .. },
+            ..
+        } = event
+        else {
+            return Err("a failed turn is an Error event".into());
+        };
+        assert!(matches!(
+            content.as_slice(),
+            [yi_types::message::Content::ToolCall { id, .. }] if id == "a"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn the_partial_folded_from_staged_events_is_the_done_message()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let model = model_for("m");
+        let thinking = |delta: &str| AssistantMessageEvent::ThinkingDelta {
+            content_index: 0,
+            delta: delta.to_owned(),
+        };
+        let text = |delta: &str| AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: delta.to_owned(),
+        };
+        let mut blocks = Blocks::default();
+        let mut partial = empty_assistant(&model);
+        let mut staged = Vec::new();
+        for event in [
+            thinking("plan"),
+            text("Hi"),
+            tool_event("a", "read", Map::new()),
+            thinking(" more"),
+            tool_event("b", "grep", Map::new()),
+            text(" there"),
+        ] {
+            staged.extend(blocks.stage(&event));
+        }
+        staged.extend(blocks.closing());
+        for event in &staged {
+            yi_types::event::apply(&mut partial, event);
+        }
+        let done = finish(&model, blocks);
+        let (
+            AgentMessage::Assistant { content: built, .. },
+            AgentMessage::Assistant { content: want, .. },
+        ) = (&partial, &done)
+        else {
+            return Err("assistant messages".into());
+        };
+        assert_eq!(want.len(), 4);
+        assert_eq!(built, want);
+        Ok(())
+    }
 
     #[test]
     fn a_delta_leaves_before_the_turn_closes() {
@@ -410,7 +507,7 @@ mod tests {
         ]);
         assert!(matches!(
             staged.first(),
-            Some(AssistantMessageEvent::TextStart { content_index: 1 })
+            Some(AssistantMessageEvent::TextStart { content_index: 0 })
         ));
         assert!(matches!(
             staged.get(1),

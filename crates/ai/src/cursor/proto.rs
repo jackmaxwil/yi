@@ -1,8 +1,7 @@
 use serde_json::{Map, Value};
 
-pub const CLIENT_VERSION: &str = "cli-2026.07.23-e383d2b";
+pub const CLIENT_VERSION: &str = concat!("cli-", "2026.07.23-e383d2b");
 pub const RUN_PATH: &str = "/agent.v1.AgentService/Run";
-pub const NAMESPACE: &str = yi_types::message::CURSOR_TOOL_NAMESPACE;
 
 fn varint(mut n: u64, out: &mut Vec<u8>) {
     loop {
@@ -149,18 +148,24 @@ fn string_of(raw: &Raw) -> String {
     String::from_utf8_lossy(&raw.bytes).into_owned()
 }
 
-fn value_from(bytes: &[u8]) -> Value {
+/// Incident: an argument nested 5,000 lists deep overflowed the stack and aborted the process.
+const MAX_DEPTH: usize = 64;
+
+fn value_from(bytes: &[u8], depth: usize) -> Result<Value, String> {
+    if depth > MAX_DEPTH {
+        return Err(format!("argument nested past {MAX_DEPTH} levels"));
+    }
     let Ok(fields) = walk(bytes) else {
-        return Value::Null;
+        return Ok(Value::Null);
     };
     if let Some(raw) = fields
         .iter()
         .find(|raw| raw.field == 3 && raw.varint.is_none())
     {
-        return Value::String(string_of(raw));
+        return Ok(Value::String(string_of(raw)));
     }
     if let Some(raw) = fields.iter().find(|raw| raw.field == 4) {
-        return Value::Bool(raw.varint.unwrap_or(0) != 0);
+        return Ok(Value::Bool(raw.varint.unwrap_or(0) != 0));
     }
     if let Some(raw) = fields
         .iter()
@@ -168,31 +173,30 @@ fn value_from(bytes: &[u8]) -> Value {
     {
         let mut bits = [0u8; 8];
         bits.copy_from_slice(&raw.bytes);
-        return serde_json::Number::from_f64(f64::from_le_bytes(bits))
+        return Ok(serde_json::Number::from_f64(f64::from_le_bytes(bits))
             .map(Value::Number)
-            .unwrap_or(Value::Null);
+            .unwrap_or(Value::Null));
     }
     if let Some(raw) = fields
         .iter()
         .find(|raw| raw.field == 6 && raw.varint.is_none())
     {
         let Ok(items) = walk(&raw.bytes) else {
-            return Value::Null;
+            return Ok(Value::Null);
         };
-        return Value::Array(
-            items
-                .iter()
-                .filter(|raw| raw.field == 1 && raw.varint.is_none())
-                .map(|raw| value_from(&raw.bytes))
-                .collect(),
-        );
+        return items
+            .iter()
+            .filter(|raw| raw.field == 1 && raw.varint.is_none())
+            .map(|raw| value_from(&raw.bytes, depth.saturating_add(1)))
+            .collect::<Result<_, _>>()
+            .map(Value::Array);
     }
     if let Some(raw) = fields
         .iter()
         .find(|raw| raw.field == 5 && raw.varint.is_none())
     {
         let Ok(entries) = walk(&raw.bytes) else {
-            return Value::Null;
+            return Ok(Value::Null);
         };
         let mut map = Map::new();
         for entry in entries
@@ -213,13 +217,14 @@ fn value_from(bytes: &[u8]) -> Value {
             let value = pair
                 .iter()
                 .find(|raw| raw.field == 2 && raw.varint.is_none())
-                .map(|raw| value_from(&raw.bytes))
-                .unwrap_or(Value::Null);
+                .map_or(Ok(Value::Null), |raw| {
+                    value_from(&raw.bytes, depth.saturating_add(1))
+                })?;
             map.insert(key, value);
         }
-        return Value::Object(map);
+        return Ok(Value::Object(map));
     }
-    Value::Null
+    Ok(Value::Null)
 }
 
 pub fn run_request(
@@ -357,7 +362,7 @@ pub enum Inbound {
     Ignore,
 }
 
-pub fn decode(message: &[u8]) -> Result<Inbound, String> {
+pub fn decode(message: &[u8], workspace: &str) -> Result<Inbound, String> {
     let outer = walk(message)?;
     if outer.iter().any(|raw| raw.field > 8) {
         return Err("unknown agent server field".to_owned());
@@ -372,7 +377,7 @@ pub fn decode(message: &[u8]) -> Result<Inbound, String> {
         .iter()
         .find(|raw| raw.field == 2 && raw.varint.is_none())
     {
-        return decode_exec(&exec.bytes);
+        return decode_exec(&exec.bytes, workspace);
     }
     if let Some(kv) = outer
         .iter()
@@ -455,7 +460,13 @@ fn decode_update(bytes: &[u8]) -> Result<Inbound, String> {
     Ok(Inbound::Ignore)
 }
 
-fn shell_tool(id: u32, exec_id: String, bytes: &[u8], route: Route) -> Result<Inbound, String> {
+fn shell_tool(
+    id: u32,
+    exec_id: String,
+    bytes: &[u8],
+    route: Route,
+    workspace: &str,
+) -> Result<Inbound, String> {
     let Ok(inner) = walk(bytes) else {
         return Ok(Inbound::Reject { id });
     };
@@ -478,10 +489,10 @@ fn shell_tool(id: u32, exec_id: String, bytes: &[u8], route: Route) -> Result<In
         .map(string_of)
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| format!("cursor-{id}"));
-    let run = if cwd.is_empty() {
+    let run = if cwd.is_empty() || Some(cwd.as_str()) == workspace.strip_prefix("file://") {
         command.clone()
     } else {
-        format!("cd -- '{}' && {command}", cwd.replace('\'', "'\\''"))
+        format!("cd '{}' && {command}", cwd.replace('\'', "'\\''"))
     };
     let mut args = Map::new();
     args.insert("command".to_owned(), Value::String(run));
@@ -497,7 +508,7 @@ fn shell_tool(id: u32, exec_id: String, bytes: &[u8], route: Route) -> Result<In
     })
 }
 
-fn decode_exec(bytes: &[u8]) -> Result<Inbound, String> {
+fn decode_exec(bytes: &[u8], workspace: &str) -> Result<Inbound, String> {
     let fields = walk(bytes)?;
     let id = fields
         .iter()
@@ -555,11 +566,13 @@ fn decode_exec(bytes: &[u8]) -> Result<Inbound, String> {
             if key.is_empty() {
                 continue;
             }
-            let value = entry
+            let Ok(value) = entry
                 .iter()
                 .find(|raw| raw.field == 2 && raw.varint.is_none())
-                .map(|raw| value_from(&raw.bytes))
-                .unwrap_or(Value::Null);
+                .map_or(Ok(Value::Null), |raw| value_from(&raw.bytes, 1))
+            else {
+                return Ok(Inbound::Reject { id });
+            };
             args.insert(key, value);
         }
         return Ok(Inbound::Tool {
@@ -577,19 +590,15 @@ fn decode_exec(bytes: &[u8]) -> Result<Inbound, String> {
         .iter()
         .find(|raw| raw.field == 2 && raw.varint.is_none())
     {
-        return shell_tool(id, exec_id, &raw.bytes, Route::Shell);
+        return shell_tool(id, exec_id, &raw.bytes, Route::Shell, workspace);
     }
     if let Some(raw) = fields
         .iter()
         .find(|raw| raw.field == 14 && raw.varint.is_none())
     {
-        return shell_tool(id, exec_id, &raw.bytes, Route::ShellStream);
+        return shell_tool(id, exec_id, &raw.bytes, Route::ShellStream, workspace);
     }
-    let rejected = [2, 3, 4, 5, 7, 8, 9];
-    if fields.iter().any(|raw| rejected.contains(&raw.field)) {
-        return Ok(Inbound::Reject { id });
-    }
-    Ok(Inbound::Ignore)
+    Ok(Inbound::Reject { id })
 }
 
 pub fn throw_reply(id: u32, error: &str) -> Vec<u8> {

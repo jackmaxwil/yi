@@ -1140,6 +1140,21 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     Ok(())
 }
 
+/// Cursor's list is the account's own, so a user who never logged in to it must not see every
+/// `yi catalog refresh` fail: the row says what to run and the run stays green.
+#[test]
+fn refreshing_cursor_without_a_login_is_a_skip_not_a_failure() -> TestResult {
+    let workspace = Workspace::new("catalog-cursor-skip")?;
+    let skipped = workspace.yi(&["catalog", "refresh", "cursor"])?;
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    let row = stdout(&skipped)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(row, "cursor no credential (yi login cursor)");
+    Ok(())
+}
+
 /// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
 #[test]
 fn a_relative_home_is_refused_at_boot() -> TestResult {
