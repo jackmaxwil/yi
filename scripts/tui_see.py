@@ -9,6 +9,8 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
   tui_see.py diff RUN_A RUN_B          # two run dirs; writes RUN_B/diff-vs-<A>/summary.md
   tui_see.py gallery [ROOT] [PAGE]     # every scene and label under ROOT on one HTML page
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
+  tui_see.py ci BASE_BIN HEAD_BIN      # every scene on both, then the PR comment (post)
+  tui_see.py post OUT                  # upsert the comment `ci` left in OUT (FORGEJO_* env)
   tui_see.py --selfcheck
 
 `--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
@@ -36,7 +38,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-FIXTURES = ROOT / "scripts" / "proof" / "tui_see"
+SCENES = ROOT / "scripts" / "proof" / "tui_see"
 # Loud caps: a cut names what it kept, the cap and the call that gets the rest (045-loud-caps).
 MAX_REGIONS = 6
 MAX_CROP_PX = 1200
@@ -96,6 +98,9 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                   / f"{meta['createdAt']}_{meta['id']}.jsonl")
         target.parent.mkdir(parents=True)
         shutil.copy(seed, target)
+        # The headless drive appends to `target`; the Ghostty replay must start where it did.
+        (run_dir / "seed").mkdir()
+        shutil.copy(seed, run_dir / "seed" / target.name)
         extra += ["--session", meta["id"]]
     if surface == "solo":
         argv = [str(binary), "tui", "--headless", "--here", "--model", "faux/faux-1",
@@ -133,8 +138,7 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
         code = subprocess.run(["python3", str(ROOT / "scripts/tui_see.py"), "term-inner",
                                str(scene.resolve()), surface, str(run_dir / "term"), str(binary),
                                *extra, *(["--video"] if video else [])], timeout=900).returncode
-        for png in sorted((run_dir / "term").glob("snap-*.png")):
-            shutil.copy(png, run_dir / "frames" / png.name)
+        collect(run_dir)
     snaps = sorted(p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.txt"))
     print(f"run: {run_dir} (exit {code})")
     print(f"snaps: {', '.join(snaps) or 'none: add `snap <name>` steps'}")
@@ -170,6 +174,19 @@ def newest_mtime(paths) -> float:
     return max(stamps, default=0.0)
 
 
+def collect(run_dir: Path) -> list[Path]:
+    """Ghostty's grabs replace agg's pictures in frames/; its notes and video are surfaced."""
+    for note in sorted((run_dir / "term").glob("*.note")):
+        print(f"[… {note.stem}: {note.read_text()}; the grab may catch a frame mid-draw]")
+    if (run_dir / "term" / "run.webp").exists():
+        shutil.copy(run_dir / "term" / "run.webp", run_dir / "run.webp")
+        print(f"video: {run_dir / 'run.webp'}")
+    pictures = sorted((run_dir / "term").glob("snap-*.png"))
+    for png in pictures:
+        shutil.copy(png, run_dir / "frames" / png.name)
+    return pictures
+
+
 def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
     """Plays the scene in Ghostty in the yi-term container; its grabs replace the agg pictures."""
     linux = ROOT / LINUX_YI
@@ -192,14 +209,7 @@ def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
     except subprocess.TimeoutExpired:
         subprocess.run(["docker", "kill", name], capture_output=True)
         code = 124
-    for note in sorted((run_dir / "term").glob("*.note")):
-        print(f"[… {note.stem}: {note.read_text()}; the grab may catch a frame mid-draw]")
-    if (run_dir / "term" / "run.webp").exists():
-        shutil.copy(run_dir / "term" / "run.webp", run_dir / "run.webp")
-        print(f"video: {run_dir / 'run.webp'}")
-    pictures = sorted((run_dir / "term").glob("snap-*.png"))
-    for png in pictures:
-        shutil.copy(png, run_dir / "frames" / png.name)
+    pictures = collect(run_dir)
     if code:
         print(f"[… term host failed (exit {code}); kept {len(pictures)} Ghostty grabs, the rest "
               f"of the pictures are agg's: {run_dir / 'term'}]")
@@ -261,7 +271,7 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
         cols, rows = extra[at + 1].split("x")
         del extra[at:at + 2]
     if "--session" in extra:
-        seed = next((out.parent / "sessions").glob(f"*/*_{extra[extra.index('--session') + 1]}.jsonl"))
+        seed = next((out.parent / "seed").glob(f"*_{extra[extra.index('--session') + 1]}.jsonl"))
         (out / "sessions" / encoded(Path.cwd())).mkdir(parents=True)
         shutil.copy(seed, out / "sessions" / encoded(Path.cwd()) / seed.name)
     # One job plays many scenes: a server that exited leaves its lock, so each run takes a free one.
@@ -269,17 +279,33 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
     env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}"}
     display = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", f"{SCREEN}x24"],
                                stderr=subprocess.DEVNULL)
+    procs = [display]
+    try:
+        term_play(scene, surface, out, yi, extra, env, number, cols, rows, video, procs)
+    finally:
+        for proc in reversed(procs):
+            proc.kill()
+            proc.wait()
+    done = (out / "done").read_text() if (out / "done").exists() else "no done marker"
+    print(f"term: {done}")
+    sys.exit(0 if done == "ok" else 1)
+
+
+def term_play(scene: str, surface: str, out: Path, yi: str, extra: list[str], env: dict,
+              number: int, cols: str, rows: str, video: bool, procs: list) -> None:
     if not wait_for(lambda: Path(f"/tmp/.X11-unix/X{number}").exists(), 10):
         sys.exit("term: Xvfb did not start")
-    serve = None
     if surface == "solo":
         argv = [yi, "tui", "--here", "--model", "faux/faux-1", "--session-dir",
                 str(out / "sessions"), *extra]
     else:
-        sock = "/tmp/yi-term.sock"
+        # Incident: the `here` host plays base and head in one container, and the killed base
+        # serve left a shared socket the head console reached before the new serve listened.
+        sock = str(Path(tempfile.mkdtemp(prefix="yi-term.")) / "d.sock")
         serve = subprocess.Popen([yi, "serve", "--socket", sock, "--model", "faux/faux-1",
                                   "--session-dir", str(out / "sessions")], env=env,
                                  stderr=open(out / "serve.log", "w"))
+        procs.append(serve)
         if not wait_for(lambda: Path(sock).exists() or serve.poll() is not None, 10) \
                 or serve.poll() is not None:
             sys.exit(f"term: yi serve did not listen; see {out / 'serve.log'}")
@@ -291,27 +317,21 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
              "-framerate", "10", "-video_size", SCREEN, "-i", env["DISPLAY"], "-c:v", "libx264",
              "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out / "screen.mp4")],
             stdin=subprocess.PIPE)
+        procs.append(recorder)
     ghostty = subprocess.Popen(
         ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
          "--font-family=JetBrains Mono", f"--window-width={cols}", f"--window-height={rows}",
          "--background-opacity=1", "--confirm-close-surface=false", "-e", "python3",
          str(ROOT / "scripts/tui_see.py"), "proxy", scene, str(out), "--", *argv],
         env=env, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
+    procs.append(ghostty)
     wait_for(lambda: (out / "done").exists() or ghostty.poll() is not None, 600)
     if recorder is not None:
         try:
             recorder.communicate(b"q", timeout=30)
             encode_video(out)
         except (subprocess.SubprocessError, OSError) as error:
-            recorder.kill()
             (out / "video.note").write_text(f"the run was not kept as video: {error}")
-    for proc in (ghostty, serve, display):
-        if proc is not None:
-            proc.kill()
-            proc.wait()
-    done = (out / "done").read_text() if (out / "done").exists() else "no done marker"
-    print(f"term: {done}")
-    sys.exit(0 if done == "ok" else 1)
 
 
 def encode_video(out: Path) -> None:
@@ -839,9 +859,9 @@ def watch(scene: Path, host: str) -> None:
             gallery(out, out / "gallery.html")
 
 
-SCENES = ROOT / "scripts" / "proof" / "tui_see"
-# Loud cap: a comment carries at most this many pictures; the gallery holds every one.
+# Loud caps: a comment carries at most this many pictures, and this many diff lines per snap.
 MAX_PICTURES = 24
+MAX_DIFF_LINES = 40
 MARKER = "TUI snapshots for this pull request (scripts/tui_see.py)"
 
 
@@ -850,18 +870,28 @@ def ci(base_bin: Path, head_bin: Path) -> None:
     and the head binary, in Ghostty where the scene allows, then one comment on the PR."""
     out = Path("target/see").resolve()
     failed: list[str] = []
+    played = 0
     for scene in sorted(SCENES.glob("*.drive")):
         steps = {line.split(" ", 1)[0] for line in scene.read_text().splitlines()}
         host = "mem" if steps & {"tick", "snap-strip", "hold", "release"} else "here"
         for label, binary in (("base", base_bin), ("head", head_bin)):
+            played += 1
             try:
                 run(scene, label, out, binary, host)
             except SystemExit as stop:
                 failed.append(f"{scene.stem} ({label}, exit {stop.code})")
+            except (subprocess.SubprocessError, OSError, ValueError) as error:
+                failed.append(f"{scene.stem} ({label}, {type(error).__name__})")
         if (out / scene.stem / "head" / "frames").is_dir() and (out / scene.stem / "base").is_dir():
-            diff(out / scene.stem / "base", out / scene.stem / "head")
+            try:
+                diff(out / scene.stem / "base", out / scene.stem / "head")
+            except (subprocess.SubprocessError, OSError, ValueError) as error:
+                failed.append(f"{scene.stem} (diff, {type(error).__name__})")
     gallery(out, out / "gallery.html")
-    post(out, failed)
+    (out / "failed.json").write_text(json.dumps(failed))
+    post(out)
+    if failed and len(failed) == played:
+        sys.exit("ci: no scene ran on either binary")
 
 
 def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
@@ -871,16 +901,25 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
         lines += [f"[… {len(failed)} run(s) failed and show no pictures: {', '.join(failed)}]", ""]
     pictures: list[tuple[str, Path]] = []
     changed = False
+    cut_at = None
     for summary in sorted(out.glob("*/head/diff-vs-base/summary.md")):
         scene = summary.parent.parent.parent.name
-        for block in re.split(r"^## ", summary.read_text(), flags=re.M)[1:]:
+        notes, *blocks = re.split(r"^## ", summary.read_text(), flags=re.M)
+        for note in (l for l in notes.splitlines() if l.startswith("[…")):
+            lines.append(f"{scene}: {note}")
+            changed = True
+        for block in blocks:
             name, _, body = block.partition("\n")
             if "no cell changed" in body:
                 continue
             changed = True
-            text = "\n".join(l for l in body.strip().splitlines()
-                             if not l.startswith(("region ", "whole frame")))
-            lines += [f"### {scene} · {name}", "", "```", text, "```"]
+            text = [l for l in body.strip().splitlines()
+                    if not l.startswith(("region ", "whole frame"))]
+            if len(text) > MAX_DIFF_LINES:
+                text = text[:MAX_DIFF_LINES] + [
+                    f"[… kept {MAX_DIFF_LINES} of {len(text)} lines (cap {MAX_DIFF_LINES}); "
+                    f"the job's tui-gallery artifact holds the whole diff]"]
+            lines += [f"### {scene} · {name}", "", "```", *text, "```"]
             drive = SCENES / f"{scene}.drive"
             if drive.exists() and header(drive)[0] == "console":
                 lines.append("Console sessions take a fresh random id each run, so avatar and badge "
@@ -889,23 +928,25 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
             for crop in sorted(crops, key=lambda p: (p.stem.rsplit("-", 1)[0], p.stem.endswith("after"))):
                 if len(pictures) < MAX_PICTURES:
                     lines.append(f"@@crop-{len(pictures)}@@")
+                elif cut_at is None:
+                    cut_at = len(lines)
                 pictures.append((f"{scene} {crop.stem}", crop))
             lines.append("")
     if not changed:
-        lines.append("No snap changed between the base and the head.")
-    if len(pictures) > MAX_PICTURES:
-        lines.append(f"[… kept {MAX_PICTURES} of {len(pictures)} crops (cap {MAX_PICTURES}); the "
-                     "job's gallery holds every one]")
+        lines.append("No snap changed between the base and the head." if not failed
+                     else "No snap changed among the runs that finished.")
+    if cut_at is not None:
+        lines.insert(cut_at, f"[… kept {MAX_PICTURES} of {len(pictures)} crops (cap "
+                     f"{MAX_PICTURES}); the job's tui-gallery artifact holds every one]")
     return "\n".join(lines) + "\n", pictures[:MAX_PICTURES]
 
 
-def post(out: Path, failed: list[str]) -> None:
+def post(out: Path) -> None:
     """Upserts the PR's one snapshot comment, its crops uploaded as the comment's own assets so a
     new push replaces the last push's pictures."""
-    import urllib.request
-
     import forgejo_pr_comment as forge
 
+    failed = json.loads((out / "failed.json").read_text()) if (out / "failed.json").exists() else []
     body, pictures = compose(out, failed)
     (out / "comment.md").write_text(body)
     if not all(os.environ.get(k) for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY", "FORGEJO_PR",
@@ -913,14 +954,17 @@ def post(out: Path, failed: list[str]) -> None:
         print(f"[… no forge to post to; the comment is {out / 'comment.md'}]")
         return
     api, repo, pr = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY", "FORGEJO_PR"))
-    comment = forge.upsert(forge.send, api, repo, pr, body)
+    bare = re.sub(r"^@@crop-\d+@@\n", "", body, flags=re.M)
+    comment = forge.upsert(forge.send, api, repo, pr, bare)
     assets = f"{api}/repos/{repo}/issues/comments/{comment['id']}/assets"
-    for old in forge.send("GET", assets, None) or []:
-        gone = urllib.request.Request(f"{assets}/{old['id']}", method="DELETE", headers={
-            "Authorization": f"token {os.environ['FORGEJO_TOKEN']}"})
-        urllib.request.urlopen(gone, timeout=30).close()
-    for index, (alt, path) in enumerate(pictures):
-        body = body.replace(f"@@crop-{index}@@", f"![{alt}]({upload(assets, path)})")
+    try:
+        for old in forge.send("GET", assets, None) or []:
+            forge.send("DELETE", f"{assets}/{old['id']}", None)
+        for index, (alt, path) in enumerate(pictures):
+            body = body.replace(f"@@crop-{index}@@", f"![{alt}]({upload(assets, path)})")
+    except OSError as error:
+        body = bare + (f"\n[… {len(pictures)} picture(s) not attached ({error}); the job's "
+                       "tui-gallery artifact holds them]\n")
     forge.send("PATCH", f"{api}/repos/{repo}/issues/comments/{comment['id']}", {"body": body})
 
 
@@ -941,7 +985,7 @@ def upload(url: str, path: Path) -> str:
 
 def selfcheck() -> None:
     """Fixtures are real snaps from `yi tui --headless`; their `.txt` comes from the Rust side."""
-    runs = [FIXTURES / "empty", FIXTURES / "typed"]
+    runs = [SCENES / "empty", SCENES / "typed"]
     for run_dir in runs:
         for cast in (run_dir / "frames").glob("snap-*.cast"):
             want = screen_rows(cast.with_suffix(".txt"))
@@ -1005,7 +1049,19 @@ def selfcheck() -> None:
         body, pictures = compose(out, ["reveal (head, exit 1)"])
         assert body.startswith(MARKER) and "### composer · composer" in body, body
         assert "make the rail calmer" in body and "[… 1 run(s) failed" in body, body
-        assert "answered" not in body.split("###")[0], "a snap only one run has is not a change"
+        assert "### composer · answered" not in body, "a snap only one run has is not a change"
+        assert "composer: [… snap answered exists in only one run]" in body, body
+        # Every slot names a picture, each before precedes its after, and the cut is named in place.
+        bundle = out / "composer" / "head" / "diff-vs-base"
+        for i in range(MAX_PICTURES // 2 + 1):
+            for side in ("before", "after"):
+                (bundle / f"composer-region{i}-{side}.png").write_bytes(b"png")
+        body, pictures = compose(out, [])
+        slots = [int(n) for n in re.findall(r"^@@crop-(\d+)@@$", body, flags=re.M)]
+        assert slots == list(range(MAX_PICTURES)) == list(range(len(pictures))), slots
+        assert [alt.rsplit("-", 1)[1] for alt, _ in pictures[:2]] == ["before", "after"], pictures
+        notice = f"[… kept {MAX_PICTURES} of {MAX_PICTURES + 2} crops (cap {MAX_PICTURES})"
+        assert body.index(f"@@crop-{MAX_PICTURES - 1}@@") < body.index(notice), body
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp)
         shutil.copytree(runs[0], out / "same" / "base")
@@ -1026,6 +1082,8 @@ def main(argv: list[str]) -> None:
         return term_inner(argv[1], argv[2], Path(argv[3]), argv[4], argv[5:])
     if argv[:1] == ["ci"] and len(argv) == 3:
         return ci(Path(argv[1]).resolve(), Path(argv[2]).resolve())
+    if argv[:1] == ["post"] and len(argv) == 2:
+        return post(Path(argv[1]).resolve())
     if argv[:1] == ["proxy"]:
         out = Path(argv[2])
         try:
