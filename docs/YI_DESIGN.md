@@ -50,7 +50,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-oauth` | PKCE, loopback callback, token store, `login`/`logout` | yi-types |
 | `yi-orb` | Orb geometry and kitty-graphics painter | none |
 | `yi-session` | Session store: JSONL and in-memory repos, ids, queries | yi-types |
-| `yi-context` | Token accounting, compaction cut point, context assembly | yi-types |
+| `yi-context` | Token accounting, compaction cut point, context assembly | yi-types, yi-tools |
 | `yi-permission` | Modes, rules, command classifier, catastrophic denylist, review ledger | yi-types |
 | `yi-tools` | `Tool` trait, builtin tools, hashline edits, bash jobs, sandbox, checkpoints | yi-types, yi-permission |
 | `yi-mcp-cli` | The `yi mcp` one-shot JSON-RPC client | yi-oauth, yi-types |
@@ -354,9 +354,10 @@ past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines, 3 a file; els
 40), kept only if shorter. Runs of passing-test lines become one counted row, and a line naming an
 error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`).
 With `models.selector` named, the lines of a cut output's full text (at most 4,000) that the cut
-does not show go to that model, numbered as in the full output, and it answers 1-based line ranges
+does not show, never a passing-test line (the reducer's `is_pass`), go to that model in concurrent parts of 300 (`PART_LINES`), numbered as in the full output, and each answers 1-based line ranges
 only; within 5 s the unshown lines it names follow the cut verbatim under a row naming it, else a
-row says it gave none (`side:select` books its cost); nothing left out asks nothing. Lossy output is tee'd, secrets redacted line for line, to the family board's
+row says it gave none (`side:select` books each part's cost); a part holds to 200 / parts lines and one
+that gives none is named in the row; nothing left out asks nothing. Lossy output is tee'd, secrets redacted line for line, to the family board's
 `spills/`, kept until `yi sessions rm`, and ends `[full output: <path>]`; with nowhere to tee,
 raw text returns. A contained call runs under
 Seatbelt (§8).
@@ -395,6 +396,14 @@ gitdir. `capture` = `add --all` + `write-tree`. `restore` moves only the paths i
 start-to-end tree diff (`--no-renames`); a path changed after the turn is kept and named; a start
 with no paired end restores unscoped and says so. Turn start and end capture into
 `custom{checkpoint}`; `/undo` and `yi undo` restore the last turn start. Without git, a no-op.
+A shadow gitdir whose project has been gone 7 days is deleted, renamed aside first so a cut-short
+delete never leaves a half repo; a project that cannot be stat'd, or whose nearest surviving ancestor is a mount
+root (`/Volumes`, `/mnt`, `/media`, `/run/media`: an unmounted volume), is kept. A live project's repo is never deleted, only `git prune`d at 30 days once idle an hour,
+which keeps every younger capture and the objects it names: captures write no ref, the shadow
+index roots the newest, and each capture refreshes its tree's mtime because `write-tree` hands
+back a cached tree untouched. The sweep is [`retention`](../crates/runtime/src/retention.rs):
+about hourly behind `~/.yi/retention.stamp` from session start, and on demand as `yi gc` (a
+preview) or `yi gc --fix`, one `kept of found, removed, trimmed` line per store.
 
 - Owner: [`tools`](../crates/tools/src/checkpoint.rs), [`types`](../crates/types/src/checkpoint.rs).
   Settled by: D248.
@@ -847,7 +856,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog |
-| `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
+| `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
 | `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. Yi uses only the pinned version, else one on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed ones first on PATH |
@@ -950,7 +959,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   session's avatar plays its state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
-- ⌘G opens Review beside a session: its scope is the lane's branch against its merge base with
+- ⌘R opens Review beside a session: its scope is the lane's branch against its merge base with
   main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
   session with no git base shows its own edits). Each file names the todo that was running when
   it changed, reads that changed nothing are counted, the header carries the claims and the

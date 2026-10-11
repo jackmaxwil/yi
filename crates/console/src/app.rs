@@ -1094,17 +1094,7 @@ impl App {
             .tab()
             .is_some_and(|tab| tab.layout.pane_ids().len() > 1);
         if let Some(action) = keys::direct(&key) {
-            // The chord goes to the pane exactly when the screen says so: a popup
-            // owns Tab, a lone chat owns the arrows (solo's child focus).
-            let to_pane = match action {
-                Action::ToggleZone => on_chat && self.popup_open(),
-                Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
-                    on_chat && !multi
-                }
-                Action::PageUp | Action::PageDown => self.on_editor(),
-                _ => false,
-            };
-            if !to_pane {
+            if !self.chord_to_pane(action, &key, on_chat, multi) {
                 return self.apply_action(outbound, action);
             }
             if self.on_editor() {
@@ -1173,7 +1163,7 @@ impl App {
                     if let Some(PaneContent::Notebook { input, .. }) =
                         self.state.focused_pane_mut().map(|pane| &mut pane.content)
                     {
-                        let _ = input.input(CtEvent::Key(key));
+                        let _ = yi_tui::composer::edit_key(input, key);
                     }
                     self.dirty = true;
                 }

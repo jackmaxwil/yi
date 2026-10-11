@@ -136,7 +136,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }));
     let framed = !lone_chat || app.state.tab().is_some_and(|tab| tab.zoomed);
     let panes_zone = app.state.zone == Zone::Panes;
-    let close_hint = if app.cmd_hints { "⌘J" } else { "⌥⇧J" };
+    let close_hint = keys::chord_for(keys::Action::ToggleNotebook, app.cmd_hints);
     let mut panes = Vec::new();
     let mut editor_cursor = None;
     let notes: std::collections::BTreeMap<SessionId, String> = app

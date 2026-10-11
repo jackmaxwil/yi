@@ -684,6 +684,59 @@ fn a_turn_records_both_checkpoints() -> TestResult {
     Ok(())
 }
 
+/// A project deleted a week ago leaves its shadow repo to `yi gc --fix`; bare `yi gc` only says so.
+#[test]
+fn gc_fix_takes_the_checkpoints_of_a_deleted_project() -> TestResult {
+    let workspace = Workspace::new("gc")?;
+    let gone = workspace.0.join("gone");
+    std::fs::create_dir_all(&gone)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the turn must run in a project the test deletes afterwards"
+    )]
+    let turn = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["ask", "--model", "faux/faux-1", "--session-dir"])
+        .arg(workspace.0.join("home/sessions"))
+        .arg("--cwd")
+        .arg(&gone)
+        .arg("start a turn")
+        .env("HOME", workspace.0.join("home"))
+        .current_dir(&gone)
+        .output()?;
+    assert!(
+        turn.status.success(),
+        "{}",
+        String::from_utf8_lossy(&turn.stderr)
+    );
+    let shadows: Vec<PathBuf> = std::fs::read_dir(workspace.0.join("home/.yi/checkpoints"))?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    let [shadow] = shadows.as_slice() else {
+        return Err(format!("one turn left {shadows:?}").into());
+    };
+    std::fs::remove_dir_all(&gone)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the sweep reads real ages, so the fixture sets one"
+    )]
+    let week_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 86_400);
+    std::fs::File::open(shadow)?.set_modified(week_ago)?;
+
+    let preview = stdout(&workspace.yi(&["gc"])?);
+    assert!(shadow.is_dir(), "a preview deleted the repo");
+    let swept = stdout(&workspace.yi(&["gc", "--fix"])?);
+    for out in [&preview, &swept] {
+        assert!(
+            out.lines()
+                .any(|row| row.starts_with("checkpoints: kept 0 of 1, removed 1,")),
+            "{out}"
+        );
+    }
+    assert!(!shadow.exists(), "the deleted project's repo was kept");
+    Ok(())
+}
+
 fn write_config(workspace: &Workspace, config: &str) -> TestResult {
     let dir = workspace.0.join("home/.yi");
     std::fs::create_dir_all(&dir)?;
@@ -727,6 +780,26 @@ fn the_cost_keys_reach_the_session_at_start() -> TestResult {
             && stderr.contains("compaction.at 5 is under the"),
         "{stderr}"
     );
+    Ok(())
+}
+
+/// `evals/b1_bench.py` ledgers the selector's cost from this row, one cost a part asked.
+#[test]
+fn debug_select_prints_one_cost_a_part() -> TestResult {
+    let workspace = Workspace::new("debug-select")?;
+    let output: String = (1..=700).map(|line| format!("{line}\n")).collect();
+    std::fs::write(workspace.project().join("out.txt"), output)?;
+    let printed = workspace.yi(&[
+        "debug",
+        "select",
+        "out.txt",
+        "seq",
+        "--model",
+        "faux/faux-1",
+    ])?;
+    let row: Value = serde_json::from_str(stdout(&printed).lines().last().unwrap_or_default())?;
+    let costs = row["costs"].as_array().ok_or("no costs")?;
+    assert_eq!(costs.len(), 3, "700 lines in parts of 300: {row}");
     Ok(())
 }
 
