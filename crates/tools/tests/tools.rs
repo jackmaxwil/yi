@@ -3656,8 +3656,6 @@ fn assert_gaps(text: &str, raw: &str) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Stage 7: pytest -v ends every line `[ 54%]`, which read as a progress bar, so each line
-/// overwrote the one before and the FAILED line at 223 of 419 never reached the model.
 /// `pytest -rA` lists every pass again in its short summary as `PASSED path::test`.
 #[test]
 fn a_pytest_ra_summary_counts_its_passes() -> TestResult {
@@ -3680,6 +3678,8 @@ fn a_pytest_ra_summary_counts_its_passes() -> TestResult {
     Ok(())
 }
 
+/// Stage 7: pytest -v ends every line `[ 54%]`, which read as a progress bar, so each line
+/// overwrote the one before and the FAILED line at 223 of 419 never reached the model.
 #[test]
 fn a_pytest_failure_amid_passes_survives_and_the_passes_are_counted() -> TestResult {
     let dir = temp_dir("reduce-pytest")?;
