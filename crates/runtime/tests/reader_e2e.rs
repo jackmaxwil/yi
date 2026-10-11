@@ -1128,15 +1128,6 @@ fn parent_greps_child(family: &Family, name: &str) -> Result<String, Box<dyn Err
     let desk = yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&family.host), None, &root);
     let resolver = yi_runtime::fetch::Resolver::new(root, yi_runtime::Wall::default())
         .with_transcripts(Arc::new(desk));
-    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
-        .into_iter()
-        .filter(|tool| tool.name() == "grep")
-        .collect();
-    yi_runtime::fetch::route_urls(&mut tools, &Arc::new(resolver));
     let input = json!({"pattern": "cutover", "path": format!("history://{name}")});
-    let output = tools.first().ok_or("no grep tool")?.execute(
-        input.as_object().cloned().ok_or("not an object")?,
-        &yi_tools::ToolContext::new(std::env::temp_dir()),
-    );
-    Ok(content_text(&output.result.content))
+    Ok(crate::support::routed_tool(&Arc::new(resolver), "grep", input)?.0)
 }

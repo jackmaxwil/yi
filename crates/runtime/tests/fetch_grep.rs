@@ -16,19 +16,7 @@ fn tool_text(
     name: &str,
     input: Value,
 ) -> Result<(String, bool), Box<dyn Error>> {
-    let resolver = Arc::new(resolver);
-    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
-        .into_iter()
-        .filter(|tool| tool.name() == name)
-        .collect();
-    yi_runtime::fetch::route_urls(&mut tools, &resolver);
-    let input = input.as_object().cloned().ok_or("input is not an object")?;
-    let output = tools
-        .first()
-        .ok_or("no such tool")?
-        .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
-    let text = yi_types::message::join_text(&output.result.content, "\n");
-    Ok((text, output.is_error))
+    crate::support::routed_tool(&Arc::new(resolver), name, input)
 }
 
 fn bash_result(text: String) -> AgentMessage {
@@ -47,19 +35,11 @@ fn bash_result(text: String) -> AgentMessage {
     }
 }
 
-/// The gate's report.py output: 301 lines, the fact on line 219.
-fn report() -> String {
-    let mut lines: Vec<String> = (0..300)
-        .map(|i| format!("setting_{i:03} = fb3f5c"))
-        .collect();
-    lines.insert(218, "release_id = rel-09d88875".to_owned());
-    lines.join("\n")
-}
-
 struct Family {
     root: Scratch,
     cwd: std::path::PathBuf,
     transcripts: Arc<SessionTranscripts>,
+    host: Arc<yi_runtime::SubagentHost>,
     parent: yi_session::SharedSession,
     child: yi_session::SharedSession,
     earlier: String,
@@ -72,7 +52,8 @@ fn family() -> Result<Family, Box<dyn Error>> {
     let cwd = cwd.canonicalize()?;
     let mut repo = yi_session::JsonlRepo::new(sessions.clone(), cwd.to_string_lossy());
     let earlier = repo.create(yi_session::CreateOptions::default())?;
-    yi_session::lock_session(&earlier).append_message("main", bash_result(report()))?;
+    yi_session::lock_session(&earlier)
+        .append_message("main", bash_result(crate::support::report_output()))?;
     let earlier = yi_session::lock_session(&earlier).metadata().id.clone();
     let parent = repo.create(yi_session::CreateOptions::default())?;
     let parent_id = yi_session::lock_session(&parent).metadata().id.clone();
@@ -84,7 +65,8 @@ fn family() -> Result<Family, Box<dyn Error>> {
         attribution: yi_types::message::Attribution::User,
     };
     yi_session::lock_session(&parent).append_message("main", asked)?;
-    yi_session::lock_session(&parent).append_message("main", bash_result(report()))?;
+    yi_session::lock_session(&parent)
+        .append_message("main", bash_result(crate::support::report_output()))?;
     let mut spawn = serde_json::Map::new();
     spawn.insert(
         "code".to_owned(),
@@ -100,11 +82,12 @@ fn family() -> Result<Family, Box<dyn Error>> {
         ..yi_session::CreateOptions::default()
     })?;
     let host = crate::support::family(root.to_path_buf(), cwd.clone(), child.clone(), None).host;
-    let transcripts = Arc::new(SessionTranscripts::new(host, Some(sessions), &cwd));
+    let transcripts = Arc::new(SessionTranscripts::new(host.clone(), Some(sessions), &cwd));
     Ok(Family {
         root,
         cwd,
         transcripts,
+        host,
         parent,
         child,
         earlier,
@@ -152,6 +135,21 @@ fn a_child_greps_its_parents_tool_output_by_alias() -> TestResult {
     );
     let address = hit_address(&text, "release_id")?;
     assert!(address.starts_with("history://parent/"), "{address}");
+    for (window, rows) in [("since/0", 2), ("tail/1", 1)] {
+        let windowed =
+            json!({"pattern": "release_id =", "path": format!("history://parent/{window}")});
+        let (got, is_error) = tool_text(
+            resolver(&family, &family.child, Wall::default()),
+            "grep",
+            windowed,
+        )?;
+        assert!(!is_error && got.lines().count() == rows, "{window}: {got}");
+        assert!(
+            got.lines()
+                .all(|line| line.starts_with("history://parent/")),
+            "{window}: {got}"
+        );
+    }
     let (entry, _) = tool_text(
         resolver(&family, &family.child, Wall::default()),
         "read",
@@ -229,8 +227,19 @@ fn history_repo_greps_this_repositorys_other_sessions() -> TestResult {
         deny_url: vec!["history://main".to_owned()],
         ..Wall::default()
     };
-    let (text, is_error) = tool_text(resolver(&family, &family.parent, history), "grep", ask)?;
+    let (text, is_error) = tool_text(
+        resolver(&family, &family.parent, history),
+        "grep",
+        ask.clone(),
+    )?;
     assert!(is_error && text.contains("denied"), "{text}");
+    let reader = Resolver::new(family.cwd.clone(), Wall::default())
+        .with_session("worker", family.child.clone())
+        .with_transcripts(Arc::new(yi_runtime::fetch::ParentTranscript(
+            Arc::downgrade(&family.host),
+        )));
+    let (text, is_error) = tool_text(reader, "grep", ask)?;
+    assert!(is_error && text.contains("history://repo does"), "{text}");
     Ok(())
 }
 
