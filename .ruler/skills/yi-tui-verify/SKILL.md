@@ -59,9 +59,17 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    `--host term` replays the scene in real Ghostty inside the yi-term container (Xvfb, software
    GL) and swaps in its grabs, so kitty images, the orb and true colour are in the crops. Build it
    once with `just yi-term`; it matches the host's architecture, because Ghostty under emulation
-   took 30 s to map a window. On that host `wait-idle` means a second without output.
+   took 30 s to map a window.
 8. Motion and in-flight states: put `--faux <cassette.jsonl>` in the `#!` line, `hold
    text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
    80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
    past the reveal before waiting. Hold is solo only; the console's model lives in the daemon,
    and the term host refuses `tick` and `hold`.
+9. Iterating: `just tui-see watch <scene> [--host term]` keeps a `base` run and, on every save
+   under crates/tui, crates/console or crates/orb, rebuilds, reruns as `head`, diffs and rewrites
+   `target/see/gallery.html`. `just tui-see gallery [root] [page]` builds that page on its own:
+   each scene, each snap by label side by side, the head's cell diff beside it, pictures inlined,
+   so it can be published as one page for the owner to comment on. `--video` with `--host term`
+   keeps the whole run as `run.webp` (cropped to the window, under the 512 KB blob cap for a
+   README); it needs at least one `snap` to find the window. On that host `wait-idle` waits for
+   the screen to hold still a second with digits ignored, so ticking ages do not count as work.
