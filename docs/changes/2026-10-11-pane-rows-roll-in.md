@@ -1,6 +1,6 @@
 ---
 issue: Closes #1217
-raise: crate tui +34, comments +3, tests +64
+raise: crate tui +34, comments +3, tests +62
 growth: +182 the pane's row pacer (36 in render.rs and app.rs: a follow state pinned to a transcript cell, the same anchor a held view already uses) on top of the frame and reveal fix (146); weighed for deletion: `History::lines`, whose one other caller in app.rs keeps it, the pacer's step function (inlined, since `div_ceil(0)` is already 0), and a separate row-count cache in `History`, which pinning a cell made unnecessary
 decision: a chat pane that follows the turn rolls rows in at most one a frame, one more per 24 rows it is behind, by pinning its window to the transcript cell at its top and moving the window's bottom toward the column's | a measured console reply moved 2 to 3 rows at once in 17 of 60 moving frames, at every paragraph and fence boundary, because a blank row and the next row's first character reveal in one step; the owner chose "Roll in, 1 row/frame" over blocks appearing at once | drop `pane_follow` and paint the last `above` rows of the column again
 ---
