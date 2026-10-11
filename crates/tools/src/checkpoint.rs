@@ -83,8 +83,7 @@ impl Checkpoints {
     /// Honours the project's own ignore rules, read from the work tree.
     pub fn capture(&self) -> Result<TreeId, CheckpointError> {
         self.stage()?;
-        let tree = self.git(&["write-tree"])?;
-        Ok(TreeId::new(tree.trim()))
+        self.write_tree()
     }
 
     /// A capture with `excluded` (paths relative to the project) left out of the tree; the
@@ -103,8 +102,7 @@ impl Checkpoints {
                 &path,
             ])?;
         }
-        let tree = self.git(&["write-tree"])?;
-        Ok(TreeId::new(tree.trim()))
+        self.write_tree()
     }
 
     pub fn changed(&self, tree: &TreeId) -> Result<Vec<Change>, CheckpointError> {
@@ -215,6 +213,23 @@ impl Checkpoints {
         Ok(())
     }
 
+    /// Incident: `write-tree` returns a cached tree without touching it, so an unchanged
+    /// project's capture kept a months-old mtime and the 30-day prune took it minutes later.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the prune ages captures by object mtime"
+    )]
+    fn write_tree(&self) -> Result<TreeId, CheckpointError> {
+        let tree = TreeId::new(self.git(&["write-tree"])?.trim());
+        if let (Some(fan), Some(rest)) = (tree.as_str().get(..2), tree.as_str().get(2..)) {
+            let object = self.git_dir.join("objects").join(fan).join(rest);
+            let now = std::time::SystemTime::now();
+            let _packed_or_gone =
+                std::fs::File::open(object).and_then(|file| file.set_modified(now));
+        }
+        Ok(tree)
+    }
+
     fn stage(&self) -> Result<String, CheckpointError> {
         self.git(&self.staged.iter().map(String::as_str).collect::<Vec<_>>())
     }
@@ -270,6 +285,35 @@ fn parse_changes(diff: &str) -> Vec<Change> {
         });
     }
     changes
+}
+
+/// The project a shadow dir captures, as `init --work-tree` wrote it into its config; read
+/// without a git process because a sweep visits thousands. A quoted or escaped value is not.
+pub fn work_tree(git_dir: &Path) -> Option<PathBuf> {
+    let config = std::fs::read_to_string(git_dir.join("config")).ok()?;
+    let value = config
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("worktree = "))?;
+    (!value.starts_with('"') && !value.contains('\\')).then(|| PathBuf::from(value))
+}
+
+/// Invariant: captures write no ref, so every object is unreachable and `prune` keeps what is
+/// younger than `keep` plus whatever a younger tree still names.
+pub fn prune(git_dir: &Path, keep: std::time::Duration) -> Result<(), CheckpointError> {
+    let output = command("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .arg("prune")
+        .arg(format!("--expire={}.seconds.ago", keep.as_secs()))
+        .output()
+        .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(CheckpointError::Git {
+        command: "prune".to_owned(),
+        message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
 }
 
 /// Hashed so the directory name cannot collide with a path component.

@@ -47,3 +47,34 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    layout that only shows on a wide screen.
    `scripts/proof/demo.drive` is the worked example. A test replays both
    casts and asserts they land on the frame the assertions ran against.
+7. To see what a change did, diff snaps rather than eyeballing whole frames:
+   `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
+   `just tui-see diff target/see/<scene>/base target/see/<scene>/head`. The summary lists every
+   changed row with its text and style changes (`cols 25-25: plain → reverse`), the changed
+   regions, and crops of each region before and after (agg pads its stills, so a crop is within
+   half a row of exact); Read the crops, not the whole frame.
+   Scenes live beside the proofs: `#! solo|console <flags>` on top, `snap <name>` where a frame
+   matters, `--seed <session.jsonl>` in the `#!` line to start from a real session (without one,
+   a solo scene starts from an empty session under a fixed id, so its badge colour is stable).
+   `--host term` replays the scene in real Ghostty inside the yi-term container (Xvfb, software
+   GL) and swaps in its grabs, so kitty images, the orb and true colour are in the crops. Build it
+   once with `just yi-term`; it matches the host's architecture, because Ghostty under emulation
+   took 30 s to map a window.
+8. Motion and in-flight states: put `--faux <cassette.jsonl>` in the `#!` line, `hold
+   text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
+   80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
+   past the reveal before waiting. Hold is solo only; the console's model lives in the daemon,
+   and the term host refuses `tick` and `hold`.
+9. Iterating: `just tui-see watch <scene> [--host term]` keeps a `base` run and, on every save
+   under crates/tui, crates/console or crates/orb, rebuilds, reruns as `head`, diffs and rewrites
+   `target/see/gallery.html`. `just tui-see gallery [root] [page]` builds that page on its own:
+   each scene, each snap by label side by side, the head's cell diff beside it, pictures inlined,
+   so it can be published as one page for the owner to comment on. `--video` with `--host term`
+   keeps the whole run as `run.webp` (cropped to the window, under the 512 KB blob cap for a
+   README); it needs at least one `snap` to find the window. On that host `wait-idle` waits for
+   the screen to hold still a second with digits ignored, so ticking ages do not count as work.
+10. On the forge, `.forgejo/workflows/tui.yml` builds the base and head binaries, then runs
+   `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
+   `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
+   24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
+   headless there. Console scenes get random session ids, so their avatar colours always differ.

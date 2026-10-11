@@ -19,7 +19,7 @@ impl App {
         self.osc_out.push(crate::select::osc52(text));
         let lines = text.lines().count();
         let noun = if lines == 1 { "line" } else { "lines" };
-        self.flash = Some((format!("copied {lines} {noun}"), std::time::Instant::now()));
+        self.flash = Some((format!("copied {lines} {noun}"), self.clock.now()));
         self.dirty = true;
     }
 

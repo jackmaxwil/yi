@@ -9,6 +9,8 @@ necessary, not sufficient.
    Chains that swallowed a failing gate have shipped broken commits in this
    repo before. `just check` runs fmt, clippy, the guardrails *and* the test
    suite, so `guardrails: all green` in a grep is not the gate: read `$?`.
+   `just test` runs the suite with HOME at the worktree's `target/yi-home`, deleted with the
+   worktree; a hand-run `cargo test` or `yi` drive goes through `scripts/wt_home.sh` the same way.
 3. For behavior changes, run the real binary. Offline:
    `./target/debug/yi ask --model faux/faux-1 "<prompt>"` (add `--json` for
    the event stream). Size or startup claims use the dist profile

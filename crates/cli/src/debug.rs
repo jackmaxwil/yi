@@ -68,9 +68,10 @@ fn select(args: &Args, rest: &[&str]) -> i32 {
         &command.join(" "),
         None,
         &lines,
+        &vec![true; lines.len()],
     ));
     let (ranges, error) = match ranges {
-        Ok((ranges, _)) => (ranges, None),
+        Ok(picked) => (picked.ranges, None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
     let row = json!({"ranges": ranges, "error": error, "ms": started.elapsed().as_millis(), "cost": usage.cost.total});

@@ -526,6 +526,19 @@ fn stage_skills(staging: &Path, target: &Path, skills: &[(String, Vec<u8>)]) -> 
     if target.exists() {
         copy_tree(target, staging)?;
     }
+    // Invariant: the release owns each top-level directory it ships, so a skill it dropped goes.
+    let owned: std::collections::BTreeSet<&str> = (skills.iter())
+        .filter_map(|(relative, _)| relative.split_once('/').map(|(top, _)| top))
+        .collect();
+    for top in owned {
+        let dir = staging.join(top);
+        match std::fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(io(&dir)(error));
+            }
+            _ => {}
+        }
+    }
     for (relative, bytes) in skills {
         let path = skill_file(staging, relative)?;
         if let Some(parent) = path.parent() {
@@ -857,9 +870,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let tmp = Tmp::new()?;
         let (home, prefix, exe) = layout(&tmp.0)?;
-        std::fs::create_dir_all(home.join(".yi/skills/yi"))?;
+        std::fs::create_dir_all(home.join(".yi/skills/yi/grid"))?;
         std::fs::write(home.join(".yi/skills/yi/SKILL.md"), b"stale")?;
-        std::fs::write(home.join(".yi/skills/yi/mine.md"), b"mine")?;
+        std::fs::write(home.join(".yi/skills/yi/grid/SKILL.md"), b"dropped")?;
+        std::fs::create_dir_all(home.join(".yi/skills/mine"))?;
+        std::fs::write(home.join(".yi/skills/mine/SKILL.md"), b"mine")?;
         let prior = serde_json::json!({
             "prefix": prefix.display().to_string(),
             "version": "0.1.0",
@@ -895,7 +910,14 @@ mod tests {
             std::fs::read(home.join(".yi/skills/yi/SKILL.md"))?,
             b"skill body"
         );
-        assert_eq!(std::fs::read(home.join(".yi/skills/yi/mine.md"))?, b"mine");
+        assert!(
+            !home.join(".yi/skills/yi/grid").exists(),
+            "a skill the release dropped is gone"
+        );
+        assert_eq!(
+            std::fs::read(home.join(".yi/skills/mine/SKILL.md"))?,
+            b"mine"
+        );
         assert!(!home.join(".yi/python").exists());
         let saved: InstallReceipt =
             serde_json::from_slice(&std::fs::read(home.join(".yi/install.json"))?)?;
@@ -993,8 +1015,8 @@ mod tests {
 
     fn old_install(tmp: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
         let home = tmp.join("home");
-        std::fs::create_dir_all(home.join(".yi/skills/yi/SKILL.md"))?;
-        std::fs::write(home.join(".yi/skills/yi/SKILL.md/mine.md"), b"mine")?;
+        std::fs::create_dir_all(home.join(".yi/skills/README.md"))?;
+        std::fs::write(home.join(".yi/skills/README.md/mine.md"), b"mine")?;
         let dest = tmp.join("prefix/yi");
         std::fs::create_dir_all(tmp.join("prefix"))?;
         std::fs::write(&dest, b"old")?;
@@ -1008,13 +1030,13 @@ mod tests {
         let (home, dest) = old_install(&tmp.0)?;
         let skills = [
             ("a/one.md".to_owned(), b"one".to_vec()),
-            ("yi/SKILL.md".to_owned(), b"new skill".to_vec()),
+            ("README.md".to_owned(), b"new readme".to_vec()),
         ];
         publish(&dest, b"new", &home, &skills).expect_err("collision");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
-            std::fs::read(home.join(".yi/skills/yi/SKILL.md/mine.md"))?,
+            std::fs::read(home.join(".yi/skills/README.md/mine.md"))?,
             b"mine"
         );
         Ok(())
@@ -1032,7 +1054,7 @@ mod tests {
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
-            std::fs::read(home.join(".yi/skills/yi/SKILL.md/mine.md"))?,
+            std::fs::read(home.join(".yi/skills/README.md/mine.md"))?,
             b"mine"
         );
         Ok(())
