@@ -226,10 +226,8 @@ pub fn session(
         Some(host) => {
             child.set_spills(crate::wiring::board_spills(&host.board()));
             resolver
-                .with_transcripts(Arc::new(crate::fetch::SessionTranscripts::new(
-                    Arc::clone(&host),
-                    None,
-                    &cwd,
+                .with_transcripts(Arc::new(crate::fetch::ParentTranscript(
+                    build.link.host.clone(),
                 )))
                 .with_plans_dir(host.options.plans_dir.clone())
         }

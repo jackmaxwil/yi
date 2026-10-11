@@ -551,8 +551,8 @@ fn a_reader_child_reads_its_live_parent_by_alias() -> TestResult {
     let host = crate::support::family(root.to_path_buf(), root.to_path_buf(), parent, None).host;
     let fetched = Resolver::new(root.to_path_buf(), Wall::default())
         .with_session("reader", child)
-        .with_transcripts(Arc::new(yi_runtime::fetch::SessionTranscripts::new(
-            host, None, &root,
+        .with_transcripts(Arc::new(yi_runtime::fetch::ParentTranscript(
+            Arc::downgrade(&host),
         )))
         .fetch(&"history://parent/since/0".parse()?)
         .map_err(|error| format!("{error:?}"))?;
@@ -596,7 +596,7 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
     assert_eq!(
         compact.lines().last(),
         Some(
-            "[… a line ending in … is cut at 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · a cut line names its entry whole as history://<agent>/<entry-id>]"
+            "[… a line is cut at 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
         )
     );
     let cut_line = compact
@@ -660,5 +660,23 @@ fn a_since_window_past_the_cap_says_where_it_was_cut() -> TestResult {
     assert!(row.starts_with("[… "), "{row}");
     assert!(row.contains("entries shown"), "{row}");
     assert!(row.contains("unpaged history cap 51200 bytes"), "{row}");
+    Ok(())
+}
+
+/// A wall that denies history refuses a family member's live transcript by `agent://` too, the
+/// other spelling of the same transcript.
+#[test]
+fn a_history_wall_refuses_a_members_agent_address() -> TestResult {
+    let root = Scratch::new("yi-fetch-agent-walled")?;
+    let wall = Wall {
+        deny_url: vec!["history://main".to_owned()],
+        ..Wall::default()
+    };
+    let fetched = Resolver::new(root.to_path_buf(), wall).fetch(&"agent://sibling".parse()?);
+    assert!(
+        matches!(fetched, Err(FetchError::Denied { .. })),
+        "{:?}",
+        fetched.map(|f| f.text)
+    );
     Ok(())
 }

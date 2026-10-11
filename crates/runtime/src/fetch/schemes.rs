@@ -106,11 +106,7 @@ fn render_history(
             };
             let (mut text, served_by, next) = paged(kept, format!("session-{kind}"))?;
             if any_cut {
-                text.push_str(
-                    "\n[… a line ending in … is cut at 120 chars (NOTE_CHARS), a user line at \
-                     2000 (USER_CHARS) · a cut line names its entry whole as \
-                     history://<agent>/<entry-id>]",
-                );
+                text.push_str(&crate::family::cut_notice());
             }
             Ok((text, served_by, next))
         }

@@ -262,6 +262,18 @@ impl Transcripts for SessionTranscripts {
     }
 }
 
+/// Invariant: a spawned child's resolver has no session root, so its parent, live from the host
+/// that spawned it, is the one transcript past its own it can open; a sibling's is not its to read.
+pub struct ParentTranscript(pub std::sync::Weak<crate::subagent::SubagentHost>);
+
+impl Transcripts for ParentTranscript {
+    fn open(&self, agent: &str) -> Option<Transcript> {
+        let store = (self.0.upgrade()?.options.store)()?;
+        let id = yi_session::lock_session(&store).metadata().id.clone();
+        (id == agent).then_some(Transcript::Live(store))
+    }
+}
+
 pub fn open_checkpoint_show(
     home: &Path,
     project: &Path,
@@ -581,6 +593,12 @@ impl Resolver {
     ) -> Result<(String, String, Option<usize>), FetchError> {
         let parent = self.parent_address(url)?;
         let url = parent.as_ref().unwrap_or(url);
+        if *url.scheme() == Scheme::Agent && self.wall.denies_history() {
+            return Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: yi_tools::wall_refusal("fetch", &url.to_string(), "deny_url"),
+            });
+        }
         if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
                 url: url.to_string(),
