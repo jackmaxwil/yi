@@ -81,6 +81,7 @@ pub struct ProviderStream {
     pub session_id: Option<String>,
     pub faux: Arc<Mutex<FauxProvider>>,
     pub(crate) faux_pace: Arc<Mutex<Option<std::time::Duration>>>,
+    pub faux_hold: Arc<FauxHold>,
     long_cache: bool,
     /// What the session ledger says of the next gap and write, for its loop requests' TTL
     /// (D315); `None` for a stream no ledger feeds, a child's included.
@@ -114,6 +115,7 @@ impl ProviderStream {
             session_id: session_id.map(|id| id.chars().take(64).collect()),
             faux: Arc::default(),
             faux_pace: Arc::default(),
+            faux_hold: Arc::default(),
             long_cache: false,
             ttl_estimate: Mutex::new(None),
             proxy: None,
@@ -146,6 +148,8 @@ impl ProviderStream {
             session_id: self.session_id.clone(),
             faux: Arc::clone(&self.faux),
             faux_pace: Arc::clone(&self.faux_pace),
+            // A drive holds the root's turn; a child's deltas must not count toward it.
+            faux_hold: Arc::default(),
             long_cache: false,
             ttl_estimate: Mutex::new(None),
             proxy: self.proxy.clone(),
@@ -384,8 +388,9 @@ impl ProviderStream {
             .unwrap_or_default();
         let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
         let pace = self.faux_pace.lock().ok().and_then(|pace| *pace);
-        if let Some(pace) = pace {
-            drop(tokio::spawn(paced(sender, events, pace)));
+        if pace.is_some() || self.faux_hold.armed() {
+            let hold = Arc::clone(&self.faux_hold);
+            drop(tokio::spawn(paced(sender, events, pace, hold)));
             return receiver;
         }
         for event in events {
@@ -485,16 +490,86 @@ fn error_stream(model: &Model, text: &str) -> Receiver<AssistantMessageEvent> {
     receiver
 }
 
+/// A drive script's `hold`: the faux stream stops before the n-th event of one kind (its wire
+/// `type`, e.g. `text_delta`) until `release`, so a turn can be looked at mid-stream.
+#[derive(Debug, Default)]
+pub struct FauxHold {
+    at: Mutex<Option<(String, u32)>>,
+    reached: std::sync::atomic::AtomicBool,
+    open: tokio::sync::Notify,
+}
+
+impl FauxHold {
+    pub fn arm(&self, kind: &str, nth: u32) {
+        self.reached
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut at) = self.at.lock() {
+            *at = Some((kind.to_owned(), nth));
+        }
+    }
+
+    /// Lets the stream go on; false when it never reached the hold, which a script must hear.
+    pub fn release(&self) -> bool {
+        let reached = self.at.lock().is_ok_and(|mut at| {
+            *at = None;
+            self.reached.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        self.open.notify_waiters();
+        reached
+    }
+
+    pub fn reached(&self) -> bool {
+        self.reached.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn armed(&self) -> bool {
+        self.at.lock().is_ok_and(|at| at.is_some())
+    }
+
+    async fn pass(&self, event: &yi_types::event::AssistantMessageEvent) {
+        if !self.armed() {
+            return;
+        }
+        let kind = serde_json::to_value(event).ok();
+        let kind = kind
+            .as_ref()
+            .and_then(|value| value.get("type"))
+            .and_then(|v| v.as_str());
+        // Invariant: the wakeup is enabled before the gate is read, and `reached` is set under the
+        // gate's lock, so a `release` racing this event either opens it or sees it reached.
+        let opened = self.open.notified();
+        tokio::pin!(opened);
+        opened.as_mut().enable();
+        let stop = self.at.lock().is_ok_and(|mut at| match at.as_mut() {
+            Some((want, left)) if Some(want.as_str()) == kind => {
+                *left = left.saturating_sub(1);
+                let stop = *left == 0;
+                self.reached
+                    .store(stop, std::sync::atomic::Ordering::SeqCst);
+                stop
+            }
+            _ => false,
+        });
+        if stop {
+            opened.await;
+        }
+    }
+}
+
 async fn paced(
     sender: tokio::sync::mpsc::Sender<yi_types::event::AssistantMessageEvent>,
     events: Vec<yi_types::event::AssistantMessageEvent>,
-    pace: std::time::Duration,
+    pace: Option<std::time::Duration>,
+    hold: Arc<FauxHold>,
 ) {
     use yi_types::event::AssistantMessageEvent as Event;
     for event in events {
-        if matches!(event, Event::TextDelta { .. } | Event::ThinkingDelta { .. }) {
+        if let Some(pace) = pace
+            && matches!(event, Event::TextDelta { .. } | Event::ThinkingDelta { .. })
+        {
             tokio::time::sleep(pace).await;
         }
+        hold.pass(&event).await;
         if sender.send(event).await.is_err() {
             return;
         }
