@@ -12,6 +12,13 @@ pub const STUCK_IDLE_MS: u64 = 300_000;
 const RECENT_ENTRIES: usize = 3;
 pub(crate) const NOTE_CHARS: usize = 120;
 
+pub(crate) fn cut_notice() -> String {
+    format!(
+        "\n[… a line is cut at {NOTE_CHARS} chars (NOTE_CHARS), a user line at {USER_CHARS} \
+         (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberState {
     /// Admitted and not yet polled.
