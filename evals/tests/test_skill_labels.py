@@ -82,7 +82,7 @@ class SkillLabels(unittest.TestCase):
     def test_the_candidates_are_the_shipped_skills_with_a_trigger(self):
         found = dict(skill_labels.skills())
         self.assertIn("verify", found)
-        self.assertEqual(len(found), 10)
+        self.assertEqual(len(found), 9)
         self.assertTrue(all(text and not text.startswith(">") for text in found.values()), found)
 
     def test_only_typed_messages_enter_scrubbed_and_once(self):

@@ -58,6 +58,8 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # The PR narrative's net-src number is what the growth budget is argued against, and
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
+# The snap diff an agent reads is parsed from casts, checked against Yi's own screen dumps.
+run "$PY" scripts/tui_see.py --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
