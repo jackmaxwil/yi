@@ -1,0 +1,4 @@
+---
+issue: Closes #1170, Closes #1171, Closes #1172, Closes #1173, Closes #1174, Closes #1175, Closes #1176
+---
+Every tool a root session's model can call now has a skill, so the pending list in the skill-coverage test is empty. Seven skills under `skills/yi/` cover `annotate`, `bash`, `get_context`, `grep`, `ipython`, `read` and `write`. Each teaches what the tool's description cannot: when to reach for it over the neighbouring tools, how its calls chain into the next one (a read's tags into an edit, a cut bash output into grep or the kernel, a `get_context` layer into read), and what to do after each notice or refusal it can print, quoting that text as the tool prints it. Each costs one clipped catalog line, about 70 bytes, and is read whole only on demand. None declares a `trigger:`: a tool name like `read` or `search` would match almost every message, and the classifier switches off past 20 triggered skills.
