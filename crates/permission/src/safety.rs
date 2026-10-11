@@ -140,12 +140,15 @@ const RIPWIRE_READ: [&str; 136] = [
     "scan-skill",
 ];
 
-/// Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write, so a
-/// bare word with `:` or `@` is never a read.
+/// Incident: a root that is a git URL makes ripwire `git clone` it, a fetch and a write, and
+/// `ripwire wrap` is setup; so a bare word is a read only when it is a path or an `=`-flag.
 pub fn ripwire_reads<'w>(mut args: impl Iterator<Item = &'w str>) -> bool {
     args.all(|word| match word.strip_prefix("--") {
         Some(flag) => RIPWIRE_READ.contains(&flag.split('=').next().unwrap_or(flag)),
-        None => !(word.starts_with('-') || word.contains(':') || word.contains('@')),
+        None => {
+            !(word.starts_with('-') || word.contains(':') || word.contains('@'))
+                && std::path::Path::new(word).exists()
+        }
     })
 }
 
