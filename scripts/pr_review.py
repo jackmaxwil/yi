@@ -425,7 +425,7 @@ def stacked(pr, other):
 def snapshots(notes, sha):
     """The tui job's comment for this head, picture links dropped: the cell diff the head drew
     against its base, which the owner wanted the bot to read before him."""
-    from tui_see import HEAD_MARK, MARKER
+    from tui_see import HEAD_MARK, MARKER, cap_notice
 
     for note in notes:
         body = note.get("body") or ""
@@ -439,8 +439,8 @@ def snapshots(notes, sha):
         text = "\n".join(kept) + (f"\n[… dropped {len(rows) - len(kept)} row(s) naming this block's closing tag; "
                                   "the PR's comment holds them]" if len(kept) < len(rows) else "")
         if len(text) > SNAPSHOTS_MAX:
-            text = text[:SNAPSHOTS_MAX] + (f"\n[… kept {SNAPSHOTS_MAX} of {len(text)} characters (cap "
-                                          f"{SNAPSHOTS_MAX}); the PR's comment holds the rest]")
+            text = text[:SNAPSHOTS_MAX] + "\n" + cap_notice(
+                SNAPSHOTS_MAX, len(text), "characters", "the PR's comment holds the rest")
         return text
     return ""
 
@@ -451,17 +451,21 @@ def settled_notes(pr, notes, wait=SNAPSHOTS_WAIT):
     deadline = min(time.monotonic() + wait, JOB_ENDS - ROUND_SECS)
 
     def tui():
-        # A job no runner has picked up has no task row, so the comment step is absent until shots ends.
+        # A job no runner has picked up has no task row, so the comment step is absent until shots
+        # ends; a queued run still shows in the run list, a workflow this PR skips does not.
         jobs = forge_pr.jobs_of(pr)
-        return [jobs[job] for job in ("build", "shots", "comment") if job in jobs], jobs.get("comment")
+        steps = [jobs[job] for job in ("build", "shots", "comment") if job in jobs]
+        if steps:
+            return steps, jobs.get("comment")
+        return ([], None) if forge_pr.run_of(pr) else (None, None)
 
     started, comment = tui()
-    while started and comment not in ENDED and not set(started) & {"failure", "cancelled"} \
+    while started is not None and comment not in ENDED and not set(started) & {"failure", "cancelled"} \
             and time.monotonic() < deadline:
         time.sleep(forge_pr.POLL)
         started, comment = tui()
     # The comment can land after the round's first read, waited for or not, so read it again.
-    return comments(forge_pr.repo(), pr["number"]) if started else notes
+    return comments(forge_pr.repo(), pr["number"]) if started is not None else notes
 
 
 def lens_prompt(probe, pr, diff, base, sha, full_read, shots=""):
@@ -1317,13 +1321,14 @@ def selfcheck():
     assert "[… dropped 1 row(s) naming this block's closing tag" in text, text
     # A round waits out the tui workflow on a clock the test moves, and reads the comments after.
     clock, fresh = [0.0], [{"user": {"login": ACTIONS}, "body": shot}]
-    keep = forge_pr.jobs_of, globals()["comments"], time.sleep, time.monotonic, JOB_ENDS
+    keep = forge_pr.jobs_of, forge_pr.run_of, globals()["comments"], time.sleep, time.monotonic, JOB_ENDS
     time.monotonic, time.sleep = (lambda: clock[0]), (lambda secs: clock.__setitem__(0, clock[0] + secs))
     globals()["comments"] = lambda repo, n: fresh
 
-    def polled(*states):
-        polls = iter(states)
+    def polled(*states, runs=None):
+        polls, exists = iter(states), iter(runs if runs is not None else [bool(state) for state in states])
         forge_pr.jobs_of = lambda pr: next(polls)
+        forge_pr.run_of = lambda pr: next(exists)
 
     try:
         globals()["JOB_ENDS"] = 10 * SNAPSHOTS_WAIT
@@ -1337,12 +1342,17 @@ def selfcheck():
         assert settled_notes({"number": 1}, []) == fresh, "a failed tui run is not waited on"
         polled({})
         assert settled_notes({"number": 1}, []) == [], "a PR the tui workflow skips does not wait"
+        polled({}, {}, {"build": "success"}, {"build": "success", "shots": "success", "comment": "success"},
+               runs=[True, True, True, True])
+        assert settled_notes({"number": 1}, []) == fresh, "a tui run queued before its first task row still waits"
         clock[0], globals()["JOB_ENDS"] = 0.0, ROUND_SECS + 3 * forge_pr.POLL
         polled(*[{"build": "running"}] * 5)
         assert settled_notes({"number": 1}, []) == fresh and clock[0] == 3 * forge_pr.POLL, clock
     finally:
-        forge_pr.jobs_of, globals()["comments"], time.sleep, time.monotonic = keep[:4]
-        globals()["JOB_ENDS"] = keep[4]
+        forge_pr.jobs_of, forge_pr.run_of = keep[:2]
+        globals()["comments"], time.monotonic, time.sleep = keep[2], keep[4], keep[3]
+        globals()["JOB_ENDS"] = keep[5]
+
     assert "older head" in snapshots(posted, "0" * 40) and snapshots([], head) == ""
     prompt = lens_prompt(probes["tests"], {"number": 1, "title": "t", "body": body}, "x", "a" * 8, "b" * 8, True, text)
     assert "<tui-snapshots>\n" + text in prompt, "the lens reads what the head drew"
