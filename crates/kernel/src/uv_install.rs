@@ -60,17 +60,8 @@ pub fn installed(home: &Path) -> Option<PathBuf> {
     crate::bootstrap::is_executable(&uv).then_some(uv)
 }
 
-pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    let response = crate::tarball::agent()
-        .build()
-        .get(url)
-        .call()
-        .map_err(|error| error.to_string())?;
-    crate::tarball::read_capped(response.into_reader())
-}
-
-/// Downloads the pinned archive through `fetch`, checks its digest before reading a byte of
-/// it, and publishes the one `uv` executable it carries; the archive's paths are never used.
+/// Downloads the pinned archive, checks its digest before reading a byte of it, and publishes
+/// the one `uv` executable it carries ([`crate::pinned::install`]).
 pub fn install(
     home: &Path,
     release: &Release,
@@ -79,83 +70,25 @@ pub fn install(
     if let Some(uv) = installed(home) {
         return Ok(uv);
     }
-    let url = release.url();
-    let archive = fetch(&url)
-        .map_err(|error| format!("couldn't download uv {UV_VERSION}: {error}; {REMEDY}"))?;
-    let digest = crate::tarball::sha256_hex(&archive);
-    if digest != release.sha256 {
-        return Err(format!(
-            "{url} has sha256 {digest}, yi pins {}; not installing. {REMEDY}",
-            release.sha256
-        ));
-    }
-    let tar =
-        crate::tarball::gunzip(&archive).map_err(|error| format!("the uv archive {error}"))?;
-    let binary = tar_file(&tar, &format!("uv-{}/uv", release.triple))?;
-    let root = home.join(".yi").join("uv");
-    let staging = root.join(format!(".staging-{}", std::process::id()));
-    let published = publish(&staging, &root.join(UV_VERSION), binary);
-    let _ = std::fs::remove_dir_all(&staging);
-    published?;
-    installed(home).ok_or_else(|| format!("uv {UV_VERSION} published but not executable"))
-}
-
-fn publish(staging: &Path, target: &Path, binary: &[u8]) -> Result<(), String> {
-    let _ = std::fs::remove_dir_all(staging);
-    std::fs::create_dir_all(staging).map_err(at(staging))?;
-    let uv = staging.join("uv");
-    std::fs::write(&uv, binary).map_err(at(&uv))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).map_err(at(&uv))?;
-    }
-    // A concurrent installer that won the rename published the same verified bytes.
-    match std::fs::rename(staging, target) {
-        Ok(()) => Ok(()),
-        Err(_) if target.join("uv").is_file() => Ok(()),
-        Err(error) => Err(at(target)(error)),
-    }
-}
-
-fn at(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
-    move |error| format!("{}: {error}", path.display())
-}
-
-fn tar_file<'a>(tar: &'a [u8], path: &str) -> Result<&'a [u8], String> {
-    crate::tarball::entries(tar)
-        .map_err(|error| format!("the uv archive: {error}"))?
-        .into_iter()
-        .find(|entry| entry.regular && entry.name == path)
-        .map(|entry| entry.bytes)
-        .ok_or_else(|| format!("the uv archive carries no {path}"))
+    let pin = crate::pinned::Pinned {
+        label: &format!("uv {UV_VERSION}"),
+        url: &release.url(),
+        sha256: release.sha256,
+        member: &format!("uv-{}/uv", release.triple),
+        dir: &home.join(".yi").join("uv").join(UV_VERSION),
+        file: "uv",
+        dirs: &[],
+    };
+    crate::pinned::install(&pin, fetch).map_err(|error| format!("{error}; {REMEDY}"))
 }
 
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
     use super::*;
+    use crate::pinned::tests::{gzip, tar_entry};
 
     const TRIPLE: &str = "aarch64-apple-darwin";
-
-    fn tar_entry(out: &mut Vec<u8>, name: &str, typeflag: u8, data: &[u8]) {
-        let mut header = [0u8; 512];
-        header[..name.len()].copy_from_slice(name.as_bytes());
-        header[124..136].copy_from_slice(format!("{:011o}\0", data.len()).as_bytes());
-        header[156] = typeflag;
-        header[257..262].copy_from_slice(b"ustar");
-        out.extend_from_slice(&header);
-        out.extend_from_slice(data);
-        out.resize(out.len().div_ceil(512) * 512, 0);
-    }
-
-    fn gzip(tar: &[u8]) -> Vec<u8> {
-        let mut out = vec![0x1f, 0x8b, 8, 0x08, 0, 0, 0, 0, 0, 3];
-        out.extend_from_slice(b"uv.tar\0");
-        out.extend(miniz_oxide::deflate::compress_to_vec(tar, 6));
-        out.extend_from_slice(&[0; 8]);
-        out
-    }
 
     fn archive(binary: &[u8]) -> Vec<u8> {
         let mut tar = Vec::new();

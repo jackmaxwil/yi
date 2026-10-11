@@ -52,6 +52,34 @@ fn env_key(provider: &str) -> Option<Secret> {
         .map(Secret::new)
 }
 
+fn refresh_cursor(
+    store: Store,
+    provider: &str,
+    current: yi_oauth::store::Credential,
+    proxy: Option<&crate::request::ProxyConfig>,
+) -> (yi_oauth::store::Credential, Vec<(String, String)>) {
+    if current.kind != Kind::Oauth {
+        return (current, Vec::new());
+    }
+    if current.refresh.is_none() {
+        return (current, Vec::new());
+    }
+    let wire = proxy.and_then(|config| {
+        config.proxy_for(crate::request::host_of(yi_oauth::cursor::REFRESH_URL))
+    });
+    // The token re-read inside the lock, not the one captured before it: another process may
+    // have rotated it while this one waited.
+    let fresh = flow::refresh_locked(&store, provider, current.clone(), |locked| {
+        let token = locked
+            .refresh
+            .as_deref()
+            .ok_or("cursor: no refresh token")?;
+        yi_oauth::cursor::refresh_ureq(token, wire)
+    })
+    .unwrap_or(current);
+    (fresh, Vec::new())
+}
+
 /// A stored OAuth credential is refreshed before it is handed out, through the
 /// session's proxy; a failed refresh falls back to the disk copy (the 401 names `yi login`).
 fn stored(
@@ -62,6 +90,9 @@ fn stored(
     let store = Store::open(root);
     let current = store.load(provider)?;
     let spec = match registry::lookup(provider) {
+        Ok(Some(registry::Kind::Cursor)) => {
+            return Some(refresh_cursor(store, provider, current, proxy));
+        }
         Ok(Some(registry::Kind::OauthCode(spec))) => spec,
         Ok(_) => return Some((current, Vec::new())),
         // A broken profile is not a missing credential: refuse it so

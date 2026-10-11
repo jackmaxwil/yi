@@ -163,6 +163,9 @@ pub fn transform_messages(
                                 });
                             }
                         }
+                        Content::ToolCall { .. } if api == yi_types::message::CURSOR_API => {
+                            continue;
+                        }
                         Content::ToolCall {
                             id,
                             name,

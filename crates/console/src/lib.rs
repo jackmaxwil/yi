@@ -31,7 +31,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
-use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
+use yi_tui::drive::{Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events};
 use yi_tui::term::ControlPictures;
 
 use crate::app::{App, MouseKind};
@@ -100,9 +100,38 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             continue;
         }
         let parsed = yi_tui::drive::parse_script(line).map_err(error)?;
+        if parsed
+            .iter()
+            .any(|step| matches!(step, Step::Hold(..) | Step::Release))
+        {
+            return Err(error(
+                "hold and release need the solo drive: the console's model lives in the daemon"
+                    .to_owned(),
+            ));
+        }
         steps.extend(parsed.into_iter().map(ConsoleStep::Tui));
     }
+    yi_tui::drive::refuse_repeated_snaps(steps.iter().filter_map(|step| match step {
+        ConsoleStep::Tui(step) => Some(step),
+        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) => None,
+    }))?;
     Ok(steps)
+}
+
+/// Moves the console's frozen clock a frame at a time, its chat panes with it.
+fn tick(
+    app: &mut App,
+    outbound: &Outbound,
+    events: &std::sync::mpsc::Receiver<ClientEvent>,
+    ms: u64,
+) {
+    let mut left = ms;
+    while left > 0 {
+        let step = left.min(yi_tui::drive::TICK_STEP_MS);
+        app.clock.advance(Duration::from_millis(step));
+        drain(app, outbound, events);
+        left -= step;
+    }
 }
 
 /// The idle tick: request deadlines, the list poll and animations advance at least this often.
@@ -470,6 +499,13 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx);
     let mut app = App::new(options.root.clone(), theme);
+    if drive
+        .script
+        .iter()
+        .any(|step| matches!(step, ConsoleStep::Tui(Step::Tick(_))))
+    {
+        app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+    }
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
     app.state.sidebar = options.sidebar;
@@ -503,6 +539,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut exit_code = 0;
     let mut type_ms = 0;
+    let mut pending_snap = None;
 
     while !app.state.quit {
         if Instant::now() > deadline {
@@ -532,6 +569,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 app.handle_event(&outbound, CtEvent::Key(event));
             }
             (ConsoleStep::Tui(Step::TypeMs(ms)), _) => type_ms = ms,
+            (ConsoleStep::Tui(Step::Snap(name)), _) => pending_snap = Some(name),
+            (ConsoleStep::Tui(Step::Tick(ms)), _) => tick(&mut app, &outbound, &events, ms),
+            (ConsoleStep::Tui(Step::Hold(..) | Step::Release), _) => {}
             (ConsoleStep::Tui(Step::Type(text)), _) => {
                 for event in typed_events(&text) {
                     app.handle_event(&outbound, event);
@@ -584,18 +624,14 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             exit_code = 1;
             break;
         }
-        if let Some(dir) = &drive.frames_dir {
-            let frame = terminal.backend().screen();
-            if frame != last_frame {
-                let path = dir.join(format!("{frame_index:04}.txt"));
-                if std::fs::write(&path, &frame).is_ok() {
-                    frame_index = frame_index.saturating_add(1);
-                    last_frame = frame;
-                }
-            }
-        }
-        if let Some((x, y, symbol)) = terminal.backend().first_control_cell() {
-            eprintln!("error: a control character reached a cell: {symbol:?} at ({x}, {y})");
+        if let Err(error) = keep_frame(
+            drive.frames_dir.as_deref(),
+            terminal.backend(),
+            &mut last_frame,
+            &mut frame_index,
+            pending_snap.take(),
+        ) {
+            eprintln!("error: {error}");
             exit_code = 1;
             break;
         }
