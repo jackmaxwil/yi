@@ -22,8 +22,8 @@ fn plan_guide() -> String {
 }
 
 impl Resolver {
-    /// `yi://tools/<name>` serves a deferred tool guide, `yi://skills/<name>` a skill's
-    /// SKILL.md: the documents the prefix names but does not carry.
+    /// `yi://tools/<name>` serves a deferred tool guide, `yi://skills/<name>` a skill's SKILL.md
+    /// and `yi://skills/<name>/<file>` a file beside it: what the prefix names but does not carry.
     pub(super) fn resolve_docs(&self, url: &Url) -> Result<(String, String), FetchError> {
         let not_found = |what: String| FetchError::NotFound {
             url: url.to_string(),
@@ -41,18 +41,29 @@ impl Resolver {
                         names.join(", ")
                     ))
                 }),
-            Some(("skills", name)) => {
+            Some(("skills", address)) => {
+                let (name, file) = address.split_once('/').unwrap_or((address, ""));
                 let skills = crate::skills::discover(self.workspace(), self.home());
                 let skill = skills
                     .iter()
                     .find(|skill| skill.name == name)
                     .ok_or_else(|| not_found(format!("skill {name}")))?;
-                super::read_text(url, &skill.path, self.workspace(), &self.wall().deny_read)
+                let mut path = skill.path.clone();
+                if !file.is_empty() {
+                    if !crate::tarball::stays_inside(file) {
+                        return Err(FetchError::BadAddress {
+                            url: url.to_string(),
+                            detail: format!("{file} is not a path under the skill's directory"),
+                        });
+                    }
+                    path.set_file_name(file);
+                }
+                super::read_text(url, &path, self.workspace(), &self.wall().deny_read)
                     .map(|text| (text, "skill".to_owned()))
             }
             _ => Err(FetchError::BadAddress {
                 url: url.to_string(),
-                detail: "a yi address is yi://tools/<name> or yi://skills/<name>".to_owned(),
+                detail: "a yi address is yi://tools/<name>, yi://skills/<name> or yi://skills/<name>/<file>".to_owned(),
             }),
         }
     }

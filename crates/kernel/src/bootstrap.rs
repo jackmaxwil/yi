@@ -480,7 +480,7 @@ pub fn find_toolchain(options: &BootstrapOptions) -> Result<Toolchain, String> {
         "› no uv or python3 3.11+; installing uv {} (one-time)…",
         crate::uv_install::UV_VERSION
     ));
-    crate::uv_install::install(&options.home, &release, crate::uv_install::fetch).map(Toolchain::Uv)
+    crate::uv_install::install(&options.home, &release, crate::pinned::fetch).map(Toolchain::Uv)
 }
 
 fn create_venv(toolchain: &Toolchain, venv_text: &str) -> Result<(), String> {
