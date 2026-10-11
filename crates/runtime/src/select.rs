@@ -165,31 +165,25 @@ fn parse(text: &str, hidden: &[bool]) -> Result<Picked, String> {
     }
 }
 
-/// Which lines of the full output the cut result does not show: the reducer and the capture keep
-/// lines verbatim and in order, and the reducer's `[N … omitted: A-B]` rows name its gaps.
+/// Which full-output lines the cut does not show: cuts keep lines in order, ANSI-free and as
+/// [`yi_tools::reduce::frame`] shows them, and a row's span names a gap.
 fn hidden(full: &[&str], shown: &str) -> Vec<bool> {
     // ponytail: past a capture cut, which names bytes not lines, a short shown line (a blank)
     // may match an omitted twin first; that twin is withheld from the selector, never doubled.
+    let full: Vec<String> = (full.iter())
+        .map(|line| yi_tools::reduce::frame(&yi_tools::reduce::strip_ansi(line)).to_owned())
+        .collect();
     let mut hidden = vec![true; full.len()];
     let mut at = 0_usize;
     for line in shown.lines() {
-        let row = line
-            .strip_prefix('[')
-            .and_then(|row| row.split_once(" omitted: "));
-        let row = row.filter(|(count, _)| count.starts_with(|c: char| c.is_ascii_digit()));
-        let gap = row.and_then(|(_, span)| {
-            let end = span.split_once('-')?.1;
-            end.get(..end.find(|c: char| !c.is_ascii_digit())?)?
-                .parse::<usize>()
-                .ok()
-        });
-        if let Some(end) = gap {
+        if let Some((_, end)) = yi_tools::reduce::row_span(line) {
             at = at.max(end);
             continue;
         }
+        let line = yi_tools::reduce::source_form(line);
         let found = full
             .get(at..)
-            .and_then(|rest| rest.iter().position(|full| *full == line));
+            .and_then(|rest| rest.iter().position(|full| full == line));
         if let Some(found) = found.map(|found| at.saturating_add(found)) {
             if let Some(flag) = hidden.get_mut(found) {
                 *flag = false;
@@ -272,6 +266,11 @@ pub(crate) async fn widen(
         }
         Err(_) => return,
     };
+    // The reducer shows lines without ANSI, so the selector reads and adds them the same way.
+    let lines: Vec<String> = lines
+        .iter()
+        .map(|line| yi_tools::reduce::strip_ansi(line))
+        .collect();
     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
     let exit = result
         .details
@@ -361,6 +360,23 @@ mod tests {
         assert_eq!(mask, vec![false, false, true, true, false]);
         let passes = hidden(&full[..3], "ok\n[1 passing tests omitted: 2-2]\nok");
         assert_eq!(passes, vec![false, true, false]);
+        let capture = hidden(
+            &full[..3],
+            "ok\n[1 lines omitted: 2-2 of the cut capture, not the file]\nok",
+        );
+        assert_eq!(
+            capture,
+            vec![false, false, true],
+            "a capture-numbered row moves nothing"
+        );
+        let raw = ["\u{1b}[31mFAILED a\u{1b}[0m  ", "pass b", "pass b"];
+        let full: Vec<String> = raw
+            .iter()
+            .map(|line| yi_tools::reduce::strip_ansi(line))
+            .collect();
+        let full: Vec<&str> = full.iter().map(String::as_str).collect();
+        let decorated = hidden(&full, "FAILED a\npass b [×2]");
+        assert_eq!(decorated, vec![false, false, true]);
     }
 
     /// A recorded pytest run through the reducer: every line its own omitted rows name stays
@@ -378,20 +394,10 @@ mod tests {
         let full: Vec<&str> = raw.lines().collect();
         let mask = hidden(&full, &cut);
         let mut omitted = 0;
-        for row in cut
-            .lines()
-            .filter_map(|line| line.strip_prefix('[')?.split_once(" omitted: "))
-        {
-            let span = row.1.trim_end_matches(']');
-            let (from, to) = span.split_once('-').ok_or("no span")?;
-            let (from, to): (usize, usize) = (from.parse()?, to.parse()?);
-            assert!(
-                mask.get(from - 1..to)
-                    .ok_or("span past the output")?
-                    .iter()
-                    .all(|hidden| *hidden),
-                "{span}"
-            );
+        let gaps = cut.lines().filter(|line| line.contains(" omitted: "));
+        for (from, to) in gaps.filter_map(yi_tools::reduce::row_span) {
+            let span = mask.get(from - 1..to).ok_or("span past the output")?;
+            assert!(span.iter().all(|hidden| *hidden), "{from}-{to}");
             omitted += to + 1 - from;
         }
         assert!(omitted > 0, "the fixture is cut");
