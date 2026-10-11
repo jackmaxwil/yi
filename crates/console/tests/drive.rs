@@ -3664,15 +3664,25 @@ fn copy_as_plain_text_drops_the_markdown() -> TestResult {
     Ok(())
 }
 
+/// A quote over a draft starts its own line: glued onto `see` it would not be a quote.
 #[test]
 fn quote_puts_the_message_in_the_composer() -> TestResult {
-    run(
+    let frame = run_frames(
         "menu-quote",
         opened_unicode(),
-        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\ntype see\n\
          mouse right 25 2\nwait-frame 3000 Quote\nkey up\nkey enter\n\
          wait-frame 3000 > hello agent\nquit\n",
-    )
+    )?;
+    let draft = frame
+        .lines()
+        .find(|row| row.contains("see"))
+        .unwrap_or_default();
+    assert!(
+        !draft.contains('>'),
+        "the quote glued onto the draft: {draft}"
+    );
+    Ok(())
 }
 
 /// Two panes: each title carries the close mark and its key, and a click on it closes that
@@ -3683,7 +3693,7 @@ fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
         "close-mark",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-v\nwait-frame 3000 ✕ ⌥x\nmouse down 97 0\n\
+         key alt-v\nwait-frame 3000 ✕ ⌥x\nmouse down 97 0\nmouse up 97 0\n\
          wait-frame 3000 !✕ ⌥x\nquit\n",
     )?;
     assert!(
@@ -3703,4 +3713,49 @@ fn the_last_panes_menu_greys_close_with_the_reason() -> TestResult {
          mouse right 60 20\nwait-frame 3000 Close pane\n\
          wait-frame 3000 last pane\nkey esc\nwait-frame 3000 !Close pane\nquit\n",
     )
+}
+
+/// The lower pane's mark sits on the split it is resized by: a press there that drags resizes,
+/// and only a release over the mark that did not drag closes the pane.
+#[test]
+fn a_drag_from_the_lower_panes_mark_resizes_and_closes_nothing() -> TestResult {
+    let frame = run_frames(
+        "close-mark-drag",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         key alt-s\nwait-frame 3000 ✕ ⌥x\nmouse down 95 14\nmouse drag 95 18\nmouse up 95 18\n\
+         wait 100\nquit\n",
+    )?;
+    assert!(
+        frame.contains("no session"),
+        "the drag closed the lower pane:\n{frame}"
+    );
+    Ok(())
+}
+
+/// Every menu step by mouse: hover opens a submenu, a press on its row runs it, and a press
+/// outside an open menu only closes it.
+#[test]
+fn the_menu_answers_the_mouse() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-mouse")?;
+    run_opts(
+        "menu-mouse",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nmouse move 32 7\nwait-frame 3000 Plain text\n\
+         mouse down 47 7\nwait-frame 3000 copied 1 line\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nmouse down 90 25\nwait-frame 3000 !Copy as\n\
+         wait-frame 3000 answer\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    let plain = "Naïve café — the ünïcode answer.";
+    assert!(
+        log.contains(&yi_console::select::osc52(plain)),
+        "no plain copy in {log:?}"
+    );
+    Ok(())
 }

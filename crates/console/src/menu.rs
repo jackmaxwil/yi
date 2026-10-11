@@ -183,10 +183,7 @@ pub fn rects(menu: &Menu, screen: Rect) -> Vec<Rect> {
         let (x, y) = match (out.last(), depth.checked_sub(1)) {
             (Some(parent), Some(up)) => {
                 let cursor = menu.levels.get(up).map_or(0, |level| level.cursor);
-                let row = parent
-                    .y
-                    .saturating_add(1)
-                    .saturating_add(u16::try_from(cursor).unwrap_or(0));
+                let row = parent.y.saturating_add(u16::try_from(cursor).unwrap_or(0));
                 if parent.right().saturating_add(width) <= screen.right() {
                     (parent.right(), row)
                 } else {
@@ -208,9 +205,9 @@ pub fn hit(menu: &Menu, rects: &[Rect], x: u16, y: u16) -> Option<(usize, Option
         .enumerate()
         .rev()
         .find(|(_, rect)| rect.contains(Position::new(x, y)))?;
-    let row = usize::from(y.checked_sub(rect.y.saturating_add(1))?);
+    let row = y.checked_sub(rect.y.saturating_add(1)).map(usize::from);
     let count = menu.levels.get(depth).map_or(0, |level| level.items.len());
-    Some((depth, (row < count).then_some(row)))
+    Some((depth, row.filter(|row| *row < count)))
 }
 
 pub fn render(menu: &Menu, rects: &[Rect], frame: &mut Frame<'_>, theme: &Theme) {
@@ -287,7 +284,11 @@ mod tests {
             root.x,
             "the submenu sits flush left of its parent"
         );
-        assert_eq!(sub.y, root.y.saturating_add(2), "beside the Copy as row");
+        assert_eq!(
+            sub.y,
+            root.y.saturating_add(1),
+            "its first row beside Copy as"
+        );
         Ok(())
     }
 }

@@ -163,6 +163,20 @@ impl App {
     }
 
     fn run_verb(&mut self, outbound: &Outbound, target: Target, verb: Verb) {
+        let pane = match &target {
+            Target::Message { pane, .. } | Target::Pane(pane) => Some(*pane),
+            Target::Session(_) => None,
+        };
+        let here = |pane| {
+            self.state
+                .tab()
+                .is_some_and(|tab| tab.layout.pane_ids().contains(&pane))
+        };
+        // Incident: an idle notebook closed itself under an open menu, and Close then closed the
+        // chat that had focus; a verb whose pane is gone does nothing.
+        if pane.is_some_and(|pane| !here(pane)) {
+            return self.note("that pane has closed");
+        }
         match (target, verb) {
             (Target::Message { source, .. }, Verb::Copy) => self.copy_out(&source),
             (Target::Message { source, .. }, Verb::CopyPlain) => {
@@ -191,14 +205,54 @@ impl App {
             }
             (Target::Session(index), Verb::Open) => {
                 self.state.selected = index;
+                self.state.cursor_moved = true;
                 self.open_selected(outbound);
+            }
+            (Target::Session(_), Verb::OpenBeside) if !self.connected() => {
+                self.note("not connected")
             }
             (Target::Session(index), Verb::OpenBeside) => {
                 self.state.selected = index;
+                self.state.cursor_moved = true;
                 self.apply_action(outbound, Action::SplitRight);
                 self.open_selected(outbound);
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_tui::colors::{ColorTier, Theme};
+
+    #[test]
+    fn a_verb_whose_pane_closed_under_the_menu_does_nothing() -> Result<(), String> {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-menu-stale-pane-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.apply_action(&outbound, Action::SplitRight);
+        let open = |app: &App| app.state.tab().map_or(0, |tab| tab.layout.pane_ids().len());
+        let mut ids = crate::layout::PaneIds::default();
+        let gone = std::iter::repeat_with(|| ids.allocate())
+            .take(64)
+            .find(|id| {
+                app.state
+                    .tab()
+                    .is_some_and(|tab| !tab.layout.pane_ids().contains(id))
+            })
+            .ok_or("no free pane id")?;
+        let facts = Facts {
+            cmd: false,
+            last_pane: false,
+            zoomed: false,
+        };
+        app.state.mode = Mode::Menu(Menu::new(Target::Pane(gone), (0, 0), &facts));
+        app.activate(&outbound);
+        outbound.shutdown();
+        assert_eq!(open(&app), 2, "Close reached the pane that had focus");
+        Ok(())
     }
 }
