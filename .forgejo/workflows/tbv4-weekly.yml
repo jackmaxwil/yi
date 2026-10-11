@@ -10,7 +10,13 @@ name: tbv4-weekly
 on:
   schedule:
     - cron: "17 3 * * 1"
+  # A dispatch with plugins=none is the other arm of the plugin comparison (#1019); the
+  # fingerprint's +plugins{...} keeps the two arms' rows apart.
   workflow_dispatch:
+    inputs:
+      plugins:
+        description: "EVAL_PLUGINS: all, none, or a comma list of plugin names"
+        default: all
 
 jobs:
   tbv4:
@@ -52,13 +58,14 @@ jobs:
           EVAL_BINARY: target/x86_64-unknown-linux-musl/dist/yi
           TBV4_ATTEMPTS: "3"
           TBV4_RUNS_DIR: runs/tbv4
+          EVAL_PLUGINS: ${{ inputs.plugins || 'all' }}
         run: |
           set -uo pipefail
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then echo "no OPENROUTER_API_KEY secret; nothing runs"; exit 0; fi
           export PATH="$HOME/.local/bin:$PATH"
           sh evals/drivers/tbv4_baseline.sh; echo "driver exit $?"
           python3 evals/axes.py runs/tbv4 --suite tbv4@39d9f44b --model openrouter/z-ai/glm-5.3-flash \
-            --note "tbv4-weekly k=3 t0.125 ${GITHUB_SHA}" --json runs/tbv4/rows.jsonl | tail -1 > runs/tbv4/ledger-row.md || true
+            --note "tbv4-weekly k=3 t0.125 plugins=${EVAL_PLUGINS} ${GITHUB_SHA}" --json runs/tbv4/rows.jsonl | tail -1 > runs/tbv4/ledger-row.md || true
       - name: the row, posted where the ledger reads it
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
