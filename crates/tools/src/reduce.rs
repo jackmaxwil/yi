@@ -455,7 +455,7 @@ fn compress(text: &str, first_line: usize) -> Vec<Row> {
     let mut blank_run = false;
     for (at, raw) in text.lines().enumerate() {
         let number = first_line.saturating_add(at).saturating_add(1);
-        let line = raw.rsplit('\r').next().unwrap_or(raw).trim_end();
+        let line = frame(raw);
         if line.is_empty() {
             if !blank_run {
                 kept.push((String::new(), 0, number));
@@ -496,6 +496,37 @@ fn compress(text: &str, first_line: usize) -> Vec<Row> {
             )
         })
         .collect()
+}
+
+/// A source line as a row shows it: the last frame of `\r` progress, trailing blanks dropped;
+/// strip ANSI from the text first, as the reducer does.
+pub fn frame(raw: &str) -> &str {
+    raw.rsplit('\r').next().unwrap_or(raw).trim_end()
+}
+
+/// A shown row as its source line reads, without the `[×N]` count of a repeated line.
+pub fn source_form(row: &str) -> &str {
+    let count = row
+        .strip_suffix(']')
+        .and_then(|rest| rest.rsplit_once(" [×"));
+    match count {
+        Some((line, digits))
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            line
+        }
+        _ => row,
+    }
+}
+
+/// The `a-b` a reducer row ends with, in the file's numbering: what it omitted, counted or
+/// pointed at; a row numbered against the cut capture names no file lines, so it gives none.
+pub fn row_span(row: &str) -> Option<(usize, usize)> {
+    let inner = row.strip_prefix('[')?.strip_suffix(']')?;
+    let (_, range) = inner.rsplit_once(": ")?;
+    let range = range.strip_prefix("output lines ").unwrap_or(range);
+    let (from, to) = range.split_once('-')?;
+    Some((from.parse().ok()?, to.parse().ok()?))
 }
 
 /// A percentage (`42%`) or a bar (`[===>`, `━━`) marks a line its successor overwrites.
