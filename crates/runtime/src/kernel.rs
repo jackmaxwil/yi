@@ -740,7 +740,7 @@ impl KernelService {
 }
 
 pub fn ipython_tool(service: Arc<KernelService>) -> Arc<dyn yi_tools::Tool> {
-    Arc::new(yi_tools::IpythonTool { bridge: service })
+    crate::kernel_tools::ipython_tool(service, None)
 }
 
 impl KernelBridge for KernelService {

@@ -21,6 +21,7 @@ pub mod kernel;
 mod kernel_bootstrap;
 mod kernel_doctor;
 mod kernel_state;
+pub mod kernel_tools;
 mod kernel_variables;
 pub mod lane;
 pub mod lease;

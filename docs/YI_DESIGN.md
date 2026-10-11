@@ -501,12 +501,26 @@ A persistent IPython process per session that reaches the host only through host
 | `subagent.rs` | `rlm.run` (returns at admission), `rlm.result/wait/status/list_subagents/delete_subagent/merge_worktree/discard_worktree/find_models`, `model.info`, parent-side `agent_message.send/request/list_agents` |
 | `mailbox.rs`, `lease.rs`, `subagent/service.rs` | child-side `agent_message.send/request/list_agents`, `rlm.receive`; `rlm.interrupt`, `rlm.revoke`; `rlm.service` |
 | `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.get`, `plan.op` |
+| `kernel_tools.rs` | `tool.list` (the session's table, `ipython` and a root's `ask_user` named as excluded), `tool.call {name, args}` |
+
+- `tool.call` runs the session's own adapter, found at call time, so rules, wall and broker judge
+  each nested call on its own arguments as they judge a model's; write and exec calls take one
+  lock, since the loop orders them only by awaiting. A failure replies `{ok: false, kind,
+  message, suggestions}`: `unknown_tool`, `excluded_tool`, `invalid_input`, `refused` (a denial),
+  `tool_failure`.
+- Every call that ran is a `NestedCall` row in its cell's `ipython` result, `details.calls`;
+  `args` is kept for a write or exec call and `answer` for `ask_user`, so compaction's file lists
+  and the todo landed count see a program's edits. A call a background task makes after its cell
+  ends lands on the next cell's result.
 
 ### 9.3 Python surface
 - The preamble binds `rlm` (the module), `mcp`, `fetch`, `bash`. `@_public` builds `rlm.__all__`:
   async `host_request, run, service, find_models, list_subagents, delete_subagent, send,
   request, receive, followup, status, list_agents, wait, plan_op, interrupt, revoke, result,
   merge_worktree, discard_worktree, fetch`; sync `put, get, ls, bash`.
+- `yi.tools.<name>(**args)` calls `tool.call` and returns a `Result` (`text`, the model's view;
+  `details`); it raises `UnknownTool`, `InvalidInput`, `Refused` (widened from plans) or
+  `ToolFailure`. `yi.tools.search` pages with a `[…]` row, and names what `excluded()` leaves out.
 - A public coroutine a cell never awaits runs once in `post_run_cell` and prints its value; a
   mail call (`send`, `followup`, `interrupt`, `revoke`) is a task scheduled at the call.
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and

@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value};
 use yi_tools::hashline::input::Patch;
 use yi_types::compaction::CompactionDetails;
+use yi_types::kernel::{NESTED_CALLS, NestedCall};
 use yi_types::message::{AgentMessage, Content};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -25,25 +26,47 @@ pub(crate) fn call_paths(name: &str, arguments: &Map<String, Value>) -> Vec<Stri
     }
 }
 
-pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut FileOps) {
-    let AgentMessage::Assistant { content, .. } = message else {
-        return;
+fn note_call(name: &str, arguments: &Map<String, Value>, file_ops: &mut FileOps) {
+    let set = match name {
+        "read" => &mut file_ops.read,
+        "write" => &mut file_ops.written,
+        "edit" => &mut file_ops.edited,
+        _ => return,
     };
-    for block in content {
-        let Content::ToolCall {
-            name, arguments, ..
-        } = block
-        else {
-            continue;
-        };
-        let set = match name.as_str() {
-            "read" => &mut file_ops.read,
-            "write" => &mut file_ops.written,
-            "edit" => &mut file_ops.edited,
-            _ => continue,
-        };
-        set.extend(call_paths(name, arguments));
+    set.extend(call_paths(name, arguments));
+}
+
+/// A cell's own calls ride its `ipython` result: a program's edit is still an edit.
+pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut FileOps) {
+    match message {
+        AgentMessage::Assistant { content, .. } => {
+            for block in content {
+                if let Content::ToolCall {
+                    name, arguments, ..
+                } = block
+                {
+                    note_call(name, arguments, file_ops);
+                }
+            }
+        }
+        AgentMessage::ToolResult { details, .. } => {
+            for call in nested_calls(details.as_ref()) {
+                if let Some(arguments) = &call.args {
+                    note_call(&call.tool, arguments, file_ops);
+                }
+            }
+        }
+        _ => {}
     }
+}
+
+/// The calls a cell made through the host, as its `ipython` result lists them.
+pub fn nested_calls(details: Option<&Value>) -> Vec<NestedCall> {
+    (details
+        .and_then(|details| details.get(NESTED_CALLS))
+        .cloned())
+    .and_then(|calls| serde_json::from_value(calls).ok())
+    .unwrap_or_default()
 }
 
 /// Design §4.4: file lists are cumulative across compactions — the previous

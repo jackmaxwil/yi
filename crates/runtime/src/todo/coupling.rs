@@ -594,6 +594,21 @@ pub fn landed(message: &AgentMessage, results: &[AgentMessage]) -> (u32, bool) {
         match tool_name.as_str() {
             tool::NAME => todo_touched = true,
             "edit" | "write" => landed = landed.saturating_add(1),
+            "ipython" => {
+                let calls = yi_context::nested_calls(details.as_ref());
+                let wrote = |call: &&yi_types::kernel::NestedCall| {
+                    let command = (call.args.as_ref()).and_then(|args| args.get("command"));
+                    let ran = command.and_then(serde_json::Value::as_str);
+                    call.ok
+                        && match call.tool.as_str() {
+                            "edit" | "write" => true,
+                            "bash" => ran.is_some_and(mutating_command),
+                            _ => false,
+                        }
+                };
+                let count = u32::try_from(calls.iter().filter(wrote).count()).unwrap_or(u32::MAX);
+                landed = landed.saturating_add(count);
+            }
             "bash" => {
                 if commands
                     .iter()
