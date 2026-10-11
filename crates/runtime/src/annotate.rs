@@ -99,7 +99,7 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         },
         call: call.clone(),
         result: (*result).clone(),
-        kept: never_cut(result, newest_reads(&pairs).contains(index)),
+        kept: never_cut(result, newest_reads(&pairs, &messages).contains(index)),
     })
 }
 
@@ -274,7 +274,10 @@ mod tests {
                 tool_call_id: id.to_owned(),
                 tool_name: name.to_owned(),
                 content: vec![Content::Text {
-                    text: format!("{name} output"),
+                    text: match name {
+                        "read" => "[src/lib.rs#AB12]\n1:read output".to_owned(),
+                        _ => format!("{name} output"),
+                    },
                     text_signature: None,
                 }],
                 details: None,
@@ -436,10 +439,15 @@ mod tests {
         if let AgentMessage::ToolResult {
             tool_call_id,
             tool_name,
+            content,
             ..
         } = &mut edit_answer
         {
             (*tool_call_id, *tool_name) = ("c5".to_owned(), "edit".to_owned());
+            *content = vec![Content::Text {
+                text: "[src/lib.rs#9A42]\nupdated; first change at line 1".to_owned(),
+                text_signature: None,
+            }];
         }
         {
             let mut store = yi_session::lock_session(&store);
