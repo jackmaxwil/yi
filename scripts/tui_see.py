@@ -1005,6 +1005,13 @@ def selfcheck() -> None:
         assert body.startswith(MARKER) and "### composer · composer" in body, body
         assert "make the rail calmer" in body and "[… 1 run(s) failed" in body, body
         assert "answered" not in body.split("###")[0], "a snap only one run has is not a change"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        shutil.copytree(runs[0], out / "same" / "base")
+        shutil.copytree(runs[0], out / "same" / "head")
+        diff(out / "same" / "base", out / "same" / "head")
+        body, _ = compose(out, [])
+        assert "No snap changed" in body and "###" not in body, body
     print("tui_see selfcheck: ok")
 
 
