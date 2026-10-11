@@ -487,7 +487,7 @@ fn classify(path: &str) -> Result<Member, String> {
     if relative.is_empty() || relative.ends_with('/') {
         return Ok(Member::Skip);
     }
-    if yi_types::path::escaping_part(relative).is_some() {
+    if !tarball::stays_inside(relative) {
         return Err(format!("archive entry {path} leaves the archive"));
     }
     Ok(Member::Skill(relative.to_owned()))
@@ -579,16 +579,12 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn skill_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
-    if yi_types::path::escaping_part(relative).is_some() {
+    if !tarball::stays_inside(relative) {
         return Err(format!(
             "archive entry skills/{relative} leaves the archive"
         ));
     }
-    let mut path = root.to_path_buf();
-    for part in relative.split('/') {
-        path.push(part);
-    }
-    Ok(path)
+    Ok(root.join(relative))
 }
 
 fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {

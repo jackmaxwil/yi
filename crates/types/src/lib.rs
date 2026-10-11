@@ -51,7 +51,6 @@ pub mod schedule;
 pub mod status_mark;
 pub mod subagent;
 pub mod tape;
-pub mod target;
 pub mod telemetry;
 pub mod todo;
 pub mod trace;

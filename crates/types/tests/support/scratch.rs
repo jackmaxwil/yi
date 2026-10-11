@@ -13,6 +13,9 @@ impl Scratch {
         let dir = std::env::temp_dir().join(format!("{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
+        // Invariant: a lexical `..` in TMPDIR would make every ancestor walk leave the
+        // scratch dir through a name that is not its real parent, so the dir is real.
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
         Ok(Self(dir))
     }
 
