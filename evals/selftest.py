@@ -926,11 +926,11 @@ def check_mutate():
 def check_plugins():
     """#1041: the plugins `yi plugin add` installed ride into the container by EVAL_PLUGINS, the
     fingerprint names each with its version, and an arm with none says `+plugins{}`."""
-    report = (
-        "ripwire 0.6.5  installed at /home/yi/.yi/plugins/ripwire/0.6.5/ripwire\n"
-        "  a code map: an edit's broken callers, a symbol's callers\n"
-        "other 0.6.5  not installed: yi plugin add other\n"
-    )
+    report = json.dumps([
+        {"name": "ripwire", "version": "0.6.5", "state": "installed",
+         "path": "/home/yi/.yi/plugins/ripwire/0.6.5/ripwire"},
+        {"name": "other", "version": "0.6.5", "state": "missing", "path": None},
+    ])
     carried = yi_usage.local_plugins({}, report)
     assert [(n, v) for n, v, _ in carried] == [("ripwire", "0.6.5")], carried
     assert yi_usage.plugins_label(carried) == "+plugins{ripwire@0.6.5}"
@@ -943,6 +943,12 @@ def check_plugins():
         raise AssertionError("a name the binary does not report must be refused")
     except ValueError as error:
         assert "grid" in str(error), error
+    for drifted in ("ripwire 0.6.5  installed at /x", "[]garbage", '[{"name": "ripwire"}]'):
+        try:
+            yi_usage.local_plugins({}, drifted)
+            raise AssertionError(f"a report that is not plugin rows must be refused: {drifted!r}")
+        except ValueError:
+            pass
 
 
 def check_plugin_upload():
@@ -1024,8 +1030,7 @@ def check_plugin_upload():
             fake = Path(home, "yi")
             fake.write_text(
                 "#!/bin/sh\n"
-                "printf 'ripwire 0.6.5  installed at "
-                "%s/.yi/plugins/ripwire/0.6.5/ripwire\\n' \"$HOME\"\n"
+                "printf '[{\"name\":\"ripwire\",\"version\":\"0.6.5\",\"state\":\"installed\",\"path\":\"%s/.yi/plugins/ripwire/0.6.5/ripwire\"}]' \"$HOME\"\n"
             )
             fake.chmod(0o755)
             os.environ["HOME"] = home

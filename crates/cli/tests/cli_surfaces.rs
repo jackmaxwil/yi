@@ -753,6 +753,23 @@ fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
 }
 
 #[test]
+fn a_named_selector_role_is_resolved_at_session_start() -> TestResult {
+    let workspace = Workspace::new("role-selector")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1","selector":"nope/nope-1"}}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "role check"])?;
+    assert_eq!(answered.status.code(), Some(0));
+    let complaint = String::from_utf8_lossy(&answered.stderr);
+    assert!(
+        complaint.contains("unknown selector model nope/nope-1; the reducer's cut stands alone"),
+        "{complaint}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_misspelled_config_key_fails_naming_it() -> TestResult {
     let workspace = Workspace::new("config-strict")?;
     write_config(
@@ -2148,6 +2165,38 @@ fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
     assert!(
         String::from_utf8_lossy(&unknown.stderr).contains("no plugin named grid"),
         "{unknown:?}"
+    );
+    Ok(())
+}
+
+/// `yi plugin list --json` is what the eval adapter reads (`evals/adapters/yi_usage.py`
+/// `installed_plugins`): one row per plugin with `name`, `version`, `state` and `path`.
+#[test]
+fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
+    let workspace = Workspace::new("plugin-json")?;
+    let home = workspace.0.join("home");
+    let pinned = home.join(".yi/plugins/ripwire/0.6.5");
+    std::fs::create_dir_all(&pinned)?;
+    std::fs::write(pinned.join("ripwire"), "#!/bin/sh\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+    )]
+    let listed = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["plugin", "list", "--json"])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .output()?;
+    let rows: Value = serde_json::from_str(&stdout(&listed))?;
+    let ripwire = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "ripwire")
+        .ok_or("no ripwire row")?;
+    assert_eq!(ripwire["state"], "installed", "{rows}");
+    assert_eq!(ripwire["version"], "0.6.5", "{rows}");
+    assert_eq!(
+        ripwire["path"],
+        json!(pinned.join("ripwire").display().to_string()),
+        "{rows}"
     );
     Ok(())
 }

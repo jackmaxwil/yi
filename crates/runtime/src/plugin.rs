@@ -35,6 +35,13 @@ pub fn add(
     home: &Path,
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
+    let whole = plugin.skills.is_empty() || plugin.skill_root(home).is_some();
+    if !whole && plugin.installed(home).is_some() {
+        // Incident: an install from before the row named skills holds the program alone, and the
+        // publish rename cannot land beside it, so the version is published afresh.
+        let dir = plugin.dir(home);
+        std::fs::remove_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    }
     let path = match plugin.installed(home) {
         Some(path) => verified(plugin, &path)?,
         None => {
@@ -83,8 +90,10 @@ pub fn chosen(plugin: &Plugin, home: &Path) -> bool {
 
 pub fn unsupported(plugin: &Plugin) -> String {
     format!(
-        "{}; build it from source and put it on PATH",
-        yi_types::target::refusal(plugin.name)
+        "yi pins no {} build for {}/{}; build it from source and put it on PATH",
+        plugin.name,
+        std::env::consts::OS,
+        std::env::consts::ARCH
     )
 }
 
@@ -307,6 +316,23 @@ mod tests {
             assert!(!home.join(".yi/plugins/tool/2.0").exists(), "{why}");
         }
         assert!(!home.join(".yi/escape").exists() && !home.join("escape").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn an_install_without_its_skills_gains_them_on_the_next_add() -> TestResult {
+        let scratch = crate::scratch::Scratch::new("plugin-skills-later")?;
+        let home = scratch.home()?;
+        let bytes = archive(&[BINARY, SKILL])?;
+        let tool = plugin(&bytes, BINARY.1, true);
+        std::fs::create_dir_all(tool.dir(&home))?;
+        std::fs::write(tool.dir(&home).join("tool"), BINARY.1)?;
+        assert!(tool.skill_root(&home).is_none());
+        add(&tool, &home, |_| Ok(bytes.clone()))?;
+        let skills = tool
+            .skill_root(&home)
+            .ok_or("the skills were not published")?;
+        assert!(skills.join("tool-map/SKILL.md").is_file());
         Ok(())
     }
 }

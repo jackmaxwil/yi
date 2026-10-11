@@ -10,6 +10,7 @@ mod lanes;
 mod memory;
 mod plan;
 mod plugin;
+mod roles;
 mod rpc;
 mod sessions;
 mod setup;
@@ -351,33 +352,6 @@ fn configured_auto_background() -> Option<std::time::Duration> {
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
 }
 
-/// §5: an unset role falls back to the primary; an unknown one warns, naming what happens instead.
-fn role_model(role: &str, spec: Option<String>, instead: &str) -> Option<Model> {
-    let spec = spec?;
-    let resolved = resolve(&spec);
-    if resolved.is_none() {
-        eprintln!("warning: unknown {role} model {spec}; {instead}");
-    }
-    resolved
-}
-
-/// Naming `models.advisor` is what turns the LLM reviewer on (D28/D50).
-fn advisor_model() -> Option<Model> {
-    let spec = configured_roles().advisor;
-    role_model("advisor", spec, "the advisor stays silent")
-}
-
-/// Naming `models.autoReview` is the switch for the §8 permission reviewer (D81).
-fn auto_review_model() -> Option<Model> {
-    let spec = configured_roles().auto_review;
-    role_model("autoReview", spec, "the auto reviewer stays off")
-}
-
-fn summarizer_model(args: &Args) -> Option<Model> {
-    let spec = configured_roles().summarizer;
-    role_model("summarizer", spec, &format!("using {}", args.model))
-}
-
 fn effective_cwd(args: &Args) -> std::path::PathBuf {
     args.cwd.as_ref().map_or_else(
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -556,6 +530,9 @@ fn build_session(
         .as_ref()
         .and_then(|edit| edit.freeform_grammar)
         .unwrap_or(false);
+    let selector = roles::selector_model()
+        .map(|model| yi_runtime::select::Selector::new(std::sync::Arc::clone(&provider), model));
+    session.set_selector(selector);
     let wiring = yi_types::trace::span("build_session.attach_runtime");
     let host = yi_runtime::attach_runtime(
         &mut session,
@@ -583,9 +560,9 @@ fn build_session(
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             family_dir: session_id.map(|id| sessions::board_dir(&default_session_dir(args), id)),
             sessions_dir: Some(default_session_dir(args)),
-            summarizer: summarizer_model(args),
-            advisor: advisor_model(),
-            auto_review: auto_review_model(),
+            summarizer: roles::summarizer_model(args),
+            advisor: roles::advisor_model(),
+            auto_review: roles::auto_review_model(),
             parent_link: None,
             wall: yi_runtime::Wall::default(),
             plan_stale_turns: config()

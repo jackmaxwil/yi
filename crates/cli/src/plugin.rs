@@ -2,7 +2,7 @@ use std::path::Path;
 
 use yi_runtime::plugin::{self, PLUGINS, Plugin, State};
 
-const USAGE: &str = "usage: yi plugin list | add <name>|--all | remove <name> | sync";
+const USAGE: &str = "usage: yi plugin list [--json] | add <name>|--all | remove <name> | sync";
 
 pub(crate) fn early() {
     if std::env::args().nth(1).as_deref() != Some("plugin") {
@@ -23,6 +23,7 @@ pub(crate) fn early() {
 fn run(home: &Path, words: &[&str]) -> i32 {
     let picked = match words {
         ["list"] | [] => return list(home),
+        ["list", "--json"] => return list_json(home),
         ["add", "--all"] => PLUGINS.iter().collect(),
         ["sync"] => PLUGINS
             .iter()
@@ -76,6 +77,30 @@ fn add(plugin: &Plugin, home: &Path) -> Result<String, String> {
         plugin.version,
         path.display()
     ))
+}
+
+/// The machine form the eval adapter reads: one object per plugin, `path` set when installed
+/// or found on PATH.
+fn list_json(home: &Path) -> i32 {
+    let rows: Vec<serde_json::Value> = (PLUGINS.iter())
+        .map(|plugin| {
+            let (state, path) = match plugin::state(plugin, home) {
+                State::Installed(path) => ("installed", Some(path)),
+                State::Stale(_) => ("stale", None),
+                State::OnPath(path) => ("on-path", Some(path)),
+                State::Missing => ("missing", None),
+                State::Unsupported => ("unsupported", None),
+            };
+            serde_json::json!({
+                "name": plugin.name,
+                "version": plugin.version,
+                "state": state,
+                "path": path.map(|path| path.display().to_string()),
+            })
+        })
+        .collect();
+    println!("{}", serde_json::Value::Array(rows));
+    0
 }
 
 fn list(home: &Path) -> i32 {

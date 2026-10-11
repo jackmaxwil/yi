@@ -81,7 +81,7 @@ impl CommandCapture {
 }
 
 /// The label (`every byte`, or the clip) and the path of a `[full output: …]` pointer.
-pub(crate) fn spill_path(pointer: &str) -> Option<(&str, &str)> {
+pub fn spill_path(pointer: &str) -> Option<(&str, &str)> {
     let rest = pointer.strip_prefix("[full output")?.strip_suffix(']')?;
     let (clip, path) = rest.split_once(": ")?;
     Some((clip.strip_prefix(", ").unwrap_or("every byte"), path))

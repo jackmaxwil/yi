@@ -82,7 +82,10 @@ impl Plugin {
     }
 
     pub fn asset(&self) -> Option<&'static Asset> {
-        yi_types::target::for_target(self.name, self.assets.iter().map(|a| (a.os, a.arch, a))).ok()
+        let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+        self.assets
+            .iter()
+            .find(|asset| asset.os == os && asset.arch == arch)
     }
 
     pub fn root(&self, home: &Path) -> PathBuf {

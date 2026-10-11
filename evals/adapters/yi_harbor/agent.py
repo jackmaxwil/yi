@@ -70,23 +70,29 @@ def mode_label():
 
 def carried_plugins():
     """#1041: path mode carries the plugins `yi plugin add` installed on this host, as the
-    binary itself reports them; URL mode carries none, since its network reaches only the
-    provider, and its fingerprint says so."""
+    binary itself reports them. URL mode, and the pier adapter which installs by URL, carry
+    none: there is no host build to ask, and the fingerprint says `+plugins{}`."""
     if os.environ.get(BINARY_URL_ENV):
         return []
     return local_plugins(os.environ, plugin_report())
 
 
-def plugin_report():
-    """`yi plugin list` is the one reader of the layout `yi plugin add` writes, so the
-    adapter carries what yi itself reports, never a second copy of the layout."""
+def local_binary():
+    """The host's yi build that path mode uploads and asks for its plugins."""
     binary = os.environ.get(BINARY_PATH_ENV)
     if not binary:
         raise ValueError(
             f"set {BINARY_URL_ENV} (release URL) or {BINARY_PATH_ENV} "
             "(local x86_64 musl build) before running the Yi adapter"
         )
-    result = subprocess.run([binary, "plugin", "list"], capture_output=True, text=True)
+    return binary
+
+
+def plugin_report():
+    """`yi plugin list` is the one reader of the layout `yi plugin add` writes, so the
+    adapter carries what yi itself reports, never a second copy of the layout."""
+    binary = local_binary()
+    result = subprocess.run([binary, "plugin", "list", "--json"], capture_output=True, text=True)
     if result.returncode != 0:
         raise ValueError(
             f"{binary} plugin list exited {result.returncode}: {result.stderr.strip()}"
@@ -133,13 +139,7 @@ class Yi(BaseInstalledAgent):
             await self.upload_levers(environment)
             await self.warm_kernel(environment)
             return
-        local = os.environ.get(BINARY_PATH_ENV)
-        if not local:
-            raise ValueError(
-                f"set {BINARY_URL_ENV} (release URL) or {BINARY_PATH_ENV} "
-                "(local x86_64 musl build) before running the Yi adapter"
-            )
-        await environment.upload_file(Path(local), REMOTE_BINARY)
+        await environment.upload_file(Path(local_binary()), REMOTE_BINARY)
         await self.exec_as_root(
             environment,
             command=f"set -euo pipefail; chmod +x {REMOTE_BINARY} && {VERSION_CHECK}",
