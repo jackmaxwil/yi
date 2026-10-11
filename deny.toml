@@ -20,7 +20,7 @@ multiple-versions = "deny"
 deny = [
   "reqwest", "hyper", "openssl-sys", "native-tls",
   "git2", "libgit2-sys", "gix", "clap", "anyhow",
-  { crate = "once_cell", wrappers = ["rustls", "ureq", "zeromq", "syntect"] },
+  { crate = "once_cell", wrappers = ["rustls", "ureq", "zeromq", "syntect", "tracing-core"] },
   { crate = "rand", wrappers = ["zeromq"] },
   "lazy_static", "textwrap", "toml",
   # D74 adopts syntect on `regex-fancy`, which rides the `regex-automata` already

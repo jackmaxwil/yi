@@ -214,7 +214,8 @@ fn walled_root_refusal(
                 return Some(crate::gate::walled_host_refusal(&why));
             }
         }
-        after_cd = matches!(word, "cd" | "pushd");
+        // A flag (`--`, `-P`) between `cd` and its target keeps the next word the target.
+        after_cd = matches!(word, "cd" | "pushd") || after_cd && word.starts_with('-');
     }
     None
 }
@@ -687,5 +688,26 @@ impl AgentTool for ToolAdapter {
                 },
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_flag_after_cd_still_scopes_the_relative_paths_that_follow() {
+        let roots = [PathBuf::from("/home/u/.yi/sessions")];
+        let refused = |command: &str| {
+            super::walled_root_refusal(command, &roots, &[], Path::new("/work")).is_some()
+        };
+        assert!(refused("cd '/home/u/.yi/other' && cat ../sessions/x.jsonl"));
+        assert!(refused(
+            "cd -- '/home/u/.yi/other' && cat ../sessions/x.jsonl"
+        ));
+        assert!(refused(
+            "cd -P /home/u/.yi/other && cat ../sessions/x.jsonl"
+        ));
+        assert!(!refused("cd -- /home/u/.yi/other && cat notes.txt"));
     }
 }

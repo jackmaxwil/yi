@@ -5,7 +5,7 @@ use std::error::Error;
 use serde_json::{Value, json};
 use yi_ai::catalog::Catalog;
 use yi_ai::openai::{OpenAiOptions, build_params};
-use yi_ai::refresh::{catalog_from, is_stale, reachable_ids};
+use yi_ai::refresh::{catalog_from, cursor_catalog, is_stale, reachable_ids};
 
 use crate::openrouter::history_context;
 use crate::scratch;
@@ -232,5 +232,35 @@ fn a_cache_file_from_an_older_schema_is_stale() -> TestResult {
     std::fs::write(dir.join("openrouter.json"), fresh.to_string())?;
     let written = std::fs::metadata(dir.join("openrouter.json"))?.modified()?;
     assert!(!is_stale(&dir, "openrouter", 24, written + hour));
+    Ok(())
+}
+
+/// The account list is the catalog. A row with no name is skipped. The fixture is the
+/// AvailableModels JSON shape, one row, not a captured account dump.
+#[test]
+fn a_cursor_account_list_becomes_one_catalog_entry() -> TestResult {
+    let list = json!({
+        "models": [
+            {
+                "name": "composer-2.5-fast",
+                "clientDisplayName": "Composer 2.5 Fast",
+                "supportsThinking": true,
+                "supportsImages": true
+            },
+            {"supportsThinking": false}
+        ]
+    });
+    let written = cursor_catalog(&list)?;
+    let model = &written["cursor-agent"]["composer-2.5-fast"];
+    assert_eq!(model["id"], "composer-2.5-fast");
+    assert_eq!(model["name"], "Composer 2.5 Fast");
+    assert_eq!(model["api"], "cursor-agent");
+    assert_eq!(model["reasoning"], true);
+    assert_eq!(model["input"], json!(["text", "image"]));
+    assert_eq!(
+        written["cursor-agent"].as_object().map(|map| map.len()),
+        Some(1)
+    );
+    assert!(cursor_catalog(&json!({})).is_err());
     Ok(())
 }
