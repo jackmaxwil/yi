@@ -16,16 +16,16 @@ pub struct Pen {
 }
 
 impl Pen {
-    pub fn new(index: usize, name: Option<String>) -> Self {
+    pub fn new(index: usize, name: Option<String>, now: Instant) -> Self {
         Self {
             index,
             name: name.unwrap_or_default(),
             raw: String::new(),
-            since: Instant::now(),
+            since: now,
         }
     }
 
-    pub fn card(&self) -> ToolCell {
+    pub fn card(&self, now: Instant) -> ToolCell {
         let args = Value::Object(yi_types::json_salvage::parse_streaming_json(&self.raw));
         let body = args
             .as_object()
@@ -48,15 +48,16 @@ impl Pen {
                 .skip(tail)
                 .map(|line| show_controls(line))
                 .collect(),
-            elapsed_ms: elapsed_ms(self.since),
+            elapsed_ms: elapsed_ms(self.since, now),
             calls: 1,
             details: Value::Null,
         }
     }
 }
 
-pub fn wait_label(wait: &Wait, since: Instant, provider: &str) -> String {
-    let secs = since.elapsed().as_secs();
+pub fn wait_label(wait: &Wait, since: Instant, now: Instant, provider: &str) -> String {
+    let waited = now.saturating_duration_since(since);
+    let secs = waited.as_secs();
     match wait {
         Wait::Retry {
             attempt,
@@ -65,7 +66,7 @@ pub fn wait_label(wait: &Wait, since: Instant, provider: &str) -> String {
             cause,
         } => {
             let left = delay_ms
-                .saturating_sub(u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX))
+                .saturating_sub(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX))
                 .div_ceil(1000);
             format!("Retrying · {provider} {cause} · {attempt} of {of} in {left} s")
         }
