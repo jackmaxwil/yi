@@ -331,12 +331,12 @@ fn run_frames_with(
     let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
     run_opts(
         name,
-        fixture,
+        Some(fixture),
         script,
         false,
         sidebar,
         Some(dir.to_path_buf()),
-        width,
+        (width, 30),
     )?;
     last_frame(&dir)
 }
@@ -360,26 +360,33 @@ fn run_sidebar(
     autostart: bool,
     sidebar: SidebarMode,
 ) -> TestResult {
-    run_opts(name, fixture, script, autostart, sidebar, None, 100)
+    run_opts(
+        name,
+        Some(fixture),
+        script,
+        autostart,
+        sidebar,
+        None,
+        (100, 30),
+    )
 }
 
+/// `fixture` None runs with no daemon listening at all.
 fn run_opts(
     name: &str,
-    fixture: Vec<Step>,
+    fixture: Option<Vec<Step>>,
     script: &str,
     autostart: bool,
     sidebar: SidebarMode,
     frames: Option<PathBuf>,
-    width: u16,
+    (width, height): (u16, u16),
 ) -> TestResult {
     let (dir, socket) = scratch_socket(name)?;
-    let server = spawn_fixture(socket.clone(), fixture);
+    let server = fixture.map(|fixture| spawn_fixture(socket.clone(), fixture));
     let steps = parse_script(script)?;
     // Incident: the flaky drive tests fail by error or by an assertion after this returns, and
     // took their frames with them; every run's frames stay at target/tmp/drive/<name>.
-    let frames = frames
-        .or_else(|| std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from))
-        .unwrap_or_else(|| dir.join("frames"));
+    let frames = frames.unwrap_or_else(|| dir.join("frames"));
     let code = run_headless(
         &ConsoleOptions {
             socket,
@@ -393,15 +400,15 @@ fn run_opts(
             frames_dir: Some(frames.clone()),
             record: None,
             width,
-            height: 30,
+            height,
         },
     );
     scratch::keep(&frames, "drive", name.as_ref());
     // The console shut the socket down; the fixture thread ends with it.
-    match server.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(format!("fixture: {error}").into()),
-        Err(_) => return Err("fixture thread panicked".into()),
+    match server.map(JoinHandle::join) {
+        None | Some(Ok(Ok(()))) => {}
+        Some(Ok(Err(error))) => return Err(format!("fixture: {error}").into()),
+        Some(Err(_)) => return Err("fixture thread panicked".into()),
     }
     if code != 0 {
         return Err(format!("console exited {code}").into());
@@ -530,13 +537,8 @@ fn a_failed_drive_run_leaves_its_frames() -> TestResult {
          quit\n",
     );
     assert!(failed.is_err(), "the timed-out wait must fail the run");
-    let frames = std::fs::read_dir(&kept)?.filter_map(Result::ok);
-    let last = frames
-        .map(|entry| entry.path())
-        .max()
-        .ok_or("no frame was kept")?;
     assert!(
-        std::fs::read_to_string(last)?.contains("s-alpha"),
+        last_frame(&kept)?.contains("s-alpha"),
         "the kept frame is the one the run drew"
     );
     Ok(())
@@ -622,35 +624,20 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
 fn prompt_rejected_while_daemon_unreachable() -> TestResult {
     // No listener at all: the client keeps retrying and the composer submit
     // is refused with a visible status note, never queued.
-    let (_dir, socket) = scratch_socket("unreachable")?;
-    let steps = parse_script(
+    run_opts(
+        "unreachable",
+        None,
         "wait-frame 5000 disconnected\n\
          key tab\n\
          type lost words\n\
          key enter\n\
          wait-frame 5000 not connected\n\
          quit\n",
-    )?;
-    let code = run_headless(
-        &ConsoleOptions {
-            socket,
-            root: "/tmp/demo-root".to_owned(),
-            autostart: false,
-            auto_side: true,
-            sidebar: SidebarMode::Full,
-        },
-        DriveOptions {
-            script: steps,
-            frames_dir: None,
-            record: None,
-            width: 100,
-            height: 30,
-        },
-    );
-    if code != 0 {
-        return Err(format!("console exited {code}").into());
-    }
-    Ok(())
+        false,
+        SidebarMode::Full,
+        None,
+        (100, 30),
+    )
 }
 
 #[test]
@@ -815,16 +802,13 @@ fn navigator_filters_and_opens() -> TestResult {
 
 #[test]
 fn tiny_terminal_survives_splits() -> TestResult {
-    let (dir, socket) = scratch_socket("tiny")?;
-    let server = spawn_fixture(
-        socket.clone(),
-        vec![
+    run_opts(
+        "tiny",
+        Some(vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
-        ],
-    );
-    let steps = parse_script(
+        ]),
         "wait-frame 5000 !connecting…\n\
          key alt-v\n\
          key alt-s\n\
@@ -835,33 +819,11 @@ fn tiny_terminal_survives_splits() -> TestResult {
          key alt-z\n\
          wait 50\n\
          quit\n",
-    )?;
-    let code = run_headless(
-        &ConsoleOptions {
-            socket,
-            root: "/tmp/demo-root".to_owned(),
-            autostart: false,
-            auto_side: true,
-            sidebar: SidebarMode::Full,
-        },
-        DriveOptions {
-            script: steps,
-            frames_dir: Some(dir.join("frames")),
-            record: None,
-            width: 20,
-            height: 8,
-        },
-    );
-    scratch::keep(&dir.join("frames"), "drive", "tiny".as_ref());
-    match server.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(format!("fixture: {error}").into()),
-        Err(_) => return Err("fixture thread panicked".into()),
-    }
-    if code != 0 {
-        return Err(format!("console exited {code}").into());
-    }
-    Ok(())
+        false,
+        SidebarMode::Full,
+        None,
+        (20, 8),
+    )
 }
 
 #[test]
@@ -1506,7 +1468,7 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
     // Read before the exit code: the drive guard fails the run on the frame this asserts.
     let run = run_opts(
         "card-tabs",
-        vec![
+        Some(vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
@@ -1514,7 +1476,7 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
             Step::Expect("_yi/seen", seen_ok),
             Step::Push(makefile_push),
             Step::Expect("_yi/tracked", tracked_no),
-        ],
+        ]),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
@@ -1524,7 +1486,7 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
         false,
         SidebarMode::Full,
         Some(dir.to_path_buf()),
-        100,
+        (100, 30),
     );
     let frame = last_frame(&dir)?;
     let control = frame.chars().find(|c| c.is_control() && *c != '\n');
