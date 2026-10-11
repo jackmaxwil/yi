@@ -505,6 +505,58 @@ fn a_timed_out_container_call_leaves_nothing_running_in_its_container() -> TestR
     Ok(())
 }
 
+/// Docker Desktop's Resource Saver as this machine showed it: while its VM sleeps, an image
+/// inspect is answered from a cache that has no images, and a pull never reaches the engine;
+/// any call the engine itself must answer wakes the VM.
+const SLEEPING_DOCKER: &str = r#"#!/bin/sh
+dir=$(dirname "$0")
+echo "$*" >> "$dir/calls"
+case "$1 $2" in
+"image inspect")
+    [ -f "$dir/awake" ] && { echo sha256:present; exit 0; }
+    echo "Error response from daemon: No such image: $5" >&2; exit 1 ;;
+"pull "*)
+    [ -f "$dir/awake" ] || { echo "the pull never reached the sleeping engine" >&2; exit 1; } ;;
+esac
+touch "$dir/awake"
+"#;
+
+/// Dies with a sleeping Docker Desktop's cached 404 taken for a missing image: the spawn then
+/// pulled one it had, and the pull hung past the test's timeout in three runs out of three.
+#[test]
+fn a_sleeping_engines_cached_miss_does_not_send_a_present_image_to_a_pull() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = Scratch::new("yi-node-sleeping-docker")?;
+    let docker = bin.join("docker");
+    std::fs::write(&docker, SLEEPING_DOCKER)?;
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755))?;
+    let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))?;
+    // This process only: nextest runs each test in its own.
+    unsafe { std::env::set_var("PATH", path) };
+    let lane = Scratch::new("yi-node-sleeping-lane")?;
+    let notices = Mutex::new(Vec::new());
+    let notice = |line: &str| {
+        notices
+            .lock()
+            .map_or((), |mut all| all.push(line.to_owned()))
+    };
+    let up = node::Container::up("alpine:3.20", &lane, &notice);
+    let calls = std::fs::read_to_string(bin.join("calls"))?;
+    let container = up.map_err(|error| format!("{error}; docker saw:\n{calls}"))?;
+    assert!(
+        !calls.contains("pull"),
+        "a present image was pulled:\n{calls}"
+    );
+    assert!(
+        notices.lock().map_err(|_| "poisoned")?.is_empty(),
+        "the spawn announced a pull of an image it had"
+    );
+    drop(container);
+    Ok(())
+}
+
 struct Demo {
     host: Arc<yi_runtime::SubagentHost>,
     trees: Arc<Mutex<Vec<std::path::PathBuf>>>,

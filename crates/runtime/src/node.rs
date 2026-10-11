@@ -254,6 +254,12 @@ pub fn placeable(home: &Path, image: &str) -> Result<(), String> {
 
 impl Container {
     pub fn up(image: &str, lane: &Path, notice: &dyn Fn(&str)) -> Result<Self, String> {
+        let lane_text = lane.to_string_lossy().into_owned();
+        let hash = crate::ext::content_hash(&lane_text);
+        let name = format!("yi-{}", hash.chars().take(12).collect::<String>());
+        // Incident: Docker Desktop's sleeping VM answers an inspect from a cache that 404s a present
+        // image, so this remove of a dead host's container runs first: the engine must answer it.
+        let _none_left_is_fine = run("docker", &["rm", "-f", &name], PROBE);
         if run(
             "docker",
             &["image", "inspect", "--format", "{{.Id}}", image],
@@ -266,11 +272,6 @@ impl Container {
             ));
             run("docker", &["pull", image], PULL)?;
         }
-        let lane_text = lane.to_string_lossy().into_owned();
-        let hash = crate::ext::content_hash(&lane_text);
-        let name = format!("yi-{}", hash.chars().take(12).collect::<String>());
-        // A host that died with a child live left its container here; the lane's name reclaims it.
-        let _none_left_is_fine = run("docker", &["rm", "-f", &name], PROBE);
         let mut args: Vec<String> = ["run", "-d", "--rm", "--name", &name, "--label"]
             .map(str::to_owned)
             .to_vec();
