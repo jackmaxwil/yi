@@ -455,10 +455,15 @@ def required():
     return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
 
 
-def run_of(pr):
-    """Whether any workflow run exists for this head, one still queued for a runner included."""
-    tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
-    return any(r.get("head_sha", "").startswith(pr["head"]["sha"]) for r in tasks.get("workflow_runs", []))
+def run_status(pr, workflow):
+    """The newest run of one workflow file for this head, queued ones included, or None.
+    Incident: the task list holds every workflow's jobs, so the review's own job read as the
+    tui run and a PR the tui workflow skips waited out the whole snapshot wait."""
+    runs = fgj_api("GET", f"repos/{repo()}/actions/runs?limit=50") or {}
+    for run in runs.get("workflow_runs") or []:
+        if run.get("workflow_id") == workflow and run.get("commit_sha", "").startswith(pr["head"]["sha"]):
+            return run.get("status")
+    return None
 
 
 def jobs_of(pr):
