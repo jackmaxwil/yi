@@ -439,6 +439,15 @@ impl ToolCell {
                 DiffBudget::NORMAL
             };
             body.extend(diffview::render(patch, inner, theme, budget));
+            for row in &self.preview {
+                let style = if row.starts_with("syntax: error") {
+                    Style::default().fg(theme.error)
+                } else {
+                    theme.muted_style()
+                };
+                let row = Line::styled(row.clone(), style);
+                body.extend(capped(&row, inner, "  ", theme));
+            }
         } else if expanded {
             for line in self.body(theme) {
                 body.extend(capped(&line, inner, "     ", theme));

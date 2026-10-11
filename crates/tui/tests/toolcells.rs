@@ -526,3 +526,61 @@ fn a_window_title_carries_no_control_character() {
     let osc = yi_tui::term::window_title_osc("Fix\u{7}\u{1b}]52;c;ZWNobyBwd25lZA==\u{9c} now");
     assert_eq!(osc, "\u{1b}]2;Fix]52;c;ZWNobyBwd25lZA== now\u{7}");
 }
+
+/// The edit cell's rows on a real screen, top to bottom, from the diff's last row to the card's end.
+fn rows_under_diff(app: &mut App, last_diff: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut terminal = yi_tui::terminal::Terminal::new(common::VT100Backend::new(80, 60), 4)?;
+    yi_tui::render::draw(app, &mut terminal, None);
+    let backend = terminal.backend();
+    let rows: Vec<String> = (0..60)
+        .map(|row| backend.row_text(row).trim_end().to_owned())
+        .collect();
+    let at = (rows.iter())
+        .position(|row| row.ends_with(last_diff))
+        .ok_or_else(|| format!("no diff row {last_diff:?}: {rows:#?}"))?;
+    Ok(rows
+        .into_iter()
+        .skip(at.saturating_add(1))
+        .take_while(|row| row.starts_with('│'))
+        .collect())
+}
+
+/// Incident (#1042): the model quoted ripwire's caller check while the edit cell showed only the
+/// diff. Producer: `yi ask --faux` editing a committed a.py whose caller b.py, ripwire 0.6.5.
+#[test]
+fn an_edit_cell_shows_the_check_rows_the_model_read_under_its_diff() -> TestResult {
+    let mut app = app();
+    let session = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sessions/01a129b6.jsonl"
+    );
+    common::replay_stream(&mut app, std::path::Path::new(session))?;
+    let under = rows_under_diff(&mut app, "+  2 │     return f\"hi {name}\"")?;
+    assert_eq!(
+        under,
+        [
+            "│   syntax: ok",
+            "│   [ripwire check]",
+            "│   greet at a.py:1: params,broken-callers changed, params 2 -> 1; 1 callers,",
+            "│     1 incompatible",
+            "│     <file-scope> b.py:1 — incompatible at line 3",
+        ]
+    );
+    Ok(())
+}
+
+/// A result with no verdict rows draws the diff and nothing else: the numbered window the model
+/// anchors on is not a check row.
+#[test]
+fn an_edit_cell_without_check_rows_ends_at_its_diff() -> TestResult {
+    let mut app = app();
+    started(&mut app, "e0", "edit", "notes.md");
+    let details = edit_cell("notes.md").details;
+    let text = "[notes.md#5B1C]\nupdated; first change at line 1\n1:two";
+    ended_with(&mut app, "e0", "edit", text, false, details);
+    assert_eq!(
+        rows_under_diff(&mut app, "+    │ two")?,
+        Vec::<String>::new()
+    );
+    Ok(())
+}
