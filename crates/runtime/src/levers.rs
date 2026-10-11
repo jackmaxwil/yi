@@ -108,6 +108,7 @@ levers! {
     tools_reduce_floor: usize = "tools.reduce_floor", yi_tools::reduce::REDUCE_FLOOR, 2048..=32768, false;
     review_timeout_s: u64 = "review.timeout_s", auto_review::REVIEW_TIMEOUT.as_secs(), 10..=120, true;
     graph_next_lines: usize = "graph.next_lines", crate::todo::text::NEXT_LINES, 1..=5, true;
+    reclaim_keep_turns: u64 = "reclaim.keep_turns", crate::reclaim::KEEP_TURNS, 1..=1000, true;
 }
 
 impl Default for Levers {

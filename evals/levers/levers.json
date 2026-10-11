@@ -43,6 +43,7 @@
   {"name": "loop.reasoning_cap", "home": "crates/loop/src/reasoning.rs", "symbol": "REASONING_CHAR_CAP", "kind": "loop", "default": 48000, "min": 8000, "max": 200000, "tunable": true},
   {"name": "tools.reduce_floor", "home": "crates/tools/src/reduce.rs", "symbol": "REDUCE_FLOOR", "kind": "reducer", "default": 8192, "min": 2048, "max": 32768, "tunable": false, "why": "the bash description names the number, so moving it moves the tool bytes"},
   {"name": "review.timeout_s", "home": "crates/runtime/src/auto_review.rs", "symbol": "REVIEW_TIMEOUT", "kind": "envelope", "default": 30, "min": 10, "max": 120, "tunable": true},
-  {"name": "graph.next_lines", "home": "crates/runtime/src/todo/text.rs", "symbol": "NEXT_LINES", "kind": "render", "default": 3, "min": 1, "max": 5, "tunable": true}
+  {"name": "graph.next_lines", "home": "crates/runtime/src/todo/text.rs", "symbol": "NEXT_LINES", "kind": "render", "default": 3, "min": 1, "max": 5, "tunable": true},
+  {"name": "reclaim.keep_turns", "home": "crates/runtime/src/reclaim.rs", "symbol": "KEEP_TURNS", "kind": "gate", "default": 5, "min": 1, "max": 1000, "tunable": true}
  ]
 }

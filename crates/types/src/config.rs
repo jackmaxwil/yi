@@ -21,6 +21,10 @@ pub struct ModelRoles {
     /// is constructed. It is never a chat model, so it never falls back to the primary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classifier: Option<String>,
+    /// Naming a model turns on line selection: after the reducer cuts a bash output, it picks
+    /// the line ranges of the full output that explain it. Unset, nothing is asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
 }
 
 /// `~/.yi/config.json` is the whole user surface. Config is not durable state, so §20's
