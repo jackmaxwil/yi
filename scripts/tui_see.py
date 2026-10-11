@@ -50,6 +50,7 @@ def encoded(cwd: Path) -> str:
 
 
 NAME = re.compile(r"^[a-z0-9_-]+$")
+FIXED_ID = "01a00000-0000-7000-8000-000000000000"
 
 
 def run(scene: Path, label: str, out: Path, binary: Path) -> Path:
@@ -68,6 +69,13 @@ def run(scene: Path, label: str, out: Path, binary: Path) -> Path:
              "--record", str(run_dir / "run.cast")]
     if "--seed" in extra and surface == "console":
         sys.exit("--seed is solo only: the console attaches to the daemon's sessions, not a resumed one")
+    if surface == "solo" and "--seed" not in extra:
+        # A session's id picks its badge colour, so a fresh random one made two runs of a scene
+        # differ; an empty session under a fixed id is the deterministic start.
+        blank = run_dir / "blank.jsonl"
+        blank.write_text(json.dumps({"kind": "header", "version": 4, "id": FIXED_ID,
+                                     "createdAt": 1790000000000, "cwd": str(Path.cwd())}) + "\n")
+        extra += ["--seed", str(blank)]
     if "--seed" in extra:
         at = extra.index("--seed")
         seed = Path(extra[at + 1])

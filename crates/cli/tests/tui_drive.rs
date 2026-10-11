@@ -542,6 +542,69 @@ fn a_snap_keeps_the_frame_of_its_own_step() -> TestResult {
     Ok(())
 }
 
+/// A frozen scene moves only when it ticks: a held turn shows no reply, each tick reveals more of
+/// it, and real time passing between two snaps changes nothing on screen.
+#[test]
+fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
+    let dir = Scratch::new("yi-tui-frozen")?;
+    let home = dir.home()?;
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(
+        &cassette,
+        cassette_lines(&[], &"The rail is calmer now. ".repeat(12)),
+    )?;
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 5000 faux-1\nhold text_delta 2\ntype calm the rail\nkey enter\nwait 300\n\
+         tick 2000\nsnap held\nrelease\nsnap-strip reveal 3 120\nwait 300\nsnap later\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+    let run = |script: &std::path::Path| -> std::io::Result<std::process::Output> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+        )]
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(["tui", "--headless", "--model", "faux/faux-1", "--faux"])
+            .arg(&cassette)
+            .arg("--session-dir")
+            .arg(dir.join("sessions"))
+            .arg("--keys")
+            .arg(script)
+            .arg("--frames")
+            .arg(&frames)
+            .env("HOME", &home)
+            .output()
+    };
+    let output = run(&keys)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let snap = |name: &str| std::fs::read_to_string(frames.join(format!("snap-{name}.txt")));
+    // Faux streams 16 characters a delta, so a stream held before its second shows only the first.
+    let held = snap("held")?;
+    assert!(
+        held.contains("The rail is calm") && !held.contains("calmer"),
+        "{held}"
+    );
+    let shown = |text: &str| text.matches("calmer").count();
+    let (first, last) = (snap("reveal-00")?, snap("reveal-02")?);
+    assert!(shown(&last) > shown(&first), "{first}\n{last}");
+    assert_eq!(snap("later")?, last, "real time moved a frozen frame");
+
+    std::fs::write(&keys, "hold toolcall_start\nrelease\nquit\n")?;
+    let unreached = run(&keys)?;
+    let stderr = String::from_utf8_lossy(&unreached.stderr);
+    assert!(
+        !unreached.status.success() && stderr.contains("never reached its hold"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
 /// One path for `--record` and `--snap` left the still truncating the
 /// recording still open on it, and the run exited 0 having lost it.
 #[test]

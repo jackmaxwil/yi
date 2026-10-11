@@ -542,7 +542,7 @@ pub fn tick(
     {
         app.commit_cell(&Cell::Footer { text });
     }
-    app.step_reveal(std::time::Instant::now());
+    app.step_reveal(app.clock.now());
     app.settle(port);
     if let Some(stub) = app.pending_summary.take() {
         let _ = cmd_tx.send(crate::app::Command::SummarizeBranch(stub));
