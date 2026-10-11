@@ -147,16 +147,12 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
             shutil.rmtree(sock.parent, ignore_errors=True)
     rendered = render(run_dir)
     if video and host == "mem":
-        # Incident: agg can exit 0 and write an empty file, so a motion proof checks its bytes.
         gif = run_dir / "run.gif"
-        if rendered and subprocess.run(["agg", "--theme", "monokai", "--font-size", "16",
-                                        "--idle-time-limit", "1", str(run_dir / "run.cast"),
-                                        str(gif)], capture_output=True).returncode == 0 \
-                and gif.stat().st_size:
+        if shutil.which("agg") and agg(run_dir / "run.cast", gif, "--idle-time-limit", "1"):
             print(f"video: {gif} (agg: no kitty images; --host term keeps them)")
         else:
-            print("[… --video on the headless host renders with agg and ffmpeg, which are not on "
-                  "PATH or wrote nothing; no run.gif kept]")
+            print("[… --video on the headless host renders with agg, which is not on PATH or "
+                  "wrote nothing; no run.gif kept]")
     if host == "term" and not code:
         code = term(scene, run_dir, surface, extra + (["--video"] if video else []))
     if host == "here" and not code:
@@ -536,13 +532,21 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     (out / "done").write_text(status)
 
 
+def agg(cast: Path, gif: Path, *flags: str) -> bool:
+    """One pinned renderer for stills and motion, so every proof looks alike across machines.
+    Incident: agg can exit 0 and write an empty file, so a render checks its bytes."""
+    done = subprocess.run(["agg", "--theme", "monokai", "--font-size", "16", *flags, str(cast),
+                           str(gif)], capture_output=True)
+    return done.returncode == 0 and gif.exists() and gif.stat().st_size > 0
+
+
 def render(run_dir: Path) -> bool:
     if not (shutil.which("agg") and shutil.which("ffmpeg")):
         return False
     for cast in (run_dir / "frames").glob("snap-*.cast"):
         gif = cast.with_suffix(".gif")
-        subprocess.run(["agg", "--theme", "monokai", "--font-size", "16", str(cast), str(gif)],
-                       check=True, capture_output=True)
+        if not agg(cast, gif):
+            raise subprocess.CalledProcessError(1, ["agg", str(cast)])
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(gif), "-frames:v", "1",
                         str(cast.with_suffix(".png"))], check=True)
         gif.unlink()
