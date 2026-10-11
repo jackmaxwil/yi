@@ -1,5 +1,5 @@
-//! The one archive-entry path check, shared by every surface that unpacks a path it did
-//! not write: a part that could leave the archive or the staging directory refuses it.
+//! An archive-entry path check for unpacks of paths the code did not write: a part that could
+//! leave the archive or the staging directory refuses it. Siblings reject non-normal components.
 
 /// The first part of a relative path that could escape the directory it lands in:
 /// an empty part, `.` or `..`. `None` for a path that stays inside.
@@ -20,6 +20,6 @@ mod tests {
         assert_eq!(escaping_part("a/../b"), Some(".."));
         assert_eq!(escaping_part("a//b"), Some(""));
         assert_eq!(escaping_part("skills/ripwire-orient/map.md"), None);
-        assert_eq!(escaping_part("./skills/x.md"), None);
+        assert_eq!(escaping_part("./skills/x.md"), Some("."));
     }
 }
