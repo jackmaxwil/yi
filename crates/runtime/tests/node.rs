@@ -521,6 +521,8 @@ esac
 touch "$dir/awake"
 "#;
 
+const SLEEPING_BIN: &str = "NODE_SLEEPING_DOCKER_BIN";
+
 /// Dies with a sleeping Docker Desktop's cached 404 taken for a missing image: the spawn then
 /// pulled one it had, and the pull hung past the test's timeout in three runs out of three.
 #[test]
@@ -533,8 +535,32 @@ fn a_sleeping_engines_cached_miss_does_not_send_a_present_image_to_a_pull() -> T
     let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))?;
-    // This process only: nextest runs each test in its own.
-    unsafe { std::env::set_var("PATH", path) };
+    // Invariant: the fake reaches the spawn's process alone; under `cargo test` the sibling
+    // tests are threads of this one, and a PATH set here would hand them the fake too.
+    let child = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", "node::sleeping_docker_child", "--nocapture"])
+        .env(SLEEPING_BIN, &*bin)
+        .env("PATH", path)
+        .output()?;
+    let calls = std::fs::read_to_string(bin.join("calls")).unwrap_or_default();
+    assert!(
+        child.status.success(),
+        "{}\ndocker saw:\n{calls}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(
+        !calls.contains("pull"),
+        "a present image was pulled:\n{calls}"
+    );
+    Ok(())
+}
+
+/// The spawn the sleeping-engine test runs, in a process whose PATH starts at the fake.
+#[test]
+fn sleeping_docker_child() -> TestResult {
+    if std::env::var_os(SLEEPING_BIN).is_none() {
+        return Ok(());
+    }
     let lane = Scratch::new("yi-node-sleeping-lane")?;
     let notices = Mutex::new(Vec::new());
     let notice = |line: &str| {
@@ -542,13 +568,7 @@ fn a_sleeping_engines_cached_miss_does_not_send_a_present_image_to_a_pull() -> T
             .lock()
             .map_or((), |mut all| all.push(line.to_owned()))
     };
-    let up = node::Container::up("alpine:3.20", &lane, &notice);
-    let calls = std::fs::read_to_string(bin.join("calls"))?;
-    let container = up.map_err(|error| format!("{error}; docker saw:\n{calls}"))?;
-    assert!(
-        !calls.contains("pull"),
-        "a present image was pulled:\n{calls}"
-    );
+    let container = node::Container::up("alpine:3.20", &lane, &notice)?;
     assert!(
         notices.lock().map_err(|_| "poisoned")?.is_empty(),
         "the spawn announced a pull of an image it had"
