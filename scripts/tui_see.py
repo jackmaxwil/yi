@@ -868,6 +868,8 @@ def watch(scene: Path, host: str) -> None:
 MAX_PICTURES = 24
 MAX_DIFF_LINES = 40
 MARKER = "TUI snapshots for this pull request (scripts/tui_see.py)"
+# The review bot reads the comment only when this names the head it reads (scripts/pr_review.py).
+HEAD_MARK = "<!-- tui-see head={} -->"
 
 
 def ci(base_bin: Path, head_bin: Path) -> None:
@@ -973,8 +975,7 @@ def post(out: Path) -> None:
         return
     api, repo, pr = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY", "FORGEJO_PR"))
     if os.environ.get("FORGEJO_HEAD"):
-        # The review bot reads this comment only when it was made for the head the bot reads.
-        body = body.replace(f"{MARKER}\n", f"{MARKER}\n<!-- tui-see head={os.environ['FORGEJO_HEAD']} -->\n", 1)
+        body = body.replace(f"{MARKER}\n", f"{MARKER}\n{HEAD_MARK.format(os.environ['FORGEJO_HEAD'])}\n", 1)
     bare = re.sub(r"^@@crop-\d+@@\n", "", body, flags=re.M)
     comment = forge.upsert(forge.send, api, repo, pr, bare)
     assets = f"{api}/repos/{repo}/issues/comments/{comment['id']}/assets"
@@ -1110,7 +1111,7 @@ def selfcheck() -> None:
                           FORGEJO_PR="3", FORGEJO_TOKEN="t", FORGEJO_HEAD="ab12")
         try:
             post(out)
-            assert calls[1][2]["body"].startswith(f"{MARKER}\n<!-- tui-see head=ab12 -->\n"), calls[1]
+            assert calls[1][2]["body"].startswith(f"{MARKER}\n{HEAD_MARK.format('ab12')}\n"), calls[1]
             assert all("@@crop" not in str(payload) for _, _, payload in calls), calls
             assert calls[-1][2]["body"].count("](https://x/") == MAX_PICTURES, calls[-1]
             assert ("DELETE", "https://f/api/repos/o/r/issues/comments/9/assets/5", None) in calls
