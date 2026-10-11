@@ -399,6 +399,7 @@ fn run_opts(
             script: steps,
             frames_dir: Some(frames.clone()),
             record: None,
+            deadline_secs: 60,
             width,
             height,
         },

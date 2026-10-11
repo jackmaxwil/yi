@@ -215,7 +215,7 @@ pub fn key_event(key: &SingleKey) -> KeyEvent {
 
 /// A day. `--deadline` is a convenience for paced proof runs, not a way to
 /// park a headless process, and the seconds are attacker-free but unbounded.
-const DEADLINE_CAP_SECS: u64 = 86_400;
+pub const DEADLINE_CAP_SECS: u64 = 86_400;
 
 pub fn typed_events(text: &str) -> Vec<CtEvent> {
     text.chars()

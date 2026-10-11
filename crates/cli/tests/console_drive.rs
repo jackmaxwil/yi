@@ -223,3 +223,29 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
     }
     Ok(())
 }
+
+/// A paced console scene outlives the 60 s an assertion run needs; `--deadline` is its wall.
+#[test]
+fn a_console_drive_honours_its_deadline() -> TestResult {
+    let dir = Scratch::new("yi-console-deadline")?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait 3000\nquit\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "true E2E: the shipped binary's own drive clock"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["console", "--headless", "--deadline", "1", "--keys"])
+        .arg(&keys)
+        .arg("--socket")
+        .arg(dir.join("no-daemon.sock"))
+        .env("HOME", dir.home()?)
+        .stdin(Stdio::null())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && stderr.contains("drive script timed out (1 s wall)"),
+        "a 3 s script must stop at the 1 s deadline: {stderr}"
+    );
+    Ok(())
+}
