@@ -78,8 +78,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    // Auto is the default: reads and known-safe commands run, destructive ones ask.
-    // `--yolo` removes the gate, `--confirm` asks for everything.
     let mut mode = match config()
         .permissions
         .as_ref()
@@ -190,7 +188,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         model_pinned: model.is_some(),
         model: model.or_else(configured_model).unwrap_or_default(),
         system,
-        thinking: thinking.or_else(configured_thinking),
+        thinking: thinking.or(config().thinking),
         json,
         mode,
         session_dir,
@@ -338,11 +336,6 @@ fn home() -> &'static std::path::Path {
     HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
 }
 
-/// The `thinking` field in the user config, overridden by `--thinking`.
-fn configured_thinking() -> Option<Effort> {
-    config().thinking
-}
-
 fn configured_roles() -> yi_types::config::ModelRoles {
     config().models.clone().unwrap_or_default()
 }
@@ -400,6 +393,7 @@ fn build_session(
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
     drop(levers);
+    drop(yi_runtime::retention::sweep_home_hourly(home()));
     yi_runtime::node::configure(config().node.clone().unwrap_or_default());
     if args.model.is_empty() {
         return Err(Refused {
@@ -666,6 +660,16 @@ fn run_yi_mcp(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout)
         .trim_end()
         .to_owned())
+}
+
+/// A preview unless `--fix`, as `yi doctor` is: deleting is the act the user asks for.
+fn run_gc(fix: bool) {
+    if !fix {
+        println!("preview: `yi gc --fix` removes and trims what these lines count");
+    }
+    for report in yi_runtime::retention::sweep(home(), !fix) {
+        println!("{report}");
+    }
 }
 
 fn run_why(args: &Args) -> i32 {
@@ -975,11 +979,9 @@ fn report_undo(changes: &[yi_runtime::Change], scoped: bool, json: bool) {
 fn yi_ai_key(provider: &str) -> Option<yi_runtime::auth::Secret> {
     yi_runtime::auth::api_key(provider)
 }
-
 fn yi_loop_default() -> yi_runtime::ExecutionMode {
     yi_runtime::ExecutionMode::Sequential
 }
-
 fn mcp_enabled() -> bool {
     config().mcp.as_ref().and_then(|mcp| mcp.enabled) == Some(true)
 }
@@ -1106,6 +1108,7 @@ fn dispatch(args: Args) {
         "fetch" => std::process::exit(fetch::run(&args)),
         "catalog" => std::process::exit(catalog::run(&args)),
         "doctor" => std::process::exit(doctor::run(&args)),
+        "gc" => run_gc(args.fix),
         "debug" => std::process::exit(debug::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),

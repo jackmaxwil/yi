@@ -27,6 +27,11 @@ CASES = [
 ]
 
 
+def cost_of(answer: dict) -> float:
+    """`yi debug select` prints one cost a part; an older binary printed one `cost`."""
+    return sum(answer.get("costs") or []) or answer.get("cost") or 0
+
+
 def lines_of(ranges) -> set[int]:
     return {line for start, end in ranges for line in range(start, end + 1)}
 
@@ -58,7 +63,7 @@ def run(yi: str, model: str, reps: int) -> dict:
             picked = [tuple(pair) for pair in answer.get("ranges", [])]
             rows.append({
                 "case": fixture, "rep": rep, "recall": recall(gold, picked), "ms": answer.get("ms", 0),
-                "cost": answer.get("cost") or 0, "lines": len(lines_of(picked)), "error": answer.get("error"),
+                "cost": cost_of(answer), "lines": len(lines_of(picked)), "error": answer.get("error"),
             })
     score = {
         "model": model, "runs": len(rows),
@@ -76,6 +81,7 @@ def selftest() -> None:
     assert recall([(1, 1), (5, 5)], []) == 0.0
     assert p95([100, 200, 300, 4000]) == 4000
     assert lines_of([(3, 4), (4, 5)]) == {3, 4, 5}
+    assert cost_of({"costs": [0.25, 0.5, 0]}) == 0.75 and cost_of({"cost": 0.1}) == 0.1
     for fixture, _, gold in CASES:
         total = len((FIXTURES / fixture).read_text().splitlines())
         assert max(end for _, end in gold) <= total, f"{fixture}: a gold line past its {total} lines"
