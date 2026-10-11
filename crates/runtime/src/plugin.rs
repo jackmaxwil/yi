@@ -44,7 +44,7 @@ pub fn add(
     };
     let installed = pinned(plugin, home, fetch);
     match (aside, &installed) {
-        (Some(aside), Ok(_)) => aside.commit(),
+        (Some(aside), Ok(_)) => aside.commit()?,
         (Some(aside), Err(why)) => aside.restore().map_err(|error| format!("{why}; {error}"))?,
         (None, _) => {}
     }
@@ -392,16 +392,15 @@ mod tests {
         let dir = tool.dir(&home);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("tool"), b"previous")?;
-        let _ = yi_kernel::tarball::set_aside(&dir)?;
+        let aside = yi_kernel::tarball::set_aside(&dir)?;
         assert!(
             matches!(state(&tool, &home), State::Missing),
             "a dead process's aside must not read as a published version"
         );
         assert!(!chosen(&tool, &home));
-        let name = dir.file_name().unwrap_or_default().to_string_lossy();
-        let aside = dir.with_file_name(format!(".{}-aside-{}", name, std::process::id()));
+        let held = aside.held().ok_or("nothing was set aside")?;
         assert!(
-            aside.join("tool").is_file(),
+            held.join("tool").is_file(),
             "the aside kept the working install"
         );
         Ok(())

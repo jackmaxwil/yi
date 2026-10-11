@@ -134,13 +134,21 @@ fn octal(field: &[u8]) -> Option<usize> {
 pub struct Aside {
     target: PathBuf,
     old: Option<PathBuf>,
+    clear: bool,
 }
 
 impl Aside {
-    pub fn commit(self) {
-        if let Some(old) = self.old {
-            let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
-        }
+    pub fn held(&self) -> Option<&Path> {
+        self.old.as_deref()
+    }
+
+    pub fn commit(self) -> Result<(), String> {
+        let Some(old) = self.old else {
+            return Ok(());
+        };
+        std::fs::remove_dir_all(&old)
+            .or_else(|_| std::fs::remove_file(&old))
+            .map_err(|error| format!("{}: {error}", old.display()))
     }
 
     /// A failed restore names the path the predecessor still sits at, so it can be moved back.
@@ -148,7 +156,7 @@ impl Aside {
         let Some(old) = self.old else {
             return Ok(());
         };
-        if std::fs::symlink_metadata(&self.target).is_ok_and(|meta| meta.is_dir()) {
+        if self.clear && std::fs::symlink_metadata(&self.target).is_ok_and(|meta| meta.is_dir()) {
             let _ = std::fs::remove_dir_all(&self.target);
         }
         std::fs::rename(&old, &self.target).map_err(|error| {
@@ -158,13 +166,30 @@ impl Aside {
     }
 }
 
-/// Moves `target` aside for a replacement published at its path by another route.
+/// Moves `target` aside under a dot name; its restore never deletes what then sits at `target`.
 pub fn set_aside(target: &Path) -> Result<Aside, String> {
-    let old = target.with_extension(format!("old-{}", std::process::id()));
-    std::fs::rename(target, &old).map_err(|error| format!("{}: {error}", target.display()))?;
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let old = target.with_file_name(format!(".{name}.old-{}", std::process::id()));
+    rename_aside(target, old, false)
+}
+
+fn rename_aside(target: &Path, old: PathBuf, clear: bool) -> Result<Aside, String> {
+    let describe = |error: std::io::Error| format!("{}: {error}", target.display());
+    if std::fs::symlink_metadata(target)
+        .map_err(describe)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(format!(
+            "{} is a symlink; not replacing it",
+            target.display()
+        ));
+    }
+    std::fs::rename(target, &old).map_err(describe)?;
     Ok(Aside {
         target: target.to_path_buf(),
         old: Some(old),
+        clear,
     })
 }
 
@@ -182,15 +207,14 @@ fn swap_in_with(
     let staged_file = std::fs::symlink_metadata(staging).is_ok_and(|meta| meta.is_file());
     let describe = |error: std::io::Error| format!("{}: {error}", target.display());
     let old = target.with_extension(format!("old-{}", std::process::id()));
-    let old = match std::fs::symlink_metadata(target) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(format!(
-                "{} is a symlink; not replacing it",
-                target.display()
-            ));
-        }
-        Ok(meta) if meta.is_dir() || !staged_file => {
-            std::fs::rename(target, &old).map(|()| Some(old))
+    let kept = |old| Aside {
+        target: target.to_path_buf(),
+        old,
+        clear: true,
+    };
+    let aside = match std::fs::symlink_metadata(target) {
+        Ok(meta) if meta.is_dir() || !staged_file || meta.file_type().is_symlink() => {
+            rename_aside(target, old, true)?
         }
         Ok(_) => match link(target, &old) {
             Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
@@ -198,14 +222,10 @@ fn swap_in_with(
             }
             linked => linked,
         }
-        .map(|()| Some(old)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-    .map_err(describe)?;
-    let aside = Aside {
-        target: target.to_path_buf(),
-        old,
+        .map(|()| kept(Some(old)))
+        .map_err(describe)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => kept(None),
+        Err(error) => return Err(describe(error)),
     };
     match std::fs::rename(staging, target) {
         Ok(()) => Ok(aside),
