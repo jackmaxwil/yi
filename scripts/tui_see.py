@@ -124,6 +124,8 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
             log.close()
             shutil.rmtree(sock.parent, ignore_errors=True)
     rendered = render(run_dir)
+    if video and host != "term":
+        print("[… --video records Ghostty's window, so it needs --host term; no run.webp kept]")
     if host == "term" and not code:
         code = term(scene, run_dir, surface, extra + (["--video"] if video else []))
     snaps = sorted(p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.txt"))
@@ -143,14 +145,31 @@ LINUX_YI = f"target/{ARCH}-unknown-linux-musl/debug/yi"
 SCREEN = "1920x1200"
 
 
+def binary_inputs() -> list[Path]:
+    """What the yi binary is built from: crate sources and anything they embed, the manifests,
+    the lockfile and the kernel's Python package; tests and benches never reach it."""
+    crates = ROOT / "crates"
+    return [ROOT / "Cargo.toml", ROOT / "Cargo.lock", *crates.glob("*/Cargo.toml"),
+            *crates.glob("*/build.rs"), *crates.glob("*/src/**/*"), *(ROOT / "python").rglob("*")]
+
+
+def newest_mtime(paths) -> float:
+    stamps = []
+    for path in paths:
+        try:
+            stamps.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(stamps, default=0.0)
+
+
 def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
     """Plays the scene in Ghostty in the yi-term container; its grabs replace the agg pictures."""
     linux = ROOT / LINUX_YI
     if not linux.exists():
         sys.exit(f"--host term needs {LINUX_YI}: run `just yi-term`")
     # Against the sources, not the host binary: cargo leaves an up-to-date artifact's mtime alone.
-    newest = max(f.stat().st_mtime for f in [ROOT / "Cargo.lock", *(ROOT / "crates").rglob("*.rs")])
-    if linux.stat().st_mtime < newest:
+    if linux.stat().st_mtime < newest_mtime(binary_inputs()):
         sys.exit(f"{LINUX_YI} is older than the sources, so its pictures would show older code: "
                  "run `just yi-term`")
     if not scene.resolve().is_relative_to(ROOT):
@@ -166,7 +185,7 @@ def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
     except subprocess.TimeoutExpired:
         subprocess.run(["docker", "kill", name], capture_output=True)
         code = 124
-    for note in sorted((run_dir / "term").glob("snap-*.note")):
+    for note in sorted((run_dir / "term").glob("*.note")):
         print(f"[… {note.stem}: {note.read_text()}; the grab may catch a frame mid-draw]")
     if (run_dir / "term" / "run.webp").exists():
         shutil.copy(run_dir / "term" / "run.webp", run_dir / "run.webp")
@@ -273,8 +292,12 @@ def term_inner(scene: str, surface: str, extra: list[str]) -> None:
         env=env, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
     wait_for(lambda: (out / "done").exists() or ghostty.poll() is not None, 600)
     if recorder is not None:
-        recorder.communicate(b"q", timeout=30)
-        encode_video(out)
+        try:
+            recorder.communicate(b"q", timeout=30)
+            encode_video(out)
+        except (subprocess.SubprocessError, OSError) as error:
+            recorder.kill()
+            (out / "video.note").write_text(f"the run was not kept as video: {error}")
     for proc in (ghostty, serve, display):
         if proc is not None:
             proc.kill()
@@ -340,6 +363,9 @@ class ApcFilter:
         self.held, data = (data[start:], data[:start]) if start >= 0 else (b"", data)
         if data.endswith(b"\x1b"):
             self.held, data = b"\x1b" + self.held, data[:-1]
+        if len(self.held) > 1 << 16:
+            # An image is far smaller; an APC that never ends must not swallow the screen.
+            data, self.held = data + self.held, b""
         return data
 
 
@@ -664,7 +690,10 @@ def labels(scene: Path) -> list[Path]:
     return sorted(runs, key=lambda p: (order.get(p.name, 2), p.name))
 
 
-def gallery(root: Path, page: Path) -> Path:
+PAGE_CAP = 15_000_000
+
+
+def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
     """Every scene under `root`, each snap with its labels side by side and the cell diff a head
     run keeps against its base: one self-contained page (pictures inlined) to publish."""
     import base64
@@ -683,13 +712,15 @@ def gallery(root: Path, page: Path) -> Path:
         host = "Ghostty" if (run_dir / "term" / f"{stem}.png").exists() else "agg"
         return f"{html.escape(run_dir.name)} · {head['width']}×{head['height']} · {host}"
 
-    sections = []
+    sections, skipped = [], []
     for scene in sorted(p for p in root.iterdir() if p.is_dir()):
         runs = labels(scene)
         stems = sorted({p.stem for run_dir in runs for p in (run_dir / "frames").glob("snap-*.txt")})
         if not stems:
+            skipped.append(scene.name)
             continue
-        diffs = {p.parent.name: p.read_text() for p in scene.glob("*/diff-vs-*/summary.md")}
+        diffs = {f"{p.parent.parent.name} {p.parent.name}": p.read_text()
+                 for p in scene.glob("*/diff-vs-*/summary.md")}
         cards = []
         for stem in stems:
             name = stem.removeprefix("snap-")
@@ -700,8 +731,8 @@ def gallery(root: Path, page: Path) -> Path:
                             for r in runs for n in (r / "term").glob(f"{stem}.note")
                             if (r / "term").is_dir())
             changed = "".join(
-                f"<pre class=diff>{html.escape(m.group(1).strip())}</pre>"
-                for text in diffs.values()
+                f"<pre class=diff>{html.escape(label)}\n{html.escape(m.group(1).strip())}</pre>"
+                for label, text in diffs.items()
                 for m in [re.search(rf"^## {re.escape(name)}\n(.*?)(?=^## |\Z)", text, re.M | re.S)]
                 if m)
             cards.append(f"<article><h3>{html.escape(name)}</h3>{notes}{changed}"
@@ -710,12 +741,22 @@ def gallery(root: Path, page: Path) -> Path:
             f"<figure><figcaption>{html.escape(r.name)} · whole run · Ghostty</figcaption><img "
             f'alt="{html.escape(r.name)} run" src="data:image/webp;base64,'
             f'{base64.b64encode((r / "run.webp").read_bytes()).decode()}"></figure>'
-            for r in runs if (r / "run.webp").exists())
+            for r in runs if videos_kept and (r / "run.webp").exists())
         if videos:
             cards.insert(0, f"<article><h3>run</h3><div class=row>{videos}</div></article>")
         sections.append(f"<section><h2>{html.escape(scene.name)}</h2>{''.join(cards)}</section>")
-    page.write_text(GALLERY.replace("{sections}", "".join(sections) or "<p>No snaps yet.</p>"))
-    print(f"gallery: {page}")
+    body = GALLERY.replace("{sections}", "".join(sections) or "<p>No snaps yet.</p>")
+    if len(body) > PAGE_CAP and videos_kept:
+        print(f"[… {len(body) / 1e6:.1f} MB is past the {PAGE_CAP / 1e6:.0f} MB page cap; "
+              "dropping the run videos, each still at <scene>/<label>/run.webp]")
+        return gallery(root, page, videos_kept=False)
+    page.write_text(body)
+    if skipped:
+        print(f"[… {len(skipped)} scene(s) have no snaps and are not on the page: {', '.join(skipped)}]")
+    if len(body) > PAGE_CAP:
+        print(f"[… the page is {len(body) / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB an artifact "
+              "takes; gallery a narrower root to publish it]")
+    print(f"gallery: {page} ({len(body) / 1e6:.1f} MB)")
     return page
 
 
@@ -755,26 +796,27 @@ def watch(scene: Path, host: str) -> None:
     or to the scene, each time diffing against base and rewriting the gallery."""
     out = Path("target/see")
     sources = [ROOT / "crates" / name / "src" for name in ("tui", "console", "orb")]
-    build = ["just", "yi-term"] if host == "term" else ["cargo", "build", "-q", "-p", "yi-cli"]
+    build = [["cargo", "build", "-q", "-p", "yi-cli"]] + ([["just", "yi-term"]] if host == "term" else [])
     binary = (ROOT / "target/debug/yi").resolve()
 
     def stamp() -> float:
-        files = [f for src in sources for f in src.rglob("*.rs")] + [scene]
-        return max(f.stat().st_mtime for f in files)
+        return newest_mtime([scene, *(f for src in sources for f in src.rglob("*.rs"))])
 
     def attempt(label: str) -> Path | None:
-        if subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"]).returncode or (
-                host == "term" and subprocess.run(build).returncode):
-            print("[… build failed; waiting for the next save]")
-            return None
         try:
+            if any(subprocess.run(step).returncode for step in build):
+                print("[… build failed; waiting for the next save]")
+                return None
             return run(scene, label, out, binary, host)
         except SystemExit as stop:
             print(f"[… the {label} run failed ({stop.code}); waiting for the next save]")
-            return None
+        except (subprocess.SubprocessError, OSError) as error:
+            print(f"[… the {label} run could not start ({error}); waiting for the next save]")
+        return None
 
+    # A base kept from an older scene or another host would diff against the wrong thing.
     base = out / scene.stem / "base"
-    if not (base / "frames").is_dir() and attempt("base") is None:
+    if attempt("base") is None:
         sys.exit("watch: the base run failed; fix it before watching")
     seen = stamp()
     print(f"watching {scene} (ctrl-c stops)")
