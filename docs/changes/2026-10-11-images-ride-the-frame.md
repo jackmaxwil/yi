@@ -1,4 +1,5 @@
 ---
+issue: Refs #1217
 raise: crate cli +5, crate console +100, crate orb +1, crate tui +42, comments +7, tests +62
 decision: every kitty placement and the delete of the image it replaced ride the synchronized update of the frame that moves them, and a placement opens no update of its own; a console chat reveals streamed text at the configured `tui.pace` and its loop wakes for the reveal | the orb, the console's avatars and its notebook image were placed after the frame's update closed, so a presented frame showed them on their old rows over the text that had moved (19 frames in one measured console reply, 40 to 57 in solo), and `place_nth`'s own `?2026` could not nest inside a frame because the mode is a flag in Ghostty and kitty; console chats were built with pace 0 and the loop's wake omitted the reveal, so a reply painted each network burst whole: 15.5 visible updates a second, a median 65 ms apart, against 80.8 and 11.8 ms after on the same stream | restore `place_nth`'s bracket, call `orb::tick`, `logos::tick` and the console's `place_*` after the update closes, and build console chats with `pace: 0`
 ---
