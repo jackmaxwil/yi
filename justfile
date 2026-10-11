@@ -20,6 +20,9 @@ clippy:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Incident: one suite run left 23 checkpoint repos in the real ~/.yi, 11,633 of them by
+    # 2026-10-07. The suite's HOME is the worktree's target/yi-home, deleted with the worktree.
+    [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test
     if command -v cargo-nextest >/dev/null; then
       cargo nextest run --workspace
       cargo test --workspace --doc
