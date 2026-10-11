@@ -189,6 +189,12 @@ console-pty out="target/proof":
     echo "avatars placed: $avatars   orbs placed: $orbs"
     [ "$avatars" -ge 1 ] && [ "$orbs" -ge 1 ]
 
+# Snap a scene headless and diff two runs into crops an agent reads (scripts/tui_see.py):
+# `just tui-see run <scene> --label base`, then `just tui-see diff <run a> <run b>`.
+tui-see *args:
+    cargo build -q -p yi-cli
+    python3 scripts/tui_see.py {{args}}
+
 # A drive script rendered for people: the motion and still GIFs a UI change
 # attaches to its PR, so a reviewer can judge how it looks. `agg` is dev-only
 # (brew install agg) and never enters the binary.
