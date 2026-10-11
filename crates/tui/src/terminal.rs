@@ -8,6 +8,7 @@ use std::io;
 use ratatui::backend::{Backend, ClearType};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
+use ratatui::text::Line;
 use ratatui::widgets::Widget;
 
 pub struct Frame<'a> {
@@ -161,6 +162,44 @@ impl<B: Backend> Terminal<B> {
         self.viewport_area = area;
     }
 
+    /// The first of `lines` the viewport's top rows already show, cell for cell, become scrollback
+    /// where they stand: committing text that is on screen writes nothing and moves nothing.
+    pub fn adopt(&mut self, lines: &[Line<'_>]) -> u16 {
+        let area = self.viewport_area;
+        let width = usize::from(area.width);
+        let mut row = Buffer::empty(Rect::new(0, 0, area.width, 1));
+        let mut adopted = 0u16;
+        for line in lines
+            .iter()
+            .take(usize::from(area.height.saturating_sub(1)))
+        {
+            row.reset();
+            row.set_line(0, 0, line, area.width);
+            let at = usize::from(adopted).saturating_mul(width);
+            let drawn = self.buffers[1 - self.current]
+                .content
+                .get(at..at.saturating_add(width));
+            if drawn != Some(row.content.as_slice()) {
+                break;
+            }
+            adopted = adopted.saturating_add(1);
+        }
+        if adopted > 0 {
+            let kept = Rect {
+                y: area.y.saturating_add(adopted),
+                height: area.height.saturating_sub(adopted),
+                ..area
+            };
+            let cut = usize::from(adopted).saturating_mul(width);
+            let previous = self.previous_buffer_mut();
+            previous.content.drain(..cut.min(previous.content.len()));
+            previous.resize(kept);
+            self.current_buffer_mut().resize(kept);
+            self.viewport_area = kept;
+        }
+        adopted
+    }
+
     /// Resetting the diff buffer alone leaves stale content showing through the blanks, since
     /// a default space equals its old cell. With no `AlwaysUpdate` in 0.29, poison it.
     pub fn invalidate_viewport(&mut self) {
@@ -229,29 +268,6 @@ impl<B: Backend> Terminal<B> {
         draw_fn(&mut buffer);
         let mut cells = buffer.content.as_slice();
 
-        if self.viewport_area.height >= self.screen_size.height {
-            // The viewport owns the whole screen: draw into its top row and
-            // scroll that row into scrollback, once per line.
-            let mut first = true;
-            while !cells.is_empty() {
-                cells = if first {
-                    self.draw_lines(0, 1, cells)?
-                } else {
-                    self.draw_lines_over_cleared(0, 1, cells)?
-                };
-                first = false;
-                self.backend.scroll_region_up(0..1, 1)?;
-            }
-            let width = usize::from(self.viewport_area.width);
-            let top_line = self.buffers[1 - self.current]
-                .content
-                .get(..width)
-                .unwrap_or_default()
-                .to_vec();
-            self.draw_lines_over_cleared(0, 1, &top_line)?;
-            return self.backend.set_cursor_position(self.last_cursor);
-        }
-
         let viewport_top = self.viewport_area.top();
         let viewport_bottom = self.viewport_area.bottom();
         let screen_bottom = self.screen_size.height;
@@ -268,6 +284,22 @@ impl<B: Backend> Terminal<B> {
         }
 
         let viewport_top = self.viewport_area.top();
+        if height > 0 && viewport_top < 2 {
+            // Incident: a one-row region is invalid, a terminal scrolls the whole screen instead,
+            // and the viewport left shifted wrote composer borders into scrollback; repaint it.
+            let screen = 0..self.screen_size.height;
+            while !cells.is_empty() {
+                if viewport_top == 0 {
+                    cells = self.draw_lines(0, 1, cells)?;
+                    self.backend.scroll_region_up(screen.clone(), 1)?;
+                } else {
+                    self.backend.scroll_region_up(screen.clone(), 1)?;
+                    cells = self.draw_lines(viewport_top - 1, 1, cells)?;
+                }
+            }
+            self.invalidate_viewport();
+            return self.backend.set_cursor_position(self.last_cursor);
+        }
         while height > 0 && viewport_top > 0 {
             let to_draw = height.min(viewport_top);
             self.backend.scroll_region_up(0..viewport_top, to_draw)?;
