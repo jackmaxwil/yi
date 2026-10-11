@@ -383,7 +383,10 @@ fn viewport_height_follows_the_live_region_and_stays_bottom_anchored() -> TestRe
 
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let idle_height = terminal.viewport_area().height;
-    assert_eq!(idle_height, 4, "idle live region is composer box + status");
+    assert_eq!(
+        idle_height, 6,
+        "idle live region is a three-row composer box + status"
+    );
     assert!(
         terminal.backend().row_text(23).contains("faux-1"),
         "the status row must sit on the last screen row when idle, not {} rows above it: {:?}",

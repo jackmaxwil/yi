@@ -3451,6 +3451,30 @@ fn only_a_sent_prompt_returns_a_scrolled_pane_to_the_bottom() -> TestResult {
     )
 }
 
+/// Dies with the sidebar gone and `X` typed at the end: Ghostty sends Option+Left as alt+b,
+/// the console's sidebar chord, so word-left over a draft hid the sidebar instead.
+#[test]
+fn option_left_over_a_draft_moves_by_word_in_ghostty() -> TestResult {
+    run(
+        "alt-b-draft",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         type hello world\n\
+         key alt-b\n\
+         type X\n\
+         wait-frame 2000 hello Xworld\n\
+         quit\n",
+    )
+}
+
 fn sibling_roots_ledger(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
