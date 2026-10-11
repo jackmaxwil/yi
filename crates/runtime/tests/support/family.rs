@@ -54,6 +54,17 @@ pub struct Family {
     pub events: tokio::sync::broadcast::Sender<yi_types::event::AgentEvent>,
 }
 
+/// How many usage rows the store booked under a cause `wanted` accepts.
+pub fn booked(
+    store: &yi_session::SharedSession,
+    wanted: impl Fn(&str) -> bool,
+) -> Result<usize, yi_session::SessionError> {
+    let records =
+        yi_session::lock_session(store).find_records(&yi_session::RecordQuery::default())?;
+    let usage = records.into_iter().filter(|record| matches!(record, yi_types::record::LaneRecord::Usage { cause, .. } if wanted(cause)));
+    Ok(usage.count())
+}
+
 pub fn memory_store(id: &str) -> yi_session::SharedSession {
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
         yi_session::SessionMetadata {
