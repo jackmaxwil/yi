@@ -31,7 +31,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
-use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
+use yi_tui::drive::{Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events};
 use yi_tui::term::ControlPictures;
 
 use crate::app::{App, MouseKind};
@@ -102,6 +102,10 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
         let parsed = yi_tui::drive::parse_script(line).map_err(error)?;
         steps.extend(parsed.into_iter().map(ConsoleStep::Tui));
     }
+    yi_tui::drive::refuse_repeated_snaps(steps.iter().filter_map(|step| match step {
+        ConsoleStep::Tui(step) => Some(step),
+        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) => None,
+    }))?;
     Ok(steps)
 }
 
@@ -503,6 +507,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut exit_code = 0;
     let mut type_ms = 0;
+    let mut pending_snap = None;
 
     while !app.state.quit {
         if Instant::now() > deadline {
@@ -532,6 +537,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 app.handle_event(&outbound, CtEvent::Key(event));
             }
             (ConsoleStep::Tui(Step::TypeMs(ms)), _) => type_ms = ms,
+            (ConsoleStep::Tui(Step::Snap(name)), _) => pending_snap = Some(name),
             (ConsoleStep::Tui(Step::Type(text)), _) => {
                 for event in typed_events(&text) {
                     app.handle_event(&outbound, event);
@@ -584,18 +590,14 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             exit_code = 1;
             break;
         }
-        if let Some(dir) = &drive.frames_dir {
-            let frame = terminal.backend().screen();
-            if frame != last_frame {
-                let path = dir.join(format!("{frame_index:04}.txt"));
-                if std::fs::write(&path, &frame).is_ok() {
-                    frame_index = frame_index.saturating_add(1);
-                    last_frame = frame;
-                }
-            }
-        }
-        if let Some((x, y, symbol)) = terminal.backend().first_control_cell() {
-            eprintln!("error: a control character reached a cell: {symbol:?} at ({x}, {y})");
+        if let Err(error) = keep_frame(
+            drive.frames_dir.as_deref(),
+            terminal.backend(),
+            &mut last_frame,
+            &mut frame_index,
+            pending_snap.take(),
+        ) {
+            eprintln!("error: {error}");
             exit_code = 1;
             break;
         }
