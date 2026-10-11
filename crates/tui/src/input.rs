@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind};
+use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind, KeyModifiers};
 
 use crate::app::{App, Bottom, Command};
 use crate::approval::AskChoice;
@@ -82,7 +82,11 @@ pub fn handle_terminal_event(
                     } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
                         let files = walk_files(std::path::Path::new(&app.options.cwd), 100);
                         app.bottom = Some(Bottom::File(ListPopup::new('@', files)));
-                    } else if key.code == KeyCodeValue::Backspace && !key.ctrl && !key.alt {
+                    } else if key.code == KeyCodeValue::Backspace
+                        && !key.ctrl
+                        && !key.alt
+                        && !key_event.modifiers.contains(KeyModifiers::SUPER)
+                    {
                         app.composer.backspace();
                     } else {
                         app.composer.input(key_event);

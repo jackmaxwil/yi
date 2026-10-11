@@ -1,0 +1,12 @@
+#! solo --size 100x34
+# A paragraph typed with no newline wraps and grows the composer box; Up walks a wrapped row.
+wait 200
+snap empty
+type Make the text input from a single line into a large box area that increased in sized to dynamic breakpoints to optimally contain large text areas in TUI in yi console and yi solo, same path. Propose geometric optimal text area sizes for normal Apple Silicon mac terminals with ghostty as well as standard non kitty terminals. 易経は変化の書
+snap paragraph
+key up
+type ^
+snap up
+key ctrl-u
+snap cleared
+quit
