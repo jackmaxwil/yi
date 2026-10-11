@@ -1,0 +1,6 @@
+---
+issue: Closes #1178
+raise: crate runtime +46, comments +1
+decision: reclaim keeps the newest `read` of a path out of every cut only when the session has edited that path, through an `edit` patch section naming it or a `write` to it; the newest read of a file only read is cut like any aged result, and the annotate tool's discard refusal reads the same rule (amends the reclaim decision of #1149) | every file read once is its own newest read, so no `read` result was ever cut: dogfooding `yi ask` on glm-5.3-flash, eight 12 KB docs read once each stayed in the prompt for all 17 requests while the same task through `cat` was cut from about 36k to 17k tokens; an edit needs the tags of its file's newest read, a file never edited does not, and the cut's placeholder already names the read that restores it | protect every newest read again in `reclaim::newest_reads`
+---
+Reclaim now cuts old reads of files the session never edited (Closes #1178). It kept the newest read of every file out of every cut so an edit would have its line tags, but a file read once is always its own newest read, so a session that read its docs and edited one file kept every read to the end. Only the newest read of a file the session edited is kept now.
