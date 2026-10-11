@@ -286,49 +286,24 @@ fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
 /// rest of the listing, or a negative offset read as none.
 #[test]
 fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Error>> {
-    let (workspace, resolver, _store) = paged_workspace()?;
+    let (_workspace, resolver, _store) = paged_workspace()?;
     let window = read(&resolver, "history://main", 1, 1)?;
-    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
-        .into_iter()
-        .filter(|tool| tool.name() == "read")
-        .collect();
-    yi_runtime::fetch::route_urls(&mut tools, &Arc::new(resolver));
-    let tool = tools.first().ok_or("no read tool")?;
-    let mut input = serde_json::Map::new();
-    input.insert("path".to_owned(), "history://main".into());
-    input.insert("offset".to_owned(), 2.into());
-    input.insert("limit".to_owned(), 1.into());
-    let text_of = |input| {
-        let output = tool.execute(input, &yi_tools::ToolContext::new(workspace.to_path_buf()));
-        let text: String = output
-            .result
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        (text, output.is_error)
-    };
+    let resolver = Arc::new(resolver);
     let next = window.1.ok_or("the listing has more than one entry")?;
     assert_eq!(
-        text_of(input.clone()).0,
+        read_tool_text(&resolver, "history://main", Some(2), Some(1))?.0,
         format!(
             "{}\n[more from offset {}; offset and limit count entries here]",
             window.0,
             next + 1
         )
     );
-    input.insert("limit".to_owned(), 0.into());
-    let (refused, is_error) = text_of(input.clone());
+    let (refused, is_error) = read_tool_text(&resolver, "history://main", Some(2), Some(0))?;
     assert!(
         is_error && refused.contains("read \"limit\" must be at least 1"),
         "{refused}"
     );
-    input.insert("limit".to_owned(), 1.into());
-    input.insert("offset".to_owned(), (-5).into());
-    let (refused, is_error) = text_of(input);
+    let (refused, is_error) = read_tool_text(&resolver, "history://main", Some(-5), Some(1))?;
     assert!(
         is_error && refused.contains("read \"offset\" must be a non-negative integer, got -5"),
         "{refused}"
@@ -467,19 +442,30 @@ fn a_child_reads_its_parent_transcript_by_alias() -> TestResult {
     Ok(())
 }
 
-fn read_tool_text(resolver: Resolver, path: &str) -> Result<String, Box<dyn Error>> {
+fn read_tool_text(
+    resolver: &Arc<Resolver>,
+    path: &str,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<(String, bool), Box<dyn Error>> {
     let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
         .into_iter()
         .filter(|tool| tool.name() == "read")
         .collect();
-    yi_runtime::fetch::route_urls(&mut tools, &Arc::new(resolver));
+    yi_runtime::fetch::route_urls(&mut tools, resolver);
     let mut input = serde_json::Map::new();
     input.insert("path".to_owned(), path.into());
+    if let Some(offset) = offset {
+        input.insert("offset".to_owned(), offset.into());
+    }
+    if let Some(limit) = limit {
+        input.insert("limit".to_owned(), limit.into());
+    }
     let output = tools
         .first()
         .ok_or("no read tool")?
         .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
-    Ok(output
+    let text = output
         .result
         .content
         .iter()
@@ -487,7 +473,8 @@ fn read_tool_text(resolver: Resolver, path: &str) -> Result<String, Box<dyn Erro
             yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
-        .collect())
+        .collect();
+    Ok((text, output.is_error))
 }
 
 /// An unpaged listing is served whole at the 51,200-byte cap and cut one byte past it, with a
@@ -517,18 +504,18 @@ fn an_unpaged_history_listing_past_its_cap_says_where_it_was_cut() -> TestResult
     let (_, base) = listing(3, "")?;
     let (at_cap, bytes) = listing(3, &"x".repeat(CAP - base))?;
     assert_eq!(bytes, CAP);
-    let whole = read_tool_text(at_cap, "history://main")?;
+    let whole = read_tool_text(&Arc::new(at_cap), "history://main", None, None)?.0;
     assert!(!whole.contains("[… "), "{}", whole.len());
     let (past, bytes) = listing(3, &"x".repeat(CAP - base + 1))?;
     assert_eq!(bytes, CAP + 1);
-    let text = read_tool_text(past, "history://main")?;
+    let text = read_tool_text(&Arc::new(past), "history://main", None, None)?.0;
     assert!(
         text.ends_with("[… 3 of 4 entries shown · unpaged history cap 51200 bytes · read history://main with offset=4 and limit to page on]"),
         "{}",
         text.lines().last().unwrap_or_default()
     );
     let (wide, _) = listing(0, &"\u{e9}".repeat(CAP))?;
-    let text = read_tool_text(wide, "history://main")?;
+    let text = read_tool_text(&Arc::new(wide), "history://main", None, None)?.0;
     assert!(
         text.lines()
             .last()
@@ -564,8 +551,8 @@ fn a_reader_child_reads_its_live_parent_by_alias() -> TestResult {
     let host = crate::support::family(root.to_path_buf(), root.to_path_buf(), parent, None).host;
     let fetched = Resolver::new(root.to_path_buf(), Wall::default())
         .with_session("reader", child)
-        .with_transcripts(Arc::new(yi_runtime::fetch::ParentTranscript(
-            Arc::downgrade(&host),
+        .with_transcripts(Arc::new(yi_runtime::fetch::SessionTranscripts::new(
+            host, None, &root,
         )))
         .fetch(&"history://parent/since/0".parse()?)
         .map_err(|error| format!("{error:?}"))?;
@@ -594,7 +581,7 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
     yi_session::lock_session(&store).append_message("main", user)?;
     let resolver =
         || Resolver::new(std::env::temp_dir(), Wall::default()).with_session("main", store.clone());
-    let plain = read_tool_text(resolver(), "history://main/since/0")?;
+    let plain = read_tool_text(&Arc::new(resolver()), "history://main/since/0", None, None)?.0;
     assert!(
         plain.contains(" ⏎ the cutover window is Sunday 02:00-04:00 UTC"),
         "{plain}"
@@ -605,12 +592,73 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
         yi_types::message::StopReason::Stop,
     );
     yi_session::lock_session(&store).append_message("main", said)?;
-    let compact = read_tool_text(resolver(), "history://main/since/0")?;
+    let compact = read_tool_text(&Arc::new(resolver()), "history://main/since/0", None, None)?.0;
     assert_eq!(
         compact.lines().last(),
         Some(
-            "[… a line ending in … is cut at 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · read history://main with offset=<#seq> and limit=1 for that entry whole]"
+            "[… a line ending in … is cut at 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · a cut line names its entry whole as history://<agent>/<entry-id>]"
         )
     );
+    let cut_line = compact
+        .lines()
+        .find(|line| line.contains(" · whole: history://main/"))
+        .ok_or("no cut line carries its whole entry")?;
+    let whole = cut_line
+        .rsplit(" · whole: ")
+        .next()
+        .ok_or("the cut line carries no pointer")?;
+    let entry = read_tool_text(&Arc::new(resolver()), whole, None, None)?.0;
+    assert!(entry.contains("état des lieux "), "{entry}");
+    assert!(!entry.contains("history://parent/since/0"), "{entry}");
+    Ok(())
+}
+
+/// A compact line that legitimately ends in … is not announced as cut: the cut is carried by
+/// the view that made it, never sniffed out of the rendered text.
+#[test]
+fn a_legitimate_ellipsis_in_a_compact_line_is_not_a_cut_row() -> TestResult {
+    let store = memory_store();
+    let user = yi_types::message::AgentMessage::User {
+        content: yi_types::message::UserContent::Text("it ends with an ellipsis …".to_owned()),
+        timestamp: 0,
+        attribution: yi_types::message::Attribution::User,
+    };
+    yi_session::lock_session(&store).append_message("main", user)?;
+    let text = read_tool_text(
+        &Arc::new(Resolver::new(std::env::temp_dir(), Wall::default()).with_session("main", store)),
+        "history://main/since/0",
+        None,
+        None,
+    )?
+    .0;
+    assert!(text.contains("it ends with an ellipsis …"), "{text}");
+    assert!(!text.contains("[… a line ending in"), "{text}");
+    Ok(())
+}
+
+/// The cap proof covers the `since/` window too, through the same read-tool route as the bare
+/// listing: both arms the `matches!` names are pinned by a red run, not green by omission.
+#[test]
+fn a_since_window_past_the_cap_says_where_it_was_cut() -> TestResult {
+    let store = memory_store();
+    for _ in 0..40 {
+        let user = yi_types::message::AgentMessage::User {
+            content: yi_types::message::UserContent::Text("x".repeat(2100)),
+            timestamp: 0,
+            attribution: yi_types::message::Attribution::User,
+        };
+        yi_session::lock_session(&store).append_message("main", user)?;
+    }
+    let text = read_tool_text(
+        &Arc::new(Resolver::new(std::env::temp_dir(), Wall::default()).with_session("main", store)),
+        "history://main/since/0",
+        None,
+        None,
+    )?
+    .0;
+    let row = text.lines().last().unwrap_or_default();
+    assert!(row.starts_with("[… "), "{row}");
+    assert!(row.contains("entries shown"), "{row}");
+    assert!(row.contains("unpaged history cap 51200 bytes"), "{row}");
     Ok(())
 }

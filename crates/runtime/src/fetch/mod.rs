@@ -232,6 +232,12 @@ impl SessionTranscripts {
 
 impl Transcripts for SessionTranscripts {
     fn open(&self, agent: &str) -> Option<Transcript> {
+        let parent = (self.host.options.store)();
+        if let Some(store) = parent
+            && yi_session::lock_session(&store).metadata().id == agent
+        {
+            return Some(Transcript::Live(store));
+        }
         if let Some(live) = self.host.transcript(agent) {
             return Some(Transcript::Live(live));
         }
@@ -253,18 +259,6 @@ impl Transcripts for SessionTranscripts {
         let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
         let store = yi_session::load_session(&file).ok()?;
         Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
-    }
-}
-
-/// Invariant: a reader's resolver has no session root, so its parent, live from the host that
-/// spawned it, is the one transcript past its own it can open.
-pub struct ParentTranscript(pub std::sync::Weak<crate::subagent::SubagentHost>);
-
-impl Transcripts for ParentTranscript {
-    fn open(&self, agent: &str) -> Option<Transcript> {
-        let store = (self.0.upgrade()?.options.store)()?;
-        let id = yi_session::lock_session(&store).metadata().id.clone();
-        (id == agent).then_some(Transcript::Live(store))
     }
 }
 
@@ -643,8 +637,7 @@ impl Resolver {
             url: url.to_string(),
             what: what.to_owned(),
         };
-        let history = |prefix: &String| prefix.starts_with("history://");
-        if self.wall.deny_url.iter().any(history) {
+        if self.wall.denies_history() {
             return Err(FetchError::Denied {
                 url: url.to_string(),
                 refusal: yi_tools::wall_refusal("fetch", &url.to_string(), "deny_url"),
