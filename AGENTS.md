@@ -376,7 +376,10 @@ Verification (the phase-7 lessons, paid for once):
   `--label base`, again after, then `just tui-see diff <base run> <head run>`. Read the cell diff
   first, then the region crops it names. A scene is a drive script whose `#!` line carries its
   setup (`#! solo --size 80x24`, `#! console --size 120x34`) and whose `snap <name>` steps mark
-  the frames worth seeing. Agg stills have no kitty images and headless draws the 16-colour tier,
+  the frames worth seeing. A scene with a `tick <ms>` step runs on a frozen clock: `hold
+  <event type> [n]` keeps a turn on screen mid-stream until `release`, `tick` moves time a frame
+  at a time, and `snap-strip <name> <n> <ms>` keeps a filmstrip, so a spinner or a reveal lands on
+  the same frame every run. Agg stills have no kitty images and headless draws the 16-colour tier,
   so judge the orb, avatars and true colour in a real terminal. Nothing here gates a build.
 - vt100 tests for viewport code must include a nonzero-offset case: an
   inline viewport at row 0 hides every coordinate-origin bug (the blank-frame

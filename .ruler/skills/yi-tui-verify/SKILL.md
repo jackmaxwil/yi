@@ -52,5 +52,10 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    changed row with its text and style changes (`cols 25-25: plain → reverse`), the changed
    regions, and 1:1 crops of each region before and after; Read the crops, not the whole frame.
    Scenes live beside the proofs: `#! solo|console <flags>` on top, `snap <name>` where a frame
-   matters, `--seed <session.jsonl>` in the `#!` line to start from a real session. A test replays both
+   matters, `--seed <session.jsonl>` in the `#!` line to start from a real session (without one,
+   a solo scene starts from an empty session under a fixed id, so its badge colour is stable).
+8. Motion and in-flight states: put `--faux <cassette.jsonl>` in the `#!` line, `hold
+   text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
+   80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
+   past the reveal before waiting. Hold is solo only; the console's model lives in the daemon. A test replays both
    casts and asserts they land on the frame the assertions ran against.

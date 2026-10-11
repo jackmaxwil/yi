@@ -100,6 +100,15 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             continue;
         }
         let parsed = yi_tui::drive::parse_script(line).map_err(error)?;
+        if parsed
+            .iter()
+            .any(|step| matches!(step, Step::Hold(..) | Step::Release))
+        {
+            return Err(error(
+                "hold and release need the solo drive: the console's model lives in the daemon"
+                    .to_owned(),
+            ));
+        }
         steps.extend(parsed.into_iter().map(ConsoleStep::Tui));
     }
     yi_tui::drive::refuse_repeated_snaps(steps.iter().filter_map(|step| match step {
@@ -107,6 +116,22 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
         ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) => None,
     }))?;
     Ok(steps)
+}
+
+/// Moves the console's frozen clock a frame at a time, its chat panes with it.
+fn tick(
+    app: &mut App,
+    outbound: &Outbound,
+    events: &std::sync::mpsc::Receiver<ClientEvent>,
+    ms: u64,
+) {
+    let mut left = ms;
+    while left > 0 {
+        let step = left.min(yi_tui::drive::TICK_STEP_MS);
+        app.clock.advance(Duration::from_millis(step));
+        drain(app, outbound, events);
+        left -= step;
+    }
 }
 
 /// The idle tick: request deadlines, the list poll and animations advance at least this often.
@@ -474,6 +499,13 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx);
     let mut app = App::new(options.root.clone(), theme);
+    if drive
+        .script
+        .iter()
+        .any(|step| matches!(step, ConsoleStep::Tui(Step::Tick(_))))
+    {
+        app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+    }
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
     app.state.sidebar = options.sidebar;
@@ -538,6 +570,8 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             }
             (ConsoleStep::Tui(Step::TypeMs(ms)), _) => type_ms = ms,
             (ConsoleStep::Tui(Step::Snap(name)), _) => pending_snap = Some(name),
+            (ConsoleStep::Tui(Step::Tick(ms)), _) => tick(&mut app, &outbound, &events, ms),
+            (ConsoleStep::Tui(Step::Hold(..) | Step::Release), _) => {}
             (ConsoleStep::Tui(Step::Type(text)), _) => {
                 for event in typed_events(&text) {
                     app.handle_event(&outbound, event);

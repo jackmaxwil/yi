@@ -29,8 +29,22 @@ pub enum Step {
     /// `snap <name>` keeps the frame drawn after this step as `snap-<name>.cast` and `.txt` in
     /// the frames dir: the moment a scene names, not wherever the script happened to end.
     Snap(String),
+    /// `tick <ms>` steps the frozen clock a frame at a time, then draws once; `snap-strip <name>
+    /// <n> <ms>` parses into `snap <name>-00`, `tick <ms>`, … `snap <name>-<n-1>`.
+    Tick(u64),
+    /// `hold <event type> [n]` stops the faux stream before the n-th event of that wire type
+    /// (`text_delta`, `toolcall_start`, …) so a turn stays on screen mid-stream until `release`.
+    Hold(String, u32),
+    Release,
     Quit,
 }
+
+/// One frame of animation: a longer step would jump a reveal past what a person sees.
+pub const TICK_STEP_MS: u64 = 16;
+/// Ten minutes of scene time: a tick is stepped frame by frame, so a typo of a few zeros would
+/// otherwise spin millions of frames.
+const TICK_MAX_MS: u64 = 600_000;
+const STRIP_MAX: u32 = 60;
 
 pub fn parse_script(source: &str) -> Result<Vec<Step>, String> {
     let mut steps = Vec::new();
@@ -63,6 +77,44 @@ pub fn parse_script(source: &str) -> Result<Vec<Step>, String> {
             "type-ms" => Step::TypeMs(rest.parse().map_err(|e| error(format!("{e}")))?),
             "snap" if is_snap_name(rest) => Step::Snap(rest.to_owned()),
             "snap" => return Err(error(format!("snap name {rest:?} is not [a-z0-9_-]+"))),
+            "tick" => match rest.parse() {
+                Ok(ms) if ms <= TICK_MAX_MS => Step::Tick(ms),
+                Ok(ms) => return Err(error(format!("tick {ms} is past {TICK_MAX_MS} ms"))),
+                Err(e) => return Err(error(format!("{e}"))),
+            },
+            "snap-strip" => {
+                let mut parts = rest.split_whitespace();
+                let (name, n, ms) = (parts.next(), parts.next(), parts.next());
+                let (Some(name), Some(n), Some(ms), None) = (name, n, ms, parts.next()) else {
+                    return Err(error("snap-strip needs <name> <n> <ms>".to_owned()));
+                };
+                let n: u32 = n.parse().map_err(|e| error(format!("{e}")))?;
+                let ms: u64 = ms.parse().map_err(|e| error(format!("{e}")))?;
+                if !is_snap_name(name) || !(1..=STRIP_MAX).contains(&n) || ms > TICK_MAX_MS {
+                    return Err(error(format!(
+                        "snap-strip wants a [a-z0-9_-]+ name and 1..={STRIP_MAX} frames"
+                    )));
+                }
+                for frame in 0..n {
+                    if frame > 0 {
+                        steps.push(Step::Tick(ms));
+                    }
+                    steps.push(Step::Snap(format!("{name}-{frame:02}")));
+                }
+                continue;
+            }
+            "hold" => {
+                let (kind, nth) = rest.split_once(' ').unwrap_or((rest, "1"));
+                let nth: u32 = nth.trim().parse().map_err(|e| error(format!("{e}")))?;
+                if nth == 0 {
+                    return Err(error("hold counts events from 1".to_owned()));
+                }
+                if kind.is_empty() || !kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+                    return Err(error(format!("hold needs an event type, got {kind:?}")));
+                }
+                Step::Hold(kind.to_owned(), nth)
+            }
+            "release" => Step::Release,
             "quit" => Step::Quit,
             other => return Err(error(format!("unknown step: {other}"))),
         };
@@ -218,9 +270,17 @@ pub fn run_headless(
     session: Arc<AgentSession>,
     host: Arc<SubagentHost>,
     ask_rx: Receiver<AskRequest>,
-    options: TuiOptions,
+    mut options: TuiOptions,
     drive: DriveOptions,
 ) -> i32 {
+    let frozen = drive
+        .script
+        .iter()
+        .any(|step| matches!(step, Step::Tick(_)));
+    if frozen {
+        // A frozen scene reveals text at the default pace, which only `tick` moves.
+        options.pace = 100;
+    }
     let theme = Theme::new(crate::colors::ColorTier::Ansi16, true);
     let mut keymap = default_keymap();
     let overrides: Vec<(&str, &str)> = options
@@ -266,6 +326,9 @@ pub fn run_headless(
     let initial_prompt = options.initial_prompt.clone();
     let mut app = App::new(options, theme, keymap, usize::from(width));
     app.set_rows(usize::from(height));
+    if frozen {
+        app.set_clock(crate::motion::Clock::Fixed(Instant::now()));
+    }
     let (ui_rx, cmd_tx, runtime_thread) = crate::app::spawn_runtime_bridge(
         runtime,
         &session,
@@ -330,6 +393,39 @@ pub fn run_headless(
             }
             (Step::TypeMs(ms), _) => type_ms = ms,
             (Step::Snap(name), _) => pending_snap = Some(name),
+            (Step::Tick(ms), _) => {
+                let mut left = ms;
+                while left > 0 {
+                    let step = left.min(TICK_STEP_MS);
+                    app.advance_clock(Duration::from_millis(step));
+                    crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
+                    left -= step;
+                }
+            }
+            (Step::Hold(kind, nth), _) => session.provider().faux_hold.arm(&kind, nth),
+            (Step::Release, _) => {
+                if !session.provider().faux_hold.release() {
+                    eprintln!("error: release: the faux stream never reached its hold");
+                    exit_code = 1;
+                    break;
+                }
+                // The rest of the message lands before the next step, or a frozen reveal would
+                // depend on how much arrived in real time.
+                let settled = Instant::now();
+                crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
+                while !app.stream_settled() {
+                    if settled.elapsed() > Duration::from_secs(5) {
+                        eprintln!("error: release: the released message did not end within 5 s");
+                        exit_code = 1;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                    crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
+                }
+                if exit_code != 0 {
+                    break;
+                }
+            }
             (Step::Wait(ms), started) => {
                 if started.elapsed() < Duration::from_millis(ms) {
                     current = Some((Step::Wait(ms), started));
@@ -341,6 +437,10 @@ pub fn run_headless(
                 match poll_condition(idle, started, ms, "wait-idle") {
                     WaitPoll::Done => {}
                     WaitPoll::Retry => current = Some((Step::WaitIdle(ms), started)),
+                    WaitPoll::TimedOut if frozen => {
+                        eprintln!("  the clock is frozen: `tick <ms>` lets a reveal finish");
+                        exit_code = 1;
+                    }
                     WaitPoll::TimedOut => exit_code = 1,
                 }
             }
