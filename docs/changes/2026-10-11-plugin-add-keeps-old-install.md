@@ -1,5 +1,5 @@
 ---
 issue: Closes #1191
-raise: crate runtime +23, crate kernel +10, crate tools +1, comments +2
+raise: crate kernel +10, crate runtime +70, crate tools +1, comments +2
 ---
 `yi plugin add` and `yi plugin sync` no longer delete a plugin that has its program but not its skills before the replacement arrives. The old install is set aside, the pinned release is downloaded and checked, and only then is the old copy removed; a failed or tampered download puts it back as it was. The old copy is set aside with the same `Aside` the binary and skills swaps of `yi update` use, so a restore that fails names where the old copy sits. The two plugin tests in cli_surfaces that spawn `yi plugin` with a test HOME share one helper; the third spawns it with HOME unset on purpose and stays inline. The comment on the plugin table now says that bumping ripwire's pin also means recording the new release's skills manifest, and the test that reads that manifest finds it by the pinned version. The note that the pier adapter's fingerprint says `+plugins{}` was wrong: pier carries no plugins and its fingerprint has no plugins label.
