@@ -354,7 +354,7 @@ past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines, 3 a file; els
 40), kept only if shorter. Runs of passing-test lines become one counted row, and a line naming an
 error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`).
 With `models.selector` named, the lines of a cut output's full text (at most 4,000) that the cut
-does not show go to that model, numbered as in the full output, and it answers 1-based line ranges
+does not show, a counted run of passes being shown by its count, go to that model, numbered as in the full output, and it answers 1-based line ranges
 only; within 5 s the unshown lines it names follow the cut verbatim under a row naming it, else a
 row says it gave none (`side:select` books its cost); nothing left out asks nothing. Lossy output is tee'd, secrets redacted line for line, to the family board's
 `spills/`, kept until `yi sessions rm`, and ends `[full output: <path>]`; with nowhere to tee,
