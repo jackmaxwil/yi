@@ -15,7 +15,7 @@ use crate::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use crate::markdown::StableScan;
 use crate::motion::elapsed_ms;
 use crate::reveal::{FRAME, Reveal};
-use crate::transcript::{preview_lines, text_of, todo_finished};
+use crate::transcript::{result_preview, text_of, todo_finished};
 
 /// Both reveal cursors, their speed, the events waiting behind them, and their cut scans.
 pub(crate) struct Pacing {
@@ -744,7 +744,7 @@ impl App {
             ToolStatus::Done
         };
         cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
-        cell.preview = preview_lines(text, 12, 6);
+        cell.preview = result_preview(text, &details);
         cell.details = details;
         // The HUD carries the list; a card per step was six cards a turn.
         if cell.name == "todo" && !is_error {

@@ -26,6 +26,22 @@ pub fn show_controls(text: &str) -> String {
         .collect()
 }
 
+/// Incident: the edit cell drew only the patch, so a caller check the model quoted never reached
+/// the screen. A diff carries neither the `syntax:` verdicts nor the trailing ripwire block.
+pub(crate) fn result_preview(text: &str, details: &Value) -> Vec<String> {
+    if details.get("patch").is_none() {
+        return preview_lines(text, 12, 6);
+    }
+    let mut block = false;
+    (text.lines())
+        .filter(|line| {
+            block |= line.starts_with("[ripwire check");
+            block || line.starts_with("syntax: ")
+        })
+        .map(show_controls)
+        .collect()
+}
+
 /// The head says what ran and the tail how it ended, and a command's error is
 /// in the tail — keeping ten head lines dropped the half worth reading.
 pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
