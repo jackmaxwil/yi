@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::image::image_defect;
-use yi_types::kernel::{ExecuteResult, ExecuteStatus, NESTED_CALLS, NestedCall};
+use yi_types::kernel::{
+    ExecuteResult, ExecuteStatus, NESTED_CALLS, NESTED_READS_DROPPED, NestedCall,
+};
 use yi_types::message::Content;
 
 use crate::spill::{Spill, Stream};
@@ -67,12 +69,16 @@ impl CellSpill {
     }
 }
 
-/// What a cell called through the host, drained once the cell ends.
-pub type NestedCallsFn = dyn Fn() -> Vec<NestedCall> + Send + Sync;
+/// The calls a cell makes through the host, taken only while the cell is open.
+pub trait CellCalls: Send + Sync {
+    fn open(&self);
+    /// Closes the cell: its rows, and how many read rows it made past the kept count.
+    fn close(&self) -> (Vec<NestedCall>, u64);
+}
 
 pub struct IpythonTool {
     pub bridge: Arc<dyn KernelBridge>,
-    pub calls: Option<Arc<NestedCallsFn>>,
+    pub calls: Option<Arc<dyn CellCalls>>,
 }
 
 fn shell_cell(code: &str) -> Option<String> {
@@ -131,14 +137,26 @@ impl Tool for IpythonTool {
             Err(message) => return error_output(message),
         };
         let (cancelled, dir) = (&context.cancelled, context.recovery_dir.as_deref());
-        let outcome = match self.bridge.execute_cell(code, cancelled, dir) {
-            Ok(outcome) => outcome,
-            Err(message) => return error_output(message),
+        if let Some(calls) = &self.calls {
+            calls.open();
+        }
+        let outcome = self.bridge.execute_cell(code, cancelled, dir);
+        let (rows, dropped) = self
+            .calls
+            .as_ref()
+            .map(|calls| calls.close())
+            .unwrap_or_default();
+        let mut output = match outcome {
+            Ok(outcome) => cell_output(code, outcome),
+            Err(message) => error_output(message),
         };
-        let mut output = cell_output(code, outcome);
-        let calls = self.calls.as_ref().map(|drain| drain()).unwrap_or_default();
-        if let (false, Value::Object(details)) = (calls.is_empty(), &mut output.result.details) {
-            details.insert(NESTED_CALLS.to_owned(), json!(calls));
+        if let Value::Object(details) = &mut output.result.details {
+            if !rows.is_empty() {
+                details.insert(NESTED_CALLS.to_owned(), json!(rows));
+            }
+            if dropped > 0 {
+                details.insert(NESTED_READS_DROPPED.to_owned(), json!(dropped));
+            }
         }
         output
     }

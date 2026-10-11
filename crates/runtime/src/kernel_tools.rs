@@ -1,10 +1,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::{Map, Value, json};
 use yi_loop::{AgentTool, ExecutionMode};
 use yi_types::event::ToolErrorKind;
-use yi_types::kernel::NestedCall;
+use yi_types::kernel::{NESTED_READS_KEPT, NestedCall};
 
 use crate::args::Args;
 use crate::kernel::{HostRegistry, KernelService};
@@ -12,26 +12,60 @@ use crate::kernel::{HostRegistry, KernelService};
 /// The session's tool table, read at each call: the registry is sealed before the tools land.
 pub type ToolsFn = Arc<dyn Fn() -> Vec<Arc<dyn AgentTool>> + Send + Sync>;
 
-/// What one session's cells called through `tool.call`, until its `ipython` result lists them.
 #[derive(Default)]
+struct Rows {
+    open: bool,
+    kept: Vec<NestedCall>,
+    reads: usize,
+    dropped: u64,
+}
+
+/// What one session's cells called through `tool.call`, until its `ipython` result lists them.
 pub struct Calls {
-    rows: Mutex<Vec<NestedCall>>,
+    rows: Mutex<Rows>,
     minted: AtomicU64,
+    /// Invariant: call ids repeat across attaches unless they carry when this one began.
+    attached_ms: u64,
     /// Invariant: the loop orders writes only by awaiting one batch at a time, so a cell that
     /// gathers two edits would race them; this lock is the only thing that orders them.
     writes: tokio::sync::Mutex<()>,
 }
 
+impl Default for Calls {
+    fn default() -> Self {
+        Self {
+            rows: Mutex::default(),
+            minted: AtomicU64::new(0),
+            attached_ms: yi_session::now_ms(),
+            writes: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
 impl Calls {
-    fn push(&self, row: NestedCall) {
-        self.rows
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(row);
+    fn rows(&self) -> MutexGuard<'_, Rows> {
+        self.rows.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn drain(&self) -> Vec<NestedCall> {
-        std::mem::take(&mut *self.rows.lock().unwrap_or_else(PoisonError::into_inner))
+    fn push(&self, row: NestedCall, read: bool) {
+        let mut rows = self.rows();
+        if read && rows.reads >= NESTED_READS_KEPT {
+            rows.dropped = rows.dropped.saturating_add(1);
+            return;
+        }
+        rows.reads = rows.reads.saturating_add(usize::from(read));
+        rows.kept.push(row);
+    }
+}
+
+impl yi_tools::CellCalls for Calls {
+    fn open(&self) {
+        self.rows().open = true;
+    }
+
+    fn close(&self) -> (Vec<NestedCall>, u64) {
+        let rows = std::mem::take(&mut *self.rows());
+        (rows.kept, rows.dropped)
     }
 }
 
@@ -53,7 +87,7 @@ fn failure(kind: &str, message: String, suggestions: Vec<String>) -> Map<String,
     reply.as_object().cloned().unwrap_or_default()
 }
 
-/// The names that share a word with `name` first, then the rest: a typo still finds its tool.
+/// The names that contain `name` or that it contains first, then the rest.
 fn suggestions(name: &str, names: &[String]) -> Vec<String> {
     let near = |other: &String| other.contains(name) || name.contains(other.as_str());
     let (mut close, far): (Vec<_>, Vec<_>) = names.iter().cloned().partition(near);
@@ -87,6 +121,31 @@ pub fn register(registry: &mut HostRegistry, tools: ToolsFn, calls: Arc<Calls>, 
     });
 }
 
+/// The refusal a call earns before its tool is looked at, or `None`.
+fn refused_before(
+    calls: &Calls,
+    name: &str,
+    args: &Map<String, Value>,
+    root: bool,
+) -> Option<Map<String, Value>> {
+    if !calls.rows().open {
+        let message = "no cell is running: a call from a task that outlived its cell, or one made after the cell was interrupted, is refused; call it inside a cell";
+        return Some(failure("cancelled", message.to_owned(), Vec::new()));
+    }
+    if let Some(why) = excluded(name, root) {
+        let message = format!("{name} is not callable from a cell: {why}");
+        return Some(failure("excluded_tool", message, Vec::new()));
+    }
+    // Incident: a cell's own `kernel://` read queues behind the cell it runs in, and times out.
+    let kernel = args
+        .str_of("path")
+        .is_some_and(|path| path.starts_with("kernel://"));
+    (name == "read" && kernel).then(|| {
+        let message = "a cell reads kernel:// with `await rlm.fetch(url)`; its own variables are already in scope";
+        failure("invalid_input", message.to_owned(), Vec::new())
+    })
+}
+
 async fn call(
     table: &[Arc<dyn AgentTool>],
     calls: &Calls,
@@ -94,11 +153,8 @@ async fn call(
     payload: &Map<String, Value>,
 ) -> Map<String, Value> {
     let Some(name) = payload.str_of("name") else {
-        return failure(
-            "invalid_input",
-            "tool.call needs a \"name\"".to_owned(),
-            Vec::new(),
-        );
+        let message = "tool.call needs a \"name\"".to_owned();
+        return failure("invalid_input", message, Vec::new());
     };
     let args = match payload.get("args") {
         None | Some(Value::Null) => Map::new(),
@@ -108,9 +164,8 @@ async fn call(
             return failure("invalid_input", message, Vec::new());
         }
     };
-    if let Some(why) = excluded(name, root) {
-        let message = format!("{name} is not callable from a cell: {why}");
-        return failure("excluded_tool", message, Vec::new());
+    if let Some(refusal) = refused_before(calls, name, &args, root) {
+        return refusal;
     }
     let Some(tool) = table.iter().find(|tool| tool.definition().name == name) else {
         let names: Vec<String> = (table.iter().map(|tool| tool.definition().name))
@@ -122,12 +177,13 @@ async fn call(
     if let Err(reason) = tool.validate(&args) {
         return failure("invalid_input", reason, Vec::new());
     }
-    let mode = tool.execution_mode(&args);
-    let _ordered = match mode {
-        ExecutionMode::Sequential => Some(calls.writes.lock().await),
-        ExecutionMode::Parallel => None,
+    let read = tool.execution_mode(&args) == ExecutionMode::Parallel;
+    let _ordered = match read {
+        true => None,
+        false => Some(calls.writes.lock().await),
     };
-    let id = format!("cell-call-{}", calls.minted.fetch_add(1, Ordering::Relaxed));
+    let minted = calls.minted.fetch_add(1, Ordering::Relaxed);
+    let id = format!("cell-{}-{minted}", calls.attached_ms);
     let started = std::time::Instant::now();
     let signal = yi_loop::interrupt::InterruptSignal::default();
     let outcome = tool.execute(&id, args.clone(), &signal).await;
@@ -144,14 +200,18 @@ async fn call(
         (true, false) => Some("tool_failure"),
     };
     let asked = name == "ask_user";
-    calls.push(NestedCall {
-        tool: name.to_owned(),
-        ok: !outcome.is_error,
-        error_kind: kind.map(str::to_owned),
-        args: (mode == ExecutionMode::Sequential || asked).then_some(args),
-        answer: asked.then(|| text.clone()),
-        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-    });
+    calls.push(
+        NestedCall {
+            tool: name.to_owned(),
+            ok: !outcome.is_error,
+            error_kind: kind.map(str::to_owned),
+            paths: yi_context::details::call_paths(name, &args),
+            command: (args.str_of("command").map(str::to_owned)).filter(|_| !read),
+            answer: asked.then(|| text.clone()),
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        },
+        read && !asked,
+    );
     let reply = json!({
         "ok": !outcome.is_error,
         "kind": kind,
@@ -166,9 +226,8 @@ pub fn ipython_tool(
     service: Arc<KernelService>,
     calls: Option<Arc<Calls>>,
 ) -> Arc<dyn yi_tools::Tool> {
-    let drain = calls.map(|calls| Arc::new(move || calls.drain()) as Arc<yi_tools::NestedCallsFn>);
     Arc::new(yi_tools::IpythonTool {
         bridge: service,
-        calls: drain,
+        calls: calls.map(|calls| calls as Arc<dyn yi_tools::CellCalls>),
     })
 }

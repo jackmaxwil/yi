@@ -1553,6 +1553,70 @@ impl yi_tools::KernelBridge for OneCell {
     }
 }
 
+struct DeadKernel;
+
+impl yi_tools::KernelBridge for DeadKernel {
+    fn execute_cell(
+        &self,
+        _code: &str,
+        _cancelled: &yi_tools::CancelFlag,
+        _recovery_dir: Option<&std::path::Path>,
+    ) -> Result<yi_tools::KernelCellOutcome, String> {
+        Err("the kernel died".to_owned())
+    }
+}
+
+struct OneWrite(std::sync::Mutex<Vec<&'static str>>);
+
+impl yi_tools::CellCalls for OneWrite {
+    fn open(&self) {
+        self.0
+            .lock()
+            .map(|mut seen| seen.push("open"))
+            .unwrap_or_default();
+    }
+
+    fn close(&self) -> (Vec<yi_types::kernel::NestedCall>, u64) {
+        self.0
+            .lock()
+            .map(|mut seen| seen.push("close"))
+            .unwrap_or_default();
+        let row = yi_types::kernel::NestedCall {
+            tool: "write".to_owned(),
+            ok: true,
+            error_kind: None,
+            paths: vec!["made.txt".to_owned()],
+            command: None,
+            answer: None,
+            duration_ms: 1,
+        };
+        (vec![row], 3)
+    }
+}
+
+/// A cell whose kernel died after a write still lists the write on its own result, not the next.
+#[test]
+fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
+    let dir = temp_dir("kernel-dead")?;
+    let calls = Arc::new(OneWrite(std::sync::Mutex::new(Vec::new())));
+    let tool = yi_tools::IpythonTool {
+        bridge: Arc::new(DeadKernel),
+        calls: Some(Arc::clone(&calls) as Arc<dyn yi_tools::CellCalls>),
+    };
+    let output = tool.execute(
+        args(&[("code", json!("1"))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    assert!(output.is_error);
+    assert_eq!(
+        output.result.details["calls"][0]["paths"],
+        json!(["made.txt"])
+    );
+    assert_eq!(output.result.details["callsDropped"], json!(3));
+    assert_eq!(*calls.0.lock().map_err(|_| "poisoned")?, ["open", "close"]);
+    Ok(())
+}
+
 /// A kernel edit becomes a patch here, where every other patch is computed. The
 /// point is the LCS: a whole-file dump would mark all four lines changed.
 #[test]
