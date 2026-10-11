@@ -37,6 +37,8 @@ necessary, not sufficient.
    Chains that swallowed a failing gate have shipped broken commits in this
    repo before. `just check` runs fmt, clippy, the guardrails *and* the test
    suite, so `guardrails: all green` in a grep is not the gate: read `$?`.
+   `just test` runs the suite with HOME at the worktree's `target/yi-home`, deleted with the
+   worktree; a hand-run `cargo test` or `yi` drive goes through `scripts/wt_home.sh` the same way.
 3. For behavior changes, run the real binary. Offline:
    `./target/debug/yi ask --model faux/faux-1 "<prompt>"` (add `--json` for
    the event stream). Size or startup claims use the dist profile
@@ -219,6 +221,53 @@ the model's own view, with three facts: what was kept over what existed, the cap
   glob files and per-file heads, grid-check lines, find's fallback window, the near-miss list,
   grep's block fallback), and the audit it forced found four older ones (grep's tag cap, its
   context clamp, its binary skips, `get_context`'s per-file heads). All eleven now speak.
+
+
+
+<!-- Source: .ruler/047-context-gathering.md -->
+
+# Context gathering
+
+A source the model cannot find does not exist, and a source it finds by accident is a leak.
+Every feature that brings context to the model — a scheme, a search verb, a memory, an
+integration — obeys these eight rules.
+
+1. **Inject pointers in-band.** A source's address rides the payload the model must consume:
+   the spawn brief, a tool result row, an error string. Doctrine and the skill catalog are
+   fallbacks, never the only route; the catalog clips a description at 60 chars. A pointer is
+   priced by how often it is paid: per spawn before per request.
+2. **One namespace, resolved by name.** A source is a URI scheme the one `Resolver` serves
+   through `read`; a search returns addresses `read` opens. The model gets aliases (`self`,
+   `parent`, a child's name) the resolver maps to ids; it is never asked to know an id. A new
+   source adds a scheme, not a tool.
+3. **Role-invariant resolution.** Every role (root, reader, worker, walled) reaches the shared
+   addresses through the same backends, or gets a typed refusal naming why. A role-matrix test
+   holds it, because the failure is silent: green suites shipped a reader resolver that could
+   open no session but its own.
+4. **Spend context by recoverability.** Data with no other source of truth — a person's words,
+   a decision, expired output — gets the widest per-item cap. Data its authority still serves
+   — a file, a rerunnable command — gets the narrowest and is read from the authority, never
+   from a transcript's copy, which is stale by the next edit.
+5. **Bounded, self-describing views.** Every model-facing view has a default bound: unpaged
+   reads, listings, one-line summaries. Every cut follows 045: kept of total, the cap's name
+   and value, the continuation call. A per-line cut in a compact view is a cut.
+6. **Canonicalize before authorizing.** An alias or rewrite resolves to its target, and the
+   access policy is judged against every spelling of it. A policy that names the target in a
+   form the canonical id does not match fails closed. Never point a model at an address its
+   own wall refuses.
+7. **External data is fenced and attributed.** A result from the network, the forge or an MCP
+   server carries its origin, renders inside a data fence, and is never written into the
+   session ledger as a first-party entry nor re-indexed as the agent's own history.
+8. **Prove it on the target model, graded on the actor.** A context feature lands with a paired
+   run against the fork binary on the model it serves (GLM 5.3 flash by default), k repeats an
+   arm, graded on the acting agent's own final output, on tasks the baseline can fail, plus a
+   `yi ask` dogfood log. Never gate on a metric the feature moves by construction.
+
+- Incident 2026-10-10 (#1184): Yi had session search, recall and MCP search, and in 300 sessions
+  the model called none of them. A child sent to find what its parent was told walked the tree:
+  0/3 on the fork, 1/3 with a doctrine line, 3/3 with the address in its brief. A dogfood read
+  put 4.86 MB of one session in a tool result, a 120-char cut hid the user's sentence the child
+  needed, and a reader's resolver could not open its parent. Every one passed its unit tests.
 
 
 
@@ -408,7 +457,10 @@ Verification (the phase-7 lessons, paid for once):
   the yi-term image (`just yi-term` builds it) and uses its grabs; `--video` there also keeps the
   run as `run.webp`. `just tui-see watch <scene>` reruns and rediffs a scene on every save under
   the TUI crates, and `just tui-see gallery` puts every scene and label on one page for the owner
-  to look at and comment on. No picture gates a build.
+  to look at and comment on. A pull request that touches crates/tui, crates/console or crates/orb
+  gets the same on the forge: the `tui` workflow plays every scene under scripts/proof/tui_see on
+  the base and the head binary and posts one comment with each changed snap's cell diff and
+  crops; a scene added there is a scene every TUI pull request is shown. No picture gates a build.
 - vt100 tests for viewport code must include a nonzero-offset case: an
   inline viewport at row 0 hides every coordinate-origin bug (the blank-frame
   draw-offset bug shipped exactly this way).

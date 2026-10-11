@@ -166,7 +166,9 @@ pub fn remove_stale_venvs(current: &Path) -> Vec<PathBuf> {
             path.as_path() != current
                 && settled(path)
                 && name.is_some_and(|name| {
-                    name.starts_with("kernel-venv-") && !name.ends_with(BOOTSTRAP_LOCK_NAME)
+                    // Incident: the pre-0.111.0 unhashed `kernel-venv` matched no prefix and stayed.
+                    (name == "kernel-venv" || name.starts_with("kernel-venv-"))
+                        && !name.ends_with(BOOTSTRAP_LOCK_NAME)
                 })
         })
         .collect();
