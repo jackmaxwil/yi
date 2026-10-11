@@ -94,10 +94,7 @@ fn tree<'t>(
             if !entry.name.starts_with(&prefix) {
                 continue;
             }
-            if relative
-                .split('/')
-                .any(|part| matches!(part, "" | "." | ".."))
-            {
+            if !crate::tarball::stays_inside(relative) {
                 return Err(format!(
                     "the {} archive entry {} leaves it",
                     pin.label, entry.name

@@ -38,6 +38,7 @@ pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, clamp_timeout, run_or_ba
 pub use orient::GetContextTool;
 pub use process::{
     CommandCapture, OUTPUT_CAP, command, edit_file, git_root, keyless_command, run_captured,
+    spill_path,
 };
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{

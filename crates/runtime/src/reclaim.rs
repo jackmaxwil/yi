@@ -9,7 +9,7 @@ use yi_types::message::{AgentMessage, Content};
 use yi_types::model::{CACHE_DIAGNOSTIC, Model, Ttl};
 use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
-const KEEP_TURNS: u64 = 5;
+pub(crate) const KEEP_TURNS: u64 = 5;
 /// Below this many tokens a cut's rewrite and its notice cost more than the reads it saves.
 const MIN_DROPPED: u64 = 2_000;
 const MIN_RESULT_CHARS: usize = 1_200;
@@ -301,7 +301,7 @@ pub(crate) fn decide(
         };
         let aged = turns
             .get(index)
-            .is_some_and(|at| turn.saturating_sub(*at) >= KEEP_TURNS);
+            .is_some_and(|at| turn.saturating_sub(*at) >= crate::levers::get().reclaim_keep_turns);
         let marked = |map| find(map, message).is_some();
         let kept = never_cut(message, newest.contains(&index)).is_some()
             || cut.get(message).is_some()
@@ -429,7 +429,8 @@ pub(crate) fn apply(mut messages: Vec<AgentMessage>, cut: &Cut) -> Vec<AgentMess
         let rule = match find(&cut.discards, message) {
             Some(()) => "you discarded it".to_owned(),
             None => format!(
-                "results older than {KEEP_TURNS} requests are cut once dropping them costs less than resending them"
+                "results older than {} requests are cut once dropping them costs less than resending them",
+                crate::levers::get().reclaim_keep_turns
             ),
         };
         if let AgentMessage::ToolResult { content, .. } = message {

@@ -85,16 +85,18 @@ def levers_label(environ):
 
 
 def installed_plugins(report):
-    """(name, version, path) as `yi plugin list` itself reports them: yi is the one reader
-    of the layout `yi plugin add` writes, so the adapter carries what yi carries instead of
-    a second copy of the layout."""
-    found = {}
-    for line in str(report).splitlines():
-        match = re.fullmatch(r"(\S+) (\S+)  installed at (.+)", line)
-        if match:
-            name, version, path = match.groups()
-            found[name] = (version, Path(path))
-    return found
+    """(name, version, path) from `yi plugin list --json`: yi is the one reader of the layout
+    `yi plugin add` writes. A report that is not that array of rows is refused, never read as
+    zero plugins (the shape is pinned by cli_surfaces' plugin list test)."""
+    try:
+        rows = json.loads(str(report))
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) and {"name", "version", "state", "path"} <= row.keys() for row in rows
+    ):
+        raise ValueError(f"`yi plugin list --json` printed no plugin rows: {str(report)[:200]!r}")
+    return {row["name"]: (row["version"], Path(row["path"])) for row in rows if row["state"] == "installed"}
 
 
 def local_plugins(environ, report):
