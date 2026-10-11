@@ -73,3 +73,8 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    keeps the whole run as `run.webp` (cropped to the window, under the 512 KB blob cap for a
    README); it needs at least one `snap` to find the window. On that host `wait-idle` waits for
    the screen to hold still a second with digits ignored, so ticking ages do not count as work.
+10. On the forge, `.forgejo/workflows/tui.yml` builds the base and head binaries, then runs
+   `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
+   `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
+   24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
+   headless there. Console scenes get random session ids, so their avatar colours always differ.
