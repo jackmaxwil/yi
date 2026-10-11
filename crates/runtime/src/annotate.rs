@@ -426,18 +426,35 @@ mod tests {
             is_error: false,
             timestamp: 0,
         };
+        let patch = json!({"patch": "[src/lib.rs#AB12]\nPUT 1.=1:\n+fn tidy() {}"});
+        let edited = yi_ai::faux::faux_tool_call(
+            "c5",
+            "edit",
+            patch.as_object().cloned().unwrap_or_default(),
+        );
+        let mut edit_answer = answer.clone();
+        if let AgentMessage::ToolResult {
+            tool_call_id,
+            tool_name,
+            ..
+        } = &mut edit_answer
+        {
+            (*tool_call_id, *tool_name) = ("c5".to_owned(), "edit".to_owned());
+        }
         {
             let mut store = yi_session::lock_session(&store);
-            store.append_message(
-                "main",
-                yi_ai::faux::faux_assistant_message(vec![asked], StopReason::ToolUse),
-            )?;
-            store.append_message("main", answer)?;
+            for (asked, answer) in [(asked, answer), (edited, edit_answer)] {
+                store.append_message(
+                    "main",
+                    yi_ai::faux::faux_assistant_message(vec![asked], StopReason::ToolUse),
+                )?;
+                store.append_message("main", answer)?;
+            }
         }
         let tool = AnnotateTool::new(Arc::new(move || Some(Arc::clone(&store))), Arc::default());
         let (text, failed) = call(&tool, json!({"kind": "discard", "call": "read src/lib.rs"}));
         assert!(
-            failed && text.contains("the newest read of a file is never cut"),
+            failed && text.contains("the newest read of a file this session edited is never cut"),
             "{text}"
         );
         let (text, failed) = call(

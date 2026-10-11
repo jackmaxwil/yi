@@ -238,18 +238,36 @@ pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationR
     })
 }
 
-/// The results that are the newest read of their path, by index: an edit needs their tags.
+/// The newest read of each file the session edited: an edit needs its line tags, while a file
+/// only read is cut like any result, its placeholder naming the read that restores it.
 pub(crate) fn newest_reads(calls: &[Option<(&str, &Args)>]) -> BTreeSet<usize> {
+    let mut edited = BTreeSet::new();
     let mut latest = BTreeMap::new();
     for (index, call) in calls.iter().enumerate() {
-        if let Some(path) = call
-            .filter(|(name, _)| *name == "read")
-            .and_then(|(_, args)| path_of(args))
-        {
-            latest.insert(path, index);
+        match *call {
+            Some(("read", args)) => {
+                if let Some(path) = path_of(args) {
+                    latest.insert(path.to_owned(), index);
+                }
+            }
+            Some(("write", args)) => edited.extend(path_of(args).map(str::to_owned)),
+            Some(("edit", args)) => {
+                let patch = args.get("patch").and_then(serde_json::Value::as_str);
+                let sections = patch
+                    .and_then(|patch| yi_tools::hashline::input::Patch::parse(patch, None).ok());
+                edited.extend(
+                    sections
+                        .into_iter()
+                        .flat_map(|patch| patch.sections)
+                        .map(|section| section.path),
+                );
+            }
+            _ => {}
         }
     }
-    latest.into_values().collect()
+    (latest.into_iter())
+        .filter_map(|(path, index)| edited.contains(&path).then_some(index))
+        .collect()
 }
 
 /// Why no cut ever takes this result, whatever its age or the model's discard.
@@ -270,7 +288,9 @@ pub(crate) fn never_cut(message: &AgentMessage, newest_read: bool) -> Option<&'s
     {
         Some("a result with an image is never cut, since its placeholder could not say so")
     } else if newest_read {
-        Some("the newest read of a file is never cut, since an edit needs its line tags")
+        Some(
+            "the newest read of a file this session edited is never cut, since an edit needs its line tags",
+        )
     } else {
         None
     }
@@ -573,17 +593,23 @@ mod tests {
     }
 
     /// An edit needs the line tags of the newest read of its file, and `ask_user` carries the
-    /// user's own words: neither is ever cut, however old.
+    /// user's own words: neither is ever cut, however old. A file only read is cut once aged.
     #[test]
-    fn the_newest_read_of_a_file_and_the_users_answers_stay() -> Fallible {
+    fn the_newest_read_of_an_edited_file_and_the_users_answers_stay() -> Fallible {
         let mut messages = vec![AgentMessage::user_input(
             UserContent::Text("tidy lib.rs".to_owned()),
             0,
         )];
         let calls = [
             ("old-read", "read", json!({"path": "src/lib.rs"})),
+            ("doc-read", "read", json!({"path": "docs/style.md"})),
             ("asked", "ask_user", json!({"question": "Which style?"})),
             ("new-read", "read", json!({"path": "src/lib.rs"})),
+            (
+                "edited",
+                "edit",
+                json!({"patch": "[src/lib.rs#AB12]\nPUT 3.=3:\n+fn tidy() {}"}),
+            ),
         ];
         for (id, name, args) in calls {
             messages.push(assistant(&[(id.to_owned(), name, args)], 0));
@@ -596,7 +622,10 @@ mod tests {
             .iter()
             .map(|item| item.tool_call_id.as_str())
             .collect();
-        assert!(cut.contains(&"old-read"), "{cut:?}");
+        assert!(
+            cut.contains(&"old-read") && cut.contains(&"doc-read"),
+            "{cut:?}"
+        );
         assert!(
             !cut.contains(&"asked") && !cut.contains(&"new-read"),
             "{cut:?}"
