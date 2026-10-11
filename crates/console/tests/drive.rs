@@ -382,6 +382,7 @@ fn run_opts(
             autostart,
             auto_side: true,
             sidebar,
+            pace: 0,
         },
         DriveOptions {
             script: steps,
@@ -605,6 +606,7 @@ fn prompt_rejected_while_daemon_unreachable() -> TestResult {
             autostart: false,
             auto_side: true,
             sidebar: SidebarMode::Full,
+            pace: 0,
         },
         DriveOptions {
             script: steps,
@@ -810,6 +812,7 @@ fn tiny_terminal_survives_splits() -> TestResult {
             autostart: false,
             auto_side: true,
             sidebar: SidebarMode::Full,
+            pace: 0,
         },
         DriveOptions {
             script: steps,
