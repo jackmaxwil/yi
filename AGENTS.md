@@ -405,7 +405,10 @@ Verification (the phase-7 lessons, paid for once):
   at a time, and `snap-strip <name> <n> <ms>` keeps a filmstrip, so a spinner or a reveal lands on
   the same frame every run. Agg stills have no kitty images and headless draws the 16-colour tier:
   for the orb, avatars and true colour add `--host term`, which plays the scene in real Ghostty in
-  the yi-term image (`just yi-term` builds it) and uses its grabs. No picture gates a build.
+  the yi-term image (`just yi-term` builds it) and uses its grabs; `--video` there also keeps the
+  run as `run.webp`. `just tui-see watch <scene>` reruns and rediffs a scene on every save under
+  the TUI crates, and `just tui-see gallery` puts every scene and label on one page for the owner
+  to look at and comment on. No picture gates a build.
 - vt100 tests for viewport code must include a nonzero-offset case: an
   inline viewport at row 0 hides every coordinate-origin bug (the blank-frame
   draw-offset bug shipped exactly this way).
