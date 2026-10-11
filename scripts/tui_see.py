@@ -972,6 +972,9 @@ def post(out: Path) -> None:
         print(f"[… no forge to post to; the comment is {out / 'comment.md'}]")
         return
     api, repo, pr = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY", "FORGEJO_PR"))
+    if os.environ.get("FORGEJO_HEAD"):
+        # The review bot reads this comment only when it was made for the head the bot reads.
+        body = body.replace(f"{MARKER}\n", f"{MARKER}\n<!-- tui-see head={os.environ['FORGEJO_HEAD']} -->\n", 1)
     bare = re.sub(r"^@@crop-\d+@@\n", "", body, flags=re.M)
     comment = forge.upsert(forge.send, api, repo, pr, bare)
     assets = f"{api}/repos/{repo}/issues/comments/{comment['id']}/assets"
@@ -1104,9 +1107,10 @@ def selfcheck() -> None:
         keep = forge.send, globals()["upload"], dict(os.environ)
         forge.send, globals()["upload"] = fake, lambda url, path: f"https://x/{path.name}"
         os.environ.update(FORGEJO_API_URL="https://f/api", FORGEJO_REPOSITORY="o/r",
-                          FORGEJO_PR="3", FORGEJO_TOKEN="t")
+                          FORGEJO_PR="3", FORGEJO_TOKEN="t", FORGEJO_HEAD="ab12")
         try:
             post(out)
+            assert calls[1][2]["body"].startswith(f"{MARKER}\n<!-- tui-see head=ab12 -->\n"), calls[1]
             assert all("@@crop" not in str(payload) for _, _, payload in calls), calls
             assert calls[-1][2]["body"].count("](https://x/") == MAX_PICTURES, calls[-1]
             assert ("DELETE", "https://f/api/repos/o/r/issues/comments/9/assets/5", None) in calls
