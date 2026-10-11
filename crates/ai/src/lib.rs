@@ -5,6 +5,7 @@ pub mod auth;
 pub mod breakpoints;
 pub mod catalog;
 pub mod compat;
+pub mod cursor;
 pub mod decide;
 pub mod faux;
 pub use yi_types::json_salvage;
@@ -14,6 +15,8 @@ pub mod openai_responses;
 pub mod refresh;
 pub mod request;
 pub mod retry;
+pub mod roots;
+
 pub mod schema;
 pub mod settle;
 pub mod sse;

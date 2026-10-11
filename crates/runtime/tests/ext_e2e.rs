@@ -684,23 +684,35 @@ impl yi_runtime::ext::Extension for Noisy {
     }
 }
 
-/// The ripwire card is in the prompt exactly when a `ripwire` binary is on PATH; each half runs
-/// in a rerun of this test whose PATH is one scratch dir, and the dir's name says it is one.
+/// The ripwire card is in the prompt exactly when ripwire is on PATH or at the pinned version
+/// in `~/.yi/plugins`; each half runs in a rerun whose PATH is one scratch dir, named as one.
 #[test]
-fn the_ripwire_card_attaches_only_when_ripwire_is_on_path() -> TestResult {
+fn the_ripwire_card_attaches_only_when_ripwire_is_found() -> TestResult {
     let path = std::env::var_os("PATH").map(PathBuf::from);
     if let Some(dir) = path.filter(|dir| {
         dir.file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("yi-ext-ripwire-"))
     }) {
-        let host = started(&dir, &dir);
-        let present = dir.join("ripwire").is_file();
+        let card = |home: &Path| {
+            started(&dir, home)
+                .system_prompt()
+                .contains("`ripwire` maps this repository's code")
+        };
+        assert_eq!(card(&dir), dir.join("ripwire").is_file());
+        let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+        let home = Scratch::new("yi-ext-plugin-home")?;
+        let stale = ripwire.root(&home).join("0.0.1");
+        std::fs::create_dir_all(&stale)?;
+        std::fs::write(stale.join("ripwire"), "#!/bin/sh\n")?;
         assert_eq!(
-            host.system_prompt()
-                .contains("`ripwire` maps this repository's code"),
-            present
+            card(&home),
+            dir.join("ripwire").is_file(),
+            "an unpinned version is off"
         );
+        std::fs::create_dir_all(ripwire.dir(&home))?;
+        std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
+        assert!(card(&home), "yi's pinned copy turns the card on");
         return Ok(());
     }
     for present in [false, true] {
@@ -711,7 +723,7 @@ fn the_ripwire_card_attaches_only_when_ripwire_is_on_path() -> TestResult {
         let rerun = yi_tools::command(std::env::current_exe()?)
             .args([
                 "--exact",
-                "ext_e2e::the_ripwire_card_attaches_only_when_ripwire_is_on_path",
+                "ext_e2e::the_ripwire_card_attaches_only_when_ripwire_is_found",
             ])
             .env("PATH", &*dir)
             .output()?;

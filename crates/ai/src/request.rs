@@ -100,24 +100,17 @@ pub fn host_of(url: &str) -> &str {
     rest.split_once(':').map_or(rest, |(host, _)| host)
 }
 
-/// One GET with a byte cap, no retry: a catalog refresh can wait for the next session.
-pub fn get_json(
-    url: &str,
-    headers: &[(&str, String)],
-    proxy: Option<&ProxyConfig>,
-    cap: usize,
-) -> Result<Value, String> {
+fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_secs(20));
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
         builder = builder.proxy(proxy.clone());
     }
-    let mut request = builder.build().get(url).set("accept", "application/json");
-    for (name, value) in headers {
-        request = request.set(name, value);
-    }
-    let response = request.call().map_err(|error| format!("{url}: {error}"))?;
+    builder.build()
+}
+
+fn read_capped(response: ureq::Response, url: &str, cap: usize) -> Result<Value, String> {
     let mut body = Vec::new();
     let limit = u64::try_from(cap.saturating_add(1)).unwrap_or(u64::MAX);
     let mut reader = std::io::Read::take(response.into_reader(), limit);
@@ -127,6 +120,41 @@ pub fn get_json(
         return Err(format!("{url}: body over {cap} bytes"));
     }
     serde_json::from_slice(&body).map_err(|error| format!("{url}: {error}"))
+}
+
+/// One GET with a byte cap, no retry: a catalog refresh can wait for the next session.
+pub fn get_json(
+    url: &str,
+    headers: &[(&str, String)],
+    proxy: Option<&ProxyConfig>,
+    cap: usize,
+) -> Result<Value, String> {
+    let mut request = agent(url, proxy).get(url).set("accept", "application/json");
+    for (name, value) in headers {
+        request = request.set(name, value);
+    }
+    let response = request.call().map_err(|error| format!("{url}: {error}"))?;
+    read_capped(response, url, cap)
+}
+
+pub fn post_json(
+    url: &str,
+    headers: &[(&str, String)],
+    body: &str,
+    proxy: Option<&ProxyConfig>,
+    cap: usize,
+) -> Result<Value, String> {
+    let mut request = agent(url, proxy)
+        .post(url)
+        .set("accept", "application/json")
+        .set("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.set(name, value);
+    }
+    let response = request
+        .send_string(body)
+        .map_err(|error| format!("{url}: {error}"))?;
+    read_capped(response, url, cap)
 }
 
 pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
