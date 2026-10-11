@@ -39,7 +39,23 @@ pub fn draw<B>(
 ) where
     B: ratatui::backend::Backend + std::io::Write,
 {
-    term::sync_frame(terminal, |terminal| draw_frame(app, terminal, port));
+    draw_with_images(app, terminal, port, |_, _| {});
+}
+
+/// Incident: the orb was placed after the frame closed, so for a presented frame it sat on its
+/// old rows over the text that had moved. `images` runs inside the frame, after the paint.
+pub fn draw_with_images<B>(
+    app: &mut App,
+    terminal: &mut crate::terminal::Terminal<B>,
+    port: Option<&dyn SessionPort>,
+    images: impl FnOnce(&mut App, &mut B),
+) where
+    B: ratatui::backend::Backend + std::io::Write,
+{
+    term::sync_frame(terminal, |terminal| {
+        draw_frame(app, terminal, port);
+        images(app, terminal.backend_mut());
+    });
 }
 
 fn draw_frame<B>(

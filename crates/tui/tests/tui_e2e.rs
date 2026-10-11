@@ -2073,6 +2073,64 @@ fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResu
     Ok(())
 }
 
+/// Dies with the orb placed after its frame closed: for a presented frame it sat on its old rows,
+/// over the text that frame had just moved under it (19 such frames in a measured console reply).
+#[test]
+fn an_orb_moved_by_a_commit_is_placed_in_the_frame_that_moved_it() -> TestResult {
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    backend.write_all(b"$ yi\r\n")?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut images = yi_tui::orb::Images::default();
+    let mut frame = |app: &mut App, terminal: &mut yi_tui::terminal::Terminal<VT100Backend>| {
+        yi_tui::render::draw_with_images(app, terminal, None, |app, out| images.tick(app, out));
+        terminal.backend_mut().take_written()
+    };
+    let first = frame(&mut app, &mut terminal);
+    let placed_row = |written: &str| -> Option<u16> {
+        let (before, _) = written.split_once("\x1b_Ga=p,")?;
+        before
+            .rsplit("\x1b[")
+            .next()?
+            .split(';')
+            .next()?
+            .parse()
+            .ok()
+    };
+    let was = placed_row(&first).ok_or("the first frame placed no orb")?;
+    app.notice("one\ntwo\nthree");
+    let written = frame(&mut app, &mut terminal);
+    let now = placed_row(&written).ok_or("the moved orb was not placed")?;
+    assert!(
+        now > was,
+        "the commit moved the orb down: row {was} then {now}"
+    );
+    let open = written.find("\x1b[?2026h").ok_or("no update opened")?;
+    let place = written.find("\x1b_Ga=p,").ok_or("no placement")?;
+    let close = written.rfind("\x1b[?2026l").ok_or("no update closed")?;
+    assert_eq!(
+        (
+            written.matches("\x1b[?2026h").count(),
+            written.matches("\x1b[?2026l").count()
+        ),
+        (1, 1),
+        "the text and the orb share one update: {written:?}"
+    );
+    assert!(
+        open < place && place < close,
+        "the placement lies inside it: {written:?}"
+    );
+    let label = terminal.backend().row_text(now.saturating_add(1));
+    assert!(
+        label.contains("[esc] interrupt"),
+        "the orb's middle row is its label's: {label:?}"
+    );
+    Ok(())
+}
+
 /// The screenshot's fourth defect: a host notice arrived as a user-role
 /// message, so it retitled the window, opened a turn with a divider, and drew
 /// the user's `›` rail on text the user never typed.

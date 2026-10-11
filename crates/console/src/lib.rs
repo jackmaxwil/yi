@@ -45,6 +45,7 @@ pub struct ConsoleOptions {
     pub autostart: bool,
     pub auto_side: bool,
     pub sidebar: crate::model::SidebarMode,
+    pub pace: u16,
 }
 
 pub struct DriveOptions {
@@ -218,6 +219,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     );
     app.state.auto_side = options.auto_side;
     app.state.sidebar = options.sidebar;
+    app.state.chat_pace = options.pace;
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -276,7 +278,6 @@ fn run_interactive(
     outbound: &Outbound,
     theme: &Theme,
 ) -> i32 {
-    let kitty_ok = app.kitty;
     let mut orb_owners = std::collections::HashMap::new();
     let mut scheduler = yi_tui::frame::FrameScheduler::default();
     while !app.state.quit {
@@ -287,7 +288,7 @@ fn run_interactive(
         let wake = scheduler
             .poll_timeout(Instant::now())
             .min(IDLE_POLL)
-            .min(orb_wake(app))
+            .min(chat_wake(app))
             .min(app.avatars.wake().unwrap_or(IDLE_POLL));
         // Incident: a 50 ms input poll delayed every daemon frame; any event now wakes the loop.
         match events.recv_timeout(wake) {
@@ -305,13 +306,8 @@ fn run_interactive(
         }
         if scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
-            // The whole frame lands inside one synchronized update, so a
-            // split-ratio animation step can never tear.
             let mut out = std::io::stdout();
-            let _ = out.execute(ratatui::crossterm::terminal::BeginSynchronizedUpdate);
-            let drawn = draw(app, terminal, theme);
-            let _ = out.execute(ratatui::crossterm::terminal::EndSynchronizedUpdate);
-            if drawn.is_err() {
+            if present(app, terminal, theme, &mut orb_owners, &mut out).is_err() {
                 return 1;
             }
             set_window_title(app);
@@ -320,23 +316,36 @@ fn run_interactive(
                 let _ = out.write_all(sequence.as_bytes());
                 let _ = out.flush();
             }
-            if kitty_ok {
-                use std::io::Write;
-                place_avatars(app, &mut out);
-                place_notebook_image(app, &mut out);
-                let _ = out.flush();
-            }
             scheduler.mark_drawn(start, Instant::now());
-        }
-        if kitty_ok {
-            use std::io::Write;
-            let mut out = std::io::stdout();
-            place_chat_orbs(app, &mut orb_owners, &mut out);
-            app.avatars.animate(&mut out);
-            let _ = out.flush();
+        } else if app.kitty {
+            let _ = yi_tui::term::framed(&mut std::io::stdout(), |out| {
+                place_chat_orbs(app, &mut orb_owners, out);
+                app.avatars.animate(out);
+            });
         }
     }
     0
+}
+
+/// Incident: images placed after the update closed sat on their old rows over moved text, so
+/// the text and every image the frame moves land in one synchronized update.
+fn present<B: Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    theme: &Theme,
+    orb_owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    let _ = out.execute(ratatui::crossterm::terminal::BeginSynchronizedUpdate);
+    let drawn = draw(app, terminal, theme);
+    if app.kitty {
+        place_avatars(app, out);
+        place_notebook_image(app, out);
+        place_chat_orbs(app, orb_owners, out);
+        app.avatars.animate(out);
+    }
+    let _ = out.execute(ratatui::crossterm::terminal::EndSynchronizedUpdate);
+    drawn
 }
 
 fn set_window_title(app: &mut App) {
@@ -352,7 +361,7 @@ fn set_window_title(app: &mut App) {
 }
 
 /// The identicon over every rail row on screen; rows that scrolled off are deleted.
-fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
+fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
@@ -361,7 +370,9 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
     app.avatars.sync(out, &rows);
 }
 
-fn orb_wake(app: &App) -> Duration {
+/// Incident: the reveal's clock was missing here, so a streaming chat stepped only when the orb
+/// or the idle poll woke the loop and drew at 28 fps in 2-row lurches.
+fn chat_wake(app: &App) -> Duration {
     use crate::model::PaneContent;
     app.state
         .panes
@@ -369,7 +380,10 @@ fn orb_wake(app: &App) -> Duration {
         .filter_map(|pane| match &pane.content {
             PaneContent::Session {
                 chat: Some(chat), ..
-            } if chat.app.orb_animating() => Some(chat.orb.wake()),
+            } => {
+                let orb = chat.app.orb_animating().then(|| chat.orb.wake());
+                Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
+            }
             _ => None,
         })
         .min()
@@ -381,7 +395,7 @@ fn orb_wake(app: &App) -> Duration {
 fn place_chat_orbs(
     app: &mut App,
     owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
-    out: &mut std::io::Stdout,
+    out: &mut impl std::io::Write,
 ) {
     use crate::model::PaneContent;
     owners.retain(|pane, owner| {
@@ -509,6 +523,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
     app.state.sidebar = options.sidebar;
+    app.state.chat_pace = options.pace;
     let width = drive.width.max(20);
     let height = drive.height.max(8);
     let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
@@ -680,6 +695,41 @@ mod tests {
         outbound.shutdown();
         draw(&mut app, &mut terminal, &theme)?;
         assert!(placed(&mut app), "placed again after the clear");
+        Ok(())
+    }
+
+    /// Dies with an image written after the frame's update closed: a presented frame then
+    /// showed it on its old rows over text that had moved, 19 times in one measured reply.
+    #[test]
+    fn a_frame_places_its_images_inside_its_own_update() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.kitty = true;
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Notebook {
+                session: None,
+                cells: vec![crate::model::NbCell {
+                    images: vec!["iVBORw0KGgo=".to_owned()],
+                    ..crate::model::NbCell::default()
+                }],
+                input: Box::default(),
+            };
+        }
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let mut out = Vec::new();
+        present(
+            &mut app,
+            &mut terminal,
+            &theme,
+            &mut std::collections::HashMap::new(),
+            &mut out,
+        )?;
+        let out = String::from_utf8_lossy(&out);
+        let open = out.find("\u{1b}[?2026h").ok_or("no update opened")?;
+        let place = out.find("a=p,").ok_or("the image was not placed")?;
+        let close = out.rfind("\u{1b}[?2026l").ok_or("no update closed")?;
+        assert!(open < place && place < close, "{out:?}");
         Ok(())
     }
 
