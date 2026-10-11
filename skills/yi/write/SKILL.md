@@ -34,7 +34,7 @@ syntax: ok
 
 - The header is a tag for the new content with every line counted as displayed. Edit at once by citing `[src/greet.py#A1B2]`, or with no tag at all, and do not `read` the file back to check.
 - `syntax: ok` or `syntax: error line N: …` is a parse check for the languages that have one (JSON, Python, JavaScript, shell, Ruby, PHP, Go, Rust) when the checker is installed. No line means no checker ran, not a pass. An error line means the file is on disk and broken: fix that line with `edit`, not with another full write.
-- The result also carries a diff against what was there, so a write that replaced an existing file shows exactly what it dropped. Look at it when you meant a new file.
+- A replacing write records a diff of what it dropped in the session record for the human reviewer; the model-facing result carries none, so you cannot check it. If the overwrite was not meant to drop content, `read` the file to see what is there now.
 
 ## Refusals
 
@@ -45,6 +45,6 @@ syntax: ok
 
 ## After a write
 
-Later changes go through `edit` with the tag above. Another write to the same path mints a new tag; use the newest. A tag older than the file's current content is rebased when the cited lines are unchanged and rejected with the current text otherwise (see the read skill).
+Later changes go through `edit` with the tag above. Another write to the same path mints a new tag; use the newest. What edit does when a tag is older than the file's current content, and which lines it may touch, is the patch guide's: `read("yi://tools/edit")`.
 
 A line wider than 512 columns can never anchor an edit. When one must change, `write` the file, or use grep `replace` with `apply`.

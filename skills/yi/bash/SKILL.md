@@ -49,7 +49,8 @@ So keep inspection pure and separate from work:
 Size the call before the first run, not after a timeout: a cold build or a
 whole suite gets `timeout_secs` near 600 and a `wait` of 30-60, so it turns
 into a job and the turn is yours for reads in the meantime. Every timeout
-spends its whole limit and returns nothing usable.
+spends its whole limit and returns the output captured so far, so read it
+before rerunning anything.
 
 Past 600 s, or for anything meant to keep running (a dev server, a watcher),
 detach it and read its log in later calls:
