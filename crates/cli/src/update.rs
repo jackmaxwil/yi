@@ -469,7 +469,8 @@ fn classify(path: &str) -> Result<Member, String> {
     if path.starts_with('/') || path.starts_with('\\') {
         return Err(format!("archive entry {path} is absolute"));
     }
-    if path.split(['/', '\\']).any(|part| part == "..") {
+    let stripped = path.strip_prefix("./").unwrap_or(path);
+    if yi_types::path::escaping_part(stripped.strip_suffix('/').unwrap_or(stripped)).is_some() {
         return Err(format!("archive entry {path} leaves the archive"));
     }
     let path = path.strip_prefix("./").unwrap_or(path);
@@ -486,10 +487,7 @@ fn classify(path: &str) -> Result<Member, String> {
     if relative.is_empty() || relative.ends_with('/') {
         return Ok(Member::Skip);
     }
-    if relative
-        .split('/')
-        .any(|part| part.is_empty() || part == "." || part == "..")
-    {
+    if yi_types::path::escaping_part(relative).is_some() {
         return Err(format!("archive entry {path} leaves the archive"));
     }
     Ok(Member::Skill(relative.to_owned()))
@@ -581,13 +579,13 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn skill_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    if yi_types::path::escaping_part(relative).is_some() {
+        return Err(format!(
+            "archive entry skills/{relative} leaves the archive"
+        ));
+    }
     let mut path = root.to_path_buf();
     for part in relative.split('/') {
-        if part.is_empty() || part == "." || part == ".." {
-            return Err(format!(
-                "archive entry skills/{relative} leaves the archive"
-            ));
-        }
         path.push(part);
     }
     Ok(path)

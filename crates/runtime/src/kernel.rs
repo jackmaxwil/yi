@@ -203,10 +203,8 @@ pub struct KernelServiceOptions {
 
 /// A session's snapshot files in `base`, prefixed with its id.
 pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, PathBuf) {
-    let (snapshot, manifest) = (
-        yi_kernel::snapshot::snapshot_path_in(base),
-        yi_kernel::snapshot::manifest_path_in(base),
-    );
+    let snapshot = yi_kernel::snapshot::snapshot_path_in(base);
+    let manifest = yi_kernel::snapshot::manifest_path_in(base);
     let prefixed = |path: PathBuf, id: &str| {
         let name = path
             .file_name()
@@ -887,21 +885,15 @@ mod tests {
     fn the_kernel_puts_an_installed_plugin_first_on_its_path() -> TestResult {
         let scratch = crate::scratch::Scratch::new("kernel-plugin-path")?;
         let home = scratch.home()?;
-        let options = |home: &std::path::Path| KernelServiceOptions {
-            cwd: home.to_path_buf(),
-            home: home.to_path_buf(),
-            session_dir: None,
-            family_dir: None,
-            host: Arc::new(HostRegistry::default()),
-            on_restore: None,
-            on_boot: None,
-            sandbox: None,
-            snapshot_key: None,
-            per_session_state: false,
-            cell_ceiling: None,
+        let options = |home: &std::path::Path| {
+            KernelService::new(options(
+                home.to_path_buf(),
+                home.to_path_buf(),
+                Arc::new(HostRegistry::default()),
+            ))
         };
         let path_of = |home: &std::path::Path| {
-            let env = KernelService::new(options(home)).kernel_env(None);
+            let env = options(home).kernel_env(None);
             env.into_iter()
                 .find_map(|(key, value)| (key == "PATH").then_some(value))
         };
@@ -1145,24 +1137,32 @@ mod tests {
         Ok(())
     }
 
-    fn service() -> KernelService {
-        let mut registry = HostRegistry::default();
-        registry.register_mcp_stubs();
-        KernelService::new(KernelServiceOptions {
-            cwd: std::env::temp_dir(),
-            home: std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default(),
+    fn options(cwd: PathBuf, home: PathBuf, host: Arc<HostRegistry>) -> KernelServiceOptions {
+        KernelServiceOptions {
+            cwd,
+            home,
             session_dir: None,
             family_dir: None,
-            host: Arc::new(registry),
+            host,
             on_restore: None,
             on_boot: None,
             sandbox: None,
             snapshot_key: None,
             per_session_state: false,
             cell_ceiling: None,
-        })
+        }
+    }
+
+    fn service() -> KernelService {
+        let mut registry = HostRegistry::default();
+        registry.register_mcp_stubs();
+        KernelService::new(options(
+            std::env::temp_dir(),
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            Arc::new(registry),
+        ))
     }
 
     #[tokio::test]
