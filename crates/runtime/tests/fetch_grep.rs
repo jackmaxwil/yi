@@ -1,0 +1,287 @@
+use crate::scratch::Scratch;
+
+use std::error::Error;
+use std::sync::Arc;
+
+use serde_json::{Value, json};
+use yi_runtime::Wall;
+use yi_runtime::fetch::{Resolver, SessionTranscripts};
+use yi_session::SessionRepo;
+use yi_types::message::{AgentMessage, Content};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+fn tool_text(
+    resolver: Resolver,
+    name: &str,
+    input: Value,
+) -> Result<(String, bool), Box<dyn Error>> {
+    let resolver = Arc::new(resolver);
+    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
+        .into_iter()
+        .filter(|tool| tool.name() == name)
+        .collect();
+    yi_runtime::fetch::route_urls(&mut tools, &resolver);
+    let input = input.as_object().cloned().ok_or("input is not an object")?;
+    let output = tools
+        .first()
+        .ok_or("no such tool")?
+        .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
+    let text = yi_types::message::join_text(&output.result.content, "\n");
+    Ok((text, output.is_error))
+}
+
+fn bash_result(text: String) -> AgentMessage {
+    AgentMessage::ToolResult {
+        tool_call_id: "t1".to_owned(),
+        tool_name: "bash".to_owned(),
+        content: vec![Content::Text {
+            text,
+            text_signature: None,
+        }],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 0,
+    }
+}
+
+/// The gate's report.py output: 301 lines, the fact on line 219.
+fn report() -> String {
+    let mut lines: Vec<String> = (0..300)
+        .map(|i| format!("setting_{i:03} = fb3f5c"))
+        .collect();
+    lines.insert(218, "release_id = rel-09d88875".to_owned());
+    lines.join("\n")
+}
+
+struct Family {
+    _root: Scratch,
+    cwd: std::path::PathBuf,
+    transcripts: Arc<SessionTranscripts>,
+    parent: yi_session::SharedSession,
+    child: yi_session::SharedSession,
+    earlier: String,
+}
+
+fn family() -> Result<Family, Box<dyn Error>> {
+    let root = Scratch::new("yi-fetch-grep")?;
+    let (sessions, cwd) = (root.join("sessions"), root.join("repo"));
+    std::fs::create_dir_all(&cwd)?;
+    let cwd = cwd.canonicalize()?;
+    let mut repo = yi_session::JsonlRepo::new(sessions.clone(), cwd.to_string_lossy());
+    let earlier = repo.create(yi_session::CreateOptions::default())?;
+    yi_session::lock_session(&earlier).append_message("main", bash_result(report()))?;
+    let earlier = yi_session::lock_session(&earlier).metadata().id.clone();
+    let parent = repo.create(yi_session::CreateOptions::default())?;
+    let parent_id = yi_session::lock_session(&parent).metadata().id.clone();
+    let asked = AgentMessage::User {
+        content: yi_types::message::UserContent::Text(
+            "what release_id did the earlier run print?".to_owned(),
+        ),
+        timestamp: 0,
+        attribution: yi_types::message::Attribution::User,
+    };
+    yi_session::lock_session(&parent).append_message("main", asked)?;
+    yi_session::lock_session(&parent).append_message("main", bash_result(report()))?;
+    let child = repo.create(yi_session::CreateOptions {
+        parent_session_id: Some(parent_id),
+        ..yi_session::CreateOptions::default()
+    })?;
+    let host = crate::support::family(root.to_path_buf(), cwd.clone(), child.clone(), None).host;
+    let transcripts = Arc::new(SessionTranscripts::new(host, Some(sessions), &cwd));
+    Ok(Family {
+        _root: root,
+        cwd,
+        transcripts,
+        parent,
+        child,
+        earlier,
+    })
+}
+
+fn resolver(family: &Family, store: &yi_session::SharedSession, wall: Wall) -> Resolver {
+    Resolver::new(family.cwd.clone(), wall)
+        .with_session("worker", store.clone())
+        .with_transcripts(family.transcripts.clone())
+}
+
+fn hit_address(text: &str, needle: &str) -> Result<String, Box<dyn Error>> {
+    let row = text
+        .lines()
+        .find(|line| line.contains(needle))
+        .ok_or(format!("no row with {needle}: {text}"))?;
+    Ok(row.split(' ').next().unwrap_or_default().to_owned())
+}
+
+/// The incident's task: a fact on line 219 of a parent's tool result, which the compact view
+/// drops, is one grep away, as a row whose address `read` opens; every role gets it or a refusal.
+#[test]
+fn a_child_greps_its_parents_tool_output_by_alias() -> TestResult {
+    let family = family()?;
+    let ask = json!({"pattern": "release_id =", "path": "history://parent"});
+    let (text, is_error) = tool_text(
+        resolver(&family, &family.child, Wall::default()),
+        "grep",
+        ask.clone(),
+    )?;
+    assert!(!is_error, "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(
+        text.ends_with(" result bash: release_id = rel-09d88875"),
+        "{text}"
+    );
+    let address = hit_address(&text, "release_id")?;
+    assert!(address.starts_with("history://parent/"), "{address}");
+    let (entry, _) = tool_text(
+        resolver(&family, &family.child, Wall::default()),
+        "read",
+        json!({"path": address}),
+    )?;
+    assert!(entry.contains("release_id = rel-09d88875"), "{entry}");
+
+    let writes = Wall {
+        deny_write: vec![family.cwd.clone()],
+        ..Wall::default()
+    };
+    let (text, is_error) = tool_text(
+        resolver(&family, &family.child, writes),
+        "grep",
+        ask.clone(),
+    )?;
+    assert!(!is_error && text.contains("rel-09d88875"), "{text}");
+    let history = Wall {
+        deny_url: vec!["history://main".to_owned()],
+        ..Wall::default()
+    };
+    let (text, is_error) = tool_text(
+        resolver(&family, &family.child, history),
+        "grep",
+        ask.clone(),
+    )?;
+    assert!(is_error && text.contains("denied"), "{text}");
+    let (text, is_error) = tool_text(
+        resolver(&family, &family.parent, Wall::default()),
+        "grep",
+        ask,
+    )?;
+    assert!(is_error && text.contains("grep's history://repo"), "{text}");
+    Ok(())
+}
+
+/// A past session's tool output, which `compact.search` never indexes, is found under
+/// `history://repo`; the searching session's own transcript, which names the pattern, is not.
+#[test]
+fn history_repo_greps_this_repositorys_other_sessions() -> TestResult {
+    let family = family()?;
+    let ask = json!({"pattern": "release_id", "path": "history://repo"});
+    let (text, is_error) = tool_text(
+        resolver(&family, &family.parent, Wall::default()),
+        "grep",
+        ask.clone(),
+    )?;
+    assert!(!is_error, "{text}");
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("release_id"))
+        .collect();
+    assert!(
+        rows.iter().all(|row| !row.contains("what release_id")),
+        "{text}"
+    );
+    let address = hit_address(&text, "rel-09d88875")?;
+    assert!(address.contains(&family.earlier), "{text}");
+    let (entry, _) = tool_text(
+        resolver(&family, &family.parent, Wall::default()),
+        "read",
+        json!({"path": address}),
+    )?;
+    assert!(entry.contains("release_id = rel-09d88875"), "{entry}");
+    let history = Wall {
+        deny_url: vec!["history://main".to_owned()],
+        ..Wall::default()
+    };
+    let (text, is_error) = tool_text(resolver(&family, &family.parent, history), "grep", ask)?;
+    assert!(is_error && text.contains("denied"), "{text}");
+    Ok(())
+}
+
+/// The page cap at its limit and one past, a hit line at 200 chars and one past on a non-ASCII
+/// char, a zero-hit search and a file-only option, each named in the model's own view.
+#[test]
+fn a_history_grep_names_every_cut_it_makes() -> TestResult {
+    let family = family()?;
+    let store = &family.child;
+    let page = |count: usize, offset: usize| -> Result<String, Box<dyn Error>> {
+        let text = (0..count)
+            .map(|i| format!("hit {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (sessions, cwd) = (family.cwd.join(format!("s{count}")), family.cwd.clone());
+        let mut repo = yi_session::JsonlRepo::new(sessions, cwd.to_string_lossy());
+        let session = repo.create(yi_session::CreateOptions::default())?;
+        yi_session::lock_session(&session).append_message("main", bash_result(text))?;
+        let resolver = Resolver::new(cwd, Wall::default()).with_session("main", session);
+        Ok(tool_text(
+            resolver,
+            "grep",
+            json!({"pattern": "^hit", "path": "history://self", "offset": offset}),
+        )?
+        .0)
+    };
+    let full = page(40, 0)?;
+    assert_eq!(full.lines().count(), 40, "{full}");
+    let over = page(41, 0)?;
+    assert_eq!(
+        over.lines().last(),
+        Some(
+            "[… hits 1-40 of 41 in 1 entries of 1 sessions · history grep page 40 · grep again with offset=40]"
+        )
+    );
+    let rest = page(41, 40)?;
+    assert!(rest.ends_with("result bash: hit 40"), "{rest}");
+
+    let long = |chars: usize| -> Result<String, Box<dyn Error>> {
+        let line = format!("needle {}", "é".repeat(chars - 7));
+        let session = Arc::new(std::sync::Mutex::new(yi_session::SessionStore::in_memory(
+            yi_session::lock_session(store).metadata().clone(),
+        )));
+        yi_session::lock_session(&session).append_message("main", bash_result(line))?;
+        let resolver =
+            Resolver::new(family.cwd.clone(), Wall::default()).with_session("main", session);
+        Ok(tool_text(
+            resolver,
+            "grep",
+            json!({"pattern": "needle", "path": "history://self"}),
+        )?
+        .0)
+    };
+    let at = long(200)?;
+    assert_eq!(at.lines().count(), 1, "{at}");
+    let past = long(201)?;
+    assert!(
+        past.lines().next().is_some_and(|line| line.ends_with("é…")),
+        "{past}"
+    );
+    assert_eq!(
+        past.lines().last(),
+        Some(
+            "[… a hit line is cut at 200 chars (LINE_CHARS) · read its address for the whole entry]"
+        )
+    );
+
+    let ask = |input: Value| tool_text(resolver(&family, store, Wall::default()), "grep", input);
+    let (none, _) = ask(json!({"pattern": "no such words", "path": "history://parent"}))?;
+    assert!(
+        none.starts_with("[no hits in 2 entries of 1 sessions;"),
+        "{none}"
+    );
+    let (refused, is_error) =
+        ask(json!({"pattern": "x", "path": "history://parent", "include": "*.rs"}))?;
+    assert!(
+        is_error && refused.starts_with("include is a file grep option"),
+        "{refused}"
+    );
+    Ok(())
+}
