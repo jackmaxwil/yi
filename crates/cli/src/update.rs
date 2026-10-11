@@ -499,8 +499,8 @@ fn swap(dest: &Path, new_bin: &Path, target: &Path, new_skills: &Path) -> Result
     let binary = tarball::swap_in(new_bin, dest)?;
     match tarball::swap_in(new_skills, target) {
         Ok(skills) => {
-            skills.commit();
-            binary.commit();
+            let _ = skills.commit();
+            let _ = binary.commit();
             Ok(())
         }
         Err(error) => Err(match binary.restore() {
