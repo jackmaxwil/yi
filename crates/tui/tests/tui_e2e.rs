@@ -361,6 +361,92 @@ fn streamed(body: &str) -> yi_types::event::AgentEvent {
     }
 }
 
+/// Streams paragraphs of `sentences`, one sentence a draw, on an 80-column screen `rows` high and
+/// pre-scrolled to its last row, calling `frame` after every draw with the bytes it wrote.
+fn stream_paragraphs(
+    rows: u16,
+    (paragraphs, sentences): (usize, usize),
+    mut frame: impl FnMut(&VT100Backend, &str, usize) -> TestResult,
+) -> TestResult {
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, rows, 400);
+    backend.write_all(&b"\n".repeat(usize::from(rows - 1)))?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(usize::from(rows));
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut body = String::new();
+    for p in 0..paragraphs {
+        for s in 0..sentences {
+            body.push_str(&format!(
+                "Paragraph {p} sentence {s} says a little more about it. "
+            ));
+            app.reduce_agent(streamed(&body));
+            let _ = terminal.backend_mut().take_written();
+            yi_tui::render::draw(&mut app, &mut terminal, None);
+            let written = terminal.backend_mut().take_written();
+            frame(terminal.backend(), &written, p)?;
+        }
+        body.push_str("\n\n");
+    }
+    Ok(())
+}
+
+/// Dies with a paragraph that committed while on screen being written above the region again:
+/// the region then shrank, the composer jumped up by the paragraph and the frame repainted.
+#[test]
+fn a_paragraph_that_commits_on_screen_moves_nothing() -> TestResult {
+    let status =
+        |screen: &VT100Backend| (0..24).find(|&row| screen.row_text(row).contains("faux-1"));
+    let (mut held, mut was) = (0, None);
+    stream_paragraphs(24, (12, 3), |screen, written, p| {
+        let now = status(screen);
+        if was == Some(23) {
+            held += 1;
+            assert_eq!(
+                now,
+                Some(23),
+                "the composer left the bottom row at paragraph {p}"
+            );
+            assert!(
+                !written.contains("\u{1b}[J"),
+                "paragraph {p} repainted the region"
+            );
+        }
+        was = now;
+        Ok(())
+    })?;
+    assert!(
+        held > 20,
+        "the region reached the bottom row for only {held} frames"
+    );
+    Ok(())
+}
+
+/// Dies with a one-row scroll region on a short screen: a terminal ignores it and scrolls the
+/// whole screen, and the region it left shifted wrote composer rows into scrollback.
+#[test]
+fn a_screen_too_short_for_a_scroll_region_keeps_its_chrome_out_of_scrollback() -> TestResult {
+    let mut pushed = Vec::new();
+    stream_paragraphs(10, (6, 8), |screen, _, _| {
+        pushed.extend(screen.scrollback_tail());
+        Ok(())
+    })?;
+    assert!(
+        !pushed.is_empty(),
+        "nothing was scrolled off the 10-row screen"
+    );
+    let chrome: Vec<&String> = pushed
+        .iter()
+        .filter(|row| row.contains(['╭', '╰', '─']) || row.contains("faux-1"))
+        .collect();
+    assert!(
+        chrome.is_empty(),
+        "composer rows in scrollback: {chrome:#?}"
+    );
+    Ok(())
+}
+
 fn tool_start(id: &str) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
