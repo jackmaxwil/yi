@@ -63,18 +63,22 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
 8. Motion and in-flight states: put `--faux <cassette.jsonl>` in the `#!` line, `hold
    text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
    80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
-   past the reveal before waiting. Hold is solo only; the console's model lives in the daemon,
-   and the term host refuses `tick` and `hold`.
+   past the reveal before waiting, and a `tick` waits (5 s at most) for an armed hold to be
+   reached. Hold is solo only; the console's model lives in the daemon. On the term host the
+   proxy sends these steps and `wait-idle` over the real binary's `--control <socket>`, which
+   plays them on the drive's engine and answers `ok` or `error: …`, so a frozen scene's Ghostty
+   grabs land on its headless frames; a snap whose words part from the headless one is named.
 9. Iterating: `just tui-see watch <scene> [--host term]` keeps a `base` run and, on every save
    under crates/tui, crates/console or crates/orb, rebuilds, reruns as `head`, diffs and rewrites
    `target/see/gallery.html`. `just tui-see gallery [root] [page]` builds that page on its own:
    each scene, each snap by label side by side, the head's cell diff beside it, pictures inlined,
    so it can be published as one page for the owner to comment on. `--video` with `--host term`
    keeps the whole run as `run.webp` (cropped to the window, under the 512 KB blob cap for a
-   README); it needs at least one `snap` to find the window. On that host `wait-idle` waits for
-   the screen to hold still a second with digits ignored, so ticking ages do not count as work.
+   README); it needs at least one `snap` to find the window. On that host `wait-idle` is the
+   binary's own answer, so a turn still finishing its checkpoint is waited out, not read as idle;
+   the binary runs in a small cwd there, because a checkpoint of the mounted repo took minutes.
 10. On the forge, `.forgejo/workflows/tui.yml` builds the base and head binaries, then runs
    `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
    `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
-   24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
-   headless there. Console scenes get random session ids, so their avatar colours always differ.
+   24 pictures, the gallery kept as the job's artifact. Frozen scenes play in Ghostty too.
+   Console scenes get random session ids, so their avatar colours always differ.

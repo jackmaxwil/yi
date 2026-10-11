@@ -50,19 +50,19 @@ impl Tick {
     }
 }
 
-/// Paint a due frame; at rest, or only moved, re-place the image already sent.
+/// Paint a due frame on the app's clock; at rest, or only moved, re-place the image sent.
 pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mut Tick) {
     if !app.kitty {
         return;
     }
     let want = app.orb_state();
     let resting = app.orb.at_rest(want);
-    let due = !resting && state.last.elapsed() >= FRAME;
+    let due = !resting && app.clock.since(state.last) >= FRAME;
     let stale = app.take_orb_stale();
     match app.orb_placement {
         Some((col, row)) if due || stale || !state.shown => {
-            let frame = app.orb.frame(state.last.elapsed(), want);
-            state.last = Instant::now();
+            let frame = app.orb.frame(app.clock.since(state.last), want);
+            state.last = app.clock.now();
             let (width, height) = pixel_size();
             let rgba = kitty::paint_rgba(&frame, 64.0, width, height);
             let back = 1 - state.front;
@@ -101,7 +101,7 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
         _ => {}
     }
     if resting {
-        state.last = Instant::now();
+        state.last = app.clock.now();
     }
 }
 

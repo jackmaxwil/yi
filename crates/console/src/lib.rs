@@ -31,7 +31,9 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
-use yi_tui::drive::{Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events};
+use yi_tui::drive::{
+    Control, Progress, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
+};
 use yi_tui::term::ControlPictures;
 
 use crate::app::{App, MouseKind};
@@ -118,6 +120,40 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     Ok(steps)
 }
 
+fn timing_step(
+    app: &mut App,
+    outbound: &Outbound,
+    events: &std::sync::mpsc::Receiver<ClientEvent>,
+    step: &Step,
+    started: Instant,
+) -> Option<Progress> {
+    Some(match step {
+        Step::Tick(ms) => {
+            if app.clock == yi_tui::motion::Clock::Real {
+                app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+            }
+            tick(app, outbound, events, *ms);
+            Progress::Done
+        }
+        Step::WaitIdle(ms) => yi_tui::drive::waited(!working(app), started, *ms, "wait-idle"),
+        Step::Hold(..) | Step::Release => Progress::Failed(
+            "hold and release need the solo drive: the console's model lives in the daemon"
+                .to_owned(),
+        ),
+        _ => return None,
+    })
+}
+
+fn working(app: &App) -> bool {
+    app.state
+        .focused_session()
+        .as_ref()
+        .and_then(|id| app.state.sessions.get(id))
+        .is_some_and(|row| row.status == SessionStatus::Working)
+        || app.chat_running()
+        || app.state.link == Link::Connecting
+}
+
 /// Moves the console's frozen clock a frame at a time, its chat panes with it.
 fn tick(
     app: &mut App,
@@ -198,7 +234,7 @@ fn draw<B: Backend>(
     Ok(())
 }
 
-pub fn run_console(options: &ConsoleOptions) -> i32 {
+pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let theme = Theme::new(
         detect_tier(
             std::env::var("COLORTERM").ok().as_deref(),
@@ -259,7 +295,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let stop_input = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let input = client::spawn_input(event_tx, std::sync::Arc::clone(&stop_input));
     drop(setup);
-    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme);
+    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme, control);
     stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = input.join();
     restore_terminal();
@@ -275,6 +311,7 @@ fn run_interactive(
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
     theme: &Theme,
+    mut control: Option<Control>,
 ) -> i32 {
     let kitty_ok = app.kitty;
     let mut orb_owners = std::collections::HashMap::new();
@@ -288,7 +325,12 @@ fn run_interactive(
             .poll_timeout(Instant::now())
             .min(IDLE_POLL)
             .min(orb_wake(app))
-            .min(app.avatars.wake().unwrap_or(IDLE_POLL));
+            .min(app.avatars.wake().unwrap_or(IDLE_POLL))
+            .min(
+                control
+                    .as_ref()
+                    .map_or(IDLE_POLL, |_| yi_tui::drive::CONTROL_POLL),
+            );
         // Incident: a 50 ms input poll delayed every daemon frame; any event now wakes the loop.
         match events.recv_timeout(wake) {
             Ok(ClientEvent::InputClosed(error)) => {
@@ -300,6 +342,11 @@ fn run_interactive(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return 1,
         }
         drain(app, outbound, events);
+        if yi_tui::drive::serve(&mut control, |step, at| {
+            timing_step(app, outbound, events, step, at)
+        }) {
+            app.dirty = true;
+        }
         if app.dirty {
             scheduler.request();
         }
@@ -587,15 +634,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 }
             }
             (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
-                let working = app
-                    .state
-                    .focused_session()
-                    .as_ref()
-                    .and_then(|id| app.state.sessions.get(id))
-                    .is_some_and(|row| row.status == SessionStatus::Working)
-                    || app.chat_running()
-                    || app.state.link == Link::Connecting;
-                match poll_condition(!working, started, ms, "wait-idle") {
+                match poll_condition(!working(&app), started, ms, "wait-idle") {
                     WaitPoll::Retry => {
                         current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
                     }
