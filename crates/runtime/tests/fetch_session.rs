@@ -448,33 +448,14 @@ fn read_tool_text(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<(String, bool), Box<dyn Error>> {
-    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
-        .into_iter()
-        .filter(|tool| tool.name() == "read")
-        .collect();
-    yi_runtime::fetch::route_urls(&mut tools, resolver);
-    let mut input = serde_json::Map::new();
-    input.insert("path".to_owned(), path.into());
+    let mut input = serde_json::json!({"path": path});
     if let Some(offset) = offset {
-        input.insert("offset".to_owned(), offset.into());
+        input["offset"] = offset.into();
     }
     if let Some(limit) = limit {
-        input.insert("limit".to_owned(), limit.into());
+        input["limit"] = limit.into();
     }
-    let output = tools
-        .first()
-        .ok_or("no read tool")?
-        .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
-    let text = output
-        .result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    Ok((text, output.is_error))
+    crate::support::routed_tool(resolver, "read", input)
 }
 
 /// An unpaged listing is served whole at the 51,200-byte cap and cut one byte past it, with a
@@ -618,15 +599,11 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
 #[test]
 fn a_multi_line_result_in_the_compact_view_counts_what_it_dropped() -> TestResult {
     let store = memory_store();
-    let mut output: Vec<String> = (0..300)
-        .map(|i| format!("setting_{i:03} = fb3f5c"))
-        .collect();
-    output.insert(218, "release_id = rel-09d88875".to_owned());
     let result = yi_types::message::AgentMessage::ToolResult {
         tool_call_id: "t1".to_owned(),
         tool_name: "bash".to_owned(),
         content: vec![yi_types::message::Content::Text {
-            text: output.join("\n"),
+            text: crate::support::report_output(),
             text_signature: None,
         }],
         details: None,

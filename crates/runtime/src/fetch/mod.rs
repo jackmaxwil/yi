@@ -74,10 +74,10 @@ impl Transcript {
 pub trait Transcripts: Send + Sync {
     fn open(&self, agent: &str) -> Option<Transcript>;
 
-    /// This repository's root sessions on disk, newest first, and the count that could not be
-    /// opened; a role with no session root has none.
-    fn corpus(&self) -> (Vec<(String, yi_session::SharedSession)>, usize) {
-        (Vec::new(), 0)
+    /// This repository's root session files on disk, newest first; `None` for a role with no
+    /// session root, which is refused rather than served an empty search.
+    fn corpus(&self) -> Option<crate::history::RepoSessions> {
+        None
     }
 }
 
@@ -262,24 +262,13 @@ impl Transcripts for SessionTranscripts {
         Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
     }
 
-    fn corpus(&self) -> (Vec<(String, yi_session::SharedSession)>, usize) {
-        let Some(dir) = &self.sessions_dir else {
-            return (Vec::new(), 0);
-        };
-        let listed = crate::history::repo_sessions(dir, Path::new(&self.cwd));
-        let mut files = listed.files;
-        files.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-        let total = files.len();
-        let opened: Vec<_> = files
-            .into_iter()
-            .filter_map(|file| {
-                let store = yi_session::load_session(&file).ok()?;
-                let id = store.metadata().id.clone();
-                Some((id, Arc::new(std::sync::Mutex::new(store))))
-            })
-            .collect();
-        let skipped = total.saturating_sub(opened.len());
-        (opened, listed.skipped.saturating_add(skipped))
+    fn corpus(&self) -> Option<crate::history::RepoSessions> {
+        let mut listed =
+            crate::history::repo_sessions(self.sessions_dir.as_ref()?, Path::new(&self.cwd));
+        listed
+            .files
+            .sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        Some(listed)
     }
 }
 

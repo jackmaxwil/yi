@@ -54,6 +54,79 @@ fn searchable(entry: &Entry) -> Vec<(String, String)> {
     }
 }
 
+/// The entries a root's window names, as `read` serves them: `since/<seq>` after a sequence,
+/// `tail/<n>` the last n, an entry id that entry, and a bare agent the whole transcript.
+fn within<'a>(found: &'a [Entry], window: &str) -> Vec<&'a Entry> {
+    let number = |raw: &str| raw.parse::<u64>().ok();
+    match window.split_once('/') {
+        _ if window.is_empty() => found.iter().collect(),
+        Some(("since", raw)) if number(raw).is_some() => {
+            let after = number(raw).unwrap_or_default();
+            found.iter().filter(|entry| entry.seq() > after).collect()
+        }
+        Some(("tail", raw)) if number(raw).is_some() => {
+            let keep = usize::try_from(number(raw).unwrap_or_default()).unwrap_or(usize::MAX);
+            found
+                .iter()
+                .skip(found.len().saturating_sub(keep))
+                .collect()
+        }
+        _ => found.iter().filter(|entry| entry.id() == window).collect(),
+    }
+}
+
+const NO_CORPUS: &str = "a session root: a spawned reader lists no past sessions, so ask the \
+                         parent, whose grep of history://repo does";
+
+#[derive(Default)]
+struct Hits {
+    rows: Vec<String>,
+    total: usize,
+    entries: usize,
+    sessions: usize,
+    clipped: bool,
+    skipped: usize,
+}
+
+impl Hits {
+    fn scan(
+        &mut self,
+        agent: &str,
+        store: &yi_session::SessionStore,
+        window: &str,
+        hit: &dyn Fn(&str) -> bool,
+        offset: usize,
+    ) -> Result<(), String> {
+        let found = store
+            .find_entries(&EntryQuery {
+                order: EntryOrder::OldestFirst,
+                ..EntryQuery::default()
+            })
+            .map_err(|error| error.to_string())?;
+        self.sessions = self.sessions.saturating_add(1);
+        for entry in within(&found, window) {
+            let parts = searchable(entry);
+            self.entries = self.entries.saturating_add(usize::from(!parts.is_empty()));
+            let lines = parts
+                .iter()
+                .flat_map(|(kind, text)| text.lines().map(move |line| (kind, line)));
+            for (kind, line) in lines.filter(|(_, line)| hit(line)) {
+                self.total = self.total.saturating_add(1);
+                if self.total <= offset || self.rows.len() == HITS {
+                    continue;
+                }
+                let kept: String = line.chars().take(LINE_CHARS).collect();
+                let cut = if kept.len() < line.len() { "…" } else { "" };
+                self.clipped = self.clipped || !cut.is_empty();
+                let (id, seq) = (entry.id(), entry.seq());
+                self.rows
+                    .push(format!("history://{agent}/{id} #{seq} {kind}: {kept}{cut}"));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Resolver {
     /// Every line of a transcript's messages and summaries, tool results included, that the
     /// matcher hits; `history://repo` walks this repository's other root sessions.
@@ -68,56 +141,59 @@ impl Resolver {
             url: url.to_string(),
             message,
         };
-        let (sessions, skipped) = match url.path() {
+        let mut hits = Hits::default();
+        match url.path() {
             REPO => {
                 self.history_walled(url)?;
+                let listing = self
+                    .transcripts()
+                    .and_then(|desk| desk.corpus())
+                    .ok_or_else(|| super::unsupported(url, NO_CORPUS))?;
                 let own = self
                     .session_store()
                     .map(|store| yi_session::lock_session(&store).metadata().id.clone());
-                let (all, skipped) = self.transcripts().map_or((Vec::new(), 0), |t| t.corpus());
-                let others = all.into_iter().filter(|(id, _)| Some(id) != own.as_ref());
-                (others.collect::<Vec<_>>(), skipped)
-            }
-            agent => {
-                let session =
-                    self.transcript_of(target.path())
-                        .ok_or_else(|| FetchError::NotFound {
-                            url: url.to_string(),
-                            what: format!("agent {agent}: no live, kept or on-disk session"),
-                        })?;
-                (vec![(agent.to_owned(), session)], 0)
-            }
-        };
-        let (mut rows, mut total, mut entries, mut clipped) = (Vec::new(), 0usize, 0usize, false);
-        for (agent, session) in &sessions {
-            let store = yi_session::lock_session(session);
-            let found = store
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| backend(error.to_string()))?;
-            for entry in &found {
-                let parts = searchable(entry);
-                entries = entries.saturating_add(usize::from(!parts.is_empty()));
-                let lines = parts
-                    .iter()
-                    .flat_map(|(kind, text)| text.lines().map(move |line| (kind, line)));
-                for (kind, line) in lines.filter(|(_, line)| hit(line)) {
-                    total = total.saturating_add(1);
-                    if total <= offset || rows.len() == HITS {
+                hits.skipped = listing.skipped;
+                // Invariant: one parsed session is resident at a time, however large the corpus.
+                for file in &listing.files {
+                    let Ok(store) = yi_session::load_session(file) else {
+                        hits.skipped = hits.skipped.saturating_add(1);
                         continue;
+                    };
+                    let id = store.metadata().id.clone();
+                    if Some(&id) != own.as_ref() {
+                        hits.scan(&id, &store, "", hit, offset).map_err(backend)?;
                     }
-                    let kept: String = line.chars().take(LINE_CHARS).collect();
-                    let cut = if kept.len() < line.len() { "…" } else { "" };
-                    clipped = clipped || !cut.is_empty();
-                    let id = entry.id();
-                    let seq = entry.seq();
-                    rows.push(format!("history://{agent}/{id} #{seq} {kind}: {kept}{cut}"));
                 }
             }
+            asked => {
+                let path = target.path();
+                let splits = path.rmatch_indices('/').map(|(at, _)| path.split_at(at));
+                let (session, window) = std::iter::once((path, ""))
+                    .chain(splits)
+                    .find_map(|(agent, rest)| {
+                        let window = rest.strip_prefix('/').unwrap_or(rest);
+                        self.transcript_of(agent).map(|session| (session, window))
+                    })
+                    .ok_or_else(|| FetchError::NotFound {
+                        url: url.to_string(),
+                        what: format!("agent {asked}: no live, kept or on-disk session"),
+                    })?;
+                let agent = asked.strip_suffix(window).unwrap_or(asked);
+                let agent = agent.strip_suffix('/').unwrap_or(agent);
+                let store = yi_session::lock_session(&session);
+                hits.scan(agent, &store, window, hit, offset)
+                    .map_err(backend)?;
+            }
         }
-        let searched = format!("{entries} entries of {} sessions", sessions.len());
+        let Hits {
+            mut rows,
+            total,
+            entries,
+            sessions,
+            clipped,
+            skipped,
+        } = hits;
+        let searched = format!("{entries} entries of {sessions} sessions");
         if rows.is_empty() {
             rows.push(match total {
                 0 => format!("[no hits in {searched}; try ignore_case, fewer words, or a synonym]"),
