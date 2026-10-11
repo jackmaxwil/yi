@@ -28,7 +28,8 @@ refinement or self-extension · embeddings and semantic search · resident LSP o
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6) · a GUI · browser automation, computer use, email, or any capability that
-is not a coding agent · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
+is not a coding agent · an `ask_user` tool on a root session with no reviewer (a root asks in
+its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
@@ -85,9 +86,15 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Kernel | A persistent Python process that reaches the host only through named host requests | §9 |
 | Url | The one reference type, `scheme://path#fragment`, resolved by `fetch` | §10 |
 | Child | A family member admitted under a lease, ending in one typed exit | §11 |
+| Lease | The tokens and deadline a child draws from its parent's own, never more | §11 |
+| Wall | A hereditary deny set over paths and URLs that only narrows down the family | §11 |
 | Envelope | A message written to the receiver's session store before delivery | §12 |
+| Todo | One unit of work, the same type in a session list and in a plan | §13, D282 |
 | Plan and contract | A hash-chained op journal over todos; a done-predicate over a frozen attempt | §13 |
 | Lane | A leased git-worktree slot with a moving hand-back | §14 |
+| Node | One machine's card of kernel slots, which every live kernel is admitted against | §9, D285 |
+| Schedule | A clock subscription whose tick creates a todo | §15.2, D283 |
+| Channel | A durable JSONL buffer that adapters append to and a blocked todo waits on | §15.2, D287 |
 
 | Capability | Composed from | Settled by |
 |---|---|---|
@@ -102,7 +109,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Shared family objects | Kernel `rlm.put` / `rlm.get` + Url (`family://`) | D164 |
 | Paged reading of anything | Url + `fetch` pages | D213 |
 | Checker after every covered write | Contract (`covers`) + Tool | D228 |
-| Heartbeat | Schedule + Session run queue (steer or follow-up) | |
+| Heartbeat | Schedule + Todo + Session run queue (steer or follow-up) | D283 |
 | Next-step hints | Tool result + procedural graph | D219 |
 
 ## 4. Session
@@ -182,8 +189,19 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   undated `unproven`), every `custom` kind and both summaries arrive as
   `<yi_internal_context source="…">`; compaction drops the kinds `heartbeat_prompt, advisory,
   goal_prompt, ledger_prompt, plan_dispatch, reminder, fragment, todo_intercept` (D342).
+- Reclaim runs inside the run's `convert_to_llm`, before compaction is ever due: a tool result
+  at least 1,200 chars long and 5 requests old (never `ask_user`, `plan`, `todo`, or the newest
+  `read` of a path) is cut once the tokens dropped × cache-read price × requests so far beat the
+  tokens after the first cut × (write − read price), or the cache lapsed; at least 2,000 tokens.
+  A `custom{reclaim}` entry names the cut results, which render from then on as one
+  `[reclaimed: … get it: read("history://self/<entry>")]` line; the stored results never change.
+- `annotate` writes `custom{annotation}`: `pin` keeps the newest result whose call contains
+  `call` out of every cut, `discard` waives its age and size floors, and a `finding` (note ≤ 280
+  chars) is listed whole under `[Findings]` in every compaction view.
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
-  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338). A
+  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338), or
+  would pass `compaction.at` tokens when that comes first (a root session's ceiling, raised with a
+  warning to `keep_recent` plus twice the reserve, which a compaction can get under). A
   usage the latest compaction kept in its tail is stale, and with none the messages count alone
   at bytes/3.
   The cut keeps 20,000 recent tokens, never at a tool result; up to 64,000 tokens of summarized
@@ -271,7 +289,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
-  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
+  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
   With `models.classifier` set, a local sidecar is also asked which triggered skill the message
   calls for (`classify` entry); it points only at or above `classifier.threshold`.
@@ -299,12 +317,17 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 ### 7.1 Table and trait
 | Read | Write | Exec | Ledger |
 |---|---|---|---|
-| `read`, `grep`, `get_context`, `ask_user` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
+| `read`, `grep`, `get_context`, `ask_user`, `annotate` | `edit`, `write` | `bash`, `ipython` | `plan`, `todo` |
 
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
-  `ipython`, `plan`, `todo`, `ask_user`. `check_request_budget.py` prices system block plus tool
+  `ipython`, `annotate`, `plan`, `todo`, and `ask_user` in a child or with auto-review on. `check_request_budget.py` prices system block plus tool
   table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
+- Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
+  never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
+  (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
+  the whole guide; `read`, `grep`, `bash`, `write`, `get_context` and `ipython` stay whole. An
+  edit refusal names the address. There is no dispatcher tool.
 - `Tool { name, description, schema, kind, kind_for, freeform, irreversible, validate, preview,
   execute -> ToolOutput }`. `kind_for` decides per call; Read runs parallel, the rest sequential.
   The adapter runs rule check, reviewer wall, permission gate (§8), next-step lines (§6).
@@ -325,9 +348,14 @@ every one-mark deletion that parses names the same op. Three no-op edits in a ro
 The interpreter is `bash` if `command -v bash` succeeds, else `sh`, probed once. Timeout 300 s
 default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = exit ≠ 0 or
 cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
-past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines; else head 80/tail 40), kept
-only if shorter. Lossy output is tee'd to `~/.yi/spills/<session>/` and ends
-`[full output: <path>]`; with nowhere to tee, raw text returns. A contained call runs under
+past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines, 3 a file; else head 80/tail
+40), kept only if shorter. Runs of passing-test lines become one counted row, and a line naming an
+error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`).
+With `models.selector` named, a cut output's full text (at most 4,000 lines) goes to that model,
+which answers 1-based line ranges only; within 5 s the lines it names follow the cut verbatim under
+a row naming it, else a row says it gave none (`side:select` books its cost). Lossy output is tee'd, secrets redacted line for line, to the family board's
+`spills/`, kept until `yi sessions rm`, and ends `[full output: <path>]`; with nowhere to tee,
+raw text returns. A contained call runs under
 Seatbelt (§8).
 
 - Owner: [`jobs.rs`](../crates/tools/src/jobs.rs), [`reduce.rs`](../crates/tools/src/reduce.rs).
@@ -372,8 +400,9 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
 `<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
 `~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
-child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
-`trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
+child's lists none of those. Frontmatter at discovery; the catalog clips each description at 60 chars and the
+whole skill is `read("yi://skills/<name>")`; `$name` or a `trigger:` needle in a message the
+user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
@@ -499,6 +528,7 @@ A persistent IPython process per session that reaches the host only through host
 | `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session id of any lane of this repository resolves too |
 | `checkpoint` / `mcp` | `<tree>/<path>` / `<server>/<uri>` | a checkpoint-tree file (§7.7) / an MCP resource (§7.6) |
 | `family` / `tree` | `<name>` / `<agent>/<path>` | a blackboard sidecar / a member's checkout file, under `deny_read` |
+| `yi` | `tools/<name>` / `skills/<name>` | a deferred tool guide (§7.1) / a skill's `SKILL.md` (§7.8), under `deny_read` |
 
 - Owner: [`runtime/src/fetch/mod.rs`](../crates/runtime/src/fetch/mod.rs),
   [`runtime/src/fetch/schemes.rs`](../crates/runtime/src/fetch/schemes.rs)
@@ -552,8 +582,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
-  A walled session also walls the spill root and every session store and spares its own spill
-  dir and transcript, at the read gate and in its contained profile (D340, D345).
+  A walled session also walls the old spill root and every session store and spares its
+  family's spill dir and its own transcript, at the read gate and in its contained profile (D345).
 - A lease is drawn under the roster lock; an ask past the parent's deadline less 30 s or its
   unreserved tokens is refused with both numbers. `rlm.revoke` journals `custom{lease}` and
   sends `cancel`; at grace expiry the child is `Repossessed` with its lane `Retained`.
@@ -619,8 +649,9 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
   Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
-- `OpKind`, 23 kinds; the `plan` tool schema shows the first 15 (`MODEL_OPS`): `set, init, append,
-  drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view`.
+- `OpKind`, 23 kinds; the `plan` tool schema shows the first 16 (`MODEL_OPS`): `set, init, append,
+  drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view,
+  accepted_by_user`.
 - `Actor { Owner, Child, User, Host, Engine }`. User may apply every op; Owner every op but
   `fuse_reset`, `resolve`, `accepted_by_user` and a resolving `repair`; Host `unblock, reconcile`;
   Child `view, submit`; Engine `start, submit, done, fail, retry`.
@@ -747,7 +778,11 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   re-arms every wait from the rehydrated list.
 - `/heartbeat halt` holds every job of every interned store (`halted`) and every bound session's
   turn and machine wakes; `/heartbeat resume` lifts it, and only it while it is in effect. Both are `custom{halt}` records.
-  `spend.alertTokens` queues a shown `spend_alert` notice per multiple crossed.
+  `spend.alertTokens` and `spend.alertUsd` each queue a shown `spend_alert` notice per multiple
+  of tokens or billed dollars crossed, children counted by their `ChildUpdate`. `spend.dayAlertUsd`
+  does the same for the local day's billed dollars across every session: the total is seeded at each alarm's first attach from
+  the day's session files, grows with the live session's replies and children, and
+  restarts from zero past local midnight; it counts replies only, so it runs late, never early.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
@@ -804,7 +839,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask` |
 | `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
-| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed |
+| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog |
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |

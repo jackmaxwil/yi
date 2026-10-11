@@ -10,18 +10,22 @@ shrinks it in its own commit; the schema lock merges to the union, since shapes 
 import json, pathlib, sys
 
 
-def merge(ours, theirs):
-    """Both sides parsed; the result is the one a re-measure can only shrink."""
+def merge(ours, theirs, base=None):
+    """Both sides parsed; the result is the one a re-measure can only shrink.
+    Incident: a hash only main moved kept the branch's stale side, and #1110's fix hook refused it."""
     if isinstance(ours, dict) and isinstance(theirs, dict):
+        base = base if isinstance(base, dict) else {}
         out = {}
         for key in sorted(set(ours) | set(theirs)):
             a, b = ours.get(key), theirs.get(key)
             if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
                 out[key] = max(a, b)
             elif isinstance(a, dict) and isinstance(b, dict):
-                out[key] = merge(a, b)
+                out[key] = merge(a, b, base.get(key))
+            elif a is None or (a == base.get(key) and b is not None):
+                out[key] = b
             else:
-                out[key] = a if a is not None else b
+                out[key] = a
         return out
     return ours if ours is not None else theirs
 
@@ -29,7 +33,8 @@ def merge(ours, theirs):
 def drive(base, ours, theirs):
     a = json.loads(pathlib.Path(ours).read_text())
     b = json.loads(pathlib.Path(theirs).read_text())
-    merged = merge(a, b)
+    o = pathlib.Path(base).read_text().strip()
+    merged = merge(a, b, json.loads(o) if o else None)
     text = json.dumps(merged, indent=2, sort_keys=isinstance(merged, dict) and "max_bytes" not in merged)
     pathlib.Path(ours).write_text(text + "\n")
     return 0
@@ -41,6 +46,9 @@ def selfcheck():
     assert merge({"volume": 2283, "over_cap": 0}, {"volume": 2256, "over_cap": 1}) == {"volume": 2283, "over_cap": 1}
     lock = merge({"a::X": "shape a", "c::Z": "old"}, {"b::Y": "shape b", "c::Z": "new"})
     assert lock == {"a::X": "shape a", "b::Y": "shape b", "c::Z": "old"}, "union, ours on a clash"
+    surface = merge({"tool:bash": "old", "tool:plan": "ours"}, {"tool:bash": "main", "tool:plan": "old"},
+                    {"tool:bash": "old", "tool:plan": "old"})
+    assert surface == {"tool:bash": "main", "tool:plan": "ours"}, "a value only theirs moved is theirs"
     assert merge({"version": "0.142.0", "loc": 73264}, {"version": "0.142.0", "loc": 73264}) == {"version": "0.142.0", "loc": 73264}
     print("ok   merge_baseline selfcheck")
 

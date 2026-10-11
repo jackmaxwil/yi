@@ -30,8 +30,8 @@ jobs:
     if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # The one place the review job's limit is set; pr_review.py budgets its sweep from it, and the
-    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 45m) bounds it.
-    timeout-minutes: 45
+    # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 120m) bounds it.
+    timeout-minutes: 120
     steps:
       # Main's tree, never the PR's: this job holds yi-bot's token, whose comments count as rounds,
       # so a PR's own justfile, scripts or probes would judge themselves. The PR is read as data.

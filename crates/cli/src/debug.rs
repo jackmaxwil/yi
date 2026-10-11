@@ -14,7 +14,8 @@ const USAGE: &str = "usage: yi debug <verb>
   skills            the skills a session in this directory would see
   profile [verb]    run a traced console (or `yi <verb>`) on a private daemon, then report
   trace <dir>       report a YI_TRACE directory and write <dir>/trace.json for Perfetto
-  wait              sleep until killed, to attach a profiler";
+  wait              sleep until killed, to attach a profiler
+  select <file> <command>  ask --model which lines of <file>, <command>'s output, matter";
 
 pub(crate) fn run(args: &Args) -> i32 {
     let mut words = args.prompt.split_whitespace();
@@ -30,11 +31,51 @@ pub(crate) fn run(args: &Args) -> i32 {
             Some(dir) => report(Path::new(dir), args.json),
             None => usage(),
         },
+        "select" => select(args, &rest),
         "wait" => loop {
             std::thread::park();
         },
         _ => usage(),
     }
+}
+
+/// The stage 9 selector on one recorded output, for `evals/b1_bench.py`: its ranges, the time it
+/// took and what it cost, as one JSON line.
+fn select(args: &Args, rest: &[&str]) -> i32 {
+    let Some((file, command)) = rest.split_first() else {
+        return usage();
+    };
+    let Some(model) = crate::resolve(&args.model) else {
+        eprintln!("yi debug select: unknown model {}", args.model);
+        return 2;
+    };
+    let Ok(output) = std::fs::read_to_string(file) else {
+        eprintln!("yi debug select: cannot read {file}");
+        return 2;
+    };
+    let provider = yi_runtime::ProviderStream::new(None).with_routing(config().routing.clone());
+    let selector = yi_runtime::select::Selector::new(std::sync::Arc::new(provider), model);
+    let lines: Vec<&str> = output.lines().collect();
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return 2;
+    };
+    let started = std::time::Instant::now();
+    let (ranges, usage) = runtime.block_on(yi_runtime::select::select_ranges(
+        &selector,
+        &command.join(" "),
+        None,
+        &lines,
+    ));
+    let (ranges, error) = match ranges {
+        Ok((ranges, _)) => (ranges, None),
+        Err(reason) => (Vec::new(), Some(reason)),
+    };
+    let row = json!({"ranges": ranges, "error": error, "ms": started.elapsed().as_millis(), "cost": usage.cost.total});
+    println!("{row}");
+    0
 }
 
 /// The name a traced process carries on the timeline.

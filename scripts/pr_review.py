@@ -212,10 +212,22 @@ def ready_problems(rounds, head, holds=on_head):
     return errs
 
 
+# The owner (2026-10-07), after #1110's rounds 2-4 each found 2-3 fresh mediums in the last fix's
+# own code: from this round on, only a medium an earlier round raised still holds a draft.
+SETTLE = 3
+
+
+def holding(rnd):
+    """The findings that keep a draft and that the fixer answers: every high, and every medium
+    through round 2; after that a medium only while it is carried (open since an earlier round)."""
+    return [f for f in rnd.get("findings") or [] if f.get("severity") == "high"
+            or (f.get("severity") == "medium" and (int(rnd["n"]) < SETTLE or f.get("since")))]
+
+
 def promotes(rounds, head, holds=on_head):
     """A draft leaves draft on its own (owner, 2026-10-03): two rounds, the last holding for the
-    head and not blocked, and no high or medium finding left in it."""
-    return not ready_problems(rounds, head, holds) and not any(f["severity"] in REPORTED for f in rounds[-1]["findings"])
+    head and not blocked, and nothing in it still holding the draft."""
+    return not ready_problems(rounds, head, holds) and not holding(rounds[-1])
 
 
 def skip_reason(rounds, head, wanted=2, holds=on_head):
@@ -510,6 +522,12 @@ def yi_bin():
         (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()), "yi")
 
 
+# Incident: rounds on #1138 and #1145 hit the job's limit and posted nothing; a round's retries had
+# no shared window, so a slow host outlasted the job. Its calls now share the job's time.
+POST_SECS = 5 * 60
+JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS
+
+
 class Unanswered(Exception):
     """A model call that did not answer. A round missing a lens is not a clean round."""
 
@@ -519,7 +537,8 @@ def repair_prompt(schema):
             f"before or after it, matching this schema: {json.dumps(schema)}")
 
 
-def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None, meter=None):
+def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None, meter=None,
+        until=None):
     """One `yi ask` answering `schema`; raises Unanswered. A reader runs under --confirm
     with no terminal, so every write and command that would ask is refused; the fixer runs
     --yolo (owner, 2026-10-04): --auto asked about a network or install command, which a
@@ -546,9 +565,12 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
     # A whole diff passes Linux's 128 KiB cap on one argument, so the prompt goes on stdin.
     def run(extra, text):
         left = ends - time.monotonic() if write else deadline + 120
+        spent = f"the fix's {deadline}s budget is spent"
+        if until is not None and until - time.monotonic() < left:
+            left, spent = until - time.monotonic(), "the job's time for this round is spent"
         # Under a tenth of the budget is no attempt: it could only time out.
         if left < (deadline + 120) / 10:
-            return subprocess.CompletedProcess(command, 124, "", f"the fix's {deadline}s budget is spent")
+            return subprocess.CompletedProcess(command, 124, "", spent)
         try:
             return subprocess.run(command + ["--deadline", str(max(int(left) - 120, 1))] + extra + ["-"], input=text,
                                   capture_output=True, text=True, timeout=left, check=False,
@@ -719,7 +741,7 @@ def read_pr(repo, number, allowed):
             kept, dropped, outside, unanswered, cleared = [], 0, 0, [], 0
         else:
             kept, dropped, outside, unanswered, cleared = read_round(
-                pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING),
+                pr, diff, merge_base, sha, tree, lambda p, s, cwd: ask(p, s, cwd, thinking=REVIEW_THINKING, until=JOB_ENDS),
                 load_probes(), full_read=base == merge_base, own=own, carry=carried(rounds, mine), fix_note=fix_note)
     finally:
         discard(tree)
@@ -850,13 +872,23 @@ def walled(paths):
     return [p for p in paths if p.startswith(WALL)]
 
 
+# Incident: #1111 left draft on a clean round while its test lane was red; a sweep retries
+# each draft, so one whose lanes are still running or red leaves on a later sweep.
+GATE_LANES = ("gate (guardrails)", "gate (lint)", "gate (test)")
+
+
 def promote(repo, pr, rounds):
-    """Take a draft that `promotes` out of draft; True when it left."""
+    """Take a draft that `promotes` and whose gate lanes passed on its head out of draft; True when it left."""
     title, number = pr.get("title", ""), pr["number"]
     if not (title.startswith(DRAFT) and promotes(rounds, pr["head"]["sha"], holds_for(number, pr["base"]["ref"]))):
         return False
+    jobs = forge_pr.jobs_of(pr)
+    waiting = [lane for lane in GATE_LANES if jobs.get(lane) != "success"]
+    if waiting:
+        print(f"#{number}: stays a draft until its gate passes: " + ", ".join(f"{lane} {jobs.get(lane, 'not run')}" for lane in waiting))
+        return False
     ready = forge_pr.fgj_api("PATCH", f"repos/{repo}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
-    print(f"#{number}: " + ("out of draft, two clean rounds and nothing above low left" if (ready or {}).get("number")
+    print(f"#{number}: " + ("out of draft, two clean rounds and nothing left holding it" if (ready or {}).get("number")
                             else f"stays a draft, the forge refused: {(ready or {}).get('message')}"))
     return bool((ready or {}).get("number"))
 
@@ -864,7 +896,6 @@ def promote(repo, pr, rounds):
 # A round at thinking high took 19m20s on #1101, so a sweep starts no new one once a round would
 # outrun the job's limit (review.yml), reads at most three heads, and the next sweep takes the rest.
 ROUND_SECS, SWEEP_HEADS = 20 * 60, 3
-SWEEP_SECS = forge_pr.job_secs("review") - ROUND_SECS
 
 
 def cmd_sweep(args):
@@ -884,7 +915,7 @@ def cmd_sweep(args):
         if promote(repo, pr, rounds):
             continue
         if skip_reason(rounds, pr["head"]["sha"]) is None:
-            if read >= SWEEP_HEADS or time.monotonic() - started > SWEEP_SECS:
+            if read >= SWEEP_HEADS or JOB_ENDS - time.monotonic() < ROUND_SECS:
                 print(f"sweep: {read} head(s) read in {int(time.monotonic() - started)}s; the rest wait for the next sweep")
                 break
             cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False))
@@ -988,6 +1019,9 @@ def selfcheck():
     clean = lambda n, found=(): {"n": n, "sha": "abc1234", "verdict": "clean", "findings": [{"severity": s} for s in found]}
     assert promotes([clean(1), clean(2, ["low"])], "abc1234ff"), "two clean rounds with only lows promote"
     assert not promotes([clean(1), clean(2, ["medium"])], "abc1234ff"), "a medium left keeps the draft"
+    assert promotes([clean(2), clean(3, ["medium", "low"])], "abc1234ff"), "a fresh medium from round 3 on lets the draft go"
+    late = dict(clean(3), findings=[{"severity": "medium", "since": 2}])
+    assert not promotes([clean(2), late], "abc1234ff"), "a medium carried from an earlier round still holds the draft"
     assert not promotes([clean(2)], "abc1234ff") and not promotes([clean(1), clean(2)], "def5678"), "one round, or an old head"
     assert skip_reason([], "abc1234") is None
     one = [{"n": 1, "sha": "abc1234", "verdict": "clean"}]
@@ -1115,6 +1149,12 @@ def selfcheck():
                 raise AssertionError("a writer that never answers returned")
             except Unanswered as err:
                 assert time.monotonic() - began < 9 and "budget is spent" in str(err), (time.monotonic() - began, err)
+            began = time.monotonic()
+            try:
+                ask("p", LENS_SCHEMA, tree, sessions=tree / "s", deadline=-110, until=time.monotonic() + 3)
+                raise AssertionError("a reader past the job's time returned")
+            except Unanswered as err:
+                assert time.monotonic() - began < 9 and "job's time" in str(err), (time.monotonic() - began, err)
         finally:
             del os.environ["YI_BIN"]
         repair = pathlib.Path(tree) / "yi"
@@ -1318,17 +1358,28 @@ def selfcheck():
               for n, sha, owner in ((1, "aaaaaaa1", "o/r"), (2, "bbbbbbb2", "o/r"), (3, "ccccccc3", "x/fork"),
                                     (4, "ddddddd4", "o/r"), (5, "eeeeeee5", "o/r"), (6, "fffffff6", "o/r"))]
     notes = {1: [clean_round(11, "aaaaaaa1"), clean_round(12, "aaaaaaa1")]}
-    patched, reviewed, saved = [], [], (forge_pr.fgj_api, forge_pr.repo, comments, holds_for, cmd_review, authors)
+    patched, reviewed, saved = [], [], (forge_pr.fgj_api, forge_pr.repo, comments, holds_for, cmd_review, authors, forge_pr.jobs_of)
     try:
         forge_pr.fgj_api = lambda method, url, body=None: drafts if method == "GET" else patched.append(url) or {"number": 1}
         forge_pr.repo = lambda: "o/r"
+        forge_pr.jobs_of = lambda pr: dict.fromkeys(GATE_LANES, "success")
         globals().update(comments=lambda repo, n: notes.get(n, []), holds_for=lambda n, base: on_head,
                          cmd_review=lambda a: reviewed.append(a.number), authors=lambda: {BOT})
         cmd_sweep(None)
     finally:
-        forge_pr.fgj_api, forge_pr.repo = saved[0], saved[1]
+        forge_pr.fgj_api, forge_pr.repo, forge_pr.jobs_of = saved[0], saved[1], saved[6]
         globals().update(comments=saved[2], holds_for=saved[3], cmd_review=saved[4], authors=saved[5])
     assert patched == ["repos/o/r/pulls/1"], f"the clean draft is promoted, nothing else: {patched}"
+    saved = (forge_pr.fgj_api, forge_pr.jobs_of, holds_for)
+    try:
+        forge_pr.fgj_api = lambda method, url, body=None: patched.append(url) or {"number": 1}
+        globals().update(holds_for=lambda n, base: on_head)
+        forge_pr.jobs_of = lambda pr: {**dict.fromkeys(GATE_LANES, "success"), "gate (test)": "failure"}
+        red = promote("o/r", drafts[0], [{"user": {}, **parse_round(c, {BOT}, None)} for c in notes[1]])
+    finally:
+        forge_pr.fgj_api, forge_pr.jobs_of = saved[0], saved[1]
+        globals().update(holds_for=saved[2])
+    assert not red and patched == ["repos/o/r/pulls/1"], "a clean draft whose test lane is red stays a draft"
     assert reviewed == [2, 4, 5], f"heads with no round are read, the fork skipped, three at most: {reviewed}"
     flaky = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-ask-"))
     try:
