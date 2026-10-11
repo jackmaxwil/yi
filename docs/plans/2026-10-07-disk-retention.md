@@ -185,8 +185,8 @@ triggers and did not move into the table: moving them would buy no behavior. A s
 process such as `yi ask` can exit before its background sweep finishes; the sweep is idempotent,
 and the stamp is written only once a sweep finishes, so the next session picks up where it
 stopped. A sweep in flight holds `~/.yi/retention.flock`, which the OS drops with a killed
-holder, so a second session skips it. Known limit: a persistent Linux mount point
-(`/mnt/data`) left empty by an unmount reads as a deleted project, and its repos go after 7 days.
+holder, so a second session skips it. Known limit: a mount point an unmount leaves behind
+under `/Volumes` or `/mnt` (`/mnt/data`) reads as a deleted project, and its repos go after 7 days.
 
 ## 4. Test homes: inside the worktree
 
