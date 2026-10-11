@@ -219,6 +219,7 @@ pub struct App {
     pub(crate) width: usize,
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
+    pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
     /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
     pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
@@ -337,6 +338,7 @@ impl App {
             width,
             rows: 24,
             pane_hold: None,
+            pane_follow: None,
             pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
