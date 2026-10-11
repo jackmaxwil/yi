@@ -25,5 +25,5 @@ pub use rules::{
 };
 pub use safety::{
     Class, Parsed, Verdict, classify, command_segments, host_need, needs_host, parse,
-    refused_scopes, ripwire_reads, verdict, write_targets,
+    refused_scopes, ripwire_reads, shell_words, verdict, write_targets,
 };

@@ -7,6 +7,10 @@ use yi_permission::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 /// Append-only. Every entry must come back as anything except Allow: the point
 /// is that an obfuscation buys nothing, not that Yi recognizes the trick.
 const BYPASS_CORPUS: [&str; 18] = [
@@ -489,21 +493,42 @@ fn each_segment_says_why_it_leaves() {
         [None, Some("installs")]
     );
 }
-/// Review of #1205: `ripwire wrap` is setup, not a query, so a bare positional that is not the
-/// tree root must stay unknown and contained instead of running unasked in auto mode.
+/// Review of #1205: `ripewire wrap` is setup and an unknown positional is not the tree root,
+/// so both stay contained, while the root itself and space-form flag values read as reads.
 #[test]
-fn a_ripwire_bare_positional_must_name_an_existing_path_to_be_a_read() -> TestResult {
+fn a_ripwire_read_takes_the_root_and_flag_values_but_not_setup_verbs() -> TestResult {
     assert_eq!(classify(&argv("ripwire wrap")[0]), Class::Unknown, "wrap");
-    assert_ne!(verdict("ripwire wrap"), Verdict::Allow, "wrap");
+    assert_ne!(verdict("ripewire wrap"), Verdict::Allow, "wrap");
     assert_eq!(
         classify(&argv("ripwire not-a-real-root-xyz")[0]),
         Class::Unknown,
         "a positional that names no path"
     );
-    let root = std::env::temp_dir().join("yi-permission-ripwire-root");
-    std::fs::create_dir_all(&root)?;
-    let command = format!("ripwire {} --hotspots", root.to_string_lossy());
-    assert_eq!(classify(&argv(&command)[0]), Class::Safe);
-    std::fs::remove_dir_all(&root)?;
+    let root = Scratch::new("yi-permission-ripwire-root")?;
+    let scratch = root.to_string_lossy().into_owned();
+    assert_eq!(
+        classify(&argv(&format!("ripwire {scratch} --hotspots"))[0]),
+        Class::Safe,
+        "the root positional"
+    );
+    assert_eq!(
+        classify(&argv(&format!("ripwire {scratch} --top-k 20 --legend=compact"))[0]),
+        Class::Safe,
+        "a space-form flag value"
+    );
+    assert_eq!(
+        classify(
+            &argv(&format!(
+                "ripwire {scratch} --for 'fix the bold split' --json"
+            ))[0]
+        ),
+        Class::Safe,
+        "a quoted flag value"
+    );
+    assert_eq!(
+        classify(&argv(&format!("ripwire wrap {scratch}"))[0]),
+        Class::Unknown,
+        "a setup verb ahead of a real root"
+    );
     Ok(())
 }
