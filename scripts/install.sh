@@ -12,6 +12,8 @@ install -m 755 bin/yi "$prefix/yi"
 rm -rf "$root/python"
 cp -R python "$root/python"
 mkdir -p "$root/skills"
+# The release owns each skill directory it ships: one it dropped must not linger.
+for dir in skills/*/; do rm -rf "$root/skills/$(basename "$dir")"; done
 cp -R skills/. "$root/skills/"
 
 base=$(basename "$PWD")
