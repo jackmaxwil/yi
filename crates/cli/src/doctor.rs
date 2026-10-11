@@ -327,21 +327,19 @@ fn sandbox_listeners(_site: &Site) -> Finding {
 
 /// A plugin installed at a version this yi does not pin is off until a sync, and says so here.
 fn plugins_pinned(site: &Site) -> Finding {
-    use yi_runtime::plugin::{PLUGINS, State, state};
+    use yi_runtime::plugin::{PLUGINS, State, stale_line, state};
     let (mut installed, mut stale) = (Vec::new(), Vec::new());
     for plugin in &PLUGINS {
         match state(plugin, &site.home) {
-            State::Installed => installed.push(format!("{} {}", plugin.name, plugin.version)),
-            State::Stale(versions) => stale.push(format!(
-                "{} {}",
-                plugin.name,
-                yi_runtime::plugin::stale_text(&versions, plugin.version)
-            )),
+            State::Installed(_) => installed.push(format!("{} {}", plugin.name, plugin.version)),
+            State::Stale(versions) => {
+                stale.push(format!("{} {}", plugin.name, stale_line(plugin, &versions)))
+            }
             State::OnPath(_) | State::Missing | State::Unsupported => {}
         }
     }
     if !stale.is_empty() {
-        return fail(format!("{}: yi plugin sync", stale.join("; ")));
+        return fail(stale.join("; "));
     }
     if installed.is_empty() {
         return ok("none installed by yi; `yi plugin list` names them");

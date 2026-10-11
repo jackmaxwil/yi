@@ -2168,3 +2168,35 @@ fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
     );
     Ok(())
 }
+
+/// `yi plugin list --json` is what the eval adapter reads (`evals/adapters/yi_usage.py`
+/// `installed_plugins`): one row per plugin with `name`, `version`, `state` and `path`.
+#[test]
+fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
+    let workspace = Workspace::new("plugin-json")?;
+    let home = workspace.0.join("home");
+    let pinned = home.join(".yi/plugins/ripwire/0.6.5");
+    std::fs::create_dir_all(&pinned)?;
+    std::fs::write(pinned.join("ripwire"), "#!/bin/sh\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+    )]
+    let listed = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["plugin", "list", "--json"])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .output()?;
+    let rows: Value = serde_json::from_str(&stdout(&listed))?;
+    let ripwire = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "ripwire")
+        .ok_or("no ripwire row")?;
+    assert_eq!(ripwire["state"], "installed", "{rows}");
+    assert_eq!(ripwire["version"], "0.6.5", "{rows}");
+    assert_eq!(
+        ripwire["path"],
+        json!(pinned.join("ripwire").display().to_string()),
+        "{rows}"
+    );
+    Ok(())
+}

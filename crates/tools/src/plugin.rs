@@ -6,6 +6,9 @@ pub struct Asset {
     pub arch: &'static str,
     pub url: &'static str,
     pub sha256: &'static str,
+    /// Invariant: digest of the member itself, so a file already at the pinned path is
+    /// re-verified before yi adopts it as the pin.
+    pub member_sha256: &'static str,
     pub member: &'static str,
 }
 
@@ -51,6 +54,7 @@ pub const PLUGINS: [Plugin; 1] = [Plugin {
             arch: "aarch64",
             url: "https://github.com/redhat-et/ripwire/releases/download/v0.6.5/ripwire-0.6.5-macos-arm64.tar.gz",
             sha256: "17a68cfba3f0d6e1390686829239a3753b454aae9fe4ecaf52e0f365d890afc0",
+            member_sha256: "8fc6abdeb9f0a597412431947292e9b5f3c6392403ce4de4afbae24b0173f64d",
             member: "ripwire-0.6.5-macos-arm64/ripwire",
         },
         Asset {
@@ -58,6 +62,7 @@ pub const PLUGINS: [Plugin; 1] = [Plugin {
             arch: "aarch64",
             url: "https://github.com/redhat-et/ripwire/releases/download/v0.6.5/ripwire-0.6.5-linux-arm64.tar.gz",
             sha256: "25e5f37e2985830bbff189879797988b862e36521413a6e3654630a0e1f0b108",
+            member_sha256: "ad3291cf0854cdd5be8661b90be803b1caf75ae24e061950f142158df2755f8d",
             member: "ripwire-0.6.5-linux-arm64/ripwire",
         },
         Asset {
@@ -65,6 +70,7 @@ pub const PLUGINS: [Plugin; 1] = [Plugin {
             arch: "x86_64",
             url: "https://github.com/redhat-et/ripwire/releases/download/v0.6.5/ripwire-0.6.5-linux-x64.tar.gz",
             sha256: "5c5794612f5f06632ada7c27a0f5c8f400748a70f707b64ec4d238c4fba2f7ea",
+            member_sha256: "30f961efca7c7bff70cec72b84524b03d65a93097724ccd7ee1635801f621284",
             member: "ripwire-0.6.5-linux-x64/ripwire",
         },
     ],

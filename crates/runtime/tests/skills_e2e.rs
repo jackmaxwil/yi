@@ -580,3 +580,34 @@ fn the_ripwire_index_names_every_published_skill_and_no_other() -> TestResult {
     assert_eq!(named, published);
     Ok(())
 }
+
+/// The skills the pinned ripwire release publishes are byte for byte the recorded ones, and the
+/// installed copy is read by address; `just journeys` runs it after `yi plugin add ripwire`.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
+    let dir = ripwire
+        .skill_root(&home)
+        .ok_or("ripwire's skills are not installed: run `yi plugin add ripwire`")?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tools/tests/fixtures/ripwire")
+        .join(format!("skills-{}.sha256", ripwire.version));
+    let recorded = std::fs::read_to_string(fixture)?;
+    for line in recorded.lines() {
+        let (sha256, path) = line.split_once("  ").ok_or("not a sha256sum line")?;
+        let relative = path.strip_prefix("skills/").ok_or("not under skills/")?;
+        let bytes = std::fs::read(dir.join(relative))?;
+        assert_eq!(yi_runtime::tarball::sha256_hex(&bytes), sha256, "{path}");
+    }
+    let resolver =
+        yi_runtime::fetch::Resolver::new(home.clone(), yi_runtime::Wall::default()).with_home(home);
+    let orient = resolver.fetch(&"yi://skills/ripwire-orient".parse()?)?;
+    assert!(
+        orient.text.contains("name: ripwire-orient"),
+        "{}",
+        orient.text
+    );
+    Ok(())
+}
