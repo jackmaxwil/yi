@@ -538,3 +538,79 @@ fn an_unpaged_history_listing_past_its_cap_says_where_it_was_cut() -> TestResult
     );
     Ok(())
 }
+
+/// A reader's resolver has no session root: its parent is reached live through the host that
+/// spawned it, where the on-disk lookup had answered "no session on disk carries that id".
+#[test]
+fn a_reader_child_reads_its_live_parent_by_alias() -> TestResult {
+    let root = Scratch::new("yi-fetch-reader-parent")?;
+    let parent = memory_store();
+    let said = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(
+            "the rounding rule is banker's, 2 decimals",
+        )],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&parent).append_message("main", said)?;
+    let parent_id = yi_session::lock_session(&parent).metadata().id.clone();
+    let child = Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
+        yi_session::SessionMetadata {
+            id: "reader-child".to_owned(),
+            created_at: 0,
+            parent_session_id: Some(parent_id),
+            name: None,
+        },
+    )));
+    let host = crate::support::family(root.to_path_buf(), root.to_path_buf(), parent, None).host;
+    let fetched = Resolver::new(root.to_path_buf(), Wall::default())
+        .with_session("reader", child)
+        .with_transcripts(Arc::new(yi_runtime::fetch::ParentTranscript(
+            Arc::downgrade(&host),
+        )))
+        .fetch(&"history://parent/since/0".parse()?)
+        .map_err(|error| format!("{error:?}"))?;
+    assert!(
+        fetched.text.contains("banker's, 2 decimals"),
+        "{}",
+        fetched.text
+    );
+    Ok(())
+}
+
+/// The incident's shape: a user message whose fact sits past 120 chars reads whole in the compact
+/// view, across its lines; an assistant line cut at 120 names the call that reads its entry whole.
+#[test]
+fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
+    let store = memory_store();
+    let told = format!(
+        "{}\nthe cutover window is Sunday 02:00-04:00 UTC",
+        "état des lieux ".repeat(10)
+    );
+    let user = yi_types::message::AgentMessage::User {
+        content: yi_types::message::UserContent::Text(told),
+        timestamp: 0,
+        attribution: yi_types::message::Attribution::User,
+    };
+    yi_session::lock_session(&store).append_message("main", user)?;
+    let resolver =
+        || Resolver::new(std::env::temp_dir(), Wall::default()).with_session("main", store.clone());
+    let plain = read_tool_text(resolver(), "history://main/since/0")?;
+    assert!(
+        plain.contains(" ⏎ the cutover window is Sunday 02:00-04:00 UTC"),
+        "{plain}"
+    );
+    assert!(!plain.contains("[… a line ending in"), "{plain}");
+    let said = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(&"état des lieux ".repeat(10))],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&store).append_message("main", said)?;
+    let compact = read_tool_text(resolver(), "history://main/since/0")?;
+    assert_eq!(
+        compact.lines().last(),
+        Some(
+            "[… a line ending in … is cut at 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · read history://main with offset=<#seq> and limit=1 for that entry whole]"
+        )
+    );
+    Ok(())
+}

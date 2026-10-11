@@ -10,7 +10,7 @@ use yi_types::todo::TodoRecord;
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
 const RECENT_ENTRIES: usize = 3;
-const NOTE_CHARS: usize = 120;
+pub(crate) const NOTE_CHARS: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberState {
@@ -137,6 +137,19 @@ pub struct MemberView {
     pub cost: f64,
     pub idle_s: u64,
     pub worktree: Option<String>,
+}
+
+/// Incident: a child sent to find what its parent was told read the parent's opening message cut
+/// at 120 chars and reported the fact absent; a person's words are what it cannot re-derive.
+pub(crate) const USER_CHARS: usize = 2_000;
+
+fn cut_user(text: &str) -> String {
+    let joined = text.lines().collect::<Vec<_>>().join(" ⏎ ");
+    if joined.chars().count() > USER_CHARS {
+        format!("{}…", joined.chars().take(USER_CHARS).collect::<String>())
+    } else {
+        joined
+    }
 }
 
 fn cut(text: &str) -> String {
@@ -373,7 +386,7 @@ pub fn compact_entry(entry: &Entry) -> String {
                 format!("result {tool_name}: {first}")
             }
             AgentMessage::User { content, .. } => match content {
-                yi_types::message::UserContent::Text(text) => format!("user: {}", cut(text)),
+                yi_types::message::UserContent::Text(text) => format!("user: {}", cut_user(text)),
                 yi_types::message::UserContent::Blocks(_) => "user: [blocks]".to_owned(),
             },
             AgentMessage::Custom {
