@@ -88,26 +88,21 @@ pub async fn select_ranges(
         let (reply, usage) = answered
             .unwrap_or_else(|error| (Err(format!("its task failed: {error}")), Usage::zero()));
         usages.push(usage);
-        match reply.and_then(|text| mark(&text, &mut named, share)) {
+        match reply.and_then(|text| mark(&text, &mut named, hidden, share)) {
             Ok(past) => over = over.saturating_add(past),
             Err(reason) => missed.push(reason),
         }
     }
-    let picked = pick(&named, hidden).map(|picked| Picked {
-        asked: picked.asked.saturating_add(over),
-        parts,
-        missed: missed.len(),
-        share,
-        ..picked
-    });
-    let picked = match (picked, missed.first()) {
-        (Err(_), Some(reason)) if missed.len() == parts => Err(reason.clone()),
-        (Err(reason), Some(first)) => Err(format!(
-            "{reason}; {} of {parts} parts gave no answer ({first})",
-            missed.len()
-        )),
-        (picked, _) => picked,
-    };
+    let picked = compose(
+        &named,
+        hidden,
+        Tally {
+            over,
+            parts,
+            missed: &missed,
+            share,
+        },
+    );
     (picked, usages)
 }
 
@@ -157,9 +152,9 @@ pub struct Picked {
     pub share: usize,
 }
 
-/// Marks the first `share` new lines a part's answer names and counts those past it; an answer
-/// that is not ranges is the reason.
-fn mark(text: &str, named: &mut [bool], share: usize) -> Result<usize, String> {
+/// Marks the lines a part's answer names, spending its `share` only on hidden ones and counting
+/// those past it; an answer that is not ranges is the reason.
+fn mark(text: &str, named: &mut [bool], hidden: &[bool], share: usize) -> Result<usize, String> {
     let value: serde_json::Value =
         serde_json::from_str(text.trim()).map_err(|error| format!("not JSON: {error}"))?;
     let pairs = (value.get("ranges").and_then(serde_json::Value::as_array)).ok_or("no `ranges`")?;
@@ -174,27 +169,44 @@ fn mark(text: &str, named: &mut [bool], share: usize) -> Result<usize, String> {
             .checked_sub(1)
             .filter(|_| from <= to)
             .map(|first| first..to.min(total));
-        for flag in span
+        let start = span.as_ref().map_or(0, |span| span.start);
+        let flags = span
             .and_then(|span| named.get_mut(span))
-            .unwrap_or_default()
-        {
-            match (*flag, left) {
-                (true, _) => {}
-                (false, 0) => over = over.saturating_add(1),
-                (false, _) => (*flag, left) = (true, left - 1),
+            .unwrap_or_default();
+        for (flag, unseen) in flags.iter_mut().zip(hidden.iter().skip(start)) {
+            match (*flag, *unseen, left) {
+                (true, _, _) => {}
+                (false, false, _) => *flag = true,
+                (false, true, 0) => over = over.saturating_add(1),
+                (false, true, _) => (*flag, left) = (true, left - 1),
             }
         }
     }
     Ok(over)
 }
 
-/// The named lines the agent has not seen, as merged ranges capped at [`LINES_OUT`] lines.
-fn pick(named: &[bool], hidden: &[bool]) -> Result<Picked, String> {
+/// What the parts came to beyond the lines they named.
+struct Tally<'a> {
+    over: usize,
+    parts: usize,
+    missed: &'a [String],
+    share: usize,
+}
+
+/// The named lines the agent has not seen, as merged ranges capped at [`LINES_OUT`] lines, or
+/// why there are none, naming the parts that gave no answer.
+fn compose(named: &[bool], hidden: &[bool], tally: Tally<'_>) -> Result<Picked, String> {
+    let Tally {
+        over,
+        parts,
+        missed,
+        share,
+    } = tally;
     let shown = (named.iter().zip(hidden))
         .filter(|(named, hidden)| **named && !**hidden)
         .count();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
-    let (mut asked, mut budget) = (0_usize, LINES_OUT);
+    let (mut asked, mut budget) = (over, LINES_OUT);
     for (line, _) in (1_usize..)
         .zip(named.iter().zip(hidden))
         .filter(|(_, (named, hidden))| **named && **hidden)
@@ -209,21 +221,39 @@ fn pick(named: &[bool], hidden: &[bool]) -> Result<Picked, String> {
             _ => ranges.push((line, line)),
         }
     }
-    match (ranges.is_empty(), shown) {
-        (false, _) => Ok(Picked {
-            ranges,
-            asked,
-            shown,
-            parts: 1,
-            missed: 0,
-            share: LINES_OUT,
-        }),
-        (true, 0) => Err(format!(
+    let none = match (ranges.is_empty(), shown) {
+        (false, _) => {
+            return Ok(Picked {
+                ranges,
+                asked,
+                shown,
+                parts,
+                missed: missed.len(),
+                share,
+            });
+        }
+        (true, 0) => format!(
             "it named none of the {} lines the cut left out",
             hidden.iter().filter(|hidden| **hidden).count()
+        ),
+        (true, _) => format!("it named {shown} lines, all shown above already"),
+    };
+    match missed.first() {
+        Some(reason) if missed.len() == parts => Err(reason.clone()),
+        Some(first) => Err(format!(
+            "{none}; {} of {parts} parts gave no answer ({first})",
+            missed.len()
         )),
-        (true, _) => Err(format!("it named {shown} lines, all shown above already")),
+        None => Err(none),
     }
+}
+
+/// What the parts' requests cost in all, as `yi debug select` prints it.
+pub fn cost_of(usages: &[Usage]) -> f64 {
+    usages
+        .iter()
+        .filter_map(|usage| usage.cost.total.as_f64())
+        .sum()
 }
 
 /// Which full-output lines, each in [`yi_tools::reduce::shown_form`], the cut does not show:
@@ -397,17 +427,20 @@ pub(crate) async fn widen(
 
 #[cfg(test)]
 mod tests {
-    use super::{LINES_IN, Picked, full_output, hidden, mark, pick, read_bounded};
+    use super::{LINES_IN, Picked, cost_of, full_output, hidden, mark, read_bounded};
     use yi_types::event::ToolResult;
     use yi_types::message::Content;
 
     fn parse(text: &str, hidden: &[bool]) -> Result<Picked, String> {
         let mut named = vec![false; hidden.len()];
-        let over = mark(text, &mut named, super::LINES_OUT)?;
-        pick(&named, hidden).map(|picked| Picked {
-            asked: picked.asked + over,
-            ..picked
-        })
+        let over = mark(text, &mut named, hidden, super::LINES_OUT)?;
+        let tally = super::Tally {
+            over,
+            parts: 1,
+            missed: &[],
+            share: super::LINES_OUT,
+        };
+        super::compose(&named, hidden, tally)
     }
 
     #[test]
@@ -439,11 +472,12 @@ mod tests {
         assert!(parse("the failure is on line 4", &mask).is_err());
         let mut named = vec![false; 10];
         assert_eq!(
-            mark(r#"{"ranges": [[1, 5]]}"#, &mut named, 2),
-            Ok(3),
+            mark(r#"{"ranges": [[1, 5]]}"#, &mut named, &mask, 2),
+            Ok(1),
             "a part past its share"
         );
-        assert_eq!(named.iter().filter(|named| **named).count(), 2);
+        // Lines 4 and 5 are shown: marked, but they spend none of the part's share of 2.
+        assert_eq!(named.iter().filter(|named| **named).count(), 4);
         let none = parse(r#"{"ranges": [[9000, 9001]]}"#, &mask);
         assert!(none.is_err_and(|reason| reason.contains("none of the 8 lines the cut left out")));
     }
@@ -544,6 +578,24 @@ mod tests {
         let sent = (full.iter().zip(hidden(&full, &cut)))
             .filter(|(line, hidden)| *hidden && line.starts_with("PASSED "));
         assert_eq!(sent.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn the_parts_costs_add_up() -> Result<(), serde_json::Error> {
+        let priced = |total: f64| -> Result<yi_types::message::Usage, serde_json::Error> {
+            let mut usage = yi_types::message::Usage::zero();
+            usage.cost = serde_json::from_value(
+                serde_json::json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": total}),
+            )?;
+            Ok(usage)
+        };
+        let parts = [
+            priced(0.25)?,
+            priced(0.5)?,
+            yi_types::message::Usage::zero(),
+        ];
+        assert!((cost_of(&parts) - 0.75).abs() < 1e-9);
         Ok(())
     }
 
