@@ -67,21 +67,13 @@ fn only_an_orphan_past_seven_days_is_removed() -> Result<(), Box<dyn Error>> {
     let (gone_young, orphan_young) = captured(&scratch, &root, "gone-young")?;
     let (nested, nested_orphan) = captured(&scratch, &root, "removed/project")?;
     let (_mounted, behind_mount) = captured(&scratch, &root, "mounted")?;
-    // The real capture's config, its work tree moved onto a volume that is not mounted; a mount
-    // point left behind (/Volumes/Macintosh HD on macOS) is the life-sized shape where one exists.
+    // The real capture's config, its work tree moved onto a volume that is not mounted.
     let mount_root = ["/Volumes", "/mnt", "/media"]
         .into_iter()
-        .map(Path::new)
-        .find(|root| root.is_dir())
+        .find(|root| Path::new(root).is_dir())
         .ok_or("no mount root on this host")?;
-    let mount_point = std::fs::read_dir(mount_root)?
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.is_dir())
-        .unwrap_or_else(|| mount_root.to_path_buf());
     let away = format!(
-        "\tworktree = {}/yi-absent-{}/project",
-        mount_point.display(),
+        "\tworktree = {mount_root}/yi-absent-{}/project",
         std::process::id()
     );
     let config: Vec<String> = std::fs::read_to_string(behind_mount.join("config"))?
