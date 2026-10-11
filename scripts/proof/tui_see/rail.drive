@@ -1,0 +1,25 @@
+#! console --size 120x34
+# The console rail with three answered sessions, then the sidebar opened.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+type first session about the rail
+key enter
+wait-frame 30000 faux:
+wait-idle 15000
+key alt-n
+wait-frame 10000 !faux:
+type second session about colour
+key enter
+wait-frame 30000 faux:
+wait-idle 15000
+key alt-n
+wait-frame 10000 !faux:
+type third session about spacing
+key enter
+wait-frame 30000 faux:
+wait-idle 15000
+snap rail
+key alt-b
+snap sidebar
+quit
