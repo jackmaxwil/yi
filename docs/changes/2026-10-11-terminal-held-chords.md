@@ -1,0 +1,6 @@
+---
+issue: Closes #1232
+raise: crate console +14, comments +2, tests +41
+decision: the console's ⌘ chords move off the keys Ghostty takes first: notebook ⌘J to ⌘I, Review ⌘G to ⌘R (amending D264's "keeping ⌘G"), open file ⌘E to ⌘O, all keys ⌘? to ⌘/; ⌘1..9 and ⌘⇧T stay held and their hints show the ⌥ chord | Ghostty 1.3.1 binds super+j, super+g, super+e, super+1..9 and super+shift+t by default and its menu puts Ghostty Help on ⌘?, so those keys never reached Yi while every hint surface named them | restore the four letters in keys::super_chord and the cmd column of CHORDS
+---
+The console no longer advertises ⌘ chords the terminal takes first (Closes #1232). Ghostty 1.3.1's default keybinds hold ⌘J, ⌘G, ⌘E, ⌘1..9 and ⌘⇧T (scroll to selection, next search match, search selection, go to tab, undo a closed tab), and its menu holds ⌘? for Ghostty Help, so the hint row, the keys overlay, the command palette and the notebook's close hint named keys that never reached Yi. The notebook moves to ⌘I, Review to ⌘R, open a file to ⌘O and the keys overlay to ⌘/, none of which Ghostty binds. One list of terminal-held chords in `keys.rs` backs `Chord::key` and `chord_for`, which every hint surface reads, so the rail slots and new tab show their ⌥ chords under ⌘ hints. The unreachable ⌘W close-pane alias is gone; ⌘X stays.

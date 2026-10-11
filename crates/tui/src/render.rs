@@ -303,7 +303,10 @@ pub fn layout_chat(
     app.bind_reply();
     app.composer
         .set_frame(border, theme.dim_style(), app.reply_title());
-    let composer_height = app.composer.desired_height();
+    let composer_height = app.composer.layout(
+        u16::try_from(width).unwrap_or(u16::MAX),
+        u16::try_from(app.rows).unwrap_or(u16::MAX),
+    );
 
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         u16::try_from(lines.len()).unwrap_or(composer_height)
@@ -392,7 +395,7 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
                     area.width.saturating_sub(2),
                     height,
                 );
-                Widget::render(&app.composer.textarea, rect, buffer);
+                app.composer.render(rect, buffer);
                 y = y.saturating_add(height);
             }
         }
