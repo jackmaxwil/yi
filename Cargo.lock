@@ -2293,6 +2293,7 @@ name = "yi-context"
 version = "0.2.0"
 dependencies = [
  "serde_json",
+ "yi-tools",
  "yi-types",
 ]
 

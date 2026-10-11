@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use serde_json::{Map, Value};
+use yi_tools::hashline::input::Patch;
 use yi_types::compaction::CompactionDetails;
 use yi_types::message::{AgentMessage, Content};
 
@@ -8,6 +10,19 @@ pub struct FileOps {
     pub read: BTreeSet<String>,
     pub written: BTreeSet<String>,
     pub edited: BTreeSet<String>,
+}
+
+/// An edit carries no `path`: its files are the `[path#TAG]` section headers of its `patch`.
+pub(crate) fn call_paths(name: &str, arguments: &Map<String, Value>) -> Vec<String> {
+    let argument = |key| arguments.get(key).and_then(Value::as_str);
+    match name {
+        "read" | "write" => argument("path").map(str::to_owned).into_iter().collect(),
+        "edit" => (Patch::parse(argument("patch").unwrap_or(""), None).into_iter())
+            .flat_map(|patch| patch.sections)
+            .map(|section| section.path)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut FileOps) {
@@ -21,21 +36,13 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
         else {
             continue;
         };
-        let Some(path) = arguments.get("path").and_then(|value| value.as_str()) else {
-            continue;
+        let set = match name.as_str() {
+            "read" => &mut file_ops.read,
+            "write" => &mut file_ops.written,
+            "edit" => &mut file_ops.edited,
+            _ => continue,
         };
-        match name.as_str() {
-            "read" => {
-                file_ops.read.insert(path.to_owned());
-            }
-            "write" => {
-                file_ops.written.insert(path.to_owned());
-            }
-            "edit" => {
-                file_ops.edited.insert(path.to_owned());
-            }
-            _ => {}
-        }
+        set.extend(call_paths(name, arguments));
     }
 }
 
