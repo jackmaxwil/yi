@@ -885,7 +885,8 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
             if drive.exists() and header(drive)[0] == "console":
                 lines.append("Console sessions take a fresh random id each run, so avatar and badge "
                              "colours differ between any two runs; read past those cells.")
-            for crop in sorted(summary.parent.glob(f"{name}-region*-*.png")):
+            crops = summary.parent.glob(f"{name}-region*-*.png")
+            for crop in sorted(crops, key=lambda p: (p.stem.rsplit("-", 1)[0], p.stem.endswith("after"))):
                 if len(pictures) < MAX_PICTURES:
                     lines.append(f"@@crop-{len(pictures)}@@")
                 pictures.append((f"{scene} {crop.stem}", crop))
