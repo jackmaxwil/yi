@@ -12,8 +12,8 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Language | Rust workspace of 16 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
-| Providers | Three wire APIs (Anthropic messages, OpenAI completions, OpenAI responses) plus `faux`; a compiled-in model catalog (§5) | |
-| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in | D191 |
+| Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog (§5) | |
+| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor` | D191 |
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
@@ -241,7 +241,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 ## 5. Provider
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
 - Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
-  `openai-codex`), `openai-completions` (`openrouter`, `google`); any other api is faux. Catalog:
+  `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
+  any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
@@ -254,7 +255,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   minute-cached `time:`; adapters set `cache_control`, `prompt_cache_key`, cache retention.
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
   `~/.yi/providers/tokens/<provider>.json` (0600, tmp+rename), refreshed 30 s before expiry under
-  a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`, Yi ships none.
+  a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`. Yi ships no client
+  id except `cursor`: `yi login cursor` polls `api2.cursor.sh` and a turn posts Connect protobuf
+  over HTTP/2 to `agentn.us.api5.cursor.sh`'s agent `Run` method. Text frames are sent on as they
+  arrive, a native shell frame runs bash, and the stream closes when the session aborts. The model
+  list is that account's `AvailableModels`, cached under `~/.yi/catalog`; a typed id still runs
+  when the file is absent. A profile file at the same id still wins.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
 - State: `models { primary, summarizer, advisor, autoReview, classifier }` in `~/.yi/config.json`
@@ -993,6 +999,9 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `serde_json` | `std`, `preserve_order` | all but orb, permission | JSON with key order kept, so a session file round-trips byte for byte | same |
 | `tokio` | `rt`, `sync`, `time`, `macros`, `process`, `io-util`, `net`; no `rt-multi-thread` | ai, kernel, loop, runtime, acp, tui, cli | provider streams, kernel sockets, scheduler timers | `smol`: `zeromq` is tokio-shaped |
 | `ureq` | `tls`, `native-certs` | ai, oauth, mcp-cli, kernel, cli | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download, the release tarball | `reqwest` (hyper stack), `native-tls` (openssl on Linux) |
+| `h2` | — | ai | HTTP/2 Connect to Cursor's agent `Run` method; the server rejects HTTP/1.1 | `reqwest` / `hyper` (banned); `ureq` (HTTP/1.1) |
+| `http` | `std` | ai | request type `h2`'s handshake takes | hand-rolling header frames |
+| `bytes` | — | ai | body buffers `h2` sends and reads | `Vec<u8>` copies at the crate boundary |
 | `zeromq` | `tokio-runtime`, `tcp-transport` | kernel | Jupyter DEALER/SUB channels | `zmq`: libzmq FFI |
 | `hmac` | — | kernel | Jupyter message signing | — |
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests, the release digest | — |
@@ -1020,14 +1029,14 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 `deny.toml` `[bans].deny`: `reqwest`, `hyper`, `openssl-sys`, `native-tls`, `git2`,
 `libgit2-sys`, `gix`, `clap`, `anyhow`, `once_cell`, `rand`, `lazy_static`, `textwrap`, `toml`,
 `onig`, `onig_sys`, `tracing-subscriber`. Wrapper exceptions: `once_cell` through `rustls`,
-`ureq`, `zeromq`, `syntect`; `rand` through `zeromq`.
+`ureq`, `zeromq`, `syntect`, `tracing-core` (the `h2` client logs through `tracing`); `rand` through `zeromq`.
 
 ### 18.6 Budgets
 | Budget | Limit | Measured as | Gate and baseline |
 |---|---|---|---|
-| direct deps | 19 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
-| transitive deps | 167 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 7,540,832 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| direct deps | 22 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
+| transitive deps | 171 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
+| dist binary | 8,174,032 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
 The binary and startup gates run only after a local dist build; a failed build fails both. Under

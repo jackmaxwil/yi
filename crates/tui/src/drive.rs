@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -26,6 +26,9 @@ pub enum Step {
     /// `type-ms <n>` paces every later `type` step at one character per `n` ms. Zero, the
     /// default, keeps assertion scripts instant; a recording needs human typing speed.
     TypeMs(u64),
+    /// `snap <name>` keeps the frame drawn after this step as `snap-<name>.cast` and `.txt` in
+    /// the frames dir: the moment a scene names, not wherever the script happened to end.
+    Snap(String),
     Quit,
 }
 
@@ -58,12 +61,72 @@ pub fn parse_script(source: &str) -> Result<Vec<Step>, String> {
                 )
             }
             "type-ms" => Step::TypeMs(rest.parse().map_err(|e| error(format!("{e}")))?),
+            "snap" if is_snap_name(rest) => Step::Snap(rest.to_owned()),
+            "snap" => return Err(error(format!("snap name {rest:?} is not [a-z0-9_-]+"))),
             "quit" => Step::Quit,
             other => return Err(error(format!("unknown step: {other}"))),
         };
         steps.push(step);
     }
+    refuse_repeated_snaps(steps.iter())?;
     Ok(steps)
+}
+
+/// A second `snap` of one name would overwrite the first frame without a word.
+pub fn refuse_repeated_snaps<'a>(steps: impl Iterator<Item = &'a Step>) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for step in steps {
+        if let Step::Snap(name) = step
+            && !seen.insert(name)
+        {
+            return Err(format!(
+                "snap {name} appears twice; each keyframe needs its own name"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_snap_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// Dumps the frame drawn after a step when it changed, refuses one with a control character in
+/// a cell, then writes the snap that step asked for.
+pub fn keep_frame(
+    dir: Option<&Path>,
+    backend: &RecordingBackend,
+    last: &mut String,
+    index: &mut u32,
+    snap: Option<String>,
+) -> Result<(), String> {
+    if let Some(dir) = dir {
+        let frame = backend.screen();
+        if frame != *last {
+            let path = dir.join(format!("{index:04}.txt"));
+            // A dump that silently failed to land reads downstream as a frame that never differed.
+            std::fs::write(&path, &frame).map_err(|e| format!("frame {}: {e}", path.display()))?;
+            *index = index.saturating_add(1);
+            *last = frame;
+        }
+    }
+    if let Some((x, y, symbol)) = backend.first_control_cell() {
+        return Err(format!(
+            "a control character reached a cell: {symbol:?} at ({x}, {y})"
+        ));
+    }
+    snap.map_or(Ok(()), |name| write_snap(dir, &name, backend))
+}
+
+fn write_snap(dir: Option<&Path>, name: &str, backend: &RecordingBackend) -> Result<(), String> {
+    let dir = dir.ok_or_else(|| format!("snap {name}: needs --frames"))?;
+    let still = dir.join(format!("snap-{name}.cast"));
+    write_still(&still, backend.buffer()).map_err(|e| format!("snap {}: {e}", still.display()))?;
+    let text = dir.join(format!("snap-{name}.txt"));
+    std::fs::write(&text, backend.screen()).map_err(|e| format!("snap {}: {e}", text.display()))
 }
 
 pub fn key_event(key: &SingleKey) -> KeyEvent {
@@ -227,6 +290,7 @@ pub fn run_headless(
     let start = Instant::now();
     let mut type_ms = 0_u64;
     let mut exit_code = 0;
+    let mut pending_snap = None;
 
     while !app.is_quit() {
         if start.elapsed() > Duration::from_secs(deadline_secs) {
@@ -265,6 +329,7 @@ pub fn run_headless(
                 }
             }
             (Step::TypeMs(ms), _) => type_ms = ms,
+            (Step::Snap(name), _) => pending_snap = Some(name),
             (Step::Wait(ms), started) => {
                 if started.elapsed() < Duration::from_millis(ms) {
                     current = Some((Step::Wait(ms), started));
@@ -296,23 +361,14 @@ pub fn run_headless(
         }
 
         crate::render::draw(&mut app, &mut terminal, Some(&port));
-        if let Some(dir) = &drive.frames_dir {
-            let frame = terminal.backend().screen();
-            if frame != last_frame {
-                let path = dir.join(format!("{frame_index:04}.txt"));
-                // A dump that silently failed to land reads downstream as a
-                // frame that never differed.
-                if let Err(error) = std::fs::write(&path, &frame) {
-                    eprintln!("error: frame {}: {error}", path.display());
-                    exit_code = 1;
-                    break;
-                }
-                frame_index += 1;
-                last_frame = frame;
-            }
-        }
-        if let Some((x, y, symbol)) = terminal.backend().first_control_cell() {
-            eprintln!("error: a control character reached a cell: {symbol:?} at ({x}, {y})");
+        if let Err(error) = keep_frame(
+            drive.frames_dir.as_deref(),
+            terminal.backend(),
+            &mut last_frame,
+            &mut frame_index,
+            pending_snap.take(),
+        ) {
+            eprintln!("error: {error}");
             exit_code = 1;
             break;
         }

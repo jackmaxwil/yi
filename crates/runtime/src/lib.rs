@@ -76,8 +76,8 @@ pub use mailbox::ParentLink;
 pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{
     CATALOG_PROVIDERS, DEFAULT_REFRESH_HOURS, MODELS_DEV, ProviderStream, available_models,
-    catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, catalog_rejected,
-    refresh_catalog, resolve_model, set_catalog_cache_dir,
+    catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, catalog_needs_credential,
+    catalog_rejected, refresh_catalog, resolve_model, set_catalog_cache_dir,
 };
 pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};
@@ -91,6 +91,7 @@ pub use wall::Wall;
 pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
 pub use yi_ai::request::ProxyConfig;
+pub use yi_ai::roots;
 pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub use yi_kernel::tarball;
 
