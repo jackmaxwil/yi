@@ -6,6 +6,7 @@ use yi_types::plan::ids::INLINE_NOTE_MAX_BYTES;
 use yi_types::plan::doc::{Isolation, PlanId, PlanState, Todo, TodoLabel, TodoState};
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
+use super::tool::ArgError;
 
 pub(super) const NOTE_REF: &str = "note_ref";
 
@@ -111,7 +112,7 @@ fn delegation_of(delegation: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> 
     Ok(())
 }
 
-fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), String> {
+fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), ArgError> {
     let loose = todo
         .get("delegation")
         .is_some_and(|delegation| delegation.get("accept").is_none());
@@ -120,7 +121,7 @@ fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), S
         if let Some(accept) = accept {
             delegation.insert("accept".to_owned(), accept);
         }
-        delegation_of(delegation, blobs)?;
+        delegation_of(delegation, blobs).map_err(ArgError::Declared)?;
     }
     let uncontracted = todo.get("contract").is_none_or(Value::is_null);
     if uncontracted && stated_worktree(todo) {
@@ -128,9 +129,9 @@ fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), S
             .get("label")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        return Err(format!(
-            r#"todo {label}: a stated accept gives the engine nothing to run on a worktree child's checkout; write it as a command, {{"command": "<shell check>"}} (for example {{"command": "test -s out.txt"}}), or declare a `contract`"#
-        ));
+        return Err(ArgError::Unverifiable {
+            label: label.to_owned(),
+        });
     }
     if uncontracted && let Some(command) = worktree_command(todo) {
         let cmd = json!({"checker": command, "timeout_ms": crate::goal::DEFAULT_CHECK_TIMEOUT_MS});
@@ -151,7 +152,9 @@ fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), S
     Ok(())
 }
 
-pub fn normalize(args: &Map<String, Value>) -> Result<(Map<String, Value>, Vec<Blob>), String> {
+pub(super) fn normalize(
+    args: &Map<String, Value>,
+) -> Result<(Map<String, Value>, Vec<Blob>), ArgError> {
     let mut args = args.clone();
     let mut blobs = Vec::new();
     if let Some(Value::Array(todos)) = args.get_mut("todos") {
@@ -160,7 +163,7 @@ pub fn normalize(args: &Map<String, Value>) -> Result<(Map<String, Value>, Vec<B
         }
     }
     if let Some(Value::Object(delegation)) = args.get_mut("delegation") {
-        delegation_of(delegation, &mut blobs)?;
+        delegation_of(delegation, &mut blobs).map_err(ArgError::Declared)?;
     }
     Ok((args, blobs))
 }

@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, text_output};
-use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
+use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel, TodoStateName};
 use yi_types::todo::PhaseName;
 
 use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
 pub const NAME: &str = "todo";
 
-pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.";
+pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work: set with a checklist (`## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked). While a plan is open the plan is the list, and these ops move only your own items. One op per state change: start, done with evidence, block, unblock, drop, append, rm, view. A todo call rides with real work. Full guide: read(\"yi://tools/todo\").";
+
+pub const GUIDE: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.";
 
 const OPS: [&str; 10] = [
     "set", "init", "append", "start", "done", "drop", "block", "unblock", "rm", "view",
@@ -173,10 +175,13 @@ pub fn infer_op(args: &Map<String, Value>) -> Option<&'static str> {
         .get("items")
         .and_then(Value::as_array)
         .is_some_and(|items| !items.is_empty());
+    if args.is_empty() {
+        return Some("view");
+    }
     match (list, items, named(args).is_some()) {
         (true, false, false) => Some("set"),
         (false, true, false) => Some("append"),
-        (false, false, true) if string(args, "evidence").is_some() => Some("done"),
+        (false, false, true) if args.contains_key("evidence") => Some("done"),
         (false, false, true) if string(args, "reason").is_some() => Some("drop"),
         (false, false, true) if string(args, "on").is_some() => Some("block"),
         _ => None,
@@ -212,20 +217,23 @@ pub fn unleak(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
 /// the item that has a single reading, so it becomes `op` plus `id` (#474).
 pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
     const ID_OPS: [&str; 6] = ["start", "done", "drop", "block", "unblock", "rm"];
-    if args.contains_key("op") || named(args).is_some() {
+    if args.contains_key("op") {
         return Cow::Borrowed(args);
     }
     let found = args.iter().find_map(|(key, value)| {
         let op = ID_OPS.iter().find(|op| **op == key.as_str())?;
         Some((*op, value.as_str()?.to_owned()))
     });
-    let Some((op, id)) = found else {
+    // A run-5 call named the todo twice, `{"done": X, "label": X}`; a key naming another is no op.
+    let Some((op, id)) = found.filter(|(_, id)| named(args).is_none_or(|name| name == *id)) else {
         return Cow::Borrowed(args);
     };
     let mut fixed = args.clone();
     fixed.remove(op);
     fixed.insert("op".to_owned(), Value::String(op.to_owned()));
-    fixed.insert("id".to_owned(), Value::String(id));
+    if named(args).is_none() {
+        fixed.insert("id".to_owned(), Value::String(id));
+    }
     Cow::Owned(fixed)
 }
 
@@ -369,12 +377,18 @@ impl TodoTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
+        let (mut args, mut said) = (args.clone(), Vec::new());
+        crate::plan::ask::few_options(&mut args, &mut said);
+        let args = &args;
         let op = self.store.aim(parse_op(args)?)?;
-        let inferred = if string(args, "op").as_deref() == Some(op.name()) {
+        let mut inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
         } else {
             format!("(op inferred: {})\n", op.name())
         };
+        for line in said {
+            inferred.push_str(&format!("({line})\n"));
+        }
         if let Some(carried) = self.store.carry(&op) {
             let text = carried.map_err(TodoToolError::Plan)?;
             return Ok(format!(
@@ -384,7 +398,20 @@ impl TodoTool {
         }
         let expected = args.get("touched").and_then(Value::as_u64);
         let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
-        let applied = self.store.apply(op, expected)?;
+        let again = matches!(op, Op::Done { .. });
+        let applied = match self.store.apply(op, expected) {
+            Err(TodoError::Illegal {
+                op: "done",
+                from: TodoStateName::Done,
+                ..
+            }) if again => {
+                let mut seen = self.store.apply(Op::View, None)?;
+                seen.notes
+                    .push("it was already done, so nothing changed".to_owned());
+                seen
+            }
+            other => other?,
+        };
         let body = if applied.changed && !whole {
             text::render_change(&applied.before, &applied.list)
         } else {

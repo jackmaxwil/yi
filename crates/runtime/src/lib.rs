@@ -2,6 +2,7 @@
 
 pub mod advisor;
 pub mod affordance;
+mod annotate;
 mod args;
 pub mod auto_review;
 pub mod cache_miss;
@@ -31,13 +32,16 @@ pub mod node;
 pub mod permission;
 pub mod plan;
 pub mod provider;
+mod reclaim;
 pub mod rewind;
+pub mod rollup;
 pub mod rules;
 pub mod schedule;
 pub mod schema;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+pub mod select;
 pub mod session;
 pub mod skills;
 pub mod slash;
