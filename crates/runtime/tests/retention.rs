@@ -58,6 +58,20 @@ fn captured(
     Ok((project, shadow))
 }
 
+fn repoint(shadow: &Path, work_tree: &str) -> std::io::Result<()> {
+    let config: Vec<String> = std::fs::read_to_string(shadow.join("config"))?
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("worktree = ") {
+                format!("\tworktree = {work_tree}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    std::fs::write(shadow.join("config"), config.join("\n"))
+}
+
 #[test]
 fn only_an_orphan_past_seven_days_is_removed() -> Result<(), Box<dyn Error>> {
     let scratch = Scratch::new("yi-retention")?;
@@ -72,21 +86,8 @@ fn only_an_orphan_past_seven_days_is_removed() -> Result<(), Box<dyn Error>> {
         .into_iter()
         .find(|root| Path::new(root).is_dir())
         .ok_or("no mount root on this host")?;
-    let away = format!(
-        "\tworktree = {mount_root}/yi-absent-{}/project",
-        std::process::id()
-    );
-    let config: Vec<String> = std::fs::read_to_string(behind_mount.join("config"))?
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with("worktree = ") {
-                away.clone()
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect();
-    std::fs::write(behind_mount.join("config"), config.join("\n"))?;
+    let away = format!("{mount_root}/yi-absent-{}/project", std::process::id());
+    repoint(&behind_mount, &away)?;
     let (_idle, idle_live) = captured(&scratch, &root, "idle")?;
     let (_active, active) = captured(&scratch, &root, "active")?;
     // git escapes the backslash in its config, so the path read back is not this one.
@@ -250,5 +251,55 @@ fn a_sweep_in_flight_holds_off_a_second_session() -> Result<(), Box<dyn Error>> 
         !orphan.exists(),
         "the sweep after the release swept nothing"
     );
+    Ok(())
+}
+
+#[test]
+fn a_leftover_mount_dir_reads_as_a_deleted_project() -> Result<(), Box<dyn Error>> {
+    let scratch = Scratch::new("yi-retention-mounts")?;
+    let home = scratch.join("home");
+    let root = yi_runtime::checkpoint::checkpoint_root(&home);
+    let pid = std::process::id();
+    // /Volumes/Macintosh HD on macOS; CI runs as root, so there a dir made under /mnt.
+    let made = Path::new("/mnt").join(format!("yi-leftover-{pid}"));
+    let leftover = match std::fs::read_dir("/Volumes")
+        .ok()
+        .and_then(|dir| dir.flatten().map(|e| e.path()).find(|path| path.is_dir()))
+    {
+        Some(dir) => dir,
+        None => {
+            std::fs::create_dir_all(&made)?;
+            made.clone()
+        }
+    };
+    let (_left, behind_leftover) = captured(&scratch, &root, "left")?;
+    repoint(
+        &behind_leftover,
+        &format!("{}/yi-absent-{pid}/project", leftover.display()),
+    )?;
+    age_dir(&behind_leftover, 400 * DAY)?;
+    // A user dir under /media survives its drive's unmount; only root can make one, so CI checks it.
+    let user = Path::new("/media").join(format!("yi-user-{pid}"));
+    let behind_user = match std::fs::create_dir_all(&user) {
+        Ok(()) => {
+            let (_drive, shadow) = captured(&scratch, &root, "drive")?;
+            repoint(&shadow, &format!("{}/usb/project", user.display()))?;
+            age_dir(&shadow, 400 * DAY)?;
+            Some(shadow)
+        }
+        Err(_) => None,
+    };
+    drop(yi_runtime::retention::sweep(&home, false));
+    let _cleaned = (std::fs::remove_dir(&made), std::fs::remove_dir(&user));
+    assert!(
+        !behind_leftover.exists(),
+        "a repo behind a leftover mount dir was kept"
+    );
+    if let Some(shadow) = behind_user {
+        assert!(
+            shadow.is_dir(),
+            "a repo behind an unplugged /media drive was removed"
+        );
+    }
     Ok(())
 }
