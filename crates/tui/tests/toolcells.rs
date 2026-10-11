@@ -529,12 +529,7 @@ fn a_window_title_carries_no_control_character() {
 
 /// The edit cell's rows on a real screen, top to bottom, from the diff's last row to the card's end.
 fn rows_under_diff(app: &mut App, last_diff: &str) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut terminal = yi_tui::terminal::Terminal::new(common::VT100Backend::new(80, 60), 4)?;
-    yi_tui::render::draw(app, &mut terminal, None);
-    let backend = terminal.backend();
-    let rows: Vec<String> = (0..60)
-        .map(|row| backend.row_text(row).trim_end().to_owned())
-        .collect();
+    let rows = common::rows_at(app, 60)?;
     let at = (rows.iter())
         .position(|row| row.ends_with(last_diff))
         .ok_or_else(|| format!("no diff row {last_diff:?}: {rows:#?}"))?;

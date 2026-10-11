@@ -439,8 +439,11 @@ impl ToolCell {
                 DiffBudget::NORMAL
             };
             body.extend(diffview::render(patch, inner, theme, budget));
+            let verdict = self.details.get("syntax").and_then(Value::as_str);
             for row in &self.preview {
-                let style = if row.starts_with("syntax: error") {
+                let style = if verdict.is_some_and(|verdict| {
+                    verdict.starts_with("syntax: error") && row.contains(verdict)
+                }) {
                     Style::default().fg(theme.error)
                 } else {
                     theme.muted_style()
