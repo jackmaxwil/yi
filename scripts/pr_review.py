@@ -446,22 +446,22 @@ def snapshots(notes, sha):
 
 
 def settled_notes(pr, notes, wait=SNAPSHOTS_WAIT):
-    """The PR's comments once the tui workflow for this head has posted, or the notes as they are
-    when it never started, failed, or the wait (never past the job's own deadline) runs out."""
+    """The PR's comments as they stand once the tui workflow for this head has posted, failed or
+    run out the wait (never past the job's own deadline); the notes as given when it never ran."""
     deadline = min(time.monotonic() + wait, JOB_ENDS - ROUND_SECS)
 
-    def posting():
+    def tui():
         # A job no runner has picked up has no task row, so the comment step is absent until shots ends.
         jobs = forge_pr.jobs_of(pr)
-        started = [jobs.get(job) for job in ("build", "shots", "comment") if job in jobs]
-        return bool(started) and jobs.get("comment") not in ENDED and not set(started) & {"failure", "cancelled"}
+        return [jobs[job] for job in ("build", "shots", "comment") if job in jobs], jobs.get("comment")
 
-    waited = False
-    while posting() and time.monotonic() < deadline:
+    started, comment = tui()
+    while started and comment not in ENDED and not set(started) & {"failure", "cancelled"} \
+            and time.monotonic() < deadline:
         time.sleep(forge_pr.POLL)
-        waited = True
-    # The comment can land between a read and the status that ends the wait, so read after it.
-    return comments(forge_pr.repo(), pr["number"]) if waited else notes
+        started, comment = tui()
+    # The comment can land after the round's first read, waited for or not, so read it again.
+    return comments(forge_pr.repo(), pr["number"]) if started else notes
 
 
 def lens_prompt(probe, pr, diff, base, sha, full_read, shots=""):
@@ -1315,30 +1315,34 @@ def selfcheck():
     assert "4 cells changed" in text and "attachments" not in text and "999" not in text, text
     assert "</tui-snapshots" not in text, "a drawn row cannot close the block it is read in"
     assert "[… dropped 1 row(s) naming this block's closing tag" in text, text
-    # A round started by the same push waits out the tui job's comment step, and no longer.
-    states = iter([{"build": "success"}, {"build": "success", "shots": "running"},
-                   {"build": "success", "shots": "success", "comment": "running"},
-                   {"build": "success", "shots": "success", "comment": "success"}])
-    fresh = [{"user": {"login": ACTIONS}, "body": shot}]
-    keep = forge_pr.jobs_of, globals()["comments"], time.sleep, JOB_ENDS
-    forge_pr.jobs_of, time.sleep = (lambda pr: next(states)), (lambda secs: None)
+    # A round waits out the tui workflow on a clock the test moves, and reads the comments after.
+    clock, fresh = [0.0], [{"user": {"login": ACTIONS}, "body": shot}]
+    keep = forge_pr.jobs_of, globals()["comments"], time.sleep, time.monotonic, JOB_ENDS
+    time.monotonic, time.sleep = (lambda: clock[0]), (lambda secs: clock.__setitem__(0, clock[0] + secs))
     globals()["comments"] = lambda repo, n: fresh
+
+    def polled(*states):
+        polls = iter(states)
+        forge_pr.jobs_of = lambda pr: next(polls)
+
     try:
+        globals()["JOB_ENDS"] = 10 * SNAPSHOTS_WAIT
+        polled({"build": "success"}, {"build": "success", "shots": "running"},
+               {"build": "success", "shots": "success", "comment": "running"},
+               {"build": "success", "shots": "success", "comment": "success"})
         assert settled_notes({"number": 1}, []) == fresh, "a round waits from build to the posted comment"
-        forge_pr.jobs_of = lambda pr: {"comment": "running"}
-        assert settled_notes({"number": 1}, [], wait=0) == [], "a stuck tui job does not hold the round"
-        polls = iter([{"build": "failure"}])
-        forge_pr.jobs_of = lambda pr: next(polls)
-        assert settled_notes({"number": 1}, []) == [], "a failed tui run posts nothing to wait for"
-        forge_pr.jobs_of = lambda pr: {}
+        polled({"build": "success", "shots": "success", "comment": "success"})
+        assert settled_notes({"number": 1}, []) == fresh, "a comment posted before the wait began is read"
+        polled({"build": "failure"})
+        assert settled_notes({"number": 1}, []) == fresh, "a failed tui run is not waited on"
+        polled({})
         assert settled_notes({"number": 1}, []) == [], "a PR the tui workflow skips does not wait"
-        polls = iter([{"build": "running"}])
-        forge_pr.jobs_of = lambda pr: next(polls)
-        globals()["JOB_ENDS"] = time.monotonic() + ROUND_SECS
-        assert settled_notes({"number": 1}, []) == [], "no wait runs into the round the job still owes"
+        clock[0], globals()["JOB_ENDS"] = 0.0, ROUND_SECS + 3 * forge_pr.POLL
+        polled(*[{"build": "running"}] * 5)
+        assert settled_notes({"number": 1}, []) == fresh and clock[0] == 3 * forge_pr.POLL, clock
     finally:
-        forge_pr.jobs_of, globals()["comments"], time.sleep = keep[:3]
-        globals()["JOB_ENDS"] = keep[3]
+        forge_pr.jobs_of, globals()["comments"], time.sleep, time.monotonic = keep[:4]
+        globals()["JOB_ENDS"] = keep[4]
     assert "older head" in snapshots(posted, "0" * 40) and snapshots([], head) == ""
     prompt = lens_prompt(probes["tests"], {"number": 1, "title": "t", "body": body}, "x", "a" * 8, "b" * 8, True, text)
     assert "<tui-snapshots>\n" + text in prompt, "the lens reads what the head drew"
