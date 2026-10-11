@@ -41,6 +41,7 @@ pub mod schema;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+pub mod select;
 pub mod session;
 pub mod skills;
 pub mod slash;
