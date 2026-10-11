@@ -195,6 +195,19 @@ tui-see *args:
     cargo build -q -p yi-cli
     python3 scripts/tui_see.py {{args}}
 
+# The term host `just tui-see run <scene> --host term` plays scenes on: real Ghostty in the
+# yi-term image, and a static Linux yi built through zig for it to run.
+yi-term:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    arch=$(uname -m | sed 's/arm64/aarch64/')
+    var=$(echo "$arch" | tr 'a-z' 'A-Z')
+    docker build -t yi-term:dev scripts/yi-term
+    export "CARGO_TARGET_${var}_UNKNOWN_LINUX_MUSL_LINKER=$PWD/scripts/zigcc.sh"
+    export "CC_${arch}_unknown_linux_musl=$PWD/scripts/zigcc.sh" "AR_${arch}_unknown_linux_musl=$PWD/scripts/zigar.sh"
+    export ZIG_TARGET="$arch-linux-musl" RUSTFLAGS="${RUSTFLAGS:-} -C link-self-contained=no"
+    cargo build -q -p yi-cli --target "$arch-unknown-linux-musl"
+
 # A drive script rendered for people: the motion and still GIFs a UI change
 # attaches to its PR, so a reviewer can judge how it looks. `agg` is dev-only
 # (brew install agg) and never enters the binary.
