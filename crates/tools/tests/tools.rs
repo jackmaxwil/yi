@@ -3656,6 +3656,28 @@ fn assert_gaps(text: &str, raw: &str) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+/// `pytest -rA` lists every pass again in its short summary as `PASSED path::test`.
+#[test]
+fn a_pytest_ra_summary_counts_its_passes() -> TestResult {
+    let dir = temp_dir("reduce-pytest-ra")?;
+    let raw = fs::read_to_string(reduce_fixture("pytest-ra-one-failure.txt"))?;
+    let reduced = yi_tools::reduce("python -m pytest -rA", &raw, "", 1, None, Some(&dir), None);
+    let text = &reduced.text;
+    assert!(
+        text.contains("[640 passing tests omitted: 31-670]"),
+        "{text}"
+    );
+    assert!(text.contains("E       assert 3 == 2.5"), "{text}");
+    assert!(text.contains("1 failed, 640 passed"), "{text}");
+    let shown = text
+        .lines()
+        .filter(|line| line.starts_with("PASSED "))
+        .count();
+    assert_eq!(shown, 0, "{text}");
+    shown_verbatim(text, &raw)?;
+    Ok(())
+}
+
 /// Stage 7: pytest -v ends every line `[ 54%]`, which read as a progress bar, so each line
 /// overwrote the one before and the FAILED line at 223 of 419 never reached the model.
 #[test]

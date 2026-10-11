@@ -1624,3 +1624,48 @@ fn every_todo_refusal_names_its_class() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+/// Incident: a GLM 5.3 flash session sent this evidence alone ten times while t2 ran; each
+/// refusal showed a done for t1 with other evidence, and repeats echoed the failing call back.
+#[test]
+fn an_evidence_only_call_is_shown_the_done_for_the_running_item() -> TestResult {
+    let (_root, session) = session("evidence-only")?;
+    let store = store_for(&session);
+    let adapter = yi_runtime::tools::ToolAdapter::new(
+        Arc::new(TodoTool::new(store.clone())),
+        std::env::temp_dir(),
+        Arc::new(|| false),
+        None,
+    );
+    store.apply(
+        Op::Set {
+            list: "- [x] scout: run git-log child\n- [>] walled: run deny_url child\n".to_owned(),
+        },
+        None,
+    )?;
+    let evidence = "transcript sub-b34d03ba: bash `git log --oneline` exit 0, output \"03d7bf5 skill3 / fce1ecb skill2 / 46b7a62 init\"; final message \"3 commits.\"";
+    let sent = json!({"evidence": evidence});
+    let input = sent.as_object().cloned().unwrap_or_default();
+    let first = yi_loop::AgentTool::validate(&adapter, &input)
+        .err()
+        .ok_or("taken")?;
+    let again = yi_loop::AgentTool::validate(&adapter, &input)
+        .err()
+        .ok_or("taken")?;
+    assert!(
+        !again.contains("call todo as"),
+        "the refused call echoed: {again}"
+    );
+    let (_, example) = first.split_once(" looks like ").ok_or(first.clone())?;
+    let shown: Value = serde_json::from_str(example)?;
+    assert_eq!(shown["evidence"], evidence, "{first}");
+    let (is_error, text) = call(&TodoTool::new(store.clone()), shown);
+    assert!(!is_error, "{text}");
+    let list = store.list();
+    let running_done = list.items().any(|item| {
+        item.label.as_str() == "walled: run deny_url child"
+            && TodoStateName::of(&item.state) == TodoStateName::Done
+    });
+    assert!(running_done, "{:?}", states(&list));
+    Ok(())
+}
