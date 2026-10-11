@@ -188,6 +188,10 @@ fn hidden(full: &[&str], shown: &str) -> Vec<bool> {
             at = found.saturating_add(1);
         }
     }
+    // A pass is the reducer's to count, never the selector's to add back, whatever rows the cut kept.
+    for (flag, line) in hidden.iter_mut().zip(full) {
+        *flag = *flag && !yi_tools::reduce::is_pass(line);
+    }
     hidden
 }
 
@@ -355,8 +359,20 @@ mod tests {
         let full = ["ok", "ok", "ok", "FAILED a", "ok"];
         let mask = hidden(&full, "[cut]\nok\nok\n[2 lines omitted: 3-4]\nok");
         assert_eq!(mask, vec![false, false, true, true, false]);
-        let passes = hidden(&full[..3], "ok\n[1 passing tests omitted: 2-2]\nok");
-        assert_eq!(passes, vec![false, true, false]);
+        let passes = hidden(
+            &["ok", "ok", "ok", "ok"],
+            "ok\n[1 passing tests omitted: 2-2]\nok",
+        );
+        assert_eq!(passes, vec![false, true, false, true], "jumped past");
+        let dropped = hidden(
+            &["a PASSED", "b PASSED", "FAILED x"],
+            "[2 lines omitted: 1-2]\nFAILED x",
+        );
+        assert_eq!(
+            dropped,
+            vec![false, false, false],
+            "a pass is never sent, its row kept or not"
+        );
         let capture = hidden(
             &full[..3],
             "ok\n[1 lines omitted: 2-2 of the cut capture, not the file]\nok",
@@ -383,30 +399,57 @@ mod tests {
         );
     }
 
-    /// A recorded pytest run through the reducer: every line its own omitted rows name stays
-    /// hidden, and every kept line of the output is marked shown.
+    /// A recorded fixture of the reducer's tests, raw and as the reducer cuts it for `command`.
+    fn cut_of(
+        fixture: &str,
+        command: &str,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tools/tests/fixtures/reduce/"
+        );
+        let raw = std::fs::read_to_string(format!("{dir}{fixture}"))?;
+        let tee = std::env::temp_dir().join(format!("yi-select-cut-{}", std::process::id()));
+        std::fs::create_dir_all(&tee)?;
+        let cut = yi_tools::reduce(command, &raw, "", 1, None, Some(&tee), None).text;
+        Ok((raw, cut))
+    }
+
+    /// A recorded pytest run through the reducer: in an omitted span a pass reads as shown (the
+    /// reducer counts it) and any other line as hidden; every kept line reads as shown.
     #[test]
     fn the_reducers_cut_of_a_recorded_run_is_read_back() -> Result<(), Box<dyn std::error::Error>> {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
-        );
-        let raw = std::fs::read_to_string(path)?;
-        let dir = std::env::temp_dir().join(format!("yi-select-cut-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        let cut = yi_tools::reduce("python -m pytest", &raw, "", 1, None, Some(&dir), None).text;
+        let (raw, cut) = cut_of("pytest-verbose-one-failure.txt", "python -m pytest")?;
         let full: Vec<&str> = raw.lines().collect();
         let mask = hidden(&full, &cut);
-        let mut omitted = 0;
-        let gaps = cut.lines().filter(|line| line.contains(" omitted: "));
-        for (from, to) in gaps.filter_map(yi_tools::reduce::row_span) {
-            let span = mask.get(from - 1..to).ok_or("span past the output")?;
-            assert!(span.iter().all(|hidden| *hidden), "{from}-{to}");
-            omitted += to + 1 - from;
+        let (mut spanned, mut passes) = (0, 0);
+        for (from, to) in cut.lines().filter_map(yi_tools::reduce::omitted_span) {
+            let lines = full.get(from - 1..to).ok_or("span past the output")?;
+            let flags = mask.get(from - 1..to).ok_or("span past the output")?;
+            for (line, hidden) in lines.iter().zip(flags) {
+                let pass = yi_tools::reduce::is_pass(line);
+                assert_eq!(*hidden, !pass, "{line}");
+                (spanned, passes) = (spanned + 1, passes + usize::from(pass));
+            }
         }
-        assert!(omitted > 0, "the fixture is cut");
+        assert!(spanned > 0, "the fixture is cut");
         let kept = cut.lines().filter(|line| full.contains(line)).count();
-        assert_eq!(mask.iter().filter(|hidden| !**hidden).count(), kept);
+        assert_eq!(
+            mask.iter().filter(|hidden| !**hidden).count(),
+            kept + passes
+        );
+        Ok(())
+    }
+
+    /// A recorded `pytest -rA` run: its passes are counted by the reducer, so none of them is a
+    /// line the selector may add back.
+    #[test]
+    fn counted_passes_are_not_sent_to_the_selector() -> Result<(), Box<dyn std::error::Error>> {
+        let (raw, cut) = cut_of("pytest-ra-one-failure.txt", "python -m pytest -rA")?;
+        let full: Vec<&str> = raw.lines().collect();
+        let sent = (full.iter().zip(hidden(&full, &cut)))
+            .filter(|(line, hidden)| *hidden && line.starts_with("PASSED "));
+        assert_eq!(sent.count(), 0);
         Ok(())
     }
 
