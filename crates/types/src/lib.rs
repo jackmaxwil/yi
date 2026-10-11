@@ -42,7 +42,6 @@ pub mod message;
 pub mod model;
 pub mod node;
 pub mod oauth;
-pub mod path;
 pub mod permission;
 pub mod plan;
 pub mod reclaim;

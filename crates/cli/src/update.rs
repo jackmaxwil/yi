@@ -450,8 +450,7 @@ fn classify(path: &str) -> Result<Member, String> {
     if path.starts_with('/') || path.starts_with('\\') {
         return Err(format!("archive entry {path} is absolute"));
     }
-    let stripped = path.strip_prefix("./").unwrap_or(path);
-    if yi_types::path::escaping_part(stripped.strip_suffix('/').unwrap_or(stripped)).is_some() {
+    if path.split(['/', '\\']).any(|part| part == "..") {
         return Err(format!("archive entry {path} leaves the archive"));
     }
     let path = path.strip_prefix("./").unwrap_or(path);
