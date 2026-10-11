@@ -579,3 +579,33 @@ fn an_edit_cell_without_check_rows_ends_at_its_diff() -> TestResult {
     );
     Ok(())
 }
+
+/// Invariant: a preview row's colour follows its own text, not details["syntax"]:
+/// worst() keeps only the first failure, so a second file's error row must stay red.
+#[test]
+fn every_syntax_error_row_under_a_diff_carries_the_error_colour() -> TestResult {
+    let theme = theme();
+    let mut cell = edit_cell("a.py");
+    cell.details["syntax"] = json!("syntax: error a.py:1: expected an expression");
+    cell.preview = vec![
+        "a.py: syntax: error a.py:1: expected an expression".to_owned(),
+        "b.py: syntax: error b.py:9: unterminated string".to_owned(),
+        "syntax: ok".to_owned(),
+    ];
+    let rows = cell.lines(80, &theme, TranscriptMode::Normal, 0);
+    let spans: Vec<(String, Option<ratatui::style::Color>)> = rows
+        .iter()
+        .flat_map(|row| row.spans.iter())
+        .map(|span| (span.content.to_string(), span.style.fg))
+        .collect();
+    for (text, fg) in &spans {
+        if text.contains("syntax: error") {
+            assert_eq!(*fg, Some(theme.error), "muted error row: {text}");
+        }
+    }
+    assert!(
+        spans.iter().any(|(text, _)| text.contains("b.py")),
+        "second file's verdict row missing: {spans:?}"
+    );
+    Ok(())
+}
