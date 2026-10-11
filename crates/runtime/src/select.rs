@@ -359,6 +359,8 @@ mod tests {
         let full = ["ok", "ok", "ok", "FAILED a", "ok"];
         let mask = hidden(&full, "[cut]\nok\nok\n[2 lines omitted: 3-4]\nok");
         assert_eq!(mask, vec![false, false, true, true, false]);
+        let passes = hidden(&full[..3], "ok\n[1 passing tests omitted: 2-2]\nok");
+        assert_eq!(passes, vec![false, true, false]);
     }
 
     /// A recorded pytest run through the reducer: every line its own omitted rows name stays
