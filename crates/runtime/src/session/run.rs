@@ -257,6 +257,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         tool_execution,
         compactor,
         on_compacted,
+        tool_cwd,
     } = parts.clone();
     let capture = start_capture(&shared);
     let assembling = yi_types::trace::span("turn.context");
@@ -358,13 +359,14 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
         return false;
     }
     shared.signal.reset_if_epoch(admitted_epoch);
+    let armed = provider.armed(context.tools.clone(), tool_cwd);
     run_loop(
         &mut context,
         vec![prompt],
         &config,
         &shared.signal,
         &mut emit,
-        provider.as_ref(),
+        &armed,
     )
     .await;
     // The end capture must follow the start capture, or undo pairs the wrong trees.

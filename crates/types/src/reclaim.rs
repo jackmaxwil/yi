@@ -31,3 +31,24 @@ pub struct Reclaimed {
 impl crate::entry::CustomRecord for ReclaimRecord {
     const TYPE: &'static str = RECLAIM_ENTRY_TYPE;
 }
+
+pub const ANNOTATION_ENTRY_TYPE: &str = "annotation";
+
+/// The `custom{annotation}` entry: the model's mark on an earlier tool result (`pin` keeps it
+/// whole in the view, `discard` lets the next cut take it) or a `finding` compaction keeps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationRecord {
+    pub kind: String,
+    /// The marked result, named as a cut names one; absent on a finding about no one result.
+    pub target: Option<Reclaimed>,
+    /// The call the target answers, as a placeholder names it: read `src/lib.rs`.
+    pub call: Option<String>,
+    pub note: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl crate::entry::CustomRecord for AnnotationRecord {
+    const TYPE: &'static str = ANNOTATION_ENTRY_TYPE;
+}

@@ -2,8 +2,8 @@ mod assemble;
 mod install;
 pub(crate) mod orchestrate;
 mod pack;
+mod plugins;
 mod project;
-mod ripwire;
 mod telemetry;
 
 use std::cell::OnceCell;

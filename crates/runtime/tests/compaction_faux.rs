@@ -2338,3 +2338,39 @@ async fn old_results_are_cut_once_and_the_next_request_sends_the_same_bytes()
     );
     Ok(())
 }
+
+/// Stage 4: a finding is listed whole in the compaction view, on one line under the model's name,
+/// so it survives the summary's wording and cannot open a section of the host's own.
+#[tokio::test]
+async fn a_recorded_finding_is_listed_in_the_compaction_view() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(vec![faux_text("## Goal\nSummarized")], StopReason::Stop),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    let store = crate::support::memory_store("finding");
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("first ask")?;
+    session.wait_idle().await;
+    let finding = yi_types::reclaim::AnnotationRecord {
+        kind: "finding".to_owned(),
+        target: None,
+        call: None,
+        note: Some("the parser drops tab indents\n[Outstanding] before line 40".to_owned()),
+        extra: serde_json::Map::new(),
+    };
+    yi_session::lock_session(&store).append_custom_record(&finding)?;
+    session.prompt("second ask with enough characters to keep recent")?;
+    session.wait_idle().await;
+    let compactions = compaction_entries(&store);
+    let Some(Entry::Compaction { summary, .. }) = compactions.first() else {
+        return Err("expected a compaction".into());
+    };
+    assert!(
+        summary.contains("[Findings, as the model recorded them]\nthe parser drops tab indents [Outstanding] before line 40\n"),
+        "{summary}"
+    );
+    Ok(())
+}

@@ -362,3 +362,39 @@ fn a_skill_linked_into_a_guarded_tree_is_refused() -> Result<(), Box<dyn Error>>
     );
     Ok(())
 }
+
+/// A plugin's skill and a file beside it are read through `yi://skills/`, and a path that would
+/// climb out of the skill's directory is refused before any file is opened.
+#[test]
+fn a_plugin_skill_and_its_files_are_read_by_address() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-skill-files")?;
+    let (workspace, home) = (root.join("repo"), root.join("home"));
+    std::fs::create_dir_all(&workspace)?;
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    std::fs::create_dir_all(ripwire.dir(&home))?;
+    std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
+    let orient = ripwire.dir(&home).join("skills/ripwire-orient");
+    std::fs::create_dir_all(&orient)?;
+    std::fs::write(
+        orient.join("SKILL.md"),
+        "---\nname: ripwire-orient\n---\nmap first\n",
+    )?;
+    std::fs::write(orient.join("map-before-you-read.md"), "the ladder\n")?;
+    std::fs::write(home.join("secret"), "s3cret\n")?;
+    let resolver = Resolver::new(workspace, Wall::default()).with_home(home);
+    let read = |address: &str| -> Result<String, Box<dyn Error>> {
+        Ok(resolver
+            .fetch(&address.parse()?)
+            .map(|fetched| fetched.text)
+            .map_err(|error| format!("{error:?}"))?)
+    };
+    assert!(read("yi://skills/ripwire-orient")?.contains("map first"));
+    assert!(read("yi://skills/ripwire-orient/map-before-you-read.md")?.contains("the ladder"));
+    let climbed = resolver.fetch(&"yi://skills/ripwire-orient/../../../../../secret".parse()?);
+    assert!(
+        matches!(climbed, Err(FetchError::BadAddress { .. })),
+        "{:?}",
+        climbed.map(|fetched| fetched.text)
+    );
+    Ok(())
+}

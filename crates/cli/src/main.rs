@@ -9,6 +9,8 @@ mod fetch;
 mod lanes;
 mod memory;
 mod plan;
+mod plugin;
+mod roles;
 mod rpc;
 mod sessions;
 mod setup;
@@ -291,17 +293,7 @@ static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new(
 /// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
-    let home = std::path::PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
-    );
-    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
-    // that followed failed to spawn, naming the wrong step.
-    if !home.is_absolute() {
-        return Err(format!(
-            "HOME is relative ({}); yi needs an absolute HOME",
-            home.display()
-        ));
-    }
+    let home = update::absolute_home()?;
     let home = HOME.get_or_init(|| home);
     setup::early();
     yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
@@ -339,7 +331,7 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
-/// Invariant: the HOME [`load_config`] checked, except under `doctor`, which reports it raw.
+/// Invariant: the HOME [`load_config`] checked; `doctor` reports it raw, `plugin` checks it itself.
 fn home() -> &'static std::path::Path {
     HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
 }
@@ -351,33 +343,6 @@ fn configured_roles() -> yi_types::config::ModelRoles {
 fn configured_auto_background() -> Option<std::time::Duration> {
     let millis = config().bash.as_ref()?.auto_background_ms?;
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
-}
-
-/// §5: an unset role falls back to the primary; an unknown one warns, naming what happens instead.
-fn role_model(role: &str, spec: Option<String>, instead: &str) -> Option<Model> {
-    let spec = spec?;
-    let resolved = resolve(&spec);
-    if resolved.is_none() {
-        eprintln!("warning: unknown {role} model {spec}; {instead}");
-    }
-    resolved
-}
-
-/// Naming `models.advisor` is what turns the LLM reviewer on (D28/D50).
-fn advisor_model() -> Option<Model> {
-    let spec = configured_roles().advisor;
-    role_model("advisor", spec, "the advisor stays silent")
-}
-
-/// Naming `models.autoReview` is the switch for the §8 permission reviewer (D81).
-fn auto_review_model() -> Option<Model> {
-    let spec = configured_roles().auto_review;
-    role_model("autoReview", spec, "the auto reviewer stays off")
-}
-
-fn summarizer_model(args: &Args) -> Option<Model> {
-    let spec = configured_roles().summarizer;
-    role_model("summarizer", spec, &format!("using {}", args.model))
 }
 
 fn effective_cwd(args: &Args) -> std::path::PathBuf {
@@ -559,6 +524,9 @@ fn build_session(
         .as_ref()
         .and_then(|edit| edit.freeform_grammar)
         .unwrap_or(false);
+    let selector = roles::selector_model()
+        .map(|model| yi_runtime::select::Selector::new(std::sync::Arc::clone(&provider), model));
+    session.set_selector(selector);
     let wiring = yi_types::trace::span("build_session.attach_runtime");
     let host = yi_runtime::attach_runtime(
         &mut session,
@@ -586,9 +554,9 @@ fn build_session(
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             family_dir: session_id.map(|id| sessions::board_dir(&default_session_dir(args), id)),
             sessions_dir: Some(default_session_dir(args)),
-            summarizer: summarizer_model(args),
-            advisor: advisor_model(),
-            auto_review: auto_review_model(),
+            summarizer: roles::summarizer_model(args),
+            advisor: roles::advisor_model(),
+            auto_review: roles::auto_review_model(),
             parent_link: None,
             wall: yi_runtime::Wall::default(),
             plan_stale_turns: config()
@@ -1043,6 +1011,7 @@ fn mcp_fast_path() {
 fn main() {
     doctor::early();
     update::early();
+    plugin::early();
     if let Err(error) = load_config() {
         eprintln!("error: {error}");
         std::process::exit(2);
