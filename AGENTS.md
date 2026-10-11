@@ -408,7 +408,10 @@ Verification (the phase-7 lessons, paid for once):
   the yi-term image (`just yi-term` builds it) and uses its grabs; `--video` there also keeps the
   run as `run.webp`. `just tui-see watch <scene>` reruns and rediffs a scene on every save under
   the TUI crates, and `just tui-see gallery` puts every scene and label on one page for the owner
-  to look at and comment on. No picture gates a build.
+  to look at and comment on. A pull request that touches crates/tui, crates/console or crates/orb
+  gets the same on the forge: the `tui` workflow plays every scene under scripts/proof/tui_see on
+  the base and the head binary and posts one comment with each changed snap's cell diff and
+  crops; a scene added there is a scene every TUI pull request is shown. No picture gates a build.
 - vt100 tests for viewport code must include a nonzero-offset case: an
   inline viewport at row 0 hides every coordinate-origin bug (the blank-frame
   draw-offset bug shipped exactly this way).
