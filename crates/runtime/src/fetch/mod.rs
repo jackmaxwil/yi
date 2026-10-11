@@ -232,12 +232,6 @@ impl SessionTranscripts {
 
 impl Transcripts for SessionTranscripts {
     fn open(&self, agent: &str) -> Option<Transcript> {
-        let parent = (self.host.options.store)();
-        if let Some(store) = parent
-            && yi_session::lock_session(&store).metadata().id == agent
-        {
-            return Some(Transcript::Live(store));
-        }
         if let Some(live) = self.host.transcript(agent) {
             return Some(Transcript::Live(live));
         }
@@ -593,11 +587,8 @@ impl Resolver {
     ) -> Result<(String, String, Option<usize>), FetchError> {
         let parent = self.parent_address(url)?;
         let url = parent.as_ref().unwrap_or(url);
-        if *url.scheme() == Scheme::Agent && self.wall.denies_history() {
-            return Err(FetchError::Denied {
-                url: url.to_string(),
-                refusal: yi_tools::wall_refusal("fetch", &url.to_string(), "deny_url"),
-            });
+        if *url.scheme() == Scheme::Agent {
+            self.history_walled(url)?;
         }
         if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
@@ -638,8 +629,6 @@ impl Resolver {
         }
     }
 
-    /// Invariant: a wall that denies any `history://` prefix refuses the alias, since it names
-    /// the parent by a spelling (`history://main`) the rewritten id would slip past.
     fn parent_address(&self, url: &Url) -> Result<Option<Url>, FetchError> {
         let path = url.path();
         let rest = match path.strip_prefix(PARENT) {
@@ -655,12 +644,7 @@ impl Resolver {
             url: url.to_string(),
             what: what.to_owned(),
         };
-        if self.wall.denies_history() {
-            return Err(FetchError::Denied {
-                url: url.to_string(),
-                refusal: yi_tools::wall_refusal("fetch", &url.to_string(), "deny_url"),
-            });
-        }
+        self.history_walled(url)?;
         let store = self
             .session_store()
             .ok_or_else(|| missing("no session is attached to name a parent"))?;
@@ -676,6 +660,18 @@ impl Resolver {
                 url: url.to_string(),
                 detail: format!("the parent id {id} is not an address: {error}"),
             })
+    }
+
+    /// Invariant: an `agent://` pin and the `parent` alias both resolve to a transcript a
+    /// history wall may name by another spelling, so either fails closed under one.
+    fn history_walled(&self, url: &Url) -> Result<(), FetchError> {
+        match self.wall.denies_history() {
+            true => Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: yi_tools::wall_refusal("fetch", &url.to_string(), "deny_url"),
+            }),
+            false => Ok(()),
+        }
     }
 
     pub(super) fn workspace(&self) -> &std::path::Path {
