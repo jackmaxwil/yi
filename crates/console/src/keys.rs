@@ -114,10 +114,10 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('r') => Some(Action::ToggleDiff),
         KeyCode::Char('y') => Some(Action::ToggleTape),
         KeyCode::Char('o') => Some(Action::OpenEditor),
-        KeyCode::Char('f') => Some(Action::Find),
+        KeyCode::Char('l') => Some(Action::Find),
         KeyCode::Char('s') => Some(Action::Save),
-        KeyCode::Char('z' | 'Z') if shift => Some(Action::Redo),
-        KeyCode::Char('z') => Some(Action::Undo),
+        KeyCode::Char('u' | 'U') if shift => Some(Action::Redo),
+        KeyCode::Char('u') => Some(Action::Undo),
         KeyCode::Char('/') => Some(Action::Keys),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
