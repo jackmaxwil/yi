@@ -12,8 +12,8 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Language | Rust workspace of 16 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
-| Providers | Three wire APIs (Anthropic messages, OpenAI completions, OpenAI responses) plus `faux`; a compiled-in model catalog (§5) | |
-| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in | D191 |
+| Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog (§5) | |
+| Login | `yi login` / `yi logout` in `yi-oauth`; no provider identity is compiled in except `cursor` | D191 |
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
@@ -27,7 +27,8 @@ A resident MCP client or MCP as a registered tool · ACP v1 · automatic skill c
 refinement or self-extension · embeddings and semantic search · resident LSP or DAP servers · a
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
-in-process Rust, §6) · a GUI · browser automation, computer use, email, or any capability that
+in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
+§17.1) · a GUI · browser automation, computer use, email, or any capability that
 is not a coding agent · an `ask_user` tool on a root session with no reviewer (a root asks in
 its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a scheduled job that puts its own text in front of the model or runs saved code
@@ -240,7 +241,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 ## 5. Provider
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
 - Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
-  `openai-codex`), `openai-completions` (`openrouter`, `google`); any other api is faux. Catalog:
+  `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
+  any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
@@ -253,7 +255,12 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   minute-cached `time:`; adapters set `cache_control`, `prompt_cache_key`, cache retention.
 - yi-oauth: PKCE S256 from `/dev/urandom`, a `127.0.0.1` loopback, `login`/`logout`; tokens in
   `~/.yi/providers/tokens/<provider>.json` (0600, tmp+rename), refreshed 30 s before expiry under
-  a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`, Yi ships none.
+  a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`. Yi ships no client
+  id except `cursor`: `yi login cursor` polls `api2.cursor.sh` and a turn posts Connect protobuf
+  over HTTP/2 to `agentn.us.api5.cursor.sh`'s agent `Run` method. Text frames are sent on as they
+  arrive, a native shell frame runs bash, and the stream closes when the session aborts. The model
+  list is that account's `AvailableModels`, cached under `~/.yi/catalog`; a typed id still runs
+  when the file is absent. A profile file at the same id still wins.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
 - State: `models { primary, summarizer, advisor, autoReview, classifier }` in `~/.yi/config.json`
@@ -269,7 +276,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, the permission-mode
   fragment, user system text and schema instruction (text compiled in from
   `crates/runtime/src/prompts/`), then registers `project-resources` (skills catalog), `pack`
-  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `ripwire`, `route-telemetry`, `memory`.
+  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `plugins` (the card of each plugin found,
+  §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
   Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
@@ -344,7 +352,10 @@ default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = 
 cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
 past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines, 3 a file; else head 80/tail
 40), kept only if shorter. Runs of passing-test lines become one counted row, and a line naming an
-error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`). Lossy output is tee'd, secrets redacted line for line, to the family board's
+error or failure in the cut middle is kept with 3 lines either side, 60 at most (`SIGNAL_ROWS`).
+With `models.selector` named, a cut output's full text (at most 4,000 lines) goes to that model,
+which answers 1-based line ranges only; within 5 s the lines it names follow the cut verbatim under
+a row naming it, else a row says it gave none (`side:select` books its cost). Lossy output is tee'd, secrets redacted line for line, to the family board's
 `spills/`, kept until `yi sessions rm`, and ends `[full output: <path>]`; with nowhere to tee,
 raw text returns. A contained call runs under
 Seatbelt (§8).
@@ -395,6 +406,10 @@ child's lists none of those. Frontmatter at discovery; the catalog clips each de
 whole skill is `read("yi://skills/<name>")`; `$name` or a `trigger:` needle in a message the
 user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
+A plugin's skills (`yi plugin add`, §17.1) are read the same way but never listed: one Yi skill
+points at them (`skills/yi/ripwire`), and its `requires: ripwire` lists it only while that
+plugin's skills are installed. `read("yi://skills/<name>/<file>")` serves a file beside a skill's
+`SKILL.md`; a path that would leave the skill's directory is refused.
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
 
@@ -519,7 +534,7 @@ A persistent IPython process per session that reaches the host only through host
 | `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session id of any lane of this repository resolves too |
 | `checkpoint` / `mcp` | `<tree>/<path>` / `<server>/<uri>` | a checkpoint-tree file (§7.7) / an MCP resource (§7.6) |
 | `family` / `tree` | `<name>` / `<agent>/<path>` | a blackboard sidecar / a member's checkout file, under `deny_read` |
-| `yi` | `tools/<name>` / `skills/<name>` | a deferred tool guide (§7.1) / a skill's `SKILL.md` (§7.8), under `deny_read` |
+| `yi` | `tools/<name>` / `skills/<name>` / `skills/<name>/<file>` | a deferred tool guide (§7.1) / a skill's `SKILL.md` / a file beside it (§7.8), under `deny_read` |
 
 - Owner: [`runtime/src/fetch/mod.rs`](../crates/runtime/src/fetch/mod.rs),
   [`runtime/src/fetch/schemes.rs`](../crates/runtime/src/fetch/schemes.rs)
@@ -834,6 +849,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
+| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. Yi uses only the pinned version, else one on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed ones first on PATH |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills` (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
@@ -983,6 +999,9 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `serde_json` | `std`, `preserve_order` | all but orb, permission | JSON with key order kept, so a session file round-trips byte for byte | same |
 | `tokio` | `rt`, `sync`, `time`, `macros`, `process`, `io-util`, `net`; no `rt-multi-thread` | ai, kernel, loop, runtime, acp, tui, cli | provider streams, kernel sockets, scheduler timers | `smol`: `zeromq` is tokio-shaped |
 | `ureq` | `tls`, `native-certs` | ai, oauth, mcp-cli, kernel, cli | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download, the release tarball | `reqwest` (hyper stack), `native-tls` (openssl on Linux) |
+| `h2` | — | ai | HTTP/2 Connect to Cursor's agent `Run` method; the server rejects HTTP/1.1 | `reqwest` / `hyper` (banned); `ureq` (HTTP/1.1) |
+| `http` | `std` | ai | request type `h2`'s handshake takes | hand-rolling header frames |
+| `bytes` | — | ai | body buffers `h2` sends and reads | `Vec<u8>` copies at the crate boundary |
 | `zeromq` | `tokio-runtime`, `tcp-transport` | kernel | Jupyter DEALER/SUB channels | `zmq`: libzmq FFI |
 | `hmac` | — | kernel | Jupyter message signing | — |
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests, the release digest | — |
@@ -1010,14 +1029,14 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 `deny.toml` `[bans].deny`: `reqwest`, `hyper`, `openssl-sys`, `native-tls`, `git2`,
 `libgit2-sys`, `gix`, `clap`, `anyhow`, `once_cell`, `rand`, `lazy_static`, `textwrap`, `toml`,
 `onig`, `onig_sys`, `tracing-subscriber`. Wrapper exceptions: `once_cell` through `rustls`,
-`ureq`, `zeromq`, `syntect`; `rand` through `zeromq`.
+`ureq`, `zeromq`, `syntect`, `tracing-core` (the `h2` client logs through `tracing`); `rand` through `zeromq`.
 
 ### 18.6 Budgets
 | Budget | Limit | Measured as | Gate and baseline |
 |---|---|---|---|
-| direct deps | 19 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
-| transitive deps | 167 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 7,540,832 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| direct deps | 22 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
+| transitive deps | 171 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
+| dist binary | 8,174,032 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
 The binary and startup gates run only after a local dist build; a failed build fails both. Under

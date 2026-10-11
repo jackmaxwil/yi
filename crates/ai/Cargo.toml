@@ -17,6 +17,9 @@ yi-types = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 ureq = { workspace = true }
+h2 = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
 
 [build-dependencies]
 miniz_oxide = { workspace = true }
