@@ -783,6 +783,26 @@ fn the_cost_keys_reach_the_session_at_start() -> TestResult {
     Ok(())
 }
 
+/// `evals/b1_bench.py` ledgers the selector's cost from this row, one cost a part asked.
+#[test]
+fn debug_select_prints_one_cost_a_part() -> TestResult {
+    let workspace = Workspace::new("debug-select")?;
+    let output: String = (1..=700).map(|line| format!("{line}\n")).collect();
+    std::fs::write(workspace.project().join("out.txt"), output)?;
+    let printed = workspace.yi(&[
+        "debug",
+        "select",
+        "out.txt",
+        "seq",
+        "--model",
+        "faux/faux-1",
+    ])?;
+    let row: Value = serde_json::from_str(stdout(&printed).lines().last().unwrap_or_default())?;
+    let costs = row["costs"].as_array().ok_or("no costs")?;
+    assert_eq!(costs.len(), 3, "700 lines in parts of 300: {row}");
+    Ok(())
+}
+
 #[test]
 fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
     let workspace = Workspace::new("role-summarizer")?;
