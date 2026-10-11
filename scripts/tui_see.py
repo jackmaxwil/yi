@@ -60,7 +60,9 @@ def run(scene: Path, label: str, out: Path, binary: Path) -> Path:
     shutil.rmtree(run_dir, ignore_errors=True)
     for sub in ("frames", "sessions", "home/.yi"):
         (run_dir / sub).mkdir(parents=True)
-    (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false}}')
+    # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
+    # .git that outlived the run dir and refused the next run as "missing but locked".
+    (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
     env = {**os.environ, "HOME": str(run_dir / "home")}
     drive = ["--keys", str(scene.resolve()), "--frames", str(run_dir / "frames"),
              "--record", str(run_dir / "run.cast")]
