@@ -22,7 +22,24 @@ fn popup_in(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-pub(crate) fn render_keys(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
+const DISMISS: &str = " esc ✕ ";
+
+pub(crate) fn dismiss_mark(popup: Rect) -> Rect {
+    let width = u16::try_from(DISMISS.chars().count()).unwrap_or(7);
+    Rect::new(
+        popup.right().saturating_sub(width.saturating_add(1)),
+        popup.y,
+        width,
+        1,
+    )
+}
+
+pub(crate) fn render_keys(
+    app: &App,
+    frame: &mut Frame<'_>,
+    view: &ViewState,
+    theme: &Theme,
+) -> Option<Rect> {
     let popup = popup_in(
         view.panes_area,
         72,
@@ -35,6 +52,7 @@ pub(crate) fn render_keys(app: &App, frame: &mut Frame<'_>, view: &ViewState, th
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(theme.accent_style())
         .title(" Keys ")
+        .title_top(Line::from(DISMISS).right_aligned())
         .style(Style::default().bg(theme.selection_bg()));
     let mut lines = vec![Line::from(vec![
         Span::styled(format!(" {:<32}", "what"), theme.dim_style()),
@@ -54,11 +72,17 @@ pub(crate) fn render_keys(app: &App, frame: &mut Frame<'_>, view: &ViewState, th
     }
     lines.push(Line::styled(" any key closes", theme.dim_style()));
     frame.render_widget(Paragraph::new(lines).block(block), popup);
+    Some(popup)
 }
 
-pub(crate) fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
+pub(crate) fn render_navigator(
+    app: &App,
+    frame: &mut Frame<'_>,
+    view: &ViewState,
+    theme: &Theme,
+) -> Option<Rect> {
     let Mode::Navigator { query, selected } = &app.state.mode else {
-        return;
+        return None;
     };
     let area = view.panes_area;
     let width = area.width.saturating_sub(8).clamp(44, 72).min(area.width);
@@ -69,6 +93,7 @@ pub(crate) fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewStat
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(theme.accent_style())
         .title(" Command Palette ")
+        .title_top(Line::from(DISMISS).right_aligned())
         .style(Style::default().bg(theme.selection_bg()));
     let inner = usize::from(width.saturating_sub(4));
     let mut lines = vec![
@@ -157,4 +182,5 @@ pub(crate) fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewStat
         ));
     }
     frame.render_widget(Paragraph::new(lines).block(block), popup);
+    Some(popup)
 }

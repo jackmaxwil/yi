@@ -319,7 +319,7 @@ pub fn copy<'s, K: Copy>(
     blocks.join("\n\n")
 }
 
-fn strip_chrome(row: &str) -> String {
+pub(crate) fn strip_chrome(row: &str) -> String {
     let body = row.trim_start();
     let lead = " ".repeat(row.len().saturating_sub(body.len()));
     // The card rail and the gutter carry their own space, and a card body's inset is its

@@ -1,12 +1,18 @@
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
+
 use crate::client::Outbound;
+use crate::keys::Action;
 use crate::layout::PaneId;
-use crate::model::{Editor, PaneContent, SessionStatus, Zone};
+use crate::model::{Editor, Mode, PaneContent, SessionStatus, Zone};
 
 use super::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseKind {
     Down,
+    RightDown,
+    Moved,
     Up,
     Drag,
     ScrollUp,
@@ -14,8 +20,22 @@ pub enum MouseKind {
 }
 
 impl App {
+    pub(super) fn mouse_event(&mut self, outbound: &Outbound, mouse: MouseEvent) {
+        let kind = match mouse.kind {
+            MouseEventKind::Down(MouseButton::Right) => MouseKind::RightDown,
+            MouseEventKind::Down(_) => MouseKind::Down,
+            MouseEventKind::Up(_) => MouseKind::Up,
+            MouseEventKind::Drag(_) => MouseKind::Drag,
+            MouseEventKind::Moved => MouseKind::Moved,
+            MouseEventKind::ScrollUp => MouseKind::ScrollUp,
+            MouseEventKind::ScrollDown => MouseKind::ScrollDown,
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => return,
+        };
+        self.handle_mouse(outbound, kind, mouse.column, mouse.row);
+    }
+
     /// A drag copies without the user reaching for a key.
-    fn copy_out(&mut self, text: &str) {
+    pub(super) fn copy_out(&mut self, text: &str) {
         self.osc_out.push(crate::select::osc52(text));
         let lines = text.lines().count();
         let noun = if lines == 1 { "line" } else { "lines" };
@@ -42,7 +62,7 @@ impl App {
         let target = self.hits.as_ref().and_then(|hits| {
             hits.panes
                 .iter()
-                .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
+                .find(|(_, rect)| rect.contains(Position::new(x, y)))
                 .map(|(id, _)| *id)
         });
         if let Some(pane_id) = target
@@ -88,10 +108,23 @@ impl App {
             self.dirty = true;
         }
         let Some(hits) = &self.hits else { return };
+        if let Some((pane, _)) = hits
+            .closers
+            .iter()
+            .find(|(_, rect)| rect.contains(Position::new(x, y)))
+        {
+            let pane = *pane;
+            if let Some(tab) = self.state.tab_mut() {
+                tab.layout.focus_pane(pane);
+            }
+            self.apply_action(outbound, Action::ClosePane);
+            self.dirty = true;
+            return;
+        }
         if let Some((_, index)) = hits
             .tabs
             .iter()
-            .find(|(rect, _)| rect.contains(ratatui::layout::Position::new(x, y)))
+            .find(|(rect, _)| rect.contains(Position::new(x, y)))
         {
             let index = *index;
             self.state.select_tab(index);
@@ -134,7 +167,7 @@ impl App {
         if let Some((pane_id, _)) = hits
             .panes
             .iter()
-            .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
+            .find(|(_, rect)| rect.contains(Position::new(x, y)))
         {
             let pane_id = *pane_id;
             if let Some(tab) = self.state.tab_mut() {
@@ -169,15 +202,37 @@ impl App {
         }
     }
 
+    /// Incident: a click with the palette open reached the pane under it. A popup takes every
+    /// press now: outside it, or on its close mark, the press dismisses it and goes no further.
+    fn overlay_press(&mut self, kind: MouseKind, x: u16, y: u16) {
+        if !matches!(kind, MouseKind::Down | MouseKind::RightDown) {
+            return;
+        }
+        let at = Position::new(x, y);
+        let Some(hits) = &self.hits else { return };
+        let inside = hits.overlays.iter().any(|rect| rect.contains(at));
+        if !inside || hits.dismiss.is_some_and(|rect| rect.contains(at)) {
+            self.state.mode = Mode::Normal;
+            self.dirty = true;
+        }
+    }
+
     /// Clicks and drags resolve against the last draw's hit table, so the
     /// mouse can never disagree with what was on screen.
     pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
+        match self.state.mode {
+            Mode::Menu(_) => return self.menu_mouse(outbound, kind, x, y),
+            Mode::Navigator { .. } | Mode::Keys => return self.overlay_press(kind, x, y),
+            Mode::Normal | Mode::Prefix => {}
+        }
         match kind {
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
                 let delta: isize = if kind == MouseKind::ScrollUp { 3 } else { -3 };
                 self.scroll_pane_under(x, y, delta);
             }
             MouseKind::Down => self.press(outbound, x, y),
+            MouseKind::RightDown => self.right_click(x, y),
+            MouseKind::Moved => {}
             MouseKind::Drag => {
                 if self.editor_drag {
                     let cell = self
@@ -246,5 +301,40 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+    use yi_tui::colors::{ColorTier, Theme};
+
+    #[test]
+    fn a_press_outside_the_palette_closes_it_and_goes_no_further() {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        app.hits = Some(crate::render::Hits {
+            sidebar_width: 20,
+            sidebar_rows: vec![(3, 1)],
+            overlays: vec![Rect::new(30, 1, 40, 10)],
+            ..crate::render::Hits::default()
+        });
+        app.state.mode = Mode::Navigator {
+            query: String::new(),
+            selected: 0,
+        };
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-overlay-press-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.handle_mouse(&outbound, MouseKind::Down, 5, 3);
+        outbound.shutdown();
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "the palette stayed open"
+        );
+        assert_eq!(
+            app.state.selected, 0,
+            "the press reached the sidebar row under it"
+        );
     }
 }

@@ -31,6 +31,7 @@ pub struct PaneView {
     pub chat: bool,
 }
 
+#[derive(Default)]
 pub struct Hits {
     pub sidebar_width: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
@@ -40,6 +41,10 @@ pub struct Hits {
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
     pub tabs: Vec<(Rect, usize)>,
+    pub closers: Vec<(PaneId, Rect)>,
+    /// Popups over the panes, outermost first: they take every click and hide kitty images.
+    pub overlays: Vec<Rect>,
+    pub dismiss: Option<Rect>,
 }
 
 pub struct ViewState {
@@ -216,6 +221,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
+        closers: Vec::new(),
+        overlays: Vec::new(),
+        dismiss: None,
     });
 
     ViewState {
@@ -643,11 +651,22 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     if let Some(area) = view.banner {
         render_banner(app, frame, area, theme);
     }
-    if matches!(app.state.mode, Mode::Navigator { .. }) {
-        crate::palette::render_navigator(app, frame, view, theme);
-    }
-    if matches!(app.state.mode, Mode::Keys) {
-        crate::palette::render_keys(app, frame, view, theme);
+    let popup = match &app.state.mode {
+        Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
+        Mode::Keys => crate::palette::render_keys(app, frame, view, theme),
+        Mode::Menu(menu) => {
+            let rects = crate::menu::rects(menu, frame.area());
+            crate::menu::render(menu, &rects, frame, theme);
+            if let Some(hits) = app.hits.as_mut() {
+                hits.overlays = rects;
+            }
+            None
+        }
+        Mode::Normal | Mode::Prefix => None,
+    };
+    if let (Some(popup), Some(hits)) = (popup, app.hits.as_mut()) {
+        hits.overlays = vec![popup];
+        hits.dismiss = Some(crate::palette::dismiss_mark(popup));
     }
 }
 
@@ -849,6 +868,14 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             });
         }
     }
+    let closable = app
+        .state
+        .tab()
+        .is_some_and(|tab| tab.layout.pane_ids().len() > 1);
+    let closer = format!(
+        " ✕ {} ",
+        keys::chord_for(keys::Action::ClosePane, app.cmd_hints)
+    );
     for pane in &view.panes {
         let r = pane.rect;
         if r.width < 8 {
@@ -874,8 +901,31 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                     app.accent_of(&row.id.0, row.seed()),
                 )
             });
+        let text = format!(" {} {} ", status.glyph(), pane.title);
+        let tile = if seed.is_some() { 3 } else { 0 };
+        let room = usize::from(r.width.saturating_sub(4)).saturating_sub(tile);
+        let need = text.chars().count();
+        // Invariant: the key closes the focused pane only, so only its mark names the key; a
+        // sibling's bare mark leaves a 40-column Review header its counts.
+        let named = pane.focused && need.saturating_add(closer.chars().count()) <= room;
+        let mark = closable.then_some(if named { closer.as_str() } else { " ✕ " });
+        let mut right = r.right().saturating_sub(1);
+        if let Some(mark) = mark {
+            let width = u16::try_from(mark.chars().count()).unwrap_or(3);
+            right = right.saturating_sub(width);
+            let style = if pane.focused {
+                theme.accent_style()
+            } else {
+                theme.dim_style()
+            };
+            buffer.set_span(right, r.y, &Span::styled(mark, style), width);
+            if let Some(hits) = app.hits.as_mut() {
+                hits.closers
+                    .push((pane.id, Rect::new(right, r.y, width, 1)));
+            }
+        }
         let mut x = r.x.saturating_add(2);
-        let mut max = r.width.saturating_sub(4);
+        let mut max = right.saturating_sub(x).saturating_sub(1);
         if let Some((id, seed, hue)) = &seed {
             let tile = title_tile(app, id, seed, *hue, x.saturating_add(1), r.y);
             buffer.set_span(x, r.y, &Span::raw(" "), max);
@@ -883,7 +933,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             x = x.saturating_add(3);
             max = max.saturating_sub(3);
         }
-        let text = format!(" {} {} ", status.glyph(), pane.title);
         let text: String = text.chars().take(usize::from(max)).collect();
         let style = if pane.focused {
             theme
