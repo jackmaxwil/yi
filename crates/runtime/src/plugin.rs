@@ -36,26 +36,17 @@ pub fn add(
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
     let whole = plugin.skills.is_empty() || plugin.skill_root(home).is_some();
-    let dir = plugin.dir(home);
-    let aside = dir.with_file_name(format!(".legacy-{}", std::process::id()));
-    let legacy = !whole && plugin.installed(home).is_some();
-    if legacy {
+    let aside = match !whole && plugin.installed(home).is_some() {
         // Incident: a program-only install from before the row named skills blocks the publish
         // rename; deleting it first lost a working install to a refused download.
-        std::fs::rename(&dir, &aside).map_err(|error| format!("{}: {error}", dir.display()))?;
-    }
+        true => Some(yi_kernel::tarball::set_aside(&plugin.dir(home))?),
+        false => None,
+    };
     let installed = pinned(plugin, home, fetch);
-    if legacy {
-        let settled = match installed {
-            Ok(_) => std::fs::remove_dir_all(&aside),
-            Err(_) => std::fs::rename(&aside, &dir),
-        };
-        if let Err(error) = settled {
-            let why = installed
-                .err()
-                .map_or_else(String::new, |why| format!("{why}; "));
-            return Err(format!("{why}{}: {error}", aside.display()));
-        }
+    match (aside, &installed) {
+        (Some(aside), Ok(_)) => aside.commit(),
+        (Some(aside), Err(why)) => aside.restore().map_err(|error| format!("{why}; {error}"))?,
+        (None, _) => {}
     }
     let path = installed?;
     for version in versions(plugin, home) {

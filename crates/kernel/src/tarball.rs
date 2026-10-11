@@ -158,6 +158,16 @@ impl Aside {
     }
 }
 
+/// Moves `target` aside for a replacement published at its path by another route.
+pub fn set_aside(target: &Path) -> Result<Aside, String> {
+    let old = target.with_extension(format!("old-{}", std::process::id()));
+    std::fs::rename(target, &old).map_err(|error| format!("{}: {error}", target.display()))?;
+    Ok(Aside {
+        target: target.to_path_buf(),
+        old: Some(old),
+    })
+}
+
 /// Invariant: a reader sees the old target or the whole new one; a file replaced by a file is one
 /// rename over a hard link of it (a copy where links fail), anything else a rename aside.
 pub fn swap_in(staging: &Path, target: &Path) -> Result<Aside, String> {
