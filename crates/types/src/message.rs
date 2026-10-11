@@ -38,6 +38,10 @@ pub enum Content {
     },
 }
 
+/// The `api` of an assistant message whose tool calls the provider already ran: the loop
+/// executes none of them and the history transform sends none on.
+pub const CURSOR_API: &str = "cursor-agent";
+
 /// D25: who a user-role message actually came from. Absent means [`Attribution::Unproven`],
 /// so older messages and host-minted ones are unresolvable by `user://`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
