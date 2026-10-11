@@ -99,7 +99,7 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         },
         call: call.clone(),
         result: (*result).clone(),
-        kept: never_cut(result, newest_reads(&pairs).contains(index)),
+        kept: never_cut(result, newest_reads(&pairs, &messages).contains(index)),
     })
 }
 
@@ -274,7 +274,10 @@ mod tests {
                 tool_call_id: id.to_owned(),
                 tool_name: name.to_owned(),
                 content: vec![Content::Text {
-                    text: format!("{name} output"),
+                    text: match name {
+                        "read" => "[src/lib.rs#AB12]\n1:read output".to_owned(),
+                        _ => format!("{name} output"),
+                    },
                     text_signature: None,
                 }],
                 details: None,
@@ -426,18 +429,40 @@ mod tests {
             is_error: false,
             timestamp: 0,
         };
+        let patch = json!({"patch": "[src/lib.rs#AB12]\nPUT 1.=1:\n+fn tidy() {}"});
+        let edited = yi_ai::faux::faux_tool_call(
+            "c5",
+            "edit",
+            patch.as_object().cloned().unwrap_or_default(),
+        );
+        let mut edit_answer = answer.clone();
+        if let AgentMessage::ToolResult {
+            tool_call_id,
+            tool_name,
+            content,
+            ..
+        } = &mut edit_answer
+        {
+            (*tool_call_id, *tool_name) = ("c5".to_owned(), "edit".to_owned());
+            *content = vec![Content::Text {
+                text: "[src/lib.rs#9A42]\nupdated; first change at line 1".to_owned(),
+                text_signature: None,
+            }];
+        }
         {
             let mut store = yi_session::lock_session(&store);
-            store.append_message(
-                "main",
-                yi_ai::faux::faux_assistant_message(vec![asked], StopReason::ToolUse),
-            )?;
-            store.append_message("main", answer)?;
+            for (asked, answer) in [(asked, answer), (edited, edit_answer)] {
+                store.append_message(
+                    "main",
+                    yi_ai::faux::faux_assistant_message(vec![asked], StopReason::ToolUse),
+                )?;
+                store.append_message("main", answer)?;
+            }
         }
         let tool = AnnotateTool::new(Arc::new(move || Some(Arc::clone(&store))), Arc::default());
         let (text, failed) = call(&tool, json!({"kind": "discard", "call": "read src/lib.rs"}));
         assert!(
-            failed && text.contains("the newest read of a file is never cut"),
+            failed && text.contains("the newest read of a file this session edited is never cut"),
             "{text}"
         );
         let (text, failed) = call(
