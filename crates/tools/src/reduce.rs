@@ -246,21 +246,12 @@ fn is_signal(line: &str) -> bool {
 
 /// A test runner's line for one passing test: cargo, pytest, jest. A `PASSED` that shares its
 /// line with a failure is not one; a test named for errors that ends `... ok` is.
-fn is_pass(line: &str) -> bool {
+pub fn is_pass(line: &str) -> bool {
     let line = line.trim();
     (line.starts_with("test ") && line.ends_with(" ... ok"))
         || ((line.contains(" PASSED") || line.starts_with("PASSED ")) && !is_signal(line))
         || line.starts_with('✓')
         || line.starts_with('✔')
-}
-
-const PASSES_OMITTED: &str = " passing tests omitted: ";
-
-/// The span of a row that counts passing tests: the count accounts for every line in it.
-pub fn passes_span(row: &str) -> Option<(usize, usize)> {
-    row.contains(PASSES_OMITTED)
-        .then(|| omitted_span(row))
-        .flatten()
 }
 
 /// Runs of passing-test lines as one counted row; a failure among them stays a line of its own.
@@ -273,7 +264,7 @@ fn collapse_passes(rows: &[Row]) -> Vec<Row> {
             [only] => out.push(only.copy()),
             [first, .., last] => out.push(Row {
                 text: format!(
-                    "[{}{PASSES_OMITTED}{}-{}]",
+                    "[{} passing tests omitted: {}-{}]",
                     run.len(),
                     first.first,
                     last.line
