@@ -1201,9 +1201,9 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
     )
 }
 
-/// ⌘J beside a session opens that session's notebook to the right; ⌘J on it closes it.
+/// ⌘I beside a session opens that session's notebook to the right; ⌘I on it closes it.
 #[test]
-fn cmd_j_toggles_the_notebook_pane() -> TestResult {
+fn cmd_i_toggles_the_notebook_pane() -> TestResult {
     run(
         "cmd-notebook",
         vec![
@@ -1216,10 +1216,10 @@ fn cmd_j_toggles_the_notebook_pane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 nb:s-alpha\n\
          wait-frame 3000 no kernel cells yet\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 !nb:s-alpha\n\
          wait-frame 3000 replayed world\n\
          quit\n",
@@ -1368,7 +1368,7 @@ fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
     )
 }
 
-/// An edit outside git accumulates but opens nothing; ⌘G shows it on demand.
+/// An edit outside git accumulates but opens nothing; ⌘R shows it on demand.
 #[test]
 fn untracked_edit_accumulates_without_opening() -> TestResult {
     run(
@@ -1387,9 +1387,9 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
          wait-frame 5000 replayed world\n\
          wait-frame 3000 brand new line\n\
          wait-frame 2000 !Review ·\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 Review · session · 1 file +1 −0\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 !Review ·\n\
          quit\n",
     )
@@ -1561,7 +1561,7 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1600,7 +1600,7 @@ fn an_untitled_session_does_not_land_from_review() -> TestResult {
         "wait-frame 5000 untitled\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-g\n\
+         cmd-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1751,7 +1751,7 @@ fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 nb:s-alpha\n\
          wait-frame 3000 ⇧↩ runs\n\
          type print(1)\n\
@@ -1779,7 +1779,7 @@ fn esc_cancels_running_user_cell() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-j\n\
+         cmd-i\n\
          wait-frame 3000 nb:s-alpha\n\
          type sleep()\n\
          key shift-enter\n\
@@ -1838,6 +1838,47 @@ fn the_hint_row_keeps_whole_keys() -> TestResult {
     assert!(
         last.ends_with("   ⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥g diff   ⌥? keys"),
         "the notebook drops whole and ⌥? keys stays: {last:?}"
+    );
+    Ok(())
+}
+
+/// Ghostty's defaults take ⌘1..9, ⌘⇧T, ⌘J, ⌘G, ⌘E and ⌘? before the console sees them, so
+/// held rows name their ⌥ chord and the panes moved to ⌘I, ⌘R, ⌘O and ⌘/, which it delivers.
+#[test]
+fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
+    let frame = run_frames(
+        "cmd-held",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-/\n\
+         wait-frame 3000 any key closes\n\
+         quit\n",
+    )?;
+    let row = |what: &str| {
+        frame
+            .lines()
+            .find(|line| line.contains(what))
+            .unwrap_or_default()
+    };
+    for (what, key) in [
+        ("notebook pane", "⌘I"),
+        ("review pane", "⌘R"),
+        ("open a file in a pane", "⌘O"),
+        ("all keys", "⌘/"),
+        ("jump to rail slot 1..9", "⌥1..9"),
+        ("new tab · next · previous", "⌥t ⌥] ⌥["),
+        ("command palette", "⌘P"),
+        ("close pane", "⌘X"),
+    ] {
+        let want = format!(" {what:<32}{key} ");
+        assert!(row(what).contains(&want), "{want:?} in {:?}", row(what));
+    }
+    let hints = frame.lines().last().unwrap_or_default();
+    assert!(
+        hints.contains("⌘P command palette") && hints.contains("   ⌘R diff   ⌘/ keys"),
+        "the hint row names only chords Ghostty delivers: {hints:?}"
     );
     Ok(())
 }
