@@ -295,6 +295,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             script,
             frames_dir: args.frames.clone().map(std::path::PathBuf::from),
             record: args.record.clone().map(std::path::PathBuf::from),
+            deadline_secs: args.deadline.unwrap_or(60),
             width: args.size.map_or(80, |(cols, _)| cols),
             height: args.size.map_or(24, |(_, rows)| rows),
         };

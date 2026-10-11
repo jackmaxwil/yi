@@ -31,7 +31,9 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
-use yi_tui::drive::{Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events};
+use yi_tui::drive::{
+    DEADLINE_CAP_SECS, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
+};
 use yi_tui::term::ControlPictures;
 
 use crate::app::{App, MouseKind};
@@ -51,6 +53,9 @@ pub struct DriveOptions {
     pub script: Vec<ConsoleStep>,
     pub frames_dir: Option<PathBuf>,
     pub record: Option<PathBuf>,
+    /// Wall clock the whole script gets; a paced console scene outlives the 60 s an assertion
+    /// run needs.
+    pub deadline_secs: u64,
     pub width: u16,
     pub height: u16,
 }
@@ -536,14 +541,15 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let mut last_frame = String::new();
     let mut steps = drive.script.into_iter();
     let mut current: Option<(ConsoleStep, Instant)> = None;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline_secs = drive.deadline_secs.clamp(1, DEADLINE_CAP_SECS);
+    let deadline = Instant::now() + Duration::from_secs(deadline_secs);
     let mut exit_code = 0;
     let mut type_ms = 0;
     let mut pending_snap = None;
 
     while !app.state.quit {
         if Instant::now() > deadline {
-            eprintln!("error: drive script timed out (60 s wall)");
+            eprintln!("error: drive script timed out ({deadline_secs} s wall)");
             exit_code = 1;
             break;
         }
