@@ -109,7 +109,7 @@ fn post_token(
     parse_tokens(&serde_json::from_str(&text).map_err(|error| format!("token response: {error}"))?)
 }
 
-fn open_url(url: &str, no_browser: bool) {
+pub(crate) fn open_url(url: &str, no_browser: bool) {
     if no_browser {
         println!("Open this URL to authorize: {url}");
         return;
@@ -225,16 +225,27 @@ pub fn live_oauth(
     let current = store
         .load(&spec.id)
         .ok_or_else(|| format!("no stored tokens; run: yi login {}", spec.id))?;
+    refresh_locked(store, &spec.id, current, |current| {
+        refresh(spec, current, proxy)
+    })
+}
+
+pub fn refresh_locked(
+    store: &Store,
+    provider: &str,
+    current: Credential,
+    refresh: impl FnOnce(&Credential) -> Result<Credential>,
+) -> Result<Credential> {
     if !Store::expired(&current) {
         return Ok(current);
     }
-    store.with_refresh_lock(&spec.id, || {
-        let current = store.load(&spec.id).unwrap_or(current.clone());
+    store.with_refresh_lock(provider, || {
+        let current = store.load(provider).unwrap_or(current.clone());
         if !Store::expired(&current) {
             return Ok(current);
         }
-        let refreshed = refresh(spec, &current, proxy)?;
-        store.save(&spec.id, &refreshed)?;
+        let refreshed = refresh(&current)?;
+        store.save(provider, &refreshed)?;
         Ok(refreshed)
     })
 }

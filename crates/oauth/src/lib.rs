@@ -1,10 +1,11 @@
-//! Provider login (D191). An OAuth provider is described by a file the user writes
-//! at `~/.yi/oauth/<provider>.json`; this crate reads it and ships no identity itself.
+//! Provider login. An OAuth provider is a file at `~/.yi/oauth/<provider>.json`,
+//! except `cursor`, whose poll and refresh URLs are compiled in.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
 pub mod cli;
+pub mod cursor;
 pub mod flow;
 pub mod loopback;
 pub mod pkce;

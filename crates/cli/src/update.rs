@@ -113,19 +113,6 @@ where
     ))
 }
 
-fn absolute_home() -> Result<PathBuf, String> {
-    let home = PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
-    );
-    if !home.is_absolute() {
-        return Err(format!(
-            "HOME is relative ({}); yi needs an absolute HOME",
-            home.display()
-        ));
-    }
-    Ok(home)
-}
-
 fn prefix_dir(home: &Path) -> Result<PathBuf, String> {
     match std::env::var_os("YI_PREFIX") {
         Some(value) => {
@@ -293,27 +280,8 @@ fn login_keychain() -> Result<String, String> {
 #[cfg(target_os = "macos")]
 fn login_agent() -> Result<ureq::Agent, String> {
     let keychain = login_keychain()?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the login keychain holds a root rustls-native-certs does not load"
-    )]
-    let output = std::process::Command::new("security")
-        .args(["find-certificate", "-a", "-p", &keychain])
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-    }
-    use ureq::rustls::pki_types::CertificateDer;
-    use ureq::rustls::pki_types::pem::PemObject;
-    let ders = CertificateDer::pem_slice_iter(&output.stdout)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let mut roots = ureq::rustls::RootCertStore::empty();
-    let (valid, _) = roots.add_parsable_certificates(ders);
-    if valid == 0 {
-        return Err("the login keychain has no certificates".to_owned());
-    }
+    let pem = yi_runtime::roots::keychain_pem(&keychain)?;
+    let roots = yi_runtime::roots::root_store(&pem)?;
     let config = ureq::rustls::ClientConfig::builder_with_provider(
         ureq::rustls::crypto::ring::default_provider().into(),
     )
@@ -499,10 +467,7 @@ fn classify(path: &str) -> Result<Member, String> {
     if relative.is_empty() || relative.ends_with('/') {
         return Ok(Member::Skip);
     }
-    if relative
-        .split('/')
-        .any(|part| part.is_empty() || part == "." || part == "..")
-    {
+    if !tarball::stays_inside(relative) {
         return Err(format!("archive entry {path} leaves the archive"));
     }
     Ok(Member::Skill(relative.to_owned()))
@@ -561,6 +526,19 @@ fn stage_skills(staging: &Path, target: &Path, skills: &[(String, Vec<u8>)]) -> 
     if target.exists() {
         copy_tree(target, staging)?;
     }
+    // Invariant: the release owns each top-level directory it ships, so a skill it dropped goes.
+    let owned: std::collections::BTreeSet<&str> = (skills.iter())
+        .filter_map(|(relative, _)| relative.split_once('/').map(|(top, _)| top))
+        .collect();
+    for top in owned {
+        let dir = staging.join(top);
+        match std::fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(io(&dir)(error));
+            }
+            _ => {}
+        }
+    }
     for (relative, bytes) in skills {
         let path = skill_file(staging, relative)?;
         if let Some(parent) = path.parent() {
@@ -594,16 +572,12 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn skill_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
-    let mut path = root.to_path_buf();
-    for part in relative.split('/') {
-        if part.is_empty() || part == "." || part == ".." {
-            return Err(format!(
-                "archive entry skills/{relative} leaves the archive"
-            ));
-        }
-        path.push(part);
+    if !tarball::stays_inside(relative) {
+        return Err(format!(
+            "archive entry skills/{relative} leaves the archive"
+        ));
     }
-    Ok(path)
+    Ok(root.join(relative))
 }
 
 fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {
@@ -618,6 +592,21 @@ fn write_receipt(home: &Path, receipt: &InstallReceipt) -> Result<(), String> {
 
 fn io(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
+}
+
+pub(crate) fn absolute_home() -> Result<std::path::PathBuf, String> {
+    let home = std::path::PathBuf::from(
+        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
+    );
+    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
+    // that followed failed to spawn, naming the wrong step.
+    if !home.is_absolute() {
+        return Err(format!(
+            "HOME is relative ({}); yi needs an absolute HOME",
+            home.display()
+        ));
+    }
+    Ok(home)
 }
 
 #[cfg(test)]
@@ -881,9 +870,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let tmp = Tmp::new()?;
         let (home, prefix, exe) = layout(&tmp.0)?;
-        std::fs::create_dir_all(home.join(".yi/skills/yi"))?;
+        std::fs::create_dir_all(home.join(".yi/skills/yi/grid"))?;
         std::fs::write(home.join(".yi/skills/yi/SKILL.md"), b"stale")?;
-        std::fs::write(home.join(".yi/skills/yi/mine.md"), b"mine")?;
+        std::fs::write(home.join(".yi/skills/yi/grid/SKILL.md"), b"dropped")?;
+        std::fs::create_dir_all(home.join(".yi/skills/mine"))?;
+        std::fs::write(home.join(".yi/skills/mine/SKILL.md"), b"mine")?;
         let prior = serde_json::json!({
             "prefix": prefix.display().to_string(),
             "version": "0.1.0",
@@ -919,7 +910,14 @@ mod tests {
             std::fs::read(home.join(".yi/skills/yi/SKILL.md"))?,
             b"skill body"
         );
-        assert_eq!(std::fs::read(home.join(".yi/skills/yi/mine.md"))?, b"mine");
+        assert!(
+            !home.join(".yi/skills/yi/grid").exists(),
+            "a skill the release dropped is gone"
+        );
+        assert_eq!(
+            std::fs::read(home.join(".yi/skills/mine/SKILL.md"))?,
+            b"mine"
+        );
         assert!(!home.join(".yi/python").exists());
         let saved: InstallReceipt =
             serde_json::from_slice(&std::fs::read(home.join(".yi/install.json"))?)?;
@@ -1017,8 +1015,8 @@ mod tests {
 
     fn old_install(tmp: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
         let home = tmp.join("home");
-        std::fs::create_dir_all(home.join(".yi/skills/yi/SKILL.md"))?;
-        std::fs::write(home.join(".yi/skills/yi/SKILL.md/mine.md"), b"mine")?;
+        std::fs::create_dir_all(home.join(".yi/skills/README.md"))?;
+        std::fs::write(home.join(".yi/skills/README.md/mine.md"), b"mine")?;
         let dest = tmp.join("prefix/yi");
         std::fs::create_dir_all(tmp.join("prefix"))?;
         std::fs::write(&dest, b"old")?;
@@ -1032,13 +1030,13 @@ mod tests {
         let (home, dest) = old_install(&tmp.0)?;
         let skills = [
             ("a/one.md".to_owned(), b"one".to_vec()),
-            ("yi/SKILL.md".to_owned(), b"new skill".to_vec()),
+            ("README.md".to_owned(), b"new readme".to_vec()),
         ];
         publish(&dest, b"new", &home, &skills).expect_err("collision");
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
-            std::fs::read(home.join(".yi/skills/yi/SKILL.md/mine.md"))?,
+            std::fs::read(home.join(".yi/skills/README.md/mine.md"))?,
             b"mine"
         );
         Ok(())
@@ -1056,7 +1054,7 @@ mod tests {
         assert_eq!(std::fs::read(&dest)?, b"old");
         assert!(!home.join(".yi/skills/a").exists());
         assert_eq!(
-            std::fs::read(home.join(".yi/skills/yi/SKILL.md/mine.md"))?,
+            std::fs::read(home.join(".yi/skills/README.md/mine.md"))?,
             b"mine"
         );
         Ok(())
