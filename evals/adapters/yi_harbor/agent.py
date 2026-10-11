@@ -8,6 +8,7 @@ Register out of tree:
 import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,7 +27,9 @@ from yi_usage import (
     eval_config,
     kernel_problems,
     levers_label,
+    local_plugins,
     parse_events,
+    plugins_label,
     routing_label,
     run_command,
     TASK_TIMEOUT_SEC,
@@ -61,7 +64,40 @@ def mode_label():
     them: a one-hour row and an eight-hour row, two routings, or a levers trial and the
     defaults must never share a fingerprint (plan §4, E16)."""
     mult = os.environ.get(TIMEOUT_MULT_ENV)
-    return "yolo" + (f"+t{mult}" if mult else "") + routing_label(os.environ) + levers_label(os.environ)
+    return ("yolo" + (f"+t{mult}" if mult else "") + routing_label(os.environ)
+            + levers_label(os.environ) + plugins_label(carried_plugins()))
+
+
+def carried_plugins():
+    """#1041: path mode carries the plugins `yi plugin add` installed on this host, as the
+    binary itself reports them. URL mode, and the pier adapter which installs by URL, carry
+    none: there is no host build to ask, and the fingerprint says `+plugins{}`."""
+    if os.environ.get(BINARY_URL_ENV):
+        return []
+    return local_plugins(os.environ, plugin_report())
+
+
+def local_binary():
+    """The host's yi build that path mode uploads and asks for its plugins."""
+    binary = os.environ.get(BINARY_PATH_ENV)
+    if not binary:
+        raise ValueError(
+            f"set {BINARY_URL_ENV} (release URL) or {BINARY_PATH_ENV} "
+            "(local x86_64 musl build) before running the Yi adapter"
+        )
+    return binary
+
+
+def plugin_report():
+    """`yi plugin list` is the one reader of the layout `yi plugin add` writes, so the
+    adapter carries what yi itself reports, never a second copy of the layout."""
+    binary = local_binary()
+    result = subprocess.run([binary, "plugin", "list", "--json"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError(
+            f"{binary} plugin list exited {result.returncode}: {result.stderr.strip()}"
+        )
+    return result.stdout
 
 
 def config_command():
@@ -103,21 +139,27 @@ class Yi(BaseInstalledAgent):
             await self.upload_levers(environment)
             await self.warm_kernel(environment)
             return
-        local = os.environ.get(BINARY_PATH_ENV)
-        if not local:
-            raise ValueError(
-                f"set {BINARY_URL_ENV} (release URL) or {BINARY_PATH_ENV} "
-                "(local x86_64 musl build) before running the Yi adapter"
-            )
-        await environment.upload_file(Path(local), REMOTE_BINARY)
+        await environment.upload_file(Path(local_binary()), REMOTE_BINARY)
         await self.exec_as_root(
             environment,
             command=f"set -euo pipefail; chmod +x {REMOTE_BINARY} && {VERSION_CHECK}",
         )
+        await self.upload_plugins(environment)
         await self.exec_as_agent(environment, command=config_command())
         await self.upload_ca_bundle(environment)
         await self.upload_levers(environment)
         await self.warm_kernel(environment)
+
+    async def upload_plugins(self, environment: BaseEnvironment) -> None:
+        """Each carried plugin lands on PATH, where yi finds it, and must answer `--version`
+        there: a binary the image cannot run fails the install rather than a silent arm."""
+        for name, version, path in carried_plugins():
+            remote = f"/usr/local/bin/{name}"
+            await environment.upload_file(path, remote)
+            await self.exec_as_root(
+                environment, command=f"set -euo pipefail; chmod +x {shlex.quote(remote)} && {shlex.quote(remote)} --version"
+            )
+            print(f"plugin: {name} {version} at {remote}", file=sys.stderr)
 
     async def upload_levers(self, environment: BaseEnvironment) -> None:
         """E16: the host's YI_LEVERS file rides into the container; `run` asks for it under --eval."""

@@ -38,6 +38,14 @@ jobs:
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
           scripts/build_dist.sh --target x86_64-unknown-linux-musl
           python3 scripts/check_elf.py target/x86_64-unknown-linux-musl/dist/yi x86_64-unknown-linux-musl
+      # Every plugin rides into each task container (#1041) and its version into the
+      # fingerprint; a failed add fails the job, never a silent run without them.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.yi/plugins
+          key: yi-plugins-${{ hashFiles('crates/tools/src/plugin.rs') }}
+      - name: the plugins the adapter carries
+        run: target/x86_64-unknown-linux-musl/dist/yi plugin add --all
       - name: the six-task subset at k=3
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

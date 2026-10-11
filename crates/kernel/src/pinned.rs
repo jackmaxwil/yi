@@ -26,6 +26,18 @@ pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
     crate::tarball::read_capped(response.into_reader())
 }
 
+/// The digest check behind every pin: `subject` names the file or URL, `remedy` what to do
+/// about a mismatch.
+pub fn checked(subject: &str, bytes: &[u8], pinned_sha: &str, remedy: &str) -> Result<(), String> {
+    let digest = crate::tarball::sha256_hex(bytes);
+    if digest != pinned_sha {
+        return Err(format!(
+            "{subject} has sha256 {digest}, yi pins {pinned_sha}{remedy}"
+        ));
+    }
+    Ok(())
+}
+
 /// Downloads through `fetch`, checks the digest before reading a byte of the archive, and
 /// publishes the member as `dir/file` by one directory rename; the archive's paths are never used.
 pub fn install(
@@ -34,13 +46,7 @@ pub fn install(
 ) -> Result<PathBuf, String> {
     let archive =
         fetch(pin.url).map_err(|error| format!("couldn't download {}: {error}", pin.label))?;
-    let digest = crate::tarball::sha256_hex(&archive);
-    if digest != pin.sha256 {
-        return Err(format!(
-            "{} has sha256 {digest}, yi pins {}; not installing",
-            pin.url, pin.sha256
-        ));
-    }
+    checked(pin.url, &archive, pin.sha256, "; not installing")?;
     let tar = crate::tarball::gunzip(&archive)
         .map_err(|error| format!("the {} archive {error}", pin.label))?;
     let entries = crate::tarball::entries(&tar)
@@ -133,10 +139,15 @@ fn publish(
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
             .map_err(at(&file))?;
     }
-    // A concurrent installer that won the rename published the same verified bytes.
+    // Incident: the rename can lose to a concurrent installer or find a target written by a
+    // poisoned cache, so an existing file is adopted only when it is the verified bytes.
     match std::fs::rename(staging, pin.dir) {
         Ok(()) => Ok(()),
-        Err(_) if pin.dir.join(pin.file).is_file() => Ok(()),
+        Err(_)
+            if std::fs::read(pin.dir.join(pin.file)).is_ok_and(|existing| existing == binary) =>
+        {
+            Ok(())
+        }
         Err(error) => Err(at(pin.dir)(error)),
     }
 }

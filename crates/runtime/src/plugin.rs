@@ -5,7 +5,7 @@ pub use yi_tools::plugin::{PLUGINS, Plugin};
 pub use yi_kernel::pinned::fetch;
 
 pub enum State {
-    Installed,
+    Installed(PathBuf),
     /// Versions on disk, none of them the one this yi pins.
     Stale(Vec<String>),
     OnPath(PathBuf),
@@ -14,8 +14,8 @@ pub enum State {
 }
 
 pub fn state(plugin: &Plugin, home: &Path) -> State {
-    if plugin.installed(home).is_some() {
-        return State::Installed;
+    if let Some(path) = plugin.installed(home) {
+        return State::Installed(path);
     }
     let stale = versions(plugin, home);
     if !stale.is_empty() {
@@ -43,7 +43,7 @@ pub fn add(
         std::fs::remove_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     }
     let path = match plugin.installed(home) {
-        Some(path) => path,
+        Some(path) => verified(plugin, &path)?,
         None => {
             let asset = plugin.asset().ok_or_else(|| unsupported(plugin))?;
             let pin = yi_kernel::pinned::Pinned {
@@ -97,9 +97,33 @@ pub fn unsupported(plugin: &Plugin) -> String {
     )
 }
 
-/// The Stale line `yi plugin list` and `yi doctor` both render for versions this yi does not pin.
-pub fn stale_text(versions: &[String], pinned: &str) -> String {
-    format!("{} installed, this yi pins {pinned}", versions.join(", "))
+/// Incident: a file already at the pinned path can come from a restored CI cache or any process
+/// with the user's authority, so its digest is re-checked before yi adopts it as the pin.
+fn verified(plugin: &Plugin, path: &Path) -> Result<PathBuf, String> {
+    let Some(asset) = plugin.asset() else {
+        return Ok(path.to_path_buf());
+    };
+    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let remedy = format!(
+        ": `yi plugin remove {}` then `yi plugin add {}`",
+        plugin.name, plugin.name
+    );
+    yi_kernel::pinned::checked(
+        &path.display().to_string(),
+        &bytes,
+        asset.member_sha256,
+        &remedy,
+    )?;
+    Ok(path.to_path_buf())
+}
+
+/// The one sentence naming a stale install and its remedy, wherever a user reads it.
+pub fn stale_line(plugin: &Plugin, versions: &[String]) -> String {
+    format!(
+        "{} installed, this yi pins {}: yi plugin sync",
+        versions.join(", "),
+        plugin.version
+    )
 }
 
 /// Dotted numeric versions compared part by part; anything else is never called older.
@@ -161,13 +185,15 @@ mod tests {
         b"---\nname: tool-map\n---\n",
     );
 
-    fn plugin(bytes: &[u8], here: bool) -> Plugin {
+    fn plugin(bytes: &[u8], member: &[u8], here: bool) -> Plugin {
         let sha256 = Box::leak(yi_kernel::tarball::sha256_hex(bytes).into_boxed_str());
+        let member_sha256 = Box::leak(yi_kernel::tarball::sha256_hex(member).into_boxed_str());
         let assets: &'static [Asset] = Box::leak(Box::new([Asset {
             os: if here { std::env::consts::OS } else { "plan9" },
             arch: std::env::consts::ARCH,
             url: "https://example.invalid/tool-2.0.tar.gz",
             sha256,
+            member_sha256,
             member: "tool-2.0/tool",
         }]));
         Plugin {
@@ -187,7 +213,7 @@ mod tests {
         let notes = ("tool-2.0/skills/tool-map/notes.md", &b"notes"[..]);
         let other = ("tool-2.0/skills/tool-mcp/SKILL.md", &b"unlisted"[..]);
         let bytes = archive(&[BINARY, SKILL, notes, other])?;
-        let tool = plugin(&bytes, true);
+        let tool = plugin(&bytes, BINARY.1, true);
         assert!(matches!(state(&tool, &home), State::Missing));
         let old = tool.root(&home).join("1.0");
         std::fs::create_dir_all(&old)?;
@@ -213,7 +239,7 @@ mod tests {
             "only the listed skills are published"
         );
         assert!(!old.exists(), "the replaced version is deleted");
-        assert!(matches!(state(&tool, &home), State::Installed));
+        assert!(matches!(state(&tool, &home), State::Installed(_)));
         assert!(remove(&tool, &home)?);
         assert!(
             !remove(&tool, &home)?,
@@ -228,13 +254,17 @@ mod tests {
     fn a_tampered_download_or_a_target_with_no_build_installs_nothing() -> TestResult {
         let scratch = crate::scratch::Scratch::new("plugin-refused")?;
         let home = scratch.home()?;
-        let tool = plugin(&archive(&[("tool-2.0/tool", b"genuine"), SKILL])?, true);
+        let tool = plugin(
+            &archive(&[("tool-2.0/tool", b"genuine"), SKILL])?,
+            b"genuine",
+            true,
+        );
         let tampered = archive(&[("tool-2.0/tool", b"tampered"), SKILL])?;
         let error = add(&tool, &home, |_| Ok(tampered.clone()))
             .err()
             .ok_or("installed")?;
         assert!(error.contains("not installing"), "{error}");
-        let elsewhere = plugin(&tampered, false);
+        let elsewhere = plugin(&tampered, b"tampered", false);
         let error = add(&elsewhere, &home, |_| Err("never asked".to_owned()))
             .err()
             .ok_or("installed")?;
@@ -248,6 +278,25 @@ mod tests {
     }
 
     #[test]
+    fn a_tampered_file_at_the_pinned_path_is_not_adopted() -> TestResult {
+        let scratch = crate::scratch::Scratch::new("plugin-poisoned")?;
+        let home = scratch.home()?;
+        let bytes = archive(&[BINARY, SKILL])?;
+        let tool = plugin(&bytes, BINARY.1, true);
+        let pinned = tool.dir(&home);
+        std::fs::create_dir_all(pinned.join("skills/tool-map"))?;
+        std::fs::write(pinned.join("skills/tool-map/SKILL.md"), SKILL.1)?;
+        std::fs::write(pinned.join("tool"), "poisoned")?;
+        let error = add(&tool, &home, |_| {
+            Err("a download must not be needed".to_owned())
+        })
+        .err()
+        .ok_or("the tampered file was adopted")?;
+        assert!(error.contains("yi pins"), "{error}");
+        Ok(())
+    }
+
+    #[test]
     fn a_skill_path_leaving_the_archive_or_a_missing_skill_installs_nothing() -> TestResult {
         let scratch = crate::scratch::Scratch::new("plugin-skill-refused")?;
         let home = scratch.home()?;
@@ -257,9 +306,13 @@ mod tests {
             (vec![BINARY], "carries no tool-2.0/skills/tool-map/"),
         ] {
             let bytes = archive(&members)?;
-            let error = add(&plugin(&bytes, true), &home, |_| Ok(bytes.clone()))
-                .err()
-                .ok_or("installed")?;
+            let error = add(
+                &plugin(&bytes, BINARY.1, true),
+                &home,
+                |_| Ok(bytes.clone()),
+            )
+            .err()
+            .ok_or("installed")?;
             assert!(error.contains(why), "{error}");
             assert!(!home.join(".yi/plugins/tool/2.0").exists(), "{why}");
         }
@@ -272,7 +325,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("plugin-skills-later")?;
         let home = scratch.home()?;
         let bytes = archive(&[BINARY, SKILL])?;
-        let tool = plugin(&bytes, true);
+        let tool = plugin(&bytes, BINARY.1, true);
         std::fs::create_dir_all(tool.dir(&home))?;
         std::fs::write(tool.dir(&home).join("tool"), BINARY.1)?;
         assert!(tool.skill_root(&home).is_none());
