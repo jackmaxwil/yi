@@ -1710,11 +1710,7 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
     session.wait_idle().await;
     let text = result(&session);
     assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); kept 3 of 3 selected lines not shown above (LINES_OUT 200, at most 25 a part), 0 more already shown]\n2000| 2000\n2001| 2001\n2002| 2002"), "{text}");
-    let booked = yi_session::lock_session(&store)
-        .find_records(&yi_session::RecordQuery::default())?
-        .into_iter()
-        .filter(|record| matches!(record, yi_types::record::LaneRecord::Usage { cause, .. } if cause == "side:select"))
-        .count();
+    let booked = crate::support::booked(&store, |cause| cause == "side:select")?;
     assert_eq!(booked, 8, "one cost row a part");
     let (session, _store) = run("seq 1 4000", &[r#"{"ranges": [[2000, 2002]]}"#]);
     session.prompt("count")?;

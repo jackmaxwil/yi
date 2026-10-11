@@ -74,8 +74,8 @@ fn select(args: &Args, rest: &[&str]) -> i32 {
         Ok(picked) => (picked.ranges, None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
-    let cost = yi_runtime::select::cost_of(&usage);
-    let row = json!({"ranges": ranges, "error": error, "ms": started.elapsed().as_millis(), "cost": cost});
+    let costs: Vec<_> = usage.iter().map(|usage| usage.cost.total.clone()).collect();
+    let row = json!({"ranges": ranges, "error": error, "ms": started.elapsed().as_millis(), "costs": costs});
     println!("{row}");
     0
 }

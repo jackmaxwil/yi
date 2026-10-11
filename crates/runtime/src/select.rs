@@ -248,14 +248,6 @@ fn compose(named: &[bool], hidden: &[bool], tally: Tally<'_>) -> Result<Picked, 
     }
 }
 
-/// What the parts' requests cost in all, as `yi debug select` prints it.
-pub fn cost_of(usages: &[Usage]) -> f64 {
-    usages
-        .iter()
-        .filter_map(|usage| usage.cost.total.as_f64())
-        .sum()
-}
-
 /// Which full-output lines, each in [`yi_tools::reduce::shown_form`], the cut does not show:
 /// cuts keep lines in order, and a row the reducer wrote for left-out lines names its gap.
 fn hidden(full: &[&str], shown: &str) -> Vec<bool> {
@@ -427,7 +419,7 @@ pub(crate) async fn widen(
 
 #[cfg(test)]
 mod tests {
-    use super::{LINES_IN, Picked, cost_of, full_output, hidden, mark, read_bounded};
+    use super::{LINES_IN, Picked, full_output, hidden, mark, read_bounded};
     use yi_types::event::ToolResult;
     use yi_types::message::Content;
 
@@ -578,24 +570,6 @@ mod tests {
         let sent = (full.iter().zip(hidden(&full, &cut)))
             .filter(|(line, hidden)| *hidden && line.starts_with("PASSED "));
         assert_eq!(sent.count(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn the_parts_costs_add_up() -> Result<(), serde_json::Error> {
-        let priced = |total: f64| -> Result<yi_types::message::Usage, serde_json::Error> {
-            let mut usage = yi_types::message::Usage::zero();
-            usage.cost = serde_json::from_value(
-                serde_json::json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": total}),
-            )?;
-            Ok(usage)
-        };
-        let parts = [
-            priced(0.25)?,
-            priced(0.5)?,
-            yi_types::message::Usage::zero(),
-        ];
-        assert!((cost_of(&parts) - 0.75).abs() < 1e-9);
         Ok(())
     }
 
