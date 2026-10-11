@@ -48,6 +48,7 @@ struct Args {
     headless: bool,
     solo: bool,
     keys: Option<String>,
+    control: Option<String>,
     frames: Option<String>,
     faux: Option<String>,
     record: Option<String>,
@@ -96,6 +97,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut lanes = false;
     let mut solo = false;
     let mut keys = None;
+    let mut control = None;
     let mut frames = None;
     let mut faux = None;
     let mut record = None;
@@ -128,6 +130,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("lanes") => lanes = true,
             Long("solo") => solo = true,
             Long("keys") => keys = Some(parser.value()?.string()?),
+            Long("control") => control = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
             Long("faux") => faux = Some(parser.value()?.string()?),
             Long("record") => record = Some(parser.value()?.string()?),
@@ -199,6 +202,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         headless,
         solo,
         keys,
+        control,
         frames,
         faux,
         record,

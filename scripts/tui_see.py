@@ -189,10 +189,39 @@ def newest_mtime(paths) -> float:
     return max(stamps, default=0.0)
 
 
+def words(rows: list[str]) -> list[str]:
+    """The words above the solo composer box: the orb's cells, the spinner, wrapping and the
+    status row's cwd differ between Ghostty and the headless screen, what was said does not. The
+    console has no such row and its key hints follow the terminal, so it yields none."""
+    top = next((i for i, row in enumerate(rows) if row.lstrip().startswith("╭")), 0)
+    return re.findall(r"\w+", " ".join(rows[:top]))
+
+
+def drift(run_dir: Path) -> list[str]:
+    """Each Ghostty snap's screen, as the proxy's emulator read it, against the headless frame of
+    the same name, which played the same scene: where their transcripts part."""
+    notes = []
+    for screen in sorted((run_dir / "term").glob("snap-*.screen")):
+        frame = run_dir / "frames" / f"{screen.stem}.txt"
+        if not frame.exists():
+            continue
+        want, got = words(screen_rows(frame)), words(screen.read_text().split("\n"))
+        shown = min(len(want), len(got))
+        # The orb's rows push more of Ghostty's transcript into scrollback: the tails must agree.
+        if want[len(want) - shown:] != got[len(got) - shown:]:
+            notes.append(f"[… snap {screen.stem.removeprefix('snap-')}: Ghostty's transcript ends "
+                         f"{' '.join(got[-6:])!r}, the headless one {' '.join(want[-6:])!r}; "
+                         f"compare {screen} with {frame}]")
+    return notes
+
+
 def collect(run_dir: Path) -> list[Path]:
-    """Ghostty's grabs replace agg's pictures in frames/; its notes and video are surfaced."""
+    """Ghostty's grabs replace agg's pictures in frames/; its notes, text drift and video are
+    surfaced."""
     for note in sorted((run_dir / "term").glob("*.note")):
         print(f"[… {note.stem}: {note.read_text()}; the grab may catch a frame mid-draw]")
+    for note in drift(run_dir):
+        print(note)
     if (run_dir / "term" / "run.webp").exists():
         shutil.copy(run_dir / "term" / "run.webp", run_dir / "run.webp")
         print(f"video: {run_dir / 'run.webp'}")
@@ -285,10 +314,19 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
         at = extra.index("--size")
         cols, rows = extra[at + 1].split("x")
         del extra[at:at + 2]
+    # Incident: a turn's checkpoint snapshots the cwd, and in the mounted repo (gigabytes of
+    # target/) a faux turn took 20 s to minutes to go idle, so an exact `wait-idle` timed out.
+    work = Path("/tmp/yi-scene")
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir()
+    scene = str(Path(scene).resolve())
+    if "--faux" in extra:
+        at = extra.index("--faux") + 1
+        extra[at] = str(Path(extra[at]).resolve())
     if "--session" in extra:
         seed = pristine_seed(out.parent, extra[extra.index("--session") + 1])
-        (out / "sessions" / encoded(Path.cwd())).mkdir(parents=True)
-        shutil.copy(seed, out / "sessions" / encoded(Path.cwd()) / seed.name)
+        (out / "sessions" / encoded(work)).mkdir(parents=True)
+        shutil.copy(seed, out / "sessions" / encoded(work) / seed.name)
     # One job plays many scenes: a server that exited leaves its lock, so each run takes a free one.
     number = next(n for n in range(99, 400) if not Path(f"/tmp/.X{n}-lock").exists())
     env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}"}
@@ -306,7 +344,7 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
             # serve left a shared socket the head console reached before the new serve listened.
             sock = str(Path(tempfile.mkdtemp(prefix="yi-term.")) / "d.sock")
             serve = subprocess.Popen([yi, "serve", "--socket", sock, "--model", "faux/faux-1",
-                                      "--session-dir", str(out / "sessions")], env=env,
+                                      "--session-dir", str(out / "sessions")], env=env, cwd=work,
                                      stderr=open(out / "serve.log", "w"))
             procs.append(serve)
             if not wait_for(lambda: Path(sock).exists() or serve.poll() is not None, 10) \
@@ -326,7 +364,7 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
              "--font-family=JetBrains Mono", f"--window-width={cols}", f"--window-height={rows}",
              "--background-opacity=1", "--confirm-close-surface=false", "-e", "python3",
              str(ROOT / "scripts/tui_see.py"), "proxy", scene, str(out), "--", *argv],
-            env=env, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
+            env=env, cwd=work, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
         procs.append(ghostty)
         wait_for(lambda: (out / "done").exists() or ghostty.poll() is not None, 600)
         if recorder is not None:
@@ -407,18 +445,55 @@ class ApcFilter:
         return data
 
 
+TIMING = ("tick", "hold", "release", "wait-idle")
+
+
+def steps(scene: Path) -> list[str]:
+    """The scene's step lines as the proxy plays them: `snap-strip` spelled out as the drive
+    parses it, and a frozen scene opened with `tick 0`, as any tick freezes a headless run."""
+    lines = [line.strip() for line in scene.read_text().splitlines()]
+    lines = [line for line in lines if line and not line.startswith("#")]
+    played = ["tick 0"] if any(line.split(" ", 1)[0] in ("tick", "snap-strip") for line in lines) else []
+    for line in lines:
+        word, _, rest = line.partition(" ")
+        if word != "snap-strip":
+            played.append(line)
+            continue
+        name, count, ms = rest.split()
+        for frame in range(int(count)):
+            if frame:
+                played.append(f"tick {ms}")
+            played.append(f"snap {name}-{frame:02}")
+    return played
+
+
 def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     """Runs inside Ghostty: the binary in a pty, Ghostty's bytes passed both ways, the scene's
-    steps sent as key bytes, `wait-frame` read off a pyte screen fed the same bytes, and a grab
+    keys sent as key bytes and its timing steps over the binary's `--control` socket, which
+    answers each once played, `wait-frame` read off a pyte screen fed the same bytes, and a grab
     at each `snap` once the output has been quiet."""
     import fcntl
     import pty
     import select
+    import socket
     import termios
     import tty
 
     import pyte
 
+    # A unix socket path is capped near 100 bytes, so it lives under the system temp dir.
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(Path(tempfile.mkdtemp(prefix="yi-ctl.")) / "c.sock"))
+    listener.listen(1)
+    listener.settimeout(30)
+    argv = [*argv, "--control", listener.getsockname()]
+    extra = header(scene)[1]
+    asked = extra[extra.index("--size") + 1] if "--size" in extra else "80x24"
+    # Incident: Ghostty starts this process at a smaller grid and then grows to the one asked for;
+    # a child sized before that drew an 80x18 scene at 79x17.
+    if not wait_for(lambda: "{1}x{0}".format(*struct.unpack(
+            "HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))[:2]) == asked, 10):
+        (out / "size.note").write_text(f"Ghostty never reached the scene's {asked} grid")
     pid, fd = pty.fork()
     if pid == 0:
         os.execvp(argv[0], argv)
@@ -426,19 +501,43 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     saved = termios.tcgetattr(0)
     tty.setraw(0)
     rows, cols = struct.unpack("HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))[:2]
-    screen = pyte.Screen(cols, rows)
-    stream = pyte.ByteStream(screen)
+    class Screen(pyte.Screen):
+        """Incident: pyte has no SU or SD (CSI S, CSI T), which the inline viewport scrolls its
+        region with, so after the first commit the rows a wait read were not Ghostty's."""
+
+        def scroll(self, count, down):
+            top, bottom = self.margins or pyte.screens.Margins(0, self.lines - 1)
+            rows = list(range(top, bottom + 1))
+            for _ in range(count or 1):
+                old = [self.buffer[y] for y in rows]
+                moved = zip(rows[1:], old[:-1]) if down else zip(rows[:-1], old[1:])
+                for y, line in moved:
+                    self.buffer[y] = line
+                self.buffer.pop(top if down else bottom, None)
+            self.dirty.update(range(self.lines))
+
+        def scroll_up(self, count=1, *_, **__):
+            self.scroll(count, False)
+
+        def scroll_down(self, count=1, *_, **__):
+            self.scroll(count, True)
+
+    class Stream(pyte.ByteStream):
+        csi = {**pyte.ByteStream.csi, "S": "scroll_up", "T": "scroll_down"}
+
+    screen = Screen(cols, rows)
+    stream = Stream(screen)
     apc = ApcFilter()
     cast = open(out / "run.cast", "w")
     cast.write(json.dumps({"version": 2, "width": cols, "height": rows}) + "\n")
-    began = last = calm = time.monotonic()
-    shape = ""
-    moved: list[list[int]] = []
+    began = last = time.monotonic()
     box: list[str] = []
     alive = True
+    control = None
+    answer = b""
 
     def pump(seconds: float, until=lambda: False) -> bool:
-        nonlocal last, calm, shape, alive
+        nonlocal last, alive
         stop = time.monotonic() + seconds
         while alive and time.monotonic() < stop:
             if until():
@@ -454,12 +553,6 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
                     break
                 os.write(1, data)
                 stream.feed(apc.feed(data))
-                # Ages and counters tick every second while idle; a change to anything else is work.
-                now_shape = re.sub(r"\d", "0", "\n".join(screen.display))
-                if now_shape != shape:
-                    moved.append([row for row, (was, now) in enumerate(
-                        zip(shape.split("\n"), now_shape.split("\n"))) if was != now])
-                    shape, calm = now_shape, time.monotonic()
                 cast.write(json.dumps([round(time.monotonic() - began, 6), "o",
                                        data.decode("utf-8", "replace")]) + "\n")
                 last = time.monotonic()
@@ -470,18 +563,36 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     def shown(needle: str) -> bool:
         return any(needle in row for row in screen.display)
 
+    def answered() -> bool:
+        nonlocal answer
+        try:
+            answer += control.recv(4096)
+        except BlockingIOError:
+            pass
+        return answer.endswith(b"\n")
+
     status = "ok"
     type_ms = 0
     # The binary must be drawing before keys arrive, or the tty's cooked mode eats them.
     if not pump(30, lambda: last > began):
         status = "the binary drew nothing within 30 s"
-    for line in scene.read_text().splitlines() if status == "ok" else []:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+    else:
+        # The binary connects before it takes the screen, so the connection is already queued.
+        control = listener.accept()[0]
+        control.setblocking(False)
+    for line in steps(scene) if status == "ok" else []:
         word, _, rest = line.partition(" ")
-        sent = last
-        if word == "key":
+        if word in TIMING:
+            answer = b""
+            control.sendall(line.encode() + b"\n")
+            # The binary times a wait out itself; this bound is for a binary that stopped answering.
+            limit = (int(rest) if word == "wait-idle" else 0) / 1000 + 30
+            if not pump(limit, answered):
+                status = f"{line}: no answer from the binary within {limit:.0f} s"
+            elif answer != b"ok\n":
+                status = f"{line}: {answer.decode(errors='replace').strip()}"
+                (out / "screen.txt").write_text("\n".join(screen.display))
+        elif word == "key":
             os.write(fd, key_bytes(rest))
             pump(0.05)
         elif word.startswith("cmd-"):
@@ -495,12 +606,6 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
             type_ms = int(rest)
         elif word == "wait":
             pump(int(rest) / 1000)
-        elif word == "wait-idle":
-            # The real binary's turn state is not visible here: a screen that changed after the step
-            # and then held still for a second, digits aside, stands in for it.
-            if not pump(int(rest) / 1000, lambda: calm > sent and time.monotonic() - calm >= 1.0):
-                status = f"wait-idle {rest} ms timed out; rows still changing: {moved[-5:]}"
-                (out / "screen.txt").write_text("\n".join(screen.display))
         elif word == "wait-frame":
             ms, _, needle = rest.partition(" ")
             gone = needle.startswith("!")
@@ -512,6 +617,7 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
             if not pump(5, lambda: time.monotonic() - last >= 0.3):
                 (out / f"snap-{rest}.note").write_text("output never paused for 0.3 s within 5 s")
             grab(out / f"snap-{rest}.png", box)
+            (out / f"snap-{rest}.screen").write_text("\n".join(screen.display))
         elif word == "quit":
             break
         else:
@@ -878,17 +984,15 @@ HEAD_MARK = "<!-- tui-see head={} -->"
 
 def ci(base_bin: Path, head_bin: Path) -> None:
     """The PR job inside the yi-term image: every scene under scripts/proof/tui_see on the base
-    and the head binary, in Ghostty where the scene allows, then one comment on the PR."""
+    and the head binary, in Ghostty, then one comment on the PR."""
     out = Path("target/see").resolve()
     failed: list[str] = []
     played = 0
     for scene in sorted(SCENES.glob("*.drive")):
-        steps = {line.split(" ", 1)[0] for line in scene.read_text().splitlines()}
-        host = "mem" if steps & {"tick", "snap-strip", "hold", "release"} else "here"
         for label, binary in (("base", base_bin), ("head", head_bin)):
             played += 1
             try:
-                run(scene, label, out, binary, host)
+                run(scene, label, out, binary, "here")
             except SystemExit as stop:
                 failed.append(f"{scene.stem} ({label}, exit {stop.code})")
             except (subprocess.SubprocessError, OSError, ValueError) as error:
@@ -1133,6 +1237,21 @@ def selfcheck() -> None:
         diff(out / "same" / "base", out / "same" / "head")
         body, _ = compose(out, [])
         assert "No snap changed" in body and "###" not in body, body
+    # Recorded on the term host: the orb's rows scrolled more of Ghostty's transcript away and its
+    # status row names another cwd, yet the words agree; a screen from another moment is named.
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(SCENES / "reveal-ghostty", tmp, dirs_exist_ok=True)
+        assert drift(Path(tmp)) == [], drift(Path(tmp))
+        shutil.copy(Path(tmp) / "term/snap-held.screen", Path(tmp) / "term/snap-done.screen")
+        notes = drift(Path(tmp))
+        assert len(notes) == 1 and notes[0].startswith("[… snap done: "), notes
+    # The proxy opens a frozen scene with a frozen clock and spells a strip as the drive parses it.
+    played = steps(SCENES / "reveal.drive")
+    assert played.count("tick 0") == 1 and played[0] == "tick 0", played
+    strip = played.index("snap reveal-00")
+    assert played[strip:strip + 5] == ["snap reveal-00", "tick 160", "snap reveal-01", "tick 160",
+                                       "snap reveal-02"], played
+    assert "tick 0" not in steps(SCENES / "typed.drive")
     # The Ghostty replay starts from the seed as staged, whatever the headless drive appended.
     with tempfile.TemporaryDirectory() as tmp:
         seed = Path(tmp) / "s.jsonl"
