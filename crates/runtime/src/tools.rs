@@ -426,12 +426,20 @@ impl AgentTool for ToolAdapter {
                 *count > 1
             })
             .unwrap_or(false);
-        if !repeated {
+        let schema = self.tool.schema();
+        // Incident: a template that fills no required key is the refused call itself; a todo
+        // session was shown its own failing `{"evidence": …}` as the next call and sent it again.
+        let fills = (schema.get("required").and_then(Value::as_array)).is_some_and(|keys| {
+            keys.iter()
+                .filter_map(Value::as_str)
+                .any(|key| !args.contains_key(key))
+        });
+        if !repeated || !fills {
             return Err(reason);
         }
         Err(format!(
             "{reason}\n{}",
-            crate::affordance::call_template(self.tool.name(), &self.tool.schema(), args)
+            crate::affordance::call_template(self.tool.name(), &schema, args)
         ))
     }
 
