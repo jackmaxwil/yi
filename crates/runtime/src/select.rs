@@ -165,25 +165,22 @@ fn parse(text: &str, hidden: &[bool]) -> Result<Picked, String> {
     }
 }
 
-/// Which full-output lines the cut does not show: cuts keep lines in order, ANSI-free and as
-/// [`yi_tools::reduce::frame`] shows them, and a row's span names a gap.
+/// Which full-output lines, each in [`yi_tools::reduce::shown_form`], the cut does not show:
+/// cuts keep lines in order, and a row the reducer wrote for left-out lines names its gap.
 fn hidden(full: &[&str], shown: &str) -> Vec<bool> {
     // ponytail: past a capture cut, which names bytes not lines, a short shown line (a blank)
     // may match an omitted twin first; that twin is withheld from the selector, never doubled.
-    let full: Vec<String> = (full.iter())
-        .map(|line| yi_tools::reduce::frame(&yi_tools::reduce::strip_ansi(line)).to_owned())
-        .collect();
     let mut hidden = vec![true; full.len()];
     let mut at = 0_usize;
     for line in shown.lines() {
-        if let Some((_, end)) = yi_tools::reduce::row_span(line) {
+        if let Some((_, end)) = yi_tools::reduce::omitted_span(line) {
             at = at.max(end);
             continue;
         }
         let line = yi_tools::reduce::source_form(line);
         let found = full
             .get(at..)
-            .and_then(|rest| rest.iter().position(|full| full == line));
+            .and_then(|rest| rest.iter().position(|full| *full == line));
         if let Some(found) = found.map(|found| at.saturating_add(found)) {
             if let Some(flag) = hidden.get_mut(found) {
                 *flag = false;
@@ -266,10 +263,10 @@ pub(crate) async fn widen(
         }
         Err(_) => return,
     };
-    // The reducer shows lines without ANSI, so the selector reads and adds them the same way.
+    // The selector reads, and the agent is shown, each line as the reducer would show it.
     let lines: Vec<String> = lines
         .iter()
-        .map(|line| yi_tools::reduce::strip_ansi(line))
+        .map(|line| yi_tools::reduce::shown_form(line))
         .collect();
     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
     let exit = result
@@ -369,14 +366,21 @@ mod tests {
             vec![false, false, true],
             "a capture-numbered row moves nothing"
         );
-        let raw = ["\u{1b}[31mFAILED a\u{1b}[0m  ", "pass b", "pass b"];
+        // As a spill holds them: colour, a CRLF end, trailing blanks.
+        let raw = ["\u{1b}[31mFAILED a\u{1b}[0m  \r", "pass b\r", "pass b\r"];
         let full: Vec<String> = raw
             .iter()
-            .map(|line| yi_tools::reduce::strip_ansi(line))
+            .map(|line| yi_tools::reduce::shown_form(line))
             .collect();
         let full: Vec<&str> = full.iter().map(String::as_str).collect();
         let decorated = hidden(&full, "FAILED a\npass b [×2]");
         assert_eq!(decorated, vec![false, false, true]);
+        let program = hidden(&["[retry: 1-3]", "ok", "ok"], "[retry: 1-3]\nok");
+        assert_eq!(
+            program,
+            vec![false, false, true],
+            "a program's own span line is a line"
+        );
     }
 
     /// A recorded pytest run through the reducer: every line its own omitted rows name stays

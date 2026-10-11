@@ -3510,14 +3510,7 @@ fn bash_inherits_no_provider_key() -> TestResult {
 fn shown_verbatim(reduced: &str, source: &str) -> Result<(), String> {
     let lines: std::collections::HashSet<&str> = source.lines().map(str::trim_end).collect();
     // The reducer's own count of a repeated line rides on its first occurrence: ` [×N]`.
-    let unmarked = |line: &str| -> String {
-        match line.rsplit_once(" [×") {
-            Some((text, count)) if count.trim_end_matches(']').parse::<usize>().is_ok() => {
-                text.to_owned()
-            }
-            _ => line.trim_end().to_owned(),
-        }
-    };
+    let unmarked = |line: &str| yi_tools::reduce::source_form(line).trim_end().to_owned();
     let invented: Vec<&str> = (reduced.lines())
         .filter(|line| !line.starts_with('[') && !line.trim().is_empty())
         .filter(|line| !lines.contains(unmarked(line).as_str()))
