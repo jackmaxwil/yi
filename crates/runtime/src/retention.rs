@@ -8,6 +8,7 @@ const SNAPSHOTS_KEPT: Duration = Duration::from_secs(30 * 24 * 3600);
 const SWEEP_EVERY: Duration = Duration::from_secs(3600);
 const DONE: &str = "done";
 const STAMP: &str = ".yi/retention.stamp";
+const LOCK: &str = ".yi/retention.flock";
 const TOMB: &str = "gone";
 /// A project whose nearest surviving ancestor is one of these sat on a volume now unmounted.
 const MOUNT_ROOTS: [&str; 4] = ["/Volumes", "/mnt", "/media", "/run/media"];
@@ -124,7 +125,9 @@ fn sweep_row(row: &Row, home: &Path, dry_run: bool) -> Report {
             Fate::Remove => {
                 // Incident: a delete cut short left a repo a capture could not use; a rename is whole.
                 let tomb = entry.path().with_extension(TOMB);
-                if dry_run || std::fs::rename(entry.path(), &tomb).is_ok() {
+                if dry_run {
+                    report.removed = report.removed.saturating_add(1);
+                } else if std::fs::rename(entry.path(), &tomb).is_ok() {
                     report.removed = report.removed.saturating_add(1);
                     let _finished_by_the_next_sweep = std::fs::remove_dir_all(tomb);
                 }
@@ -134,20 +137,27 @@ fn sweep_row(row: &Row, home: &Path, dry_run: bool) -> Report {
     report
 }
 
-/// About once an hour per home, on a thread the caller never joins. The stamp is written
-/// only once the sweep ends, so a process killed mid-sweep leaves no fresh stamp and the
-/// next session runs the leftover pass.
-pub fn sweep_home_hourly(home: &Path) {
+/// About once an hour per home, on a thread the caller never joins; `None` when skipped. The
+/// stamp is written once a sweep ends and the flock dies with its holder, so a killed sweep holds nothing.
+pub fn sweep_home_hourly(home: &Path) -> Option<std::thread::JoinHandle<()>> {
     let stamp = home.join(STAMP);
     let fresh = std::fs::metadata(&stamp)
         .and_then(|meta| meta.modified())
         .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < SWEEP_EVERY));
     if fresh && std::fs::read_to_string(&stamp).is_ok_and(|mark| mark == DONE) {
-        return;
+        return None;
     }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join(LOCK))
+        .ok()?;
+    lock.try_lock().ok()?;
     let home = home.to_path_buf();
-    std::thread::spawn(move || {
+    Some(std::thread::spawn(move || {
         drop(sweep(&home, false));
         let _ = std::fs::write(stamp, DONE);
-    });
+        drop(lock);
+    }))
 }
