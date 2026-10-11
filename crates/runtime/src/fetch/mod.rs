@@ -256,6 +256,18 @@ impl Transcripts for SessionTranscripts {
     }
 }
 
+/// Invariant: a reader's resolver has no session root, so its parent, live from the host that
+/// spawned it, is the one transcript past its own it can open.
+pub struct ParentTranscript(pub std::sync::Weak<crate::subagent::SubagentHost>);
+
+impl Transcripts for ParentTranscript {
+    fn open(&self, agent: &str) -> Option<Transcript> {
+        let store = (self.0.upgrade()?.options.store)()?;
+        let id = yi_session::lock_session(&store).metadata().id.clone();
+        (id == agent).then_some(Transcript::Live(store))
+    }
+}
+
 pub fn open_checkpoint_show(
     home: &Path,
     project: &Path,

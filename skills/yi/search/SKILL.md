@@ -37,6 +37,10 @@ text cut; `tail/20` is the last twenty. For one entry whole, read the plain list
 entry: `read("history://parent", offset=<seq>, limit=1)`. A refusal that names a wall is the
 design, not a fault: a walled reader works from its task alone, which keeps it independent.
 
+**Brief a reader.** A reader child (the default role) gets a short prompt, not this doctrine, so
+it does not know the family addresses. Put the fact in its question, name the address there
+(`read history://parent/since/0`), or inline it with `partition=["history://self/<entryId>"]`.
+
 **Collect the children.** A parent that needs what a child found reads that child's transcript
 instead of asking it to say it again, and only the entries it needs.
 

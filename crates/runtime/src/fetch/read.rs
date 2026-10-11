@@ -62,6 +62,24 @@ fn capped(url: &Url, served_by: &str, text: String) -> String {
     )
 }
 
+/// Incident: a fact past the cut of a compact line took a child four guessed offsets before it
+/// read the entry whole.
+fn compact_note(url: &Url, served_by: &str, text: String) -> String {
+    let compact = matches!(served_by, "session-since" | "session-tail");
+    if !compact || !text.lines().any(|line| line.ends_with('…')) {
+        return text;
+    }
+    let full = url.to_string();
+    let base = ["/since/", "/tail/"]
+        .iter()
+        .find_map(|window| full.split_once(window).map(|(base, _)| base))
+        .unwrap_or(&full);
+    let (note, user) = (crate::family::NOTE_CHARS, crate::family::USER_CHARS);
+    format!(
+        "{text}\n[… a line ending in … is cut at {note} chars (NOTE_CHARS), a user line at {user} (USER_CHARS) · read {base} with offset=<#seq> and limit=1 for that entry whole]"
+    )
+}
+
 fn address(input: &Map<String, Value>) -> Option<&str> {
     let path = input.get("path")?.as_str()?;
     let (scheme, _) = path.split_once("://")?;
@@ -114,7 +132,10 @@ impl Tool for UrlRead {
                     next.saturating_add(1),
                     unit(&fetched.url)
                 )),
-                None => text_output(capped(&fetched.url, &fetched.served_by, fetched.text)),
+                None => {
+                    let text = capped(&fetched.url, &fetched.served_by, fetched.text);
+                    text_output(compact_note(&fetched.url, &fetched.served_by, text))
+                }
             },
             Err(message) => error_output(message),
         }
