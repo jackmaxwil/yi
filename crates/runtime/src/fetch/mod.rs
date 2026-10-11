@@ -207,6 +207,8 @@ impl KernelVariables for KernelServiceMap {
 /// The reader's own transcript in a `history://` address, for a member that was never told
 /// the name its family knows it by.
 pub(crate) const SELF: &str = "self";
+/// Invariant: a child is told its task, never the parent id its own header carries.
+const PARENT: &str = "parent";
 
 pub struct SessionTranscripts {
     host: Arc<crate::subagent::SubagentHost>,
@@ -251,6 +253,18 @@ impl Transcripts for SessionTranscripts {
         let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
         let store = yi_session::load_session(&file).ok()?;
         Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
+    }
+}
+
+/// Invariant: a spawned child's resolver has no session root, so its parent, live from the host
+/// that spawned it, is the one transcript past its own it can open; a sibling's is not its to read.
+pub struct ParentTranscript(pub std::sync::Weak<crate::subagent::SubagentHost>);
+
+impl Transcripts for ParentTranscript {
+    fn open(&self, agent: &str) -> Option<Transcript> {
+        let store = (self.0.upgrade()?.options.store)()?;
+        let id = yi_session::lock_session(&store).metadata().id.clone();
+        (id == agent).then_some(Transcript::Live(store))
     }
 }
 
@@ -571,6 +585,11 @@ impl Resolver {
         url: &Url,
         page: Option<Page>,
     ) -> Result<(String, String, Option<usize>), FetchError> {
+        let parent = self.parent_address(url)?;
+        let url = parent.as_ref().unwrap_or(url);
+        if *url.scheme() == Scheme::Agent {
+            self.history_walled(url)?;
+        }
         if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
                 url: url.to_string(),
@@ -607,6 +626,51 @@ impl Resolver {
                 url: url.to_string(),
                 scheme: scheme.clone(),
             }),
+        }
+    }
+
+    fn parent_address(&self, url: &Url) -> Result<Option<Url>, FetchError> {
+        let path = url.path();
+        let rest = match path.strip_prefix(PARENT) {
+            Some(rest)
+                if *url.scheme() == Scheme::History
+                    && matches!(rest.chars().next(), None | Some('/')) =>
+            {
+                rest
+            }
+            _ => return Ok(None),
+        };
+        let missing = |what: &str| FetchError::NotFound {
+            url: url.to_string(),
+            what: what.to_owned(),
+        };
+        self.history_walled(url)?;
+        let store = self
+            .session_store()
+            .ok_or_else(|| missing("no session is attached to name a parent"))?;
+        let id = yi_session::lock_session(&store)
+            .metadata()
+            .parent_session_id
+            .clone();
+        let id = id.ok_or_else(|| missing("this session has no parent; it is a root session"))?;
+        format!("history://{id}{rest}")
+            .parse()
+            .map(Some)
+            .map_err(|error| FetchError::BadAddress {
+                url: url.to_string(),
+                detail: format!("the parent id {id} is not an address: {error}"),
+            })
+    }
+
+    /// Invariant: an `agent://` pin and the `parent` alias both resolve to a transcript a
+    /// history wall may name by another spelling, so either fails closed under one.
+    fn history_walled(&self, url: &Url) -> Result<(), FetchError> {
+        match self.wall.denies_history() {
+            true => Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: yi_tools::wall_refusal("fetch", &url.to_string(), "deny_url"),
+            }),
+            false => Ok(()),
         }
     }
 

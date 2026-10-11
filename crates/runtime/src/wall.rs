@@ -15,7 +15,6 @@ pub struct Wall {
     /// the child's own, so [`Wall::under`] never hands it down.
     pub container: Option<String>,
 }
-
 fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathBuf>, String> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(Vec::new());
@@ -54,6 +53,13 @@ fn parse_prefixes(value: Option<&Value>) -> Result<Vec<String>, String> {
 }
 
 impl Wall {
+    /// Invariant: the resolver's refusal and the spawn brief both ask the wall whether it
+    /// denies history, so no copy of the rule can tell a child what its wall then refuses.
+    pub fn denies_history(&self) -> bool {
+        self.deny_url
+            .iter()
+            .any(|url| url.starts_with("history://"))
+    }
     pub fn from_kwargs(kwargs: &Map<String, Value>, cwd: &Path) -> Result<Self, String> {
         Ok(Self {
             deny_write: parse_paths(kwargs.get("deny_write"), cwd, "deny_write")?,
