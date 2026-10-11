@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use yi_types::message::{AgentMessage, Content};
 
-use crate::details::extract_file_ops_from_message;
+use crate::details::{call_paths, extract_file_ops_from_message};
 use crate::prompts::KERNEL_PERSIST_SUMMARY_NOTE;
 use crate::serialize::text_of;
 use crate::wrapper::internal_source;
@@ -239,21 +239,18 @@ fn assistant_tools(
         else {
             continue;
         };
-        let path = arguments
-            .get("path")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        match name.as_str() {
-            "read" if !path.is_empty() => {
-                let stale = if first_edit.get(path).is_some_and(|first| *first > index) {
-                    " stale"
-                } else {
-                    ""
-                };
-                parts.push(format!("read {path}{stale}"));
-            }
-            "edit" | "write" if !path.is_empty() => parts.push(format!("edit {path}")),
-            _ => parts.push(tool_call_brief(name, arguments)),
+        let paths = call_paths(name, arguments);
+        if paths.is_empty() {
+            parts.push(tool_call_brief(name, arguments));
+        }
+        for path in paths {
+            let read = name == "read";
+            let stale = read && first_edit.get(&path).is_some_and(|first| *first > index);
+            let verb = if read { "read" } else { "edit" };
+            parts.push(format!(
+                "{verb} {path}{}",
+                if stale { " stale" } else { "" }
+            ));
         }
     }
     if parts.is_empty() {
