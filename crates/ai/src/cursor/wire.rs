@@ -27,7 +27,9 @@ pub async fn run(
             .await
             .map_err(|error| error.to_string())
     };
-    let Some((mut client, connection)) = bounded(out.stop, CONNECT_LIMIT, opening).await? else {
+    let Some((mut client, connection)) =
+        bounded(out.stop, "connect", CONNECT_LIMIT, opening).await?
+    else {
         return Ok(());
     };
     tokio::spawn(async move {
@@ -57,26 +59,17 @@ pub async fn run(
         .map_err(|error| error.to_string())?;
     send.send_data(bytes::Bytes::from(body), false)
         .map_err(|error| error.to_string())?;
-    let mut response = std::pin::pin!(response);
-    let deadline = tokio::time::Instant::now() + HEADERS_LIMIT;
     let mut beat = tokio::time::interval(std::time::Duration::from_secs(15));
     beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let _ = beat.tick().await;
-    let response = loop {
-        tokio::select! {
-            result = response.as_mut() => break result,
-            _ = wait_stop(out.stop) => return Ok(()),
-            // rustls finishes its handshake lazily, here, so a silent host is caught by this bound.
-            () = tokio::time::sleep_until(deadline) => {
-                return Err(format!("cursor sent no response within {HEADERS_LIMIT:?}"));
-            }
-            _ = beat.tick() => {
-                send.send_data(bytes::Bytes::from(proto::frame(&proto::heartbeat())), false)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-    }
-    .map_err(|error| error.to_string())?;
+    // rustls finishes its handshake lazily, here, so a silent host is caught by this bound.
+    let headers = beating(response, &mut beat, || {
+        drop(send.send_data(beat_frame(), false))
+    });
+    let headers = async { headers.await.map_err(|error| error.to_string()) };
+    let Some(response) = bounded(out.stop, "response", HEADERS_LIMIT, headers).await? else {
+        return Ok(());
+    };
     if response.status() != http::StatusCode::OK {
         return Err(format!(
             "cursor run failed: status code {}",
@@ -92,8 +85,7 @@ pub async fn run(
             _ = wait_stop(out.stop) => break,
             chunk = recv.data() => chunk,
             _ = beat.tick() => {
-                send.send_data(bytes::Bytes::from(proto::frame(&proto::heartbeat())), false)
-                    .map_err(|error| error.to_string())?;
+                send.send_data(beat_frame(), false).map_err(|error| error.to_string())?;
                 continue;
             }
         };
@@ -114,8 +106,7 @@ pub async fn run(
             let ended = matches!(inbound, Ok(proto::Inbound::TurnEnded));
             let applying = super::apply_message(inbound, tool, tools, workspace, &mut blobs);
             let applied = beating(applying, &mut beat, || {
-                let beat = bytes::Bytes::from(proto::frame(&proto::heartbeat()));
-                let _ = send.send_data(beat, false);
+                drop(send.send_data(beat_frame(), false))
             })
             .await;
             for reply in applied.replies {
@@ -151,13 +142,14 @@ const HEADERS_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 async fn bounded<T>(
     stop: &super::StopFn,
+    what: &str,
     limit: std::time::Duration,
     work: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<Option<T>, String> {
     tokio::select! {
         done = work => done.map(Some),
         () = wait_stop(stop) => Ok(None),
-        () = tokio::time::sleep(limit) => Err(format!("cursor connect timed out after {limit:?}")),
+        () = tokio::time::sleep(limit) => Err(format!("cursor {what} timed out after {limit:?}")),
     }
 }
 
@@ -176,6 +168,10 @@ async fn beating<T>(
             _ = beat.tick() => heartbeat(),
         }
     }
+}
+
+fn beat_frame() -> bytes::Bytes {
+    bytes::Bytes::from(proto::frame(&proto::heartbeat()))
 }
 
 async fn wait_stop(stop: &super::StopFn) {
@@ -440,13 +436,19 @@ mod tests {
         let never = std::future::pending::<Result<(), String>>;
         let running: StopFn = Arc::new(|| false);
         let limit = std::time::Duration::from_millis(20);
-        let timed_out = bounded(&running, limit, never()).await;
+        let timed_out = bounded(&running, "connect", limit, never()).await;
         assert_eq!(
             timed_out,
             Err("cursor connect timed out after 20ms".to_owned())
         );
         let stopped: StopFn = Arc::new(|| true);
-        let quiet = bounded(&stopped, std::time::Duration::from_secs(60), never()).await;
+        let quiet = bounded(
+            &stopped,
+            "connect",
+            std::time::Duration::from_secs(60),
+            never(),
+        )
+        .await;
         assert_eq!(quiet, Ok(None));
     }
 
