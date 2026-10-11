@@ -20,6 +20,9 @@ concurrency:
 
 env:
   CARGO_BUILD_JOBS: "5"
+  # Incident: upload-artifact runs on Node, which ignores the system store, and failed every
+  # chunk with "unable to get local issuer certificate" against the forge's internal CA.
+  NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
 
 jobs:
   # The yi-term image carries no Rust, so the binaries are built here in rust-ci (Ubuntu 22.04,
