@@ -249,7 +249,7 @@ fn is_signal(line: &str) -> bool {
 fn is_pass(line: &str) -> bool {
     let line = line.trim();
     (line.starts_with("test ") && line.ends_with(" ... ok"))
-        || (line.contains(" PASSED") && !is_signal(line))
+        || ((line.contains(" PASSED") || line.starts_with("PASSED ")) && !is_signal(line))
         || line.starts_with('✓')
         || line.starts_with('✔')
 }
