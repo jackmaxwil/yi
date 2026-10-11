@@ -237,7 +237,7 @@ pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationR
 /// The newest read of each file the session edited, by the `[path#TAG]` headers the read, edit
 /// and write results print: an edit needs its file's tags, a file only read is cut like any result.
 pub(crate) fn newest_reads<M: std::borrow::Borrow<AgentMessage>>(
-    calls: &[Option<(&str, &Args)>],
+    names: &[Option<&str>],
     messages: &[M],
 ) -> BTreeSet<usize> {
     let shown = |index: usize| -> Vec<String> {
@@ -256,8 +256,8 @@ pub(crate) fn newest_reads<M: std::borrow::Borrow<AgentMessage>>(
             .collect()
     };
     let (mut edited, mut latest) = (Vec::new(), BTreeMap::new());
-    for (index, call) in calls.iter().enumerate() {
-        match call.map(|(name, _)| name) {
+    for (index, name) in names.iter().enumerate() {
+        match *name {
             Some("read") => latest.extend(shown(index).into_iter().map(|path| (path, index))),
             Some("edit" | "write") => edited.extend(shown(index)),
             _ => {}
@@ -309,7 +309,11 @@ pub(crate) fn decide(
     now: u64,
 ) -> Option<ReclaimRecord> {
     let calls = calls(messages);
-    let newest = newest_reads(&calls, messages);
+    let names: Vec<Option<&str>> = calls
+        .iter()
+        .map(|call| call.map(|(name, _)| name))
+        .collect();
+    let newest = newest_reads(&names, messages);
     let (mut turn, mut turns) = (0_u64, Vec::with_capacity(messages.len()));
     for message in messages {
         if matches!(message, AgentMessage::Assistant { .. }) {

@@ -51,6 +51,10 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         .collect();
     let messages: Vec<&AgentMessage> = stored.iter().map(|(_, message)| *message).collect();
     let pairs = calls(&messages);
+    let names: Vec<Option<&str>> = pairs
+        .iter()
+        .map(|call| call.map(|(name, _)| name))
+        .collect();
     let full = |name: &str, args: &Map<String, Value>| {
         let values = args.values().filter_map(Value::as_str);
         std::iter::once(name)
@@ -99,7 +103,7 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         },
         call: call.clone(),
         result: (*result).clone(),
-        kept: never_cut(result, newest_reads(&pairs, &messages).contains(index)),
+        kept: never_cut(result, newest_reads(&names, &messages).contains(index)),
     })
 }
 
