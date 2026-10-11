@@ -15,7 +15,8 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
 
 `--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
 so the pictures carry kitty images and true colour; it needs `just yi-term` built first.
-`--video` on that host also keeps the whole run as run.webp, cropped to the Ghostty window.
+`--video` keeps the whole run as motion: run.webp cropped to the Ghostty window on that host,
+run.gif rendered by agg on the headless one.
 
 What an agent reads, in order: the cell diff as text (exact), then 1:1 crops of each changed
 region before and after, then the whole frame. Pictures never gate anything.
@@ -145,8 +146,17 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
             log.close()
             shutil.rmtree(sock.parent, ignore_errors=True)
     rendered = render(run_dir)
-    if video and host not in ("term", "here"):
-        print("[… --video records Ghostty's window, so it needs --host term; no run.webp kept]")
+    if video and host == "mem":
+        # Incident: agg can exit 0 and write an empty file, so a motion proof checks its bytes.
+        gif = run_dir / "run.gif"
+        if rendered and subprocess.run(["agg", "--theme", "monokai", "--font-size", "16",
+                                        "--idle-time-limit", "1", str(run_dir / "run.cast"),
+                                        str(gif)], capture_output=True).returncode == 0 \
+                and gif.stat().st_size:
+            print(f"video: {gif} (agg: no kitty images; --host term keeps them)")
+        else:
+            print("[… --video on the headless host renders with agg and ffmpeg, which are not on "
+                  "PATH or wrote nothing; no run.gif kept]")
     if host == "term" and not code:
         code = term(scene, run_dir, surface, extra + (["--video"] if video else []))
     if host == "here" and not code:

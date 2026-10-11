@@ -137,36 +137,6 @@ journeys:
     HOME="$home" python3 scripts/tui_pty.py --send-quit --expect '┃' \
       --expect 'faux:' -- tui --model faux/faux-1 --session-dir "$home/sessions" ping
 
-# The console counterpart of tui-proof: a faux daemon on a scratch socket drives the
-# real workspace shell headless and agg renders the cast, at `size` COLSxROWS.
-console-proof script out="target/proof" size="80x24":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{out}}" in /*|*..*) echo "out must be a relative path in the repo"; exit 1 ;; esac
-    out="$PWD/{{out}}"
-    rm -rf "$out"
-    mkdir -p "$out/frames" "$out/home/.yi"
-    printf '{"kernel":{"prewarm":false}}' > "$out/home/.yi/config.json"
-    cargo build -q -p yi-cli
-    # A unix socket path is capped near 100 bytes, so it lives under /tmp, not the repo.
-    sock="$(mktemp -d /tmp/yi-proof.XXXXXX)/d.sock"
-    HOME="$out/home" target/debug/yi serve --socket "$sock" --model faux/faux-1 \
-      --session-dir "$out/sessions" >"$out/serve.log" 2>&1 &
-    pid=$!
-    trap 'kill $pid 2>/dev/null || true; rm -rf "$(dirname "$sock")"' EXIT
-    for _ in $(seq 1 60); do [ -S "$sock" ] && break; sleep 0.05; done
-    HOME="$out/home" target/debug/yi console --headless --socket "$sock" \
-      --keys "{{script}}" --frames "$out/frames" --record "$out/run.cast" --size "{{size}}"
-    rendered() { [ -s "$1" ] || { echo "empty render: $1"; exit 1; }; }
-    if command -v agg >/dev/null; then
-      agg --theme monokai --font-size 16 --idle-time-limit 1 "$out/run.cast" "$out/run.gif"
-      rendered "$out/run.gif"
-      echo "motion: $out/run.gif"
-    else
-      echo "no agg on PATH — cast only (brew install agg)"
-    fi
-    echo "cast: $out/run.cast"
-
 # The rail's avatars and the pane's orb are kitty images: a real console under a pty
 # claiming xterm-kitty against a faux daemon must place at least one avatar (ids 8000+)
 # per rail row and one orb (ids 7800+) for the chat pane.
@@ -210,46 +180,6 @@ yi-term:
     export "CC_${arch}_unknown_linux_musl=$PWD/scripts/zigcc.sh" "AR_${arch}_unknown_linux_musl=$PWD/scripts/zigar.sh"
     export ZIG_TARGET="$arch-linux-musl" RUSTFLAGS="${RUSTFLAGS:-} -C link-self-contained=no"
     cargo build -q -p yi-cli --target "$arch-unknown-linux-musl"
-
-# A drive script rendered for people: the motion and still GIFs a UI change
-# attaches to its PR, so a reviewer can judge how it looks. `agg` is dev-only
-# (brew install agg) and never enters the binary.
-tui-proof script out="target/proof":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Incident: `out` is a caller argument that is `rm -rf`'d and was also
-    # spliced after $PWD for the HOME isolation, so an absolute value deleted
-    # a path outside the repo and isolated a directory it never wrote to.
-    case "{{out}}" in /*|*..*) echo "out must be a relative path in the repo"; exit 1 ;; esac
-    out="$PWD/{{out}}"
-    rm -rf "$out"
-    mkdir -p "$out/frames"
-    # Same isolation as `journeys`: a `keys` entry in the developer's own
-    # ~/.yi/config.json must not decide what the proof shows.
-    home="$out/home"
-    mkdir -p "$home"
-    HOME="$home" cargo run -q -p yi-cli -- tui --headless --model faux/faux-1 \
-      --session-dir "$out/sessions" --keys "{{script}}" \
-      --frames "$out/frames" --record "$out/run.cast" \
-      --snap "$out/still.cast" --deadline 300
-    # Incident: a renderer can exit 0 and write an empty file, so a proof that
-    # rendered nothing printed a path and looked like it worked.
-    rendered() { [ -s "$1" ] || { echo "empty render: $1"; exit 1; }; }
-    # One renderer for both artifacts: agg is a terminal emulator, so the
-    # still and the motion agree cell for cell. Theme and size are pinned so
-    # proofs from different machines look alike.
-    if command -v agg >/dev/null; then
-      agg --theme monokai --font-size 16 --idle-time-limit 1 \
-        "$out/run.cast" "$out/run.gif"
-      rendered "$out/run.gif"
-      agg --theme monokai --font-size 16 "$out/still.cast" "$out/still.gif"
-      rendered "$out/still.gif"
-      echo "motion: $out/run.gif"
-      echo "still:  $out/still.gif"
-    else
-      echo "no agg on PATH — casts only (brew install agg)"
-    fi
-    echo "cast: $out/run.cast"
 
 # Tier 4, after a merge: the journeys. The dist-profile suite left this recipe for
 # `dist-suite` (#304): a release build of the workspace and its tests that no cache
