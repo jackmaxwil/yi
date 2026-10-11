@@ -16,6 +16,7 @@ pub struct ToolAdapter {
     cancelled: CancelFlag,
     permission: Option<Arc<PermissionBroker>>,
     spills: Option<PathBuf>,
+    selector: Option<Arc<crate::select::Selector>>,
     transcript: Option<crate::goal::StoreHandle>,
     auto_background: Option<std::time::Duration>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
@@ -213,7 +214,8 @@ fn walled_root_refusal(
                 return Some(crate::gate::walled_host_refusal(&why));
             }
         }
-        after_cd = matches!(word, "cd" | "pushd");
+        // A flag (`--`, `-P`) between `cd` and its target keeps the next word the target.
+        after_cd = matches!(word, "cd" | "pushd") || after_cd && word.starts_with('-');
     }
     None
 }
@@ -330,6 +332,7 @@ impl ToolAdapter {
             cancelled,
             permission,
             spills: None,
+            selector: None,
             transcript: None,
             auto_background: None,
             rules: None,
@@ -348,6 +351,11 @@ impl ToolAdapter {
 
     pub fn with_spills(mut self, dir: Option<PathBuf>) -> Self {
         self.spills = dir;
+        self
+    }
+
+    pub fn with_selector(mut self, selector: Option<Arc<crate::select::Selector>>) -> Self {
+        self.selector = selector;
         self
     }
 
@@ -438,6 +446,8 @@ impl AgentTool for ToolAdapter {
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
         let spills = self.spills.clone();
         let store = (self.transcript.as_ref()).and_then(|store| store());
+        let (selector, ledger, spills_dir) =
+            (self.selector.clone(), store.clone(), self.spills.clone());
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
         let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
@@ -615,6 +625,18 @@ impl AgentTool for ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
+                    if let (Some(selector), Some(spills)) =
+                        (selector.as_deref().filter(|_| name == "bash"), &spills_dir)
+                    {
+                        crate::select::widen(
+                            selector,
+                            ledger,
+                            spills,
+                            &command,
+                            &mut output.result,
+                        )
+                        .await;
+                    }
                     let holds = facts_of(&name, &output);
                     let facts = crate::affordance::Facts {
                         holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -666,5 +688,26 @@ impl AgentTool for ToolAdapter {
                 },
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_flag_after_cd_still_scopes_the_relative_paths_that_follow() {
+        let roots = [PathBuf::from("/home/u/.yi/sessions")];
+        let refused = |command: &str| {
+            super::walled_root_refusal(command, &roots, &[], Path::new("/work")).is_some()
+        };
+        assert!(refused("cd '/home/u/.yi/other' && cat ../sessions/x.jsonl"));
+        assert!(refused(
+            "cd -- '/home/u/.yi/other' && cat ../sessions/x.jsonl"
+        ));
+        assert!(refused(
+            "cd -P /home/u/.yi/other && cat ../sessions/x.jsonl"
+        ));
+        assert!(!refused("cd -- /home/u/.yi/other && cat notes.txt"));
     }
 }

@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use yi_types::model::Model;
 
 use crate::catalog::{Catalog, SCHEMA};
-use crate::request::{ProxyConfig, get_json};
+use crate::request::{ProxyConfig, get_json, post_json};
 
 pub const MODELS_DEV: &str = "https://models.dev/api.json";
 pub const CAP_BYTES: usize = 16 * 1024 * 1024;
@@ -39,6 +39,7 @@ pub fn list_url(provider: &str) -> Option<&'static str> {
         "anthropic" => "https://api.anthropic.com/v1/models",
         "openai" => "https://api.openai.com/v1/models",
         "openrouter" => "https://openrouter.ai/api/v1/models",
+        "cursor" => crate::cursor::MODELS_URL,
         _ => return None,
     })
 }
@@ -184,6 +185,76 @@ fn write_atomic(path: &Path, value: &Value) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// The account list as the on-disk catalog. It carries names, not prices.
+pub fn cursor_catalog(list: &Value) -> Result<Value, String> {
+    let rows = list
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or("cursor: AvailableModels has no models")?;
+    let mut by_id = Map::new();
+    for row in rows {
+        let Some(id) = row
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let mut model = crate::cursor::model_for(id);
+        if let Some(name) = row.get("clientDisplayName").and_then(Value::as_str)
+            && !name.is_empty()
+        {
+            model.name = name.to_owned();
+        }
+        model.reasoning = row
+            .get("supportsThinking")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if row.get("supportsImages").and_then(Value::as_bool) == Some(true) {
+            model.input = vec!["text".to_owned(), "image".to_owned()];
+        }
+        by_id.insert(
+            id.to_owned(),
+            serde_json::to_value(&model).map_err(|error| error.to_string())?,
+        );
+    }
+    if by_id.is_empty() {
+        return Err("cursor: AvailableModels listed nothing".to_owned());
+    }
+    Ok(json!({ "cursor-agent": by_id, "schema": SCHEMA }))
+}
+
+/// A provider whose list is the account's own: without a login there is nothing to fetch, which
+/// is a skip, not a failed refresh.
+pub fn needs_credential(provider: &str) -> bool {
+    provider == "cursor"
+}
+
+fn refresh_cursor(
+    dir: &Path,
+    key: Option<&str>,
+    proxy: Option<&ProxyConfig>,
+) -> Result<usize, String> {
+    let key = key.ok_or("cursor: no credential")?;
+    let list = post_json(
+        crate::cursor::MODELS_URL,
+        &[
+            ("authorization", format!("Bearer {key}")),
+            ("connect-protocol-version", "1".to_owned()),
+        ],
+        "{}",
+        proxy,
+        CAP_BYTES,
+    )?;
+    let catalog = cursor_catalog(&list)?;
+    let count = catalog["cursor-agent"]
+        .as_object()
+        .map(Map::len)
+        .unwrap_or(0);
+    write_atomic(&cache_path(dir, "cursor"), &catalog)?;
+    Ok(count)
+}
+
 /// Fetch, narrow, write. Returns the model count written. Never touches the running process's
 /// catalog: the next session reads the file.
 pub fn refresh(
@@ -192,6 +263,9 @@ pub fn refresh(
     key: Option<&str>,
     proxy: Option<&ProxyConfig>,
 ) -> Result<usize, String> {
+    if provider == "cursor" {
+        return refresh_cursor(dir, key, proxy);
+    }
     let url = list_url(provider).ok_or_else(|| format!("no adapter for provider {provider}"))?;
     let models_dev = get_json(MODELS_DEV, &[], proxy, CAP_BYTES)?;
     let headers: Vec<(&str, String)> = match (provider, key) {

@@ -13,6 +13,7 @@ pub const PROFILE_DIR: &str = "oauth";
 pub enum Kind {
     OauthCode(Box<OauthCode>),
     ApiKey,
+    Cursor,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,7 @@ pub struct OauthCode {
 
 /// Providers whose login is a pasted key: no endpoints, no identity, nothing to supply.
 pub const API_KEY_IDS: [&str; 3] = ["openai", "openrouter", "google"];
+pub const CURSOR_ID: &str = "cursor";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -129,6 +131,7 @@ pub fn parse(id: &str, value: &Value) -> Result<Kind> {
 pub fn lookup(provider: &str) -> Result<Option<Kind>> {
     match load(provider)? {
         Some(kind) => Ok(Some(kind)),
+        None if provider == CURSOR_ID => Ok(Some(Kind::Cursor)),
         None => Ok(API_KEY_IDS.contains(&provider).then_some(Kind::ApiKey)),
     }
 }
@@ -144,7 +147,11 @@ pub fn load(provider: &str) -> Result<Option<Kind>> {
 }
 
 pub fn ids() -> Vec<String> {
-    let mut found: Vec<String> = API_KEY_IDS.iter().map(|id| (*id).to_owned()).collect();
+    let mut found: Vec<String> = API_KEY_IDS
+        .iter()
+        .chain(std::iter::once(&CURSOR_ID))
+        .map(|id| (*id).to_owned())
+        .collect();
     let Ok(entries) = std::fs::read_dir(profile_root()) else {
         found.sort();
         return found;

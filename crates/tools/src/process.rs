@@ -27,7 +27,11 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         clippy::disallowed_methods,
         reason = "process spawns live in yi-tools; every spawn routes through run_captured via this constructor"
     )]
-    Command::new(program)
+    let mut process = Command::new(program);
+    if let Some(path) = crate::plugin::home().and_then(|home| crate::plugin::search_path(&home)) {
+        process.env("PATH", path);
+    }
+    process
 }
 
 /// [`command`] for a command the model wrote, whose output it reads: yi's provider keys never
@@ -77,7 +81,7 @@ impl CommandCapture {
 }
 
 /// The label (`every byte`, or the clip) and the path of a `[full output: …]` pointer.
-pub(crate) fn spill_path(pointer: &str) -> Option<(&str, &str)> {
+pub fn spill_path(pointer: &str) -> Option<(&str, &str)> {
     let rest = pointer.strip_prefix("[full output")?.strip_suffix(']')?;
     let (clip, path) = rest.split_once(": ")?;
     Some((clip.strip_prefix(", ").unwrap_or("every byte"), path))

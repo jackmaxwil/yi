@@ -30,6 +30,13 @@ jobs:
         with:
           shared-key: test
           cache-on-failure: true
+      # The live ripwire journey reads the plugin the table pins; the cache keeps
+      # the download off GitHub until the table changes, and a failed add fails here.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.yi/plugins
+          key: yi-plugins-${{ hashFiles('crates/tools/src/plugin.rs') }}
+      - run: cargo build -p yi-cli && target/debug/yi plugin add --all
       # The image carries just and the uv the kernel journey boots, so the
       # install steps the GitHub file needs are both gone.
       - run: just postmerge
