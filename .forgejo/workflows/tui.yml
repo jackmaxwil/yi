@@ -46,7 +46,8 @@ jobs:
           mkdir -p bins
           cargo build -q -p yi-cli
           cp target/debug/yi bins/head
-          git worktree add -q ../base "${{ github.event.pull_request.base.sha }}"
+          # The fork point, not the base tip: main commits the head lacks are not the PR's change.
+          git worktree add -q ../base "$(git merge-base "${{ github.event.pull_request.base.sha }}" HEAD)"
           CARGO_TARGET_DIR="$PWD/target" cargo build -q -p yi-cli --manifest-path ../base/Cargo.toml
           cp target/debug/yi bins/base
       - uses: actions/upload-artifact@v3
@@ -67,12 +68,8 @@ jobs:
         with:
           name: tui-bins
           path: bins
-      - name: snap every scene on base and head, then comment
-        env:
-          FORGEJO_API_URL: ${{ github.api_url }}
-          FORGEJO_REPOSITORY: ${{ github.repository }}
-          FORGEJO_PR: ${{ github.event.pull_request.number }}
-          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # No token here: the scenes run the pull request's own binaries and script.
+      - name: snap every scene on base and head
         run: |
           set -euo pipefail
           chmod +x bins/base bins/head
@@ -83,3 +80,32 @@ jobs:
           name: tui-gallery
           path: target/see/gallery.html
           retention-days: 14
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: tui-see
+          path: target/see/
+          retention-days: 1
+
+  # The token-bearing step runs the base branch's script over the shots job's output, so code
+  # the pull request wrote never holds the token. Forgejo ignores `permissions:` blocks.
+  comment:
+    needs: shots
+    if: always() && needs.shots.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/download-artifact@v3
+        with:
+          name: tui-see
+          path: target/see
+      - name: upsert the snapshot comment
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_PR: ${{ github.event.pull_request.number }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/tui_see.py post target/see
