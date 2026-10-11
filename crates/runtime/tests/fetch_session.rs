@@ -398,3 +398,143 @@ fn a_plugin_skill_and_its_files_are_read_by_address() -> Result<(), Box<dyn Erro
     );
     Ok(())
 }
+
+/// A child is told its task, never its parent's session id: `history://parent` reads the parent's
+/// transcript off disk as written by the session repo, and a root session has no parent to read.
+#[test]
+fn a_child_reads_its_parent_transcript_by_alias() -> TestResult {
+    use yi_session::SessionRepo;
+    let root = Scratch::new("yi-fetch-parent")?;
+    let (sessions, cwd) = (root.join("sessions"), root.join("repo"));
+    std::fs::create_dir_all(&cwd)?;
+    let mut repo = yi_session::JsonlRepo::new(sessions.clone(), cwd.to_string_lossy());
+    let parent = repo.create(yi_session::CreateOptions::default())?;
+    let parent_id = yi_session::lock_session(&parent).metadata().id.clone();
+    let found = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(
+            "the parent found it in plan/kinds.rs",
+        )],
+        yi_types::message::StopReason::Stop,
+    );
+    let asked = yi_session::lock_session(&parent).append_message("main", found)?;
+    let child = repo.create(yi_session::CreateOptions {
+        parent_session_id: Some(parent_id.clone()),
+        ..yi_session::CreateOptions::default()
+    })?;
+    let host = crate::support::family(root.to_path_buf(), cwd.clone(), child.clone(), None).host;
+    let transcripts = Arc::new(yi_runtime::fetch::SessionTranscripts::new(
+        host,
+        Some(sessions),
+        &cwd,
+    ));
+    let reader = |store: yi_session::SharedSession, wall: Wall| {
+        Resolver::new(cwd.clone(), wall)
+            .with_session("worker", store)
+            .with_transcripts(transcripts.clone())
+    };
+
+    let fetched = reader(child.clone(), Wall::default())
+        .fetch(&format!("history://parent/{asked}").parse()?)
+        .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(fetched.served_by, "session-entry");
+    assert!(fetched.text.contains("plan/kinds.rs"), "{}", fetched.text);
+    let listing = reader(child.clone(), Wall::default())
+        .fetch(&"history://parent".parse()?)
+        .map_err(|error| format!("{error:?}"))?;
+    assert!(listing.text.contains("plan/kinds.rs"), "{}", listing.text);
+    let orphan = reader(parent, Wall::default()).fetch(&"history://parent".parse()?);
+    assert!(
+        matches!(orphan, Err(FetchError::NotFound { .. })),
+        "{:?}",
+        orphan.map(|f| f.text)
+    );
+    let writes = Wall {
+        deny_write: vec![cwd.clone()],
+        ..Wall::default()
+    };
+    let reader_child = reader(child.clone(), writes).fetch(&"history://parent/tail/1".parse()?);
+    assert!(reader_child.is_ok(), "{:?}", reader_child.err());
+    let wall = Wall {
+        deny_url: vec!["history://main".to_owned()],
+        ..Wall::default()
+    };
+    let walled = reader(child, wall).fetch(&"history://parent".parse()?);
+    assert!(
+        matches!(walled, Err(FetchError::Denied { .. })),
+        "{:?}",
+        walled.map(|f| f.text)
+    );
+    Ok(())
+}
+
+fn read_tool_text(resolver: Resolver, path: &str) -> Result<String, Box<dyn Error>> {
+    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
+        .into_iter()
+        .filter(|tool| tool.name() == "read")
+        .collect();
+    yi_runtime::fetch::route_urls(&mut tools, &Arc::new(resolver));
+    let mut input = serde_json::Map::new();
+    input.insert("path".to_owned(), path.into());
+    let output = tools
+        .first()
+        .ok_or("no read tool")?
+        .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
+    Ok(output
+        .result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect())
+}
+
+/// An unpaged listing is served whole at the 51,200-byte cap and cut one byte past it, with a
+/// row naming kept of total, the cap and the offset; a first entry alone over it is clipped on a char.
+#[test]
+fn an_unpaged_history_listing_past_its_cap_says_where_it_was_cut() -> TestResult {
+    const CAP: usize = 50 * 1024;
+    let listing = |notes: usize, pad: &str| -> Result<(Resolver, usize), Box<dyn Error>> {
+        let store = memory_store();
+        for _ in 0..notes {
+            yi_session::lock_session(&store).append_custom("main", "note", None)?;
+        }
+        let data = serde_json::json!({ "pad": pad });
+        yi_session::lock_session(&store).append_custom("main", "note", Some(data))?;
+        let entries = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        })?;
+        let lines = entries
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?;
+        let resolver =
+            Resolver::new(std::env::temp_dir(), Wall::default()).with_session("main", store);
+        Ok((resolver, lines.join("\n").len()))
+    };
+    let (_, base) = listing(3, "")?;
+    let (at_cap, bytes) = listing(3, &"x".repeat(CAP - base))?;
+    assert_eq!(bytes, CAP);
+    let whole = read_tool_text(at_cap, "history://main")?;
+    assert!(!whole.contains("[… "), "{}", whole.len());
+    let (past, bytes) = listing(3, &"x".repeat(CAP - base + 1))?;
+    assert_eq!(bytes, CAP + 1);
+    let text = read_tool_text(past, "history://main")?;
+    assert!(
+        text.ends_with("[… 3 of 4 entries shown · unpaged history cap 51200 bytes · read history://main with offset=4 and limit to page on]"),
+        "{}",
+        text.lines().last().unwrap_or_default()
+    );
+    let (wide, _) = listing(0, &"\u{e9}".repeat(CAP))?;
+    let text = read_tool_text(wide, "history://main")?;
+    assert!(
+        text.lines()
+            .last()
+            .is_some_and(|row| row.starts_with("[… 1 of 1 entries shown (the last one clipped)")),
+        "{}",
+        text.lines().last().unwrap_or_default()
+    );
+    Ok(())
+}

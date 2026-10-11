@@ -207,6 +207,8 @@ impl KernelVariables for KernelServiceMap {
 /// The reader's own transcript in a `history://` address, for a member that was never told
 /// the name its family knows it by.
 pub(crate) const SELF: &str = "self";
+/// Invariant: a child is told its task, never the parent id its own header carries.
+const PARENT: &str = "parent";
 
 pub struct SessionTranscripts {
     host: Arc<crate::subagent::SubagentHost>,
@@ -571,6 +573,8 @@ impl Resolver {
         url: &Url,
         page: Option<Page>,
     ) -> Result<(String, String, Option<usize>), FetchError> {
+        let parent = self.parent_address(url)?;
+        let url = parent.as_ref().unwrap_or(url);
         if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
                 url: url.to_string(),
@@ -608,6 +612,47 @@ impl Resolver {
                 scheme: scheme.clone(),
             }),
         }
+    }
+
+    /// Invariant: a wall that denies any `history://` prefix refuses the alias, since it names
+    /// the parent by a spelling (`history://main`) the rewritten id would slip past.
+    fn parent_address(&self, url: &Url) -> Result<Option<Url>, FetchError> {
+        let path = url.path();
+        let rest = match path.strip_prefix(PARENT) {
+            Some(rest)
+                if *url.scheme() == Scheme::History
+                    && matches!(rest.chars().next(), None | Some('/')) =>
+            {
+                rest
+            }
+            _ => return Ok(None),
+        };
+        let missing = |what: &str| FetchError::NotFound {
+            url: url.to_string(),
+            what: what.to_owned(),
+        };
+        let history = |prefix: &String| prefix.starts_with("history://");
+        if self.wall.deny_url.iter().any(history) {
+            return Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: yi_tools::wall_refusal("fetch", &url.to_string(), "deny_url"),
+            });
+        }
+        let store = self
+            .session_store()
+            .ok_or_else(|| missing("no session is attached to name a parent"))?;
+        let id = yi_session::lock_session(&store)
+            .metadata()
+            .parent_session_id
+            .clone();
+        let id = id.ok_or_else(|| missing("this session has no parent; it is a root session"))?;
+        format!("history://{id}{rest}")
+            .parse()
+            .map(Some)
+            .map_err(|error| FetchError::BadAddress {
+                url: url.to_string(),
+                detail: format!("the parent id {id} is not an address: {error}"),
+            })
     }
 
     pub(super) fn workspace(&self) -> &std::path::Path {
