@@ -376,9 +376,7 @@ struct Block<'a> {
 /// Every error block whole, a few warnings, the summaries; what follows the last located block
 /// is program output and takes the generic reduction, numbered by its place in `text`.
 fn diagnostics(text: &str, budget: usize, numbering: Numbering) -> String {
-    let lines: Vec<&str> = (text.lines())
-        .map(|line| line.rsplit('\r').next().unwrap_or(line).trim_end())
-        .collect();
+    let lines: Vec<&str> = text.lines().map(frame).collect();
     let mut blocks: Vec<Block<'_>> = Vec::new();
     let mut open: Option<Block<'_>> = None;
     for (at, &line) in lines.iter().enumerate() {
@@ -502,6 +500,21 @@ fn compress(text: &str, first_line: usize) -> Vec<Row> {
 /// strip ANSI from the text first, as the reducer does.
 pub fn frame(raw: &str) -> &str {
     raw.rsplit('\r').next().unwrap_or(raw).trim_end()
+}
+
+/// A line of the raw output as a row shows it: its CRLF end dropped as `str::lines` drops it,
+/// ANSI stripped, then [`frame`].
+pub fn shown_form(raw: &str) -> String {
+    frame(&strip_ansi(raw.strip_suffix('\r').unwrap_or(raw))).to_owned()
+}
+
+/// The span of a row the reducer wrote for lines it left out; any other line, a program's own
+/// `[retry: 1-4]` included, gives none.
+pub fn omitted_span(row: &str) -> Option<(usize, usize)> {
+    let label = row.strip_prefix('[')?.rsplit_once(": ")?.0;
+    let counted = label.starts_with(|c: char| c.is_ascii_digit() || c == '+');
+    let ours = counted && (label.contains(" omitted") || label.contains(" more in "));
+    ours.then(|| row_span(row)).flatten()
 }
 
 /// A shown row as its source line reads, without the `[×N]` count of a repeated line.
