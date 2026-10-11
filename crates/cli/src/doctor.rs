@@ -41,7 +41,7 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 13] = [
+const ROWS: [(&str, Check); 14] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
@@ -55,6 +55,7 @@ const ROWS: [(&str, Check); 13] = [
     ("lanes", lanes_consistent),
     ("cache", cache_reads),
     ("sandbox-listeners", sandbox_listeners),
+    ("plugins", plugins_pinned),
 ];
 
 /// Never a failure: where yi runs decides what a contained command and a placement can reach.
@@ -322,6 +323,30 @@ fn cache_reads(site: &Site) -> Finding {
 /// address of this host, so these listeners are open to it. Only macOS has that sandbox.
 fn sandbox_listeners(_site: &Site) -> Finding {
     ok(yi_runtime::sandbox_listeners())
+}
+
+/// A plugin installed at a version this yi does not pin is off until a sync, and says so here.
+fn plugins_pinned(site: &Site) -> Finding {
+    use yi_runtime::plugin::{PLUGINS, State, state};
+    let (mut installed, mut stale) = (Vec::new(), Vec::new());
+    for plugin in &PLUGINS {
+        match state(plugin, &site.home) {
+            State::Installed => installed.push(format!("{} {}", plugin.name, plugin.version)),
+            State::Stale(versions) => stale.push(format!(
+                "{} {}",
+                plugin.name,
+                yi_runtime::plugin::stale_text(&versions, plugin.version)
+            )),
+            State::OnPath(_) | State::Missing | State::Unsupported => {}
+        }
+    }
+    if !stale.is_empty() {
+        return fail(format!("{}: yi plugin sync", stale.join("; ")));
+    }
+    if installed.is_empty() {
+        return ok("none installed by yi; `yi plugin list` names them");
+    }
+    ok(installed.join(", "))
 }
 
 /// Runs before the config loads, so a config that will not parse is a row, not a death.

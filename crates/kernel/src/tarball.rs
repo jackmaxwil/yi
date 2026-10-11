@@ -68,6 +68,14 @@ pub struct Entry<'a> {
     pub bytes: &'a [u8],
 }
 
+/// Invariant: every archive member and skill file yi writes or reads by a relative path passes
+/// this one check: relative, no backslash, and no empty, `.` or `..` part.
+pub fn stays_inside(path: &str) -> bool {
+    !path.starts_with('/')
+        && !path.contains('\\')
+        && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
+}
+
 /// Names are returned as stored, `..` included: refusing a path is the caller's policy.
 pub fn entries(mut tar: &[u8]) -> Result<Vec<Entry<'_>>, String> {
     let mut found = Vec::new();
@@ -201,6 +209,22 @@ fn swap_in_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_leaving_its_directory_by_any_spelling_is_refused() {
+        assert!(stays_inside("ripwire-orient/map-before-you-read.md"));
+        for path in [
+            "/etc/passwd",
+            "a/../../b",
+            "a\\..\\b",
+            "./a",
+            "a//b",
+            "a/",
+            "..",
+        ] {
+            assert!(!stays_inside(path), "{path}");
+        }
+    }
 
     #[test]
     fn a_failed_restore_names_where_the_old_one_is() -> Result<(), Box<dyn std::error::Error>> {
