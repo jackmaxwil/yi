@@ -455,6 +455,12 @@ def required():
     return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
 
 
+def run_of(pr):
+    """Whether any workflow run exists for this head, one still queued for a runner included."""
+    tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
+    return any(r.get("head_sha", "").startswith(pr["head"]["sha"]) for r in tasks.get("workflow_runs", []))
+
+
 def jobs_of(pr):
     tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
     return job_table(tasks.get("workflow_runs", []), pr["head"]["sha"])
