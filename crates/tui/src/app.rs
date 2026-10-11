@@ -189,6 +189,7 @@ pub struct App {
     orb_stale: bool,
     pub(crate) pending_title: Option<String>,
     pub(crate) started_at: Instant,
+    pub(crate) clock: crate::motion::Clock,
     pub(crate) quit: bool,
     exit_code: i32,
     pub(crate) options: TuiOptions,
@@ -227,6 +228,7 @@ pub use crate::frame::next_spinner_wake;
 mod asks;
 mod bridge;
 mod children;
+mod clock;
 mod stream;
 
 pub(crate) use asks::mail_source;
@@ -308,6 +310,7 @@ impl App {
             orb_stale: false,
             pending_title: Some("Yi".to_owned()),
             started_at: Instant::now(),
+            clock: crate::motion::Clock::Real,
             quit: false,
             exit_code: 0,
             options,
@@ -503,7 +506,8 @@ impl App {
         }
         self.todos = todos;
         // ponytail: an idle console pane folds its list on the next event, not at the deadline.
-        self.todo_clock.observe(self.todos.as_ref(), Instant::now());
+        self.todo_clock
+            .observe(self.todos.as_ref(), self.clock.now());
     }
 
     pub fn mode(&self) -> TranscriptMode {
@@ -636,7 +640,8 @@ impl App {
             .as_ref()
             .filter(|_| self.running)
             .map(|(wait, since)| {
-                crate::pen::wait_label(wait, *since, &self.selection.model.provider)
+                let now = self.clock.now();
+                crate::pen::wait_label(wait, *since, now, &self.selection.model.provider)
             });
         Some(
             waiting
@@ -722,10 +727,6 @@ impl App {
         self.scheduler.take_request() || stepped
     }
 
-    pub fn spinner_phase(&self) -> usize {
-        usize::try_from(self.started_at.elapsed().as_millis() / SPINNER_PERIOD_MS).unwrap_or(0)
-    }
-
     pub fn reduce_agent(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::AgentStart => self.start_turn(),
@@ -744,7 +745,7 @@ impl App {
             }
             AgentEvent::MessageStart { message } => {
                 if let AgentMessage::Assistant { .. } = &message {
-                    self.model_since = Some(Instant::now());
+                    self.model_since = Some(self.clock.now());
                     self.segment = 0;
                     return self.streaming = Some(message);
                 }
@@ -792,14 +793,15 @@ impl App {
                 if let Some(warning) = wait.as_ref().and_then(yi_types::event::Wait::warning) {
                     self.notice(warning);
                 }
-                self.wait = wait.map(|wait| (wait, Instant::now()));
+                self.wait = wait.map(|wait| (wait, self.clock.now()));
                 self.scheduler.request();
             }
             AgentEvent::MessageEnd { message } => {
                 self.streaming = None;
                 self.pen = None;
                 if let Some(since) = self.model_since.take() {
-                    self.model_ms = self.model_ms.saturating_add(elapsed_ms(since));
+                    let ms = elapsed_ms(since, self.clock.now());
+                    self.model_ms = self.model_ms.saturating_add(ms);
                 }
                 if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
                     self.wait = None;
@@ -810,7 +812,7 @@ impl App {
             AgentEvent::ChildUpdate { update } => self.reduce_child_update(&update),
             AgentEvent::LandingState { landing } => {
                 self.landing = Some(landing);
-                self.landing_at = Some(Instant::now());
+                self.landing_at = Some(self.clock.now());
             }
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
@@ -819,7 +821,7 @@ impl App {
             } => {
                 self.intent = intent_of(&args);
                 self.tool_started
-                    .insert(tool_call_id.clone(), Instant::now());
+                    .insert(tool_call_id.clone(), self.clock.now());
                 self.live_tools.push(ToolCell {
                     name: tool_name.clone(),
                     call_id: tool_call_id.clone(),
@@ -981,7 +983,7 @@ impl App {
         self.seen_turn = true;
         self.started_turns = self.started_turns.saturating_add(1);
         self.esc_armed_at = None;
-        self.turn_started = Instant::now();
+        self.turn_started = self.clock.now();
         self.turn_tools = 0;
         self.turn_kinds.clear();
         self.claims_before = self
@@ -1014,7 +1016,7 @@ impl App {
         } else {
             kinds.join(" · ")
         };
-        let elapsed = crate::cell::elapsed_label(elapsed_ms(self.turn_started));
+        let elapsed = crate::cell::elapsed_label(elapsed_ms(self.turn_started, self.clock.now()));
         let mut text = format!("{head} · {elapsed}");
         // A time, not a share: `model 85%` read as a cache rate. A turn with no tools is all
         // model time, so it says nothing more.

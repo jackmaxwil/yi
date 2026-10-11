@@ -2898,8 +2898,8 @@ fn grep_reports_a_context_it_could_not_honour() -> TestResult {
     Ok(())
 }
 
-/// A process-wide cache or a PATH lookup is tested in a rerun of one test whose PATH is one
-/// scratch dir; the dir's name is how the rerun knows it is one.
+/// A process-wide cache or a PATH lookup is tested in a rerun whose PATH and HOME are one scratch
+/// dir, so no pinned plugin shadows a fake; the dir's name is how the rerun knows it is one.
 fn fake_path(tag: &str) -> Option<PathBuf> {
     let path = PathBuf::from(std::env::var_os("PATH")?);
     let name = path.file_name()?.to_str()?;
@@ -2907,17 +2907,21 @@ fn fake_path(tag: &str) -> Option<PathBuf> {
         .then_some(path)
 }
 
-fn rerun_on_path(test: &str, dir: &std::path::Path) -> TestResult {
+fn rerun_with_path(test: &str, dir: &std::path::Path, path: &std::ffi::OsStr) -> TestResult {
     let rerun = yi_tools::command(std::env::current_exe()?)
         .args(["--exact", test])
-        .env("PATH", dir)
+        .env("PATH", path)
+        .env("HOME", dir)
         .output()?;
     let stdout = String::from_utf8_lossy(&rerun.stdout);
-    assert!(
-        rerun.status.success() && stdout.contains("1 passed"),
-        "{stdout}"
-    );
+    let stderr = String::from_utf8_lossy(&rerun.stderr);
+    assert!(rerun.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("1 passed"), "{stdout}{stderr}");
     Ok(())
+}
+
+fn rerun_on_path(test: &str, dir: &std::path::Path) -> TestResult {
+    rerun_with_path(test, dir, dir.as_os_str())
 }
 
 #[cfg(unix)]
@@ -3506,18 +3510,100 @@ fn bash_inherits_no_provider_key() -> TestResult {
     Ok(())
 }
 
+/// The model's bash runs Yi's copy of a plugin before one on PATH, and never a version this yi
+/// does not pin; HOME and PATH belong to the process, so each half runs in a rerun that owns them.
+#[cfg(unix)]
+#[test]
+fn the_models_bash_runs_the_pinned_plugin_before_one_on_path() -> TestResult {
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    if fake_path("plugin-path").is_none() {
+        for version in [ripwire.version, "0.0.1"] {
+            let dir = temp_dir("plugin-path")?;
+            let installed = dir.join(".yi/plugins/ripwire").join(version);
+            fs::create_dir_all(&installed)?;
+            script(&installed.join("ripwire"), "echo \"yi's copy\"\n")?;
+            script(&dir.join("ripwire"), "echo 'path copy'\n")?;
+            let path = format!("/usr/bin:/bin:{}", dir.display());
+            rerun_with_path(
+                "the_models_bash_runs_the_pinned_plugin_before_one_on_path",
+                &dir,
+                std::ffi::OsStr::new(&path),
+            )?;
+        }
+        return Ok(());
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
+    let pinned = ripwire.installed(&home).is_some();
+    let context = ToolContext::new(home);
+    let ran = BashTool::default().execute(args(&[("command", json!("ripwire"))]), &context);
+    let expected = if pinned { "yi's copy" } else { "path copy" };
+    assert_eq!(output_text(&ran).trim(), expected, "pinned={pinned}");
+    Ok(())
+}
+
+/// Yi reads the ripwire it pins, not a recording of it: an edit that adds a parameter names the
+/// caller it broke, and `get_context` lists that caller. `just journeys` runs it after a plugin add.
+#[cfg(unix)]
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn the_pinned_ripwire_answers_in_the_shapes_yi_reads() -> TestResult {
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").ok_or("no ripwire row")?;
+    let home = yi_tools::plugin::home().ok_or("no HOME")?;
+    let binary = ripwire
+        .installed(&home)
+        .ok_or("ripwire is not at the version yi pins: run `yi plugin add ripwire`")?;
+    let dir = temp_dir("live-ripwire")?;
+    fs::write(dir.join("calc.py"), "def add(a, b):\n    return a + b\n")?;
+    fs::write(
+        dir.join("main.py"),
+        "from calc import add\n\nprint(add(1, 2))\n",
+    )?;
+    let git = |words: &[&str]| {
+        yi_tools::command("git")
+            .args(words)
+            .current_dir(&*dir)
+            .output()
+    };
+    git(&["init", "-q"])?;
+    git(&["add", "-A"])?;
+    git(&[
+        "-c",
+        "user.email=yi@test",
+        "-c",
+        "user.name=yi",
+        "commit",
+        "-qm",
+        "seed",
+    ])?;
+    // The edit check answers within 3 s or names itself unavailable; a first index can take longer.
+    yi_tools::command(&binary)
+        .args([".", "--for=add"])
+        .current_dir(&*dir)
+        .output()?;
+    let edit = output_text(&edit_with(
+        &dir,
+        "calc.py",
+        "PUT 1.=1:\n+def add(a, b, c):\n",
+    ));
+    assert!(edit.contains("[ripwire check]"), "{edit}");
+    assert!(
+        edit.contains("params 2 -> 3")
+            && edit.contains("main.py:1")
+            && edit.contains("1 incompatible"),
+        "{edit}"
+    );
+    let context = ToolContext::new(dir.to_path_buf());
+    let packet =
+        output_text(&yi_tools::GetContextTool.execute(args(&[("symbol", json!("add"))]), &context));
+    assert!(packet.contains("main.py"), "{packet}");
+    Ok(())
+}
+
 /// Every line the reducer shows that is not one of its own `[…]` rows, verbatim from `source`.
 fn shown_verbatim(reduced: &str, source: &str) -> Result<(), String> {
     let lines: std::collections::HashSet<&str> = source.lines().map(str::trim_end).collect();
     // The reducer's own count of a repeated line rides on its first occurrence: ` [×N]`.
-    let unmarked = |line: &str| -> String {
-        match line.rsplit_once(" [×") {
-            Some((text, count)) if count.trim_end_matches(']').parse::<usize>().is_ok() => {
-                text.to_owned()
-            }
-            _ => line.trim_end().to_owned(),
-        }
-    };
+    let unmarked = |line: &str| yi_tools::reduce::source_form(line).trim_end().to_owned();
     let invented: Vec<&str> = (reduced.lines())
         .filter(|line| !line.starts_with('[') && !line.trim().is_empty())
         .filter(|line| !lines.contains(unmarked(line).as_str()))
@@ -3528,16 +3614,9 @@ fn shown_verbatim(reduced: &str, source: &str) -> Result<(), String> {
     }
 }
 
-/// The `a-b` a reducer row ends with: what it omitted, counted or pointed at.
+/// The `a-b` a reducer row ends with, in either numbering.
 fn row_range(row: &str) -> Option<(usize, usize)> {
-    let inner = row.strip_prefix('[')?.strip_suffix(']')?;
-    let inner = inner
-        .strip_suffix(" of the cut capture, not the file")
-        .unwrap_or(inner);
-    let (_, range) = inner.rsplit_once(": ")?;
-    let range = range.strip_prefix("output lines ").unwrap_or(range);
-    let (from, to) = range.split_once('-')?;
-    Some((from.parse().ok()?, to.parse().ok()?))
+    yi_tools::reduce::row_span(&row.replace(" of the cut capture, not the file", ""))
 }
 
 /// Each `[N lines omitted: a-b]` row names exactly the lines between its neighbours: a shown

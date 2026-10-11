@@ -354,6 +354,30 @@ Tests are tiered by where they run and what they may spend:
 
 
 
+<!-- Source: .ruler/082-skills.md -->
+
+# A skill for every tool
+
+The owner, 2026-10-10: "every major agent tool/feature needs a corresponding skill".
+
+- **Major** is every tool a root session's model can call and every row of the plugin table
+  (`yi_tools::plugin::PLUGINS`).
+- **Covered** means a shipped `SKILL.md` (under `skills/` or `python/skills/`) whose frontmatter
+  says `covers: tool:<name>` or `covers: plugin:<name>` (a comma list), or an on-demand tool guide
+  served at `yi://tools/<name>`.
+- `request_budget::every_model_tool_and_plugin_is_covered_by_a_skill_or_pending` enforces it. Its
+  `PENDING` list holds the gaps that predate the rule and may only shrink: a covered entry fails
+  until it is removed, and a `covers:` naming a tool or plugin that no longer exists fails too.
+- A tool or plugin lands with its skill, and deleting one deletes its skill. `yi update` replaces
+  the bundled skill directory whole, so a deletion reaches every install.
+- The content bar: a skill teaches what the tool description cannot — when to reach for this tool
+  over another, how its calls combine, and how to recover from its failures. It never restates
+  the schema or the description; the duplication gate refuses that.
+- Skills load lazily: one catalog line each, the body on `read("yi://skills/<name>")`. A plugin's
+  own skills sit behind one pointer skill and are never listed.
+
+
+
 <!-- Source: .ruler/085-tui.md -->
 
 # TUI work
@@ -372,6 +396,16 @@ Verification (the phase-7 lessons, paid for once):
   terminal emulator (agg), never a text-screenshot tool: `freeze` re-renders
   in its own font and chrome, so its output is not the grid Yi painted. Pace
   typing with `type-ms <n>` and raise `--deadline` when the beats outlast 60 s.
+- Look before claiming a TUI change: `just tui-see run <scene>` before the edit with
+  `--label base`, again after, then `just tui-see diff <base run> <head run>`. Read the cell diff
+  first, then the region crops it names. A scene is a drive script whose `#!` line carries its
+  setup (`#! solo --size 80x24`, `#! console --size 120x34`) and whose `snap <name>` steps mark
+  the frames worth seeing. A scene with a `tick <ms>` step runs on a frozen clock: `hold
+  <event type> [n]` keeps a turn on screen mid-stream until `release`, `tick` moves time a frame
+  at a time, and `snap-strip <name> <n> <ms>` keeps a filmstrip, so a spinner or a reveal lands on
+  the same frame every run. Agg stills have no kitty images and headless draws the 16-colour tier:
+  for the orb, avatars and true colour add `--host term`, which plays the scene in real Ghostty in
+  the yi-term image (`just yi-term` builds it) and uses its grabs. No picture gates a build.
 - vt100 tests for viewport code must include a nonzero-offset case: an
   inline viewport at row 0 hides every coordinate-origin bug (the blank-frame
   draw-offset bug shipped exactly this way).

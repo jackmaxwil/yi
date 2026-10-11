@@ -1140,6 +1140,21 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     Ok(())
 }
 
+/// Cursor's list is the account's own, so a user who never logged in to it must not see every
+/// `yi catalog refresh` fail: the row says what to run and the run stays green.
+#[test]
+fn refreshing_cursor_without_a_login_is_a_skip_not_a_failure() -> TestResult {
+    let workspace = Workspace::new("catalog-cursor-skip")?;
+    let skipped = workspace.yi(&["catalog", "refresh", "cursor"])?;
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    let row = stdout(&skipped)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(row, "cursor no credential (yi login cursor)");
+    Ok(())
+}
+
 /// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
 #[test]
 fn a_relative_home_is_refused_at_boot() -> TestResult {
@@ -1148,6 +1163,36 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
     assert_eq!(refused.status.code(), Some(2));
     let complaint = String::from_utf8_lossy(&refused.stderr);
     assert!(complaint.contains("HOME is relative"), "{complaint}");
+    Ok(())
+}
+
+/// `yi plugin` writes under HOME like every other surface, so an unset or relative one
+/// is refused before a verb downloads or deletes into the working directory.
+#[test]
+fn a_homeless_plugin_verb_is_refused_and_writes_nothing_here() -> TestResult {
+    let workspace = Workspace::new("plugin-unset-home")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract is the spawned binary's exit code and what it wrote"
+    )]
+    let homeless = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(args)
+            .env_remove("HOME")
+            .envs(NO_KERNEL.iter().copied())
+            .current_dir(workspace.project())
+            .output()
+    };
+    let refused = homeless(&["plugin", "add", "ripwire"])?;
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert!(!workspace.project().join(".yi").exists(), "{complaint}");
+    assert_eq!(refused.status.code(), Some(2), "{complaint}");
+    assert!(complaint.contains("HOME is not set"), "{complaint}");
+    let relative = workspace.yi_env(&["plugin", "add", "ripwire"], &[("HOME", "../elsewhere")])?;
+    let complaint = String::from_utf8_lossy(&relative.stderr);
+    assert_eq!(relative.status.code(), Some(2), "{complaint}");
+    assert!(complaint.contains("HOME is relative"), "{complaint}");
+    assert!(!workspace.project().join(".yi").exists(), "{complaint}");
     Ok(())
 }
 
@@ -1415,7 +1460,8 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "daemon-ledger",
             "lanes",
             "cache",
-            "sandbox-listeners"
+            "sandbox-listeners",
+            "plugins"
         ]
     );
     assert_eq!(rows[11]["detail"], "no session here", "{rows}");
@@ -2088,4 +2134,84 @@ fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// A plugin yi installed at a version it no longer pins is off, and both `yi plugin list` and
+/// `yi doctor` name the one call that brings it to the pin; a name not in the table is refused.
+#[test]
+fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
+    let workspace = Workspace::new("plugin-stale")?;
+    let home = workspace.0.join("home");
+    let stale = home.join(".yi/plugins/ripwire/0.0.1");
+    std::fs::create_dir_all(&stale)?;
+    std::fs::write(stale.join("ripwire"), "#!/bin/sh\n")?;
+    let plugin = |args: &[&str]| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        command
+            .arg("plugin")
+            .args(args)
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+    };
+    let list = plugin(&["list"])?;
+    let first = stdout(&list).lines().next().unwrap_or_default().to_owned();
+    assert!(
+        first.starts_with("ripwire ")
+            && first.ends_with("0.0.1 installed, this yi pins 0.6.5: yi plugin sync"),
+        "{first}"
+    );
+    let doctor = workspace.yi_env(&["doctor"], &[("PATH", "/usr/bin:/bin")])?;
+    let row = stdout(&doctor)
+        .lines()
+        .find(|line| line.contains(" plugins "))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        row.starts_with("FAIL") && row.ends_with("yi plugin sync"),
+        "{row}"
+    );
+    let unknown = plugin(&["add", "grid"])?;
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("no plugin named grid"),
+        "{unknown:?}"
+    );
+    Ok(())
+}
+
+/// `yi plugin list --json` is what the eval adapter reads (`evals/adapters/yi_usage.py`
+/// `installed_plugins`): one row per plugin with `name`, `version`, `state` and `path`.
+#[test]
+fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
+    let workspace = Workspace::new("plugin-json")?;
+    let home = workspace.0.join("home");
+    let pinned = home.join(".yi/plugins/ripwire/0.6.5");
+    std::fs::create_dir_all(&pinned)?;
+    std::fs::write(pinned.join("ripwire"), "#!/bin/sh\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+    )]
+    let listed = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["plugin", "list", "--json"])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .output()?;
+    let rows: Value = serde_json::from_str(&stdout(&listed))?;
+    let ripwire = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "ripwire")
+        .ok_or("no ripwire row")?;
+    assert_eq!(ripwire["state"], "installed", "{rows}");
+    assert_eq!(ripwire["version"], "0.6.5", "{rows}");
+    assert_eq!(
+        ripwire["path"],
+        json!(pinned.join("ripwire").display().to_string()),
+        "{rows}"
+    );
+    Ok(())
 }

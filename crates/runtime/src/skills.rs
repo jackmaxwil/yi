@@ -17,9 +17,14 @@ pub fn roots(cwd: &Path, home: &Path) -> Vec<PathBuf> {
     crate::ext::resource_roots(cwd, home, "skills")
 }
 
+/// Every skill a read can reach: the listed ones, then those a `requires:` holds back, then each
+/// installed plugin's, which are reached only through a pointer and never listed.
 pub fn discover(cwd: &Path, home: &Path) -> Vec<Skill> {
-    let (mut global, project) = discover_split(cwd, home);
+    let (mut global, project) = scan_split(cwd, home);
     global.extend(project);
+    for root in (yi_tools::plugin::PLUGINS.iter()).filter_map(|plugin| plugin.skill_root(home)) {
+        global.extend(scan(&root));
+    }
     let mut found: BTreeMap<String, Skill> = BTreeMap::new();
     for skill in global {
         found.entry(skill.name.clone()).or_insert(skill);
@@ -27,9 +32,23 @@ pub fn discover(cwd: &Path, home: &Path) -> Vec<Skill> {
     found.into_values().collect()
 }
 
-/// The user's own roots and the repository's, kept apart: a repository author writes the
-/// second set's descriptions, so those render in the yard, not the trusted prefix.
+/// The user's own roots and the repository's, kept apart: a repository author writes the second
+/// set's descriptions, so they render in the yard; a `requires:` unmet by an install leaves both.
 pub fn discover_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
+    let (global, project) = scan_split(cwd, home);
+    let present = |skill: &Skill| {
+        skill.frontmatter.get("requires").is_none_or(|name| {
+            yi_tools::plugin::Plugin::named(name)
+                .is_some_and(|plugin| plugin.skill_root(home).is_some())
+        })
+    };
+    (
+        global.into_iter().filter(present).collect(),
+        project.into_iter().filter(present).collect(),
+    )
+}
+
+fn scan_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
     let mut global: BTreeMap<String, Skill> = BTreeMap::new();
     let mut project: BTreeMap<String, Skill> = BTreeMap::new();
     for root in roots(cwd, home) {
@@ -54,7 +73,10 @@ pub fn discover_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
 /// Each description is clipped to [`DESCRIPTION_CLIP`] chars and the whole skill is one
 /// `yi://skills/<name>` read away; the block as a whole is fitted to the `skills_meta` budget.
 pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncated> {
-    catalog_text(&discover(cwd, home), budget)
+    let (mut listed, project) = discover_split(cwd, home);
+    listed.extend(project);
+    listed.sort_by(|a, b| a.name.cmp(&b.name));
+    catalog_text(&listed, budget)
 }
 
 pub const CATALOG_FLOOR: Bytes = Bytes(8_192);
@@ -169,7 +191,7 @@ fn read_skill(dir: &Path, manifest: &Path) -> Option<Skill> {
 
 /// The `key: value` subset of YAML that skill frontmatter actually uses, plus
 /// `>` and `|` blocks; anything else in the block is ignored rather than guessed at.
-pub(crate) fn frontmatter(source: &str) -> BTreeMap<String, String> {
+pub fn frontmatter(source: &str) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
     let mut lines = source.lines().peekable();
     if lines.next().map(str::trim) != Some("---") {

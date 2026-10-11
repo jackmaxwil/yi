@@ -1699,7 +1699,16 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
     session.prompt("count")?;
     session.wait_idle().await;
     let text = result(&session);
-    assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); kept 3 of 3 selected lines (LINES_OUT 200)]\n2000| 2000\n2001| 2001\n2002| 2002"), "{text}");
+    assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); kept 3 of 3 selected lines not shown above (LINES_OUT 200), 0 more already shown]\n2000| 2000\n2001| 2001\n2002| 2002"), "{text}");
+    let session = run("seq 1 4000", r#"{"ranges": [[1, 3], [3999, 4000]]}"#);
+    session.prompt("count")?;
+    session.wait_idle().await;
+    let text = result(&session);
+    assert!(
+        text.contains("gave no lines (it named 5 lines, all shown above already)")
+            && !text.contains("1| 1\n"),
+        "{text}"
+    );
     let session = run("seq 1 4001", r#"{"ranges": [[2000, 2002]]}"#);
     session.prompt("count")?;
     session.wait_idle().await;
