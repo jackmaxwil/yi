@@ -42,9 +42,7 @@ read(path="src/lib.rs", offset=400, limit=300)
 
 Each read ends in a tag; edit cites `[path#TAG]` and the `LINE:` numbers beside it. An edit with no tag uses the latest one shown for that path.
 
-- Do not re-read a file you just edited: the edit result carries the new tag and the lines around every change.
-- Edit only lines a read, grep, write or edit printed in full. Otherwise the edit refuses with `This edit anchors to lines … that … never displayed` and prints those lines; re-issue with the header it gives. Past 40 such lines, `read` them with `ranges` first.
-- A file changed since your tag: edit moves the cited lines onto the current file when they are unchanged (`rebased #A -> #B`, or a `Recovered …` warning) and rejects with the current text when they changed. Read that text, do not guess it.
+- edit's rules on which lines it may touch and what it does when the file moved since your tag are the patch guide's: `read("yi://tools/edit")`. A refusal quotes the lines to read or re-issue with.
 - `No version of PATH is on record for this session` means the tag was never shown or fell out of the short per-path history. Read the path again.
 - `read` accepts a pasted `path#TAG`. If that tag is old it says `[path#TAG is not the current version: the file is now #LIVE; this is the current content]`: use #LIVE.
 
