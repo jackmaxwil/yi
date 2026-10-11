@@ -489,3 +489,21 @@ fn each_segment_says_why_it_leaves() {
         [None, Some("installs")]
     );
 }
+/// Review of #1205: `ripwire wrap` is setup, not a query, so a bare positional that is not the
+/// tree root must stay unknown and contained instead of running unasked in auto mode.
+#[test]
+fn a_ripwire_bare_positional_must_name_an_existing_path_to_be_a_read() -> TestResult {
+    assert_eq!(classify(&argv("ripwire wrap")[0]), Class::Unknown, "wrap");
+    assert_ne!(verdict("ripwire wrap"), Verdict::Allow, "wrap");
+    assert_eq!(
+        classify(&argv("ripwire not-a-real-root-xyz")[0]),
+        Class::Unknown,
+        "a positional that names no path"
+    );
+    let root = std::env::temp_dir().join("yi-permission-ripwire-root");
+    std::fs::create_dir_all(&root)?;
+    let command = format!("ripwire {} --hotspots", root.to_string_lossy());
+    assert_eq!(classify(&argv(&command)[0]), Class::Safe);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
