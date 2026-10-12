@@ -9,10 +9,10 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
   # The sweep: a draft whose push job died, or one opened before this job ran, had no round and
-  # nothing read it again; a draft already clean never left draft. Every two hours, because a sweep
-  # may run the whole job limit and a newer one in the group cancels it mid-round.
+  # nothing read it again; a draft already clean never left draft. Every three hours, because a
+  # sweep may run the whole two-hour job limit and a newer one in the group cancels it mid-round.
   schedule:
-    - cron: "7 */2 * * *"
+    - cron: "7 */3 * * *"
   workflow_dispatch:
 
 # A newer head supersedes the rounds on the old one. The group is this event's own: a branch that
