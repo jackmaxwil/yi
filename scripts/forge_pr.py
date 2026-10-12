@@ -454,11 +454,18 @@ def required():
             return required_jobs(protection.get("status_check_contexts") or [])
     return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
 
+TUI_WORKFLOW = "tui.yml"
 
-def run_of(pr):
-    """Whether any workflow run exists for this head, one still queued for a runner included."""
-    tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
-    return any(r.get("head_sha", "").startswith(pr["head"]["sha"]) for r in tasks.get("workflow_runs", []))
+
+def run_status(pr):
+    """The newest tui workflow run for this head, queued ones included, or None.
+    Incident: the task list holds every workflow's jobs, so the review's own job read as the
+    tui run and a PR the tui workflow skips waited out the whole snapshot wait."""
+    # Incident: Forgejo's run rows carry `workflow_id` and `commit_sha`, not GitHub's `name` and
+    # `head_sha`, so matching on those found no tui run at all and TUI PRs read before their snaps.
+    runs = fgj_api("GET", f"repos/{repo()}/actions/runs?head_sha={pr['head']['sha']}") or {}
+    tui = [run for run in runs.get("workflow_runs") or [] if run.get("workflow_id") == TUI_WORKFLOW]
+    return max(tui, key=lambda run: run.get("id", 0))["status"] if tui else None
 
 
 def jobs_of(pr):

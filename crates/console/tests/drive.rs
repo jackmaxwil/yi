@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use yi_console::model::SidebarMode;
@@ -379,6 +380,19 @@ fn run_opts(
     autostart: bool,
     sidebar: SidebarMode,
     frames: Option<PathBuf>,
+    size: (u16, u16),
+) -> TestResult {
+    let console = (autostart, sidebar, Vec::new());
+    run_console(name, fixture, script, console, frames, size)
+}
+
+/// `console` is (autostart, sidebar, the Open in apps the config lists).
+fn run_console(
+    name: &str,
+    fixture: Option<Vec<Step>>,
+    script: &str,
+    (autostart, sidebar, open_apps): (bool, SidebarMode, Vec<String>),
+    frames: Option<PathBuf>,
     (width, height): (u16, u16),
 ) -> TestResult {
     let (dir, socket) = scratch_socket(name)?;
@@ -393,12 +407,15 @@ fn run_opts(
             root: "/tmp/demo-root".to_owned(),
             autostart,
             auto_side: true,
+            open_apps,
             sidebar,
+            pace: 0,
         },
         DriveOptions {
             script: steps,
             frames_dir: Some(frames.clone()),
             record: None,
+            deadline_secs: 60,
             width,
             height,
         },
@@ -413,6 +430,42 @@ fn run_opts(
     if code != 0 {
         return Err(format!("console exited {code}").into());
     }
+    Ok(())
+}
+
+/// A paced type step sleeps per character while it holds the wall clock, so a
+/// long line otherwise outruns the deadline the scene author asked for.
+#[test]
+fn paced_type_step_respects_the_deadline() -> TestResult {
+    let (_dir, socket) = scratch_socket("paced-type-deadline")?;
+    let steps = parse_script("type-ms 200\ntype 0123456789abcdefghij")?;
+    let started = Instant::now();
+    let code = run_headless(
+        &ConsoleOptions {
+            socket,
+            root: "/tmp/demo-root".to_owned(),
+            autostart: false,
+            auto_side: true,
+            sidebar: SidebarMode::Rail,
+            open_apps: Vec::new(),
+            pace: 0,
+        },
+        DriveOptions {
+            script: steps,
+            frames_dir: None,
+            record: None,
+            deadline_secs: 1,
+            width: 100,
+            height: 30,
+        },
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(code, 1, "the deadline must end the run with exit code 1");
+    // The full line takes 4 s at 200 ms a character; the wall gives it 1 s.
+    assert!(
+        elapsed < Duration::from_millis(2500),
+        "a paced type step ran past the deadline unchecked: {elapsed:?}"
+    );
     Ok(())
 }
 
@@ -1185,7 +1238,7 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          key alt-/\n\
          wait-frame 3000 ⌥n new\n\
          key esc\n\
-         cmd-d\n\
+         cmd-\\\n\
          wait-frame 3000 no session\n\
          cmd-p\n\
          wait-frame 3000 ⌘⇧N new\n\
@@ -1368,7 +1421,7 @@ fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
     )
 }
 
-/// An edit outside git accumulates but opens nothing; ⌘R shows it on demand.
+/// An edit outside git accumulates but opens nothing; ⌘⇧R shows it on demand.
 #[test]
 fn untracked_edit_accumulates_without_opening() -> TestResult {
     run(
@@ -1387,9 +1440,9 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
          wait-frame 5000 replayed world\n\
          wait-frame 3000 brand new line\n\
          wait-frame 2000 !Review ·\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 Review · session · 1 file +1 −0\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 !Review ·\n\
          quit\n",
     )
@@ -1561,7 +1614,7 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1600,7 +1653,7 @@ fn an_untitled_session_does_not_land_from_review() -> TestResult {
         "wait-frame 5000 untitled\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1842,20 +1895,26 @@ fn the_hint_row_keeps_whole_keys() -> TestResult {
     Ok(())
 }
 
-/// Ghostty's defaults take ⌘1..9, ⌘⇧T, ⌘J, ⌘G, ⌘E and ⌘? before the console sees them, so
-/// held rows name their ⌥ chord and the panes moved to ⌘I, ⌘R, ⌘O and ⌘/, which it delivers.
+/// Ghostty and kitty take ⌘1..9, ⌘⇧T, ⌘J, ⌘G, ⌘E, ⌘R and ⌘? first, so the overlay and the
+/// hint row name chords both deliver, and rail slots name only their ⌥ chord.
 #[test]
 fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
-    let frame = run_frames(
+    let dir = Scratch::new("yi-console-frames-cmd-held")?;
+    run_opts(
         "cmd-held",
-        session_fixture(),
+        Some(session_fixture()),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
          cmd-/\n\
-         wait-frame 3000 any key closes\n\
+         wait-frame 3000 ↑↓ move · ←→ tab\n\
          quit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (160, 40),
     )?;
+    let frame = last_frame(&dir)?;
     let row = |what: &str| {
         frame
             .lines()
@@ -1864,20 +1923,28 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
     };
     for (what, key) in [
         ("notebook pane", "⌘I"),
-        ("review pane", "⌘R"),
+        ("review pane", "⌘⇧R"),
         ("open a file in a pane", "⌘O"),
-        ("all keys", "⌘/"),
+        ("all keys, in settings", "⌘/"),
         ("jump to rail slot 1..9", "⌥1..9"),
-        ("new tab · next · previous", "⌥t ⌥] ⌥["),
+        ("new tab · next · previous", "⌘⇧O"),
+        ("editor: save, find, undo, redo", "⌘S ⌘⇧L ⌘U ⌘⇧U"),
         ("command palette", "⌘P"),
         ("close pane", "⌘X"),
     ] {
-        let want = format!(" {what:<32}{key} ");
-        assert!(row(what).contains(&want), "{want:?} in {:?}", row(what));
+        let at = row(what)
+            .find(what)
+            .map(|at| row(what).get(at..).unwrap_or_default());
+        let after = at.unwrap_or_default().trim_start_matches(what).trim_start();
+        assert!(
+            after.starts_with(key),
+            "{key:?} after {what:?} in {:?}",
+            row(what)
+        );
     }
     let hints = frame.lines().last().unwrap_or_default();
     assert!(
-        hints.contains("⌘P command palette") && hints.contains("   ⌘R diff   ⌘/ keys"),
+        hints.contains("⌘P command palette") && hints.contains("   ⌘⇧R diff   ⌘/ keys"),
         "the hint row names only chords Ghostty delivers: {hints:?}"
     );
     Ok(())
@@ -1909,6 +1976,43 @@ fn editor_opens_types_and_saves() -> TestResult {
     assert_eq!(std::fs::read_to_string(&path)?, "fn main() {} // done\n");
     let _ = std::fs::remove_file(&path);
     Ok(())
+}
+
+/// ⌘U undoes the last edit and ⌘⇧U redoes it; Ghostty holds ⌘Z and ⌘⇧Z for its own undo.
+#[test]
+fn cmd_u_undoes_and_cmd_shift_u_redoes() -> TestResult {
+    let path = seed_editor_file("undo", "fn main() {}\n")?;
+    run(
+        "editor-undo",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 fn main\nkey end\ntype  // gone\nwait-frame 3000 // gone\n\
+             cmd-u\nwait-frame 3000 !// gone\ncmd-shift-u\nwait-frame 3000 // gone\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// ⌘U in a chat pane undoes the draft's last edit and ⌘⇧U redoes it, as in the editor.
+#[test]
+fn cmd_u_undoes_the_chat_draft() -> TestResult {
+    run(
+        "chat-undo",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type undo me\n\
+         wait-frame 3000 undo me\n\
+         cmd-u\n\
+         wait-frame 3000 !undo me\n\
+         wait-frame 3000 undo m\n\
+         cmd-shift-u\n\
+         wait-frame 3000 undo me\n\
+         quit\n",
+    )
 }
 
 /// A click places the cursor on that cell; a drag selects, and backspace removes the run.
@@ -2003,9 +2107,9 @@ fn dirty_editor_shows_reload_bar_and_r_reloads() -> TestResult {
     Ok(())
 }
 
-/// ⌘F then `/needle` scrolls the editor to the match.
+/// ⌘⇧L then `/needle` scrolls the editor to the match; Ghostty holds ⌘F and kitty ⌘L.
 #[test]
-fn cmd_f_scrolls_to_match() -> TestResult {
+fn cmd_shift_l_scrolls_to_match() -> TestResult {
     let body: String = (1..=60)
         .map(|n| {
             if n == 55 {
@@ -2021,7 +2125,7 @@ fn cmd_f_scrolls_to_match() -> TestResult {
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-f\ntype needle\nkey enter\n\
+            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-shift-l\ntype needle\nkey enter\n\
              wait-frame 3000 let needle = 1;\nquit\n",
         ),
     )?;
@@ -3273,8 +3377,8 @@ fn the_command_palette_runs_an_action_by_name() -> TestResult {
 
 /// ⌥? shows every chord with its keys; the next key closes it.
 #[test]
-fn the_keys_overlay_lists_every_chord() -> TestResult {
-    run(
+fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
+    let frame = run_frames_with(
         "keys",
         vec![
             Step::Expect("initialize", init_reply),
@@ -3284,11 +3388,13 @@ fn the_keys_overlay_lists_every_chord() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key alt-?\n\
          wait-frame 3000 stop the daemon and quit\n\
-         wait-frame 3000 ctrl+b then\n\
-         key esc\n\
-         wait-frame 3000 !ctrl+b then\n\
+         wait-frame 3000 ctrl+b q\n\
          quit\n",
-    )
+        SidebarMode::Full,
+        160,
+    )?;
+    assert!(frame.contains("◂ Keys ▸"), "not on the Keys tab:\n{frame}");
+    Ok(())
 }
 
 #[test]
@@ -3583,4 +3689,660 @@ fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
         "the pane moved left to column {column}: {top}"
     );
     Ok(())
+}
+
+const UNICODE_REPLY: &str = "Naïve café — the **ünïcode** answer.";
+
+fn resume_unicode(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("hello agent")),
+                entry("e2", Some("e1"), 2, &assistant(UNICODE_REPLY)),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+fn opened_unicode() -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_unicode),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+fn osc_log(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    Ok(std::fs::read_to_string(dir.join(".osc.log")).unwrap_or_default())
+}
+
+/// A right-click was a left-click: the button was dropped, so it focused and began a drag.
+/// It opens the menu now, and Copy hands that one reply's markdown to the clipboard.
+#[test]
+fn a_right_click_on_a_reply_copies_that_reply() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-copy")?;
+    run_opts(
+        "menu-copy",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nkey enter\n\
+         wait-frame 3000 copied 1 line\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    assert!(
+        log.contains(&yi_console::select::osc52(UNICODE_REPLY)),
+        "no clipboard write of the reply in {log:?}"
+    );
+    Ok(())
+}
+
+/// Plain text is the reply as read: the bold marks go, the words and accents stay.
+#[test]
+fn copy_as_plain_text_drops_the_markdown() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-plain")?;
+    run_opts(
+        "menu-plain",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nkey down\nkey right\n\
+         wait-frame 3000 Plain text\nkey enter\nwait-frame 3000 copied 1 line\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    let plain = "Naïve café — the ünïcode answer.";
+    assert!(
+        log.contains(&yi_console::select::osc52(plain)),
+        "no plain copy in {log:?}"
+    );
+    Ok(())
+}
+
+/// A quote over a draft starts its own line: glued onto `see` it would not be a quote.
+#[test]
+fn quote_puts_the_message_in_the_composer() -> TestResult {
+    let frame = run_frames(
+        "menu-quote",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\ntype see\n\
+         mouse right 25 2\nwait-frame 3000 Quote\nkey down\nkey down\nkey enter\n\
+         wait-frame 3000 > hello agent\nquit\n",
+    )?;
+    let draft = frame
+        .lines()
+        .find(|row| row.contains("see"))
+        .unwrap_or_default();
+    assert!(
+        !draft.contains('>'),
+        "the quote glued onto the draft: {draft}"
+    );
+    Ok(())
+}
+
+/// Two panes: each title carries the close mark and its key, and a click on it closes that
+/// pane. One pane is the last, and the last pane cannot close, so it carries none.
+#[test]
+fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
+    let frame = run_frames(
+        "close-mark",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         key alt-v\nwait-frame 3000 ✕ ⌥x\nmouse down 97 0\nmouse up 97 0\n\
+         wait-frame 3000 !✕ ⌥x\nquit\n",
+    )?;
+    assert!(
+        !frame.contains('✕'),
+        "a lone pane drew a close mark:\n{frame}"
+    );
+    Ok(())
+}
+
+/// The last pane cannot close, so its menu greys Close and says why rather than hiding it.
+#[test]
+fn the_last_panes_menu_greys_close_with_the_reason() -> TestResult {
+    run(
+        "menu-last-pane",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 60 20\nwait-frame 3000 Close pane\n\
+         wait-frame 3000 last pane\nkey esc\nwait-frame 3000 !Close pane\nquit\n",
+    )
+}
+
+/// The lower pane's mark sits on the split it is resized by: a press there that drags resizes,
+/// and only a release over the mark that did not drag closes the pane.
+#[test]
+fn a_drag_from_the_lower_panes_mark_resizes_and_closes_nothing() -> TestResult {
+    let frame = run_frames(
+        "close-mark-drag",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         key alt-s\nwait-frame 3000 ✕ ⌥x\nmouse down 95 14\nmouse drag 95 18\nmouse up 95 18\n\
+         wait 100\nquit\n",
+    )?;
+    assert!(
+        frame.contains("no session"),
+        "the drag closed the lower pane:\n{frame}"
+    );
+    Ok(())
+}
+
+/// Every menu step by mouse: hover opens a submenu, a press on its row runs it, and a press
+/// outside an open menu only closes it.
+#[test]
+fn the_menu_answers_the_mouse() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-mouse")?;
+    run_opts(
+        "menu-mouse",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nmouse move 32 7\nwait-frame 3000 Plain text\n\
+         mouse down 47 7\nwait-frame 3000 copied 1 line\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nmouse down 90 25\nwait-frame 3000 !Copy as\n\
+         wait-frame 3000 answer\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    let plain = "Naïve café — the ünïcode answer.";
+    assert!(
+        log.contains(&yi_console::select::osc52(plain)),
+        "no plain copy in {log:?}"
+    );
+    Ok(())
+}
+
+fn settings_rows(frame: &Value) -> Vec<Value> {
+    let rows = yi_types::settings::rows();
+    vec![ok(frame, json!({"rows": rows}))]
+}
+
+/// The daemon's half of a save: it answers only the edit the page should have sent.
+fn save_auto_side(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "console.autoSide", "value": false}) {
+        return vec![
+            json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": format!("unexpected {}", frame["params"])}}),
+        ];
+    }
+    let mut rows = yi_types::settings::rows();
+    for row in &mut rows {
+        if row.id == "console.autoSide" {
+            row.value = json!(false);
+        }
+    }
+    vec![ok(frame, json!({"rows": rows}))]
+}
+
+fn refuse_depth(frame: &Value) -> Vec<Value> {
+    vec![json!({"jsonrpc": "2.0", "id": frame["id"],
+        "error": {"code": -32602, "message": "rlm.maxDepth takes at most 3"}})]
+}
+
+/// The gear opens the page beside the chat; a default flips with Enter, the daemon's answer
+/// says saved, and a refused value says why rather than pretending it landed.
+#[test]
+fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
+    let frame = run_frames_with(
+        "settings-save",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("_yi/set_default", save_auto_side),
+            Step::Expect("_yi/set_default", refuse_depth),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         mouse down 3 29\nmouse up 3 29\n\
+         wait-frame 3000 Settings\n\
+         key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
+         wait-frame 3000 Open Review beside\n\
+         key enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         key left\nkey left\nwait-frame 3000 Family depth\n\
+         key enter\ntype 9\nkey enter\n\
+         wait-frame 3000 not saved: rlm.maxDepth takes at most 3\n\
+         quit\n",
+        SidebarMode::Full,
+        160,
+    )?;
+    let gear = frame.lines().last().unwrap_or_default();
+    assert!(
+        gear.contains("⚙  settings ⌥,"),
+        "no gear in the corner: {gear:?}"
+    );
+    Ok(())
+}
+
+fn resume_with_efforts(frame: &Value) -> Vec<Value> {
+    let options = json!([{"configId": "thought_level", "name": "Thinking level", "type": "select",
+        "currentValue": "medium",
+        "options": [{"value": "low", "name": "low"}, {"value": "medium", "name": "medium"},
+                    {"value": "high", "name": "high"}]}]);
+    let mut result = session_result(frame, "s-alpha", None, json!({"replayedTo": 2}));
+    result["result"]["configOptions"] = options;
+    vec![replay("s-alpha", &alpha_branch(), 0, None), result]
+}
+
+fn set_high(frame: &Value) -> Vec<Value> {
+    let want =
+        json!({"sessionId": "s-alpha", "configId": "thought_level", "type": "id", "value": "high"});
+    if frame["params"] != want {
+        return refuse(frame, "wrong option");
+    }
+    let options = json!([{"configId": "thought_level", "name": "Thinking level", "type": "select",
+        "currentValue": "high",
+        "options": [{"value": "low", "name": "low"}, {"value": "medium", "name": "medium"},
+                    {"value": "high", "name": "high"}]}]);
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "_yi/config", "configOptions": options}),
+        ),
+        ok(frame, json!({})),
+    ]
+}
+
+fn save_thinking(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "thinking", "value": "high"}) {
+        return vec![
+            json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": "wrong default"}}),
+        ];
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+/// The Session tab changes this session through the worker and `d` keeps its value as the
+/// default; the fixture answers only the request the page should have sent.
+#[test]
+fn the_session_tab_sets_the_live_option_and_makes_it_the_default() -> TestResult {
+    run(
+        "settings-session",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_efforts),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("session/set_config_option", set_high),
+            Step::Expect("_yi/set_default", save_thinking),
+        ],
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-,\nwait-frame 3000 Thinking level\n\
+         key enter\nwait-frame 3000 ‹ medium ›\nkey down\nkey enter\n\
+         key d\nwait-frame 3000 saved\nwait-frame 500 !not saved\nquit\n",
+    )
+}
+
+fn refuse(frame: &Value, why: &str) -> Vec<Value> {
+    vec![json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": why}})]
+}
+
+fn fork_at_answer(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e2", "position": "at"}) {
+        return refuse(frame, "wrong fork");
+    }
+    vec![session_result(frame, "s-fork", None, json!({}))]
+}
+
+fn resume_fork(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-fork",
+            &[
+                entry("e1", None, 1, &user_message("hello agent")),
+                entry("e2", Some("e1"), 2, &assistant(UNICODE_REPLY)),
+            ],
+            0,
+            Some("s-fork"),
+        ),
+        session_result(frame, "s-fork", Some("s-fork"), json!({"replayedTo": 2})),
+    ]
+}
+
+/// Fork here asks the worker for a session that ends at this answer and opens it beside the
+/// chat it came from; the fixture refuses any other fork.
+#[test]
+fn fork_here_opens_the_answers_branch_beside_the_chat() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/fork", fork_at_answer));
+    steps.push(Step::Expect("session/resume", resume_fork));
+    let frame = run_frames(
+        "menu-fork",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Fork here\nkey down\nkey down\nkey down\nkey enter\n\
+         wait-frame 5000 s-fork\nwait 200\nquit\n",
+    )?;
+    let replies = frame.matches("Naïve café").count();
+    assert_eq!(
+        replies, 2,
+        "the fork's copy of the answer is not beside the chat:\n{frame}"
+    );
+    Ok(())
+}
+
+fn fork_before_prompt(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e1", "position": "before"}) {
+        return refuse(frame, "wrong fork");
+    }
+    let mut result = session_result(frame, "s-again", None, json!({}));
+    result["result"]["_meta"]["yi"]["prefill"] = json!("hello agent");
+    vec![result]
+}
+
+fn resume_empty(frame: &Value) -> Vec<Value> {
+    vec![
+        replay("s-again", &[], 0, Some("s-again")),
+        session_result(frame, "s-again", Some("s-again"), json!({"replayedTo": 0})),
+    ]
+}
+
+/// Re-ask from here starts a session before the prompt and hands the prompt back to edit.
+#[test]
+fn re_ask_puts_the_prompt_back_in_a_session_before_it() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/fork", fork_before_prompt));
+    steps.push(Step::Expect("session/resume", resume_empty));
+    let frame = run_frames(
+        "menu-reask",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 25 2\nwait-frame 3000 Re-ask from here\nkey down\nkey down\nkey down\nkey enter\n\
+         wait-frame 5000 s-again\nwait 200\nquit\n",
+    )?;
+    assert_eq!(
+        frame.matches("hello agent").count(),
+        2,
+        "no prompt to edit:\n{frame}"
+    );
+    Ok(())
+}
+
+fn rewind_first(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e1"}) {
+        return refuse(frame, "wrong rewind");
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
+    )]
+}
+
+/// Rewind ▸ Conversation sends the clicked prompt's entry, and the prompt comes back to edit.
+#[test]
+fn rewind_to_here_rewinds_to_the_clicked_prompt() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/rewind", rewind_first));
+    run(
+        "menu-rewind",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 25 2\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 rewound prompt\nquit\n",
+    )
+}
+
+/// Inspect opens the entry beside the chat: its id and the message as the ledger holds it.
+#[test]
+fn inspect_shows_the_entry_beside_the_chat() -> TestResult {
+    run(
+        "menu-inspect",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Inspect\nkey up\nkey enter\n\
+         wait-frame 3000 entry e2\nwait-frame 3000 model faux/faux-1\nquit\n",
+    )
+}
+
+fn prompt_committed(frame: &Value) -> Vec<Value> {
+    let mut frames = prompt_stream(frame);
+    let prompt = frame
+        .pointer("/params/prompt/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let asked = entry("e3", Some("e2"), 3, &user_message(prompt));
+    let answered = entry("e4", Some("e3"), 4, &assistant("streamed answer"));
+    for saved in [asked, answered] {
+        frames.push(update(
+            "s-alpha",
+            json!({"sessionUpdate": "_yi/committed", "entry": saved}),
+        ));
+    }
+    frames
+}
+
+/// A reply that streamed in live is in no replay; the worker's committed notice is what lets
+/// its menu reach the ledger, so Inspect opens the entry the notice named.
+#[test]
+fn a_live_reply_is_inspectable_once_committed() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("session/prompt", prompt_committed));
+    run(
+        "menu-live",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
+         mouse right 25 13\nwait-frame 3000 Inspect\nkey up\nkey enter\n\
+         wait-frame 3000 entry e4\nquit\n",
+    )
+}
+
+fn resume_twice(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("yes")),
+                entry("e2", Some("e1"), 2, &assistant("first answer")),
+                entry("e3", Some("e2"), 3, &user_message("yes")),
+                entry("e4", Some("e3"), 4, &assistant("second answer")),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 4})),
+    ]
+}
+
+fn rewind_second_yes(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e3"}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]["entryId"]));
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": "e2", "unsent": "second yes", "summarizing": false}),
+    )]
+}
+
+/// Two prompts say "yes": the menu on the second rewinds to the second, not the first match.
+#[test]
+fn a_repeated_prompt_rewinds_to_its_own_turn() -> TestResult {
+    let steps = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_twice),
+        Step::Expect("_yi/seen", seen_ok),
+        Step::Expect("_yi/rewind", rewind_second_yes),
+    ];
+    run(
+        "menu-twice",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 second answer\n\
+         mouse right 25 10\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 second yes\nquit\n",
+    )
+}
+
+/// Copy as ▸ Raw JSON hands out the ledger's entry, not the rendered reply.
+#[test]
+fn copy_as_raw_json_copies_the_entry() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-json")?;
+    run_opts(
+        "menu-json",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nkey down\nkey right\nwait-frame 3000 Raw JSON\n\
+         key down\nkey enter\nwait-frame 3000 copied\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let saved: yi_types::entry::Entry =
+        serde_json::from_value(entry("e2", Some("e1"), 2, &assistant(UNICODE_REPLY)))?;
+    let want = yi_console::select::osc52(&serde_json::to_string_pretty(&saved)?);
+    assert!(osc_log(&dir)?.contains(&want), "the entry was not copied");
+    Ok(())
+}
+
+fn host_says(text: &str) -> Value {
+    let mut message = serde_json::to_value(user_message(text)).unwrap_or_default();
+    message["attribution"] = serde_json::to_value(yi_types::message::Attribution::Host(
+        yi_types::message::HostSource::Job,
+    ))
+    .unwrap_or_default();
+    message
+}
+
+fn host_entry(id: &str, parent: Option<&str>, seq: u64, message: Value) -> Value {
+    json!({"type": "message", "id": id, "message": message, "parentId": parent,
+           "seq": seq, "timestamp": seq})
+}
+
+fn resume_host_then_typed(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                host_entry("e1", None, 1, host_says("yes")),
+                entry("e2", Some("e1"), 2, &assistant("noted")),
+                entry("e3", Some("e2"), 3, &user_message("yes")),
+                entry("e4", Some("e3"), 4, &assistant("typed answer")),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 4})),
+    ]
+}
+
+fn resume_abandoned(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("yes")),
+                entry("e2", Some("e1"), 2, &assistant("first answer")),
+                entry("e3", Some("e2"), 3, &user_message("yes")),
+                entry("e4", Some("e3"), 4, &assistant("abandoned answer")),
+                entry("e5", Some("e2"), 5, &user_message("yes")),
+                entry("e6", Some("e5"), 6, &assistant("live answer")),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 6})),
+    ]
+}
+
+fn probe_steps(resume: fn(&Value) -> Vec<Value>) -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+fn rewind_typed_with_files(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e3", "files": true}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]));
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": "e2", "unsent": "typed yes", "summarizing": false}),
+    )]
+}
+
+/// A host message saying "yes" draws as a notice, so the typed "yes" is the first prompt cell
+/// and must map to its own entry; its files row asks the worker to restore files too.
+#[test]
+fn a_host_message_does_not_take_a_typed_prompts_place() -> TestResult {
+    let mut steps = probe_steps(resume_host_then_typed);
+    steps.push(Step::Expect("_yi/rewind", rewind_typed_with_files));
+    run(
+        "menu-host",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 typed answer\n\
+         mouse right 25 6\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey down\nkey enter\nwait-frame 3000 typed yes\nquit\n",
+    )
+}
+
+fn rewind_live_yes(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e5"}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]));
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": "e2", "unsent": "live yes", "summarizing": false}),
+    )]
+}
+
+/// A replay draws the abandoned branch too: the third "yes" on screen is the live branch's
+/// prompt, which the leaf's chain alone would number as its second.
+#[test]
+fn a_prompt_after_an_abandoned_branch_rewinds_to_itself() -> TestResult {
+    let mut steps = probe_steps(resume_abandoned);
+    steps.push(Step::Expect("_yi/rewind", rewind_live_yes));
+    run(
+        "menu-abandoned",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 live answer\n\
+         mouse right 25 18\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 live yes\nquit\n",
+    )
+}
+
+fn open_in_recorder(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"name": "Second", "text": UNICODE_REPLY}) {
+        return refuse(frame, &format!("refused {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"argv": ["recorder", "/tmp/x.md"]}))]
+}
+
+/// Open in lists the apps the config names and asks the daemon to open this reply's markdown
+/// in the one picked; the fixture refuses any other app or text.
+#[test]
+fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/open", open_in_recorder));
+    let apps = vec!["First".to_owned(), "Second".to_owned()];
+    run_console(
+        "menu-open",
+        Some(steps),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Open in\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Second\nkey down\nkey enter\nwait-frame 3000 launched Second\nquit\n",
+        (false, SidebarMode::Full, apps),
+        None,
+        (100, 30),
+    )
 }

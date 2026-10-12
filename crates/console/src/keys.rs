@@ -38,6 +38,8 @@ pub enum Action {
     Save,
     Undo,
     Redo,
+    Menu,
+    Settings,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -87,6 +89,8 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('y') => Some(Action::ToggleTape),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('?') => Some(Action::Keys),
+        KeyCode::Char('c') => Some(Action::Menu),
+        KeyCode::Char(',') => Some(Action::Settings),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
@@ -96,33 +100,31 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
 }
 
 fn super_chord(key: &KeyEvent) -> Option<Action> {
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    match key.code {
-        KeyCode::Char('\\') | KeyCode::Char('|') if shift => Some(Action::SplitDown),
-        KeyCode::Char('\\') => Some(Action::SplitRight),
-        KeyCode::Char('d') | KeyCode::Char('D') if shift => Some(Action::SplitDown),
-        KeyCode::Char('d') => Some(Action::SplitRight),
-        KeyCode::Char('x') => Some(Action::ClosePane),
-        KeyCode::Char('m') | KeyCode::Char('M') if shift => Some(Action::Zoom),
-        KeyCode::Char('t') | KeyCode::Char('T') if shift => Some(Action::NewTab),
-        KeyCode::Char('n') | KeyCode::Char('N') if shift => Some(Action::NewSession),
-        KeyCode::Char('p') => Some(Action::Navigator),
-        KeyCode::Char('b') => Some(Action::ToggleSidebar),
-        KeyCode::Char('i') => Some(Action::ToggleNotebook),
-        KeyCode::Char('r') => Some(Action::ToggleDiff),
-        KeyCode::Char('y') => Some(Action::ToggleTape),
-        KeyCode::Char('o') => Some(Action::OpenEditor),
-        KeyCode::Char('f') => Some(Action::Find),
-        KeyCode::Char('s') => Some(Action::Save),
-        KeyCode::Char('z' | 'Z') if shift => Some(Action::Redo),
-        KeyCode::Char('z') => Some(Action::Undo),
-        KeyCode::Char('/') => Some(Action::Keys),
-        KeyCode::Char(digit @ '1'..='9') => {
-            let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
-            Some(Action::SelectSlot(n))
-        }
-        _ => None,
-    }
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT) || c.is_ascii_uppercase();
+    let action = match (c.to_ascii_lowercase(), shift) {
+        ('|', _) | ('\\', true) => Action::SplitDown,
+        ('\\', false) => Action::SplitRight,
+        ('x', false) => Action::ClosePane,
+        ('m', true) => Action::Zoom,
+        ('o', true) => Action::NewTab,
+        ('n', true) => Action::NewSession,
+        ('r', true) => Action::ToggleDiff,
+        ('l', true) => Action::Find,
+        ('u', true) => Action::Redo,
+        ('p', false) => Action::Navigator,
+        ('b', false) => Action::ToggleSidebar,
+        ('i', false) => Action::ToggleNotebook,
+        ('y', false) => Action::ToggleTape,
+        ('o', false) => Action::OpenEditor,
+        ('s', false) => Action::Save,
+        ('u', false) => Action::Undo,
+        ('/', false) => Action::Keys,
+        _ => return None,
+    };
+    Some(action)
 }
 
 /// The one-shot table after ctrl+b. Unbound keys simply disarm.
@@ -142,6 +144,8 @@ pub fn prefixed(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('o') => Some(Action::NewSession),
         KeyCode::Char('g') => Some(Action::Navigator),
         KeyCode::Char('q') => Some(Action::Quit),
+        KeyCode::Char('m') => Some(Action::Menu),
+        KeyCode::Char(',') => Some(Action::Settings),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectTab(n))
@@ -158,17 +162,9 @@ pub struct Chord {
     pub action: Option<Action>,
 }
 
-/// Incident: Ghostty 1.3.1's default keybinds take these before the console sees them
-/// (`ghostty +list-keybinds --default`), so the hints named keys that did nothing.
-const TERMINAL_HELD: [&str; 2] = ["⌘1..9", "⌘⇧T"];
-
 impl Chord {
     pub fn key(&self, cmd: bool) -> &'static str {
-        if cmd && !TERMINAL_HELD.contains(&self.cmd) {
-            self.cmd
-        } else {
-            self.alt
-        }
+        if cmd { self.cmd } else { self.alt }
     }
 }
 
@@ -195,14 +191,21 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 21] = [
+pub const CHORDS: [Chord; 24] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
-    chord("jump to rail slot 1..9", "⌥1..9", "⌘1..9", "", None),
+    chord("jump to rail slot 1..9", "⌥1..9", "⌥1..9", "", None),
     chord("split right", "⌥v", "⌘\\", "v", Some(Action::SplitRight)),
     chord("split down", "⌥s", "⌘⇧\\", "s", Some(Action::SplitDown)),
     chord("close pane", "⌥x", "⌘X", "x", Some(Action::ClosePane)),
     chord("zoom pane", "⌥z", "⌘⇧M", "z", Some(Action::Zoom)),
+    chord(
+        "menu for the pane or session",
+        "⌥c",
+        "⌥c",
+        "m",
+        Some(Action::Menu),
+    ),
     chord("focus pane", "⌥←→↑↓", "⌥←→↑↓", "h j k l", None),
     chord(
         "notebook pane",
@@ -211,7 +214,7 @@ pub const CHORDS: [Chord; 21] = [
         "",
         Some(Action::ToggleNotebook),
     ),
-    chord("review pane", "⌥g", "⌘R", "", Some(Action::ToggleDiff)),
+    chord("review pane", "⌥g", "⌘⇧R", "", Some(Action::ToggleDiff)),
     chord(
         "tape: where the time went",
         "⌥y",
@@ -227,6 +230,13 @@ pub const CHORDS: [Chord; 21] = [
         Some(Action::OpenEditor),
     ),
     chord(
+        "editor: save, find, undo, redo",
+        "",
+        "⌘S ⌘⇧L ⌘U ⌘⇧U",
+        "",
+        None,
+    ),
+    chord(
         "sidebar: rail or full",
         "⌥b",
         "⌘B",
@@ -236,7 +246,7 @@ pub const CHORDS: [Chord; 21] = [
     chord(
         "new tab · next · previous",
         "⌥t ⌥] ⌥[",
-        "⌘⇧T",
+        "⌘⇧O",
         "c n p 1..9",
         Some(Action::NewTab),
     ),
@@ -254,7 +264,8 @@ pub const CHORDS: [Chord; 21] = [
         "",
         Some(Action::StopDaemon),
     ),
-    chord("all keys", "⌥?", "⌘/", "", Some(Action::Keys)),
+    chord("settings", "⌥,", "⌥,", ",", Some(Action::Settings)),
+    chord("all keys, in settings", "⌥?", "⌘/", "", Some(Action::Keys)),
     chord(
         "chat: cycle normal · thinking · verbose",
         "ctrl+o",
@@ -357,7 +368,7 @@ mod hint_tests {
                 false,
                 true,
                 63,
-                "   ⌘P command palette   ⌘⇧N new session   ⌘R diff   ⌘/ keys",
+                "   ⌘P command palette   ⌘⇧N new session   ⌘⇧R diff   ⌘/ keys",
             ),
             (true, false, 18, "   PREFIX  q leave"),
         ];

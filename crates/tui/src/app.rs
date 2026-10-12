@@ -219,6 +219,7 @@ pub struct App {
     pub(crate) width: usize,
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
+    pub(crate) pane_follow: Option<(usize, TranscriptMode, usize, usize)>,
     /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
     pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
@@ -337,6 +338,7 @@ impl App {
             width,
             rows: 24,
             pane_hold: None,
+            pane_follow: None,
             pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
@@ -1109,8 +1111,7 @@ pub fn run_tui(
         let _ = cmd_tx.send(Command::Prompt(prompt));
     }
 
-    let mut orb_tick = orb::Tick::default();
-    let mut logo_tick = crate::logos::Tick::default();
+    let mut images = orb::Images::default();
     let mut last_spinner_phase = usize::MAX;
     let mut last_todo_full = false;
     while !app.quit {
@@ -1132,7 +1133,7 @@ pub fn run_tui(
         let orb_moving =
             app.kitty && app.orb_placement.is_some() && !app.orb.at_rest(app.orb_state());
         let mut timeout = if orb_moving {
-            timeout.min(orb_tick.wake())
+            timeout.min(images.orb.wake())
         } else if animating {
             timeout.min(next_spinner_wake(app.started_at.elapsed().as_millis()))
         } else {
@@ -1171,17 +1172,11 @@ pub fn run_tui(
             app.scheduler.request();
         }
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
-        if app.scheduler.should_draw(Instant::now()) {
-            let start = Instant::now();
-            crate::render::draw(&mut app, &mut terminal, Some(&port));
-            app.scheduler.mark_drawn(start, Instant::now());
-        }
-        orb::tick(&mut app, terminal.backend_mut(), &mut orb_tick);
-        crate::logos::tick(&app, terminal.backend_mut(), &mut logo_tick);
+        crate::render::step_frame(&mut app, &mut terminal, Some(&port), &mut images);
     }
-    crate::logos::delete_all(terminal.backend_mut(), &mut logo_tick);
+    crate::logos::delete_all(terminal.backend_mut(), &mut images.logos);
 
-    if orb_tick.shown {
+    if images.orb.shown {
         let _ = yi_orb::kitty::delete(terminal.backend_mut());
     }
     let _ = cmd_tx.send(Command::Shutdown);
