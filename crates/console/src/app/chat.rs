@@ -3,7 +3,7 @@
 
 use std::sync::mpsc::TryRecvError;
 
-use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent};
+use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 use yi_tui::app::command_channel;
 use yi_tui::input::handle_terminal_event;
@@ -17,6 +17,7 @@ use super::port::{
 };
 use super::{App, RequestKind};
 use crate::client::Outbound;
+use crate::keys::Action;
 use crate::layout::PaneId;
 use crate::model::{Chat, PaneContent, PendingAsk, SessionId, SessionRow};
 
@@ -104,6 +105,28 @@ impl App {
         self.state
             .focused_pane()
             .is_some_and(|pane| matches!(pane.content, PaneContent::Session { chat: Some(_), .. }))
+    }
+
+    /// The chord goes to the pane exactly when the screen says so: a popup owns Tab, a lone chat
+    /// owns the arrows (solo's child focus), and a draft owns alt+b, Ghostty's Option+Left.
+    pub(super) fn chord_to_pane(
+        &mut self,
+        action: Action,
+        key: &KeyEvent,
+        on_chat: bool,
+        multi: bool,
+    ) -> bool {
+        match action {
+            Action::ToggleZone => on_chat && self.popup_open(),
+            Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
+                on_chat && !multi
+            }
+            Action::PageUp | Action::PageDown => self.on_editor(),
+            Action::ToggleSidebar => {
+                on_chat && key.modifiers.contains(KeyModifiers::ALT) && self.chat_takes_ctrl_c()
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn chat_takes_ctrl_c(&mut self) -> bool {

@@ -72,9 +72,21 @@ fn render_history(
         (_, Some((kind, number))) => {
             let entries = all(custom)?;
             // A filtered listing is read for its data, which the compact line drops.
-            let line = |entry: &yi_types::entry::Entry| match custom {
-                Some(_) => serde_json::to_string(entry).unwrap_or_default(),
-                None => crate::family::compact_entry(entry),
+            let agent = url.path().split('/').next().unwrap_or_default();
+            let mut any_cut = false;
+            let line = |entry: &yi_types::entry::Entry| -> String {
+                match custom {
+                    Some(_) => serde_json::to_string(entry).unwrap_or_default(),
+                    None => {
+                        let (text, this) = crate::family::compact_entry(entry);
+                        if this {
+                            any_cut = true;
+                            format!("{text} · whole: history://{agent}/{}", entry.id())
+                        } else {
+                            text
+                        }
+                    }
+                }
             };
             let kept: Vec<String> = match kind {
                 "tail" => entries
@@ -92,7 +104,11 @@ fn render_history(
                     .map(line)
                     .collect(),
             };
-            paged(kept, format!("session-{kind}"))
+            let (mut text, served_by, next) = paged(kept, format!("session-{kind}"))?;
+            if any_cut {
+                text.push_str(&crate::family::cut_notice());
+            }
+            Ok((text, served_by, next))
         }
         (Some(_), None) if custom.is_some() => Err(FetchError::BadAddress {
             url: url.to_string(),
@@ -979,13 +995,7 @@ mod tests {
     #[test]
     fn history_resolves_entries_through_the_attached_session() -> TestResult {
         let workspace = Scratch::new("yi-schemes-history")?;
-        let metadata = yi_session::SessionMetadata {
-            id: "test".to_owned(),
-            created_at: 0,
-            parent_session_id: None,
-            name: None,
-        };
-        let mut store = yi_session::SessionStore::in_memory(metadata);
+        let mut store = in_memory_session();
         let id = store.append_custom("main", "note", None)?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =
@@ -1032,26 +1042,24 @@ mod tests {
         })
     }
 
+    fn host_notice(text: &str) -> AgentMessage {
+        AgentMessage::host_text(HostSource::Notice, text, 0)
+    }
+    fn user_ask(text: &str) -> AgentMessage {
+        AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
+    }
+    fn shared_session() -> yi_session::SharedSession {
+        std::sync::Arc::new(std::sync::Mutex::new(in_memory_session()))
+    }
+
     #[test]
     fn user_n_counts_only_attributed_user_messages() -> TestResult {
         let workspace = Scratch::new("yi-schemes-user")?;
         let mut store = in_memory_session();
-        store.append_message(
-            "main",
-            AgentMessage::host_text(HostSource::Notice, "host-minted preamble", 0),
-        )?;
-        store.append_message(
-            "main",
-            AgentMessage::user_input(UserContent::Text("first real ask".to_owned()), 0),
-        )?;
-        store.append_message(
-            "main",
-            AgentMessage::host_text(HostSource::Notice, "compaction filler", 0),
-        )?;
-        store.append_message(
-            "main",
-            AgentMessage::user_input(UserContent::Text("second real ask".to_owned()), 0),
-        )?;
+        store.append_message("main", host_notice("host-minted preamble"))?;
+        store.append_message("main", user_ask("first real ask"))?;
+        store.append_message("main", host_notice("compaction filler"))?;
+        store.append_message("main", user_ask("second real ask"))?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =
             Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", shared);
@@ -1080,10 +1088,7 @@ mod tests {
     fn a_host_minted_user_message_never_resolves() -> TestResult {
         let workspace = Scratch::new("yi-schemes-user-forged")?;
         let mut store = in_memory_session();
-        store.append_message(
-            "main",
-            AgentMessage::host_text(HostSource::Notice, "forged instruction", 0),
-        )?;
+        store.append_message("main", host_notice("forged instruction"))?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =
             Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", shared);
@@ -1144,10 +1149,7 @@ mod tests {
         let log = std::sync::Arc::new(FetchLog::new());
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_log(std::sync::Arc::clone(&log))
-            .with_session(
-                "main",
-                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
-            )
+            .with_session("main", shared_session())
             .with_transcripts(desk("demo-plan/cut-the-seam")?);
         let live: Url = "agent://demo-plan/cut-the-seam".parse()?;
         log.register_pin(&live, "history://demo-plan/cut-the-seam".parse()?)?;
@@ -1162,10 +1164,7 @@ mod tests {
     fn a_live_child_answers_its_own_agent_url_before_any_pin_exists() -> TestResult {
         let workspace = Scratch::new("yi-schemes-agent-live")?;
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
-            .with_session(
-                "main",
-                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
-            )
+            .with_session("main", shared_session())
             .with_transcripts(desk("demo-plan/cut-the-seam")?);
         let live: Url = "agent://demo-plan/cut-the-seam".parse()?;
         let fetched = resolver.fetch(&live)?;
@@ -1183,10 +1182,7 @@ mod tests {
     fn history_reaches_a_run_that_is_not_the_attached_session() -> TestResult {
         let workspace = Scratch::new("yi-schemes-history-corpus")?;
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
-            .with_session(
-                "main",
-                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
-            )
+            .with_session("main", shared_session())
             .with_transcripts(desk("some-older-run")?);
         let elsewhere: Url = "history://some-older-run".parse()?;
         assert_eq!(resolver.fetch(&elsewhere)?.served_by, "session-transcript");

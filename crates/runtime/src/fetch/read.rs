@@ -6,6 +6,9 @@ use yi_types::url::{Scheme, Url};
 
 use super::{Page, Resolver};
 
+/// Incident: an unpaged `read history://<id>` of a 5 MB session put 4.86 MB in one tool result.
+const LISTING_BYTES: usize = 50 * 1024;
+
 struct UrlRead {
     inner: Arc<dyn Tool>,
     resolver: Arc<Resolver>,
@@ -25,6 +28,47 @@ fn unit(url: &Url) -> &'static str {
         Scheme::History => "entries",
         _ => "chars",
     }
+}
+
+/// Whole entries up to the budget, the first one clipped if it alone is over; the bare listing
+/// and `since/` both page by `offset`, so that is the next call.
+fn capped(url: &Url, served_by: &str, text: String) -> String {
+    let listing = matches!(served_by, "session-transcript" | "session-since");
+    if !listing || text.len() <= LISTING_BYTES {
+        return text;
+    }
+    let total = text.lines().count();
+    let (mut kept, mut used) = (0usize, 0usize);
+    for line in text.lines() {
+        let next = used
+            .saturating_add(line.len())
+            .saturating_add(usize::from(kept > 0));
+        if next > LISTING_BYTES && kept > 0 {
+            break;
+        }
+        (kept, used) = (kept.saturating_add(1), next);
+    }
+    let shown = text.lines().take(kept).collect::<Vec<_>>().join("\n");
+    let cut = shown.floor_char_boundary(LISTING_BYTES);
+    let clipped = if cut < shown.len() {
+        " (the last one clipped)"
+    } else {
+        ""
+    };
+    let tail = if kept < total {
+        format!(
+            "read {url} with offset={} and limit to page on",
+            kept.saturating_add(1)
+        )
+    } else {
+        "the one entry alone exceeds the cap and cannot be paged smaller; its id names a whole \
+         entry read"
+            .to_owned()
+    };
+    format!(
+        "{}\n[… {kept} of {total} entries shown{clipped} · unpaged history cap {LISTING_BYTES} bytes · {tail}]",
+        shown.get(..cut).unwrap_or_default(),
+    )
 }
 
 fn address(input: &Map<String, Value>) -> Option<&str> {
@@ -79,7 +123,7 @@ impl Tool for UrlRead {
                     next.saturating_add(1),
                     unit(&fetched.url)
                 )),
-                None => text_output(fetched.text),
+                None => text_output(capped(&fetched.url, &fetched.served_by, fetched.text)),
             },
             Err(message) => error_output(message),
         }
