@@ -480,6 +480,62 @@ fn two_clients_both_stream_one_session() -> TestResult {
     outcome
 }
 
+fn mode_of(new: &Value) -> Option<&str> {
+    new["result"]["configOptions"]
+        .as_array()?
+        .iter()
+        .find(|option| option["configId"] == "mode")?["currentValue"]
+        .as_str()
+}
+
+/// A default the settings page saves reaches the worker's next session with no restart (the
+/// worker read the file once at its own start), and a refused one leaves the file as it was.
+#[test]
+fn a_saved_default_reaches_the_next_session_and_a_refused_one_writes_nothing() -> TestResult {
+    let dir = Scratch::new("yi-settings-save")?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let config = dir.join("home/.yi/config.json");
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let cwd = json!({"cwd": root.display().to_string()});
+        let first = client.request("n1", "session/new", cwd.clone())?;
+        assert_eq!(mode_of(&first), Some("auto"), "{first}");
+        let saved = client.request(
+            "s1",
+            "_yi/set_default",
+            json!({"id": "permissions.mode", "value": "ask"}),
+        )?;
+        let row = saved["result"]["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == "permissions.mode"));
+        assert_eq!(row.map(|row| &row["value"]), Some(&json!("ask")), "{saved}");
+        let second = client.request("n2", "session/new", cwd)?;
+        assert_eq!(mode_of(&second), Some("ask"), "{second}");
+        let before = std::fs::read(&config)?;
+        let refused = client.request(
+            "s2",
+            "_yi/set_default",
+            json!({"id": "rlm.maxDepth", "value": 9}),
+        )?;
+        assert_eq!(
+            refused["error"]["message"], "rlm.maxDepth takes at most 3",
+            "{refused}"
+        );
+        assert_eq!(
+            std::fs::read(&config)?,
+            before,
+            "a refused save touched the file"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// A client that leaves mid-turn is owed one unseen mark for the idle it missed, not one
 /// per streamed event, and the client that comes back gets the branch verbatim.
 #[test]

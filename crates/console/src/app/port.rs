@@ -149,11 +149,13 @@ pub struct Replay {
     pub stats: Option<yi_types::wire::SessionStats>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Config {
     pub model: Option<(String, String)>,
     pub effort: Option<Effort>,
     pub context_window: Option<u64>,
+    /// Every option as the worker sent it, which the settings page's Session tab lists.
+    pub options: Vec<AcpConfigOption>,
 }
 
 pub enum Decoded {
@@ -199,7 +201,10 @@ pub fn goal_view(value: &Value) -> Option<GoalView> {
 }
 
 pub fn config_of(options: &[AcpConfigOption]) -> Config {
-    let mut config = Config::default();
+    let mut config = Config {
+        options: options.to_vec(),
+        ..Config::default()
+    };
     for option in options {
         let value = option.current_value.as_str();
         match option.config_id.as_str() {

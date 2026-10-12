@@ -17,6 +17,8 @@ pub struct DaemonOptions {
     /// yolo — the serve invocation's own surface).
     pub worker_args: Vec<String>,
     pub agent_version: String,
+    /// Where the `config.json` the settings page reads and saves lives.
+    pub home: PathBuf,
 }
 
 type ClientId = u64;
@@ -447,6 +449,7 @@ impl Supervisor {
                 let _ = self.input.send(Input::Shutdown);
             }
             "_yi/seen" => self.mark_seen(client, id, &frame),
+            "_yi/settings" | "_yi/set_default" => self.settings(client, id, &method, &frame),
             _ => {
                 let Some(root) = self.root_of(&frame) else {
                     if let Some(id) = id {
@@ -661,6 +664,25 @@ impl Supervisor {
         self.sessions.retain(|_, entry| entry.root != root);
         self.parked
             .retain(|session_id, _| self.sessions.contains_key(session_id));
+    }
+
+    /// The daemon answers for the config, not a worker: a worker holds the copy it started on.
+    fn settings(&mut self, client: ClientId, id: Option<Value>, method: &str, frame: &Value) {
+        let Some(id) = id else { return };
+        let home = &self.options.home;
+        let answer = match method {
+            "_yi/set_default" => {
+                let setting = frame.pointer("/params/id").and_then(Value::as_str);
+                let value = frame.pointer("/params/value").cloned();
+                yi_runtime::settings::save(home, setting.unwrap_or(""), value.unwrap_or_default())
+            }
+            _ => yi_runtime::settings::current(home),
+        };
+        let line = match answer {
+            Ok(rows) => result_frame(id, json!({"rows": rows})),
+            Err(why) => error_frame(id, -32602, &why),
+        };
+        self.send_client(client, line);
     }
 
     fn handle_client_closed(&mut self, client: ClientId) {
