@@ -26,6 +26,7 @@ judge_replay.py              stage 0 judge replay over recorded sessions, read-o
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
 skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
+search_gate.py               paired history-search gate (#1184): a fact printed only in a tool result, graded on the actor
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
 improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
 inner/                       the inner loop: seeded task generators (gen/) and their runner (runner.py), container-free
