@@ -33,7 +33,7 @@ syntax: ok
 ```
 
 - The header is a tag for the new content with every line counted as displayed. Edit at once by citing `[src/greet.py#A1B2]`, or with no tag at all, and do not `read` the file back to check.
-- `syntax: ok` or `syntax: error line N: …` is a parse check for the languages that have one (JSON, Python, JavaScript, shell, Ruby, PHP, Go, Rust) when the checker is installed. No line means no checker ran, not a pass. An error line means the file is on disk and broken: fix that line with `edit`, not with another full write.
+- `syntax: ok`, `syntax: error line N: …` or `syntax: error: …` is a parse check for the languages that have one (JSON, Python, JavaScript, shell, Ruby, PHP, Go, Rust) when the checker is installed. No line, or `syntax: check timed out`, means no verdict, not a pass. An error line means the file is on disk and broken: fix that line with `edit`, not with another full write.
 - A replacing write records a diff of what it dropped in the session record for the human reviewer; the model-facing result carries none, so you cannot check it. If the overwrite was not meant to drop content, `read` the file to see what is there now.
 
 ## Refusals

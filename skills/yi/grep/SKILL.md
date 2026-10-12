@@ -21,6 +21,7 @@ covers: tool:grep
 - What is in this file: `read`. One function of a big file: `grep def=true` for its line, or `read` with `find`.
 - A repository you have not read this session: one `get_context`, then grep for the names it gives.
 - Gitignored or binary files, or output you want to pipe: bash `rg`. `grep` skips what `.gitignore` excludes and always skips `.git`.
+- Transcripts, past sessions, a cut output: the search skill. A `history://` root takes only `pattern`, `literal`, `ignore_case` and `offset`.
 - A hit count is not a finding: a sweep over a tree counts tests and comments too. Read the matches before reporting a number.
 
 ## Narrow before you read
@@ -47,7 +48,7 @@ Hits print under `[path#TAG]` as `LINE:TEXT`; context rows are `LINE-TEXT`, and 
 
 ## Paging and caps
 
-- `[showing matches A-B of T — continue with offset=N]` is the next page. A total reading `at least N` means the collection stopped at 2000 hits: `[match collection stopped at 2000 before every file was scanned — narrow with path, include, or type]`. Narrow, do not page to the end.
+- `[showing matches A-B of T — continue with offset=N]` is the next page. A total reading `at least N` means the collection stopped, at 2000 hits or 8 MiB of matches: `[match collection stopped at 2000 before every file was scanned — narrow with path, include, or type]`. Narrow, do not page to the end.
 - `[matches changed since the last page; offsets now count the current sweep]`: files moved under you (an edit, a build). Restart at offset 0 for a coherent list.
 - `[offset N is beyond the K collected matches]`: you paged past the end.
 - `[N binary files skipped (not text, not a document) — bash: rg -a for those]` and `[N paths left out: the reviewer wall's …]` are skips, not misses.
