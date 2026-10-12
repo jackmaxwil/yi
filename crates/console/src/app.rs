@@ -61,6 +61,7 @@ pub enum RequestKind {
     SetConfig(SessionId),
     Settings(PaneId, bool),
     Fork(PaneId),
+    Open,
     Steer,
     Shutdown,
 }
@@ -516,6 +517,7 @@ impl App {
             | RequestKind::Fork(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
+            RequestKind::Open => self.note("opened"),
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
                     let text = text.to_owned();

@@ -41,5 +41,6 @@
 {"id": "console.autoSide", "label": "Open Review beside", "tab": "Interface", "help": "open the Review pane beside a session that edits files", "kind": {"type": "toggle"}, "applies": "live", "default": true},
 {"id": "telemetry.enabled", "label": "Telemetry", "tab": "Interface", "help": "write one span per request, tool call and turn beside the session", "kind": {"type": "toggle"}, "applies": "nextSession", "default": false},
 {"id": "tui.pace", "label": "Reveal pace %", "tab": "Interface", "help": "the solo TUI's streaming speed; 0 paints at once", "kind": {"type": "number", "integer": true, "min": 0, "max": 1000}, "applies": "soloTui"},
-{"id": "keys", "label": "Solo keymap", "tab": "Interface", "help": "the solo TUI's key bindings; edit in config.json", "kind": {"type": "json"}, "applies": "soloTui"}
+{"id": "keys", "label": "Solo keymap", "tab": "Interface", "help": "the solo TUI's key bindings; edit in config.json", "kind": {"type": "json"}, "applies": "soloTui"},
+{"id": "open", "label": "Open in apps", "tab": "Interface", "help": "a name and a command per app, `{path}` standing for the message saved as markdown; edit in config.json", "kind": {"type": "json"}, "applies": "consoleRestart"}
 ]

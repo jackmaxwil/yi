@@ -874,7 +874,8 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
+  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`,
+  `open[{name,command}]`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
@@ -896,6 +897,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again as `prefill`) or `at` it, attached beside the source, which keeps its own branch |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
+| `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, the model never names an app |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -958,7 +960,8 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
 - A right-click opens a menu for what is under it: a message (Copy, Copy as plain text or raw
   JSON, Quote, Inspect; on a prompt Re-ask from here and Rewind to here, the conversation or it and
-  its files; on an answer Fork here, a side session beside the chat),
+  its files; on an answer Fork here, a side session beside the chat; Open in ▸ each app `open` in config.json
+  names, run by the daemon on the message saved as markdown),
   a pane (close, zoom, split) or a sidebar session (open, open beside); ⌥c opens it for the
   focused pane or session. A verb that never applies is absent, one blocked now is greyed with
   its reason, and a row with a key names it. With more than one pane in a tab, the focused pane's

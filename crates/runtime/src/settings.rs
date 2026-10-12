@@ -57,6 +57,40 @@ pub fn save(home: &Path, id: &str, value: Value) -> Result<Vec<SettingRow>, Stri
     current(home)
 }
 
+/// The command an Open in app runs on `text`, saved first as markdown under `~/.yi/exports`:
+/// each `{path}` argument becomes the file, or the file is appended when none names it.
+pub fn open(home: &Path, name: &str, text: &str) -> Result<Vec<String>, String> {
+    let raw = std::fs::read_to_string(config_path(home)).map_err(|error| error.to_string())?;
+    let (config, _) = yi_types::config::parse(&raw).map_err(|error| error.to_string())?;
+    let apps = config.open.unwrap_or_default();
+    let app = apps
+        .iter()
+        .find(|app| app.name == name)
+        .ok_or_else(|| format!("no app named {name} under `open` in config.json"))?;
+    if app.command.is_empty() {
+        return Err(format!("{name}'s command is empty"));
+    }
+    let dir = home.join(".yi/exports");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let n = STAGED.fetch_add(1, Ordering::Relaxed);
+    let file = dir.join(format!(
+        "{}-{}-{n}.md",
+        yi_types::trace::now_us(),
+        std::process::id()
+    ));
+    stage(&file, text, 0o600).map_err(|error| format!("{}: {error}", file.display()))?;
+    let path = file.display().to_string();
+    let mut argv: Vec<String> = app
+        .command
+        .iter()
+        .map(|arg| arg.replace("{path}", &path))
+        .collect();
+    if !app.command.iter().any(|arg| arg.contains("{path}")) {
+        argv.push(path);
+    }
+    Ok(argv)
+}
+
 static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static STAGED: AtomicU64 = AtomicU64::new(0);
 
