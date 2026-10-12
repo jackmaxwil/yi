@@ -1439,6 +1439,32 @@ async fn asked_id(host: &SubagentHost) -> Result<String, Box<dyn Error>> {
     Err("writer never asked".into())
 }
 
+/// Dies with a program's `ask_user` getting no structured answer, or the model's call getting one.
+#[tokio::test]
+async fn a_programs_ask_user_value_is_the_parents_answer_and_the_models_has_none() -> TestResult {
+    let (harness, _busy) = held_child("sleep 2").await?;
+    let link = yi_runtime::mailbox::ParentLink {
+        child_name: "busy".to_owned(),
+        host: Arc::downgrade(&harness.host),
+    };
+    for (program, want) in [(true, Some(json!({"answer": "notes.md"}))), (false, None)] {
+        let ask = yi_runtime::auto_review::AskUserTool::new(None).asking(Some(link.clone()));
+        let mut context = yi_tools::ToolContext::new(std::env::temp_dir());
+        context.program = program;
+        let input = json!({"question": "Which file name?"});
+        let input = input.as_object().cloned().unwrap_or_default();
+        let call =
+            tokio::task::spawn_blocking(move || yi_tools::Tool::execute(&ask, input, &context));
+        let id = asked_id(&harness.host).await?;
+        let reply = json!({"target": "busy", "message": "notes.md", "reply_to": id});
+        harness
+            .host
+            .send("parent", reply.as_object().ok_or("reply")?)?;
+        assert_eq!(call.await?.value, want, "program = {program}");
+    }
+    Ok(())
+}
+
 /// Dies with no human road to a child's question, and with both answers landing: the parent's
 /// second reply to an answered request was presented to the child as fresh mail. Dies too with
 /// the human's answer unrecorded: the envelope, the parent's journal and its model never said so.
