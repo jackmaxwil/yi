@@ -125,6 +125,12 @@ impl App {
             self.dirty = true;
             return;
         }
+        if hits
+            .gear
+            .is_some_and(|gear| gear.contains(Position::new(x, y)))
+        {
+            return self.apply_action(outbound, Action::Settings);
+        }
         if x < hits.sidebar_width {
             if let Some((_, index)) = hits.root_rows.iter().find(|(row_y, _)| *row_y == y) {
                 let root = self.state.roots().get(*index).cloned();
@@ -214,7 +220,7 @@ impl App {
     pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
         match self.state.mode {
             Mode::Menu(_) => return self.menu_mouse(outbound, kind, x, y),
-            Mode::Navigator { .. } | Mode::Keys => return self.overlay_press(kind, x, y),
+            Mode::Navigator { .. } => return self.overlay_press(kind, x, y),
             Mode::Normal | Mode::Prefix => {}
         }
         match kind {

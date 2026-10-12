@@ -49,9 +49,16 @@ pub fn session_title(text: &str) -> Option<String> {
     Some(words.join(" ").chars().take(48).collect())
 }
 
+/// Incident: the id picks a console session's avatar and badge colours, so a scene replayed with
+/// random ids drew different colours each run. A set `YI_FIXED_IDS` counts ids up from 1.
+const FIXED_IDS_VAR: &str = "YI_FIXED_IDS";
+
+static FIXED_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct IdGenerator {
     seed: RandomState,
     counter: u64,
+    fixed: bool,
 }
 
 impl Default for IdGenerator {
@@ -62,13 +69,22 @@ impl Default for IdGenerator {
 
 impl IdGenerator {
     pub fn new() -> Self {
+        Self::with_fixed(std::env::var_os(FIXED_IDS_VAR).is_some())
+    }
+
+    fn with_fixed(fixed: bool) -> Self {
         Self {
             seed: RandomState::new(),
             counter: 0,
+            fixed,
         }
     }
 
     pub fn next_id(&mut self) -> String {
+        if self.fixed {
+            let n = FIXED_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            return format!("01a00000-0000-7000-8000-{n:012x}");
+        }
         self.counter = self.counter.wrapping_add(1);
         let timestamp = now_ms() & 0xffff_ffff_ffff;
         let a = self.seed.hash_one((self.counter, timestamp, 0u8));
@@ -105,6 +121,29 @@ pub fn validate_session_id(id: &str) -> Result<(), SessionError> {
         Err(SessionError::InvalidPayload(
             "Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod fixed_tests {
+    use super::IdGenerator;
+
+    #[test]
+    fn fixed_ids_count_up_across_generators_and_random_ones_do_not() {
+        let (mut first, mut second) =
+            (IdGenerator::with_fixed(true), IdGenerator::with_fixed(true));
+        let ids = [first.next_id(), second.next_id(), first.next_id()];
+        let numbers: Vec<u64> = ids
+            .iter()
+            .filter_map(|id| id.strip_prefix("01a00000-0000-7000-8000-"))
+            .filter_map(|n| u64::from_str_radix(n, 16).ok())
+            .collect();
+        let counting: Vec<u64> = numbers
+            .first()
+            .map_or_else(Vec::new, |a| (*a..).take(3).collect());
+        assert_eq!((numbers.len(), numbers), (3, counting), "{ids:?}");
+        let mut random = IdGenerator::with_fixed(false);
+        assert!(!random.next_id().starts_with("01a00000-"));
     }
 }
 

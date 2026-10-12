@@ -34,47 +34,6 @@ pub(crate) fn dismiss_mark(popup: Rect) -> Rect {
     )
 }
 
-pub(crate) fn render_keys(
-    app: &App,
-    frame: &mut Frame<'_>,
-    view: &ViewState,
-    theme: &Theme,
-) -> Option<Rect> {
-    let popup = popup_in(
-        view.panes_area,
-        72,
-        u16::try_from(keys::CHORDS.len())
-            .unwrap_or(16)
-            .saturating_add(4),
-    );
-    frame.render_widget(ratatui::widgets::Clear, popup);
-    let block = ratatui::widgets::Block::bordered()
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(theme.accent_style())
-        .title(" Keys ")
-        .title_top(Line::from(DISMISS).right_aligned())
-        .style(Style::default().bg(theme.selection_bg()));
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!(" {:<32}", "what"), theme.dim_style()),
-        Span::styled(format!("{:<14}", "key"), theme.dim_style()),
-        Span::styled("ctrl+b then", theme.dim_style()),
-    ])];
-    for chord in &keys::CHORDS {
-        let key = chord.key(app.cmd_hints);
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {:<32}", chord.what),
-                Style::default().fg(theme.text),
-            ),
-            Span::styled(format!("{key:<14}"), theme.accent_style()),
-            Span::styled(chord.prefix, theme.muted_style()),
-        ]));
-    }
-    lines.push(Line::styled(" any key closes", theme.dim_style()));
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
-    Some(popup)
-}
-
 pub(crate) fn render_navigator(
     app: &App,
     frame: &mut Frame<'_>,

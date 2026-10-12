@@ -59,7 +59,9 @@ pub enum RequestKind {
     Rewind(SessionId),
     Plan(SessionId),
     SetConfig(SessionId),
+    Settings(PaneId, bool),
     Fork(PaneId),
+    Open(String),
     Steer,
     Shutdown,
 }
@@ -447,12 +449,8 @@ impl App {
         };
         trace_answered(&pending);
         let _span = yi_types::trace::span("console.reduce_response");
-        if pending.kind == RequestKind::Shutdown {
-            self.state.quit = true;
+        if self.pane_reply(outbound, &pending.kind, value) {
             return;
-        }
-        if let RequestKind::Fork(pane) = pending.kind {
-            return self.absorb_fork(outbound, pane, value);
         }
         if let Some(error) = value.get("error") {
             let message = error
@@ -515,9 +513,11 @@ impl App {
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig(_)
+            | RequestKind::Settings(..)
             | RequestKind::Fork(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
+            RequestKind::Open(name) => self.note(&format!("launched {name}")),
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
                     let text = text.to_owned();
@@ -950,7 +950,8 @@ impl App {
             Action::SelectSlot(n) => self.select_slot(outbound, n),
             Action::Quit => self.state.quit = true,
             Action::StopDaemon => self.stop_daemon_and_quit(outbound),
-            Action::Keys => self.state.mode = Mode::Keys,
+            Action::Keys => self.open_settings(outbound, crate::settings::KEYS),
+            Action::Settings => self.open_settings(outbound, crate::settings::SESSION),
             Action::Menu => self.open_menu_for_focus(),
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
@@ -1025,6 +1026,7 @@ impl App {
 
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
         match event {
+            CtEvent::Key(key) if yi_tui::keymap::is_pasted_control(&key) => {}
             CtEvent::Key(key) => {
                 if self.selection.take().is_some() {
                     self.dirty = true;
@@ -1067,11 +1069,6 @@ impl App {
         }
         if matches!(self.state.mode, Mode::Menu(_)) {
             return self.menu_key(outbound, key);
-        }
-        if matches!(self.state.mode, Mode::Keys) {
-            self.state.mode = Mode::Normal;
-            self.dirty = true;
-            return;
         }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
@@ -1168,6 +1165,7 @@ impl App {
             },
             Zone::Panes if self.on_review().is_some() => self.review_key(key),
             Zone::Panes if self.on_tape() => self.tape_key(key),
+            Zone::Panes if self.on_settings() => self.settings_key(outbound, key),
             Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
     }
@@ -1182,6 +1180,7 @@ mod navigator;
 mod notebook;
 pub mod port;
 mod review;
+mod settings;
 
 pub(crate) use chat::orb_ids;
 pub use mouse::MouseKind;

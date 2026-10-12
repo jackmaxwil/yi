@@ -1,6 +1,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use serde_json::{Value, json};
+use yi_types::acp::{AcpForkParams, AcpForkPosition};
 use yi_types::entry::Entry;
 use yi_types::message::AgentMessage;
 
@@ -55,6 +56,7 @@ impl App {
         let facts = Facts {
             cmd: self.cmd_hints,
             running,
+            open: self.state.open_apps.clone(),
             last_pane: tab.is_none_or(|tab| tab.layout.pane_ids().len() < 2),
             zoomed: tab.is_some_and(|tab| tab.zoomed),
         };
@@ -210,6 +212,13 @@ impl App {
             ) => {
                 self.ledger_verb(outbound, pane, &entry, verb);
             }
+            (Target::Message { source, .. }, Verb::OpenWith(at)) => {
+                let Some(name) = self.state.open_apps.get(at).cloned() else {
+                    return;
+                };
+                let params = json!({"name": name, "text": source});
+                self.send_request(outbound, RequestKind::Open(name), "_yi/open", params);
+            }
             (Target::Message { pane, source, .. }, Verb::Quote) => {
                 self.focus_pane(pane);
                 if let Some(chat) = self.focused_chat() {
@@ -287,8 +296,17 @@ impl App {
                 ) else {
                     return;
                 };
-                let position = if at { "at" } else { "before" };
-                let params = json!({"sessionId": session.0, "entryId": id, "position": position});
+                let position = if at {
+                    AcpForkPosition::At
+                } else {
+                    AcpForkPosition::Before
+                };
+                let asked = AcpForkParams {
+                    session_id: session.0,
+                    entry_id: id,
+                    position,
+                };
+                let params = serde_json::to_value(asked).unwrap_or_default();
                 self.send_request(outbound, RequestKind::Fork(new), "_yi/fork", params);
             }
             _ => self.note("this pane has no session"),
@@ -345,8 +363,11 @@ impl App {
             last_ms: 0,
         });
         self.resume_into(outbound, pane, &session);
+        // Incident: a daemon from the last build keeps serving after a rebuild, and its worker
+        // still puts the prompt at the result's root.
         let prefill = reply
-            .pointer("/result/prefill")
+            .pointer("/result/_meta/yi/prefill")
+            .or_else(|| reply.pointer("/result/prefill"))
             .and_then(Value::as_str)
             .unwrap_or("");
         if let Some(PaneContent::Session {
@@ -442,6 +463,7 @@ mod tests {
         let facts = Facts {
             cmd: false,
             running: false,
+            open: Vec::new(),
             last_pane: false,
             zoomed: false,
         };

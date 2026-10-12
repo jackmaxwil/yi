@@ -70,8 +70,8 @@ def mode_label():
 
 def carried_plugins():
     """#1041: path mode carries the plugins `yi plugin add` installed on this host, as the
-    binary itself reports them. URL mode, and the pier adapter which installs by URL, carry
-    none: there is no host build to ask, and the fingerprint says `+plugins{}`."""
+    binary itself reports them. URL mode carries none, since there is no host build to ask,
+    and its fingerprint says `+plugins{}`. The pier adapter carries none and has no label."""
     if os.environ.get(BINARY_URL_ENV):
         return []
     return local_plugins(os.environ, plugin_report())

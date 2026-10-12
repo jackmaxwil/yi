@@ -69,7 +69,9 @@ impl SubagentHost {
         let walled = session.wall().denies_history();
         let header = match walled {
             true => "[task from parent]",
-            false => "[task from parent]\n[its transcript: history://parent/since/0]",
+            false => {
+                "[task from parent]\n[its transcript: history://parent/since/0 · one line of it: grep with path=history://parent]"
+            }
         };
         // Invariant: scope rides the first user message, never a trusted block.
         let content = match context {
