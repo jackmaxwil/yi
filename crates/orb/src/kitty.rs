@@ -177,7 +177,7 @@ pub fn transmit(
 }
 
 /// Place (or move) the id's one placement: the same (image, placement) pair replaces
-/// atomically, so a pure scroll re-places ~40 bytes inside a synchronized update.
+/// atomically, so a pure scroll re-places ~40 bytes inside the caller's synchronized update.
 pub fn place(
     out: &mut impl Write,
     id: u32,
@@ -189,7 +189,8 @@ pub fn place(
     place_nth(out, id, 1, col, row, cols, rows)
 }
 
-/// One image shown on several rows needs one placement id per row: `p` names it.
+/// Invariant: no `?2026` of its own, since the mode does not nest and an inner end showed the
+/// frame early; the caller brackets. One image on several rows takes a placement id `p` per row.
 pub fn place_nth(
     out: &mut impl Write,
     id: u32,
@@ -199,12 +200,12 @@ pub fn place_nth(
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
-    write!(out, "\x1b[?2026h\x1b7\x1b[{};{}H", row + 1, col + 1)?;
+    write!(out, "\x1b7\x1b[{};{}H", row + 1, col + 1)?;
     write!(
         out,
         "\x1b_Ga=p,i={id},p={placement},q=2,C=1,c={cols},r={rows}\x1b\\"
     )?;
-    write!(out, "\x1b8\x1b[?2026l")?;
+    write!(out, "\x1b8")?;
     out.flush()
 }
 

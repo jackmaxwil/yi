@@ -137,6 +137,17 @@ pub struct Placement {
     pub state: Option<yi_tui::orb::OrbState>,
 }
 
+/// Incident: kitty images draw above text, so an avatar under an open popup showed through it;
+/// a placement a popup covers is left out until the popup closes.
+pub fn uncovered(rows: Vec<Placement>, covers: &[ratatui::layout::Rect]) -> Vec<Placement> {
+    rows.into_iter()
+        .filter(|place| {
+            let at = ratatui::layout::Rect::new(place.col, place.row, place.cols, place.rows);
+            !covers.iter().any(|cover| cover.intersects(at))
+        })
+        .collect()
+}
+
 struct Motion {
     orb: yi_tui::orb::Orb,
     state: yi_tui::orb::OrbState,
@@ -280,6 +291,25 @@ mod tests {
             (0..100).map(|n| grid(&format!("s-{n:02}")).0).collect();
         assert!(distinct.len() >= 95, "{}", distinct.len());
         assert_eq!(rgba(&g, (1, 2, 3)).len(), PX * PX * 4);
+    }
+
+    /// Kitty images draw above text: an avatar under the open palette showed through it.
+    #[test]
+    fn a_popup_hides_the_avatars_it_covers_and_keeps_the_rest() {
+        let at = |row| Placement {
+            col: 2,
+            row,
+            cols: 2,
+            rows: 1,
+            key: format!("s-{row}"),
+            seed: String::new(),
+            accent: (0, 0, 0),
+            state: None,
+        };
+        let popup = ratatui::layout::Rect::new(0, 3, 30, 4);
+        let kept = uncovered(vec![at(1), at(4), at(9)], &[popup]);
+        let rows: Vec<u16> = kept.iter().map(|place| place.row).collect();
+        assert_eq!(rows, vec![1, 9]);
     }
 
     #[test]

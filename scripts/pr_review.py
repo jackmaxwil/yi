@@ -15,7 +15,6 @@ Transport and the model are parameters where the decisions are, so the selfcheck
 without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
 import argparse
-import fcntl
 import fnmatch
 import functools
 import hashlib
@@ -27,8 +26,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -446,26 +446,15 @@ def snapshots(notes, sha):
 
 
 def settled_notes(pr, notes, wait=SNAPSHOTS_WAIT):
-    """The PR's comments as they stand once the tui workflow for this head has posted, failed or
-    run out the wait (never past the job's own deadline); the notes as given when it never ran."""
+    """The PR's comments as they stand once this head's tui run has ended, queued time included,
+    or the wait (never past the job's own deadline) runs out; the notes as given when none ran."""
     deadline = min(time.monotonic() + wait, JOB_ENDS - ROUND_SECS)
-
-    def tui():
-        # A job no runner has picked up has no task row, so the comment step is absent until shots
-        # ends; a queued run still shows in the run list, a workflow this PR skips does not.
-        jobs = forge_pr.jobs_of(pr)
-        steps = [jobs[job] for job in ("build", "shots", "comment") if job in jobs]
-        if steps:
-            return steps, jobs.get("comment")
-        return ([], None) if forge_pr.run_of(pr) else (None, None)
-
-    started, comment = tui()
-    while started is not None and comment not in ENDED and not set(started) & {"failure", "cancelled"} \
-            and time.monotonic() < deadline:
+    status = forge_pr.run_status(pr)
+    while status is not None and status not in ENDED and time.monotonic() < deadline:
         time.sleep(forge_pr.POLL)
-        started, comment = tui()
+        status = forge_pr.run_status(pr)
     # The comment can land after the round's first read, waited for or not, so read it again.
-    return comments(forge_pr.repo(), pr["number"]) if started is not None else notes
+    return comments(forge_pr.repo(), pr["number"]) if status is not None else notes
 
 
 def lens_prompt(probe, pr, diff, base, sha, full_read, shots=""):
@@ -578,9 +567,11 @@ def yi_bin():
 
 
 # Incident: rounds on #1138 and #1145 hit the job's limit and posted nothing; a round's retries had
-# no shared window, so a slow host outlasted the job. Its calls now share the job's time.
+# no shared window. Its calls share the job's time, from the first step (review.yml stamps it).
 POST_SECS = 5 * 60
-JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS
+REFUTERS = 16
+JOB_SPENT = max(0.0, time.time() - float(os.environ.get("REVIEW_JOB_STARTED") or time.time()))
+JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS - JOB_SPENT
 
 
 class Unanswered(Exception):
@@ -659,8 +650,8 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
 
 def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None, carry=(), fix_note="", shots=""):
     body = pr.get("body") or ""
-    """Every probe that applies, then the host's quote and scope checks, then the refuters, each
-    stage's calls at once; `carry` (see `carried`) meets refuters beside the new findings. `own` is
+    """Every probe that applies at once, each lens's findings through the host's quote and scope
+    checks and on to their refuters as it answers; `carry` (see `carried`) meets refuters from the start. `own` is
     the PR's own patch (fork to head) by added line, the read diff when absent. Returns (kept,
     dropped, outside, unanswered, cleared). A lens or refuter that stays silent is named in
     `unanswered` and the round goes on; only every lens silent raises, no round."""
@@ -677,21 +668,34 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
             last[0] = err
 
     last = [None]
-    with ThreadPoolExecutor(max_workers=max(1, len(chosen))) as pool:
-        said = list(pool.map(lambda probe: tried(f"{probe['id']} lens", lens_prompt(probe, pr, diff, base, sha, full_read, shots), LENS_SCHEMA, tree), chosen))
+
+    def refute(f):
+        return [seats_pool.submit(tried, f"refuter on {f['lens']} finding at {f['path']}:{f['line']}",
+                                  refute_prompt(f, fix_note, body), REFUTE_SCHEMA, tree) for _ in range(seats(f, probes))]
+
+    # Incident: refuters shared the lens pool and waited for the slowest lens, so a round ran in waves
+    # of one worker per lens (113 minutes on #1279); each finding's refuters now start when its lens answers.
+    with ThreadPoolExecutor(max_workers=max(1, len(chosen))) as pool, ThreadPoolExecutor(max_workers=REFUTERS) as seats_pool:
+        held = [(f, refute(f)) for f in carry]
+        asked = {pool.submit(tried, f"{probe['id']} lens", lens_prompt(probe, pr, diff, base, sha, full_read, shots), LENS_SCHEMA, tree): i
+                 for i, probe in enumerate(chosen)}
+        said, per_lens = [None] * len(chosen), [([], [], [])] * len(chosen)
+        for done in as_completed(asked):
+            i = asked[done]
+            said[i] = done.result()
+            found = [{**f, "lens": chosen[i]["id"]} for f in (said[i] or {}).get("findings", []) if f.get("severity") in REPORTED]
+            quoted_ = [f for f in found if quoted(f, tree)]
+            per_lens[i] = (found, quoted_, [(f, refute(f)) for f in quoted_ if in_scope(f, own)])
         # Incident: the first dry run on #733 had every lens exit 4 (no key) and read clean.
         if chosen and all(a is None for a in said):
+            seats_pool.shutdown(cancel_futures=True)
             raise last[0]
-        candidates = [{**f, "lens": probe["id"]} for probe, answer_ in zip(chosen, said) if answer_
-                      for f in answer_.get("findings", []) if f.get("severity") in REPORTED]
-        quoted_ = [f for f in candidates if quoted(f, tree)]
-        fresh = [f for f in quoted_ if in_scope(f, own)]
-        checked = fresh + list(carry)
-        seats_ = [(i, f) for i, f in enumerate(checked) for _ in range(seats(f, probes))]
-        votes = list(pool.map(lambda seat: tried(f"refuter on {seat[1]['lens']} finding at {seat[1]['path']}:{seat[1]['line']}",
-                                                 refute_prompt(seat[1], fix_note, body), REFUTE_SCHEMA, tree), seats_))
+        candidates = [f for found, _, _ in per_lens for f in found]
+        quoted_ = [f for _, q, _ in per_lens for f in q]
+        fresh = [pair for _, _, refuted in per_lens for pair in refuted]
+        checked = [f for f, _ in fresh + held]
+        heard = [[v for v in (seat.result() for seat in seated) if v] for _, seated in fresh + held]
     # A silent refuter casts no vote. With none cast the finding is kept and says so: silence is not a refutation.
-    heard = [[v for (j, _), v in zip(seats_, votes) if j == i and v] for i in range(len(checked))]
     unverified = "(unverified: no refuter answered) "
     kept = [f if h or f["claim"].startswith(unverified) else {**f, "claim": unverified + f["claim"]}
             for f, h in zip(checked, heard) if survives(h) or not h]
@@ -1114,6 +1118,16 @@ def selfcheck():
         assert kept == [finding] and dropped == 1 and outside == 0, (kept, dropped, outside)
         assert all("<tui-snapshots>\nrow 0: drawn\n</tui-snapshots>" in p for p in prompts if " lens." in p), "a round's lenses read it"
         assert seen.count(REFUTE_SCHEMA) == 3, "a high finding meets three refuters; a dropped or low one none"
+        # Incident: refuters waited for the slowest lens; a finding's refuters now run while another lens reads.
+        votes, slow_id = threading.Semaphore(0), next(q["id"] for q in probes.values() if q["id"] != "correctness" and applies(q, added_at(change), True))
+
+        def late(prompt, schema, cwd):
+            if schema is REFUTE_SCHEMA:
+                votes.release()
+            elif f" as its {slow_id} lens" in prompt:
+                assert all(votes.acquire(timeout=5) for _ in range(3)), "the slow lens returned before any refuter ran"
+            return answer(prompt, schema, cwd)
+        assert read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, late, probes)[0] == [finding]
         # Incident: rounds after a merge from main posted findings on the code main brought in.
         seen.clear()
         kept, dropped, outside, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
@@ -1319,39 +1333,47 @@ def selfcheck():
     assert "4 cells changed" in text and "attachments" not in text and "999" not in text, text
     assert "</tui-snapshots" not in text, "a drawn row cannot close the block it is read in"
     assert "[… dropped 1 row(s) naming this block's closing tag" in text, text
+    # The forge's run list as /actions/runs?head_sha= answered it for #1235's head on 2026-10-12
+    # (Forgejo 15: `workflow_id`, `commit_sha`); the review's own run is not the tui run.
+    saved_api, sha = forge_pr.fgj_api, "36af141c32abd98664c8d3bcda780948d9030f26"
+    listed = [{"id": 9412, "workflow_id": "review.yml", "commit_sha": sha, "status": "running"},
+              {"id": 9411, "workflow_id": "pr.yml", "commit_sha": sha, "status": "success"}]
+    asked = []
+    forge_pr.fgj_api = lambda method, path, payload=None: asked.append(path) or {"workflow_runs": listed}
+    try:
+        assert forge_pr.run_status({"head": {"sha": sha}}) is None, "a head the tui workflow skipped has no tui run"
+        assert asked and asked[-1].endswith(f"head_sha={sha}"), "the forge filters by head, so no page walk can miss it"
+        listed += [{"id": 9409, "workflow_id": "tui.yml", "commit_sha": sha, "status": "success"},
+                   {"id": 9413, "workflow_id": "tui.yml", "commit_sha": sha, "status": "waiting"}]
+        assert forge_pr.run_status({"head": {"sha": sha}}) == "waiting", "the newest tui run, a queued one included"
+    finally:
+        forge_pr.fgj_api = saved_api
     # A round waits out the tui workflow on a clock the test moves, and reads the comments after.
     clock, fresh = [0.0], [{"user": {"login": ACTIONS}, "body": shot}]
-    keep = forge_pr.jobs_of, forge_pr.run_of, globals()["comments"], time.sleep, time.monotonic, JOB_ENDS
+    keep = forge_pr.run_status, globals()["comments"], time.sleep, time.monotonic, JOB_ENDS
     time.monotonic, time.sleep = (lambda: clock[0]), (lambda secs: clock.__setitem__(0, clock[0] + secs))
     globals()["comments"] = lambda repo, n: fresh
 
-    def polled(*states, runs=None):
-        polls, exists = iter(states), iter(runs if runs is not None else [bool(state) for state in states])
-        forge_pr.jobs_of = lambda pr: next(polls)
-        forge_pr.run_of = lambda pr: next(exists)
+    def polled(*states):
+        polls = iter(states)
+        forge_pr.run_status = lambda pr: next(polls)
 
     try:
         globals()["JOB_ENDS"] = 10 * SNAPSHOTS_WAIT
-        polled({"build": "success"}, {"build": "success", "shots": "running"},
-               {"build": "success", "shots": "success", "comment": "running"},
-               {"build": "success", "shots": "success", "comment": "success"})
-        assert settled_notes({"number": 1}, []) == fresh, "a round waits from build to the posted comment"
-        polled({"build": "success", "shots": "success", "comment": "success"})
+        polled("waiting", "waiting", "running", "success")
+        assert settled_notes({"number": 1}, []) == fresh, "a round waits from the queue to the posted comment"
+        polled("success")
         assert settled_notes({"number": 1}, []) == fresh, "a comment posted before the wait began is read"
-        polled({"build": "failure"})
+        polled("failure")
         assert settled_notes({"number": 1}, []) == fresh, "a failed tui run is not waited on"
-        polled({})
+        polled(None)
         assert settled_notes({"number": 1}, []) == [], "a PR the tui workflow skips does not wait"
-        polled({}, {}, {"build": "success"}, {"build": "success", "shots": "success", "comment": "success"},
-               runs=[True, True, True, True])
-        assert settled_notes({"number": 1}, []) == fresh, "a tui run queued before its first task row still waits"
         clock[0], globals()["JOB_ENDS"] = 0.0, ROUND_SECS + 3 * forge_pr.POLL
-        polled(*[{"build": "running"}] * 5)
+        polled(*["running"] * 5)
         assert settled_notes({"number": 1}, []) == fresh and clock[0] == 3 * forge_pr.POLL, clock
     finally:
-        forge_pr.jobs_of, forge_pr.run_of = keep[:2]
-        globals()["comments"], time.monotonic, time.sleep = keep[2], keep[4], keep[3]
-        globals()["JOB_ENDS"] = keep[5]
+        forge_pr.run_status, globals()["comments"], time.sleep, time.monotonic = keep[:4]
+        globals()["JOB_ENDS"] = keep[4]
 
     assert "older head" in snapshots(posted, "0" * 40) and snapshots([], head) == ""
     prompt = lens_prompt(probes["tests"], {"number": 1, "title": "t", "body": body}, "x", "a" * 8, "b" * 8, True, text)
