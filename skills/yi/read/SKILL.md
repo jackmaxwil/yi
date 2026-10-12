@@ -18,7 +18,7 @@ covers: tool:read
 
 ## Pick the tool
 
-- Know the file: `read` it. Do not `cat`, `head`, `sed` or `tail` it in bash; only `read` prints the `[path#TAG]` header edit anchors to.
+- Know the file: `read` it. Do not `cat`, `head`, `sed` or `tail` it in bash; only `read` numbers the lines an edit anchors on.
 - Know a name, not a file: `grep` first, then read the window it points at.
 - Unread repository: one `get_context`, then read the entry points it names.
 - Want one function of a big file: `read` with `find="fn name"`. It shows the enclosing block, and for a definition lists its references in files of the same language.
@@ -33,14 +33,14 @@ read(path="src/lib.rs", offset=400, limit=300)
 ```
 
 - `ranges` and `offset`/`limit` never combine, and neither combines with `find`. Each refusal names the pair ("pass ranges or offset/limit, not both").
-- A cut reads `[showing lines A-B of T — continue with offset=N]` or `[byte budget … reached at line L of T — continue with offset=L]`. Pass that offset. A capped read also ends with the file's skeleton (a heading outline for Markdown): use its line numbers for `ranges`.
+- A cut reads `[showing lines A-B of T — continue with offset=N]` or `[byte budget … reached at line L of T — continue with offset=L]`. Pass that offset. A read cut by its byte budget or default line cap also ends with the file's skeleton (a heading outline for Markdown): use its line numbers for `ranges`.
 - A `find` that misses lists the nearest lines (`no line of PATH contains "…"; nearest by "…"`); retry with a word from one of them.
 - A directory lists entries and source skeletons; a glob (`src/**/*.rs`) prints each match whole until 50 KiB, then lists the rest as skeletons. `[first 200 files matching …]` and `[showing 200 of N entries …]` mean: narrow the path.
 - Rows over 512 columns arrive clipped and never anchor an edit. The notice prints the exact `bash: sed -n 'Np' path` that shows them.
 
 ## Tags and the next edit
 
-Each read ends in a tag; edit cites `[path#TAG]` and the `LINE:` numbers beside it. An edit with no tag uses the latest one shown for that path.
+Each read opens with a tag; edit cites `[path#TAG]` and the `LINE:` numbers beside it. An edit with no tag uses the latest one shown for that path.
 
 - edit's rules on which lines it may touch and what it does when the file moved since your tag are the patch guide's: `read("yi://tools/edit")`. A refusal quotes the lines to read or re-issue with.
 - `No version of PATH is on record for this session` means the tag was never shown or fell out of the short per-path history. Read the path again.
@@ -49,7 +49,7 @@ Each read ends in a tag; edit cites `[path#TAG]` and the `LINE:` numbers beside 
 ## Documents, images, binaries, encodings
 
 - PDF, Word, spreadsheet, slides and similar files read as Markdown under a note that they are read-only; edit and write refuse the original. `pages="3-5,9"` picks PDF pages (`pages= applies to a PDF` otherwise). The first look is short and leads with an outline: read it, then `ranges`. Line numbers are those of the Markdown, and `grep` searches the same text.
-- A spreadsheet with several sheets starts with `[sheets: name RxC, …]`; for analysis, load it with pandas in `ipython` rather than paging rows.
+- A spreadsheet with several sheets, or one over 500 rows, starts with `[sheets: name RxC, …]`; for analysis, load it with pandas in `ipython` rather than paging rows.
 - `the kernel venv that converts documents is not built yet` clears on retry; do not work around it.
 - An image refuses with the exact `attach_image` call to run in `ipython`. A NUL-byte file is `a binary file`: use `bash` (`file` names it).
 - A UTF-16 or Latin-1 file reads decoded, under `[decoded from …; the file is not UTF-8, so edit cannot anchor to it]`. Change it with `write`.

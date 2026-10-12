@@ -26,10 +26,12 @@ query) with no `>` redirect (`2>/dev/null` excepted), backtick or `$(`.
 Reads run beside the other reads in the same message; an exec runs alone,
 in transcript order.
 
-The permission check decides whether it runs, and how. In auto mode a
-command whose every segment is known-safe runs as is, one with a segment it
-does not know runs contained in the sandbox, and a destructive or network
-segment asks. In ask mode every bash call asks.
+The permission check decides whether it runs, and how. In auto mode, where
+a sandbox exists, every command runs contained, a proven-safe one too. A
+destructive command and git fetch/pull/push ask. A command needing the
+network, an install or a credential store runs outside the sandbox without
+asking, and its result says so; a compound mixing that with other work, or
+one Yi cannot parse, asks. In ask mode every bash call asks.
 
 So keep inspection pure and separate from work:
 
@@ -59,8 +61,8 @@ detach it and read its log in later calls:
 nohup ./serve --port 8123 > serve.log 2>&1 & echo $!
 ```
 
-A contained server is reachable on 127.0.0.1 only. Keep the printed pid to
-stop it. From the kernel, `rlm.bash` overlaps a long command with Python
+Bind it to 127.0.0.1 explicitly: the sandbox lets a wildcard listener face
+the LAN. Keep the printed pid to stop it. From the kernel, `rlm.bash` overlaps a long command with Python
 work instead (the ipython skill).
 
 ## A cut output

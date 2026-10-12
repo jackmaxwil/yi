@@ -6,7 +6,7 @@ description: >
   when a layer is absent or cut. Use at the start of a task in a repository you
   have not read this session, and before touching unfamiliar code. Do NOT use
   to find a known symbol (grep), to read a file (read), or a second time in the
-  same repository: the packet does not change as you work.
+  same repository: a second packet rarely adds what grep or read cannot.
 covers: tool:get_context
 ---
 
@@ -48,7 +48,7 @@ it. The task map is a guide: its rows name where to start, not what is correct.
   uses of a type.
 - Skeletons are ordered: files defining your `symbol`, then files mentioning it, then
   change heat, then name. Pass `symbol` to bring its file to the top.
-- Take the gate line as the command to judge your change; run it with `bash`.
+- The gate line is a guess from the manifest's name (justfile, Makefile, …); confirm the recipe exists before trusting a green run.
 
 ## Capped layers
 
