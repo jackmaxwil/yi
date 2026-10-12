@@ -66,29 +66,16 @@ impl RemotePort {
         self.committed.push(entry);
     }
 
-    /// The replayed branch from its leaf back, then what was committed live after it.
-    pub fn branch(&self) -> Vec<Entry> {
-        let by_id: std::collections::HashMap<&str, &Entry> = self
-            .entries
+    /// Every entry in the order the transcript drew it: a replay draws abandoned branches too,
+    /// so matching a cell against the leaf's chain alone found the wrong turn after a rewind.
+    pub fn drawn(&self) -> Vec<&Entry> {
+        let replayed: std::collections::HashSet<&str> =
+            self.entries.iter().map(Entry::id).collect();
+        let live = self
+            .committed
             .iter()
-            .map(|entry| (entry.id(), entry))
-            .collect();
-        let mut chain: Vec<&Entry> = Vec::new();
-        let mut at = self.leaf.as_deref();
-        while let Some(entry) = at
-            .and_then(|id| by_id.get(id))
-            .filter(|_| chain.len() < by_id.len())
-        {
-            chain.push(entry);
-            at = entry.parent_id();
-        }
-        chain.reverse();
-        for entry in &self.committed {
-            if !chain.iter().any(|kept| kept.id() == entry.id()) {
-                chain.push(entry);
-            }
-        }
-        chain.into_iter().cloned().collect()
+            .filter(|entry| !replayed.contains(entry.id()));
+        self.entries.iter().chain(live).collect()
     }
 
     pub fn set_goal(&mut self, goal: Option<GoalView>) {

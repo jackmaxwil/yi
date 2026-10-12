@@ -4,10 +4,11 @@ use yi_runtime::session_store::{
     CreateOptions, ForkPosition, ForkScope, SessionRepo, lock_session,
 };
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 
 use crate::{AcpState, INVALID_PARAMS};
 
+/// The prompt as Rewind hands it back, so Re-ask and Rewind put the same text in the composer.
 fn typed(message: &AgentMessage) -> String {
     match message {
         AgentMessage::User {
@@ -17,14 +18,7 @@ fn typed(message: &AgentMessage) -> String {
         AgentMessage::User {
             content: UserContent::Blocks(blocks),
             ..
-        } => blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        } => yi_types::message::join_text(blocks, " "),
         _ => String::new(),
     }
 }
@@ -66,7 +60,6 @@ impl AcpState {
             .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
         let forked = self.attach_later(&store);
         let mut result = json!(self.session_result(&forked));
-        result["configOptions"] = json!(self.default_options());
         result["prefill"] = Value::String(prefill);
         Ok(result)
     }

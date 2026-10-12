@@ -100,8 +100,9 @@ impl Parent {
     /// later one by the time this lags through, so the entry is found by the message it holds.
     fn committed(&mut self, message: &AgentMessage) {
         let query = EntryQuery {
+            entry_type: Some("message"),
             order: EntryOrder::NewestFirst,
-            limit: Some(32),
+            limit: Some(256),
             ..EntryQuery::default()
         };
         let entry = self.session.store().and_then(|store| {

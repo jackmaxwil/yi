@@ -3999,3 +3999,113 @@ fn copy_as_raw_json_copies_the_entry() -> TestResult {
     assert!(osc_log(&dir)?.contains(&want), "the entry was not copied");
     Ok(())
 }
+
+fn host_says(text: &str) -> Value {
+    let mut message = serde_json::to_value(user_message(text)).unwrap_or_default();
+    message["attribution"] = serde_json::to_value(yi_types::message::Attribution::Host(
+        yi_types::message::HostSource::Job,
+    ))
+    .unwrap_or_default();
+    message
+}
+
+fn host_entry(id: &str, parent: Option<&str>, seq: u64, message: Value) -> Value {
+    json!({"type": "message", "id": id, "message": message, "parentId": parent,
+           "seq": seq, "timestamp": seq})
+}
+
+fn resume_host_then_typed(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                host_entry("e1", None, 1, host_says("yes")),
+                entry("e2", Some("e1"), 2, &assistant("noted")),
+                entry("e3", Some("e2"), 3, &user_message("yes")),
+                entry("e4", Some("e3"), 4, &assistant("typed answer")),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 4})),
+    ]
+}
+
+fn resume_abandoned(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("yes")),
+                entry("e2", Some("e1"), 2, &assistant("first answer")),
+                entry("e3", Some("e2"), 3, &user_message("yes")),
+                entry("e4", Some("e3"), 4, &assistant("abandoned answer")),
+                entry("e5", Some("e2"), 5, &user_message("yes")),
+                entry("e6", Some("e5"), 6, &assistant("live answer")),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 6})),
+    ]
+}
+
+fn probe_steps(resume: fn(&Value) -> Vec<Value>) -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+fn rewind_typed_with_files(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e3", "files": true}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]));
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": "e2", "unsent": "typed yes", "summarizing": false}),
+    )]
+}
+
+/// A host message saying "yes" draws as a notice, so the typed "yes" is the first prompt cell
+/// and must map to its own entry; its files row asks the worker to restore files too.
+#[test]
+fn a_host_message_does_not_take_a_typed_prompts_place() -> TestResult {
+    let mut steps = probe_steps(resume_host_then_typed);
+    steps.push(Step::Expect("_yi/rewind", rewind_typed_with_files));
+    run(
+        "menu-host",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 typed answer\n\
+         mouse right 25 6\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey down\nkey enter\nwait-frame 3000 typed yes\nquit\n",
+    )
+}
+
+fn rewind_live_yes(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e5"}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]));
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": "e2", "unsent": "live yes", "summarizing": false}),
+    )]
+}
+
+/// A replay draws the abandoned branch too: the third "yes" on screen is the live branch's
+/// prompt, which the leaf's chain alone would number as its second.
+#[test]
+fn a_prompt_after_an_abandoned_branch_rewinds_to_itself() -> TestResult {
+    let mut steps = probe_steps(resume_abandoned);
+    steps.push(Step::Expect("_yi/rewind", rewind_live_yes));
+    run(
+        "menu-abandoned",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 live answer\n\
+         mouse right 25 18\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 live yes\nquit\n",
+    )
+}
