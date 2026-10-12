@@ -6,9 +6,13 @@ use yi_types::url::{Scheme, Url};
 
 use super::{Page, Resolver};
 
-struct UrlRead {
+/// Incident: an unpaged `read history://<id>` of a 5 MB session put 4.86 MB in one tool result.
+const LISTING_BYTES: usize = 50 * 1024;
+
+struct UrlRouted {
     inner: Arc<dyn Tool>,
     resolver: Arc<Resolver>,
+    serve: fn(&Resolver, &Map<String, Value>) -> Option<ToolOutput>,
 }
 
 fn page(input: &Map<String, Value>) -> Result<Option<Page>, String> {
@@ -27,13 +31,79 @@ fn unit(url: &Url) -> &'static str {
     }
 }
 
+/// Whole entries up to the budget, the first one clipped if it alone is over; the bare listing
+/// and `since/` both page by `offset`, so that is the next call.
+fn capped(url: &Url, served_by: &str, text: String) -> String {
+    let listing = matches!(served_by, "session-transcript" | "session-since");
+    if !listing || text.len() <= LISTING_BYTES {
+        return text;
+    }
+    let total = text.lines().count();
+    let (mut kept, mut used) = (0usize, 0usize);
+    for line in text.lines() {
+        let next = used
+            .saturating_add(line.len())
+            .saturating_add(usize::from(kept > 0));
+        if next > LISTING_BYTES && kept > 0 {
+            break;
+        }
+        (kept, used) = (kept.saturating_add(1), next);
+    }
+    let shown = text.lines().take(kept).collect::<Vec<_>>().join("\n");
+    let cut = shown.floor_char_boundary(LISTING_BYTES);
+    let clipped = if cut < shown.len() {
+        " (the last one clipped)"
+    } else {
+        ""
+    };
+    let tail = if kept < total {
+        format!(
+            "read {url} with offset={} and limit to page on",
+            kept.saturating_add(1)
+        )
+    } else {
+        "the one entry alone exceeds the cap and cannot be paged smaller; its id names a whole \
+         entry read"
+            .to_owned()
+    };
+    format!(
+        "{}\n[… {kept} of {total} entries shown{clipped} · unpaged history cap {LISTING_BYTES} bytes · {tail}]",
+        shown.get(..cut).unwrap_or_default(),
+    )
+}
+
 fn address(input: &Map<String, Value>) -> Option<&str> {
     let path = input.get("path")?.as_str()?;
     let (scheme, _) = path.split_once("://")?;
     (!scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_lowercase())).then_some(path)
 }
 
-impl Tool for UrlRead {
+fn serve_read(resolver: &Resolver, input: &Map<String, Value>) -> Option<ToolOutput> {
+    let raw = address(input)?;
+    let fetched = raw
+        .parse::<Url>()
+        .map_err(|error| format!("{raw}: {error}"))
+        .and_then(|url| {
+            let page = page(input)?;
+            resolver
+                .fetch_page(&url, page)
+                .map_err(|error| error.to_string())
+        });
+    Some(match fetched {
+        Ok(fetched) => match fetched.next_offset {
+            Some(next) => text_output(format!(
+                "{}\n[more from offset {}; offset and limit count {} here]",
+                fetched.text,
+                next.saturating_add(1),
+                unit(&fetched.url)
+            )),
+            None => text_output(capped(&fetched.url, &fetched.served_by, fetched.text)),
+        },
+        Err(message) => error_output(message),
+    })
+}
+
+impl Tool for UrlRouted {
     fn name(&self) -> &str {
         self.inner.name()
     }
@@ -59,39 +129,24 @@ impl Tool for UrlRead {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let Some(raw) = address(&input) else {
-            return self.inner.execute(input, context);
-        };
-        let fetched = raw
-            .parse::<Url>()
-            .map_err(|error| format!("{raw}: {error}"))
-            .and_then(|url| {
-                let page = page(&input)?;
-                self.resolver
-                    .fetch_page(&url, page)
-                    .map_err(|error| error.to_string())
-            });
-        match fetched {
-            Ok(fetched) => match fetched.next_offset {
-                Some(next) => text_output(format!(
-                    "{}\n[more from offset {}; offset and limit count {} here]",
-                    fetched.text,
-                    next.saturating_add(1),
-                    unit(&fetched.url)
-                )),
-                None => text_output(fetched.text),
-            },
-            Err(message) => error_output(message),
+        match (self.serve)(&self.resolver, &input) {
+            Some(output) => output,
+            None => self.inner.execute(input, context),
         }
     }
 }
 
 pub fn route_urls(tools: &mut [Arc<dyn Tool>], resolver: &Arc<Resolver>) {
-    for tool in tools.iter_mut().filter(|tool| tool.name() == "read") {
-        let inner = Arc::clone(tool);
-        *tool = Arc::new(UrlRead {
-            inner,
+    for tool in tools.iter_mut() {
+        let serve = match tool.name() {
+            "read" => serve_read,
+            "grep" => super::grep::serve_grep,
+            _ => continue,
+        };
+        *tool = Arc::new(UrlRouted {
+            inner: Arc::clone(tool),
             resolver: Arc::clone(resolver),
+            serve,
         });
     }
 }

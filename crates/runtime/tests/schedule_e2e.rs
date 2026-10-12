@@ -1703,11 +1703,7 @@ async fn a_clock_set_before_a_restart_owes_one_todo_on_resume() -> TestResult {
     job.next_run_at = Some(yi_session::now_ms().saturating_sub(hour * 5 / 2));
     std::fs::write(&path, serde_json::to_string(&state)?)?;
 
-    // Invariant: the timer is interned per path for the process's life, so the next process is
-    // a second spelling of the same directory, which opens the file afresh.
-    let next = Scratch::new("yi-clock-restart-next")?;
-    std::os::unix::fs::symlink(&*root, next.join("root"))?;
-    let session = wired_root(&next.join("root"), "notes written")?;
+    let session = wired_root(&root, "notes written")?;
     session.attach_store(repo.open(id)?)?;
     let todos = session.todos().ok_or("no todo list wired")?;
     let made = wait_until(8_000, || todos.list().items().count() > 0).await;
@@ -1729,6 +1725,62 @@ async fn a_clock_set_before_a_restart_owes_one_todo_on_resume() -> TestResult {
         "the todo does not count the missed ticks: {note}"
     );
     assert!(woke, "the tick never woke the resumed session");
+    Ok(())
+}
+
+/// Another process holding the session pauses its clock on disk; the session this process
+/// dropped must not tick it back to Active from a stale in-memory copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_session_leaves_the_next_holders_edit_on_disk() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let root = Scratch::new("yi-clock-stale")?;
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-clock-stale".to_owned());
+    let id = "clock-stale-1";
+    let clock = {
+        let session = wired_root(&root, "unused")?;
+        session.attach_store(repo.create(CreateOptions {
+            id: Some(id.to_owned()),
+            ..CreateOptions::default()
+        })?)?;
+        let clock = session.heartbeat_service().ok_or("no clock wired")?;
+        clock.run("/heartbeat every 1h write the stand-up notes")?;
+        let soon = yi_session::now_ms().saturating_add(1_000);
+        clock.store().mutate(|state| {
+            for job in &mut state.jobs {
+                job.next_run_at = Some(soon);
+            }
+        });
+        clock
+    };
+    let path = root
+        .join("sessions/schedules")
+        .join(id)
+        .join("scheduled-jobs.json");
+    let next = JobStore::open(path.clone());
+    next.mutate(|state| {
+        for job in &mut state.jobs {
+            job.status = JobStatus::Paused;
+            job.next_run_at = None;
+        }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+    let late = clock.run("/heartbeat every 1h a handle the plan timer kept");
+
+    assert!(
+        late.is_err(),
+        "an ended session's clock still wrote: {late:?}"
+    );
+    let disk: ScheduleState = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    assert!(
+        !disk.jobs.is_empty() && disk.jobs.iter().all(|job| job.status == JobStatus::Paused),
+        "the dropped session's timer rewrote the file from memory: {:?}",
+        disk.jobs
+    );
+    assert!(
+        disk.dispatches.is_empty(),
+        "a dropped session claimed a tick"
+    );
     Ok(())
 }
 

@@ -887,7 +887,8 @@ def cmd_autofix(args):
             set_label(repo, pr["number"], ids, "autofix:working", False)
     fixed = 0
     started = time.monotonic()
-    for pr in ours:
+    while ours:
+        pr = ours[0]
         if not room(time.monotonic() - started):
             print(f"autofix: {int(time.monotonic() - started)}s into the pass, a fix no longer fits the runner's limit; the rest wait")
             break
@@ -904,6 +905,9 @@ def cmd_autofix(args):
         # filled every pass's quota with skips and no other PR was tried for a day.
         fixed += said in ("pushed", "failed", "missed", "moved")
         print(f"#{pr['number']}: {said}")
+        # A missed tier climbs in this pass, not 15 minutes and a queue later: #1187 took four passes.
+        if said != "missed":
+            ours.pop(0)
     return 0
 
 
@@ -1335,7 +1339,7 @@ def selfcheck():
     if round_on(merged_only, "b5657bbd", lambda sha, head: True) is None or round_on(merged_only, "b5657bbd") is not None:
         errs.append("a round the review job holds for a merge-only head is not the fixer's round, or an unrelated head is")
     # A pass: PRs already labelled failed are skipped without spending its quota of fixes.
-    module, tried_prs = sys.modules[__name__], []
+    module, tried_prs, climbed = sys.modules[__name__], [], []
     keep = {name: getattr(module, name) for name in ("attempt", "label_ids", "spent_today", "tidy")}
     keep_api, keep_repo = forge_pr.fgj_api, forge_pr.repo
     try:
@@ -1346,12 +1350,19 @@ def selfcheck():
         module.attempt = lambda repo, pr, ids, asked=False: (tried_prs.append(pr["number"]) or
                                                               decide({l["name"] for l in pr["labels"]}, [], 9e9, False, True))
         cmd_autofix(type("A", (), {"number": None})())
+        misses_left = [True]
+        module.attempt = lambda repo, pr, ids, asked=False: (climbed.append(pr["number"]) or
+                                                              ("missed" if misses_left and misses_left.pop() else "pushed"))
+        forge_pr.fgj_api = lambda *a, **k: [fresh, dict(fresh, number=5)]
+        cmd_autofix(type("A", (), {"number": None})())
     finally:
         forge_pr.fgj_api, forge_pr.repo = keep_api, keep_repo
         for name, value in keep.items():
             setattr(module, name, value)
     if 4 not in tried_prs:
         errs.append(f"three PRs labelled failed used up the pass; it tried {tried_prs}")
+    if climbed != [4, 4, 5]:
+        errs.append(f"a missed tier waited for the next pass instead of climbing in this one: {climbed}")
     crate = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-fmt-"))
     try:
         sh(crate, "git", "init", "-q")

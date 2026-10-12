@@ -63,36 +63,35 @@ fn render_history(
             })
             .map_err(|error| backend(error.to_string()))
     };
-    // `tail/N` is the last N entries compact, `since/S` everything after sequence S (D165).
-    let window = entry_id
-        .and_then(|selector| selector.split_once('/'))
-        .filter(|(kind, _)| matches!(*kind, "tail" | "since"))
-        .and_then(|(kind, raw)| raw.parse::<u64>().ok().map(|number| (kind, number)));
-    match (entry_id, window) {
+    match (entry_id, entry_id.and_then(super::grep::window)) {
         (_, Some((kind, number))) => {
             let entries = all(custom)?;
             // A filtered listing is read for its data, which the compact line drops.
-            let line = |entry: &yi_types::entry::Entry| match custom {
-                Some(_) => serde_json::to_string(entry).unwrap_or_default(),
-                None => crate::family::compact_entry(entry),
+            let agent = url.path().split('/').next().unwrap_or_default();
+            let mut any_cut = false;
+            let line = |entry: &yi_types::entry::Entry| -> String {
+                match custom {
+                    Some(_) => serde_json::to_string(entry).unwrap_or_default(),
+                    None => {
+                        let (text, this) = crate::family::compact_entry(entry);
+                        if this {
+                            any_cut = true;
+                            format!("{text} · whole: history://{agent}/{}", entry.id())
+                        } else {
+                            text
+                        }
+                    }
+                }
             };
-            let kept: Vec<String> = match kind {
-                "tail" => entries
-                    .iter()
-                    .rev()
-                    .take(usize::try_from(number).unwrap_or(usize::MAX))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .map(line)
-                    .collect(),
-                _ => entries
-                    .iter()
-                    .filter(|entry| entry.seq() > number)
-                    .map(line)
-                    .collect(),
-            };
-            paged(kept, format!("session-{kind}"))
+            let kept: Vec<String> = super::grep::in_window(&entries, (kind, number))
+                .into_iter()
+                .map(line)
+                .collect();
+            let (mut text, served_by, next) = paged(kept, format!("session-{kind}"))?;
+            if any_cut {
+                text.push_str(&crate::family::cut_notice());
+            }
+            Ok((text, served_by, next))
         }
         (Some(_), None) if custom.is_some() => Err(FetchError::BadAddress {
             url: url.to_string(),
@@ -268,17 +267,25 @@ impl Resolver {
 
     /// Invariant: an agent name carries its own slash, so the whole path is tried as an agent
     /// before an entry id is split off; splitting first read a reap pin as a missing entry.
-    pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
-        let path = url.path();
+    pub(super) fn history_root<'p>(
+        &self,
+        path: &'p str,
+    ) -> Option<(yi_session::SharedSession, Option<&'p str>)> {
         if let Some(session) = self.transcript_of(path) {
-            return render_history(url, &session, None, page);
+            return Some((session, None));
         }
-        for (at, _) in path.rmatch_indices('/') {
-            let (agent, entry) = path.split_at(at);
-            if let Some(session) = self.transcript_of(agent) {
-                return render_history(url, &session, entry.get(1..), page);
-            }
+        path.rmatch_indices('/').find_map(|(at, _)| {
+            let (agent, rest) = path.split_at(at);
+            self.transcript_of(agent)
+                .map(|session| (session, rest.get(1..)))
+        })
+    }
+
+    pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
+        if let Some((session, entry)) = self.history_root(url.path()) {
+            return render_history(url, &session, entry, page);
         }
+        let path = url.path();
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
         }
@@ -979,13 +986,7 @@ mod tests {
     #[test]
     fn history_resolves_entries_through_the_attached_session() -> TestResult {
         let workspace = Scratch::new("yi-schemes-history")?;
-        let metadata = yi_session::SessionMetadata {
-            id: "test".to_owned(),
-            created_at: 0,
-            parent_session_id: None,
-            name: None,
-        };
-        let mut store = yi_session::SessionStore::in_memory(metadata);
+        let mut store = in_memory_session();
         let id = store.append_custom("main", "note", None)?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =
@@ -1032,26 +1033,24 @@ mod tests {
         })
     }
 
+    fn host_notice(text: &str) -> AgentMessage {
+        AgentMessage::host_text(HostSource::Notice, text, 0)
+    }
+    fn user_ask(text: &str) -> AgentMessage {
+        AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
+    }
+    fn shared_session() -> yi_session::SharedSession {
+        std::sync::Arc::new(std::sync::Mutex::new(in_memory_session()))
+    }
+
     #[test]
     fn user_n_counts_only_attributed_user_messages() -> TestResult {
         let workspace = Scratch::new("yi-schemes-user")?;
         let mut store = in_memory_session();
-        store.append_message(
-            "main",
-            AgentMessage::host_text(HostSource::Notice, "host-minted preamble", 0),
-        )?;
-        store.append_message(
-            "main",
-            AgentMessage::user_input(UserContent::Text("first real ask".to_owned()), 0),
-        )?;
-        store.append_message(
-            "main",
-            AgentMessage::host_text(HostSource::Notice, "compaction filler", 0),
-        )?;
-        store.append_message(
-            "main",
-            AgentMessage::user_input(UserContent::Text("second real ask".to_owned()), 0),
-        )?;
+        store.append_message("main", host_notice("host-minted preamble"))?;
+        store.append_message("main", user_ask("first real ask"))?;
+        store.append_message("main", host_notice("compaction filler"))?;
+        store.append_message("main", user_ask("second real ask"))?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =
             Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", shared);
@@ -1080,10 +1079,7 @@ mod tests {
     fn a_host_minted_user_message_never_resolves() -> TestResult {
         let workspace = Scratch::new("yi-schemes-user-forged")?;
         let mut store = in_memory_session();
-        store.append_message(
-            "main",
-            AgentMessage::host_text(HostSource::Notice, "forged instruction", 0),
-        )?;
+        store.append_message("main", host_notice("forged instruction"))?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =
             Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", shared);
@@ -1144,10 +1140,7 @@ mod tests {
         let log = std::sync::Arc::new(FetchLog::new());
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_log(std::sync::Arc::clone(&log))
-            .with_session(
-                "main",
-                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
-            )
+            .with_session("main", shared_session())
             .with_transcripts(desk("demo-plan/cut-the-seam")?);
         let live: Url = "agent://demo-plan/cut-the-seam".parse()?;
         log.register_pin(&live, "history://demo-plan/cut-the-seam".parse()?)?;
@@ -1162,10 +1155,7 @@ mod tests {
     fn a_live_child_answers_its_own_agent_url_before_any_pin_exists() -> TestResult {
         let workspace = Scratch::new("yi-schemes-agent-live")?;
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
-            .with_session(
-                "main",
-                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
-            )
+            .with_session("main", shared_session())
             .with_transcripts(desk("demo-plan/cut-the-seam")?);
         let live: Url = "agent://demo-plan/cut-the-seam".parse()?;
         let fetched = resolver.fetch(&live)?;
@@ -1183,10 +1173,7 @@ mod tests {
     fn history_reaches_a_run_that_is_not_the_attached_session() -> TestResult {
         let workspace = Scratch::new("yi-schemes-history-corpus")?;
         let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
-            .with_session(
-                "main",
-                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
-            )
+            .with_session("main", shared_session())
             .with_transcripts(desk("some-older-run")?);
         let elsewhere: Url = "history://some-older-run".parse()?;
         assert_eq!(resolver.fetch(&elsewhere)?.served_by, "session-transcript");

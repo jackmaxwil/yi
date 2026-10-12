@@ -59,9 +59,9 @@ fn assistant(text: &str, usage_row: Usage, stop_reason: StopReason) -> AgentMess
     }
 }
 
-fn assistant_call(name: &str, path: &str) -> AgentMessage {
+fn assistant_call(name: &str, key: &str, value: &str) -> AgentMessage {
     let mut arguments = serde_json::Map::new();
-    arguments.insert("path".to_owned(), json!(path));
+    arguments.insert(key.to_owned(), json!(value));
     AgentMessage::Assistant {
         content: vec![Content::ToolCall {
             id: "call-1".to_owned(),
@@ -722,9 +722,16 @@ fn tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResul
     let long = "body ".repeat(80);
     let attributed = vec![
         att("u1", user("must keep the latch")),
-        att("r1", assistant_call("read", "src/latch.rs")),
+        att("r1", assistant_call("read", "path", "src/latch.rs")),
         att("t1", tool_result(&long)),
-        att("e1", assistant_call("edit", "src/latch.rs")),
+        att(
+            "e1",
+            assistant_call(
+                "edit",
+                "patch",
+                "[src/latch.rs#3945]\nPUT 1.=1:\n+fn latch() {}",
+            ),
+        ),
         att(
             "a1",
             assistant(
@@ -762,6 +769,53 @@ fn tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResul
     assert!(
         rendered.contains("[Kernel]") && rendered.contains("IPython kernel keeps running"),
         "the view carries the kernel persist note: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn every_section_of_an_edit_patch_is_a_modified_file() -> TestResult {
+    let patch = "[shapes/geometry.py#3945]\nPUT 1.=1:\n+def area(rect):\n[shapes/billing.py#5EEB]\nPUT 7.=7:\n+    return area((width, height)) * RATE\n[shapes/report.py#20A7]\nPUT 5.=5:\n+    return f\"{area(rect)}\"";
+    let attributed = vec![
+        att("r1", assistant_call("read", "path", "shapes/report.py")),
+        att("e1", assistant_call("edit", "patch", patch)),
+        att(
+            "e2",
+            assistant_call("edit", "patch", "PUT 1.=1:\n+no header"),
+        ),
+    ];
+    let messages: Vec<AgentMessage> = attributed.iter().map(|a| a.message.clone()).collect();
+    let file_ops = yi_context::details::extract_file_ops(&messages, None);
+    let view = compile_view(&attributed, None);
+    let (text, details) = compose_summary("## Goal\nArea", &file_ops, &view);
+    assert_eq!(
+        details.modified_files,
+        [
+            "shapes/billing.py",
+            "shapes/geometry.py",
+            "shapes/report.py"
+        ],
+        "every [path#TAG] header is a modified file: {text}"
+    );
+    assert!(
+        details.read_files.is_empty(),
+        "a read file later edited is listed as modified only: {:?}",
+        details.read_files
+    );
+    let rendered = view.render();
+    assert!(
+        rendered.contains("(#r1) read shapes/report.py stale"),
+        "an edit in a later section marks the read stale: {rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "(#e1) edit shapes/geometry.py; edit shapes/billing.py; edit shapes/report.py"
+        ),
+        "a multi-file edit names each path: {rendered}"
+    );
+    assert!(
+        rendered.contains("(#e2) edit\n"),
+        "a patch with no header names no path: {rendered}"
     );
     Ok(())
 }
