@@ -1178,14 +1178,7 @@ pub fn run_tui(
             app.scheduler.request();
         }
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
-        if app.scheduler.should_draw(Instant::now()) {
-            let start = Instant::now();
-            let tick = |app: &mut App, out: &mut _| images.tick(app, out);
-            crate::render::draw_with_images(&mut app, &mut terminal, Some(&port), tick);
-            app.scheduler.mark_drawn(start, Instant::now());
-        } else {
-            let _ = term::framed(terminal.backend_mut(), |out| images.tick(&mut app, out));
-        }
+        crate::render::step_frame(&mut app, &mut terminal, Some(&port), &mut images);
     }
     crate::logos::delete_all(terminal.backend_mut(), &mut images.logos);
 
