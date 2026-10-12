@@ -1154,8 +1154,12 @@ fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     ask(&workspace, "prove it", &[])?;
     let mut lines = String::new();
     for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
-        for entry in std::fs::read_dir(project?.path())? {
-            lines.push_str(&std::fs::read_to_string(entry?.path())?);
+        // A root's mailbox job is kept under `schedules/<id>/`, a directory beside the files.
+        for path in std::fs::read_dir(project?.path())? {
+            let path = path?.path();
+            if path.is_file() {
+                lines.push_str(&std::fs::read_to_string(path)?);
+            }
         }
     }
     assert!(lines.contains("prove it"), "{lines}");

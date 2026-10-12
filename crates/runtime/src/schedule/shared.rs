@@ -92,6 +92,15 @@ pub(crate) fn halt_all(on: bool, now: u64) -> (u64, u64) {
 /// A message landed in the buffer at `path`: each subscription reading it comes due now, or one
 /// cadence after its last delivery, so a burst still wakes a session at most once a cadence.
 pub(crate) fn poke(path: &std::path::Path) {
+    due(path, true);
+}
+
+/// A letter is one message a person or agent is waiting on, so its mailbox comes due now.
+pub(crate) fn poke_now(path: &std::path::Path) {
+    due(path, false);
+}
+
+fn due(path: &std::path::Path, paced: bool) {
     let all: Vec<Arc<SharedSchedule>> = intern_map()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -112,7 +121,7 @@ pub(crate) fn poke(path: &std::path::Path) {
         }
         shared.store.mutate(|state| {
             for job in state.jobs.iter_mut().filter(|job| reads(job)) {
-                let cadence = job.schedule.interval_ms.unwrap_or_default();
+                let cadence = (job.schedule.interval_ms.filter(|_| paced)).unwrap_or_default();
                 let due = job
                     .last_run_at
                     .map_or(now, |last| last.saturating_add(cadence))

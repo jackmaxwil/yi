@@ -15,7 +15,7 @@ use yi_runtime::fetch::KernelServiceMap;
 use yi_runtime::{
     AgentSession, ProviderStream, RuntimeWiring, SessionConfig, SubagentHost, Wall, attach_runtime,
 };
-use yi_session::SessionRepo;
+use yi_session::{SessionRepo, SharedSession};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -28,8 +28,26 @@ struct Root {
 
 /// A root as `build_session` leaves it: the runtime attached first, then its file store.
 fn root(scratch: &Path, repo: &str, name: &str) -> Result<Root, Box<dyn Error>> {
-    let (sessions, cwd) = (scratch.join("sessions"), scratch.join(repo));
+    bind(scratch, repo, name, ledger(scratch, repo, name)?)
+}
+
+/// A session's file on disk, as one no process holds.
+fn ledger(scratch: &Path, repo: &str, name: &str) -> Result<SharedSession, Box<dyn Error>> {
+    let cwd = scratch.join(repo);
     std::fs::create_dir_all(&cwd)?;
+    let mut repo = yi_session::JsonlRepo::new(scratch.join("sessions"), cwd.to_string_lossy());
+    let store = repo.create(Default::default())?;
+    yi_session::lock_session(&store).set_name(Some(name.to_owned()))?;
+    Ok(store)
+}
+
+fn bind(
+    scratch: &Path,
+    repo: &str,
+    name: &str,
+    store: SharedSession,
+) -> Result<Root, Box<dyn Error>> {
+    let (sessions, cwd) = (scratch.join("sessions"), scratch.join(repo));
     let provider = Arc::new(ProviderStream::new(None));
     let noted = || faux_assistant_message(vec![faux_text("noted")], StopReason::Stop);
     provider.queue_faux((0..64).map(|_| noted()).collect());
@@ -72,9 +90,6 @@ fn root(scratch: &Path, repo: &str, name: &str) -> Result<Root, Box<dyn Error>> 
             kernels: KernelServiceMap::new(),
         },
     );
-    let store =
-        yi_session::JsonlRepo::new(sessions, cwd.to_string_lossy()).create(Default::default())?;
-    yi_session::lock_session(&store).set_name(Some(name.to_owned()))?;
     let id = yi_session::lock_session(&store).metadata().id.clone();
     session.attach_store(store)?;
     Ok(Root { session, host, id })
@@ -246,6 +261,13 @@ async fn a_child_a_request_call_and_an_oversized_letter_are_refused_by_name() ->
         error.contains("as sent") && error.contains("16384"),
         "{error}"
     );
+    let local = letter(&target, "see the report", &[("ref", "family://report")]);
+    let error = ant
+        .host
+        .send("parent", &local)
+        .err()
+        .ok_or("a family ref was sent")?;
+    assert!(error.contains("reader's own store"), "{error}");
     assert!(delivered(&bee).is_empty());
     Ok(())
 }
@@ -272,5 +294,64 @@ async fn an_open_todo_does_not_hold_the_next_request() -> TestResult {
         .collect();
     assert_eq!(stamps.len(), 2, "{stamps:?}");
     assert_ne!(stamps[0]["ids"], stamps[1]["ids"]);
+    Ok(())
+}
+
+/// Dies with an `inform` ringing the doorbell: it makes its todo and waits, and the request
+/// that follows wakes the session, whose turn then reads both.
+#[tokio::test]
+async fn an_inform_makes_a_todo_and_waits_for_the_next_turn() -> TestResult {
+    let scratch = Scratch::new("yi-session-inform")?;
+    let (ant, bee) = (
+        root(&scratch, "here", "ant")?,
+        root(&scratch, "there", "bee")?,
+    );
+    let target = format!("history://{}", bee.id);
+    let note = letter(&target, "the gate is green", &[("kind", "inform")]);
+    ant.host.send("parent", &note)?;
+    let mail = |root: &Root| {
+        (root.session.todos()).map_or(0, |todos| {
+            let list = todos.list();
+            let count = list
+                .items()
+                .filter(|item| item.label.to_string().starts_with("mail"));
+            count.count()
+        })
+    };
+    until("the inform's todo", || mail(&bee) == 1).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(delivered(&bee).is_empty(), "the inform woke a turn");
+    ant.host
+        .send("parent", &letter(&target, "please deploy", &[]))?;
+    until("both letters", || delivered(&bee).len() == 2).await?;
+    let mut bodies: Vec<Value> = delivered(&bee)
+        .iter()
+        .map(|got| got["body"].clone())
+        .collect();
+    bodies.sort_by_key(ToString::to_string);
+    assert_eq!(bodies, [json!("please deploy"), json!("the gate is green")]);
+    Ok(())
+}
+
+/// Dies with a letter lost because it came first: a session no process held when it was posted
+/// reads it at its next start, and a `/heartbeat clear` there leaves its mailbox reading.
+#[tokio::test]
+async fn a_letter_waits_for_a_session_no_process_holds_and_outlives_a_heartbeat_clear() -> TestResult
+{
+    let scratch = Scratch::new("yi-session-dark")?;
+    let ant = root(&scratch, "here", "ant")?;
+    let dark = ledger(&scratch, "there", "bee")?;
+    ant.host.send(
+        "parent",
+        &letter("history://bee", "while you were out", &[]),
+    )?;
+    let bee = bind(&scratch, "there", "bee", dark)?;
+    let got = next_letter(&bee, 0).await?;
+    assert_eq!(got["body"], "while you were out");
+    let schedule = bee.session.heartbeat_service().ok_or("no schedule")?;
+    schedule.run("clear")?;
+    ant.host
+        .send("parent", &letter("history://bee", "after the clear", &[]))?;
+    assert_eq!(next_letter(&bee, 1).await?["body"], "after the clear");
     Ok(())
 }

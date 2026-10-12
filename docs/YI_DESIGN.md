@@ -639,15 +639,21 @@ A family message: an envelope in the receiver's inbox before delivery, then its 
   a cursor and `causes`; `rlm.receive` takes queued envelopes into `agent_message_read`.
 - A target resolves by exact name, else the one child named `.../<target>`; ambiguity refuses.
 - A letter to another session: a root sends to `history://<id or name>`, resolved as a read of
-  it is and judged by the same wall. It is appended to `channel://mail-<id>` under that
-  session's sessions directory, receipt `stored`. `from` is the sender's `history://<id>`, its
-  reply address; `origin` and `intent` point at the sender's entry and the user's words.
-- Each durable root subscribes to its own mail channel at bind: one letter per todo, any number
-  open, `FollowUp`. The wake shows the envelope as fenced data, never as a prompt.
+  it is and judged by the same wall; the target must be a root, a transcript directly under a
+  repository directory of the sessions store. It is appended to `channel://mail-<id>`, receipt
+  `stored`. `from` is the sender's `history://<id>`, its reply address; `origin` points at the
+  sender's entry, `intent` at the words behind its run. A `ref` in the reader's own store
+  (`family://`, `kernel://`) is refused.
+- Each durable root subscribes to its own mail channel at bind, from the channel's start, with
+  no heartbeat source, so `/heartbeat clear` leaves it: one todo per letter, any number open,
+  `FollowUp`; an `inform` waits for the next turn. A sender in the same process makes it due at
+  once; another process's waits up to a minute. The wake shows the envelope as fenced data.
 - Only a root sends outside; a child is refused and asks its root. `request` refuses another
   session, whose reply comes back as a letter. The envelope must fit the 16 KiB channel cap.
-- `hops`: a letter carries the hop count of the latest mail wake in its sender's ledger since the
-  user last typed, plus one; past `mail.hopLimit` (20) the send is refused with `yi.HopLimit`.
+- `hops`: walking back to what started the run, a mail wake gives its highest letter's hop and
+  intent, the user's words or the task give 0, and family mail and notices are passed over, so a
+  child's report keeps the chain. A letter carries that plus one; past `mail.hopLimit` (20) the
+  send is refused with `yi.HopLimit`.
 - State: `Kind { Inform, Request, Reply, Progress, Failure, Cancel }`,
   `Delivery { Queued, Woken, Inboxed, Answered, Stored }`.
 - Owner: [`runtime/src/mail.rs`](../crates/runtime/src/mail.rs),
@@ -883,7 +889,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
+  `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`, `mail{hopLimit}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)

@@ -74,12 +74,17 @@ fn remove_board(session_dir: &Path, id: &str) -> Result<(), String> {
     validate_session_id(id).map_err(|error| error.to_string())?;
     let kernel = session_dir.join("kernels").join(id);
     let clock = session_dir.join("schedules").join(id);
+    let gone = |result: std::io::Result<()>| match result {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+        _ => Ok(()),
+    };
     [board_dir(session_dir, id), kernel, clock]
         .into_iter()
-        .try_for_each(|dir| match std::fs::remove_dir_all(dir) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
-            _ => Ok(()),
-        })
+        .try_for_each(|dir| gone(std::fs::remove_dir_all(dir)))?;
+    let mail = session_dir.join("channels").join(format!("mail-{id}"));
+    ["jsonl", "json", "lock"]
+        .into_iter()
+        .try_for_each(|ext| gone(std::fs::remove_file(mail.with_extension(ext))))
 }
 
 fn split_subcommand(subcommand: &str) -> (&str, Option<&str>) {

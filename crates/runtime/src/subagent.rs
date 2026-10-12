@@ -1025,8 +1025,13 @@ impl SubagentHost {
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("agent_message.send", move |payload| {
-            let reply = host.send(PARENT_NAME, &payload);
-            Box::pin(async move { reply })
+            let host = Arc::clone(&host);
+            // A letter to another session walks the sessions directory, off the reactor.
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || host.send(PARENT_NAME, &payload))
+                    .await
+                    .map_err(|error| error.to_string())?
+            })
         });
         let host = Arc::clone(self);
         registry.register("agent_message.request", move |payload| {
