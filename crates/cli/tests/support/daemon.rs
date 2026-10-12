@@ -12,6 +12,14 @@ pub fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
 }
 
 pub fn spawn_daemon_in(dir: &Path, home: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
+    spawn_daemon_with(dir, home, &["--model", "faux/faux-1"])
+}
+
+pub fn spawn_daemon_with(
+    dir: &Path,
+    home: &Path,
+    flags: &[&str],
+) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let socket = dir.join("yi.sock");
     #[expect(
         clippy::disallowed_methods,
@@ -22,11 +30,10 @@ pub fn spawn_daemon_in(dir: &Path, home: &Path) -> Result<(Child, PathBuf), Box<
             "serve",
             "--socket",
             &socket.display().to_string(),
-            "--model",
-            "faux/faux-1",
             "--session-dir",
             &dir.join("sessions").display().to_string(),
         ])
+        .args(flags)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

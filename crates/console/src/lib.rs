@@ -17,6 +17,7 @@ pub mod palette;
 pub mod panes;
 pub mod render;
 pub mod select;
+pub mod settings;
 pub mod sidebar;
 
 use std::io::Stdout;

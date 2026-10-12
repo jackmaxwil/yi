@@ -31,7 +31,7 @@ in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is
 §17.1) · a GUI · browser automation, computer use, email, or any capability that
 is not a coding agent · an `ask_user` tool on a root session with no reviewer (a root asks in
 its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
-the console · a scheduled job that puts its own text in front of the model or runs saved code
+the console · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
@@ -867,7 +867,8 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 - `yi ask -` reads the prompt from stdin: one argument past Linux's 128 KiB cap is refused before `yi` starts.
 - Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
-- `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`
+- `~/.yi/config.json` is the only config file, parsed strictly before dispatch and read again as each
+  session starts, since the console's settings page saves it while workers run; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
   `models{primary,summarizer,advisor,autoReview,classifier}`, `bash{autoBackgroundMs}`, `plans{dir}`,
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
@@ -894,6 +895,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again as `prefill`) or `at` it, attached beside the source, which keeps its own branch |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
+| `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -961,8 +963,8 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   focused pane or session. A verb that never applies is absent, one blocked now is greyed with
   its reason, and a row with a key names it. With more than one pane in a tab, the focused pane's
   title carries `✕` and its close key where the title leaves room, and a sibling's a bare `✕`;
-  a mark closes its pane on a release that did not drag. The palette, the keys overlay and the
-  menu take every press while open and lift the kitty images of the panes they cover.
+  a mark closes its pane on a release that did not drag. The palette and the menu take every
+  press while open and lift the kitty images of the panes they cover.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
 - The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
   those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
@@ -982,9 +984,13 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   conversation to it, a fork that leaves the old branch in the ledger. `u` twice also restores
   files to before that turn by /undo's rule (D248, `undo_to`): what the agent moved goes back, a
   path the user changed after the last turn is kept and named; a steer has no checkpoint.
-- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor}`,
+- ⌥, or the gear in the sidebar's bottom row opens Settings beside the focused pane: a Session
+  tab over the session's live options (`d` keeps one as the default), a tab per group of every
+  config default, each row saying when a saved change applies, and a Keys tab listing every
+  chord, which replaced the keys overlay. An edit saves at once or names why it was refused.
+- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor, Settings}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
-  `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
+  `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Menu}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
 - Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267, D271
 
