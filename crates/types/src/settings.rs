@@ -10,6 +10,7 @@ pub enum Applies {
     Live,
     NextSession,
     DaemonRestart,
+    ConsoleRestart,
     SoloTui,
 }
 

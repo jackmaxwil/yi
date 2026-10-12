@@ -379,6 +379,19 @@ fn run_opts(
     autostart: bool,
     sidebar: SidebarMode,
     frames: Option<PathBuf>,
+    size: (u16, u16),
+) -> TestResult {
+    let console = (autostart, sidebar, Vec::new());
+    run_console(name, fixture, script, console, frames, size)
+}
+
+/// `console` is (autostart, sidebar, the Open in apps the config lists).
+fn run_console(
+    name: &str,
+    fixture: Option<Vec<Step>>,
+    script: &str,
+    (autostart, sidebar, open_apps): (bool, SidebarMode, Vec<String>),
+    frames: Option<PathBuf>,
     (width, height): (u16, u16),
 ) -> TestResult {
     let (dir, socket) = scratch_socket(name)?;
@@ -393,6 +406,7 @@ fn run_opts(
             root: "/tmp/demo-root".to_owned(),
             autostart,
             auto_side: true,
+            open_apps,
             sidebar,
         },
         DriveOptions {
@@ -4240,5 +4254,31 @@ fn a_prompt_after_an_abandoned_branch_rewinds_to_itself() -> TestResult {
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 live answer\n\
          mouse right 25 18\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
          wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 live yes\nquit\n",
+    )
+}
+
+fn open_in_recorder(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"name": "Second", "text": UNICODE_REPLY}) {
+        return refuse(frame, &format!("refused {}", frame["params"]));
+    }
+    vec![ok(frame, json!({"argv": ["recorder", "/tmp/x.md"]}))]
+}
+
+/// Open in lists the apps the config names and asks the daemon to open this reply's markdown
+/// in the one picked; the fixture refuses any other app or text.
+#[test]
+fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/open", open_in_recorder));
+    let apps = vec!["First".to_owned(), "Second".to_owned()];
+    run_console(
+        "menu-open",
+        Some(steps),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Open in\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Second\nkey down\nkey enter\nwait-frame 3000 launched Second\nquit\n",
+        (false, SidebarMode::Full, apps),
+        None,
+        (100, 30),
     )
 }
