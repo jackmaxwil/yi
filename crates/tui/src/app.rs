@@ -23,7 +23,7 @@ use crate::orb;
 use crate::popup::ListPopup;
 use crate::port::SessionPort;
 use crate::term;
-use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
+use crate::transcript::{arg_summary, intent_of, result_preview, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
 use yi_orb::OrbState;
 
@@ -956,7 +956,7 @@ impl App {
                         &text,
                         yi_types::event::shown_failed(is_error, &result.details),
                     ),
-                    preview: preview_lines(&text, 12, 6),
+                    preview: result_preview(&text, &result.details),
                     elapsed_ms: 0,
                     calls: 1,
                     details: result.details.clone(),
