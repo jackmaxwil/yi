@@ -1126,20 +1126,32 @@ impl Tool for GrepTool {
 
 /// Every hit collected, whole lines in walk order, with every row naming what the walk left out.
 fn program_value(collected: &Collected, notices: &[String]) -> Value {
-    let matches = (collected.files.iter()).flat_map(|file| {
+    let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
+    let mut matches: Vec<yi_types::tool_value::GrepMatch> = Vec::new();
+    'files: for file in &collected.files {
         let lines: Vec<&str> = file.normalized.split('\n').collect();
-        file.hits
-            .iter()
-            .map(move |&index| yi_types::tool_value::GrepMatch {
+        for &index in &file.hits {
+            if matches.len() >= fuse {
+                break 'files;
+            }
+            matches.push(yi_types::tool_value::GrepMatch {
                 path: file.display.clone(),
                 line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
                 text: lines.get(index).copied().unwrap_or_default().to_owned(),
-            })
-    });
+            });
+        }
+    }
+    let mut cut = notices.to_vec();
+    if matches.len() >= fuse {
+        cut.push(format!(
+            "[kept the first {fuse} of {} matches: the program fuse is {fuse} items; narrow the pattern or page the text view with offset]",
+            collected.total
+        ));
+    }
     let value = yi_types::tool_value::GrepValue {
-        matches: matches.collect(),
+        matches,
         files: u64::try_from(collected.files.len()).unwrap_or(u64::MAX),
-        cut: (!notices.is_empty()).then(|| notices.join("\n")),
+        cut: (!cut.is_empty()).then(|| cut.join("\n")),
     };
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
