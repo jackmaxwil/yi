@@ -454,12 +454,25 @@ def required():
             return required_jobs(protection.get("status_check_contexts") or [])
     return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
 
+TUI_RUN_NAME = "tui"
 
-def run_of(pr):
-    """Whether any workflow run exists for this head, one still queued for a runner included."""
-    tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
-    return any(r.get("head_sha", "").startswith(pr["head"]["sha"]) for r in tasks.get("workflow_runs", []))
 
+def run_status(pr):
+    """The newest tui workflow run for this head, queued ones included, or None.
+    Incident: the task list holds every workflow's jobs, so the review's own job read as the
+    tui run and a PR the tui workflow skips waited out the whole snapshot wait."""
+    sha = pr["head"]["sha"]
+    for page in (1, 2, 3):
+        runs = fgj_api("GET", f"repos/{repo()}/actions/runs?limit=50&page={page}") or {}
+        rows = runs.get("workflow_runs") or []
+        for run in rows:
+            if run.get("name") == TUI_RUN_NAME and run.get("head_sha", "").startswith(sha):
+                return run.get("status")
+        if len(rows) < 50:
+            return None
+    print("[…] no tui run for this head in the newest 150 runs (cap 50 per page × 3); "
+          "widen the page walk in run_status to read further back")
+    return None
 
 def jobs_of(pr):
     tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
