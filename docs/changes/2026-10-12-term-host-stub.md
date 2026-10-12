@@ -1,0 +1,4 @@
+---
+issue: Closes #1290
+---
+A scene played in the Ghostty term host can now stream a reply at a real pace. A scene header `--stub <reply file> <tokens/s>` starts `scripts/proof/stub_provider.py` inside the yi-term container, registers it in the run's catalog as `openrouter/local-slow`, and runs `yi tui` or `yi serve` against it instead of `faux/faux-1`, whose reply lands in one frame and, from `yi serve`, is only `faux: `. A new `snap-now <name>` step grabs the window at once, where `snap` waits for output to pause and so never fires mid-stream. A stub scene is not played headless and is left out of the PR job's base-and-head diff, because a paced stream differs between any two runs. `stream-solo` and `stream-console` are the two scenes: a multi-paragraph reply at 90 tokens a second, grabbed half way and after its last words land. Run them with `just tui-see run scripts/proof/tui_see/stream-console.drive --host term --video`.

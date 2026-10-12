@@ -9,9 +9,10 @@ use super::{Page, Resolver};
 /// Incident: an unpaged `read history://<id>` of a 5 MB session put 4.86 MB in one tool result.
 const LISTING_BYTES: usize = 50 * 1024;
 
-struct UrlRead {
+struct UrlRouted {
     inner: Arc<dyn Tool>,
     resolver: Arc<Resolver>,
+    serve: fn(&Resolver, &Map<String, Value>, &ToolContext) -> Option<ToolOutput>,
 }
 
 fn page(input: &Map<String, Value>) -> Result<Option<Page>, String> {
@@ -77,7 +78,49 @@ fn address(input: &Map<String, Value>) -> Option<&str> {
     (!scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_lowercase())).then_some(path)
 }
 
-impl Tool for UrlRead {
+fn serve_read(
+    resolver: &Resolver,
+    input: &Map<String, Value>,
+    context: &ToolContext,
+) -> Option<ToolOutput> {
+    let raw = address(input)?;
+    let fetched = raw
+        .parse::<Url>()
+        .map_err(|error| format!("{raw}: {error}"))
+        .and_then(|url| {
+            let page = page(input)?;
+            resolver
+                .fetch_page(&url, page)
+                .map_err(|error| error.to_string())
+        });
+    Some(match fetched {
+        Ok(fetched) if context.program => {
+            let value = yi_types::tool_value::FetchedValue {
+                url: fetched.url.to_string(),
+                text: fetched.text.clone(),
+                served_by: fetched.served_by.clone(),
+                // The tool's `offset` is 1-based; a program feeds this straight back to it.
+                next_offset: (fetched.next_offset)
+                    .map(|next| u64::try_from(next.saturating_add(1)).unwrap_or(u64::MAX)),
+            };
+            let mut output = text_output(fetched.text);
+            output.value = serde_json::to_value(value).ok();
+            output
+        }
+        Ok(fetched) => match fetched.next_offset {
+            Some(next) => text_output(format!(
+                "{}\n[more from offset {}; offset and limit count {} here]",
+                fetched.text,
+                next.saturating_add(1),
+                unit(&fetched.url)
+            )),
+            None => text_output(capped(&fetched.url, &fetched.served_by, fetched.text)),
+        },
+        Err(message) => error_output(message),
+    })
+}
+
+impl Tool for UrlRouted {
     fn name(&self) -> &str {
         self.inner.name()
     }
@@ -103,52 +146,24 @@ impl Tool for UrlRead {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let Some(raw) = address(&input) else {
-            return self.inner.execute(input, context);
-        };
-        let fetched = raw
-            .parse::<Url>()
-            .map_err(|error| format!("{raw}: {error}"))
-            .and_then(|url| {
-                let page = page(&input)?;
-                self.resolver
-                    .fetch_page(&url, page)
-                    .map_err(|error| error.to_string())
-            });
-        match fetched {
-            Ok(fetched) if context.program => {
-                let value = yi_types::tool_value::FetchedValue {
-                    url: fetched.url.to_string(),
-                    text: fetched.text.clone(),
-                    served_by: fetched.served_by.clone(),
-                    // The tool's `offset` is 1-based; a program feeds this straight back to it.
-                    next_offset: (fetched.next_offset)
-                        .map(|next| u64::try_from(next.saturating_add(1)).unwrap_or(u64::MAX)),
-                };
-                let mut output = text_output(fetched.text);
-                output.value = serde_json::to_value(value).ok();
-                output
-            }
-            Ok(fetched) => match fetched.next_offset {
-                Some(next) => text_output(format!(
-                    "{}\n[more from offset {}; offset and limit count {} here]",
-                    fetched.text,
-                    next.saturating_add(1),
-                    unit(&fetched.url)
-                )),
-                None => text_output(capped(&fetched.url, &fetched.served_by, fetched.text)),
-            },
-            Err(message) => error_output(message),
+        match (self.serve)(&self.resolver, &input, context) {
+            Some(output) => output,
+            None => self.inner.execute(input, context),
         }
     }
 }
 
 pub fn route_urls(tools: &mut [Arc<dyn Tool>], resolver: &Arc<Resolver>) {
-    for tool in tools.iter_mut().filter(|tool| tool.name() == "read") {
-        let inner = Arc::clone(tool);
-        *tool = Arc::new(UrlRead {
-            inner,
+    for tool in tools.iter_mut() {
+        let serve = match tool.name() {
+            "read" => serve_read,
+            "grep" => super::grep::serve_grep,
+            _ => continue,
+        };
+        *tool = Arc::new(UrlRouted {
+            inner: Arc::clone(tool),
             resolver: Arc::clone(resolver),
+            serve,
         });
     }
 }

@@ -597,9 +597,10 @@ pub fn landed(message: &AgentMessage, results: &[AgentMessage]) -> (u32, bool) {
             continue;
         };
         // A cell that raised after its edits still made them: each row carries its own `ok`.
+        // A row that outlived its cell was started by an earlier turn, so this one is not credited.
         for call in yi_context::nested_calls(details.as_ref())
             .iter()
-            .filter(|call| call.ok)
+            .filter(|call| call.ok && !call.outlived)
         {
             let ran = call.command.as_deref().is_some_and(mutating_command);
             count_call(&call.tool, ran, (&mut landed, &mut todo_touched));

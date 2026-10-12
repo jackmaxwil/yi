@@ -479,33 +479,14 @@ fn read_tool_text(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<(String, bool), Box<dyn Error>> {
-    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
-        .into_iter()
-        .filter(|tool| tool.name() == "read")
-        .collect();
-    yi_runtime::fetch::route_urls(&mut tools, resolver);
-    let mut input = serde_json::Map::new();
-    input.insert("path".to_owned(), path.into());
+    let mut input = serde_json::json!({"path": path});
     if let Some(offset) = offset {
-        input.insert("offset".to_owned(), offset.into());
+        input["offset"] = offset.into();
     }
     if let Some(limit) = limit {
-        input.insert("limit".to_owned(), limit.into());
+        input["limit"] = limit.into();
     }
-    let output = tools
-        .first()
-        .ok_or("no read tool")?
-        .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
-    let text = output
-        .result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    Ok((text, output.is_error))
+    crate::support::routed_tool(resolver, "read", input)
 }
 
 /// An unpaged listing is served whole at the 51,200-byte cap and cut one byte past it, with a
@@ -627,7 +608,7 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
     assert_eq!(
         compact.lines().last(),
         Some(
-            "[… a line is cut at 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
+            "[… a line is cut to its first line and 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
         )
     );
     let cut_line = compact
@@ -641,6 +622,43 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
     let entry = read_tool_text(&Arc::new(resolver()), whole, None, None)?.0;
     assert!(entry.contains("état des lieux "), "{entry}");
     assert!(!entry.contains("history://parent/since/0"), "{entry}");
+    Ok(())
+}
+
+/// The incident's shape: a 301-line bash result whose fact sits on line 219. Its compact line
+/// counts the lines it dropped and names the read that returns them.
+#[test]
+fn a_multi_line_result_in_the_compact_view_counts_what_it_dropped() -> TestResult {
+    let store = memory_store();
+    let result = yi_types::message::AgentMessage::ToolResult {
+        tool_call_id: "t1".to_owned(),
+        tool_name: "bash".to_owned(),
+        content: vec![yi_types::message::Content::Text {
+            text: crate::support::report_output(),
+            text_signature: None,
+        }],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 0,
+    };
+    yi_session::lock_session(&store).append_message("main", result)?;
+    let resolver = Arc::new(
+        Resolver::new(std::env::temp_dir(), Wall::default()).with_session("main", store.clone()),
+    );
+    let compact = read_tool_text(&resolver, "history://main/since/0", None, None)?.0;
+    let line = compact
+        .lines()
+        .find(|line| line.contains("result bash: "))
+        .ok_or("no result line")?;
+    assert!(
+        line.contains("setting_000 = fb3f5c… (+300 lines) · whole: "),
+        "{line}"
+    );
+    let whole = line.rsplit(" · whole: ").next().ok_or("no pointer")?;
+    let entry = read_tool_text(&resolver, whole, None, None)?.0;
+    assert!(entry.contains("release_id = rel-09d88875"), "{entry}");
     Ok(())
 }
 

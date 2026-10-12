@@ -32,7 +32,7 @@ pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
 pub use exec::{ExecTool, discover_exec_tools};
-pub use grep::GrepTool;
+pub use grep::{GrepTool, line_matcher};
 pub use ipython::cell_output;
 pub use ipython::{CellCalls, CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, clamp_timeout, run_or_background};

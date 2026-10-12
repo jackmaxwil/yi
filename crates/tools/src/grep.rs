@@ -116,11 +116,16 @@ impl Options {
     }
 }
 
-fn build_matchers(
+/// The matcher a file grep builds from `pattern`, `literal` and `ignore_case`, for a decorator
+/// that greps another source by the same rules.
+pub fn line_matcher(input: &Map<String, Value>) -> Result<regex::Regex, Box<ToolOutput>> {
+    pattern_matcher(input, &Options::from(input))
+}
+
+fn pattern_matcher(
     input: &Map<String, Value>,
     options: &Options,
-    root: &Path,
-) -> Result<(regex::Regex, Option<RootedGlob>), Box<ToolOutput>> {
+) -> Result<regex::Regex, Box<ToolOutput>> {
     let alternatives: Vec<String> = patterns(input)?
         .into_iter()
         .map(|pattern| {
@@ -146,6 +151,15 @@ fn build_matchers(
             };
             invalid(format!("invalid regex pattern: {error}{unlinked}"))
         })?;
+    Ok(matcher)
+}
+
+fn build_matchers(
+    input: &Map<String, Value>,
+    options: &Options,
+    root: &Path,
+) -> Result<(regex::Regex, Option<RootedGlob>), Box<ToolOutput>> {
+    let matcher = pattern_matcher(input, options)?;
     let include_source = match (
         input.get("include").and_then(Value::as_str),
         input.get("type").and_then(Value::as_str),
@@ -927,7 +941,7 @@ impl Tool for GrepTool {
             "type": "object",
             "properties": {
                 "pattern": {"type": ["string", "array"], "items": {"type": "string"}, "description": "Regex (Rust syntax), or an array of them matched as alternatives"},
-                "path": {"type": "string", "description": "Directory or file to search (default: cwd)"},
+                "path": {"type": "string", "description": "Directory or file to search (default: cwd), or a transcript: history://self, parent, a child, or repo for past sessions"},
                 "literal": {"type": "boolean", "description": "Match the pattern as plain text"},
                 "ignore_case": {"type": "boolean", "description": "Case-insensitive"},
                 "include": {"type": "string", "description": "Glob on file paths: relative to path, or absolute"},

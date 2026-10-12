@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use yi_kernel::client::{
     AbortFlag, ExecuteError, ExecuteOptions, HostFuture, HostHandlers, KernelManager, KernelOptions,
 };
-use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome, ToolOutput};
+use yi_tools::{CancelFlag, KernelCellOutcome, ToolOutput};
 
 use crate::args::Args;
 pub use crate::kernel_bootstrap::{
@@ -255,6 +255,7 @@ pub struct KernelService {
     waited: Mutex<Option<String>>,
     own_paths: Option<crate::wiring::OwnPathsFn>,
     user_cells: std::sync::atomic::AtomicUsize,
+    pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
 }
 
 impl KernelService {
@@ -277,6 +278,7 @@ impl KernelService {
             waited: Mutex::new(None),
             own_paths: None,
             user_cells: std::sync::atomic::AtomicUsize::new(0),
+            cell_calls: std::sync::OnceLock::new(),
         }
     }
 
@@ -619,7 +621,7 @@ impl KernelService {
         // Invariant: only an abort skips the decrement, and a user cell is aborted only when its
         // session closes, after which no notice can wake it.
         self.user_cells.fetch_add(1, SeqCst);
-        let output = match self.execute_async(code, cancelled, None).await {
+        let output = match self.execute_async(code, cancelled, None, None).await {
             Ok(outcome) => yi_tools::cell_output(code, outcome),
             Err(message) => yi_tools::error_output(message),
         };
@@ -650,11 +652,12 @@ impl KernelService {
         crate::kernel_bootstrap::restart_note(lost.as_deref())
     }
 
-    async fn execute_async(
+    pub(crate) async fn execute_async(
         &self,
         code: &str,
         cancelled: &CancelFlag,
         recovery_dir: Option<&std::path::Path>,
+        calls: Option<Arc<dyn yi_tools::CellCalls>>,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
         let mut notes = Vec::new();
@@ -690,6 +693,8 @@ impl KernelService {
                     ExecuteOptions {
                         abort: Some(abort),
                         on_stream: Some(spill.sink()),
+                        on_request: (calls.clone())
+                            .map(|calls| Box::new(move |id: &str| calls.open(id)) as Box<_>),
                         ..ExecuteOptions::default()
                     },
                 )
@@ -736,23 +741,6 @@ impl KernelService {
                 }
             }
         }
-    }
-}
-
-pub fn ipython_tool(service: Arc<KernelService>) -> Arc<dyn yi_tools::Tool> {
-    crate::kernel_tools::ipython_tool(service, None)
-}
-
-impl KernelBridge for KernelService {
-    fn execute_cell(
-        &self,
-        code: &str,
-        cancelled: &CancelFlag,
-        recovery_dir: Option<&std::path::Path>,
-    ) -> Result<KernelCellOutcome, String> {
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|_| "ipython requires a tokio runtime".to_owned())?;
-        handle.block_on(self.execute_async(code, cancelled, recovery_dir))
     }
 }
 
