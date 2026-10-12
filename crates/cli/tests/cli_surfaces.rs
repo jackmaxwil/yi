@@ -2288,3 +2288,49 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
     );
     Ok(())
 }
+
+/// The prompt slots each session in `home/sessions` recorded, by slot name, one list per file.
+fn prompt_slots(workspace: &Workspace) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+    let mut found = Vec::new();
+    for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
+        for path in std::fs::read_dir(project?.path())? {
+            let path = path?.path();
+            if !path.is_file() || path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            let mut names = Vec::new();
+            for line in std::fs::read_to_string(&path)?.lines() {
+                let entry: Value = serde_json::from_str(line)?;
+                if entry["customType"] == "ext_state" {
+                    let slots = entry["data"]["slots"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    names.extend(
+                        slots
+                            .iter()
+                            .filter_map(|slot| slot["name"].as_str().map(str::to_owned)),
+                    );
+                }
+            }
+            found.push(names);
+        }
+    }
+    Ok(found)
+}
+
+/// Dies with an unattended run told nothing about its graders: `yi ask` with no terminal on
+/// stdin records the unattended slot (an rpc client's session does not: rpc_protocol).
+#[test]
+fn a_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
+    let alone = Workspace::new("unattended-ask")?;
+    ask(&alone, "build the report", &[])?;
+    let slots = prompt_slots(&alone)?;
+    assert!(
+        slots
+            .iter()
+            .any(|names| names.iter().any(|name| name == "unattended")),
+        "{slots:?}"
+    );
+    Ok(())
+}

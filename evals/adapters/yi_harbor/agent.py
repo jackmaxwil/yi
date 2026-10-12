@@ -25,6 +25,7 @@ from yi_usage import (
     SESSIONS_SUBDIR,
     config_fingerprint,
     eval_config,
+    kernel_broken,
     kernel_problems,
     levers_label,
     local_plugins,
@@ -175,9 +176,12 @@ class Yi(BaseInstalledAgent):
         if stdout is None:
             return
         problems = kernel_problems(stdout)
+        if kernel_broken(problems):
+            raise RuntimeError("kernel preflight red with its toolchain present, so the trial "
+                               "would score a broken install: " + "; ".join(problems))
         if problems:
-            # the trial runs anyway: the environment block tells the model the kernel is
-            # unavailable and the row counts `kernel_dead` (#329)
+            # no toolchain: the trial runs bash-only, the environment block tells the model the
+            # kernel is unavailable and the row counts `kernel_dead` (#329)
             print("kernel: " + "; ".join(problems), file=sys.stderr)
 
     async def upload_ca_bundle(self, environment: BaseEnvironment) -> None:

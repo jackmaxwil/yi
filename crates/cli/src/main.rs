@@ -431,6 +431,8 @@ fn build_session(
     let work = lane
         .as_ref()
         .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
+    // Only `yi ask` runs with nobody at all: an rpc or acp client is a person's surface.
+    let unattended = asker.is_none() && args.command == "ask";
     let broker = std::sync::Arc::new(
         yi_runtime::PermissionBroker::new(
             args.mode,
@@ -447,11 +449,12 @@ fn build_session(
     }
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");
-    session.install_extensions(shells::session_extensions(
-        args,
-        &work,
-        session.model().context_window,
-    ));
+    let mut host = shells::session_extensions(args, &work, session.model().context_window);
+    if unattended {
+        let slot = yi_runtime::ext::Slot::new(yi_runtime::ext::Rank::Mode, "unattended");
+        host.attach(slot, yi_runtime::unattended_fragment().to_owned());
+    }
+    session.install_extensions(host);
     drop(extensions);
     let provider = std::sync::Arc::clone(session_provider(&session));
     let freeform_grammar = config()
