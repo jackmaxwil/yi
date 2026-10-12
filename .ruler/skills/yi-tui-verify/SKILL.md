@@ -79,18 +79,8 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    way out). The scrub masks ids the store refuses, so the seed gets unique ids and a chain. The
    `end` scene also retypes the last prompt and plays the last recorded reply as its cassette;
    that turn freezes the clock, because its elapsed seconds read the wall clock.
-10. On the forge, `.forgejo/workflows/tui.yml` builds the base and head binaries, then runs
-   `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
-   `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
-   24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
-   headless there. `tui_see.py` sets `YI_FIXED_IDS=1` for the serve it starts, so console sessions
-   count ids up from 1 and two runs draw the same avatar colours.
-11. The live gallery: every push to main that touches those paths plays the scenes on main's binary
-   alone and replaces `gallery.html` on the `tui-gallery` release. Bookmark
-   https://git.example.invalid/apex/yi/releases/tag/tui-gallery (the release body names the commit).
-   The forge serves a release's HTML as `text/plain`, so the asset shows source in a browser: save
-   it (`gallery.html` on that page) and open the file. `just tui-see publish <page>` is the verb the
-   job runs; it needs the `FORGEJO_*` env that `post` reads and `FORGEJO_HEAD` for the commit.
-12. Fuzzing: `just tui-see monkey --runs 20 --seed 7 [--surface solo|console]` plays seeded random key
+   `tui_see.py` sets `YI_FIXED_IDS=1` for the serve it starts, so console sessions count ids up
+   from 1 and two runs draw the same avatar colours.
+10. Fuzzing: `just tui-see monkey --runs 20 --seed 7 [--surface solo|console]` plays seeded random key
    runs through the headless loops and reports only a crash, a hang or a control character in a
    cell; the seed's script is `target/see/monkey/<seed>/<surface>.drive`, replayed by `tui_see.py run`.
