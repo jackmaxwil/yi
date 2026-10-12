@@ -83,6 +83,11 @@ pub fn extract_file_ops(
         file_ops
             .edited
             .extend(details.modified_files.iter().cloned());
+        let dropped = details
+            .extra
+            .get(NESTED_READS_DROPPED)
+            .and_then(Value::as_u64);
+        file_ops.reads_dropped = dropped.unwrap_or(0);
     }
     for message in messages {
         extract_file_ops_from_message(message, &mut file_ops);
@@ -111,7 +116,7 @@ pub fn format_file_operations(
     let mut read_rows = read_files.to_vec();
     if reads_dropped > 0 {
         read_rows.push(format!(
-            "[… {} read files listed; {reads_dropped} more read calls from cells are not: a cell keeps {NESTED_READS_KEPT} distinct read rows (NESTED_READS_KEPT); their files: grep(pattern=\"yi.tools\", path=\"history://self\")]",
+            "[… {} read files listed; {reads_dropped} more read calls from cells are not, and their paths were not kept: a cell keeps {NESTED_READS_KEPT} distinct read rows (NESTED_READS_KEPT); the cells that made them: grep(pattern=\"yi.tools\", path=\"history://self\")]",
             read_files.len()
         ));
     }

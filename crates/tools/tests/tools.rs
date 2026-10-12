@@ -1569,7 +1569,7 @@ impl yi_tools::KernelBridge for DeadKernel {
 struct OneWrite(std::sync::Mutex<Vec<&'static str>>);
 
 impl yi_tools::CellCalls for OneWrite {
-    fn open(&self) {
+    fn open(&self, _request: &str) {
         self.0
             .lock()
             .map(|mut seen| seen.push("open"))
@@ -1614,7 +1614,7 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
         json!(["made.txt"])
     );
     assert_eq!(output.result.details["callsDropped"], json!(3));
-    assert_eq!(*calls.0.lock().map_err(|_| "poisoned")?, ["open", "close"]);
+    assert_eq!(*calls.0.lock().map_err(|_| "poisoned")?, ["close"]);
     Ok(())
 }
 

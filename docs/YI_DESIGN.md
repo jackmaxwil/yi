@@ -506,17 +506,18 @@ A persistent IPython process per session that reaches the host only through host
 - `tool.call` runs the session's own adapter, found at call time, so rules, wall and broker judge
   each nested call on its own arguments as they judge a model's. Calls keep the loop's order
   through one read-write lock: reads share it, every other kind takes it alone, since the loop
-  orders them only by awaiting. It answers only while an agent's `ipython` cell is open and the
-  call's `cell` (the execute request a `pre_run_cell` hook put in a context variable, which tasks
-  inherit) is the request the kernel pump names as running (`activeCell`): a task that outlived
-  its cell, even while a later cell runs, a call after an interrupt, or a cell typed into the
-  console is refused `cancelled`. A failure replies `{ok: false, kind, message, suggestions}`: `unknown_tool`,
+  orders them only by awaiting. It answers only a call whose `cell` (the execute request a
+  `pre_run_cell` hook put in a context variable, which tasks inherit) is the request the agent's
+  `ipython` cell holds the kernel as, recorded when the kernel takes it: a task that outlived its
+  cell, even while a later cell runs, a call after an interrupt, a call naming no cell, or a cell
+  typed into the console, even one running while the agent's cell waits, is refused `cancelled`. A failure replies `{ok: false, kind, message, suggestions}`: `unknown_tool`,
   `excluded_tool`, `invalid_input` (also a cell's own `kernel://` read, which would queue behind
   the cell), `refused` (a denial), `tool_failure`, `cancelled`.
 - Every call that ran is a `NestedCall` row on its cell's `ipython` result, `details.calls`: the
   files it named, a sequential call's `command`, an `ask_user` answer, never a write's content.
   A read row is kept once per tool and files, a cell keeps 256 of them, counting the rest in
-  `callsDropped`, which the summary's `<read-files>` names in a `[…]` row; every other row is kept. A
+  `callsDropped`, which the summary's `<read-files>` names in a `[…]` row (the paths are not kept;
+  the compaction's details carry the count to the next one); every other row is kept. A
   call that finished after its cell closed is `outlived` on a later cell's result, even one already
   open. Compaction's file lists and the todo landed count read the rows, a cell that raised
   included; the landed count skips an outlived row, which an earlier turn started.
