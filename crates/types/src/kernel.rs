@@ -146,14 +146,19 @@ pub struct NestedCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     pub duration_ms: u64,
+    /// Set on a call that finished after the cell that started it ended: it lands on the next.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outlived: bool,
 }
 
 /// The `ipython` result's `details` key holding its cell's [`NestedCall`] rows.
 pub const NESTED_CALLS: &str = "calls";
 /// The `details` key counting read rows a cell made past [`NESTED_READS_KEPT`].
 pub const NESTED_READS_DROPPED: &str = "callsDropped";
-/// Read rows one cell keeps; a write's row is always kept, its paths are what compaction lists.
+/// Read rows one cell keeps.
 pub const NESTED_READS_KEPT: usize = 256;
+/// Write rows one cell keeps whole; past it, one row per tool carries the remaining paths.
+pub const NESTED_WRITES_KEPT: usize = 1024;
 
 /// `.bootstrap-version` marker (design §9.1): any mismatch forces a full venv
 /// rebuild.

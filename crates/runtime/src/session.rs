@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -586,10 +586,9 @@ impl AgentSession {
 
     pub fn tools_handle(&self) -> crate::kernel_tools::ToolsFn {
         let shared = Arc::downgrade(&self.shared);
-        Arc::new(move || {
-            let shared = shared.upgrade();
-            let slot = shared.as_ref().and_then(|shared| shared.tools.lock().ok());
-            slot.as_deref().cloned().unwrap_or_default()
+        Arc::new(move || match shared.upgrade() {
+            Some(shared) => (shared.tools.lock().unwrap_or_else(PoisonError::into_inner)).clone(),
+            None => Vec::new(),
         })
     }
 

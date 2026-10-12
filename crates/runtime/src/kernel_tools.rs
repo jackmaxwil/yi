@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use serde_json::{Map, Value, json};
 use yi_loop::{AgentTool, ExecutionMode};
 use yi_types::event::ToolErrorKind;
-use yi_types::kernel::{NESTED_READS_KEPT, NestedCall};
+use yi_types::kernel::{NESTED_READS_KEPT, NESTED_WRITES_KEPT, NestedCall};
 
 use crate::args::Args;
 use crate::kernel::{HostRegistry, KernelService};
@@ -17,7 +17,10 @@ struct Rows {
     open: bool,
     kept: Vec<NestedCall>,
     reads: usize,
+    writes: usize,
     dropped: u64,
+    /// Past the write cap: each tool's remaining paths, one row apiece at close.
+    spilled: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 /// What one session's cells called through `tool.call`, until its `ipython` result lists them.
@@ -26,9 +29,9 @@ pub struct Calls {
     minted: AtomicU64,
     /// Invariant: call ids repeat across attaches unless they carry when this one began.
     attached_ms: u64,
-    /// Invariant: the loop orders writes only by awaiting one batch at a time, so a cell that
-    /// gathers two edits would race them; this lock is the only thing that orders them.
-    writes: tokio::sync::Mutex<()>,
+    /// Invariant: the loop runs a write alone and reads beside reads; a cell's gathered calls
+    /// keep that order only through this lock, reads shared and everything else exclusive.
+    order: tokio::sync::RwLock<()>,
 }
 
 impl Default for Calls {
@@ -37,7 +40,7 @@ impl Default for Calls {
             rows: Mutex::default(),
             minted: AtomicU64::new(0),
             attached_ms: yi_session::now_ms(),
-            writes: tokio::sync::Mutex::new(()),
+            order: tokio::sync::RwLock::new(()),
         }
     }
 }
@@ -47,13 +50,21 @@ impl Calls {
         self.rows.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push(&self, row: NestedCall, read: bool) {
+    fn push(&self, mut row: NestedCall, read: bool) {
         let mut rows = self.rows();
+        row.outlived = !rows.open;
         if read && rows.reads >= NESTED_READS_KEPT {
             rows.dropped = rows.dropped.saturating_add(1);
             return;
         }
+        if !read && rows.writes >= NESTED_WRITES_KEPT {
+            rows.dropped = rows.dropped.saturating_add(1);
+            let spilled = rows.spilled.entry(row.tool).or_default();
+            spilled.extend(row.paths);
+            return;
+        }
         rows.reads = rows.reads.saturating_add(usize::from(read));
+        rows.writes = rows.writes.saturating_add(usize::from(!read));
         rows.kept.push(row);
     }
 }
@@ -64,7 +75,18 @@ impl yi_tools::CellCalls for Calls {
     }
 
     fn close(&self) -> (Vec<NestedCall>, u64) {
-        let rows = std::mem::take(&mut *self.rows());
+        let mut rows = std::mem::take(&mut *self.rows());
+        let spilled = rows.spilled.into_iter().map(|(tool, paths)| NestedCall {
+            tool,
+            ok: true,
+            error_kind: None,
+            paths: paths.into_iter().collect(),
+            command: None,
+            answer: None,
+            duration_ms: 0,
+            outlived: false,
+        });
+        rows.kept.extend(spilled);
         (rows.kept, rows.dropped)
     }
 }
@@ -129,7 +151,7 @@ fn refused_before(
     root: bool,
 ) -> Option<Map<String, Value>> {
     if !calls.rows().open {
-        let message = "no cell is running: a call from a task that outlived its cell, or one made after the cell was interrupted, is refused; call it inside a cell";
+        let message = "no cell of the agent's is running: a call from a task that outlived its cell, one made after the cell was interrupted, or one from a cell typed into the console is refused; call it inside an ipython call";
         return Some(failure("cancelled", message.to_owned(), Vec::new()));
     }
     if let Some(why) = excluded(name, root) {
@@ -178,9 +200,9 @@ async fn call(
         return failure("invalid_input", reason, Vec::new());
     }
     let read = tool.execution_mode(&args) == ExecutionMode::Parallel;
-    let _ordered = match read {
-        true => None,
-        false => Some(calls.writes.lock().await),
+    let (_shared, _alone) = match read {
+        true => (Some(calls.order.read().await), None),
+        false => (None, Some(calls.order.write().await)),
     };
     let minted = calls.minted.fetch_add(1, Ordering::Relaxed);
     let id = format!("cell-{}-{minted}", calls.attached_ms);
@@ -209,6 +231,7 @@ async fn call(
             command: (args.str_of("command").map(str::to_owned)).filter(|_| !read),
             answer: asked.then(|| text.clone()),
             duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            outlived: false,
         },
         read && !asked,
     );
