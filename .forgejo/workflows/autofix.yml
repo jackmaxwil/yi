@@ -58,6 +58,10 @@ jobs:
           save-if: false
       - if: steps.queue.outputs.newer == '0'
         run: cargo build -p yi-cli
+      # glm-5.3-flash goes to CoreWeave first, as in review.yml; no fallback ban, because the higher
+      # tiers' models are not on CoreWeave and a strict pin would refuse them.
+      - if: steps.queue.outputs.newer == '0'
+        run: mkdir -p ~/.yi && echo '{"routing":{"order":["coreweave/nvfp4"]}}' > ~/.yi/config.json
       - name: fix conflicted PRs as yi-bot
         if: steps.queue.outputs.newer == '0'
         env:
