@@ -118,7 +118,7 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
     (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
-    env = {**os.environ, "HOME": str(run_dir / "home")}
+    env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1"}
     drive = ["--keys", str(scene.resolve()), "--frames", str(run_dir / "frames"),
              "--record", str(run_dir / "run.cast")]
     if "--seed" in extra and surface == "console":
@@ -353,7 +353,7 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
         shutil.copy(seed, out / "sessions" / encoded(Path.cwd()) / seed.name)
     # One job plays many scenes: a server that exited leaves its lock, so each run takes a free one.
     number = next(n for n in range(99, 400) if not Path(f"/tmp/.X{n}-lock").exists())
-    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}"}
+    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}", "YI_FIXED_IDS": "1"}
     display = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", f"{SCREEN}x24"],
                                stderr=subprocess.DEVNULL)
     procs = [display]
@@ -1020,10 +1020,6 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
                 text = text[:MAX_DIFF_LINES] + [cap_notice(
                     MAX_DIFF_LINES, len(text), "lines", "the job's tui-gallery artifact holds the whole diff")]
             lines += [f"### {scene} · {name}", "", *fence(text)]
-            drive = SCENES / f"{scene}.drive"
-            if drive.exists() and header(drive)[0] == "console":
-                lines.append("Console sessions take a fresh random id each run, so avatar and badge "
-                             "colours differ between any two runs; read past those cells.")
             crops = summary.parent.glob(f"{name}-region*-*.png")
             for crop in sorted(crops, key=lambda p: (p.stem.rsplit("-", 1)[0], p.stem.endswith("after"))):
                 if len(pictures) < MAX_PICTURES:
