@@ -661,7 +661,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
                 child.set_kernel_service(Arc::clone(&service));
                 child.set_wall(build.wall.clone());
                 let mut tools = yi_tools::builtin_tools();
-                tools.push(yi_runtime::kernel::ipython_tool(service));
+                tools.push(yi_runtime::kernel_tools::ipython_tool(service, None));
                 child.use_tools(tools, cwd, None);
                 Ok(child)
             }),

@@ -8,6 +8,7 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_kernel::client::HostHandlers;
 use yi_loop::ExecutionMode;
 use yi_runtime::kernel_tools::{Calls, ipython_tool, register};
+use yi_runtime::permission::PermissionBroker;
 use yi_runtime::{
     AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
 };
@@ -67,17 +68,21 @@ signed = all(callable(getattr(yi.tools, name)) for name in listed)
 print(walled, nested, "alpha" in view.text, signed and "grep" in listed)
 "#;
 
-fn session(cwd: &Path, code: &str) -> AgentSession {
+fn session(cwd: &Path, codes: &[&str]) -> AgentSession {
     let provider = Arc::new(ProviderStream::new(None));
-    let mut args = Map::new();
-    args.insert("code".to_owned(), json!(code));
-    provider.queue_faux(vec![
-        faux_assistant_message(
-            vec![faux_tool_call("call-1", "ipython", args)],
-            StopReason::ToolUse,
-        ),
-        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
-    ]);
+    let mut turns: Vec<_> = (codes.iter().enumerate())
+        .map(|(at, code)| {
+            let mut args = Map::new();
+            args.insert("code".to_owned(), json!(code));
+            let call = faux_tool_call(&format!("call-{at}"), "ipython", args);
+            faux_assistant_message(vec![call], StopReason::ToolUse)
+        })
+        .collect();
+    turns.push(faux_assistant_message(
+        vec![faux_text("done")],
+        StopReason::Stop,
+    ));
+    provider.queue_faux(turns);
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
@@ -96,7 +101,17 @@ fn session(cwd: &Path, code: &str) -> AgentSession {
 
 /// The `ipython` result of `code` run as the model's one cell, the session's tools behind it.
 async fn run_cell(cwd: &Path, code: &str) -> Result<ToolResult, Box<dyn Error>> {
-    let mut session = session(cwd, code);
+    let cells = run_cells(cwd, &[code], None).await?;
+    Ok(cells.into_iter().next().ok_or("the cell never ended")?)
+}
+
+/// Each code run as the model's next cell in one session, and their results in order.
+async fn run_cells(
+    cwd: &Path,
+    codes: &[&str],
+    broker: Option<Arc<PermissionBroker>>,
+) -> Result<Vec<ToolResult>, Box<dyn Error>> {
+    let mut session = session(cwd, codes);
     let calls = Arc::new(Calls::default());
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
@@ -117,22 +132,22 @@ async fn run_cell(cwd: &Path, code: &str) -> Result<ToolResult, Box<dyn Error>> 
     }));
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service), Some(calls)));
-    session.use_tools(tools, cwd.to_path_buf(), None);
+    session.use_tools(tools, cwd.to_path_buf(), broker);
     let mut events = session.subscribe();
     session.prompt("run the cell")?;
     session.wait_idle().await;
     service.dispose().await;
-    let mut cell = None;
+    let mut cells = Vec::new();
     while let Ok(event) = events.try_recv() {
         if let AgentEvent::ToolExecutionEnd {
             tool_name, result, ..
         } = event
             && tool_name == "ipython"
         {
-            cell = Some(result);
+            cells.push(result);
         }
     }
-    Ok(cell.ok_or("the cell never ended")?)
+    Ok(cells)
 }
 
 fn stored(cell: &ToolResult, is_error: bool) -> AgentMessage {
@@ -244,6 +259,69 @@ print("waited", read_at >= 0.4)
     Ok(())
 }
 
+/// Incident: a task cell 1 left running called a tool during cell 2, and cell 2 was credited.
+#[tokio::test]
+async fn a_task_that_outlived_its_cell_is_refused_while_the_next_cell_runs()
+-> Result<(), Box<dyn Error>> {
+    let (_dir, cwd) = scratch("kernel-tools-late")?;
+    let first = r#"
+import asyncio
+async def late():
+    await asyncio.sleep(0.5)
+    try:
+        await yi.tools.write(path="late.txt", content="x\n")
+        return "late wrote"
+    except yi.tools.ToolError as error:
+        return f"late refused {error.kind}"
+task = asyncio.ensure_future(late())
+"#;
+    let second = "import asyncio\nawait asyncio.sleep(1.5)";
+    let cells = run_cells(&cwd, &[first, second, "print(task.result())"], None).await?;
+    let [_, during, after] = cells.as_slice() else {
+        return Err(format!("{} cells ended, not 3", cells.len()).into());
+    };
+    let text = yi_types::message::join_text(&after.content, "\n");
+    assert!(text.contains("late refused cancelled"), "{text}");
+    assert!(
+        !cwd.join("late.txt").exists(),
+        "a task from an ended cell wrote"
+    );
+    let rows = yi_context::nested_calls(Some(&during.details));
+    assert!(rows.is_empty(), "the next cell was credited with {rows:?}");
+    Ok(())
+}
+
+/// The cell's own approval never covers its calls: an Auto broker with nobody to ask judges
+/// the nested `rm` on its own arguments.
+#[tokio::test]
+async fn an_auto_broker_with_no_asker_refuses_a_cells_nested_rm() -> Result<(), Box<dyn Error>> {
+    let (_dir, cwd) = scratch("kernel-tools-broker")?;
+    std::fs::write(cwd.join("victim.txt"), "v\n")?;
+    let broker = Arc::new(PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        cwd.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    ));
+    let code = r#"
+try:
+    await yi.tools.bash(command="rm victim.txt")
+    print("removed")
+except yi.Refused:
+    print("refused")
+"#;
+    let cells = run_cells(&cwd, &[code], Some(broker)).await?;
+    let cell = cells.first().ok_or("the cell never ended")?;
+    let text = yi_types::message::join_text(&cell.content, "\n");
+    assert!(text.contains("refused"), "{text}");
+    assert!(cwd.join("victim.txt").exists(), "a cell's nested rm ran");
+    let rows = yi_context::nested_calls(Some(&cell.details));
+    let kinds: Vec<_> = rows.iter().map(|row| row.error_kind.as_deref()).collect();
+    assert_eq!(kinds, [Some("refused")]);
+    Ok(())
+}
+
 fn request(name: &str, args: serde_json::Value) -> Map<String, serde_json::Value> {
     let mut payload = Map::new();
     payload.insert("name".to_owned(), json!(name));
@@ -256,7 +334,7 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
 -> Result<(), Box<dyn Error>> {
     let (_dir, cwd) = scratch("kernel-tools-cap")?;
     std::fs::write(cwd.join("a.txt"), "a\n")?;
-    let mut session = session(&cwd, "");
+    let mut session = session(&cwd, &[]);
     session.use_tools(yi_tools::builtin_tools(), cwd.clone(), None);
     let calls = Arc::new(Calls::default());
     let mut registry = HostRegistry::default();
@@ -277,17 +355,35 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
     assert_eq!(closed.get("kind"), Some(&json!("cancelled")), "{closed:?}");
     calls.open();
     let kept = yi_types::kernel::NESTED_READS_KEPT;
-    for _ in 0..=kept {
+    for _ in 0..3 {
         dispatch(read())?.await?;
+    }
+    for n in 0..kept {
+        dispatch(request("read", json!({"path": format!("r{n}.txt")})))?.await?;
     }
     dispatch(request("write", json!({"path": "b.txt", "content": "b\n"})))?.await?;
     let (rows, dropped) = calls.close();
-    assert_eq!((rows.len(), dropped), (kept + 1, 1));
+    assert_eq!(
+        (rows.len(), dropped),
+        (kept + 1, 1),
+        "three reads of one file are one row, and the last distinct read is past the cap"
+    );
     assert_eq!(
         rows.last().map(|row| row.tool.as_str()),
         Some("write"),
         "a write past the cap is kept"
     );
+    let details = json!({"calls": rows, "callsDropped": dropped});
+    let cell = serde_json::from_value(json!({"content": [], "details": details}))?;
+    let mut ops = yi_context::FileOps::default();
+    yi_context::details::extract_file_ops_from_message(&stored(&cell, false), &mut ops);
+    let view = yi_context::CompiledView::default();
+    let (summary, _) = yi_context::compose_summary("## Goal", &ops, &view);
+    let notice = format!(
+        "[… {kept} read files listed; 1 more read calls from cells are not: a cell keeps {kept} distinct read rows (NESTED_READS_KEPT); their files: grep(pattern=\"yi.tools\", path=\"history://self\")]"
+    );
+    let row = summary.lines().find(|line| line.starts_with("[…"));
+    assert_eq!(row, Some(notice.as_str()), "{summary}");
     let after = dispatch(read())?.await?;
     assert_eq!(
         after.get("kind"),

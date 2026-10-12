@@ -462,18 +462,21 @@ async fn dispatch_host_request(
         .ok_or("host request payload must have a string type")?;
     // Tag the request with the cell that triggered it: a blocking call is the in-flight
     // execution, and a detached spawn falls back to the last cell's source.
-    let cell_source = inner
-        .active
-        .lock()
-        .ok()
-        .and_then(|active| active.as_ref().map(|current| current.cell.code.clone()))
-        .or_else(|| {
-            inner
-                .last_cell_code
-                .lock()
-                .ok()
-                .and_then(|last| last.clone())
-        });
+    let active = (inner.active.lock().ok()).and_then(|active| {
+        let cell = &active.as_ref()?.cell;
+        Some((cell.request_msg_id.clone(), cell.code.clone()))
+    });
+    let (active_id, active_code) = active.unzip();
+    if let Some(id) = active_id {
+        payload.insert("activeCell".to_owned(), Value::String(id));
+    }
+    let cell_source = active_code.or_else(|| {
+        inner
+            .last_cell_code
+            .lock()
+            .ok()
+            .and_then(|last| last.clone())
+    });
     if let Some(source) = cell_source {
         payload.insert("cellSourceCode".to_owned(), Value::String(source));
     }

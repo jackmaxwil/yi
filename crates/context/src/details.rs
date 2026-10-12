@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value};
 use yi_tools::hashline::input::Patch;
 use yi_types::compaction::CompactionDetails;
-use yi_types::kernel::{NESTED_CALLS, NestedCall};
+use yi_types::kernel::{NESTED_CALLS, NESTED_READS_DROPPED, NESTED_READS_KEPT, NestedCall};
 use yi_types::message::{AgentMessage, Content};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub struct FileOps {
     pub read: BTreeSet<String>,
     pub written: BTreeSet<String>,
     pub edited: BTreeSet<String>,
+    pub reads_dropped: u64,
 }
 
 /// An edit carries no `path`: its files are the `[path#TAG]` section headers of its `patch`.
@@ -53,6 +54,9 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
             for call in nested_calls(details.as_ref()) {
                 note_paths(&call.tool, call.paths, file_ops);
             }
+            let dropped =
+                (details.as_ref()).and_then(|details| details.get(NESTED_READS_DROPPED)?.as_u64());
+            file_ops.reads_dropped = file_ops.reads_dropped.saturating_add(dropped.unwrap_or(0));
         }
         _ => {}
     }
@@ -98,12 +102,23 @@ pub fn compute_file_lists(file_ops: &FileOps) -> (Vec<String>, Vec<String>) {
     (read_files, modified_files)
 }
 
-pub fn format_file_operations(read_files: &[String], modified_files: &[String]) -> String {
+pub fn format_file_operations(
+    read_files: &[String],
+    modified_files: &[String],
+    reads_dropped: u64,
+) -> String {
     let mut sections = Vec::new();
-    if !read_files.is_empty() {
+    let mut read_rows = read_files.to_vec();
+    if reads_dropped > 0 {
+        read_rows.push(format!(
+            "[… {} read files listed; {reads_dropped} more read calls from cells are not: a cell keeps {NESTED_READS_KEPT} distinct read rows (NESTED_READS_KEPT); their files: grep(pattern=\"yi.tools\", path=\"history://self\")]",
+            read_files.len()
+        ));
+    }
+    if !read_rows.is_empty() {
         sections.push(format!(
             "<read-files>\n{}\n</read-files>",
-            read_files.join("\n")
+            read_rows.join("\n")
         ));
     }
     if !modified_files.is_empty() {
