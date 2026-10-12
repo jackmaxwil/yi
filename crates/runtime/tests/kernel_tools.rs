@@ -401,6 +401,14 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
 
     let closed = dispatch(read())?.await?;
     assert_eq!(closed.get("kind"), Some(&json!("cancelled")), "{closed:?}");
+    let mut untagged = read();
+    untagged.remove("cell");
+    let shut = dispatch(untagged)?.await?;
+    assert_eq!(
+        shut.get("kind"),
+        Some(&json!("cancelled")),
+        "a call naming no cell is refused while none is open"
+    );
     calls.open(REQUEST);
     let mut untagged = read();
     untagged.remove("cell");
