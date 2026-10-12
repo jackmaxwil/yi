@@ -518,9 +518,20 @@ def survives(answers):
     return held * 2 > len(answers)
 
 
+_BUILT = threading.Lock()
+
+
 def yi_bin():
-    return os.environ.get("YI_BIN") or next(
-        (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()), "yi")
+    """The yi a model call runs; with none built and none on PATH, the first call builds it.
+    Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read."""
+    with _BUILT:
+        found = os.environ.get("YI_BIN") or next(
+            (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()),
+            None)
+        if found or shutil.which("yi"):
+            return found or "yi"
+        subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
+        return str(ROOT / "target/debug/yi")
 
 
 # Incident: rounds on #1138 and #1145 hit the job's limit and posted nothing; a round's retries had
@@ -1054,6 +1065,25 @@ def selfcheck():
     assert answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 2, 733)
     assert not answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 3, 733)
 
+    # A job with no yi builds it once, on the first model call, however many lenses ask at once.
+    builds, keep = [], (subprocess.run, shutil.which, globals()["ROOT"], os.environ.pop("YI_BIN", None))
+    root = pathlib.Path(tempfile.mkdtemp(prefix="yi-bin-check-"))
+
+    def build(argv, cwd, check):
+        builds.append(argv)
+        (root / "target/debug").mkdir(parents=True, exist_ok=True)
+        (root / "target/debug/yi").write_text("")
+
+    subprocess.run, shutil.which, globals()["ROOT"] = build, (lambda name: None), root
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            got = set(pool.map(lambda _: yi_bin(), range(8)))
+        assert builds == [["cargo", "build", "-q", "-p", "yi-cli"]] and got == {str(root / "target/debug/yi")}, (builds, got)
+    finally:
+        subprocess.run, shutil.which, globals()["ROOT"] = keep[:3]
+        if keep[3] is not None:
+            os.environ["YI_BIN"] = keep[3]
+        shutil.rmtree(root)
     tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-check-"))
     try:
         (tree / "a.rs").write_text("fn main() {\n    let x = 1;\n}\n")
