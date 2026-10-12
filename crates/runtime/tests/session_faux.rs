@@ -1649,8 +1649,9 @@ async fn a_long_tool_loop_records_its_cut_with_the_entries_that_restore_it()
 /// names the model; its input cap, at the limit and one past it, and a selector giving prose.
 #[tokio::test]
 async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), Box<dyn Error>> {
+    const NONE: &str = r#"{"ranges": []}"#;
     let dir = Scratch::new("yi-runtime-select")?;
-    let run = |command: &str, answer: &str| {
+    let run = |command: &str, answers: &[&str]| {
         let provider = Arc::new(ProviderStream::new(None));
         let args = serde_json::json!({"command": command})
             .as_object()
@@ -1664,10 +1665,14 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
             faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
         ]);
         let picker = Arc::new(ProviderStream::new(None));
-        picker.queue_faux(vec![faux_assistant_message(
-            vec![faux_text(answer)],
-            StopReason::Stop,
-        )]);
+        let replies = answers.iter().map(|answer| {
+            let mut reply = faux_assistant_message(vec![faux_text(answer)], StopReason::Stop);
+            if let AgentMessage::Assistant { usage, .. } = &mut reply {
+                usage.input = 10;
+            }
+            reply
+        });
+        picker.queue_faux(replies.collect());
         let mut session = AgentSession::new(
             SessionConfig {
                 system_prompt: "sys".to_owned(),
@@ -1682,8 +1687,10 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
             picker,
             faux_model(),
         )));
+        let store = crate::support::memory_store("select");
+        session.attach_store(Arc::clone(&store)).ok();
         session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
-        session
+        (session, store)
     };
     let result = |session: &AgentSession| {
         (session.messages().iter())
@@ -1695,12 +1702,27 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
             })
             .unwrap_or_default()
     };
-    let session = run("seq 1 4000", r#"{"ranges": [[2000, 2002]]}"#);
+    // `seq 1 4000`'s cut hides enough lines for 8 parts; any part may draw the naming answer.
+    let mut answers = vec![r#"{"ranges": [[2000, 2002]]}"#];
+    answers.extend([NONE; 7]);
+    let (session, store) = run("seq 1 4000", &answers);
     session.prompt("count")?;
     session.wait_idle().await;
     let text = result(&session);
-    assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); kept 3 of 3 selected lines not shown above (LINES_OUT 200), 0 more already shown]\n2000| 2000\n2001| 2001\n2002| 2002"), "{text}");
-    let session = run("seq 1 4000", r#"{"ranges": [[1, 3], [3999, 4000]]}"#);
+    assert!(text.contains("[lines 2000-2002 of the full output, selected by faux-1 (models.selector); kept 3 of 3 selected lines not shown above (LINES_OUT 200, at most 25 a part), 0 more already shown]\n2000| 2000\n2001| 2001\n2002| 2002"), "{text}");
+    let booked = crate::support::booked(&store, |cause| cause == "side:select")?;
+    assert_eq!(booked, 8, "one cost row a part");
+    let (session, _store) = run("seq 1 4000", &[r#"{"ranges": [[2000, 2002]]}"#]);
+    session.prompt("count")?;
+    session.wait_idle().await;
+    let text = result(&session);
+    assert!(
+        text.contains("0 more already shown; 7 of 8 parts (PART_LINES 300) gave no lines, so read the full output for theirs]\n2000| 2000"),
+        "{text}"
+    );
+    let mut answers = vec![r#"{"ranges": [[1, 3], [3999, 4000]]}"#];
+    answers.extend([NONE; 7]);
+    let (session, _store) = run("seq 1 4000", &answers);
     session.prompt("count")?;
     session.wait_idle().await;
     let text = result(&session);
@@ -1709,7 +1731,7 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
             && !text.contains("1| 1\n"),
         "{text}"
     );
-    let session = run("seq 1 4001", r#"{"ranges": [[2000, 2002]]}"#);
+    let (session, _store) = run("seq 1 4001", &[r#"{"ranges": [[2000, 2002]]}"#]);
     session.prompt("count")?;
     session.wait_idle().await;
     let text = result(&session);
@@ -1719,7 +1741,7 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
         ),
         "{text}"
     );
-    let session = run("seq 1 4000", "the interesting part is the middle");
+    let (session, _store) = run("seq 1 4000", &["the interesting part is the middle"; 8]);
     session.prompt("count")?;
     session.wait_idle().await;
     let text = result(&session);

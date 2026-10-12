@@ -8,12 +8,12 @@ wait-frame 8000 untitled
 type hello workspace
 key enter
 wait-frame 10000 faux:
-cmd-j
+cmd-i
 wait-frame 3000 ▤ nb:
-cmd-j
-cmd-g
+cmd-i
+cmd-shift-r
 wait-frame 3000 Δ 
-cmd-g
+cmd-shift-r
 cmd-b
 wait 400
 cmd-b
