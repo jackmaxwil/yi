@@ -55,6 +55,13 @@ pub enum ArgError {
         example("done")
     )]
     UnknownOp { got: String },
+    #[error(
+        "op is required; legal ops are {}; a full call looks like {{\"op\": \"done\", \"id\": {}, \"evidence\": {}}}",
+        OPS.join(", "),
+        Value::from(id.as_str()),
+        Value::from(evidence.as_str())
+    )]
+    EvidenceOnly { id: TodoLabel, evidence: String },
     #[error("{op} requires {field:?}; a full {op} call looks like {}", example(op))]
     Missing {
         op: &'static str,
@@ -376,11 +383,36 @@ impl TodoTool {
         Self { store }
     }
 
+    fn parse(&self, args: &Map<String, Value>) -> Result<Op, ArgError> {
+        parse_op(args).map_err(|error| match error {
+            ArgError::NoOp => self.evidence_only(args).unwrap_or(ArgError::NoOp),
+            other => other,
+        })
+    }
+
+    /// Incident: a GLM session sent `{"evidence": …}` alone ten times, each refused with t1 and
+    /// another command's evidence; the repair names the one running item and keeps the evidence.
+    fn evidence_only(&self, args: &Map<String, Value>) -> Option<ArgError> {
+        let evidence = string(args, "evidence")?;
+        self.store.resync();
+        let list = self.store.list();
+        let mut running = list
+            .items()
+            .filter(|item| TodoStateName::of(&item.state) == TodoStateName::Running);
+        let (Some(one), None) = (running.next(), running.next()) else {
+            return None;
+        };
+        Some(ArgError::EvidenceOnly {
+            id: super::id_needle(one),
+            evidence,
+        })
+    }
+
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
         let (mut args, mut said) = (args.clone(), Vec::new());
         crate::plan::ask::few_options(&mut args, &mut said);
         let args = &args;
-        let op = self.store.aim(parse_op(args)?)?;
+        let op = self.store.aim(self.parse(args)?)?;
         let mut inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
         } else {
@@ -466,7 +498,7 @@ impl Tool for TodoTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        parse_op(input)
+        self.parse(input)
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
