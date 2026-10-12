@@ -10,6 +10,9 @@ mod scratch;
 mod usage_record;
 use scratch::Scratch;
 
+#[path = "support/config_option.rs"]
+mod config_option;
+use config_option::current_value;
 #[path = "support/acp_schema.rs"]
 mod acp_schema;
 use acp_schema::Schema;
@@ -309,14 +312,8 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
         .as_str()
         .ok_or("missing sessionId")?
         .to_owned();
-    let mode_of = |options: &Value| -> Option<String> {
-        options.as_array()?.iter().find_map(|option| {
-            (option["configId"] == "mode")
-                .then(|| option["currentValue"].as_str().map(str::to_owned))?
-        })
-    };
     assert_eq!(
-        mode_of(&new["result"]["configOptions"]).as_deref(),
+        current_value(new, "mode").as_deref(),
         Some("auto"),
         "the session must advertise its permission mode (C8)"
     );
@@ -328,7 +325,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     )?;
     let set = set.last().ok_or("no set_config_option response")?;
     assert_eq!(
-        mode_of(&set["result"]["configOptions"]).as_deref(),
+        current_value(set, "mode").as_deref(),
         Some("ask"),
         "the applied mode must echo back in the options: {set}"
     );
