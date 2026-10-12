@@ -72,7 +72,7 @@ impl App {
             session_dir: String::new(),
             keys: Vec::new(),
             initial_prompt: None,
-            pace: 0,
+            pace: self.state.chat_pace,
         };
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
@@ -122,6 +122,7 @@ impl App {
                 on_chat && !multi
             }
             Action::PageUp | Action::PageDown => self.on_editor(),
+            Action::Undo | Action::Redo => on_chat,
             Action::ToggleSidebar => {
                 on_chat && key.modifiers.contains(KeyModifiers::ALT) && self.chat_takes_ctrl_c()
             }
@@ -329,6 +330,9 @@ impl App {
     }
 
     pub(super) fn apply_config(&mut self, id: &SessionId, config: &Config, announce: bool) {
+        self.state
+            .session_options
+            .insert(id.clone(), config.options.clone());
         let Some((provider, model_id)) = &config.model else {
             return;
         };
@@ -1000,5 +1004,116 @@ mod tests {
             "the finished row made way, not a running one: {rows:?}"
         );
         assert!(rows.iter().any(|row| row.id.as_str() == "sub-0"));
+    }
+
+    /// Dies with a pane painting each network burst whole, or with the console sleeping while
+    /// a paced reveal is behind: either way a reply streamed at 28 fps in 2-row lurches.
+    #[test]
+    fn a_pane_revealing_a_reply_wakes_the_console_every_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_types::event::{AgentEvent, AssistantMessageEvent};
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.state.chat_pace = 100;
+        let session = SessionId("s-a".to_owned());
+        let pane = app.state.focused_pane_id().ok_or("a pane")?;
+        let chat = app.make_chat(pane, &session);
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: Some(chat),
+            };
+        }
+        assert!(
+            crate::chat_wake(&app) > yi_tui::reveal::FRAME,
+            "nothing to reveal yet"
+        );
+        let partial = serde_json::from_value(json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "One paragraph.\n\nAnd a second one, still arriving"}],
+            "api": "faux", "provider": "faux", "model": "faux-1",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": "stop", "timestamp": 0
+        }))?;
+        let chat = app
+            .state
+            .chats_mut(&session)
+            .into_iter()
+            .next()
+            .ok_or("no chat")?;
+        chat.app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start { partial },
+        });
+        assert!(
+            crate::chat_wake(&app) <= yi_tui::reveal::FRAME,
+            "a reveal behind its text sleeps {:?}, past one {:?} frame",
+            crate::chat_wake(&app),
+            yi_tui::reveal::FRAME
+        );
+        Ok(())
+    }
+
+    /// Dies with the chat's orb frozen mid-morph: a loop step that drew no text ran no image
+    /// tick, so the orb moved only on steps that happened to repaint.
+    #[test]
+    fn a_step_that_draws_no_text_still_advances_the_chat_orb_inside_its_own_update()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.kitty = true;
+        app.state.zone = crate::model::Zone::Panes;
+        let session = SessionId("s-a".to_owned());
+        let pane = app.state.focused_pane_id().ok_or("a pane")?;
+        let chat = app.make_chat(pane, &session);
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: Some(chat),
+            };
+        }
+        let chat = app
+            .state
+            .chats_mut(&session)
+            .into_iter()
+            .next()
+            .ok_or("no chat")?;
+        chat.app
+            .reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let mut scheduler = yi_tui::frame::FrameScheduler::default();
+        scheduler.request();
+        let mut owners = std::collections::HashMap::new();
+        let mut out = Vec::new();
+        let mut step = |out: &mut Vec<u8>| {
+            crate::step_frame(
+                &mut app,
+                &mut terminal,
+                &theme,
+                &mut scheduler,
+                &mut owners,
+                out,
+            )
+        };
+        step(&mut out)?;
+        out.clear();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while out.is_empty() {
+            if std::time::Instant::now() > deadline {
+                return Err("2 s of text-free steps never advanced the orb".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            step(&mut out)?;
+        }
+        let written = String::from_utf8_lossy(&out);
+        assert!(
+            written.starts_with("\x1b[?2026h") && written.ends_with("\x1b[?2026l"),
+            "the image work is one update of its own: {written:?}"
+        );
+        assert!(
+            written.contains(",a=t,") && written.contains("\x1b_Ga=p,"),
+            "the next orb frame is sent and placed: {written:?}"
+        );
+        Ok(())
     }
 }
