@@ -19,12 +19,17 @@ mod stats;
 mod todo;
 mod tty;
 mod update;
+mod user_config;
 mod why;
 
 use std::sync::Arc;
-use yi_types::config::{ConfigMigration, DEFAULT_MAX_DEPTH, RlmConfig, UserConfig};
+use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
 
 use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
+use user_config::{
+    config, configured_auto_background, configured_mode, configured_model, configured_roles, home,
+    load_config, refreshed, reload_config,
+};
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
@@ -38,6 +43,7 @@ struct Args {
     thinking: Option<Effort>,
     /// `--model` was named on the command line, so it outranks a resumed one.
     model_pinned: bool,
+    thinking_pinned: bool,
     json: bool,
     mode: yi_runtime::PermissionMode,
     mode_pinned: bool,
@@ -79,15 +85,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    let configured_mode = match config()
-        .permissions
-        .as_ref()
-        .and_then(|permissions| permissions.mode)
-    {
-        Some(yi_types::config::ModeName::Ask) => yi_runtime::PermissionMode::Ask,
-        Some(yi_types::config::ModeName::Yolo) => yi_runtime::PermissionMode::Yolo,
-        Some(yi_types::config::ModeName::Auto) | None => yi_runtime::PermissionMode::Auto,
-    };
     let mut mode = None;
     let mut session_dir = None;
     let mut cwd = None;
@@ -190,9 +187,10 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         model_pinned: model.is_some(),
         model: model.or_else(configured_model).unwrap_or_default(),
         system,
+        thinking_pinned: thinking.is_some(),
         thinking: thinking.or(config().thinking),
         json,
-        mode: mode.unwrap_or(configured_mode),
+        mode: mode.unwrap_or_else(configured_mode),
         mode_pinned: mode.is_some(),
         session_dir,
         cwd,
@@ -280,74 +278,6 @@ fn render_text(event: &AgentEvent) -> Option<String> {
     }
 }
 
-/// Yi has no built-in default model; the user's config carries it, either as
-/// `"model"` or as the §5 `"models"` role table.
-fn configured_model() -> Option<String> {
-    let roles = configured_roles();
-    if let Some(primary) = roles.primary {
-        return Some(primary);
-    }
-    config().model.clone()
-}
-
-static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::OnceLock::new();
-static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-/// The one config load, strict, before dispatch — a typo that reads as an unset default
-/// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
-fn load_config() -> Result<(), String> {
-    let home = update::absolute_home()?;
-    let home = HOME.get_or_init(|| home);
-    setup::early();
-    yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
-    let (config, migrations) = read_config(home)?;
-    for migration in migrations {
-        eprintln!("warning: {migration}");
-    }
-    set_config(config)
-}
-
-/// A relative home would read `<cwd>/.yi/config.json`, which is §17.1's project
-/// layer, not this one; [`load_config`] is the only caller for that reason.
-fn read_config(home: &std::path::Path) -> Result<(UserConfig, Vec<ConfigMigration>), String> {
-    let path = home.join(".yi/config.json");
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Default::default());
-        }
-        Err(error) => return Err(format!("{}: {error}", path.display())),
-    };
-    yi_types::config::parse(&raw).map_err(|error| format!("{}: {error}", path.display()))
-}
-
-/// Invariant: nothing may read the config before this lands it, or the strict
-/// load would be a no-op behind a default somebody else already installed.
-fn set_config(loaded: yi_types::config::UserConfig) -> Result<(), String> {
-    match CONFIG.set(loaded) {
-        Ok(()) => Ok(()),
-        Err(_) => Err("config was already read before it was loaded".to_owned()),
-    }
-}
-
-fn config() -> &'static yi_types::config::UserConfig {
-    CONFIG.get_or_init(yi_types::config::UserConfig::default)
-}
-
-/// Invariant: the HOME [`load_config`] checked; `doctor` reports it raw, `plugin` checks it itself.
-fn home() -> &'static std::path::Path {
-    HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
-}
-
-fn configured_roles() -> yi_types::config::ModelRoles {
-    config().models.clone().unwrap_or_default()
-}
-
-fn configured_auto_background() -> Option<std::time::Duration> {
-    let millis = config().bash.as_ref()?.auto_background_ms?;
-    (millis > 0).then(|| std::time::Duration::from_millis(millis))
-}
-
 fn effective_cwd(args: &Args) -> std::path::PathBuf {
     args.cwd.as_ref().map_or_else(
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -396,6 +326,8 @@ fn build_session(
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
     drop(levers);
+    reload_config();
+    let args = &refreshed(args);
     drop(yi_runtime::retention::sweep_home_hourly(home()));
     yi_runtime::node::configure(config().node.clone().unwrap_or_default());
     if args.model.is_empty() {
@@ -585,7 +517,7 @@ fn build_session(
         eprintln!("warning: {why}");
     }
     if !faux {
-        for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
+        for why in yi_runtime::classifier::attach(&session, &work, &home, &config()) {
             eprintln!("warning: {why}");
         }
     }
@@ -607,8 +539,8 @@ fn build_session(
 /// `plans.dir`, relative to the workspace root unless absolute. Unset leaves
 /// the resolver's own `.yi/plans` default in place.
 fn configured_plans_dir(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
-    let dir = config().plans.as_ref()?.dir.as_deref()?;
-    let path = std::path::PathBuf::from(dir);
+    let config = config();
+    let path = std::path::PathBuf::from(config.plans.as_ref()?.dir.as_deref()?);
     Some(if path.is_absolute() {
         path
     } else {
@@ -1003,7 +935,8 @@ fn mcp_fast_path() {
             std::process::exit(2);
         }
         let raw: Vec<String> = std::env::args().skip(2).collect();
-        let token_store = config()
+        let config = config();
+        let token_store = config
             .mcp
             .as_ref()
             .and_then(|mcp| mcp.token_store.as_deref());
@@ -1083,6 +1016,7 @@ fn dispatch(args: Args) {
                 }
             };
             let build_args = args.clone();
+            let defaults_args = args.clone();
             let build: yi_acp::SessionBuilder = {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker, session| {
@@ -1096,10 +1030,14 @@ fn dispatch(args: Args) {
                 cwd: effective_cwd(&args),
                 build,
                 agent_version: version.to_owned(),
-                defaults: resolve(&args.model).map(|model| yi_acp::SessionDefaults {
-                    model,
-                    effort: args.thinking.unwrap_or_default(),
-                    mode: args.mode,
+                defaults: std::sync::Arc::new(move || {
+                    reload_config();
+                    let args = refreshed(&defaults_args);
+                    resolve(&args.model).map(|model| yi_acp::SessionDefaults {
+                        model,
+                        effort: args.thinking.unwrap_or_default(),
+                        mode: args.mode,
+                    })
                 }),
             };
             std::process::exit(yi_acp::run_acp(options, runtime));

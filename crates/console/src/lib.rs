@@ -10,12 +10,14 @@ pub mod client;
 pub mod keys;
 pub mod kitty;
 pub mod layout;
+pub mod menu;
 pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
 pub mod render;
 pub mod select;
+pub mod settings;
 pub mod sidebar;
 
 use std::io::Stdout;
@@ -62,6 +64,26 @@ pub enum ConsoleStep {
     Cmd(yi_tui::keymap::SingleKey),
 }
 
+/// The drive harness speaks crossterm, so a script runs the same button mapping a terminal does.
+fn mouse_event(kind: MouseKind, column: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let kind = match kind {
+        MouseKind::Down => MouseEventKind::Down(MouseButton::Left),
+        MouseKind::RightDown => MouseEventKind::Down(MouseButton::Right),
+        MouseKind::Moved => MouseEventKind::Moved,
+        MouseKind::Up => MouseEventKind::Up(MouseButton::Left),
+        MouseKind::Drag => MouseEventKind::Drag(MouseButton::Left),
+        MouseKind::ScrollUp => MouseEventKind::ScrollUp,
+        MouseKind::ScrollDown => MouseEventKind::ScrollDown,
+    };
+    ratatui::crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+    }
+}
+
 pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     let mut steps = Vec::new();
     for (index, raw) in source.lines().enumerate() {
@@ -74,6 +96,8 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             let mut parts = rest.split_whitespace();
             let kind = match parts.next() {
                 Some("down") => MouseKind::Down,
+                Some("right") => MouseKind::RightDown,
+                Some("move") => MouseKind::Moved,
                 Some("up") => MouseKind::Up,
                 Some("drag") => MouseKind::Drag,
                 Some("scrollup") => MouseKind::ScrollUp,
@@ -356,7 +380,7 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
-        .map(|hits| hits.avatars.clone())
+        .map(|hits| crate::avatar::uncovered(hits.avatars.clone(), &hits.overlays))
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
 }
@@ -404,6 +428,13 @@ fn place_chat_orbs(
         kept
     });
     let focused = app.state.focused_pane_id();
+    let covered = |id: PaneId| {
+        app.hits.as_ref().is_some_and(|hits| {
+            let pane = hits.panes.iter().find(|(pane, _)| *pane == id);
+            pane.is_some_and(|(_, rect)| hits.overlays.iter().any(|cover| cover.intersects(*rect)))
+        })
+    };
+    let shown = focused.filter(|id| !covered(*id));
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
             session,
@@ -413,7 +444,7 @@ fn place_chat_orbs(
             continue;
         };
         owners.entry(*id).or_insert_with(|| session.clone());
-        if Some(*id) == focused {
+        if Some(*id) == shown {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
             yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
         } else {
@@ -463,7 +494,11 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
         height: inner.height / 2,
         ..inner
     };
-    if half.height < 3 || half.width < 8 {
+    let covered = app
+        .hits
+        .as_ref()
+        .is_some_and(|hits| hits.overlays.iter().any(|cover| cover.intersects(half)));
+    if half.height < 3 || half.width < 8 || covered {
         return clear(out, placed);
     }
     if *placed == Some((image.len(), half)) {
@@ -558,7 +593,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         };
         match step {
             (ConsoleStep::Mouse(kind, x, y), _) => {
-                app.handle_mouse(&outbound, kind, x, y);
+                app.handle_event(&outbound, CtEvent::Mouse(mouse_event(kind, x, y)));
             }
             (ConsoleStep::Tui(Step::Key(key)), _) => {
                 app.handle_event(&outbound, CtEvent::Key(key_event(&key)));
@@ -630,7 +665,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             &mut last_frame,
             &mut frame_index,
             pending_snap.take(),
-        ) {
+        )
+        .and_then(|()| keep_osc(drive.frames_dir.as_deref(), &mut app.osc_out))
+        {
             eprintln!("error: {error}");
             exit_code = 1;
             break;
@@ -641,6 +678,22 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     drop(events);
     join_with_deadline(threads);
     exit_code
+}
+
+/// What the console wrote outside the grid (clipboard, title), kept beside the frames; the
+/// leading dot sorts it ahead of them, so the last file stays the last frame.
+fn keep_osc(dir: Option<&std::path::Path>, osc: &mut Vec<String>) -> Result<(), String> {
+    let Some(dir) = dir.filter(|_| !osc.is_empty()) else {
+        return Ok(());
+    };
+    let text: String = osc.drain(..).map(|sequence| sequence + "\n").collect();
+    let path = dir.join(".osc.log");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()))
+        .map_err(|error| format!("osc log {}: {error}", path.display()))
 }
 
 #[cfg(test)]

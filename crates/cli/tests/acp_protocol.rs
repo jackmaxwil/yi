@@ -1710,3 +1710,108 @@ fn an_ask_offering_reject_always_reaches_the_console() -> TestResult {
     assert_eq!(decoded.options.len(), 2, "{decoded:?}");
     Ok(())
 }
+
+fn committed(frames: &[Value]) -> Result<Vec<yi_types::entry::Entry>, Box<dyn Error>> {
+    updates_of(frames, "_yi/committed")
+        .iter()
+        .map(|frame| {
+            Ok(serde_json::from_value(
+                frame["params"]["update"]["entry"].clone(),
+            )?)
+        })
+        .collect()
+}
+
+fn typed_on(frames: &[Value]) -> Vec<String> {
+    updates_of(frames, "_yi/replay")
+        .iter()
+        .flat_map(|frame| {
+            frame["params"]["update"]["entries"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|entry| entry["message"]["role"] == "user")
+        .map(|entry| entry["message"]["content"].to_string())
+        .collect()
+}
+
+/// The worker names each saved message as it lands, so a console can act on a reply it watched
+/// stream; a fork at that reply holds the turn up to it, and the source keeps its later turn.
+#[test]
+fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
+    let dir = temp_dir("fork")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    let first = prompt_until_idle(&mut client, "3", &session_id, "first turn")?;
+    let saved = committed(&first)?;
+    let roles: Vec<&str> = saved
+        .iter()
+        .map(|entry| match entry {
+            yi_types::entry::Entry::Message {
+                message: yi_types::message::AgentMessage::User { .. },
+                ..
+            } => "user",
+            yi_types::entry::Entry::Message {
+                message: yi_types::message::AgentMessage::Assistant { .. },
+                ..
+            } => "assistant",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(roles, ["user", "assistant"], "{first:?}");
+    let (asked, answer) = match saved.as_slice() {
+        [asked, answer] => (asked.id().to_owned(), answer.id().to_owned()),
+        _ => return Err("two committed entries".into()),
+    };
+    prompt_until_idle(&mut client, "4", &session_id, "second turn")?;
+
+    let at = client.request(
+        "5",
+        "_yi/fork",
+        json!({"sessionId": session_id, "entryId": answer, "position": "at"}),
+    )?;
+    let forked = at
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("no fork")?;
+    assert_ne!(forked, session_id);
+    let fork = client.request(
+        "6",
+        "session/resume",
+        json!({"sessionId": forked, "replayFrom": 0}),
+    )?;
+    assert_eq!(
+        typed_on(&fork).len(),
+        1,
+        "the fork ends at the first answer: {fork:?}"
+    );
+    let kept = updates_of(&fork, "_yi/replay").iter().any(|frame| {
+        frame["params"]["update"]["entries"]
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|entry| entry["id"] == answer.as_str()))
+    });
+    assert!(kept, "the fork holds the answer it was made at: {fork:?}");
+    let source = client.request(
+        "7",
+        "session/resume",
+        json!({"sessionId": session_id, "replayFrom": 0}),
+    )?;
+    assert_eq!(
+        typed_on(&source).len(),
+        2,
+        "the source keeps its second turn"
+    );
+
+    let before = client.request(
+        "8",
+        "_yi/fork",
+        json!({"sessionId": session_id, "entryId": asked, "position": "before"}),
+    )?;
+    let reply = before.last().ok_or("no reply")?;
+    assert_eq!(
+        reply["result"]["prefill"], "first turn",
+        "a re-ask hands back the prompt"
+    );
+    Ok(())
+}
