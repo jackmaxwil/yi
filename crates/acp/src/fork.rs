@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use yi_runtime::session_store::{
     CreateOptions, ForkPosition, ForkScope, SessionRepo, lock_session,
 };
+use yi_types::acp::{AcpForkParams, AcpForkPosition, AcpMeta};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, UserContent};
 
@@ -28,15 +29,12 @@ impl AcpState {
     /// `at` keeps it, so a side question starts from that answer. The source session is untouched.
     pub(crate) fn fork(&mut self, params: &Value) -> Result<Value, (i64, String)> {
         let (handle, session_id) = self.session(params)?;
-        let entry_id = params
-            .get("entryId")
-            .and_then(Value::as_str)
-            .ok_or((INVALID_PARAMS, "missing entryId".to_owned()))?
-            .to_owned();
-        let position = match params.get("position").and_then(Value::as_str) {
-            Some("at") => ForkPosition::At,
-            Some("before") | None => ForkPosition::Before,
-            Some(other) => {
+        let asked: AcpForkParams = serde_json::from_value(params.clone())
+            .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+        let position = match asked.position {
+            AcpForkPosition::Before => ForkPosition::Before,
+            AcpForkPosition::At => ForkPosition::At,
+            AcpForkPosition::Other(other) => {
                 return Err((
                     INVALID_PARAMS,
                     format!("position is before or at, not {other}"),
@@ -44,14 +42,16 @@ impl AcpState {
             }
         };
         let prefill = match (&position, handle.session.store()) {
-            (ForkPosition::Before, Some(store)) => match lock_session(&store).entry(&entry_id) {
-                Some(Entry::Message { message, .. }) => typed(&message),
-                _ => String::new(),
-            },
-            _ => String::new(),
+            (ForkPosition::Before, Some(store)) => {
+                match lock_session(&store).entry(&asked.entry_id) {
+                    Some(Entry::Message { message, .. }) => Some(typed(&message)),
+                    _ => None,
+                }
+            }
+            _ => None,
         };
         let scope = ForkScope::Branch {
-            entry_id: Some(entry_id),
+            entry_id: Some(asked.entry_id),
             position: Some(position),
         };
         let store = self
@@ -59,8 +59,8 @@ impl AcpState {
             .fork(&session_id, &scope, CreateOptions::default())
             .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
         let forked = self.attach_later(&store);
-        let mut result = json!(self.session_result(&forked));
-        result["prefill"] = Value::String(prefill);
-        Ok(result)
+        let mut result = self.session_result(&forked);
+        result.meta.get_or_insert_with(AcpMeta::default).yi.prefill = prefill;
+        Ok(json!(result))
     }
 }

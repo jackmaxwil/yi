@@ -894,7 +894,7 @@ an unknown method −32601, bad JSON −32700.
 | `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3), and one still queued at close gets −32800; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
 | `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/tape`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; the session's ledger over time; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
-| `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again as `prefill`) or `at` it, attached beside the source, which keeps its own branch |
+| `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again in `_meta.yi.prefill`) or `at` it, attached beside the source, which keeps its own branch; any other position is refused by name (`AcpForkParams`) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
@@ -905,7 +905,7 @@ an unknown method −32601, bad JSON −32700.
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
-`_yi/committed{entry}` (each user or assistant message as saved, so a client can act on a reply it
+`_yi/committed{entry}` (`AcpCommitted`: each user or assistant message as saved, so a client can act on a reply it
 watched stream), `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
@@ -928,9 +928,11 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 `yi-tui` is the solo chat: an inline viewport on the normal screen above native scrollback.
 
 - The UI thread is synchronous; the runtime runs on its own thread; intents return as `Command`s.
-- Finished cells commit above the viewport once, through scroll regions, in one synchronized
-  update per frame. Streaming text commits by byte cursor over stable slices; a thought commits
-  before its prose; a reveal cursor paces the painted tail.
+- Finished cells commit above the viewport once, in one synchronized update per frame: rows the
+  viewport's top already shows are adopted where they stand, the rest arrive through scroll
+  regions of two rows or more, a full-screen scroll and a repaint where none fits. Streaming text
+  commits by byte cursor over stable slices; a thought commits before its prose; a reveal cursor
+  paces the painted tail.
 - Resize and mode change rebuild scrollback from the transcript; text wraps at width less 2; a
   frame draws only on change.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
@@ -975,7 +977,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   session's avatar plays its state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
-- ⌘R opens Review beside a session: its scope is the lane's branch against its merge base with
+- ⌘⇧R opens Review beside a session: its scope is the lane's branch against its merge base with
   main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
   session with no git base shows its own edits). Each file names the todo that was running when
   it changed, reads that changed nothing are counted, the header carries the claims and the

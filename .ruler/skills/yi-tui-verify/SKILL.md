@@ -39,9 +39,8 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    `freeze` was tried and dropped — it re-renders text in its own font and chrome, so
    the still was not 1:1 (the composer border ran off the edge) and `-c full` wrote a
    0-byte file while exiting 0. Pace the typing with `type-ms <n>` (0 by default, so
-   assertion scripts stay instant), and put `--deadline <secs>` in a solo scene's `#!`
-   line when the beats outlast the 60 s default; the console's headless run always stops at
-   60 s. A wide layout is `#! console --size 254x40`.
+   assertion scripts stay instant), and put `--deadline <secs>` in the scene's `#!` line
+   when the beats outlast the 60 s default. A wide layout is `#! console --size 254x40`.
    `scripts/proof/demo.drive` is the worked example.
 7. To see what a change did, diff snaps rather than eyeballing whole frames:
    `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
@@ -73,4 +72,5 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
    `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
    24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
-   headless there. Console scenes get random session ids, so their avatar colours always differ.
+   headless there. `tui_see.py` sets `YI_FIXED_IDS=1` for the serve it starts, so console sessions
+   count ids up from 1 and two runs draw the same avatar colours.
