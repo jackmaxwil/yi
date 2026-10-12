@@ -246,7 +246,7 @@ fn is_signal(line: &str) -> bool {
 
 /// A test runner's line for one passing test: cargo, pytest, jest. A `PASSED` that shares its
 /// line with a failure is not one; a test named for errors that ends `... ok` is.
-fn is_pass(line: &str) -> bool {
+pub fn is_pass(line: &str) -> bool {
     let line = line.trim();
     (line.starts_with("test ") && line.ends_with(" ... ok"))
         || ((line.contains(" PASSED") || line.starts_with("PASSED ")) && !is_signal(line))

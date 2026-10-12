@@ -59,6 +59,7 @@ struct Setup {
     during: Option<Hook>,
     broker: Option<Arc<yi_runtime::PermissionBroker>>,
     window: u64,
+    parent: Option<yi_session::SharedSession>,
 }
 
 impl Default for Setup {
@@ -68,6 +69,7 @@ impl Default for Setup {
             during: None,
             broker: None,
             window: 128_000,
+            parent: None,
         }
     }
 }
@@ -83,6 +85,7 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         during,
         broker,
         window,
+        parent,
     } = setup;
     let root = Scratch::new("yi-reader")?;
     let workspace = root.join("ws");
@@ -168,7 +171,7 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         report: Arc::new(|_, _| {}),
         parent_messages: Arc::new(Vec::new),
         attribute: Arc::new(|_| {}),
-        store: Arc::new(|| None),
+        store: Arc::new(move || parent.clone()),
         plans_dir: root.join("plans"),
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
@@ -463,6 +466,16 @@ fn read_call(path: &str) -> AgentMessage {
     args.insert("path".to_owned(), Value::from(path));
     faux_assistant_message(
         vec![faux_tool_call("c1", "read", args)],
+        StopReason::ToolUse,
+    )
+}
+
+fn grep_call(pattern: &str, path: &str) -> AgentMessage {
+    let mut args = Map::new();
+    args.insert("pattern".to_owned(), Value::from(pattern));
+    args.insert("path".to_owned(), Value::from(path));
+    faux_assistant_message(
+        vec![faux_tool_call("c2", "grep", args)],
         StopReason::ToolUse,
     )
 }
@@ -1038,4 +1051,83 @@ async fn a_worker_reads_a_plan_under_the_configured_plans_dir() -> TestResult {
         "a worker's plan:// read missed the configured plans dir: {rows:?}"
     );
     Ok(())
+}
+
+/// Every narrow role reads and greps its parent's transcript by alias through the runtime's own reader
+/// build, and a wall naming history refuses it: a reader resolver once opened no session but its own.
+#[tokio::test]
+async fn every_child_role_reads_its_parent_or_is_refused_by_its_wall() -> TestResult {
+    let cases = [
+        (
+            "r",
+            json!({"name": "r", "role": "reader", "turns": 3}),
+            "Sunday 02:00-04:00 UTC",
+        ),
+        (
+            "w",
+            json!({"name": "w", "role": "worker", "turns": 3}),
+            "Sunday 02:00-04:00 UTC",
+        ),
+        (
+            "v",
+            json!({"name": "v", "role": "reader", "turns": 3, "deny_url": ["history://main"]}),
+            "deny_url",
+        ),
+    ];
+    for (name, args, expected) in cases {
+        let parent: yi_session::SharedSession = Arc::new(Mutex::new(
+            yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
+                id: "the-parent".to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+                name: None,
+            }),
+        ));
+        let told = AgentMessage::User {
+            content: UserContent::Text("the cutover window is Sunday 02:00-04:00 UTC".to_owned()),
+            timestamp: 0,
+            attribution: yi_types::message::Attribution::User,
+        };
+        yi_session::lock_session(&parent).append_message("main", told)?;
+        let script: Script = Arc::new(Mutex::new(vec![
+            read_call("history://parent/since/0"),
+            grep_call("cutover", "history://parent"),
+            reply("done"),
+        ]));
+        let setup = Setup {
+            parent: Some(parent),
+            ..Setup::default()
+        };
+        let family = family_with(4, script, setup)?;
+        family
+            .host
+            .spawn("Find the cutover window.".to_owned(), kwargs(args))?;
+        let rows = transcript(&family, name).await?;
+        let tools: Vec<&String> = rows
+            .iter()
+            .filter(|(role, _)| role == "tool")
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(tools.len(), 2, "{name}: {rows:?}");
+        assert!(
+            tools.iter().all(|text| text.contains(expected)),
+            "{name}: {rows:?}"
+        );
+        let found = parent_greps_child(&family, name)?;
+        assert!(
+            found.contains(&format!("history://{name}/")),
+            "{name}: {found}"
+        );
+    }
+    Ok(())
+}
+
+/// The parent's side of the alias: a finished child is a grep root by its name.
+fn parent_greps_child(family: &Family, name: &str) -> Result<String, Box<dyn Error>> {
+    let root = family.root.to_path_buf();
+    let desk = yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&family.host), None, &root);
+    let resolver = yi_runtime::fetch::Resolver::new(root, yi_runtime::Wall::default())
+        .with_transcripts(Arc::new(desk));
+    let input = json!({"pattern": "cutover", "path": format!("history://{name}")});
+    Ok(crate::support::routed_tool(&Arc::new(resolver), "grep", input)?.0)
 }
