@@ -1102,11 +1102,14 @@ fn open_in_runs_the_configured_app_on_the_saved_message() -> TestResult {
         let text = "Naïve café — an answer\n";
         let opened = client.request("o1", "_yi/open", json!({"name": "copier", "text": text}))?;
         assert!(opened["result"]["argv"].is_array(), "{opened}");
+        // `cp` creates the file before it writes it, so the wait is for the whole text.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !landed.exists() && Instant::now() < deadline {
+        let mut copied = String::new();
+        while copied != text && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
+            copied = std::fs::read_to_string(&landed).unwrap_or_default();
         }
-        assert_eq!(std::fs::read_to_string(&landed)?, text);
+        assert_eq!(copied, text);
         let unknown = client.request("o2", "_yi/open", json!({"name": "nope", "text": text}))?;
         assert_eq!(
             unknown["error"]["message"], "no app named nope under `open` in config.json",

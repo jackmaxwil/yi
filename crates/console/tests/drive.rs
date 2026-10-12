@@ -4258,7 +4258,7 @@ fn a_prompt_after_an_abandoned_branch_rewinds_to_itself() -> TestResult {
 }
 
 fn open_in_recorder(frame: &Value) -> Vec<Value> {
-    if frame["params"] != json!({"name": "Recorder", "text": UNICODE_REPLY}) {
+    if frame["params"] != json!({"name": "Second", "text": UNICODE_REPLY}) {
         return refuse(frame, &format!("refused {}", frame["params"]));
     }
     vec![ok(frame, json!({"argv": ["recorder", "/tmp/x.md"]}))]
@@ -4270,13 +4270,13 @@ fn open_in_recorder(frame: &Value) -> Vec<Value> {
 fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
     let mut steps = opened_unicode();
     steps.push(Step::Expect("_yi/open", open_in_recorder));
-    let apps = vec!["Recorder".to_owned()];
+    let apps = vec!["First".to_owned(), "Second".to_owned()];
     run_console(
         "menu-open",
         Some(steps),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          mouse right 30 5\nwait-frame 3000 Open in\nkey up\nkey up\nkey right\n\
-         wait-frame 3000 Recorder\nkey enter\nwait-frame 3000 opened\nquit\n",
+         wait-frame 3000 Second\nkey down\nkey enter\nwait-frame 3000 launched Second\nquit\n",
         (false, SidebarMode::Full, apps),
         None,
         (100, 30),

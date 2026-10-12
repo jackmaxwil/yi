@@ -222,7 +222,7 @@ impl App {
                     return;
                 };
                 let params = json!({"name": name, "text": source});
-                self.send_request(outbound, RequestKind::Open, "_yi/open", params);
+                self.send_request(outbound, RequestKind::Open(name), "_yi/open", params);
             }
             (Target::Message { pane, source, .. }, Verb::Quote) => {
                 self.focus_pane(pane);

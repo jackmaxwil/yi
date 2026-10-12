@@ -697,7 +697,7 @@ impl Supervisor {
     }
 
     /// A message opened in an app the person listed: the daemon runs it, since the console never
-    /// spawns, and the model never names it.
+    /// spawns, and only an app named in config.json can run.
     fn open(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
         let Some(id) = id else { return };
         let home = self.options.home.clone();
@@ -772,19 +772,22 @@ fn spawn_client(stream: UnixStream, client: ClientId, input: mpsc::UnboundedSend
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "an Open in app is the person's own config, run on their click; no model reaches it"
+    reason = "an Open in app is one the person named in config.json; nothing else can be run"
 )]
 fn spawn_app(argv: &[String]) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     let (program, args) = argv.split_first().ok_or(std::io::ErrorKind::InvalidInput)?;
-    std::process::Command::new(program)
+    let mut child = std::process::Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
-        .spawn()
-        .map(drop)
+        .spawn()?;
+    // Invariant: a dropped Child is never reaped, so each launch would leave a zombie in the
+    // long-lived daemon; a thread waits it out without holding the reply.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 #[expect(
