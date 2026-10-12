@@ -23,7 +23,7 @@ pub use attribution::{CHILD_USAGE_CAUSE, attribute_child_usage};
 pub use budget::{Bytes, SourceBudgets, Truncated, fit};
 pub use convert::convert_to_llm;
 pub use cut::{Cut, is_cut_point, select_cut};
-pub use details::FileOps;
+pub use details::{FileOps, nested_calls};
 pub use floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 pub use policy::{Settings, should_compact};
 pub use prepare::{Preparation, compose_summary, prepare_compaction};

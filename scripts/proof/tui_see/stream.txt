@@ -1,0 +1,19 @@
+Streaming a reply to the screen is mostly a question of when text may show. A renderer that repaints on every network burst looks jumpy, and one that waits for a whole line hides progress, so the useful target is a steady trickle that never outruns what the provider has sent.
+
+The first paragraph should already be readable while the second is still arriving. That means the last, unfinished line is allowed to grow in place, and every line above it stays put. Anything that moves above the growing line is a bug, whatever the frame rate says.
+
+Three things are worth watching while this reply streams:
+
+- the text above the live line holds still,
+- the working orb sits beside its label and never over a letter,
+- the composer keeps its place under the reply.
+
+A fourth is the end of the turn. When the last token lands the orb goes away, the reply is committed to scrollback in one piece, and the prompt is ready for the next question without any row shifting under the reader's eyes.
+
+That is the whole contract. If a screenshot taken half way through shows the same words as the final one, only fewer of them, the stream is doing its job.
+
+Why bother with a stub at all? A scripted faux reply lands in one frame, so nothing in the pipeline from socket to scrollback is ever caught in the middle of a turn. The orb, the live line, the commit of finished rows and the tail-follow of a long answer only meet when tokens arrive slowly enough for a person to see them.
+
+So the stub plays the part of a provider with a steady voice. It sends a few tokens at a time, in bursts of uneven size, and pauses for as long as those tokens would take at the chosen rate. Nothing about the text matters except that it has paragraphs, a list, and a long line that has to wrap at the width of the terminal when the window is narrow.
+
+When the reply is over, the run keeps one more picture of the finished screen. Set it beside the one from half way through and the difference should be only the lines that arrived in between, with the orb gone and the composer unmoved.
