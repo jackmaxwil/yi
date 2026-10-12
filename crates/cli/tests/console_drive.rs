@@ -59,9 +59,9 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
             &dir,
             &socket,
             &root,
-            "wait-frame 8000 !connecting…\n\
+            "wait-frame 8000 no sessions for this root\n\
              key alt-n\n\
-             wait-frame 8000 ○\n\
+             wait-frame 8000 untitled\n\
              type hello daemon\n\
              key enter\n\
              wait-frame 15000 faux:\n\
@@ -108,50 +108,51 @@ fn reply_rows(frames: &Path) -> Result<Vec<String>, Box<dyn Error>> {
 #[test]
 fn a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_whole() -> TestResult
 {
-    let dir = Scratch::new("yi-console-pace")?;
-    dir.home()?;
-    let root = dir.join("repo");
-    std::fs::create_dir_all(&root)?;
-    let (mut daemon, socket) = spawn_daemon(&dir)?;
-    let outcome = (|| -> TestResult {
-        let script = "wait-frame 8000 !connecting…\n\
-                      key alt-n\n\
-                      wait-frame 8000 ○\n\
-                      type hello daemon\n\
-                      key enter\n\
-                      wait-frame 15000 faux:\n\
-                      wait-idle 15000\n\
-                      quit\n";
-        let cast = dir.join("run.cast").display().to_string();
-        let mut rows = Vec::new();
-        for (name, record) in [("plain", None), ("recorded", Some(cast.as_str()))] {
-            let frames = dir.join(name).display().to_string();
-            let mut extra = vec!["--frames", &frames];
-            extra.extend(record.into_iter().flat_map(|cast| ["--record", cast]));
-            run_console(&dir, &socket, &root, script, &extra)?;
-            rows.push(reply_rows(&dir.join(name))?);
+    let script = "wait-frame 8000 no sessions for this root\n\
+                  key alt-n\n\
+                  wait-frame 8000 untitled\n\
+                  type hello daemon\n\
+                  key enter\n\
+                  wait-frame 15000 faux:\n\
+                  wait-idle 15000\n\
+                  quit\n";
+    let mut rows = Vec::new();
+    // Invariant: a daemon per run, so the rail starts empty and `untitled` can only be this run's.
+    for (name, record) in [("plain", false), ("recorded", true)] {
+        let dir = Scratch::new(&format!("yi-console-pace-{name}"))?;
+        dir.home()?;
+        let root = dir.join("repo");
+        std::fs::create_dir_all(&root)?;
+        let (mut daemon, socket) = spawn_daemon(&dir)?;
+        let (frames, cast) = (dir.join("frames"), dir.join("run.cast"));
+        let mut extra = vec!["--frames".to_owned(), frames.display().to_string()];
+        if record {
+            extra.extend(["--record".to_owned(), cast.display().to_string()]);
         }
-        let partial = |rows: &[String]| {
-            rows.iter()
-                .any(|row| !row.is_empty() && row != "faux:" && "faux:".starts_with(row.as_str()))
-        };
-        let [plain, recorded] = rows.as_slice() else {
-            return Err("two runs".into());
-        };
-        assert!(plain.iter().any(|row| row == "faux:"), "{plain:?}");
-        assert!(
-            !partial(plain),
-            "a headless run paints the reply whole: {plain:?}"
-        );
-        assert!(
-            partial(recorded),
-            "a recorded run keeps the configured pace, so a frame shows the reply half-revealed: {recorded:?}"
-        );
-        Ok(())
-    })();
-    let _ = daemon.kill();
-    let _ = daemon.wait();
-    outcome
+        let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+        let outcome = run_console(&dir, &socket, &root, script, &extra);
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        outcome?;
+        rows.push(reply_rows(&frames)?);
+    }
+    let partial = |rows: &[String]| {
+        rows.iter()
+            .any(|row| !row.is_empty() && row != "faux:" && "faux:".starts_with(row.as_str()))
+    };
+    let [plain, recorded] = rows.as_slice() else {
+        return Err("two runs".into());
+    };
+    assert!(plain.iter().any(|row| row == "faux:"), "{plain:?}");
+    assert!(
+        !partial(plain),
+        "a headless run paints the reply whole: {plain:?}"
+    );
+    assert!(
+        partial(recorded),
+        "a recorded run keeps the configured pace, so a frame shows the reply half-revealed: {recorded:?}"
+    );
+    Ok(())
 }
 
 /// Dies with 80-column frames: the console's headless screen ignored `--size`, so no console
