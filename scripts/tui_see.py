@@ -125,7 +125,7 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
     (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
-    env = {**os.environ, "HOME": str(run_dir / "home")}
+    env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1"}
     drive = ["--keys", str(scene.resolve()), "--frames", str(run_dir / "frames"),
              "--record", str(run_dir / "run.cast")]
     if "--seed" in extra and surface == "console":
@@ -211,22 +211,23 @@ SCREEN = "1920x1200"
 TERMINALS = ("ghostty", "kitty", "wezterm")
 ITERM = Path("/Applications/iTerm.app")
 ADVERTISED = ("TERM", "COLORTERM", "TERM_PROGRAM", "KITTY_WINDOW_ID")
+FONT = "JetBrains Mono"
 
 
-def terminal_argv(name: str, cols: str, rows: str, cmd: list[str]) -> list[str]:
+def terminal_argv(name: str, cols: str, rows: str, cmd: list[str], font: str = FONT) -> list[str]:
     """One window of `name` running `cmd`. kitty and WezTerm get Ghostty's default ground: the
     grab finds the window by cropdetect against the black root, which their black default hides."""
     launch = {
         "ghostty": ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
-                    "--font-family=JetBrains Mono", f"--window-width={cols}",
+                    f"--font-family={font}", f"--window-width={cols}",
                     f"--window-height={rows}", "--background-opacity=1",
                     "--confirm-close-surface=false", "-e"],
-        "kitty": ["kitty", "--config=NONE", "-o", "font_family=JetBrains Mono", "-o",
+        "kitty": ["kitty", "--config=NONE", "-o", f"font_family={font}", "-o",
                   f"initial_window_width={cols}c", "-o", f"initial_window_height={rows}c", "-o",
                   "remember_window_size=no", "-o", "background=#282c34", "-o",
                   "foreground=#ffffff", "-o", "confirm_os_window_close=0"],
         "wezterm": ["wezterm", "-n", "--config", f"initial_cols={cols}", "--config",
-                    f"initial_rows={rows}", "--config", 'font=wezterm.font("JetBrains Mono")',
+                    f"initial_rows={rows}", "--config", f'font=wezterm.font("{font}")',
                     "--config", "enable_tab_bar=false", "--config", 'window_decorations="NONE"',
                     "--config", 'colors={background="#282c34",foreground="#ffffff"}', "start",
                     "--always-new-process", "--cwd", os.getcwd(), "--"],
@@ -451,7 +452,7 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
     number = next(n for n in range(99, 400) if not Path(f"/tmp/.X{n}-lock").exists())
     # Incident: kitty's image cache made its temp files on the host-mounted /out and failed every
     # defrag; a cache on the container's own disk keeps its images.
-    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}",
+    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}", "YI_FIXED_IDS": "1",
            "XDG_CACHE_HOME": tempfile.mkdtemp(prefix="yi-term-cache.")}
     display = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", f"{SCREEN}x24"],
                                stderr=subprocess.DEVNULL)
@@ -1165,10 +1166,6 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
                 text = text[:MAX_DIFF_LINES] + [cap_notice(
                     MAX_DIFF_LINES, len(text), "lines", "the job's tui-gallery artifact holds the whole diff")]
             lines += [f"### {scene} · {name}", "", *fence(text)]
-            drive = SCENES / f"{scene}.drive"
-            if drive.exists() and header(drive)[0] == "console":
-                lines.append("Console sessions take a fresh random id each run, so avatar and badge "
-                             "colours differ between any two runs; read past those cells.")
             crops = summary.parent.glob(f"{name}-region*-*.png")
             for crop in sorted(crops, key=lambda p: (p.stem.rsplit("-", 1)[0], p.stem.endswith("after"))):
                 if len(pictures) < MAX_PICTURES:
@@ -1371,8 +1368,9 @@ def selfcheck() -> None:
     # is refused rather than played in whichever terminal happened to be the default.
     for name, size in (("ghostty", "--window-width=60"), ("kitty", "initial_window_width=60c"),
                        ("wezterm", "initial_cols=60")):
-        argv = terminal_argv(name, "60", "12", ["python3", "proxy"])
+        argv = terminal_argv(name, "60", "12", ["python3", "proxy"], font="Noto Sans Mono")
         assert argv[0] == name and argv[-2:] == ["python3", "proxy"] and size in argv, argv
+        assert sum("Noto Sans Mono" in arg for arg in argv) == 1, f"{name} ignored the font: {argv}"
     try:
         terminal_argv("iterm2", "60", "12", ["python3"])
         raise AssertionError("iterm2 was launched instead of refused")

@@ -343,6 +343,37 @@ pub struct AcpYiMeta {
     /// The entry offset a resume replayed up to, for the next resume's `replayFrom`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replayed_to: Option<u64>,
+    /// What the person typed in the entry a `before` fork left out, to ask again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<String>,
+}
+
+/// `_yi/fork` params: a new session branched from `entryId`, leaving it out (`before`) or
+/// keeping it (`at`); the source session is untouched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpForkParams {
+    pub session_id: String,
+    pub entry_id: String,
+    #[serde(default)]
+    pub position: AcpForkPosition,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpForkPosition {
+    #[default]
+    Before,
+    At,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// `_yi/committed`: a user or assistant message as the worker saved it, so a client can act on
+/// a reply it watched stream through the entry's id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcpCommitted {
+    pub entry: crate::entry::Entry,
 }
 
 /// A `select` session config option; `currentValue` is one of the `options` values.

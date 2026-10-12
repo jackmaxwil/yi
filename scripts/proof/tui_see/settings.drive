@@ -4,7 +4,7 @@ wait-frame 15000 command palette
 key alt-n
 wait-frame 10000 untitled
 key alt-,
-wait-frame 5000 ⚙ Settings
+wait-frame 5000 Settings
 snap session
 key right
 wait-frame 5000 Thinking
