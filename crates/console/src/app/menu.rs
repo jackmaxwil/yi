@@ -1,5 +1,4 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Position;
 
 use crate::client::Outbound;
 use crate::keys::Action;
@@ -18,10 +17,7 @@ impl App {
             let (_, index) = hits.sidebar_rows.iter().find(|(row, _)| *row == y)?;
             return Some(Target::Session(*index));
         }
-        let (pane, _) = hits
-            .panes
-            .iter()
-            .find(|(_, rect)| rect.contains(Position::new(x, y)))?;
+        let pane = &hits.pane_at(x, y)?;
         let source = match &self.state.panes.get(pane)?.content {
             PaneContent::Session {
                 chat: Some(chat), ..
@@ -180,18 +176,16 @@ impl App {
         match (target, verb) {
             (Target::Message { source, .. }, Verb::Copy) => self.copy_out(&source),
             (Target::Message { source, .. }, Verb::CopyPlain) => {
-                let plain: Vec<String> = yi_tui::markdown::render(&source, UNWRAPPED, &self.theme)
+                let rows: Vec<String> = yi_tui::markdown::render(&source, UNWRAPPED, &self.theme)
                     .iter()
                     .map(|line| {
-                        let row: String = line
-                            .spans
+                        line.spans
                             .iter()
                             .map(|span| span.content.as_ref())
-                            .collect();
-                        crate::select::strip_chrome(row.trim_end())
+                            .collect()
                     })
                     .collect();
-                self.copy_out(plain.join("\n").trim_end());
+                self.copy_out(&crate::select::words(&rows));
             }
             (Target::Message { pane, source }, Verb::Quote) => {
                 self.focus_pane(pane);
