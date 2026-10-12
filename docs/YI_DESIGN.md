@@ -504,16 +504,19 @@ A persistent IPython process per session that reaches the host only through host
 | `kernel_tools.rs` | `tool.list` (the session's table, `ipython` and a root's `ask_user` named as excluded), `tool.call {name, args}` |
 
 - `tool.call` runs the session's own adapter, found at call time, so rules, wall and broker judge
-  each nested call on its own arguments as they judge a model's; a call the loop would run in
-  sequence (write, exec, ledger) takes one lock, since the loop orders them only by awaiting. It
-  answers only while an `ipython` cell is open: a task that outlived its cell, or a call after an
-  interrupt, is refused `cancelled`. A failure replies `{ok: false, kind, message, suggestions}`:
-  `unknown_tool`, `excluded_tool`, `invalid_input` (also a cell's own `kernel://` read, which
-  would queue behind the cell), `refused` (a denial), `tool_failure`, `cancelled`.
+  each nested call on its own arguments as they judge a model's. Calls keep the loop's order
+  through one read-write lock: reads share it, every other kind takes it alone, since the loop
+  orders them only by awaiting. It answers only while an agent's `ipython` cell is open: a task
+  that outlived its cell, a call after an interrupt, or a cell typed into the console is refused
+  `cancelled`. A failure replies `{ok: false, kind, message, suggestions}`: `unknown_tool`,
+  `excluded_tool`, `invalid_input` (also a cell's own `kernel://` read, which would queue behind
+  the cell), `refused` (a denial), `tool_failure`, `cancelled`.
 - Every call that ran is a `NestedCall` row on its cell's `ipython` result, `details.calls`: the
   files it named, a sequential call's `command`, an `ask_user` answer, never a write's content.
-  A cell keeps 256 read rows and counts the rest in `callsDropped`; compaction's file lists and
-  the todo landed count read the rows, a cell that raised included.
+  A cell keeps 256 read rows and 1,024 write rows; past them reads are counted in `callsDropped`
+  and writes fold into one row per tool holding their paths. A call that finished after its cell
+  ended is `outlived` on the next cell's result. Compaction's file lists and the todo landed count
+  read the rows, a cell that raised included.
 - A nested call runs as a program's (`ToolContext::program`, `AgentTool::execute_program`): the
   tool fills `ToolOutput::value`, a `yi_types::tool_value` shape the reply carries beside the
   text and the transcript never holds; a value's `cut` names everything left out (a fuse, a walk

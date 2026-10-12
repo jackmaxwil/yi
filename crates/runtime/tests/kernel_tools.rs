@@ -223,12 +223,23 @@ import asyncio, time
 started = time.monotonic()
 await asyncio.gather(*[yi.tools.bash(command="sleep 0.4") for _ in range(2)])
 print("ordered", time.monotonic() - started >= 0.8)
+async def read_later():
+    await asyncio.sleep(0.1)
+    await yi.tools.grep(pattern="x", path=".")
+    return time.monotonic() - started
+started = time.monotonic()
+_, read_at = await asyncio.gather(yi.tools.bash(command="sleep 0.4; touch t"), read_later())
+print("waited", read_at >= 0.4)
 "#;
     let cell = run_cell(&cwd, code).await?;
     let text = yi_types::message::join_text(&cell.content, "\n");
     assert!(
         text.contains("ordered True"),
         "two exec calls overlapped: {text}"
+    );
+    assert!(
+        text.contains("waited True"),
+        "a read overlapped an exec: {text}"
     );
     Ok(())
 }
@@ -282,6 +293,132 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
         after.get("kind"),
         Some(&json!("cancelled")),
         "closing a cell shuts the gate"
+    );
+
+    calls.open();
+    let writes = yi_types::kernel::NESTED_WRITES_KEPT;
+    for n in 0..=writes {
+        let path = format!("w{n}.txt");
+        dispatch(request("write", json!({"path": path, "content": "w\n"})))?.await?;
+    }
+    let (rows, dropped) = calls.close();
+    let last = rows.last().ok_or("no rows")?;
+    assert_eq!(
+        (rows.len(), dropped),
+        (writes + 1, 1),
+        "a write past the cap folds, not vanishes"
+    );
+    assert_eq!(
+        (last.tool.as_str(), last.paths.clone()),
+        ("write", vec![format!("w{writes}.txt")])
+    );
+
+    calls.open();
+    let slow = dispatch(request(
+        "bash",
+        json!({"command": "sleep 0.3; touch late.txt"}),
+    ))?;
+    let running = tokio::spawn(slow);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (during, _) = calls.close();
+    running.await??;
+    calls.open();
+    let (next, _) = calls.close();
+    let outlived: Vec<bool> = next.iter().map(|row| row.outlived).collect();
+    assert_eq!(
+        (during.len(), outlived),
+        (0, vec![true]),
+        "a call that outlives its cell says so"
+    );
+    Ok(())
+}
+
+/// The wiring a real session gets: `attach_runtime` registers the verb and hands the ipython
+/// tool the same rows, and the stored result is what compaction later reads.
+#[tokio::test]
+async fn an_attached_session_answers_tool_calls_and_stores_their_rows() -> Result<(), Box<dyn Error>>
+{
+    let (_dir, cwd) = scratch("kernel-tools-attached")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut code = Map::new();
+    let cell = "await yi.tools.write(path=\"wired.txt\", content=\"w\\n\")";
+    code.insert("code".to_owned(), json!(cell));
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "ipython", code)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    let sessions = cwd.join("sessions");
+    let _host = yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: String::new(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: cwd.clone(),
+            home: home(),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: sessions.join("rlm-1"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(cwd.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::wall::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: Some(sessions),
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    let store = Arc::new(std::sync::Mutex::new(yi_session::SessionStore::in_memory(
+        yi_session::SessionMetadata {
+            id: "wired".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        },
+    )));
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("write through the kernel")?;
+    session.wait_idle().await;
+    if let Some(kernel) = session.kernel_service() {
+        kernel.dispose().await;
+    }
+    assert_eq!(std::fs::read_to_string(cwd.join("wired.txt"))?, "w\n");
+    let entries =
+        yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery::default())?;
+    let stored = (entries.iter()).find_map(|entry| match entry {
+        yi_types::entry::Entry::Message {
+            message: message @ AgentMessage::ToolResult { tool_name, .. },
+            ..
+        } if tool_name == "ipython" => Some(message.clone()),
+        _ => None,
+    });
+    let mut ops = yi_context::FileOps::default();
+    yi_context::details::extract_file_ops_from_message(&stored.ok_or("no stored cell")?, &mut ops);
+    assert!(
+        ops.written.contains("wired.txt"),
+        "the stored result lists the cell's write: {ops:?}"
     );
     Ok(())
 }
