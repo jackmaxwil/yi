@@ -361,3 +361,27 @@ fn a_first_prompt_rolls_into_an_empty_pane() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the first prompt rolling in again after a scroll away and back: the scroll dropped
+/// the follow pin, and the empty-pane fallback re-armed for a cell already on screen.
+#[test]
+fn a_first_prompt_scrolled_away_and_back_stays_where_it_was() -> TestResult {
+    let mut app = app();
+    let mut scroll = 0;
+    app.reduce_agent(AgentEvent::AgentStart);
+    paint(&mut app, &mut scroll);
+    let text: Vec<String> = (0..6).map(|i| format!("prompt line {i}")).collect();
+    app.commit_cell(&Cell::User {
+        text: text.join("\n"),
+    });
+    for _ in 0..20 {
+        paint(&mut app, &mut scroll);
+    }
+    let (settled, _) = paint(&mut app, &mut scroll);
+    scroll = 3;
+    paint(&mut app, &mut scroll);
+    scroll = 0;
+    let (back, _) = paint(&mut app, &mut scroll);
+    assert_eq!(back, settled, "the prompt rolled in again");
+    Ok(())
+}
