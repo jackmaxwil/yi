@@ -10,8 +10,8 @@ use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Seeds that played green when they were chosen; a seed that fails is filed on the forge with
-/// its script, not dropped from here to turn this green.
+/// Seeds 103-107 paste no control characters, so only keys guard the control-cell invariant here.
+/// A seed that fails is filed on the forge with its script, not dropped to turn this green.
 const SEEDS: &str = "103";
 const RUNS: &str = "5";
 
