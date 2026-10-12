@@ -12,6 +12,8 @@ use scratch::Scratch;
 
 #[path = "support/acp_schema.rs"]
 mod acp_schema;
+#[path = "support/config_option.rs"]
+mod config_option;
 use acp_schema::Schema;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -309,14 +311,8 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
         .as_str()
         .ok_or("missing sessionId")?
         .to_owned();
-    let mode_of = |options: &Value| -> Option<String> {
-        options.as_array()?.iter().find_map(|option| {
-            (option["configId"] == "mode")
-                .then(|| option["currentValue"].as_str().map(str::to_owned))?
-        })
-    };
     assert_eq!(
-        mode_of(&new["result"]["configOptions"]).as_deref(),
+        config_option::current_value(new, "mode").as_deref(),
         Some("auto"),
         "the session must advertise its permission mode (C8)"
     );
@@ -328,7 +324,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     )?;
     let set = set.last().ok_or("no set_config_option response")?;
     assert_eq!(
-        mode_of(&set["result"]["configOptions"]).as_deref(),
+        config_option::current_value(set, "mode").as_deref(),
         Some("ask"),
         "the applied mode must echo back in the options: {set}"
     );
@@ -1809,12 +1805,22 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
     let before = client.request(
         "8",
         "_yi/fork",
-        json!({"sessionId": session_id, "entryId": asked, "position": "before"}),
+        json!({"sessionId": session_id, "entryId": asked}),
     )?;
     let reply = before.last().ok_or("no reply")?;
     assert_eq!(
-        reply["result"]["prefill"], "first turn",
+        reply["result"]["_meta"]["yi"]["prefill"], "first turn",
         "a re-ask hands back the prompt"
+    );
+    let sideways = client.request(
+        "9",
+        "_yi/fork",
+        json!({"sessionId": session_id, "entryId": asked, "position": "sideways"}),
+    )?;
+    let refused = sideways.last().ok_or("no reply")?;
+    assert_eq!(
+        refused["error"]["message"], "position is before or at, not sideways",
+        "an unknown position is named, not read as before: {refused}"
     );
     Ok(())
 }

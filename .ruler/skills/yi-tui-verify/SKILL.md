@@ -39,9 +39,8 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    `freeze` was tried and dropped — it re-renders text in its own font and chrome, so
    the still was not 1:1 (the composer border ran off the edge) and `-c full` wrote a
    0-byte file while exiting 0. Pace the typing with `type-ms <n>` (0 by default, so
-   assertion scripts stay instant), and put `--deadline <secs>` in a solo scene's `#!`
-   line when the beats outlast the 60 s default; the console's headless run always stops at
-   60 s. A wide layout is `#! console --size 254x40`.
+   assertion scripts stay instant), and put `--deadline <secs>` in the scene's `#!` line
+   when the beats outlast the 60 s default. A wide layout is `#! console --size 254x40`.
    `scripts/proof/demo.drive` is the worked example.
 7. To see what a change did, diff snaps rather than eyeballing whole frames:
    `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
@@ -69,8 +68,16 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    keeps the whole run as `run.webp` (cropped to the window, under the 512 KB blob cap for a
    README); it needs at least one `snap` to find the window. On that host `wait-idle` waits for
    the screen to hold still a second with digits ignored, so ticking ages do not count as work.
-10. On the forge, `.forgejo/workflows/tui.yml` builds the base and head binaries, then runs
-   `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
-   `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
-   24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
-   headless there. Console scenes get random session ids, so their avatar colours always differ.
+   Harvest a scene from a recorded session instead of writing one:
+   `just tui-see harvest crates/tui/tests/fixtures/sessions/<id>.jsonl --name N [--view
+   end|tool|long]` writes `harvest-N-<view>` into scripts/proof/tui_see. A solo screen has no
+   scroll, so each view is its own seed cut where it matters: `end` the whole session, `tool`
+   through the largest tool result, `long` through the longest reply (the cut is named on the
+   way out). The scrub masks ids the store refuses, so the seed gets unique ids and a chain. The
+   `end` scene also retypes the last prompt and plays the last recorded reply as its cassette;
+   that turn freezes the clock, because its elapsed seconds read the wall clock.
+   `tui_see.py` sets `YI_FIXED_IDS=1` for the serve it starts, so console sessions count ids up
+   from 1 and two runs draw the same avatar colours.
+10. Fuzzing: `just tui-see monkey --runs 20 --seed 7 [--surface solo|console]` plays seeded random key
+   runs through the headless loops and reports only a crash, a hang or a control character in a
+   cell; the seed's script is `target/see/monkey/<seed>/<surface>.drive`, replayed by `tui_see.py run`.

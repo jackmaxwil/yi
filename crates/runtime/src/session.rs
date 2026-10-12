@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -581,8 +581,15 @@ impl AgentSession {
     /// The registered table, as attached; the surface lock renders its lock
     /// from these definitions so what it pins is what a model call can name.
     pub fn tools(&self) -> Vec<Arc<dyn yi_loop::AgentTool>> {
-        let slot = self.shared.tools.lock();
-        slot.as_deref().cloned().unwrap_or_default()
+        (self.tools_handle())()
+    }
+
+    pub fn tools_handle(&self) -> crate::kernel_tools::ToolsFn {
+        let shared = Arc::downgrade(&self.shared);
+        Arc::new(move || match shared.upgrade() {
+            Some(shared) => (shared.tools.lock().unwrap_or_else(PoisonError::into_inner)).clone(),
+            None => Vec::new(),
+        })
     }
 
     /// Aborting the session cancels any tool subprocess still running.

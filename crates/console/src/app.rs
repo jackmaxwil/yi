@@ -1026,6 +1026,7 @@ impl App {
 
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
         match event {
+            CtEvent::Key(key) if yi_tui::keymap::is_pasted_control(&key) => {}
             CtEvent::Key(key) => {
                 if self.selection.take().is_some() {
                     self.dirty = true;

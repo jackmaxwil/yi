@@ -1,6 +1,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use serde_json::{Value, json};
+use yi_types::acp::{AcpForkParams, AcpForkPosition};
 use yi_types::entry::Entry;
 use yi_types::message::AgentMessage;
 
@@ -295,8 +296,17 @@ impl App {
                 ) else {
                     return;
                 };
-                let position = if at { "at" } else { "before" };
-                let params = json!({"sessionId": session.0, "entryId": id, "position": position});
+                let position = if at {
+                    AcpForkPosition::At
+                } else {
+                    AcpForkPosition::Before
+                };
+                let asked = AcpForkParams {
+                    session_id: session.0,
+                    entry_id: id,
+                    position,
+                };
+                let params = serde_json::to_value(asked).unwrap_or_default();
                 self.send_request(outbound, RequestKind::Fork(new), "_yi/fork", params);
             }
             _ => self.note("this pane has no session"),
@@ -353,8 +363,11 @@ impl App {
             last_ms: 0,
         });
         self.resume_into(outbound, pane, &session);
+        // Incident: a daemon from the last build keeps serving after a rebuild, and its worker
+        // still puts the prompt at the result's root.
         let prefill = reply
-            .pointer("/result/prefill")
+            .pointer("/result/_meta/yi/prefill")
+            .or_else(|| reply.pointer("/result/prefill"))
             .and_then(Value::as_str)
             .unwrap_or("");
         if let Some(PaneContent::Session {
