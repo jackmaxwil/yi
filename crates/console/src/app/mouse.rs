@@ -59,12 +59,7 @@ impl App {
     }
 
     fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
-        let target = self.hits.as_ref().and_then(|hits| {
-            hits.panes
-                .iter()
-                .find(|(_, rect)| rect.contains(Position::new(x, y)))
-                .map(|(id, _)| *id)
-        });
+        let target = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y));
         if let Some(pane_id) = target
             && let Some(pane) = self.state.panes.get_mut(&pane_id)
         {
@@ -172,12 +167,7 @@ impl App {
         if self.pending_close.is_some() {
             return;
         }
-        if let Some((pane_id, _)) = hits
-            .panes
-            .iter()
-            .find(|(_, rect)| rect.contains(Position::new(x, y)))
-        {
-            let pane_id = *pane_id;
+        if let Some(pane_id) = hits.pane_at(x, y) {
             if let Some(tab) = self.state.tab_mut() {
                 tab.layout.focus_pane(pane_id);
             }

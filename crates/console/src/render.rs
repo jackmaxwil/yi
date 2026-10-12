@@ -48,6 +48,14 @@ pub struct Hits {
     pub gear: Option<Rect>,
 }
 
+impl Hits {
+    pub fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
+        let at = ratatui::layout::Position::new(x, y);
+        let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
+        Some(*pane)
+    }
+}
+
 pub struct ViewState {
     pub sidebar: Rect,
     pub roots: Rect,
