@@ -520,7 +520,7 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
     assert_eq!(
         user_texts(&first_child_messages(&cold).await),
         vec![
-            "[task from parent]\n[its transcript: history://parent/since/0]\n\ndo the thing"
+            "[task from parent]\n[its transcript: history://parent/since/0 · one line of it: grep with path=history://parent]\n\ndo the thing"
                 .to_owned()
         ],
         "no fork means a cold child: the parent's turns never cross, only their address does"
@@ -556,7 +556,7 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
         user_texts(&first_child_messages(&forked).await),
         vec![
             "turn three".to_owned(),
-            "[task from parent]\n[its transcript: history://parent/since/0]\n\ncontinue it"
+            "[task from parent]\n[its transcript: history://parent/since/0 · one line of it: grep with path=history://parent]\n\ncontinue it"
                 .to_owned()
         ],
         "fork=1 seeds the last turn boundary onward, nothing older"

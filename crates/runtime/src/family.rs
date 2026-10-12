@@ -14,8 +14,8 @@ pub(crate) const NOTE_CHARS: usize = 120;
 
 pub(crate) fn cut_notice() -> String {
     format!(
-        "\n[… a line is cut at {NOTE_CHARS} chars (NOTE_CHARS), a user line at {USER_CHARS} \
-         (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
+        "\n[… a line is cut to its first line and {NOTE_CHARS} chars (NOTE_CHARS), a user line at \
+         {USER_CHARS} (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
     )
 }
 
@@ -182,15 +182,17 @@ fn cut(text: &str) -> String {
     cut_note(text).0
 }
 
+/// Incident: a 301-line bash result rendered as its first line, unmarked, and a child answered
+/// with that line as the whole output; dropped lines are a cut and are counted.
 fn cut_note(text: &str) -> (String, bool) {
     let line = text.lines().next().unwrap_or_default();
-    if line.chars().count() > NOTE_CHARS {
-        (
-            format!("{}…", line.chars().take(NOTE_CHARS).collect::<String>()),
-            true,
-        )
-    } else {
-        (line.to_owned(), false)
+    let more = text.lines().count().saturating_sub(1);
+    let kept = line.chars().take(NOTE_CHARS).collect::<String>();
+    let long = kept.len() < line.len();
+    match (long, more) {
+        (false, 0) => (kept, false),
+        (_, 0) => (format!("{kept}…"), true),
+        (_, more) => (format!("{kept}… (+{more} lines)"), true),
     }
 }
 
