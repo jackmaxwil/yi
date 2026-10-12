@@ -10,13 +10,19 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
   tui_see.py gallery [ROOT] [PAGE]     # every scene and label under ROOT on one HTML page
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
   tui_see.py ci BASE_BIN HEAD_BIN      # every scene on both, then the PR comment (post)
+  tui_see.py ci HEAD_BIN               # every scene on one binary and the gallery, nothing posted
   tui_see.py post OUT                  # upsert the comment `ci` left in OUT (FORGEJO_* env)
+  tui_see.py publish PAGE              # replace the live gallery release's asset (FORGEJO_* env)
   tui_see.py --selfcheck
+  tui_see.py monkey [--runs N] [--seed S] [--surface solo|console]   # random key runs, failures only
 
 `--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
 so the pictures carry kitty images and true colour; it needs `just yi-term` built first.
 `--video` keeps the whole run as motion: run.webp cropped to the Ghostty window on that host,
 run.gif rendered by agg on the headless one.
+A scene header `--stub <reply file> <tokens/s>` (file beside the scene) swaps the faux model for
+scripts/proof/stub_provider.py streaming that reply; such a scene needs `--host term`, and its
+`snap-now <name>` step grabs the screen at once, where `snap` waits for output to pause.
 
 What an agent reads, in order: the cell diff as text (exact), then 1:1 crops of each changed
 region before and after, then the whole frame. Pictures never gate anything.
@@ -29,6 +35,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -60,6 +67,16 @@ def header(scene: Path) -> tuple[str, list[str]]:
     return surface, words
 
 
+def take(args: list[str], flag: str, count: int) -> list[str]:
+    """Removes `flag` and the `count` words after it from `args`, returning those words."""
+    if flag not in args:
+        return []
+    at = args.index(flag)
+    taken = args[at + 1:at + 1 + count]
+    del args[at:at + 1 + count]
+    return taken
+
+
 def encoded(cwd: Path) -> str:
     return "--" + str(cwd).strip("/").replace("/", "-").replace(":", "-") + "--"
 
@@ -89,21 +106,21 @@ def pristine_seed(run_dir: Path, session: str) -> Path:
     return next((run_dir / "seed").glob(f"*_{session}.jsonl"))
 
 
-def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
-        video: bool = False) -> Path:
-    surface, extra = header(scene)
-    if not NAME.fullmatch(label):
-        sys.exit(f"label {label!r} is not [a-z0-9_-]+")
-    run_dir = (out / scene.stem / label).resolve()
+def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Path, *,
+         record: bool = True, timeout: int = 600,
+         stderr=None, stub: bool = False) -> tuple[int, list[str]]:
+    """Plays a scene headless in a fresh run dir; returns the exit code and the flags left over."""
     shutil.rmtree(run_dir, ignore_errors=True)
     for sub in ("frames", "sessions", "home/.yi"):
         (run_dir / sub).mkdir(parents=True)
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
     (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
-    env = {**os.environ, "HOME": str(run_dir / "home")}
+    # ctrl-g hands the draft to $EDITOR; a scene that replays must never open a real vi.
+    env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1",
+           "EDITOR": "true", "VISUAL": "true"}
     drive = ["--keys", str(scene.resolve()), "--frames", str(run_dir / "frames"),
-             "--record", str(run_dir / "run.cast")]
+             *(["--record", str(run_dir / "run.cast")] if record else [])]
     if "--seed" in extra and surface == "console":
         sys.exit("--seed is solo only: the console attaches to the daemon's sessions, not a resumed one")
     if surface == "solo" and "--seed" not in extra:
@@ -118,10 +135,12 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
         seed = Path(extra[at + 1])
         del extra[at:at + 2]
         extra += ["--session", stage_seed(run_dir, seed)]
-    if surface == "solo":
+    if stub:
+        code = 0
+    elif surface == "solo":
         argv = [str(binary), "tui", "--headless", "--here", "--model", "faux/faux-1",
                 "--session-dir", str(run_dir / "sessions"), *drive, *extra]
-        code = subprocess.run(argv, env=env, timeout=600).returncode
+        code = subprocess.run(argv, env=env, timeout=timeout, stderr=stderr).returncode
     else:
         # A unix socket path is capped near 100 bytes, so it lives under the system temp dir.
         sock = Path(tempfile.mkdtemp(prefix="yi-see.")) / "d.sock"
@@ -136,7 +155,7 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                     break
                 time.sleep(0.05)
             argv = [str(binary), "console", "--headless", "--socket", str(sock), *drive, *extra]
-            code = subprocess.run(argv, env=env, timeout=600).returncode
+            code = subprocess.run(argv, env=env, timeout=timeout, stderr=stderr).returncode
         finally:
             serve.send_signal(signal.SIGTERM)
             try:
@@ -145,7 +164,21 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                 serve.kill()
             log.close()
             shutil.rmtree(sock.parent, ignore_errors=True)
+    return code, extra
+
+
+def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
+        video: bool = False) -> Path:
+    surface, extra = header(scene)
+    stub = take(extra, "--stub", 2)
+    if stub and host not in ("term", "here"):
+        sys.exit("--stub scenes stream from a live provider and are played in Ghostty: add --host term")
+    if not NAME.fullmatch(label):
+        sys.exit(f"label {label!r} is not [a-z0-9_-]+")
+    run_dir = (out / scene.stem / label).resolve()
+    code, extra = play(scene, surface, extra, run_dir, binary, stub=bool(stub))
     rendered = render(run_dir)
+    extra += ["--stub", *stub] if stub else []
     if video and host == "mem":
         gif = run_dir / "run.gif"
         if shutil.which("agg") and agg(run_dir / "run.cast", gif, "--idle-time-limit", "1"):
@@ -160,7 +193,8 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                                str(scene.resolve()), surface, str(run_dir / "term"), str(binary),
                                *extra, *(["--video"] if video else [])], timeout=900).returncode
         collect(run_dir)
-    snaps = sorted(p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.txt"))
+    snaps = sorted({p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.*")
+                    if p.suffix in (".txt", ".png")})
     print(f"run: {run_dir} (exit {code})")
     print(f"snaps: {', '.join(snaps) or 'none: add `snap <name>` steps'}")
     if not rendered:
@@ -279,6 +313,40 @@ def key_bytes(spec: str, cmd: bool = False) -> bytes:
     return (("\x1b" if "alt" in mods else "") + key).encode()
 
 
+STUB_MODEL = "openrouter/local-slow"
+PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+
+
+def start_stub(reply: Path, rate: str, home: Path, env: dict[str, str]) -> subprocess.Popen:
+    """Streams `reply` at `rate` tokens a second from a local OpenAI-style endpoint, registered in
+    `home`'s catalog as STUB_MODEL, and points `env` at it with no proxy in the way."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    stub = subprocess.Popen([sys.executable, str(Path(__file__).with_name("proof") / "stub_provider.py"),
+                             str(port), str(reply), rate], stderr=open(home.parent / "stub.log", "w"))
+    model = {"id": "local-slow", "name": "Local Slow", "api": "openai-completions",
+             "provider": "openrouter", "baseUrl": f"http://127.0.0.1:{port}/v1", "reasoning": False,
+             "input": ["text"], "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+             "contextWindow": 128000, "maxTokens": 8000}
+    (home / ".yi/catalog").mkdir(parents=True)
+    (home / ".yi/catalog/openrouter.json").write_text(
+        json.dumps({"openai-completions": {"local-slow": model}}))
+    env.update(OPENROUTER_API_KEY="stub", NO_PROXY="*", no_proxy="*")
+    for var in PROXY_VARS:
+        env.pop(var, None)
+
+    def listening() -> bool:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            return True
+        except OSError:
+            return False
+    if not wait_for(listening, 10):
+        sys.exit("term: the stub provider did not listen")
+    return stub
+
+
 def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -> None:
     """Inside the yi-term image: Xvfb, then Ghostty running the real binary behind `proxy`."""
     shutil.rmtree(out, ignore_errors=True)
@@ -291,27 +359,31 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
         at = extra.index("--size")
         cols, rows = extra[at + 1].split("x")
         del extra[at:at + 2]
+    stub = take(extra, "--stub", 2)
     if "--session" in extra:
         seed = pristine_seed(out.parent, extra[extra.index("--session") + 1])
         (out / "sessions" / encoded(Path.cwd())).mkdir(parents=True)
         shutil.copy(seed, out / "sessions" / encoded(Path.cwd()) / seed.name)
     # One job plays many scenes: a server that exited leaves its lock, so each run takes a free one.
     number = next(n for n in range(99, 400) if not Path(f"/tmp/.X{n}-lock").exists())
-    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}"}
+    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}", "YI_FIXED_IDS": "1"}
     display = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", f"{SCREEN}x24"],
                                stderr=subprocess.DEVNULL)
     procs = [display]
+    model = STUB_MODEL if stub else "faux/faux-1"
     try:
         if not wait_for(lambda: Path(f"/tmp/.X11-unix/X{number}").exists(), 10):
             sys.exit("term: Xvfb did not start")
+        if stub:
+            procs.append(start_stub(Path(scene).parent / stub[0], stub[1], out / "home", env))
         if surface == "solo":
-            argv = [yi, "tui", "--here", "--model", "faux/faux-1", "--session-dir",
+            argv = [yi, "tui", "--here", "--model", model, "--session-dir",
                     str(out / "sessions"), *extra]
         else:
             # Incident: the `here` host plays base and head in one container, and the killed base
             # serve left a shared socket the head console reached before the new serve listened.
             sock = str(Path(tempfile.mkdtemp(prefix="yi-term.")) / "d.sock")
-            serve = subprocess.Popen([yi, "serve", "--socket", sock, "--model", "faux/faux-1",
+            serve = subprocess.Popen([yi, "serve", "--socket", sock, "--model", model,
                                       "--session-dir", str(out / "sessions")], env=env,
                                      stderr=open(out / "serve.log", "w"))
             procs.append(serve)
@@ -514,6 +586,8 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
             if not pump(int(ms) / 1000, lambda: shown(needle) != gone):
                 status = f"wait-frame {rest!r} timed out; the screen it saw: {out / 'screen.txt'}"
                 (out / "screen.txt").write_text("\n".join(screen.display))
+        elif word == "snap-now":
+            grab(out / f"snap-{rest}.png", box)
         elif word == "snap":
             if not pump(5, lambda: time.monotonic() - last >= 0.3):
                 (out / f"snap-{rest}.note").write_text("output never paused for 0.3 s within 5 s")
@@ -890,16 +964,21 @@ MARKER = "TUI snapshots for this pull request (scripts/tui_see.py)"
 HEAD_MARK = "<!-- tui-see head={} -->"
 
 
-def ci(base_bin: Path, head_bin: Path) -> None:
+def ci(base_bin: Path | None, head_bin: Path) -> None:
     """The PR job inside the yi-term image: every scene under scripts/proof/tui_see on the base
-    and the head binary, in Ghostty where the scene allows, then one comment on the PR."""
+    and the head binary, in Ghostty where the scene allows, then one comment on the PR. Without
+    a base (main's own push) only the head plays and the gallery is all it leaves."""
     out = Path("target/see").resolve()
     failed: list[str] = []
     played = 0
     for scene in sorted(SCENES.glob("*.drive")):
+        if "--stub" in header(scene)[1]:
+            continue  # a live-paced stream differs between any two runs, so a cell diff would be noise
         steps = {line.split(" ", 1)[0] for line in scene.read_text().splitlines()}
         host = "mem" if steps & {"tick", "snap-strip", "hold", "release"} else "here"
         for label, binary in (("base", base_bin), ("head", head_bin)):
+            if binary is None:
+                continue
             played += 1
             try:
                 run(scene, label, out, binary, host)
@@ -907,14 +986,15 @@ def ci(base_bin: Path, head_bin: Path) -> None:
                 failed.append(f"{scene.stem} ({label}, exit {stop.code})")
             except (subprocess.SubprocessError, OSError, ValueError) as error:
                 failed.append(f"{scene.stem} ({label}, {type(error).__name__})")
-        if (out / scene.stem / "head" / "frames").is_dir() and (out / scene.stem / "base").is_dir():
+        if base_bin and (out / scene.stem / "head" / "frames").is_dir() and (out / scene.stem / "base").is_dir():
             try:
                 diff(out / scene.stem / "base", out / scene.stem / "head")
             except (subprocess.SubprocessError, OSError, ValueError) as error:
                 failed.append(f"{scene.stem} (diff, {type(error).__name__})")
     gallery(out, out / "gallery.html")
     (out / "failed.json").write_text(json.dumps(failed))
-    post(out)
+    if base_bin:
+        post(out)
     if failed and len(failed) == played:
         sys.exit("ci: no scene ran on either binary")
 
@@ -957,10 +1037,6 @@ def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
                 text = text[:MAX_DIFF_LINES] + [cap_notice(
                     MAX_DIFF_LINES, len(text), "lines", "the job's tui-gallery artifact holds the whole diff")]
             lines += [f"### {scene} · {name}", "", *fence(text)]
-            drive = SCENES / f"{scene}.drive"
-            if drive.exists() and header(drive)[0] == "console":
-                lines.append("Console sessions take a fresh random id each run, so avatar and badge "
-                             "colours differ between any two runs; read past those cells.")
             crops = summary.parent.glob(f"{name}-region*-*.png")
             for crop in sorted(crops, key=lambda p: (p.stem.rsplit("-", 1)[0], p.stem.endswith("after"))):
                 if len(pictures) < MAX_PICTURES:
@@ -1006,19 +1082,61 @@ def post(out: Path) -> None:
     forge.send("PATCH", f"{api}/repos/{repo}/issues/comments/{comment['id']}", {"body": body})
 
 
-def upload(url: str, path: Path) -> str:
-    """One multipart POST of a picture as a comment asset; the forge answers with its URL."""
+def upload(url: str, path: Path, kind: str = "image/png") -> str:
+    """One multipart POST of a file as an asset; the forge answers with its URL."""
     import urllib.request
 
     boundary = f"tui-see-{os.getpid()}-{time.time_ns()}"
     data = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"attachment\"; "
-            f"filename=\"{path.name}\"\r\nContent-Type: image/png\r\n\r\n").encode()
+            f"filename=\"{path.name}\"\r\nContent-Type: {kind}\r\n\r\n").encode()
     data += path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
     request = urllib.request.Request(url, data=data, method="POST", headers={
         "Authorization": f"token {os.environ['FORGEJO_TOKEN']}", "Accept": "application/json",
         "Content-Type": f"multipart/form-data; boundary={boundary}"})
     with urllib.request.urlopen(request, timeout=60) as response:
         return json.load(response)["browser_download_url"]
+
+# One release on one fixed tag holds the live gallery: the tag is the bookmark, the asset is
+# replaced per run. The forge serves a release's HTML as text/plain, so the page is saved, not viewed.
+# Invariant: the release stays a prerelease, because `yi update` installs `releases/latest`.
+GALLERY_TAG = "tui-gallery"
+
+
+def publish(page: Path) -> None:
+    """Replaces the live gallery release's asset with `page`, creating the release on first use.
+    The new asset goes up before the old ones go, so a refused upload leaves the last gallery."""
+    import urllib.error
+
+    import forgejo_pr_comment as forge
+
+    api, repo = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY"))
+    sha = os.environ.get("FORGEJO_HEAD", "")
+    size = page.stat().st_size
+    over = (f"\n[… the page is {size / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB page cap "
+            "(PAGE_CAP) and published whole; gallery a narrower root for a smaller one]"
+            if size > PAGE_CAP else "")
+    body = (f"Newest gallery: `{sha[:12]}` on main, {size / 1e6:.1f} MB. The forge serves this "
+            f"asset as plain text, so save `{page.name}` and open the file.{over}")
+    releases = f"{api}/repos/{repo}/releases"
+    try:
+        try:
+            release = forge.send("GET", f"{releases}/tags/{GALLERY_TAG}", None)
+            forge.send("PATCH", f"{releases}/{release['id']}", {"body": body, "prerelease": True})
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+            release = forge.send("POST", releases, {"tag_name": GALLERY_TAG, "target_commitish": sha or "main",
+                                                    "name": "TUI gallery (live)", "body": body,
+                                                    "prerelease": True})
+        assets = f"{releases}/{release['id']}/assets"
+        old = [a["id"] for a in forge.send("GET", assets, None) or [] if a["name"] == page.name]
+        url = upload(f"{assets}?name={page.name}", page, "text/html")
+        for asset in old:
+            forge.send("DELETE", f"{assets}/{asset}", None)
+    except (OSError, KeyError) as error:
+        sys.exit(f"[… the gallery was not published ({type(error).__name__}: {error}); "
+                 "the job's tui-gallery artifact holds it]")
+    print(f"published: {url}")
 
 
 def selfcheck() -> None:
@@ -1059,6 +1177,9 @@ def selfcheck() -> None:
                             ("f2", False, b"\x1bOQ"), ("pageup", False, b"\x1b[5~"),
                             ("b", True, b"\x1b[98;9u"), ("shift-p", True, b"\x1b[112;10u")]:
         assert key_bytes(spec, cmd) == want, f"{spec}: {key_bytes(spec, cmd)!r}"
+    words = ["--size", "80x24", "--stub", "a.txt", "90", "--seed", "s"]
+    assert take(words, "--stub", 2) == ["a.txt", "90"] and words == ["--size", "80x24", "--seed", "s"]
+    assert take(words, "--stub", 2) == [] and len(words) == 4, "an absent flag took nothing"
     for refused in ("ctrl-1", "hyper-x", "f13"):
         try:
             key_bytes(refused)
@@ -1156,19 +1277,84 @@ def selfcheck() -> None:
         grown = next((Path(tmp) / "run" / "sessions").glob(f"*/*_{session}.jsonl"))
         grown.write_text(grown.read_text() + '{"kind":"message"}\n')
         assert pristine_seed(Path(tmp) / "run", session).read_text() == seed.read_text()
+    # Publishing: the release is created once, the asset is replaced rather than added, the old
+    # one goes only after the new is up, and a refusal is named with the last gallery left alone.
+    import forgejo_pr_comment as forge
+    import urllib.error
+    with tempfile.TemporaryDirectory() as tmp:
+        page = Path(tmp) / "gallery.html"
+        page.write_text("<title>x</title>")
+        calls, state = [], {"release": None, "refuse": False}
+        releases = "https://f/api/repos/o/r/releases"
+
+        def fake(method, url, payload):
+            calls.append((method, url))
+            if method == "GET" and url.endswith(f"/tags/{GALLERY_TAG}"):
+                if state["release"] is None:
+                    raise urllib.error.HTTPError(url, 404, "not found", None, None)
+                return state["release"]
+            if method == "GET":
+                return [{"id": 5, "name": "gallery.html"}, {"id": 6, "name": "other.txt"}]
+            calls[-1] += (payload,)
+            return {"id": 4}
+
+        def put(url, path, kind="image/png"):
+            calls.append(("UPLOAD", url, kind))
+            if state["refuse"]:
+                raise OSError("refused")
+            return "https://f/gallery.html"
+
+        keep = forge.send, globals()["upload"], dict(os.environ)
+        forge.send, globals()["upload"] = fake, put
+        os.environ.update(FORGEJO_API_URL="https://f/api", FORGEJO_REPOSITORY="o/r", FORGEJO_HEAD="ab12" * 10)
+        try:
+            publish(page)
+            assert calls[1][:2] == ("POST", releases) and calls[1][2]["tag_name"] == GALLERY_TAG, calls
+            assert calls[1][2]["prerelease"] is True, "a release `yi update` could pick as latest"
+            assert not any(c[0] == "PATCH" for c in calls), calls
+            state["release"] = {"id": 4}
+            calls.clear()
+            publish(page)
+            assert [c[0] for c in calls] == ["GET", "PATCH", "GET", "UPLOAD", "DELETE"], calls
+            assert calls[3][1] == f"{releases}/4/assets?name=gallery.html", calls[3]
+            assert calls[4][1] == f"{releases}/4/assets/5", "only the old gallery.html goes"
+            assert calls[1][2]["prerelease"] is True, "the PATCH must keep it out of releases/latest"
+            assert "ab12ab12ab12" in calls[1][2]["body"] and "plain text" in calls[1][2]["body"]
+            state["refuse"] = True
+            calls.clear()
+            try:
+                publish(page)
+                raise AssertionError("a refused upload published")
+            except SystemExit as stop:
+                assert "the gallery was not published (OSError: refused)" in str(stop), stop
+            assert not any(c[0] == "DELETE" for c in calls), "the last gallery must survive a refusal"
+            state["refuse"] = False
+            page.write_bytes(b"x" * (PAGE_CAP + 1))
+            calls.clear()
+            publish(page)
+            assert "past the 15 MB page cap (PAGE_CAP)" in calls[1][2]["body"], calls[1]
+        finally:
+            forge.send, globals()["upload"] = keep[0], keep[1]
+            os.environ.clear()
+            os.environ.update(keep[2])
     print("tui_see selfcheck: ok")
 
 
 def main(argv: list[str]) -> None:
     if argv[:1] == ["--selfcheck"]:
         return selfcheck()
+    if argv[:1] == ["monkey"]:
+        import tui_monkey
+        return tui_monkey.monkey(argv[1:])
     if argv[:1] == ["diff"] and len(argv) == 3:
         diff(Path(argv[1]).resolve(), Path(argv[2]).resolve())
         return None
     if argv[:1] == ["term-inner"]:
         return term_inner(argv[1], argv[2], Path(argv[3]), argv[4], argv[5:])
-    if argv[:1] == ["ci"] and len(argv) == 3:
-        return ci(Path(argv[1]).resolve(), Path(argv[2]).resolve())
+    if argv[:1] == ["ci"] and len(argv) in (2, 3):
+        return ci(Path(argv[1]).resolve() if len(argv) == 3 else None, Path(argv[-1]).resolve())
+    if argv[:1] == ["publish"] and len(argv) == 2:
+        return publish(Path(argv[1]).resolve())
     if argv[:1] == ["post"] and len(argv) == 2:
         return post(Path(argv[1]).resolve())
     if argv[:1] == ["proxy"]:

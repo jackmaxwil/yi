@@ -1,7 +1,7 @@
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 const PROVIDERS: [(&str, &str); 3] = [
     ("anthropic", "anthropic/claude-sonnet-5"),
@@ -22,7 +22,9 @@ pub(crate) fn early() {
     let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     if !offers(
         std::env::args().nth(1).as_deref(),
-        config_path(home).symlink_metadata().is_ok(),
+        yi_runtime::settings::config_path(home)
+            .symlink_metadata()
+            .is_ok(),
         terminal,
     ) {
         return;
@@ -36,7 +38,7 @@ pub(crate) fn early() {
         return;
     };
     if !yes_default(&answer) {
-        if let Err(error) = write_config(home, &[]) {
+        if let Err(error) = yi_runtime::settings::write(home, &[]) {
             eprintln!("warning: {error}");
         }
         eprintln!("Run `yi setup` any time.");
@@ -65,12 +67,8 @@ fn offers(first_arg: Option<&str>, has_config: bool, terminal: bool) -> bool {
     first_arg.is_none() && !has_config && terminal
 }
 
-fn config_path(home: &Path) -> PathBuf {
-    home.join(".yi/config.json")
-}
-
 fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), String> {
-    let path = config_path(home);
+    let path = yi_runtime::settings::config_path(home);
     match std::fs::read_to_string(&path) {
         Ok(raw) => {
             yi_types::config::parse(&raw).map_err(|error| {
@@ -119,7 +117,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
     if edits.is_empty() {
         return say(out, "Nothing to save.");
     }
-    let path = write_config(home, &edits)?;
+    let path = yi_runtime::settings::write(home, &edits)?;
     say(out, &format!("Saved {}.", path.display()))
 }
 
@@ -152,7 +150,7 @@ fn model_step(
             &format!("unknown model {model}; the model is left as it is"),
         );
     }
-    let primary = std::fs::read_to_string(config_path(home))
+    let primary = std::fs::read_to_string(yi_runtime::settings::config_path(home))
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .is_some_and(|config| config.pointer("/models/primary").is_some());
@@ -257,69 +255,6 @@ fn install_laya(venv: &Path) -> Result<(), String> {
             return Err(format!("{} exited {status}", program.to_string_lossy()));
         }
     }
-    Ok(())
-}
-
-fn write_config(home: &Path, edits: &[Edit]) -> Result<PathBuf, String> {
-    let path = config_path(home);
-    let mut root = match std::fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str::<Value>(&raw)
-            .map_err(|error| format!("{}: {error}", path.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),
-        Err(error) => return Err(format!("{}: {error}", path.display())),
-    };
-    for (keys, value) in edits {
-        set(&mut root, keys, value.clone())?;
-    }
-    let text = serde_json::to_string_pretty(&root).map_err(|error| error.to_string())? + "\n";
-    yi_types::config::parse(&text)
-        .map_err(|error| format!("setup would write a config Yi cannot load: {error}"))?;
-    let target = match (std::fs::canonicalize(&path), std::fs::read_link(&path)) {
-        (Ok(target), _) => target,
-        (Err(_), Ok(link)) => path.parent().ok_or("config path has no parent")?.join(link),
-        (Err(_), Err(_)) => path.clone(),
-    };
-    let dir = target.parent().ok_or("config path has no parent")?;
-    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-    let mode = std::fs::metadata(&target).map_or(0o600, |meta| {
-        std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777
-    });
-    let staging = dir.join(".config.json.setup");
-    let written = stage(&staging, &text, mode)
-        .and_then(|()| std::fs::rename(&staging, &target))
-        .map_err(|error| format!("{}: {error}", target.display()));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&staging);
-    }
-    written.map(|()| path)
-}
-
-fn stage(staging: &Path, text: &str, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(mode)
-        .open(staging)?;
-    std::fs::set_permissions(staging, std::os::unix::fs::PermissionsExt::from_mode(mode))?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()
-}
-
-fn set(root: &mut Value, keys: &[&str], value: Value) -> Result<(), String> {
-    let (last, parents) = keys.split_last().ok_or("an empty key path")?;
-    let mut node = root;
-    for key in parents {
-        node = node
-            .as_object_mut()
-            .ok_or_else(|| format!("`{key}` sits under a value that is not an object"))?
-            .entry((*key).to_owned())
-            .or_insert_with(|| Value::Object(Map::new()));
-    }
-    node.as_object_mut()
-        .ok_or_else(|| format!("`{last}` sits under a value that is not an object"))?
-        .insert((*last).to_owned(), value);
     Ok(())
 }
 

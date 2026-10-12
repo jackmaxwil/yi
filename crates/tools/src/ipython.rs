@@ -71,7 +71,9 @@ impl CellSpill {
 
 /// The calls a cell makes through the host, taken only while the cell is open.
 pub trait CellCalls: Send + Sync {
-    fn open(&self);
+    /// The bridge opens the cell once its execute `request` holds the kernel; only calls naming
+    /// that request count.
+    fn open(&self, request: &str);
     /// Closes the cell: its rows, and how many read rows it made past the kept count.
     fn close(&self) -> (Vec<NestedCall>, u64);
 }
@@ -137,9 +139,6 @@ impl Tool for IpythonTool {
             Err(message) => return error_output(message),
         };
         let (cancelled, dir) = (&context.cancelled, context.recovery_dir.as_deref());
-        if let Some(calls) = &self.calls {
-            calls.open();
-        }
         let outcome = self.bridge.execute_cell(code, cancelled, dir);
         let (rows, dropped) = self
             .calls

@@ -1,0 +1,25 @@
+#! console --size 120x34
+# The menu over kitty images in real Ghostty: a session row's menu sits on the rail's avatars and
+# a pane's on its title tile; no image may draw through it. The gear sits in the sidebar's last row.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+type hello menu
+key enter
+wait-frame 30000 faux:
+wait-idle 40000
+snap rest
+key tab
+key alt-c
+wait-frame 3000 Open beside
+snap menu-on-avatars
+key esc
+key tab
+key alt-c
+wait-frame 3000 Split down
+snap menu-on-pane
+key esc
+key alt-,
+wait-frame 5000 Settings
+snap gear
+quit
