@@ -2034,6 +2034,18 @@ fn an_orb_that_cannot_fit_its_rows_is_not_placed() -> TestResult {
     Ok(())
 }
 
+/// The 1-based row the first kitty placement in `written` lands on, from its cursor move.
+fn placement_row(written: &str) -> Option<u16> {
+    let (before, _) = written.split_once("\x1b_Ga=p,")?;
+    before
+        .rsplit("\x1b[")
+        .next()?
+        .split(';')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// The owner asked for the orb two thirds bigger: a 10x5 cell image whose five reserved rows
 /// carry the working label on the middle one, beside the image's centre rather than its top.
 #[test]
@@ -2047,9 +2059,8 @@ fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResu
     let mut out = Vec::new();
     yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
     let out = String::from_utf8_lossy(&out);
-    let (before, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
-    let cup = before.rsplit("\x1b[").next().ok_or("no cursor move")?;
-    let row: u16 = cup.split(';').next().ok_or("no row")?.parse()?;
+    let row = placement_row(&out).ok_or("no placement")?;
+    let (_, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
     let keys: Vec<&str> = after
         .split("\x1b\\")
         .next()
@@ -2073,6 +2084,54 @@ fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResu
             "row {band}:\n{screen}"
         );
     }
+    Ok(())
+}
+
+/// Dies with the orb placed after its frame closed: for a presented frame it sat on its old rows,
+/// over the text that frame had just moved under it (19 such frames in a measured console reply).
+#[test]
+fn an_orb_moved_by_a_commit_is_placed_in_the_frame_that_moved_it() -> TestResult {
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    backend.write_all(b"$ yi\r\n")?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut images = yi_tui::orb::Images::default();
+    let mut frame = |app: &mut App, terminal: &mut yi_tui::terminal::Terminal<VT100Backend>| {
+        yi_tui::render::draw_with_images(app, terminal, None, |app, out| images.tick(app, out));
+        terminal.backend_mut().take_written()
+    };
+    let first = frame(&mut app, &mut terminal);
+    let was = placement_row(&first).ok_or("the first frame placed no orb")?;
+    app.notice("one\ntwo\nthree");
+    let written = frame(&mut app, &mut terminal);
+    let now = placement_row(&written).ok_or("the moved orb was not placed")?;
+    assert!(
+        now > was,
+        "the commit moved the orb down: row {was} then {now}"
+    );
+    let open = written.find("\x1b[?2026h").ok_or("no update opened")?;
+    let place = written.find("\x1b_Ga=p,").ok_or("no placement")?;
+    let close = written.rfind("\x1b[?2026l").ok_or("no update closed")?;
+    assert_eq!(
+        (
+            written.matches("\x1b[?2026h").count(),
+            written.matches("\x1b[?2026l").count()
+        ),
+        (1, 1),
+        "the text and the orb share one update: {written:?}"
+    );
+    assert!(
+        open < place && place < close,
+        "the placement lies inside it: {written:?}"
+    );
+    let label = terminal.backend().row_text(now.saturating_add(1));
+    assert!(
+        label.contains("[esc] interrupt"),
+        "the orb's middle row is its label's: {label:?}"
+    );
     Ok(())
 }
 
