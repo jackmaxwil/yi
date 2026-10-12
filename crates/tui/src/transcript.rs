@@ -299,3 +299,41 @@ pub(crate) fn fence_tail(tail: &str, rows: usize) -> std::borrow::Cow<'_, str> {
         _ => std::borrow::Cow::Borrowed(tail),
     }
 }
+
+/// Who wrote a transcript cell a menu can act on, and so which ledger entry drew it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Said {
+    User,
+    Assistant,
+    Thought,
+}
+
+/// The cells one message entry draws, by kind and source, as replay draws them.
+pub fn said_in(entry: &yi_types::entry::Entry) -> Vec<(Said, String)> {
+    use yi_types::message::{AgentMessage, Content};
+    let yi_types::entry::Entry::Message { message, .. } = entry else {
+        return Vec::new();
+    };
+    match message {
+        AgentMessage::User { content, .. } => vec![(Said::User, user_text(content))],
+        AgentMessage::Assistant { content, .. } => {
+            let mut said: Vec<(Said, String)> = content
+                .iter()
+                .filter_map(|block| match block {
+                    Content::Thinking {
+                        thinking, redacted, ..
+                    } if *redacted != Some(true) && !thinking.trim().is_empty() => {
+                        Some((Said::Thought, thinking.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let prose = prose_of(content);
+            if !prose.is_empty() {
+                said.push((Said::Assistant, prose));
+            }
+            said
+        }
+        _ => Vec::new(),
+    }
+}
