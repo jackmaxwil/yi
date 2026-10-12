@@ -9,10 +9,8 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
   tui_see.py diff RUN_A RUN_B          # two run dirs; writes RUN_B/diff-vs-<A>/summary.md
   tui_see.py gallery [ROOT] [PAGE]     # every scene and label under ROOT on one HTML page
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
-  tui_see.py ci BASE_BIN HEAD_BIN      # every scene on both, then the PR comment (post)
-  tui_see.py ci HEAD_BIN               # every scene on one binary and the gallery, nothing posted
-  tui_see.py post OUT                  # upsert the comment `ci` left in OUT (FORGEJO_* env)
-  tui_see.py publish PAGE              # replace the live gallery release's asset (FORGEJO_* env)
+  tui_see.py harvest SESSION [--name N] [--view end|tool|long] [--size WxH]
+                                       # a recorded session as harvest-N-<view> scenes under SCENES
   tui_see.py --selfcheck
   tui_see.py monkey [--runs N] [--seed S] [--surface solo|console]   # random key runs, failures only
 
@@ -29,6 +27,7 @@ region before and after, then the whole frame. Pictures never gate anything.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -47,6 +46,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 SCENES = ROOT / "scripts" / "proof" / "tui_see"
+sys.path.insert(0, str(ROOT / "evals"))
+import record  # noqa: E402  the record-time scrub (§10) harvest must apply before a seed lands
 # Loud caps: a cut names what it kept, the cap and the call that gets the rest (045-loud-caps).
 MAX_REGIONS = 6
 MAX_CROP_PX = 1200
@@ -820,7 +821,7 @@ PAGE_CAP = 15_000_000
 
 def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
     """Every scene under `root`, each snap with its labels side by side and the cell diff a head
-    run keeps against its base: one self-contained page (pictures inlined) to publish."""
+    run keeps against its base: one self-contained page (pictures inlined)."""
     import base64
     import html
 
@@ -879,8 +880,8 @@ def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
     if skipped:
         print(f"[… {len(skipped)} scene(s) have no snaps and are not on the page: {', '.join(skipped)}]")
     if len(body) > PAGE_CAP:
-        print(f"[… the page is {len(body) / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB an artifact "
-              "takes; gallery a narrower root to publish it]")
+        print(f"[… the page is {len(body) / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB page cap "
+              "(PAGE_CAP); gallery a narrower root for a smaller one]")
     print(f"gallery: {page} ({len(body) / 1e6:.1f} MB)")
     return page
 
@@ -956,187 +957,129 @@ def watch(scene: Path, host: str) -> None:
             gallery(out, out / "gallery.html")
 
 
-# Loud caps: a comment carries at most this many pictures, and this many diff lines per snap.
-MAX_PICTURES = 24
-MAX_DIFF_LINES = 40
-MARKER = "TUI snapshots for this pull request (scripts/tui_see.py)"
-# The review bot reads the comment only when this names the head it reads (scripts/pr_review.py).
-HEAD_MARK = "<!-- tui-see head={} -->"
+MASK = "[MASKED]"
+VIEWS = ("end", "tool", "long")
 
 
-def ci(base_bin: Path | None, head_bin: Path) -> None:
-    """The PR job inside the yi-term image: every scene under scripts/proof/tui_see on the base
-    and the head binary, in Ghostty where the scene allows, then one comment on the PR. Without
-    a base (main's own push) only the head plays and the gallery is all it leaves."""
-    out = Path("target/see").resolve()
-    failed: list[str] = []
-    played = 0
-    for scene in sorted(SCENES.glob("*.drive")):
-        if "--stub" in header(scene)[1]:
-            continue  # a live-paced stream differs between any two runs, so a cell diff would be noise
-        steps = {line.split(" ", 1)[0] for line in scene.read_text().splitlines()}
-        host = "mem" if steps & {"tick", "snap-strip", "hold", "release"} else "here"
-        for label, binary in (("base", base_bin), ("head", head_bin)):
-            if binary is None:
-                continue
-            played += 1
-            try:
-                run(scene, label, out, binary, host)
-            except SystemExit as stop:
-                failed.append(f"{scene.stem} ({label}, exit {stop.code})")
-            except (subprocess.SubprocessError, OSError, ValueError) as error:
-                failed.append(f"{scene.stem} ({label}, {type(error).__name__})")
-        if base_bin and (out / scene.stem / "head" / "frames").is_dir() and (out / scene.stem / "base").is_dir():
-            try:
-                diff(out / scene.stem / "base", out / scene.stem / "head")
-            except (subprocess.SubprocessError, OSError, ValueError) as error:
-                failed.append(f"{scene.stem} (diff, {type(error).__name__})")
-    gallery(out, out / "gallery.html")
-    (out / "failed.json").write_text(json.dumps(failed))
-    if base_bin:
-        post(out)
-    if failed and len(failed) == played:
-        sys.exit("ci: no scene ran on either binary")
+def resumable(rows: list[dict]) -> list[dict]:
+    """The scrub (evals/record.py) masks the header id and most entry ids, which `--seed` refuses:
+    duplicate ids, then a parent that is not the lane leaf. Masked ids become the row's seq in
+    hex and masked parents the previous entry; the header id is derived from the content."""
+    digest = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+    if rows[0].get("id") == MASK:
+        rows[0]["id"] = f"01a0{digest[:4]}-{digest[4:8]}-7{digest[8:11]}-8{digest[11:14]}-{digest[14:26]}"
+    leaf = None
+    for row in rows[1:]:
+        if row.get("id") == MASK:
+            row["id"] = f"{row['seq']:08x}"
+        if row.get("parentId") == MASK:
+            row["parentId"] = leaf
+        if row.get("kind") == "entry":
+            leaf = row["id"]
+    return rows
 
 
-def fence(text: list[str]) -> list[str]:
-    """A code fence longer than any backtick run inside it, so the text cannot close it."""
-    run = max((len(m) for line in text for m in re.findall(r"`+", line)), default=0)
-    return ["`" * max(3, run + 1), *text, "`" * max(3, run + 1)]
+def text_of(message: dict) -> str:
+    content = message["content"]
+    if isinstance(content, str):
+        return content
+    return "".join(block.get("text", "") for block in content if block.get("type") == "text")
 
 
-def word(text: str) -> str:
-    return re.sub(r"[^\w.-]", "_", text)
+def cut(rows: list[dict], view: str) -> int | None:
+    """How many rows a view keeps: all of them, through the largest tool result, or through the
+    longest reply; the last two run on past their pick to the next turn so no call is left open.
+    None when the session has no row of the view's kind."""
+    picks = [(i, row["message"]) for i, row in enumerate(rows) if row.get("type") == "message"]
+    if view == "end":
+        return len(rows)
+    if view == "tool":
+        candidates = [i for i, m in picks if m["role"] == "toolResult"]
+    else:
+        candidates = [i for i, m in picks if m["role"] == "assistant"]
+    if not candidates:
+        return None
+    key = (lambda i: len(json.dumps(rows[i]))) if view == "tool" \
+        else (lambda i: len(text_of(rows[i]["message"])))
+    pick = max(candidates, key=key)
+    end = pick + 1
+    while end < len(rows) and (rows[end].get("message") or {}).get("role") not in ("user", "assistant"):
+        end += 1
+    return end
 
 
-def compose(out: Path, failed: list[str]) -> tuple[str, list[tuple[str, Path]]]:
-    """The comment body with a `@@crop-N@@` slot per picture, and the pictures, cap applied.
-    The post job runs the base's script over text the pull request's script wrote: all fenced."""
-    lines = [MARKER, ""]
-    if failed:
-        lines += fence([f"[… {len(failed)} run(s) failed and show no pictures: {', '.join(failed)}]"])
-    pictures: list[tuple[str, Path]] = []
-    changed = False
-    cut_at = None
-    for summary in sorted(out.glob("*/head/diff-vs-base/summary.md")):
-        scene = word(summary.parent.parent.parent.name)
-        notes, *blocks = re.split(r"^## ", summary.read_text(), flags=re.M)
-        notes = [f"{scene}: {l}" for l in notes.splitlines() if l.startswith("[…")]
-        if notes:
-            lines += fence(notes)
-            changed = True
-        for block in blocks:
-            name, _, body = block.partition("\n")
-            name = word(name)
-            if "no cell changed" in body:
-                continue
-            changed = True
-            text = [l for l in body.strip().splitlines()
-                    if not l.startswith(("region ", "whole frame"))]
-            if len(text) > MAX_DIFF_LINES:
-                text = text[:MAX_DIFF_LINES] + [cap_notice(
-                    MAX_DIFF_LINES, len(text), "lines", "the job's tui-gallery artifact holds the whole diff")]
-            lines += [f"### {scene} · {name}", "", *fence(text)]
-            crops = summary.parent.glob(f"{name}-region*-*.png")
-            for crop in sorted(crops, key=lambda p: (p.stem.rsplit("-", 1)[0], p.stem.endswith("after"))):
-                if len(pictures) < MAX_PICTURES:
-                    lines.append(f"@@crop-{len(pictures)}@@")
-                elif cut_at is None:
-                    cut_at = len(lines)
-                pictures.append((f"{scene} {word(crop.stem)}", crop))
-            lines.append("")
-    if not changed:
-        lines.append("No snap changed between the base and the head." if not failed
-                     else "No snap changed among the runs that finished.")
-    if cut_at is not None:
-        lines.insert(cut_at, cap_notice(
-            MAX_PICTURES, len(pictures), "crops", "the job's tui-gallery artifact holds every one"))
-    return "\n".join(lines) + "\n", pictures[:MAX_PICTURES]
-
-def post(out: Path) -> None:
-    """Upserts the PR's one snapshot comment, its crops uploaded as the comment's own assets so a
-    new push replaces the last push's pictures."""
-    import forgejo_pr_comment as forge
-
-    failed = json.loads((out / "failed.json").read_text()) if (out / "failed.json").exists() else []
-    body, pictures = compose(out, failed)
-    (out / "comment.md").write_text(body)
-    if not all(os.environ.get(k) for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY", "FORGEJO_PR",
-                                           "FORGEJO_TOKEN")):
-        print(f"[… no forge to post to; the comment is {out / 'comment.md'}]")
-        return
-    api, repo, pr = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY", "FORGEJO_PR"))
-    if os.environ.get("FORGEJO_HEAD"):
-        body = body.replace(f"{MARKER}\n", f"{MARKER}\n{HEAD_MARK.format(os.environ['FORGEJO_HEAD'])}\n", 1)
-    bare = re.sub(r"^@@crop-\d+@@\n", "", body, flags=re.M)
-    comment = forge.upsert(forge.send, api, repo, pr, bare)
-    assets = f"{api}/repos/{repo}/issues/comments/{comment['id']}/assets"
-    try:
-        for old in forge.send("GET", assets, None) or []:
-            forge.send("DELETE", f"{assets}/{old['id']}", None)
-        for index, (alt, path) in enumerate(pictures):
-            body = body.replace(f"@@crop-{index}@@", f"![{alt}]({upload(assets, path)})")
-    except OSError as error:
-        body = bare + (f"\n[… {len(pictures)} picture(s) not attached ({error}); the job's "
-                       "tui-gallery artifact holds them]\n")
-    forge.send("PATCH", f"{api}/repos/{repo}/issues/comments/{comment['id']}", {"body": body})
+def continuation(rows: list[dict]) -> tuple[str, dict, str] | None:
+    """The last typed prompt and the last reply that has text, as the faux cassette line that
+    answers it; None when the session has either missing. Skipped prompts: ones the scrub left
+    fully "[MASKED]", and Yi's own subagent notifications (the "[subagent …]" shape the runtime
+    inserts as user rows); a real prompt that starts with '[' is kept. Line breaks flatten to
+    spaces, which the drive's one-step-per-line grammar cannot carry, and the note says when."""
+    messages = [row["message"] for row in rows if row.get("type") == "message"]
+    def typed(text: str) -> bool:
+        return bool(text.replace(MASK, "").strip()) and not text.startswith("[subagent ")
+    prompts = [text_of(m) for m in messages if m["role"] == "user" and typed(text_of(m))]
+    replies = [m for m in messages if m["role"] == "assistant" and text_of(m)]
+    if not prompts or not replies:
+        return None
+    reply = {key: replies[-1][key] for key in ("role", "api", "provider", "model", "usage",
+                                              "stopReason", "timestamp") if key in replies[-1]}
+    reply["content"] = [{"type": "text", "text": text_of(replies[-1])}]
+    prompt = prompts[-1]
+    note = ""
+    if re.search(r"\r\n?|\n", prompt):
+        prompt = re.sub(r"\r\n?|\n", " ", prompt)
+        note = ("the recorded prompt had line breaks, flattened to spaces: the drive grammar"
+                " carries one step per line")
+    return prompt, reply, note
 
 
-def upload(url: str, path: Path, kind: str = "image/png") -> str:
-    """One multipart POST of a file as an asset; the forge answers with its URL."""
-    import urllib.request
-
-    boundary = f"tui-see-{os.getpid()}-{time.time_ns()}"
-    data = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"attachment\"; "
-            f"filename=\"{path.name}\"\r\nContent-Type: {kind}\r\n\r\n").encode()
-    data += path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
-    request = urllib.request.Request(url, data=data, method="POST", headers={
-        "Authorization": f"token {os.environ['FORGEJO_TOKEN']}", "Accept": "application/json",
-        "Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.load(response)["browser_download_url"]
-
-# One release on one fixed tag holds the live gallery: the tag is the bookmark, the asset is
-# replaced per run. The forge serves a release's HTML as text/plain, so the page is saved, not viewed.
-# Invariant: the release stays a prerelease, because `yi update` installs `releases/latest`.
-GALLERY_TAG = "tui-gallery"
-
-
-def publish(page: Path) -> None:
-    """Replaces the live gallery release's asset with `page`, creating the release on first use.
-    The new asset goes up before the old ones go, so a refused upload leaves the last gallery."""
-    import urllib.error
-
-    import forgejo_pr_comment as forge
-
-    api, repo = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY"))
-    sha = os.environ.get("FORGEJO_HEAD", "")
-    size = page.stat().st_size
-    over = (f"\n[… the page is {size / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB page cap "
-            "(PAGE_CAP) and published whole; gallery a narrower root for a smaller one]"
-            if size > PAGE_CAP else "")
-    body = (f"Newest gallery: `{sha[:12]}` on main, {size / 1e6:.1f} MB. The forge serves this "
-            f"asset as plain text, so save `{page.name}` and open the file.{over}")
-    releases = f"{api}/repos/{repo}/releases"
-    try:
-        try:
-            release = forge.send("GET", f"{releases}/tags/{GALLERY_TAG}", None)
-            forge.send("PATCH", f"{releases}/{release['id']}", {"body": body, "prerelease": True})
-        except urllib.error.HTTPError as error:
-            if error.code != 404:
-                raise
-            release = forge.send("POST", releases, {"tag_name": GALLERY_TAG, "target_commitish": sha or "main",
-                                                    "name": "TUI gallery (live)", "body": body,
-                                                    "prerelease": True})
-        assets = f"{releases}/{release['id']}/assets"
-        old = [a["id"] for a in forge.send("GET", assets, None) or [] if a["name"] == page.name]
-        url = upload(f"{assets}?name={page.name}", page, "text/html")
-        for asset in old:
-            forge.send("DELETE", f"{assets}/{asset}", None)
-    except (OSError, KeyError) as error:
-        sys.exit(f"[… the gallery was not published ({type(error).__name__}: {error}); "
-                 "the job's tui-gallery artifact holds it]")
-    print(f"published: {url}")
+def harvest(session: Path, name: str, views: tuple[str, ...], size: str,
+            out: Path = SCENES) -> list[Path]:
+    """Writes a session as scenes: per view a seed cut at that view's end and a drive that snaps
+    it; the `end` view then types the last prompt and plays the recorded reply as a cassette.
+    Seed content goes through record.py's scrub, the redaction a recorded session already carries,
+    so a seed from an unscrubbed input still lands masked."""
+    if not NAME.fullmatch(name):
+        sys.exit(f"name {name!r} is not [a-z0-9_-]+")
+    raw = [record.scrub_values(json.loads(line)) for line in session.read_text().splitlines()]
+    if raw[0].get("id") != MASK:
+        print(f"[… {session.name} was not record.py-scrubbed: seed content is redacted]")
+    rows = resumable(raw)
+    where = out.relative_to(ROOT) if out.is_relative_to(ROOT) else out
+    written, cuts = [], {}
+    for view in views:
+        kept = cut(rows, view)
+        if kept is None:
+            print(f"[… view {view} has no {'toolResult' if view == 'tool' else 'reply'} row:"
+                  " no scene written]")
+            continue
+        if kept in cuts:
+            print(f"[… view {view} cuts where {cuts[kept]} does: no scene written]")
+            continue
+        stem = f"harvest-{name}-{view}"
+        flags = f"--size {size} --seed {where}/{stem}.jsonl"
+        steps = ["wait-frame 5000 faux-1", f"snap {view}"]
+        flat = ""
+        again = continuation(rows) if view == "end" else None
+        if again:
+            prompt, reply, flat = again
+            (out / f"{stem}.reply.jsonl").write_text(json.dumps(reply) + "\n")
+            flags += f" --faux {where}/{stem}.reply.jsonl"
+            # Incident: a turn's elapsed seconds read the wall clock and flipped between two runs;
+            # a `tick` freezes it, and the reveal then moves only on ticks, so the scene waits on
+            # the spinner coming and going rather than on a duration.
+            steps += [f"type {prompt}", "key enter", "wait-frame 10000 Composing", "tick 30000",
+                      "wait-idle 30000", "wait-frame 10000 !Composing", "snap continued"]
+        (out / f"{stem}.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows[:kept]))
+        (out / f"{stem}.drive").write_text(
+            f"#! solo {flags}\n# Harvested from {session.name} by `tui_see.py harvest`: view {view}.\n"
+            + (f"# {flat}\n" if flat else "")
+            + "\n".join(steps + ["quit"]) + "\n")
+        written.append(out / f"{stem}.drive")
+        if kept < len(rows):
+            print(cap_notice(kept, len(rows), "rows", f"{session.name} holds the whole session"))
+    print("scenes: " + ", ".join(str(where / p.name) for p in written))
+    return written
 
 
 def selfcheck() -> None:
@@ -1199,144 +1142,6 @@ def selfcheck() -> None:
     apc = ApcFilter()
     fed = apc.feed(b"left \x1b_Ga=p,i=8003;AAAA") + apc.feed(b"BBBB\x1b") + apc.feed(b"\\ right\x1b")
     assert fed + apc.feed(b"[0m") == b"left  right\x1b[0m", fed
-    # The PR comment names the changed rows and leaves one slot per crop; unchanged snaps stay out.
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp)
-        shutil.copytree(runs[0], out / "composer" / "base")
-        shutil.copytree(runs[1], out / "composer" / "head")
-        diff(out / "composer" / "base", out / "composer" / "head")
-        body, pictures = compose(out, ["reveal (head, exit 1)"])
-        assert body.startswith(MARKER) and "### composer · composer" in body, body
-        assert "make the rail calmer" in body and "[… 1 run(s) failed" in body, body
-        assert "### composer · answered" not in body, "a snap only one run has is not a change"
-        assert "composer: [… snap answered exists in only one run]" in body, body
-        summary = out / "composer" / "head" / "diff-vs-base" / "summary.md"
-        summary.write_text("## long\n\n" + "".join(f"row {i}: ```\n" for i in range(MAX_DIFF_LINES + 1)))
-        body, _ = compose(out, [])
-        block = body.split("### composer · long\n\n", 1)[1].split("\n````\n", 1)[0]
-        assert block.startswith("````\n") and block.count("\nrow ") == MAX_DIFF_LINES, block
-        assert f"[… kept {MAX_DIFF_LINES} of {MAX_DIFF_LINES + 1} lines (cap {MAX_DIFF_LINES})" in block
-        shutil.copytree(runs[1], out / "composer" / "head", dirs_exist_ok=True)
-        diff(out / "composer" / "base", out / "composer" / "head")
-        # Every slot names a picture, each before precedes its after, and the cut is named in place.
-        bundle = out / "composer" / "head" / "diff-vs-base"
-        for i in range(MAX_PICTURES // 2 + 1):
-            for side in ("before", "after"):
-                (bundle / f"composer-region{i}-{side}.png").write_bytes(b"png")
-        body, pictures = compose(out, [])
-        slots = [int(n) for n in re.findall(r"^@@crop-(\d+)@@$", body, flags=re.M)]
-        assert slots == list(range(MAX_PICTURES)) == list(range(len(pictures))), slots
-        assert [alt.rsplit("-", 1)[1] for alt, _ in pictures[:2]] == ["before", "after"], pictures
-        notice = f"[… kept {MAX_PICTURES} of {MAX_PICTURES + 2} crops (cap {MAX_PICTURES})"
-        assert body.index(f"@@crop-{MAX_PICTURES - 1}@@") < body.index(notice), body
-        # Posting: no slot ever reaches the forge, old assets go, and a refused upload is named.
-        import forgejo_pr_comment as forge
-        calls: list = []
-
-        def fake(method, url, payload):
-            calls.append((method, url, payload))
-            if method == "GET":
-                return [{"id": 5}] if url.endswith("/assets") else []
-            return {"id": 9}
-
-        def refused(url, path):
-            raise OSError("refused")
-
-        keep = forge.send, globals()["upload"], dict(os.environ)
-        forge.send, globals()["upload"] = fake, lambda url, path: f"https://x/{path.name}"
-        os.environ.update(FORGEJO_API_URL="https://f/api", FORGEJO_REPOSITORY="o/r",
-                          FORGEJO_PR="3", FORGEJO_TOKEN="t", FORGEJO_HEAD="ab12")
-        try:
-            post(out)
-            assert calls[1][2]["body"].startswith(f"{MARKER}\n{HEAD_MARK.format('ab12')}\n"), calls[1]
-            assert all("@@crop" not in str(payload) for _, _, payload in calls), calls
-            assert calls[-1][2]["body"].count("](https://x/") == MAX_PICTURES, calls[-1]
-            assert ("DELETE", "https://f/api/repos/o/r/issues/comments/9/assets/5", None) in calls
-            calls.clear()
-            globals()["upload"] = refused
-            post(out)
-            assert all("@@crop" not in str(payload) for _, _, payload in calls), calls
-            assert f"[… {MAX_PICTURES} picture(s) not attached (refused)" in calls[-1][2]["body"]
-        finally:
-            forge.send, globals()["upload"] = keep[0], keep[1]
-            os.environ.clear()
-            os.environ.update(keep[2])
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp)
-        shutil.copytree(runs[0], out / "same" / "base")
-        shutil.copytree(runs[0], out / "same" / "head")
-        diff(out / "same" / "base", out / "same" / "head")
-        body, _ = compose(out, [])
-        assert "No snap changed" in body and "###" not in body, body
-    # The Ghostty replay starts from the seed as staged, whatever the headless drive appended.
-    with tempfile.TemporaryDirectory() as tmp:
-        seed = Path(tmp) / "s.jsonl"
-        seed.write_text(json.dumps({"kind": "header", "version": 4, "id": FIXED_ID,
-                                    "createdAt": 1790000000000, "cwd": tmp}) + "\n")
-        session = stage_seed(Path(tmp) / "run", seed)
-        grown = next((Path(tmp) / "run" / "sessions").glob(f"*/*_{session}.jsonl"))
-        grown.write_text(grown.read_text() + '{"kind":"message"}\n')
-        assert pristine_seed(Path(tmp) / "run", session).read_text() == seed.read_text()
-    # Publishing: the release is created once, the asset is replaced rather than added, the old
-    # one goes only after the new is up, and a refusal is named with the last gallery left alone.
-    import forgejo_pr_comment as forge
-    import urllib.error
-    with tempfile.TemporaryDirectory() as tmp:
-        page = Path(tmp) / "gallery.html"
-        page.write_text("<title>x</title>")
-        calls, state = [], {"release": None, "refuse": False}
-        releases = "https://f/api/repos/o/r/releases"
-
-        def fake(method, url, payload):
-            calls.append((method, url))
-            if method == "GET" and url.endswith(f"/tags/{GALLERY_TAG}"):
-                if state["release"] is None:
-                    raise urllib.error.HTTPError(url, 404, "not found", None, None)
-                return state["release"]
-            if method == "GET":
-                return [{"id": 5, "name": "gallery.html"}, {"id": 6, "name": "other.txt"}]
-            calls[-1] += (payload,)
-            return {"id": 4}
-
-        def put(url, path, kind="image/png"):
-            calls.append(("UPLOAD", url, kind))
-            if state["refuse"]:
-                raise OSError("refused")
-            return "https://f/gallery.html"
-
-        keep = forge.send, globals()["upload"], dict(os.environ)
-        forge.send, globals()["upload"] = fake, put
-        os.environ.update(FORGEJO_API_URL="https://f/api", FORGEJO_REPOSITORY="o/r", FORGEJO_HEAD="ab12" * 10)
-        try:
-            publish(page)
-            assert calls[1][:2] == ("POST", releases) and calls[1][2]["tag_name"] == GALLERY_TAG, calls
-            assert calls[1][2]["prerelease"] is True, "a release `yi update` could pick as latest"
-            assert not any(c[0] == "PATCH" for c in calls), calls
-            state["release"] = {"id": 4}
-            calls.clear()
-            publish(page)
-            assert [c[0] for c in calls] == ["GET", "PATCH", "GET", "UPLOAD", "DELETE"], calls
-            assert calls[3][1] == f"{releases}/4/assets?name=gallery.html", calls[3]
-            assert calls[4][1] == f"{releases}/4/assets/5", "only the old gallery.html goes"
-            assert calls[1][2]["prerelease"] is True, "the PATCH must keep it out of releases/latest"
-            assert "ab12ab12ab12" in calls[1][2]["body"] and "plain text" in calls[1][2]["body"]
-            state["refuse"] = True
-            calls.clear()
-            try:
-                publish(page)
-                raise AssertionError("a refused upload published")
-            except SystemExit as stop:
-                assert "the gallery was not published (OSError: refused)" in str(stop), stop
-            assert not any(c[0] == "DELETE" for c in calls), "the last gallery must survive a refusal"
-            state["refuse"] = False
-            page.write_bytes(b"x" * (PAGE_CAP + 1))
-            calls.clear()
-            publish(page)
-            assert "past the 15 MB page cap (PAGE_CAP)" in calls[1][2]["body"], calls[1]
-        finally:
-            forge.send, globals()["upload"] = keep[0], keep[1]
-            os.environ.clear()
-            os.environ.update(keep[2])
     print("tui_see selfcheck: ok")
 
 
@@ -1351,12 +1156,16 @@ def main(argv: list[str]) -> None:
         return None
     if argv[:1] == ["term-inner"]:
         return term_inner(argv[1], argv[2], Path(argv[3]), argv[4], argv[5:])
-    if argv[:1] == ["ci"] and len(argv) in (2, 3):
-        return ci(Path(argv[1]).resolve() if len(argv) == 3 else None, Path(argv[-1]).resolve())
-    if argv[:1] == ["publish"] and len(argv) == 2:
-        return publish(Path(argv[1]).resolve())
-    if argv[:1] == ["post"] and len(argv) == 2:
-        return post(Path(argv[1]).resolve())
+    if argv[:1] == ["harvest"] and len(argv) >= 2:
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        unknown = set(opts) - {"--name", "--view", "--size"}
+        if unknown or len(argv[2:]) % 2 or "--view" not in opts or opts["--view"] not in VIEWS:
+            sys.exit(f"harvest: unknown or valueless flags {sorted(unknown) or argv[-1:]}, --view"
+                     f" is required and one of {', '.join(VIEWS)}")
+        session = Path(argv[1]).resolve()
+        harvest(session, opts.get("--name", session.stem.lower()), (opts["--view"],),
+                opts.get("--size", "100x40"))
+        return None
     if argv[:1] == ["proxy"]:
         out = Path(argv[2])
         try:
