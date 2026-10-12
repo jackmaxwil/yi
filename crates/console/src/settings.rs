@@ -334,6 +334,7 @@ fn applies(applies: Applies) -> &'static str {
         Applies::Live => "now",
         Applies::NextSession => "next session",
         Applies::DaemonRestart => "after restart",
+        Applies::ConsoleRestart => "next console",
         Applies::SoloTui => "solo tui only",
     }
 }
