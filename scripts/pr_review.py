@@ -15,11 +15,9 @@ Transport and the model are parameters where the decisions are, so the selfcheck
 without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
 import argparse
-import contextlib
 import fnmatch
 import functools
 import hashlib
-import io
 import json
 import os
 import pathlib
@@ -1335,36 +1333,19 @@ def selfcheck():
     assert "4 cells changed" in text and "attachments" not in text and "999" not in text, text
     assert "</tui-snapshots" not in text, "a drawn row cannot close the block it is read in"
     assert "[… dropped 1 row(s) naming this block's closing tag" in text, text
-    # The forge's run list as /actions/runs answers it: the rows carry the workflow's
-    # display name (`name`, as the GitHub runs fixture in adapters records) and `head_sha`,
-    # the commit field both recorded producers use; the review's own run is not the tui run.
+    # The forge's run list as /actions/runs?head_sha= answered it for #1235's head on 2026-10-12
+    # (Forgejo 15: `workflow_id`, `commit_sha`); the review's own run is not the tui run.
     saved_api, sha = forge_pr.fgj_api, "36af141c32abd98664c8d3bcda780948d9030f26"
-    listed = [{"name": "review", "head_sha": sha, "status": "running"},
-              {"name": "tui", "head_sha": "0" * 40, "status": "waiting"}]
-    forge_pr.fgj_api = lambda method, path, payload=None: {"workflow_runs": listed}
+    listed = [{"id": 9412, "workflow_id": "review.yml", "commit_sha": sha, "status": "running"},
+              {"id": 9411, "workflow_id": "pr.yml", "commit_sha": sha, "status": "success"}]
+    asked = []
+    forge_pr.fgj_api = lambda method, path, payload=None: asked.append(path) or {"workflow_runs": listed}
     try:
-        assert forge_pr.run_status({"head": {"sha": sha}}) is None, "a skipped tui run is no run"
-        listed.insert(0, {"name": "tui", "head_sha": sha, "status": "waiting"})
-        assert forge_pr.run_status({"head": {"sha": sha}}) == "waiting", "a queued tui run counts"
-    finally:
-        forge_pr.fgj_api = saved_api
-    full_page = [{"name": "gate", "head_sha": "0" * 40, "status": "success"}] * 50
-    def paged(method, path, payload=None):
-        full = path.endswith("&page=1") or path.endswith("&page=2")
-        return {"workflow_runs": full_page if full else listed}
-
-    forge_pr.fgj_api = paged
-    try:
-        listed[0] = {"name": "tui", "head_sha": sha, "status": "waiting"}
-        assert forge_pr.run_status({"head": {"sha": sha}}) == "waiting", "the walk reads past the first full page"
-    finally:
-        forge_pr.fgj_api = saved_api
-    forge_pr.fgj_api = lambda method, path, payload=None: {"workflow_runs": full_page}
-    try:
-        cut = io.StringIO()
-        with contextlib.redirect_stdout(cut):
-            assert forge_pr.run_status({"head": {"sha": sha}}) is None
-        assert "150" in cut.getvalue() and "run_status" in cut.getvalue(), cut.getvalue()
+        assert forge_pr.run_status({"head": {"sha": sha}}) is None, "a head the tui workflow skipped has no tui run"
+        assert asked and asked[-1].endswith(f"head_sha={sha}"), "the forge filters by head, so no page walk can miss it"
+        listed += [{"id": 9409, "workflow_id": "tui.yml", "commit_sha": sha, "status": "success"},
+                   {"id": 9413, "workflow_id": "tui.yml", "commit_sha": sha, "status": "waiting"}]
+        assert forge_pr.run_status({"head": {"sha": sha}}) == "waiting", "the newest tui run, a queued one included"
     finally:
         forge_pr.fgj_api = saved_api
     # A round waits out the tui workflow on a clock the test moves, and reads the comments after.
