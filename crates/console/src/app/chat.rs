@@ -122,6 +122,7 @@ impl App {
                 on_chat && !multi
             }
             Action::PageUp | Action::PageDown => self.on_editor(),
+            Action::Undo | Action::Redo => on_chat,
             Action::ToggleSidebar => {
                 on_chat && key.modifiers.contains(KeyModifiers::ALT) && self.chat_takes_ctrl_c()
             }
