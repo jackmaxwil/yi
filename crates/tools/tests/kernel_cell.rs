@@ -22,6 +22,7 @@ fn a_shell_cell_is_read_as_a_shell_command() -> TestResult {
         input.insert("code".to_owned(), Value::String(code.to_owned()));
         let tool = IpythonTool {
             bridge: Arc::new(NoKernel),
+            calls: None,
         };
         assert_eq!(!tool.irreversible(&input), allowed, "{code:?}");
     }

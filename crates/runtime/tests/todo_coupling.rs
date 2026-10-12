@@ -279,6 +279,24 @@ fn work_is_changes_landed_not_calls_made() -> TestResult {
     Ok(())
 }
 
+/// Dies when a write a background task finished after its cell closed is credited to this turn.
+#[test]
+fn a_cell_write_that_outlived_its_cell_is_not_credited_to_this_turn() -> TestResult {
+    let message = faux_assistant_message(
+        vec![faux_tool_call("k1", "ipython", Map::new())],
+        StopReason::ToolUse,
+    );
+    let mut cell = result("k1", "ipython", false);
+    if let AgentMessage::ToolResult { details, .. } = &mut cell {
+        *details = Some(json!({"calls": [
+            {"tool": "write", "ok": true, "paths": ["late.txt"], "durationMs": 1, "outlived": true},
+            {"tool": "edit", "ok": true, "paths": ["now.txt"], "durationMs": 1},
+        ]}));
+    }
+    assert_eq!(landed(&message, &[cell]), (1, false));
+    Ok(())
+}
+
 #[test]
 fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult {
     let r = rig("ladder")?;
