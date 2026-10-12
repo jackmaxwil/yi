@@ -872,11 +872,10 @@ fn the_plan_table_keeps_every_key_but_the_nested_prose() -> TestResult {
 /// `SKILL.md` saying `covers:`, or a `yi://tools/` guide) or sits in `PENDING`, which only shrinks.
 #[test]
 fn every_model_tool_and_plugin_is_covered_by_a_skill_or_pending() -> Result<(), Box<dyn Error>> {
-    const PENDING: [&str; 6] = [
+    const PENDING: [&str; 5] = [
         "tool:annotate",
         "tool:bash",
         "tool:get_context",
-        "tool:ipython",
         "tool:read",
         "tool:write",
     ];
