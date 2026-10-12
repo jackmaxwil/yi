@@ -526,8 +526,8 @@ A persistent IPython process per session that reaches the host only through host
   model's (`Snapshot::program_lines`). A glob is its paths, no file opened; a directory, `edit`,
   `write`, `bash` (streams before the reducer, the job, the polled output), `get_context` (layers
   unclamped), `todo` (the list), `annotate` (the record), an address (the page, and the 1-based
-  `nextOffset` the tool takes back), a child's `ask_user` and an exec tool (its JSON) each have one;
-  `plan` has none, since `yi.Plan` already reads plans as data. The line selector never runs.
+  `nextOffset` the tool takes back), a child's `ask_user`, an exec tool (its JSON) and `plan` (the
+  plan document after the op, read back unjournaled) each have one. The line selector never runs.
 
 ### 9.3 Python surface
 - The preamble binds `rlm` (the module), `mcp`, `fetch`, `bash`. `@_public` builds `rlm.__all__`:
