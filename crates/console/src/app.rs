@@ -59,6 +59,7 @@ pub enum RequestKind {
     Rewind(SessionId),
     Plan(SessionId),
     SetConfig(SessionId),
+    Settings(PaneId),
     Steer,
     Shutdown,
 }
@@ -450,6 +451,9 @@ impl App {
             self.state.quit = true;
             return;
         }
+        if let RequestKind::Settings(pane) = pending.kind {
+            return self.absorb_settings(pane, value);
+        }
         if let Some(error) = value.get("error") {
             let message = error
                 .get("message")
@@ -511,6 +515,7 @@ impl App {
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig(_)
+            | RequestKind::Settings(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
@@ -945,7 +950,8 @@ impl App {
             Action::SelectSlot(n) => self.select_slot(outbound, n),
             Action::Quit => self.state.quit = true,
             Action::StopDaemon => self.stop_daemon_and_quit(outbound),
-            Action::Keys => self.state.mode = Mode::Keys,
+            Action::Keys => self.open_settings(outbound, crate::settings::KEYS),
+            Action::Settings => self.open_settings(outbound, crate::settings::SESSION),
             Action::Menu => self.open_menu_for_focus(),
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
@@ -1063,11 +1069,6 @@ impl App {
         if matches!(self.state.mode, Mode::Menu(_)) {
             return self.menu_key(outbound, key);
         }
-        if matches!(self.state.mode, Mode::Keys) {
-            self.state.mode = Mode::Normal;
-            self.dirty = true;
-            return;
-        }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
             if let Some(action) = keys::prefixed(&key) {
@@ -1163,6 +1164,7 @@ impl App {
             },
             Zone::Panes if self.on_review().is_some() => self.review_key(key),
             Zone::Panes if self.on_tape() => self.tape_key(key),
+            Zone::Panes if self.on_settings() => self.settings_key(outbound, key),
             Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
     }
@@ -1177,6 +1179,7 @@ mod navigator;
 mod notebook;
 pub mod port;
 mod review;
+mod settings;
 
 pub(crate) use chat::orb_ids;
 pub use mouse::MouseKind;

@@ -227,6 +227,7 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
             socket,
             worker_args,
             agent_version: version.to_owned(),
+            home: crate::home().to_path_buf(),
         },
         runtime,
     )
