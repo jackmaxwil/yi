@@ -27,8 +27,8 @@ use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
 
 use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 use user_config::{
-    config, configured_auto_background, configured_model, configured_roles, home, load_config,
-    refreshed, reload_config,
+    config, configured_auto_background, configured_mode, configured_model, configured_roles, home,
+    load_config, refreshed, reload_config,
 };
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
@@ -85,15 +85,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    let configured_mode = match config()
-        .permissions
-        .as_ref()
-        .and_then(|permissions| permissions.mode)
-    {
-        Some(yi_types::config::ModeName::Ask) => yi_runtime::PermissionMode::Ask,
-        Some(yi_types::config::ModeName::Yolo) => yi_runtime::PermissionMode::Yolo,
-        Some(yi_types::config::ModeName::Auto) | None => yi_runtime::PermissionMode::Auto,
-    };
     let mut mode = None;
     let mut session_dir = None;
     let mut cwd = None;
@@ -199,7 +190,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         thinking_pinned: thinking.is_some(),
         thinking: thinking.or(config().thinking),
         json,
-        mode: mode.unwrap_or(configured_mode),
+        mode: mode.unwrap_or_else(configured_mode),
         mode_pinned: mode.is_some(),
         session_dir,
         cwd,
@@ -548,7 +539,8 @@ fn build_session(
 /// `plans.dir`, relative to the workspace root unless absolute. Unset leaves
 /// the resolver's own `.yi/plans` default in place.
 fn configured_plans_dir(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
-    let path = std::path::PathBuf::from(config().plans.as_ref()?.dir.as_deref()?);
+    let config = config();
+    let path = std::path::PathBuf::from(config.plans.as_ref()?.dir.as_deref()?);
     Some(if path.is_absolute() {
         path
     } else {
@@ -1024,6 +1016,7 @@ fn dispatch(args: Args) {
                 }
             };
             let build_args = args.clone();
+            let defaults_args = args.clone();
             let build: yi_acp::SessionBuilder = {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker, session| {
@@ -1037,10 +1030,14 @@ fn dispatch(args: Args) {
                 cwd: effective_cwd(&args),
                 build,
                 agent_version: version.to_owned(),
-                defaults: resolve(&args.model).map(|model| yi_acp::SessionDefaults {
-                    model,
-                    effort: args.thinking.unwrap_or_default(),
-                    mode: args.mode,
+                defaults: std::sync::Arc::new(move || {
+                    reload_config();
+                    let args = refreshed(&defaults_args);
+                    resolve(&args.model).map(|model| yi_acp::SessionDefaults {
+                        model,
+                        effort: args.thinking.unwrap_or_default(),
+                        mode: args.mode,
+                    })
                 }),
             };
             std::process::exit(yi_acp::run_acp(options, runtime));

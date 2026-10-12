@@ -64,7 +64,8 @@ pub struct AcpOptions {
     pub cwd: PathBuf,
     pub build: SessionBuilder,
     pub agent_version: String,
-    pub defaults: Option<SessionDefaults>,
+    /// Asked once per new session, so a default saved since the worker started is the one shown.
+    pub defaults: Arc<dyn Fn() -> Option<SessionDefaults> + Send + Sync>,
 }
 
 pub struct SessionDefaults {
@@ -218,7 +219,7 @@ struct AcpState {
     building: HashMap<String, attach::Building>,
     failed: HashMap<String, String>,
     wake: tokio::sync::mpsc::WeakUnboundedSender<attach::Incoming>,
-    defaults: Option<SessionDefaults>,
+    defaults: Arc<dyn Fn() -> Option<SessionDefaults> + Send + Sync>,
     build: SessionBuilder,
     sink: LineSink,
     pending: PendingAsks,
@@ -603,7 +604,7 @@ impl AcpState {
                     .create(CreateOptions::default())
                     .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
                 drop(creating);
-                let Some(defaults) = &self.defaults else {
+                let Some(defaults) = (self.defaults)() else {
                     let session_id = self
                         .attach(&store)
                         .map_err(|error| (INTERNAL_ERROR, error))?;
@@ -933,11 +934,7 @@ impl AcpState {
         self.sessions
             .get(session_id)
             .map(|handle| handle.session.model().context_window)
-            .or_else(|| {
-                self.defaults
-                    .as_ref()
-                    .map(|defaults| defaults.model.context_window)
-            })
+            .or_else(|| (self.defaults)().map(|defaults| defaults.model.context_window))
             .unwrap_or(0)
     }
 

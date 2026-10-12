@@ -566,7 +566,19 @@ fn a_saved_default_reaches_the_next_session_and_a_refused_one_writes_nothing() -
             .and_then(|rows| rows.iter().find(|row| row["id"] == "permissions.mode"));
         assert_eq!(row.map(|row| &row["value"]), Some(&json!("ask")), "{saved}");
         let second = client.request("n2", "session/new", cwd)?;
-        assert_eq!(mode_of(&second), Some("ask"), "{second}");
+        let built = session_id_from(&second)?;
+        // The new-session reply reads the defaults; the session that was built reports its own
+        // options in a `_yi/config` update once it exists.
+        let frames = client.read_until(|frame| {
+            frame["params"]["sessionId"] == built.as_str()
+                && frame["params"]["update"]["sessionUpdate"] == "_yi/config"
+        })?;
+        let echoed = frames.last().ok_or("no config update")?;
+        let mode = echoed["params"]["update"]["configOptions"]
+            .as_array()
+            .and_then(|options| options.iter().find(|option| option["configId"] == "mode"))
+            .and_then(|option| option["currentValue"].as_str());
+        assert_eq!(mode, Some("ask"), "{echoed}");
         let before = std::fs::read(&config)?;
         let refused = client.request(
             "s2",

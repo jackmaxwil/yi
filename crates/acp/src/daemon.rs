@@ -32,6 +32,7 @@ enum Input {
     WorkerLine(String, Value, String),
     WorkerReply(String, Value),
     WorkerClosed(String),
+    Answer(ClientId, String),
     Shutdown,
 }
 
@@ -667,22 +668,31 @@ impl Supervisor {
     }
 
     /// The daemon answers for the config, not a worker: a worker holds the copy it started on.
+    /// The read and fsync run off the routing loop, which every client and worker waits on.
     fn settings(&mut self, client: ClientId, id: Option<Value>, method: &str, frame: &Value) {
         let Some(id) = id else { return };
-        let home = &self.options.home;
-        let answer = match method {
-            "_yi/set_default" => {
-                let setting = frame.pointer("/params/id").and_then(Value::as_str);
-                let value = frame.pointer("/params/value").cloned();
-                yi_runtime::settings::save(home, setting.unwrap_or(""), value.unwrap_or_default())
-            }
-            _ => yi_runtime::settings::current(home),
-        };
-        let line = match answer {
-            Ok(rows) => result_frame(id, json!({"rows": rows})),
-            Err(why) => error_frame(id, -32602, &why),
-        };
-        self.send_client(client, line);
+        let home = self.options.home.clone();
+        let save = method == "_yi/set_default";
+        let setting = frame
+            .pointer("/params/id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let value = frame.pointer("/params/value").cloned();
+        let input = self.input.clone();
+        tokio::task::spawn_blocking(move || {
+            let answer = match (save, setting, value) {
+                (false, _, _) => yi_runtime::settings::current(&home),
+                (true, Some(setting), Some(value)) => {
+                    yi_runtime::settings::save(&home, &setting, value)
+                }
+                (true, _, _) => Err("a save names an id and a value; null unsets".to_owned()),
+            };
+            let line = match answer {
+                Ok(rows) => result_frame(id, json!({"rows": rows})),
+                Err(why) => error_frame(id, -32602, &why),
+            };
+            let _ = input.send(Input::Answer(client, line));
+        });
     }
 
     fn handle_client_closed(&mut self, client: ClientId) {
@@ -824,6 +834,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                     supervisor.forward_response_to_worker(&root, frame).await;
                 }
                 Input::WorkerClosed(root) => supervisor.handle_worker_closed(root),
+                Input::Answer(client, line) => supervisor.send_client(client, line),
                 Input::Shutdown => break,
             }
         }

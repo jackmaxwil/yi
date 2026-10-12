@@ -40,9 +40,13 @@ pub struct SettingRow {
     pub help: String,
     pub kind: SettingKind,
     pub applies: Applies,
-    /// The file's value; `null` is unset, and the help names what unset means.
+    /// The file's value; `null` is unset, and the help names what unset means. The daemon sends
+    /// a list or JSON row's entry count instead, so a key stored in the wrong place stays put.
     #[serde(default)]
     pub value: Value,
+    /// What an unset toggle means, so the page flips the value in effect, not the stored one.
+    #[serde(default)]
+    pub default: Value,
 }
 
 pub const TABS: [&str; 6] = [

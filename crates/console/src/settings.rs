@@ -76,6 +76,20 @@ fn default_of(config_id: &str) -> Option<&'static str> {
     }
 }
 
+/// `models.primary` wins over `model` when both are set, so a default model goes where it reads.
+fn primary_over<'a>(settings: &Settings, id: &'a str) -> &'a str {
+    let primary = settings
+        .rows
+        .iter()
+        .flatten()
+        .any(|row| row.id == "models.primary" && !row.value.is_null());
+    if id == "model" && primary {
+        "models.primary"
+    } else {
+        id
+    }
+}
+
 fn count(settings: &Settings, options: &[AcpConfigOption]) -> usize {
     match settings.tab {
         SESSION => options.len(),
@@ -160,13 +174,22 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
         }
         KeyCode::Enter => begin(settings, options),
         KeyCode::Char('u') if settings.tab != SESSION && settings.tab != KEYS => {
-            commit(settings, options, Value::Null)
+            match settings
+                .tab_rows()
+                .get(settings.cursor)
+                .map(|row| (&row.kind, row.id.clone()))
+            {
+                Some((SettingKind::List | SettingKind::Json, id)) => {
+                    Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
+                }
+                _ => commit(settings, options, Value::Null),
+            }
         }
         KeyCode::Char('d') if settings.tab == SESSION => {
             let option = options.get(settings.cursor);
             match option.and_then(|option| Some((default_of(&option.config_id)?, option))) {
                 Some((id, option)) => Intent::SaveDefault {
-                    id: id.to_owned(),
+                    id: primary_over(settings, id).to_owned(),
                     value: Value::String(option.current_value.clone()),
                 },
                 None => Intent::None,
@@ -207,11 +230,14 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
         return Intent::None;
     };
     match &row.kind {
-        SettingKind::Toggle => commit(
-            settings,
-            options,
-            Value::Bool(row.value != Value::Bool(true)),
-        ),
+        SettingKind::Toggle => {
+            let on = if row.value.is_null() {
+                &row.default
+            } else {
+                &row.value
+            };
+            commit(settings, options, Value::Bool(on != &Value::Bool(true)))
+        }
         SettingKind::Choice { options: picks } => {
             let current = row.value.as_str().unwrap_or_default();
             let cursor = picks.iter().position(|pick| pick == current).unwrap_or(0);
@@ -275,7 +301,17 @@ fn commit_typed(settings: &Settings, options: &[AcpConfigOption], text: &str) ->
     }
 }
 
-fn shown(value: &Value) -> String {
+fn shown(row: &SettingRow) -> String {
+    let entries = matches!(row.kind, SettingKind::List | SettingKind::Json);
+    match (&row.value, &row.default) {
+        (Value::Number(count), _) if entries => format!("{count} entries"),
+        (Value::Null, Value::Bool(true)) => "on (default)".to_owned(),
+        (Value::Null, Value::Bool(false)) => "off (default)".to_owned(),
+        (value, _) => shown_value(value),
+    }
+}
+
+fn shown_value(value: &Value) -> String {
     match value {
         Value::Null => "unset".to_owned(),
         Value::Bool(true) => "on".to_owned(),
@@ -381,7 +417,7 @@ fn shown_rows(settings: &Settings, options: &[AcpConfigOption], cmd: bool) -> Ve
             .map(|row| {
                 (
                     row.label.clone(),
-                    shown(&row.value),
+                    shown(row),
                     applies(row.applies).to_owned(),
                     format!(
                         "{} · {} · applies {}",

@@ -3795,7 +3795,7 @@ fn settings_rows(frame: &Value) -> Vec<Value> {
 
 /// The daemon's half of a save: it answers only the edit the page should have sent.
 fn save_auto_side(frame: &Value) -> Vec<Value> {
-    if frame["params"] != json!({"id": "console.autoSide", "value": true}) {
+    if frame["params"] != json!({"id": "console.autoSide", "value": false}) {
         return vec![
             json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": format!("unexpected {}", frame["params"])}}),
         ];
@@ -3803,7 +3803,7 @@ fn save_auto_side(frame: &Value) -> Vec<Value> {
     let mut rows = yi_types::settings::rows();
     for row in &mut rows {
         if row.id == "console.autoSide" {
-            row.value = json!(true);
+            row.value = json!(false);
         }
     }
     vec![ok(frame, json!({"rows": rows}))]
@@ -3833,7 +3833,7 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
          wait-frame 3000 ⚙ Settings\n\
          key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
          wait-frame 3000 Open Review beside\n\
-         key enter\nwait-frame 3000 saved\n\
+         key enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
          key left\nkey left\nwait-frame 3000 Family depth\n\
          key enter\ntype 9\nkey enter\n\
          wait-frame 3000 not saved: rlm.maxDepth takes at most 3\n\
@@ -3863,15 +3863,23 @@ fn set_high(frame: &Value) -> Vec<Value> {
     let want =
         json!({"sessionId": "s-alpha", "configId": "thought_level", "type": "id", "value": "high"});
     if frame["params"] != want {
-        return vec![
-            json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": "wrong option"}}),
-        ];
+        return refuse(frame, "wrong option");
     }
-    vec![ok(frame, json!({}))]
+    let options = json!([{"configId": "thought_level", "name": "Thinking level", "type": "select",
+        "currentValue": "high",
+        "options": [{"value": "low", "name": "low"}, {"value": "medium", "name": "medium"},
+                    {"value": "high", "name": "high"}]}]);
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "_yi/config", "configOptions": options}),
+        ),
+        ok(frame, json!({})),
+    ]
 }
 
 fn save_thinking(frame: &Value) -> Vec<Value> {
-    if frame["params"] != json!({"id": "thinking", "value": "medium"}) {
+    if frame["params"] != json!({"id": "thinking", "value": "high"}) {
         return vec![
             json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": "wrong default"}}),
         ];
@@ -3898,6 +3906,10 @@ fn the_session_tab_sets_the_live_option_and_makes_it_the_default() -> TestResult
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
          key alt-,\nwait-frame 3000 Thinking level\n\
          key enter\nwait-frame 3000 ‹ medium ›\nkey down\nkey enter\n\
-         key d\nwait-frame 3000 saved\nquit\n",
+         key d\nwait-frame 3000 saved\nwait-frame 500 !not saved\nquit\n",
     )
+}
+
+fn refuse(frame: &Value, why: &str) -> Vec<Value> {
+    vec![json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": why}})]
 }
