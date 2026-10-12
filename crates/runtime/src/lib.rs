@@ -115,6 +115,11 @@ pub fn identity_fragment() -> &'static str {
 pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
 }
+
+/// Rides the system prompt only when no asker is wired, so no person can answer.
+pub fn unattended_fragment() -> &'static str {
+    include_str!("prompts/unattended.md")
+}
 pub use yi_ai::faux;
 pub use yi_context::{Bytes, SourceBudgets, Truncated, reply_tokens};
 pub use yi_loop::ExecutionMode;

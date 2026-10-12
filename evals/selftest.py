@@ -109,7 +109,7 @@ def check_command():
 
 def check_install():
     """S2: the adapter builds the kernel venv at install and reports an image it cannot boot on;
-    #329: it runs the trial anyway, since a Bun image has no python and bash still scores."""
+    #329: with no toolchain it runs bash-only; #1315: a boot that failed on a toolchain stops it."""
     source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
     assert "doctor --fix --json" in source and "warm_kernel" in source, "install must warm the kernel"
     assert "cannot boot in this image" not in source, "a dead kernel is reported, not a refusal"
@@ -126,6 +126,11 @@ def check_install():
     problems = yi_usage.kernel_problems(red)
     assert problems == ["kernel-toolchain: no uv and no python3", "kernel-boot: row missing"], problems
     assert yi_usage.kernel_problems("not json")[0].startswith("doctor output is not JSON")
+    assert not yi_usage.kernel_broken(problems), "an image with no toolchain still runs bash-only"
+    booted_dead = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv"},
+                              {"name": "kernel-boot", "status": "fail", "detail": "kernel_info timed out"}])
+    assert yi_usage.kernel_broken(yi_usage.kernel_problems(booted_dead)), "row 0072: a dead boot must stop the trial"
+    assert not yi_usage.kernel_broken(yi_usage.kernel_problems(green))
 
 
 def check_adapter_imports():

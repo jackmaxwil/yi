@@ -383,3 +383,41 @@ fn a_socket_client_cannot_confirm_an_administrative_op() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a person's session told nobody is there: an rpc client wires no asker, as `yi ask`
+/// with no terminal does, yet its session records no unattended slot.
+#[test]
+fn an_rpc_session_is_not_told_it_is_alone() -> TestResult {
+    let dir = temp_dir("attended")?;
+    run_rpc(
+        &dir,
+        &[serde_json::json!({"id": "p", "type": "prompt", "message": "hello"})],
+    )?;
+    let mut names = Vec::new();
+    for project in std::fs::read_dir(dir.join("sessions"))? {
+        for path in std::fs::read_dir(project?.path())? {
+            let path = path?.path();
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            for line in std::fs::read_to_string(&path)?.lines() {
+                let entry: Value = serde_json::from_str(line)?;
+                let slots = entry["data"]["slots"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                names.extend(
+                    slots
+                        .iter()
+                        .filter_map(|slot| slot["name"].as_str().map(str::to_owned)),
+                );
+            }
+        }
+    }
+    assert!(
+        names.iter().any(|name| name == "doctrine"),
+        "no prompt slots recorded: {names:?}"
+    );
+    assert!(!names.iter().any(|name| name == "unattended"), "{names:?}");
+    Ok(())
+}

@@ -36,11 +36,15 @@ pub fn discover(cwd: &Path, home: &Path) -> Vec<Skill> {
 /// set's descriptions, so they render in the yard; a `requires:` unmet by an install leaves both.
 pub fn discover_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
     let (global, project) = scan_split(cwd, home);
+    let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let present = |skill: &Skill| {
-        skill.frontmatter.get("requires").is_none_or(|name| {
+        let plugin = skill.frontmatter.get("requires").is_none_or(|name| {
             yi_tools::plugin::Plugin::named(name)
                 .is_some_and(|plugin| plugin.skill_root(home).is_some())
-        })
+        });
+        // A skill written for one repository names a path only that repository has.
+        let within = (skill.frontmatter.get("within")).is_none_or(|path| root.join(path).exists());
+        plugin && within
     };
     (
         global.into_iter().filter(present).collect(),
