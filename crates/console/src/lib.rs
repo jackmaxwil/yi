@@ -10,12 +10,14 @@ pub mod client;
 pub mod keys;
 pub mod kitty;
 pub mod layout;
+pub mod menu;
 pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
 pub mod render;
 pub mod select;
+pub mod settings;
 pub mod sidebar;
 
 use std::io::Stdout;
@@ -44,7 +46,9 @@ pub struct ConsoleOptions {
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
+    pub pace: u16,
 }
 
 pub struct DriveOptions {
@@ -62,6 +66,26 @@ pub enum ConsoleStep {
     Cmd(yi_tui::keymap::SingleKey),
 }
 
+/// The drive harness speaks crossterm, so a script runs the same button mapping a terminal does.
+fn mouse_event(kind: MouseKind, column: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let kind = match kind {
+        MouseKind::Down => MouseEventKind::Down(MouseButton::Left),
+        MouseKind::RightDown => MouseEventKind::Down(MouseButton::Right),
+        MouseKind::Moved => MouseEventKind::Moved,
+        MouseKind::Up => MouseEventKind::Up(MouseButton::Left),
+        MouseKind::Drag => MouseEventKind::Drag(MouseButton::Left),
+        MouseKind::ScrollUp => MouseEventKind::ScrollUp,
+        MouseKind::ScrollDown => MouseEventKind::ScrollDown,
+    };
+    ratatui::crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+    }
+}
+
 pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     let mut steps = Vec::new();
     for (index, raw) in source.lines().enumerate() {
@@ -74,6 +98,8 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             let mut parts = rest.split_whitespace();
             let kind = match parts.next() {
                 Some("down") => MouseKind::Down,
+                Some("right") => MouseKind::RightDown,
+                Some("move") => MouseKind::Moved,
                 Some("up") => MouseKind::Up,
                 Some("drag") => MouseKind::Drag,
                 Some("scrollup") => MouseKind::ScrollUp,
@@ -211,13 +237,11 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
-    app.autostart = options.autostart;
     app.kitty = crate::kitty::supported(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
-    app.state.auto_side = options.auto_side;
-    app.state.sidebar = options.sidebar;
+    configure(&mut app, options);
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -276,7 +300,6 @@ fn run_interactive(
     outbound: &Outbound,
     theme: &Theme,
 ) -> i32 {
-    let kitty_ok = app.kitty;
     let mut orb_owners = std::collections::HashMap::new();
     let mut scheduler = yi_tui::frame::FrameScheduler::default();
     while !app.state.quit {
@@ -287,7 +310,7 @@ fn run_interactive(
         let wake = scheduler
             .poll_timeout(Instant::now())
             .min(IDLE_POLL)
-            .min(orb_wake(app))
+            .min(chat_wake(app))
             .min(app.avatars.wake().unwrap_or(IDLE_POLL));
         // Incident: a 50 ms input poll delayed every daemon frame; any event now wakes the loop.
         match events.recv_timeout(wake) {
@@ -305,13 +328,8 @@ fn run_interactive(
         }
         if scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
-            // The whole frame lands inside one synchronized update, so a
-            // split-ratio animation step can never tear.
             let mut out = std::io::stdout();
-            let _ = out.execute(ratatui::crossterm::terminal::BeginSynchronizedUpdate);
-            let drawn = draw(app, terminal, theme);
-            let _ = out.execute(ratatui::crossterm::terminal::EndSynchronizedUpdate);
-            if drawn.is_err() {
+            if present(app, terminal, theme, &mut orb_owners, &mut out).is_err() {
                 return 1;
             }
             set_window_title(app);
@@ -320,23 +338,36 @@ fn run_interactive(
                 let _ = out.write_all(sequence.as_bytes());
                 let _ = out.flush();
             }
-            if kitty_ok {
-                use std::io::Write;
-                place_avatars(app, &mut out);
-                place_notebook_image(app, &mut out);
-                let _ = out.flush();
-            }
             scheduler.mark_drawn(start, Instant::now());
-        }
-        if kitty_ok {
-            use std::io::Write;
-            let mut out = std::io::stdout();
-            place_chat_orbs(app, &mut orb_owners, &mut out);
-            app.avatars.animate(&mut out);
-            let _ = out.flush();
+        } else if app.kitty {
+            let _ = yi_tui::term::framed(&mut std::io::stdout(), |out| {
+                place_chat_orbs(app, &mut orb_owners, out);
+                app.avatars.animate(out);
+            });
         }
     }
     0
+}
+
+/// Incident: images placed after the update closed sat on their old rows over moved text, so
+/// the text and every image the frame moves land in one synchronized update.
+fn present<B: Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    theme: &Theme,
+    orb_owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    let _ = out.execute(ratatui::crossterm::terminal::BeginSynchronizedUpdate);
+    let drawn = draw(app, terminal, theme);
+    if app.kitty {
+        place_avatars(app, out);
+        place_notebook_image(app, out);
+        place_chat_orbs(app, orb_owners, out);
+        app.avatars.animate(out);
+    }
+    let _ = out.execute(ratatui::crossterm::terminal::EndSynchronizedUpdate);
+    drawn
 }
 
 fn set_window_title(app: &mut App) {
@@ -352,16 +383,18 @@ fn set_window_title(app: &mut App) {
 }
 
 /// The identicon over every rail row on screen; rows that scrolled off are deleted.
-fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
+fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
-        .map(|hits| hits.avatars.clone())
+        .map(|hits| crate::avatar::uncovered(hits.avatars.clone(), &hits.overlays))
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
 }
 
-fn orb_wake(app: &App) -> Duration {
+/// Incident: the reveal's clock was missing here, so a streaming chat stepped only when the orb
+/// or the idle poll woke the loop and drew at 28 fps in 2-row lurches.
+fn chat_wake(app: &App) -> Duration {
     use crate::model::PaneContent;
     app.state
         .panes
@@ -369,7 +402,10 @@ fn orb_wake(app: &App) -> Duration {
         .filter_map(|pane| match &pane.content {
             PaneContent::Session {
                 chat: Some(chat), ..
-            } if chat.app.orb_animating() => Some(chat.orb.wake()),
+            } => {
+                let orb = chat.app.orb_animating().then(|| chat.orb.wake());
+                Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
+            }
             _ => None,
         })
         .min()
@@ -381,7 +417,7 @@ fn orb_wake(app: &App) -> Duration {
 fn place_chat_orbs(
     app: &mut App,
     owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
-    out: &mut std::io::Stdout,
+    out: &mut impl std::io::Write,
 ) {
     use crate::model::PaneContent;
     owners.retain(|pane, owner| {
@@ -404,6 +440,13 @@ fn place_chat_orbs(
         kept
     });
     let focused = app.state.focused_pane_id();
+    let covered = |id: PaneId| {
+        app.hits.as_ref().is_some_and(|hits| {
+            let pane = hits.panes.iter().find(|(pane, _)| *pane == id);
+            pane.is_some_and(|(_, rect)| hits.overlays.iter().any(|cover| cover.intersects(*rect)))
+        })
+    };
+    let shown = focused.filter(|id| !covered(*id));
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
             session,
@@ -413,7 +456,7 @@ fn place_chat_orbs(
             continue;
         };
         owners.entry(*id).or_insert_with(|| session.clone());
-        if Some(*id) == focused {
+        if Some(*id) == shown {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
             yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
         } else {
@@ -463,7 +506,11 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
         height: inner.height / 2,
         ..inner
     };
-    if half.height < 3 || half.width < 8 {
+    let covered = app
+        .hits
+        .as_ref()
+        .is_some_and(|hits| hits.overlays.iter().any(|cover| cover.intersects(half)));
+    if half.height < 3 || half.width < 8 || covered {
         return clear(out, placed);
     }
     if *placed == Some((image.len(), half)) {
@@ -506,9 +553,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     {
         app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
     }
-    app.autostart = options.autostart;
-    app.state.auto_side = options.auto_side;
-    app.state.sidebar = options.sidebar;
+    configure(&mut app, options);
     let width = drive.width.max(20);
     let height = drive.height.max(8);
     let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
@@ -558,7 +603,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         };
         match step {
             (ConsoleStep::Mouse(kind, x, y), _) => {
-                app.handle_mouse(&outbound, kind, x, y);
+                app.handle_event(&outbound, CtEvent::Mouse(mouse_event(kind, x, y)));
             }
             (ConsoleStep::Tui(Step::Key(key)), _) => {
                 app.handle_event(&outbound, CtEvent::Key(key_event(&key)));
@@ -630,7 +675,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             &mut last_frame,
             &mut frame_index,
             pending_snap.take(),
-        ) {
+        )
+        .and_then(|()| keep_osc(drive.frames_dir.as_deref(), &mut app.osc_out))
+        {
             eprintln!("error: {error}");
             exit_code = 1;
             break;
@@ -641,6 +688,30 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     drop(events);
     join_with_deadline(threads);
     exit_code
+}
+
+fn configure(app: &mut App, options: &ConsoleOptions) {
+    app.autostart = options.autostart;
+    app.state.auto_side = options.auto_side;
+    app.state.open_apps = options.open_apps.clone();
+    app.state.sidebar = options.sidebar;
+    app.state.chat_pace = options.pace;
+}
+
+/// What the console wrote outside the grid (clipboard, title), kept beside the frames; the
+/// leading dot sorts it ahead of them, so the last file stays the last frame.
+fn keep_osc(dir: Option<&std::path::Path>, osc: &mut Vec<String>) -> Result<(), String> {
+    let Some(dir) = dir.filter(|_| !osc.is_empty()) else {
+        return Ok(());
+    };
+    let text: String = osc.drain(..).map(|sequence| sequence + "\n").collect();
+    let path = dir.join(".osc.log");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()))
+        .map_err(|error| format!("osc log {}: {error}", path.display()))
 }
 
 #[cfg(test)]
@@ -680,6 +751,41 @@ mod tests {
         outbound.shutdown();
         draw(&mut app, &mut terminal, &theme)?;
         assert!(placed(&mut app), "placed again after the clear");
+        Ok(())
+    }
+
+    /// Dies with an image written after the frame's update closed: a presented frame then
+    /// showed it on its old rows over text that had moved, 19 times in one measured reply.
+    #[test]
+    fn a_frame_places_its_images_inside_its_own_update() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.kitty = true;
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Notebook {
+                session: None,
+                cells: vec![crate::model::NbCell {
+                    images: vec!["iVBORw0KGgo=".to_owned()],
+                    ..crate::model::NbCell::default()
+                }],
+                input: Box::default(),
+            };
+        }
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let mut out = Vec::new();
+        present(
+            &mut app,
+            &mut terminal,
+            &theme,
+            &mut std::collections::HashMap::new(),
+            &mut out,
+        )?;
+        let out = String::from_utf8_lossy(&out);
+        let open = out.find("\u{1b}[?2026h").ok_or("no update opened")?;
+        let place = out.find("a=p,").ok_or("the image was not placed")?;
+        let close = out.rfind("\u{1b}[?2026l").ok_or("no update closed")?;
+        assert!(open < place && place < close, "{out:?}");
         Ok(())
     }
 

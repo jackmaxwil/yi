@@ -72,7 +72,7 @@ impl App {
             session_dir: String::new(),
             keys: Vec::new(),
             initial_prompt: None,
-            pace: 0,
+            pace: self.state.chat_pace,
         };
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
@@ -254,6 +254,11 @@ impl App {
                 keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
             }
+            Decoded::Committed(entry) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.commit((*entry).clone());
+                }
+            }
             Decoded::Notice(text) => {
                 self.fan_out(id, || UiEvent::Reply(Reply::Notice(text.clone())))
             }
@@ -324,6 +329,9 @@ impl App {
     }
 
     pub(super) fn apply_config(&mut self, id: &SessionId, config: &Config, announce: bool) {
+        self.state
+            .session_options
+            .insert(id.clone(), config.options.clone());
         let Some((provider, model_id)) = &config.model else {
             return;
         };
@@ -687,7 +695,7 @@ impl App {
         }
     }
 
-    fn send_port_request(
+    pub(super) fn send_port_request(
         &mut self,
         outbound: &Outbound,
         pane_id: PaneId,
@@ -995,5 +1003,53 @@ mod tests {
             "the finished row made way, not a running one: {rows:?}"
         );
         assert!(rows.iter().any(|row| row.id.as_str() == "sub-0"));
+    }
+
+    /// Dies with a pane painting each network burst whole, or with the console sleeping while
+    /// a paced reveal is behind: either way a reply streamed at 28 fps in 2-row lurches.
+    #[test]
+    fn a_pane_revealing_a_reply_wakes_the_console_every_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_types::event::{AgentEvent, AssistantMessageEvent};
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.state.chat_pace = 100;
+        let session = SessionId("s-a".to_owned());
+        let pane = app.state.focused_pane_id().ok_or("a pane")?;
+        let chat = app.make_chat(pane, &session);
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: Some(chat),
+            };
+        }
+        assert!(
+            crate::chat_wake(&app) > yi_tui::reveal::FRAME,
+            "nothing to reveal yet"
+        );
+        let partial = serde_json::from_value(json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "One paragraph.\n\nAnd a second one, still arriving"}],
+            "api": "faux", "provider": "faux", "model": "faux-1",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": "stop", "timestamp": 0
+        }))?;
+        let chat = app
+            .state
+            .chats_mut(&session)
+            .into_iter()
+            .next()
+            .ok_or("no chat")?;
+        chat.app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start { partial },
+        });
+        assert!(
+            crate::chat_wake(&app) <= yi_tui::reveal::FRAME,
+            "a reveal behind its text sleeps {:?}, past one {:?} frame",
+            crate::chat_wake(&app),
+            yi_tui::reveal::FRAME
+        );
+        Ok(())
     }
 }
