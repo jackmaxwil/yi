@@ -332,6 +332,16 @@ impl History {
         })
     }
 
+    pub fn said(&self, index: usize) -> Option<(crate::transcript::Said, &str)> {
+        use crate::transcript::Said;
+        match self.cells.get(index)? {
+            Cell::User { text } => Some((Said::User, text)),
+            Cell::Assistant { markdown } => Some((Said::Assistant, markdown)),
+            Cell::Thought { markdown } => Some((Said::Thought, markdown)),
+            _ => None,
+        }
+    }
+
     pub fn source(&self, index: usize) -> Option<&str> {
         match self.cells.get(index)? {
             Cell::User { text } => Some(text),
