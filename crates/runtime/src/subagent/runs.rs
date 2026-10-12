@@ -64,10 +64,19 @@ impl SubagentHost {
         session: Arc<AgentSession>,
         requested: u64,
     ) {
+        // Incident: told only the doctrine, a child sent to find what its parent was told walked
+        // the tree and gave up in two runs of three; a wall that denies history is never told it.
+        let walled = session.wall().denies_history();
+        let header = match walled {
+            true => "[task from parent]",
+            false => {
+                "[task from parent]\n[its transcript: history://parent/since/0 · one line of it: grep with path=history://parent]"
+            }
+        };
         // Invariant: scope rides the first user message, never a trusted block.
         let content = match context {
-            Some(block) => format!("[task from parent]\n\n{block}\n\n{prompt}"),
-            None => format!("[task from parent]\n\n{prompt}"),
+            Some(block) => format!("{header}\n\n{block}\n\n{prompt}"),
+            None => format!("{header}\n\n{prompt}"),
         };
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(&child_id)

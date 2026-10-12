@@ -252,6 +252,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
                 },
                 provider,
             );
+            child.set_wall(build.wall.clone());
             if tool_command.is_some() {
                 child.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
             }
@@ -518,8 +519,23 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
         .map_err(|error| error.to_string())?;
     assert_eq!(
         user_texts(&first_child_messages(&cold).await),
+        vec![
+            "[task from parent]\n[its transcript: history://parent/since/0 · one line of it: grep with path=history://parent]\n\ndo the thing"
+                .to_owned()
+        ],
+        "no fork means a cold child: the parent's turns never cross, only their address does"
+    );
+    let walled = harness(0, 1, "walled")?;
+    let mut fenced = kwargs(&[("name", "walled")]);
+    fenced.insert("deny_url".to_owned(), serde_json::json!(["history://main"]));
+    walled
+        .host
+        .spawn("do the thing".to_owned(), fenced)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        user_texts(&first_child_messages(&walled).await),
         vec!["[task from parent]\n\ndo the thing".to_owned()],
-        "no fork means a cold child: the parent's turns never cross"
+        "a child walled from history is never told the address its wall refuses"
     );
 
     let forked = harness(0, 1, "forked")?;
@@ -540,7 +556,8 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
         user_texts(&first_child_messages(&forked).await),
         vec![
             "turn three".to_owned(),
-            "[task from parent]\n\ncontinue it".to_owned()
+            "[task from parent]\n[its transcript: history://parent/since/0 · one line of it: grep with path=history://parent]\n\ncontinue it"
+                .to_owned()
         ],
         "fork=1 seeds the last turn boundary onward, nothing older"
     );
