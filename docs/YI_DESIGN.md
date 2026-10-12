@@ -952,6 +952,13 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
+- A right-click opens a menu for what is under it: a message (Copy, Copy as plain text, Quote),
+  a pane (close, zoom, split) or a sidebar session (open, open beside); ⌥c opens it for the
+  focused pane or session. A verb that never applies is absent, one blocked now is greyed with
+  its reason, and a row with a key names it. With more than one pane in a tab, the focused pane's
+  title carries `✕` and its close key where the title leaves room, and a sibling's a bare `✕`;
+  a mark closes its pane on a release that did not drag. The palette, the keys overlay and the
+  menu take every press while open and lift the kitty images of the panes they cover.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
 - The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
   those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
