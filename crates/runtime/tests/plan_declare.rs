@@ -951,3 +951,25 @@ fn the_model_is_shown_set_view_and_accepted_by_user() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a program that changed the plan getting only the rendered reply, which it must
+/// parse to learn each row's state; the model's own call still gets no value.
+#[test]
+fn a_program_gets_the_plan_it_changed_and_the_model_none() -> TestResult {
+    let rig = rig("program-value")?;
+    let set = json!({"op": "set", "goal": "ship the release", "todos": [
+        {"label": "build it"}, {"label": "tag it", "after": ["build it"]}]});
+    let input = set.as_object().cloned().unwrap_or_default();
+    let mut context = ToolContext::new(rig.temp.to_path_buf());
+    context.program = true;
+    let output = rig.tool.execute(input.clone(), &context);
+    let plan = output.value.ok_or("the program got no plan")?;
+    let labels: Vec<&str> = (plan["todos"].as_array().ok_or("no todos")?.iter())
+        .filter_map(|todo| todo["label"].as_str())
+        .collect();
+    assert_eq!(labels, ["build it", "tag it"]);
+    assert_eq!(plan["goal"], "ship the release");
+    context.program = false;
+    assert!(rig.tool.execute(input, &context).value.is_none());
+    Ok(())
+}
