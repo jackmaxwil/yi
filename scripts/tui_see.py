@@ -11,6 +11,7 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
   tui_see.py ci BASE_BIN HEAD_BIN      # every scene on both, then the PR comment (post)
   tui_see.py post OUT                  # upsert the comment `ci` left in OUT (FORGEJO_* env)
+  tui_see.py monkey [--runs N] [--seed S] [--surface solo|console]   # random key runs, failures only
   tui_see.py --selfcheck
 
 `--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
@@ -88,21 +89,20 @@ def pristine_seed(run_dir: Path, session: str) -> Path:
     return next((run_dir / "seed").glob(f"*_{session}.jsonl"))
 
 
-def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
-        video: bool = False) -> Path:
-    surface, extra = header(scene)
-    if not NAME.fullmatch(label):
-        sys.exit(f"label {label!r} is not [a-z0-9_-]+")
-    run_dir = (out / scene.stem / label).resolve()
+def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Path, *,
+         record: bool = True, timeout: int = 600, env_extra: dict | None = None,
+         stderr=None) -> tuple[int, list[str]]:
+    """Plays a scene headless in a fresh run dir; returns the exit code and the flags left over."""
+    env_extra = env_extra or {}
     shutil.rmtree(run_dir, ignore_errors=True)
     for sub in ("frames", "sessions", "home/.yi"):
         (run_dir / sub).mkdir(parents=True)
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
     (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
-    env = {**os.environ, "HOME": str(run_dir / "home")}
+    env = {**os.environ, "HOME": str(run_dir / "home"), **env_extra}
     drive = ["--keys", str(scene.resolve()), "--frames", str(run_dir / "frames"),
-             "--record", str(run_dir / "run.cast")]
+             *(["--record", str(run_dir / "run.cast")] if record else [])]
     if "--seed" in extra and surface == "console":
         sys.exit("--seed is solo only: the console attaches to the daemon's sessions, not a resumed one")
     if surface == "solo" and "--seed" not in extra:
@@ -120,7 +120,7 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
     if surface == "solo":
         argv = [str(binary), "tui", "--headless", "--here", "--model", "faux/faux-1",
                 "--session-dir", str(run_dir / "sessions"), *drive, *extra]
-        code = subprocess.run(argv, env=env, timeout=600).returncode
+        code = subprocess.run(argv, env=env, timeout=timeout, stderr=stderr).returncode
     else:
         # A unix socket path is capped near 100 bytes, so it lives under the system temp dir.
         sock = Path(tempfile.mkdtemp(prefix="yi-see.")) / "d.sock"
@@ -135,7 +135,7 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                     break
                 time.sleep(0.05)
             argv = [str(binary), "console", "--headless", "--socket", str(sock), *drive, *extra]
-            code = subprocess.run(argv, env=env, timeout=600).returncode
+            code = subprocess.run(argv, env=env, timeout=timeout, stderr=stderr).returncode
         finally:
             serve.send_signal(signal.SIGTERM)
             try:
@@ -144,6 +144,16 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                 serve.kill()
             log.close()
             shutil.rmtree(sock.parent, ignore_errors=True)
+    return code, extra
+
+
+def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
+        video: bool = False) -> Path:
+    surface, extra = header(scene)
+    if not NAME.fullmatch(label):
+        sys.exit(f"label {label!r} is not [a-z0-9_-]+")
+    run_dir = (out / scene.stem / label).resolve()
+    code, extra = play(scene, surface, extra, run_dir, binary)
     rendered = render(run_dir)
     if video and host not in ("term", "here"):
         print("[… --video records Ghostty's window, so it needs --host term; no run.webp kept]")
@@ -1148,6 +1158,9 @@ def selfcheck() -> None:
 def main(argv: list[str]) -> None:
     if argv[:1] == ["--selfcheck"]:
         return selfcheck()
+    if argv[:1] == ["monkey"]:
+        import tui_monkey
+        return tui_monkey.monkey(argv[1:])
     if argv[:1] == ["diff"] and len(argv) == 3:
         diff(Path(argv[1]).resolve(), Path(argv[2]).resolve())
         return None

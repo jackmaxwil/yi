@@ -78,3 +78,6 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
    24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
    headless there. Console scenes get random session ids, so their avatar colours always differ.
+11. Fuzzing: `just tui-see monkey --runs 20 --seed 7 [--surface solo|console]` plays seeded random key
+   runs through the headless loops and reports only a crash, a hang or a control character in a
+   cell; the seed's script is `target/see/monkey/<seed>/<surface>.drive`, replayed by `tui_see.py run`.
