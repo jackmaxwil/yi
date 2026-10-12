@@ -254,6 +254,11 @@ impl App {
                 keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
             }
+            Decoded::Committed(entry) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.commit((*entry).clone());
+                }
+            }
             Decoded::Notice(text) => {
                 self.fan_out(id, || UiEvent::Reply(Reply::Notice(text.clone())))
             }
@@ -324,6 +329,9 @@ impl App {
     }
 
     pub(super) fn apply_config(&mut self, id: &SessionId, config: &Config, announce: bool) {
+        self.state
+            .session_options
+            .insert(id.clone(), config.options.clone());
         let Some((provider, model_id)) = &config.model else {
             return;
         };
@@ -687,7 +695,7 @@ impl App {
         }
     }
 
-    fn send_port_request(
+    pub(super) fn send_port_request(
         &mut self,
         outbound: &Outbound,
         pane_id: PaneId,

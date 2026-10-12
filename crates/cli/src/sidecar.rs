@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn start(home: &Path) {
     let Some(yi_runtime::classifier::Endpoint { checkpoint, url }) =
-        yi_runtime::classifier::endpoint(crate::config())
+        yi_runtime::classifier::endpoint(&crate::config())
     else {
         return;
     };
