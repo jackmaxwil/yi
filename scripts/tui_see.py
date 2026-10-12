@@ -105,7 +105,7 @@ def pristine_seed(run_dir: Path, session: str) -> Path:
 
 
 def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Path, *,
-         record: bool = True, timeout: int = 600, env_extra: dict | None = None,
+         record: bool = True, timeout: int = 600,
          stderr=None, stub: bool = False) -> tuple[int, list[str]]:
     """Plays a scene headless in a fresh run dir; returns the exit code and the flags left over."""
     shutil.rmtree(run_dir, ignore_errors=True)
@@ -114,7 +114,9 @@ def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Pat
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
     (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
-    env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1", **(env_extra or {})}
+    # ctrl-g hands the draft to $EDITOR; a scene that replays must never open a real vi.
+    env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1",
+           "EDITOR": "true", "VISUAL": "true"}
     drive = ["--keys", str(scene.resolve()), "--frames", str(run_dir / "frames"),
              *(["--record", str(run_dir / "run.cast")] if record else [])]
     if "--seed" in extra and surface == "console":

@@ -7,7 +7,7 @@ Run i plays seed S+i. Each seed writes `<out>/<seed>/<surface>.drive`, a scene `
 replays as it stands; only a run that crashes, hangs or leaves a control character in a cell is
 reported, with its stderr beside it as `<surface>.err` and its frames kept. Green runs keep only
 the script. The drive engine already refuses a control cell (`keep_frame`); this finds the keys
-that reach one.
+that reach one. Frame corruption without a control character (wrong rows, dropped text) is not caught.
 """
 from __future__ import annotations
 
@@ -109,8 +109,8 @@ def generate(seed: int, surface: str, steps: int = 40) -> str:
     flags = f"{size} --deadline {HANG_SECS}" if surface == "solo" else size
     lines = [f"# monkey seed={seed} surface={surface} steps={steps}", f"#! {surface} --size {flags}"]
     if surface == "console":
-        lines += ["wait-frame 15000 !connecting…", "key alt-n", "wait 200"]
-    lines += ["type hello", "key enter", "wait 150"]
+        lines += ["wait-frame 15000 !connecting…", "key alt-n", "wait-frame 8000 untitled"]
+    lines += ["type hello", "key enter", "wait-frame 15000 faux:"]
     # One script in four pastes control characters; the rest stay clean so the keys can fail alone.
     pasting = rng.below(4) == 0
     for _ in range(steps):
@@ -125,8 +125,10 @@ def classify(code: int, err: str) -> str | None:
         return None
     if "control character" in err:
         return "control character in a cell"
-    if "timed out" in err:
+    if "drive script timed out" in err:
         return "hang: the drive deadline fired"
+    if "timed out after" in err:
+        return "hang: a wait never saw the frame it waits on"
     if "panicked" in err or code < 0 or code == 101:
         return "crash"
     if re.search(r"\bline \d+:", err):
@@ -141,14 +143,12 @@ def play_seed(seed: int, surface: str, steps: int, binary: Path, out: Path) -> s
     scene.write_text(generate(seed, surface, steps))
     errfile = base / f"{surface}.err"
     run_dir = base / surface
-    # EDITOR=true: ctrl-g hands the draft to $EDITOR, and a monkey must not open vi.
-    env = {"EDITOR": "true", "VISUAL": "true"}
     _, extra = tui_see.header(scene)
     kind = None
     with open(errfile, "w") as err:
         try:
             code, _ = tui_see.play(scene, surface, extra, run_dir, binary, record=False,
-                                   timeout=HANG_SECS + GRACE, env_extra=env, stderr=err)
+                                   timeout=HANG_SECS + GRACE, stderr=err)
         except subprocess.TimeoutExpired:
             code = None
             kind = f"hang: killed after {HANG_SECS + GRACE} s"
@@ -207,6 +207,7 @@ def selfcheck() -> None:
     assert classify(0, "") is None
     assert classify(1, "error: a control character reached a cell: ...") == "control character in a cell"
     assert classify(1, "error: drive script timed out (60 s wall)").startswith("hang")
+    assert classify(1, "error: wait-frame timed out after 15000 ms").startswith("hang")
     assert classify(101, "thread 'main' panicked at x").startswith("crash")
     assert classify(3, "") == "exit 3", "an unrecognised failure must still be a failure"
     assert classify(2, "error: line 3: unknown step: keyy").startswith("bad script")
