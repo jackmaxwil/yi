@@ -131,6 +131,7 @@ def check_install():
                               {"name": "kernel-boot", "status": "fail", "detail": "kernel_info timed out"}])
     assert yi_usage.kernel_broken(yi_usage.kernel_problems(booted_dead)), "row 0072: a dead boot must stop the trial"
     assert not yi_usage.kernel_broken(yi_usage.kernel_problems(green))
+    assert "upload_skills(environment)" in source, "#1315: a trial carries the bundled skills a real install has"
 
 
 def check_adapter_imports():
@@ -1022,6 +1023,8 @@ def check_plugin_upload():
             pass
         async def warm_kernel(self, environment):
             pass
+        async def upload_skills(self, environment):
+            pass
 
     class Env:
         def __init__(self):
@@ -1029,7 +1032,7 @@ def check_plugin_upload():
         async def upload_file(self, src, dst):
             self.uploads.append((str(src), str(dst)))
 
-    saved = {key: os.environ.get(key) for key in ("HOME", "EVAL_BINARY", "EVAL_BINARY_URL")}
+    saved = {key: os.environ.get(key) for key in ("HOME", "EVAL_BINARY", "EVAL_BINARY_URL", "EVAL_SKILLS")}
     try:
         with tempfile.TemporaryDirectory() as home:
             fake = Path(home, "yi")
@@ -1058,6 +1061,18 @@ def check_plugin_upload():
             assert agent.carried_plugins() == []
             assert yi_usage.plugins_label(agent.carried_plugins()) == "+plugins{}"
             assert agent.mode_label().endswith("+plugins{}"), agent.mode_label()
+            # #1315: each arm carries its own skill tree, and two trees never share a label.
+            assert agent.bundled_skills() is not None, "this checkout's skills/yi must be found"
+            for arm in ("a", "b"):
+                Path(home, arm, "kernel").mkdir(parents=True)
+                Path(home, arm, "kernel", "SKILL.md").write_text(f"arm {arm}\n")
+            labels = []
+            for arm in ("a", "b"):
+                os.environ["EVAL_SKILLS"] = str(Path(home, arm))
+                labels.append(agent.skills_label())
+            assert labels[0] != labels[1] and labels[0].startswith("+skills{"), labels
+            os.environ["EVAL_SKILLS"] = str(Path(home, "missing"))
+            assert agent.bundled_skills() is None and agent.skills_label() == "+skills{}"
     finally:
         for key, value in saved.items():
             if value is None:
