@@ -23,7 +23,8 @@ pub struct Plugin {
     pub assets: &'static [Asset],
 }
 
-/// Bump a version with every digest beside it, from the release's own `.sha256` files.
+/// Bump a version with every digest beside it, from the release's own `.sha256` files, and
+/// record its skills' `sha256sum` as tests/fixtures/ripwire/skills-<version>.sha256.
 pub const PLUGINS: [Plugin; 1] = [Plugin {
     name: "ripwire",
     version: "0.6.5",

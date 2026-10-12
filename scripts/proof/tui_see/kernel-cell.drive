@@ -1,0 +1,5 @@
+#! solo --size 100x34 --seed scripts/proof/tui_see/kernel-cell.seed.jsonl
+# A resumed session holding two kernel cells: a collapsed ok cell, then a traceback.
+wait-frame 10000 IndexError: tuple
+snap cells
+quit
