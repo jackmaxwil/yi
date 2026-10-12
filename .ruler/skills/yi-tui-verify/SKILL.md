@@ -56,6 +56,8 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    GL) and swaps in its grabs, so kitty images, the orb and true colour are in the crops. Build it
    once with `just yi-term`; it matches the host's architecture, because Ghostty under emulation
    took 30 s to map a window.
+   `--terminal kitty|wezterm` plays it in that terminal instead; `just tui-see terminals <scene>`
+   plays all three onto one sheet with what each advertised, Yi's colour tier and kitty ids placed.
 8. Motion and in-flight states: put `--faux <cassette.jsonl>` in the `#!` line, `hold
    text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
    80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
