@@ -1,0 +1,20 @@
+#! console --size 120x34
+# The gear opens Settings beside the chat: the session's live options, then a defaults tab.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+key alt-,
+wait-frame 5000 ⚙ Settings
+snap session
+key right
+wait-frame 5000 Thinking
+snap models
+key right
+key right
+key right
+key right
+key right
+key right
+wait-frame 5000 menu for the pane
+snap keys
+quit
