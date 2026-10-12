@@ -34,8 +34,7 @@ use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
 use yi_tui::drive::{
-    Control, Deadline, Progress, Step, WaitPoll, keep_frame, key_event, poll_condition,
-    typed_events,
+    Control, Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
 };
 use yi_tui::term::ControlPictures;
 
@@ -156,17 +155,17 @@ fn timing_step(
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     step: &Step,
     started: Instant,
-) -> Option<Progress> {
+) -> Option<WaitPoll> {
     Some(match step {
         Step::Tick(ms) => {
             if app.clock == yi_tui::motion::Clock::Real {
                 app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
             }
             tick(app, outbound, events, *ms);
-            Progress::Done
+            WaitPoll::Done
         }
-        Step::WaitIdle(ms) => yi_tui::drive::waited(!drive_idle(app), started, *ms, "wait-idle"),
-        Step::Hold(..) | Step::Release => Progress::Failed(
+        Step::WaitIdle(ms) => poll_condition(!drive_idle(app), started, *ms, "wait-idle"),
+        Step::Hold(..) | Step::Release => WaitPoll::Failed(
             "hold and release need the solo drive: the console's model lives in the daemon"
                 .to_owned(),
         ),
@@ -712,7 +711,10 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     WaitPoll::Retry => {
                         current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
                     }
-                    WaitPoll::TimedOut => exit_code = 1,
+                    WaitPoll::Failed(error) => {
+                        eprintln!("error: {error}");
+                        exit_code = 1;
+                    }
                     WaitPoll::Done => {}
                 }
             }
@@ -726,7 +728,10 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                             started,
                         ))
                     }
-                    WaitPoll::TimedOut => exit_code = 1,
+                    WaitPoll::Failed(error) => {
+                        eprintln!("error: {error}");
+                        exit_code = 1;
+                    }
                 }
             }
             (ConsoleStep::Tui(Step::Quit), _) => break,

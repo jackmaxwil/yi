@@ -261,7 +261,7 @@ pub fn typed_events(text: &str) -> Vec<CtEvent> {
 pub enum WaitPoll {
     Done,
     Retry,
-    TimedOut,
+    Failed(String),
 }
 
 pub fn poll_condition(satisfied: bool, started: Instant, ms: u64, what: &str) -> WaitPoll {
@@ -269,27 +269,10 @@ pub fn poll_condition(satisfied: bool, started: Instant, ms: u64, what: &str) ->
         return WaitPoll::Done;
     }
     if started.elapsed() > Duration::from_millis(ms) {
-        eprintln!("error: {what} timed out after {ms} ms");
-        return WaitPoll::TimedOut;
+        return WaitPoll::Failed(format!("{what} timed out after {ms} ms"));
     }
     std::thread::sleep(Duration::from_millis(2));
     WaitPoll::Retry
-}
-
-pub enum Progress {
-    Done,
-    Pending,
-    Failed(String),
-}
-
-pub fn waited(met: bool, started: Instant, ms: u64, what: &str) -> Progress {
-    if met {
-        Progress::Done
-    } else if started.elapsed() > Duration::from_millis(ms) {
-        Progress::Failed(format!("{what} timed out after {ms} ms"))
-    } else {
-        Progress::Pending
-    }
 }
 
 const HOLD_WAIT_MS: u64 = 5_000;
@@ -301,12 +284,12 @@ pub fn timing_step(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
     step: &Step,
     started: Instant,
-) -> Option<Progress> {
+) -> Option<WaitPoll> {
     let hold = Arc::clone(&port.provider().faux_hold);
     Some(match step {
         // Invariant: a frozen frame never depends on how much of a held stream arrived in real
         // time, so a tick waits for an armed hold to be reached first.
-        Step::Tick(_) if hold.armed() && !hold.reached() => waited(
+        Step::Tick(_) if hold.armed() && !hold.reached() => poll_condition(
             false,
             started,
             HOLD_WAIT_MS,
@@ -323,14 +306,14 @@ pub fn timing_step(
                 crate::port::tick(app, port, ui_rx, cmd_tx);
                 left -= frame;
             }
-            Progress::Done
+            WaitPoll::Done
         }
         Step::Hold(kind, nth) => {
             hold.arm(kind, *nth);
-            Progress::Done
+            WaitPoll::Done
         }
         Step::Release if !hold.release() => {
-            Progress::Failed("release: the faux stream never reached its hold".to_owned())
+            WaitPoll::Failed("release: the faux stream never reached its hold".to_owned())
         }
         Step::Release => {
             // The rest of the message lands before the next step, or a frozen reveal would
@@ -338,17 +321,17 @@ pub fn timing_step(
             let settled = Instant::now();
             loop {
                 crate::port::tick(app, port, ui_rx, cmd_tx);
-                match waited(app.stream_settled(), settled, HOLD_WAIT_MS, "release") {
-                    Progress::Pending => std::thread::sleep(Duration::from_millis(2)),
+                match poll_condition(app.stream_settled(), settled, HOLD_WAIT_MS, "release") {
+                    WaitPoll::Retry => {}
                     done => break done,
                 }
             }
         }
-        Step::WaitIdle(ms) => match waited(app.turn_idle(), started, *ms, "wait-idle") {
-            Progress::Failed(error) if app.clock != crate::motion::Clock::Real => Progress::Failed(
+        Step::WaitIdle(ms) => match poll_condition(app.turn_idle(), started, *ms, "wait-idle") {
+            WaitPoll::Failed(error) if app.clock != crate::motion::Clock::Real => WaitPoll::Failed(
                 format!("{error}\n  the clock is frozen: `tick <ms>` lets a reveal finish"),
             ),
-            progress => progress,
+            poll => poll,
         },
         _ => return None,
     })
@@ -377,7 +360,7 @@ impl Control {
 
     fn serve(
         &mut self,
-        run: impl FnOnce(&Step, Instant) -> Option<Progress>,
+        run: impl FnOnce(&Step, Instant) -> Option<WaitPoll>,
     ) -> std::io::Result<bool> {
         if self.step.is_none() {
             let mut chunk = [0_u8; 1024];
@@ -403,12 +386,12 @@ impl Control {
             return Ok(false);
         };
         match run(&step, started) {
-            Some(Progress::Pending) => {
+            Some(WaitPoll::Retry) => {
                 self.step = Some((step, started));
                 Ok(false)
             }
-            Some(Progress::Done) => self.answer(Ok(())),
-            Some(Progress::Failed(error)) => self.answer(Err(error)),
+            Some(WaitPoll::Done) => self.answer(Ok(())),
+            Some(WaitPoll::Failed(error)) => self.answer(Err(error)),
             None => self.answer(Err(format!(
                 "only the keyboard or the screen plays {step:?}"
             ))),
@@ -428,7 +411,7 @@ impl Control {
 
 pub fn serve(
     control: &mut Option<Control>,
-    run: impl FnOnce(&Step, Instant) -> Option<Progress>,
+    run: impl FnOnce(&Step, Instant) -> Option<WaitPoll>,
 ) -> bool {
     let Some(channel) = control.as_mut() else {
         return false;
@@ -597,16 +580,13 @@ pub fn run_headless(
             (Step::Snap(name), _) => pending_snap = Some(name),
             (step @ (Step::Tick(_) | Step::Hold(..) | Step::Release | Step::WaitIdle(_)), at) => {
                 match timing_step(&mut app, &mut port, &ui_rx, &cmd_tx, &step, at) {
-                    Some(Progress::Pending) => {
-                        current = Some((step, at));
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                    Some(Progress::Failed(error)) => {
+                    Some(WaitPoll::Retry) => current = Some((step, at)),
+                    Some(WaitPoll::Failed(error)) => {
                         eprintln!("error: {error}");
                         exit_code = 1;
                         break;
                     }
-                    Some(Progress::Done) | None => {}
+                    Some(WaitPoll::Done) | None => {}
                 }
             }
             (Step::Wait(ms), started) => {
@@ -622,8 +602,8 @@ pub fn run_headless(
                     WaitPoll::Retry => {
                         current = Some((Step::WaitFrame(ms, present, text), started))
                     }
-                    WaitPoll::TimedOut => {
-                        eprintln!("  waiting for {text:?}");
+                    WaitPoll::Failed(error) => {
+                        eprintln!("error: {error}\n  waiting for {text:?}");
                         exit_code = 1;
                     }
                 }
