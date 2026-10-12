@@ -73,4 +73,5 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
    `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
    24 pictures, the gallery kept as the job's artifact. Frozen scenes (`tick`, `hold`) play
-   headless there. Console scenes get random session ids, so their avatar colours always differ.
+   headless there. `tui_see.py` sets `YI_FIXED_IDS=1` for the serve it starts, so console sessions
+   count ids up from 1 and two runs draw the same avatar colours.
