@@ -41,8 +41,9 @@ fn kitty_emit_transmits_an_inflatable_zlib_stream() -> TestResult {
     let placement = wire.get(place_at..).unwrap_or_default();
     assert!(placement.starts_with("a=p,i=7601,p=1"), "{placement}");
     assert!(
-        wire.contains("\x1b[?2026h") && wire.contains("\x1b[?2026l"),
-        "placement is bracketed in a synchronized update"
+        !wire.contains("\x1b[?2026"),
+        "a placement opens no update of its own: the mode does not nest, so its end shows the \
+         caller's frame early"
     );
     assert!(
         wire.contains("\x1b7") && wire.contains("\x1b8"),
