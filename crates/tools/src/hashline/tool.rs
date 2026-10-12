@@ -390,6 +390,20 @@ fn read_dir(display_path: &str, path: &Path, context: &ToolContext) -> ToolOutpu
     );
     let mut output = text_output(rows.join("\n"));
     output.result.details = json!({ "dirs": dirs.len(), "files": files.len() });
+    output.value = context.program.then(|| {
+        let dir = |name: &String| yi_types::tool_value::Entry {
+            name: name.clone(),
+            kind: "dir".to_owned(),
+            bytes: None,
+        };
+        let file = |(name, bytes): &(String, u64)| yi_types::tool_value::Entry {
+            name: name.clone(),
+            kind: "file".to_owned(),
+            bytes: Some(*bytes),
+        };
+        let entries = dirs.iter().map(dir).chain(files.iter().map(file)).collect();
+        serde_json::to_value(yi_types::tool_value::ListValue { entries }).unwrap_or(Value::Null)
+    });
     output
 }
 
@@ -407,7 +421,7 @@ impl HashlineReadTool {
             if glob.matches(path) {
                 matches.push(path.to_path_buf());
             }
-            matches.len() < GLOB_FILES_CAP && !(context.cancelled)()
+            (context.program || matches.len() < GLOB_FILES_CAP) && !(context.cancelled)()
         });
         matches.sort();
         if matches.is_empty() {
@@ -418,7 +432,7 @@ impl HashlineReadTool {
                 .collect();
             return error_output(rows.join("\n"));
         }
-        let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
+        let mut sections = vec![if matches.len() >= GLOB_FILES_CAP && !context.program {
             format!(
                 "[first {GLOB_FILES_CAP} files matching {pattern}; the walk stopped there — narrow the glob for the rest]"
             )
@@ -473,6 +487,16 @@ impl HashlineReadTool {
         sections.extend(walled.notices());
         let mut output = text_output(sections.join("\n\n"));
         output.result.details = json!({ "files": matches.len(), "whole": whole });
+        output.value = context.program.then(|| {
+            let shown = |path: &std::path::PathBuf| {
+                path.strip_prefix(&root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            let paths = matches.iter().map(shown).collect();
+            serde_json::to_value(yi_types::tool_value::GlobValue { paths }).unwrap_or(Value::Null)
+        });
         output
     }
 
@@ -590,6 +614,13 @@ impl HashlineReadTool {
             .unwrap_or_else(|_| path.to_path_buf())
             .to_string_lossy()
             .into_owned();
+        let whole = !explicit_window && found.is_none();
+        let program = context
+            .program
+            .then(|| super::values::program_lines(&all_lines[..line_count], whole, &windows));
+        // A program edits the lines it was handed, so those are the lines it has seen.
+        let seen =
+            (program.as_ref()).map_or(seen, |(lines, _)| lines.iter().map(|line| line.n).collect());
         let tag = lock_state(&self.state)
             .snapshots
             .record(&canonical, &normalized, Some(&seen));
@@ -684,6 +715,16 @@ impl HashlineReadTool {
             "windows": windows.len(),
             "skeleton": capped,
             "refs": refs_total,
+        });
+        output.value = program.map(|(lines, cut)| {
+            let value = yi_types::tool_value::ReadValue {
+                path: display_path.to_owned(),
+                tag: tag.to_string(),
+                lines,
+                total_lines: u64::try_from(line_count).unwrap_or(u64::MAX),
+                cut,
+            };
+            serde_json::to_value(value).unwrap_or(Value::Null)
         });
         output
     }
@@ -1015,6 +1056,9 @@ impl Tool for HashlineEditTool {
             layer.name()
         });
         let mut output = text_output(rendered.join("\n\n"));
+        output.value = context
+            .program
+            .then(|| super::values::edit_value(&results, &diff));
         if !diff.is_empty() {
             output.result.details = crate::diff::patch_details(&GitPatch::from_text(diff));
         }

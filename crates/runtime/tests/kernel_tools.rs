@@ -285,3 +285,66 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
     );
     Ok(())
 }
+
+/// A program reads past the model's page: grep's 2,000-match collection cap and read's first
+/// look, then edits a line only the value showed it.
+#[tokio::test]
+async fn a_program_gets_whole_values_and_edits_a_line_the_view_never_showed()
+-> Result<(), Box<dyn Error>> {
+    let (_dir, cwd) = scratch("kernel-tools-values")?;
+    let hits = (1..=2500).map(|n| format!("hit {n}"));
+    let rest = (2501..=3000).map(|n| format!("other {n}"));
+    let body: Vec<String> = hits.chain(rest).collect();
+    std::fs::write(cwd.join("big.txt"), body.join("\n") + "\n")?;
+    let code = r#"
+g = await yi.tools.grep(pattern="^hit", path="big.txt")
+r = await yi.tools.read(path="big.txt")
+last = r.value.lines[-1]
+await yi.tools.edit(patch=f"[big.txt#{r.value.tag}]\nPUT {last.n}.={last.n}:\n+edited {last.n}\n")
+print(len(g.value.matches), g.value.matches[-1].line, len(r.value.lines), last.n, "matches" in g.text)
+"#;
+    let cell = run_cell(&cwd, code).await?;
+    let text = yi_types::message::join_text(&cell.content, "\n");
+    assert!(text.contains("2500 2500 3000 3000"), "{text}");
+    let written = std::fs::read_to_string(cwd.join("big.txt"))?;
+    assert_eq!(
+        written.lines().last(),
+        Some("edited 3000"),
+        "the edit at a line the view never showed"
+    );
+    assert!(
+        !cell.details.to_string().contains("\"matches\""),
+        "a value never reaches the transcript"
+    );
+    Ok(())
+}
+
+/// Each tool hands a program its own shape; a field a later change renames breaks this cell.
+#[tokio::test]
+async fn every_tool_hands_a_program_its_typed_value() -> Result<(), Box<dyn Error>> {
+    let (_dir, cwd) = scratch("kernel-tools-shapes")?;
+    std::fs::create_dir(cwd.join("src"))?;
+    std::fs::write(cwd.join("src/a.rs"), "fn a() {}\n")?;
+    let code = r#"
+w = (await yi.tools.write(path="src/b.rs", content="fn b() {}\n")).value
+d = (await yi.tools.read(path="src")).value
+g = (await yi.tools.read(path="src/*.rs")).value
+e = (await yi.tools.edit(patch=f"[src/b.rs#{w.tag}]\nPUT 1.=1:\n+fn b2() {{}}\n")).value
+b = (await yi.tools.bash(command="echo out; echo err >&2; exit 3")).value
+c = (await yi.tools.get_context()).value
+rows = [
+    (w.path, w.bytes),
+    [(entry.name, entry.kind, entry.bytes) for entry in d.entries],
+    g.paths,
+    [(f.path, f.op, f.firstChangedLine) for f in e.files], "+fn b2" in e.patch,
+    (b.exitCode, b.stdout, b.stderr),
+    len(c.layers), all(layer.body is not None or layer.absent for layer in c.layers),
+]
+print(repr(rows))
+"#;
+    let cell = run_cell(&cwd, code).await?;
+    let text = yi_types::message::join_text(&cell.content, "\n");
+    let expected = "[('src/b.rs', 10), [('a.rs', 'file', 10), ('b.rs', 'file', 10)], ['src/a.rs', 'src/b.rs'], [('src/b.rs', 'updated', 1)], True, (3, 'out\\n', 'err\\n'), 6, True]";
+    assert!(text.contains(expected), "{text}");
+    Ok(())
+}

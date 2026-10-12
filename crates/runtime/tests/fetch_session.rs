@@ -282,6 +282,33 @@ fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
     Ok(())
 }
 
+/// A program's read of an address gets the page as data, the next offset a number, not a row.
+#[test]
+fn a_program_reads_an_address_as_its_page_and_next_offset() -> Result<(), Box<dyn Error>> {
+    let (_workspace, resolver, _store) = paged_workspace()?;
+    let (page, next) = read(&resolver, "history://main", 1, 1)?;
+    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = (yi_tools::builtin_tools().into_iter())
+        .filter(|tool| tool.name() == "read")
+        .collect();
+    yi_runtime::fetch::route_urls(&mut tools, &Arc::new(resolver));
+    let input = serde_json::json!({"path": "history://main", "offset": 2, "limit": 1});
+    let mut context = yi_tools::ToolContext::new(std::env::temp_dir());
+    context.program = true;
+    let tool = tools.first().ok_or("no read tool")?;
+    let output = tool.execute(input.as_object().cloned().unwrap_or_default(), &context);
+    let value = output.value.ok_or("a program's read carries no value")?;
+    let fetched: yi_types::tool_value::FetchedValue = serde_json::from_value(value)?;
+    assert_eq!(
+        (fetched.url.as_str(), fetched.text.as_str()),
+        ("history://main", page.as_str())
+    );
+    assert_eq!(
+        fetched.next_offset,
+        next.and_then(|next| u64::try_from(next).ok())
+    );
+    Ok(())
+}
+
 /// Dies with a url's `offset` and `limit` dropped, its unit unnamed, `limit: 0` read as the
 /// rest of the listing, or a negative offset read as none.
 #[test]

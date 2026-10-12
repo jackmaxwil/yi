@@ -312,6 +312,11 @@ fn collect(
     let mut documents_searched = 0_usize;
     let mut documents_unsearched: Vec<String> = Vec::new();
     let (cwd, deny, gate) = (&context.cwd, &context.deny_read, context.read_gate());
+    // A program reads the value, not the page, so only the fuse bounds what it collects.
+    let (cap, byte_cap) = match context.program {
+        true => (usize::MAX, yi_types::tool_value::PROGRAM_FUSE_BYTES),
+        false => (COLLECTION_CAP, COLLECTION_BYTE_CAP),
+    };
     let mut search_file = |path: &Path| -> bool {
         if include.is_some_and(|include| !include.matches(path)) {
             return true;
@@ -354,7 +359,7 @@ fn collect(
         if hits.is_empty() {
             return true;
         }
-        let room = COLLECTION_CAP.saturating_sub(total);
+        let room = cap.saturating_sub(total);
         if room == 0 {
             collection_capped = true;
             return false;
@@ -365,7 +370,7 @@ fn collect(
         }
         total = total.saturating_add(hits.len());
         retained = retained.saturating_add(normalized.len());
-        if retained >= COLLECTION_BYTE_CAP {
+        if retained >= byte_cap {
             collection_capped = true;
         }
         files.push(FileHits {
@@ -1046,7 +1051,7 @@ impl Tool for GrepTool {
                     continue;
                 }
                 taken = taken.saturating_add(page_hits.len());
-                let mint = tagged < TAG_FILES_CAP;
+                let mint = tagged < TAG_FILES_CAP && !context.program;
                 if tagged == TAG_FILES_CAP {
                     rows.push(format!(
                         "[tags minted for the first {TAG_FILES_CAP} files of this page; the rows below name their file and anchor nothing — page with offset to tag them]"
@@ -1065,7 +1070,9 @@ impl Tool for GrepTool {
                 ));
             }
         }
-        rows.extend(self.sweep_row(&input, offset, &collected));
+        if !context.program {
+            rows.extend(self.sweep_row(&input, offset, &collected));
+        }
         cut_notices(&collected, context_asked, &mut rows);
         if let Some(asked) = context_ignored {
             rows.push(format!(
@@ -1090,6 +1097,32 @@ impl Tool for GrepTool {
             "files": collected.files.len(),
             "collectionCapped": collected.collection_capped,
         });
+        output.value = context.program.then(|| program_value(&collected));
         output
     }
+}
+
+/// Every hit collected, whole lines in walk order, with the fuse named when it cut the walk.
+fn program_value(collected: &Collected) -> Value {
+    let matches = (collected.files.iter()).flat_map(|file| {
+        let lines: Vec<&str> = file.normalized.split('\n').collect();
+        file.hits
+            .iter()
+            .map(move |&index| yi_types::tool_value::GrepMatch {
+                path: file.display.clone(),
+                line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                text: lines.get(index).copied().unwrap_or_default().to_owned(),
+            })
+    });
+    let fuse = yi_types::tool_value::PROGRAM_FUSE_BYTES / (1024 * 1024);
+    let value = yi_types::tool_value::GrepValue {
+        matches: matches.collect(),
+        files: u64::try_from(collected.files.len()).unwrap_or(u64::MAX),
+        cut: collected.collection_capped.then(|| format!(
+            "[kept {} matches in {} files: the program fuse is {fuse} MiB of file text; narrow path, pattern or include for the rest]",
+            collected.total,
+            collected.files.len()
+        )),
+    };
+    serde_json::to_value(value).unwrap_or(Value::Null)
 }

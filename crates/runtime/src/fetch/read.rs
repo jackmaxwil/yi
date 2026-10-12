@@ -116,6 +116,19 @@ impl Tool for UrlRead {
                     .map_err(|error| error.to_string())
             });
         match fetched {
+            Ok(fetched) if context.program => {
+                let value = yi_types::tool_value::FetchedValue {
+                    url: fetched.url.to_string(),
+                    text: fetched.text.clone(),
+                    served_by: fetched.served_by.clone(),
+                    next_offset: fetched
+                        .next_offset
+                        .map(|next| u64::try_from(next).unwrap_or(u64::MAX)),
+                };
+                let mut output = text_output(fetched.text);
+                output.value = serde_json::to_value(value).ok();
+                output
+            }
             Ok(fetched) => match fetched.next_offset {
                 Some(next) => text_output(format!(
                     "{}\n[more from offset {}; offset and limit count {} here]",

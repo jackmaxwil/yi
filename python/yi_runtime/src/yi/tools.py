@@ -24,7 +24,7 @@ import rlm
 
 from .plan import Refused
 
-__all__ = ["Result", "ToolError", "UnknownTool", "InvalidInput", "ToolFailure", "Refused",
+__all__ = ["Result", "Value", "ToolError", "UnknownTool", "InvalidInput", "ToolFailure", "Refused",
            "call", "search", "excluded"]
 
 SEARCH_LIMIT = 10
@@ -56,13 +56,34 @@ class ToolFailure(ToolError):
     """The tool ran and failed; ``result`` holds what it returned."""
 
 
-class Result:
-    """One call's outcome: ``text`` is what the model would have read, ``details`` the tool's fields."""
+class Value(dict):
+    """A tool's data, read as ``value["matches"]`` or ``value.matches``; nested dicts read alike."""
 
-    def __init__(self, tool: str, text: str, details: dict[str, Any]) -> None:
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"this value has no {name!r}; it has {', '.join(self)}") from None
+
+
+def _wrap(data: Any) -> Any:
+    if isinstance(data, dict):
+        return Value({key: _wrap(item) for key, item in data.items()})
+    if isinstance(data, list):
+        return [_wrap(item) for item in data]
+    return data
+
+
+class Result:
+    """One call's outcome: ``text`` is what the model would have read, ``details`` the tool's
+    fields, and ``value`` the data the text was drawn from, whole, or ``None`` for a tool with none.
+    """
+
+    def __init__(self, tool: str, text: str, details: dict[str, Any], value: Any = None) -> None:
         self.tool = tool
         self.text = text
         self.details = details
+        self.value = _wrap(value)
 
     def __str__(self) -> str:
         return self.text
@@ -75,7 +96,7 @@ async def call(name: str, **args: Any) -> Result:
     """Call tool ``name`` with ``args``; an argument passed as ``None`` is not sent."""
     sent = {key: value for key, value in args.items() if value is not None}
     reply = await rlm.host_request("tool.call", {"name": name, "args": sent})
-    result = Result(name, reply.get("text", ""), reply.get("details") or {})
+    result = Result(name, reply.get("text", ""), reply.get("details") or {}, reply.get("value"))
     if reply.get("ok"):
         return result
     kind = reply.get("kind") or "tool_failure"
