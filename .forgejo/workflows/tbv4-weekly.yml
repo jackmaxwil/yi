@@ -11,7 +11,7 @@ on:
   schedule:
     - cron: "17 3 * * 1"
   # A dispatch with plugins=none is the other arm of the plugin comparison (#1019); the
-  # fingerprint's +plugins{...} keeps the two arms' rows apart.
+  # row's plugins= note is what keeps the two arms' rows apart.
   workflow_dispatch:
     inputs:
       plugins:
