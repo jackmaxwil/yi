@@ -22,6 +22,7 @@ an agent decided or found, and output that is no longer on screen.
 | Output this session saw, now reclaimed or compacted | this session's log | `await compact.recall("needle")`, then `read("history://self/<entryId>")` |
 | What the parent asked for, decided or found | the parent's transcript | `read("history://parent/since/0")` |
 | What a child did or found | the child's transcript | `read("history://<child name>/since/0")`, or `rlm.result` once it ended |
+| What another session found or was told, in any repository | its transcript | `read("history://<its name or id>/tail/40")`; `history://<root>/<child>` for its child |
 | Whether this repository met the problem before | past root sessions | `await compact.search("words")`, then `read(hit["url"])` |
 | A saved note | notes | `await memory.search("words")` |
 | An MCP tool | the MCP snapshot | `yi mcp grep "words"` in bash, when MCP is on |
@@ -40,6 +41,15 @@ design, not a fault: a walled reader works from its task alone, which keeps it i
 **Brief a reader.** A reader child (the default role) gets a short prompt, not this doctrine, so
 it does not know the family addresses. Put the fact in its question, name the address there
 (`read history://parent/since/0`), or inline it with `partition=["history://self/<entryId>"]`.
+
+**Read before you ask.** Another session's transcript answers what it found or was told without
+waking it, and costs it nothing. Read it by the name you know it by; a name several sessions
+share is refused with their `history://<id>` addresses, so pick one and read again.
+
+**Pass a range, not a retelling.** A child that needs part of your session gets addresses, not
+your paraphrase of them: `history://self/<entryId>` for one result, `tail/N` or `since/<seq>` for a
+stretch, `custom/<type>` for one kind of record. Inline them with `partition=[...]` when the child
+must read them before anything else; name them in the brief when it may need them.
 
 **Collect the children.** A parent that needs what a child found reads that child's transcript
 instead of asking it to say it again, and only the entries it needs.
