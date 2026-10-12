@@ -580,6 +580,29 @@ fn an_edit_cell_without_check_rows_ends_at_its_diff() -> TestResult {
     Ok(())
 }
 
+/// A multi-file edit prints one `[path#TAG]` per file; its verdict rows without them name no file.
+#[test]
+fn a_multi_file_edit_names_the_file_above_each_verdict() -> TestResult {
+    let mut app = app();
+    started(&mut app, "e0", "edit", "a.py");
+    let details = edit_cell("a.py").details;
+    let text = concat!(
+        "[a.py#1A2B]\nupdated; first change at line 1\n1:two\nsyntax: ok\n\n",
+        "[b.py#3C4D]\nupdated; first change at line 3\n3:x = (\nsyntax: error line 3: '(' was never closed",
+    );
+    ended_with(&mut app, "e0", "edit", text, false, details);
+    assert_eq!(
+        rows_under_diff(&mut app, "+    │ two")?,
+        [
+            "│   [a.py#1A2B]",
+            "│   syntax: ok",
+            "│   [b.py#3C4D]",
+            "│   syntax: error line 3: '(' was never closed",
+        ]
+    );
+    Ok(())
+}
+
 /// Invariant: a preview row's colour follows its own text, not details["syntax"]:
 /// worst() keeps only the first failure, so a second file's error row must stay red.
 #[test]
