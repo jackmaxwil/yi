@@ -437,14 +437,12 @@ Verification (the phase-7 lessons, paid for once):
   done: `yi tui --headless --keys <script> --frames <dir>` drives the real
   loop over an in-memory screen with scripted keys and dumps text frames.
   Visual changes include a frame dump in the report.
-- A change a person has to look at ships a proof artifact: `just tui-proof
-  <script>` records the same drive run as an asciicast (`--record`) plus a
-  one-frame still cast (`--snap`) and renders `run.gif` / `still.gif` for the
-  PR. Frame dumps prove the contract held; they cannot show whether the result
-  looks right, which is the half a model judges worst. Render stills with a
-  terminal emulator (agg), never a text-screenshot tool: `freeze` re-renders
-  in its own font and chrome, so its output is not the grid Yi painted. Pace
-  typing with `type-ms <n>` and raise `--deadline` when the beats outlast 60 s.
+- A change a person has to look at ships a proof artifact, made by `just tui-see run <scene>`
+  (below): its snaps are the stills and `--video` keeps the whole run as motion. Frame dumps
+  prove the contract held; they cannot show whether the result looks right, which is the half a
+  model judges worst. Render with a terminal emulator (agg, or Ghostty on `--host term`), never
+  a text-screenshot tool: `freeze` re-renders in its own font and chrome, so its output is not
+  the grid Yi painted. Pace typing with `type-ms <n>`.
 - Look before claiming a TUI change: `just tui-see run <scene>` before the edit with
   `--label base`, again after, then `just tui-see diff <base run> <head run>`. Read the cell diff
   first, then the region crops it names. A scene is a drive script whose `#!` line carries its
@@ -460,7 +458,8 @@ Verification (the phase-7 lessons, paid for once):
   to look at and comment on. A pull request that touches crates/tui, crates/console or crates/orb
   gets the same on the forge: the `tui` workflow plays every scene under scripts/proof/tui_see on
   the base and the head binary and posts one comment with each changed snap's cell diff and
-  crops; a scene added there is a scene every TUI pull request is shown. No picture gates a build.
+  crops; a scene added there is a scene every TUI pull request is shown. The review bot reads
+  that cell diff before anyone looks, when it was made for the head it reads. No picture gates a build.
 - vt100 tests for viewport code must include a nonzero-offset case: an
   inline viewport at row 0 hides every coordinate-origin bug (the blank-frame
   draw-offset bug shipped exactly this way).

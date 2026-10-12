@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Instant, SystemTime};
 
-use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tui_textarea::{CursorMove, TextArea};
 
 use crate::keys::Action;
@@ -119,7 +119,7 @@ impl Editor {
             return None;
         }
         let before = self.text.cursor().0;
-        if self.text.input(CtEvent::Key(key)) {
+        if yi_tui::composer::edit_key(&mut self.text, key) {
             self.dirty = true;
             // Only an edit above the viewport can change what the visible rows sit inside.
             let touched = before.min(self.text.cursor().0);

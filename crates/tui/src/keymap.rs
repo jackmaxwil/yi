@@ -375,9 +375,13 @@ pub fn default_keymap() -> Keymap {
     );
     map.bind(single(KeyCodeValue::Down, false, true), Action::FocusChild);
     map.bind(single(KeyCodeValue::Up, false, true), Action::FocusParent);
-    map.bind(
+    // Option+arrows move by word over a draft; they walk the agent tree only from an empty box.
+    map.map.insert(
         single(KeyCodeValue::Right, false, true),
-        Action::FocusNextSibling,
+        vec![Rule {
+            when: Some(Condition::InputEmpty),
+            action: Action::FocusNextSibling,
+        }],
     );
     map.map.insert(
         KeyInput::Single(SingleKey {
@@ -412,9 +416,12 @@ pub fn default_keymap() -> Keymap {
         single(KeyCodeValue::Char('m'), false, true),
         Action::OpenModelPicker,
     );
-    map.bind(
+    map.map.insert(
         single(KeyCodeValue::Left, false, true),
-        Action::FocusPrevSibling,
+        vec![Rule {
+            when: Some(Condition::InputEmpty),
+            action: Action::FocusPrevSibling,
+        }],
     );
     map.bind(
         single(KeyCodeValue::Char('r'), true, false),
