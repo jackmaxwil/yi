@@ -60,6 +60,8 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 run "$PY" scripts/pr_body.py --selfcheck
 # The snap diff an agent reads is parsed from casts, checked against Yi's own screen dumps.
 run "$PY" scripts/tui_see.py --selfcheck
+# The monkey's seed must replay byte for byte or a failure it reports cannot be reproduced.
+run "$PY" scripts/tui_monkey.py --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
