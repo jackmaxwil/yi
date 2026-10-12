@@ -22,7 +22,8 @@ pub(crate) struct Pacing {
     pub(crate) prose: Reveal,
     pub(crate) thought: Reveal,
     pace: u16,
-    pub(crate) updates: u64,
+    pub(crate) arrived: u64,
+    pub(crate) turns: u64,
     pub(crate) held: VecDeque<UiEvent>,
     prose_scan: StableScan,
     thought_scan: StableScan,
@@ -34,10 +35,32 @@ impl Pacing {
             prose: Reveal::default(),
             thought: Reveal::default(),
             pace,
-            updates: 0,
+            arrived: 0,
+            turns: 0,
             held: VecDeque::new(),
             prose_scan: StableScan::default(),
             thought_scan: StableScan::default(),
+        }
+    }
+
+    /// Queues what the runtime sent, counting the stream events a drive matches to the provider's.
+    pub(crate) fn receive(&mut self, events: &std::sync::mpsc::Receiver<UiEvent>) {
+        for event in events.try_iter() {
+            if matches!(
+                &event,
+                UiEvent::Agent(
+                    AgentEvent::MessageUpdate { .. }
+                        | AgentEvent::MessageEnd {
+                            message: AgentMessage::Assistant { .. }
+                        }
+                )
+            ) {
+                self.arrived = self.arrived.saturating_add(1);
+            }
+            if matches!(&event, UiEvent::Agent(AgentEvent::TurnStart)) {
+                self.turns = self.turns.saturating_add(1);
+            }
+            self.held.push_back(event);
         }
     }
 
@@ -513,7 +536,6 @@ impl App {
     /// a delta grows the message `MessageStart` opened.
     pub(super) fn fold_stream(&mut self, event: &AssistantMessageEvent) {
         let _span = yi_types::trace::span("tui.stream_delta");
-        self.pacing.updates = self.pacing.updates.saturating_add(1);
         match event {
             AssistantMessageEvent::ToolCallStart {
                 content_index,

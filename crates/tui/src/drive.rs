@@ -289,6 +289,36 @@ pub struct DriveOptions {
     pub height: u16,
 }
 
+/// Waits until the screen has what the provider owes it; false, with the reason printed, after 5 s.
+fn settle_faux(
+    app: &mut App,
+    port: &mut Arc<AgentSession>,
+    ui_rx: &Receiver<crate::app::UiEvent>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::app::Command>,
+    faux_time: &yi_runtime::provider::FauxTime,
+) -> bool {
+    let waiting = Instant::now();
+    while app.awaiting_turn() {
+        if waiting.elapsed() > Duration::from_secs(5) {
+            eprintln!("error: tick: the turn did not start within 5 s");
+            return false;
+        }
+        crate::port::tick(app, port, ui_rx, cmd_tx);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    loop {
+        app.pacing.receive(ui_rx);
+        if !app.stream_owed(faux_time.requests(), faux_time.updates()) {
+            return true;
+        }
+        if waiting.elapsed() > Duration::from_secs(5) {
+            eprintln!("error: tick: the faux stream's updates did not arrive within 5 s");
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// The real loop — same App, reduce and draw path — over an in-memory screen,
 /// with script steps for the keyboard. Draws dump to `frames_dir/NNNN.txt`.
 pub fn run_headless(
@@ -422,23 +452,19 @@ pub fn run_headless(
                 let mut left = ms;
                 while left > 0 && exit_code == 0 {
                     let step = left.min(TICK_STEP_MS);
+                    // Incident: a step reduced in two halves revealed less than one reduced whole,
+                    // and a clock moved before the model request existed started its stream late.
+                    if !settle_faux(&mut app, &mut port, &ui_rx, &cmd_tx, faux_time) {
+                        exit_code = 1;
+                        break;
+                    }
                     app.advance_clock(Duration::from_millis(step));
                     faux_time.advance(Duration::from_millis(step));
-                    // Every update the provider owes by now is on screen before the next step,
-                    // or a frame would depend on how fast two threads ran.
-                    let waiting = Instant::now();
-                    crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
-                    while app.stream_updates() < faux_time.updates() {
-                        if waiting.elapsed() > Duration::from_secs(5) {
-                            eprintln!(
-                                "error: tick: the faux stream's updates did not arrive within 5 s"
-                            );
-                            exit_code = 1;
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(1));
-                        crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
+                    if !settle_faux(&mut app, &mut port, &ui_rx, &cmd_tx, faux_time) {
+                        exit_code = 1;
+                        break;
                     }
+                    crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
                     left -= step;
                 }
                 if exit_code != 0 {

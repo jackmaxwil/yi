@@ -1,11 +1,10 @@
 #! solo --size 80x18 --faux scripts/proof/tui_see/paced.jsonl
 # A recorded reply (7.7 s on the wire) streams at its recorded cadence on a frozen clock.
+# It stops before the reply ends: what lands after the last delta (the turn's end and its
+# elapsed label) arrives in real time, so a frozen frame cannot include it.
 wait-frame 5000 faux-1
 type what tools do you have available?
 key enter
 wait-frame 5000 what tools do you have
-snap-strip paced 4 1900
-tick 20000
-wait-idle 10000
-snap done
+snap-strip paced 5 1900
 quit

@@ -530,7 +530,7 @@ pub fn tick(
     events: &std::sync::mpsc::Receiver<crate::app::UiEvent>,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::app::Command>,
 ) {
-    app.pacing.held.extend(events.try_iter());
+    app.pacing.receive(events);
     while let Some(ui_event) = app.pacing.held.pop_front() {
         // The end waits behind the reveal, and everything after it waits too, so a tool row
         // never commits above prose the reader has not seen yet.
