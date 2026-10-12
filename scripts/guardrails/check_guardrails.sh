@@ -62,6 +62,8 @@ run "$PY" scripts/pr_body.py --selfcheck
 run "$PY" scripts/tui_see.py --selfcheck
 # The monkey's seed must replay byte for byte or a failure it reports cannot be reproduced.
 run "$PY" scripts/tui_monkey.py --selfcheck
+# The frame audit is only evidence if each of its checks can fail; only this flag trips them.
+run "$PY" scripts/tui_pty.py --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
