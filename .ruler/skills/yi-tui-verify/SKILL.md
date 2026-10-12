@@ -88,3 +88,6 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    The forge serves a release's HTML as `text/plain`, so the asset shows source in a browser: save
    it (`gallery.html` on that page) and open the file. `just tui-see publish <page>` is the verb the
    job runs; it needs the `FORGEJO_*` env that `post` reads and `FORGEJO_HEAD` for the commit.
+12. Fuzzing: `just tui-see monkey --runs 20 --seed 7 [--surface solo|console]` plays seeded random key
+   runs through the headless loops and reports only a crash, a hang or a control character in a
+   cell; the seed's script is `target/see/monkey/<seed>/<surface>.drive`, replayed by `tui_see.py run`.
