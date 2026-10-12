@@ -1,4 +1,5 @@
 mod docs;
+mod grep;
 mod log;
 mod read;
 mod schemes;
@@ -72,6 +73,12 @@ impl Transcript {
 
 pub trait Transcripts: Send + Sync {
     fn open(&self, agent: &str) -> Option<Transcript>;
+
+    /// This repository's root session files on disk, newest first; `None` for a role with no
+    /// session root, which is refused rather than served an empty search.
+    fn corpus(&self) -> Option<crate::history::RepoSessions> {
+        None
+    }
 }
 
 pub trait KernelVariables: Send + Sync {
@@ -253,6 +260,15 @@ impl Transcripts for SessionTranscripts {
         let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
         let store = yi_session::load_session(&file).ok()?;
         Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
+    }
+
+    fn corpus(&self) -> Option<crate::history::RepoSessions> {
+        let mut listed =
+            crate::history::repo_sessions(self.sessions_dir.as_ref()?, Path::new(&self.cwd));
+        listed
+            .files
+            .sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        Some(listed)
     }
 }
 
@@ -585,17 +601,7 @@ impl Resolver {
         url: &Url,
         page: Option<Page>,
     ) -> Result<(String, String, Option<usize>), FetchError> {
-        let parent = self.parent_address(url)?;
-        let url = parent.as_ref().unwrap_or(url);
-        if *url.scheme() == Scheme::Agent {
-            self.history_walled(url)?;
-        }
-        if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
-            return Err(FetchError::Denied {
-                url: url.to_string(),
-                refusal,
-            });
-        }
+        let url = &self.admitted(url)?;
         let whole = |served: Result<(String, String), FetchError>| {
             served.map(|(text, served_by)| (text, served_by, None))
         };
@@ -629,6 +635,21 @@ impl Resolver {
         }
     }
 
+    /// The address a read or a grep reaches, its alias resolved, once every wall admits it.
+    pub(super) fn admitted(&self, url: &Url) -> Result<Url, FetchError> {
+        let url = self.parent_address(url)?.unwrap_or_else(|| url.clone());
+        if *url.scheme() == Scheme::Agent {
+            self.history_walled(&url)?;
+        }
+        match self.wall().check_url(&url, &self.workspace) {
+            Some(refusal) => Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal,
+            }),
+            None => Ok(url),
+        }
+    }
+
     fn parent_address(&self, url: &Url) -> Result<Option<Url>, FetchError> {
         let path = url.path();
         let rest = match path.strip_prefix(PARENT) {
@@ -652,7 +673,12 @@ impl Resolver {
             .metadata()
             .parent_session_id
             .clone();
-        let id = id.ok_or_else(|| missing("this session has no parent; it is a root session"))?;
+        let id = id.ok_or_else(|| {
+            missing(
+                "this session has no parent; it is a root session, and grep's history://repo \
+             searches this repository's past sessions",
+            )
+        })?;
         format!("history://{id}{rest}")
             .parse()
             .map(Some)
