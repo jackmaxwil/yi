@@ -797,6 +797,11 @@ async def send(
     ``kind`` is ``inform`` (the default), ``progress``, ``failure`` or ``cancel``.
     A body over 16 KiB is refused, never trimmed: ``put`` it and pass
     ``ref="family://<name>"``.
+
+    A root also mails another session by its address, ``"history://<id or name>"``, in any
+    repository: the receipt is ``stored``, the letter becomes a todo there, and its reply comes
+    back to you the same way. A letter's ``ref`` is a file path or a ``history://`` address,
+    since ``family://`` names the reader's own board; a long chain raises ``HopLimit``.
     """
     options = {"reply_to": reply_to, "kind": kind, "ref": ref}
     options.update(conversation=conversation, deadline_ms=deadline_ms)

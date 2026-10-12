@@ -57,6 +57,7 @@ fn subscription(
         retention,
         label,
         prompt: prompt.to_owned(),
+        from_start: false,
     })
 }
 

@@ -338,7 +338,7 @@ impl AgentSession {
     pub fn heartbeat_deliverer(&self) -> Arc<crate::schedule::DeliverFn> {
         let shared = Arc::clone(&self.shared);
         let compactor = self.compactor.clone();
-        let hook = self.heartbeat_hook();
+        let (hook, quiet) = (self.heartbeat_hook(), self.deliver_hook());
         Arc::new(move |job, firing| {
             let is_streaming = shared
                 .status
@@ -368,7 +368,10 @@ impl AgentSession {
                 let mode = job
                     .delivery_mode
                     .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
-                hook(wake, mode);
+                match crate::post::rings(job, &wake) {
+                    true => hook(wake, mode),
+                    false => quiet(wake, false),
+                }
             }
             Ok(outcome)
         })
