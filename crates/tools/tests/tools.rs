@@ -3824,7 +3824,7 @@ fn the_middle_signal_cap_names_itself_only_when_it_cuts() -> TestResult {
 }
 
 /// A HOME under `.yi-homes/keep-failed` made an EPERM line naming a path in it an error kept
-/// from the middle; a directory on an absolute path says nothing, `failed/total` still does.
+/// from the middle; a directory on a path says nothing, its last component and `failed/total` do.
 #[test]
 fn a_directory_named_for_failure_is_no_signal() -> TestResult {
     let dir = temp_dir("reduce-signal-dir")?;
@@ -3835,13 +3835,19 @@ fn a_directory_named_for_failure_is_no_signal() -> TestResult {
         "bash: line 1: /Users/x/.yi-homes/keep-failed/yidog_long-7.log: Operation not permitted";
     let broke = "/Users/x/src/fail_fast/run.rs:12: error: probe broke";
     let summary = "failed/total: 12/300";
+    let compiling = "Compiling probe v0.1.0 (/Users/x/.yi-homes/keep-failed/probe)";
+    let named = "/Users/x/runs/test_errors.py: not found";
     lines.insert(150, refused.to_owned());
     lines.insert(190, summary.to_owned());
     lines.insert(220, broke.to_owned());
+    lines.insert(120, compiling.to_owned());
+    lines.insert(250, named.to_owned());
     let reduced = yi_tools::reduce("sh run", "", &lines.join("\n"), 1, None, Some(&dir), None);
     assert!(!reduced.text.contains(refused), "{}", reduced.text);
     assert!(reduced.text.contains(summary), "{}", reduced.text);
     assert!(reduced.text.contains(broke), "{}", reduced.text);
+    assert!(!reduced.text.contains(compiling), "{}", reduced.text);
+    assert!(reduced.text.contains(named), "{}", reduced.text);
     Ok(())
 }
 
