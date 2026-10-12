@@ -570,6 +570,17 @@ fn mutating_command(command: &str) -> bool {
     )
 }
 
+/// One call's share of the landed count: an edit or write lands, a bash lands when its command
+/// mutates, a todo call touches the list; the model's calls and a cell's are counted alike.
+fn count_call(tool: &str, mutating: bool, (landed, todo_touched): (&mut u32, &mut bool)) {
+    match tool {
+        tool::NAME => *todo_touched = true,
+        "edit" | "write" => *landed = landed.saturating_add(1),
+        "bash" if mutating => *landed = landed.saturating_add(1),
+        _ => {}
+    }
+}
+
 pub fn landed(message: &AgentMessage, results: &[AgentMessage]) -> (u32, bool) {
     let commands = commands_of(message);
     let mut landed = 0_u32;
@@ -590,14 +601,8 @@ pub fn landed(message: &AgentMessage, results: &[AgentMessage]) -> (u32, bool) {
             .iter()
             .filter(|call| call.ok)
         {
-            match call.tool.as_str() {
-                tool::NAME => todo_touched = true,
-                "edit" | "write" => landed = landed.saturating_add(1),
-                "bash" if call.command.as_deref().is_some_and(mutating_command) => {
-                    landed = landed.saturating_add(1);
-                }
-                _ => {}
-            }
+            let ran = call.command.as_deref().is_some_and(mutating_command);
+            count_call(&call.tool, ran, (&mut landed, &mut todo_touched));
         }
         if yi_types::event::shown_failed(
             *is_error,
@@ -605,19 +610,9 @@ pub fn landed(message: &AgentMessage, results: &[AgentMessage]) -> (u32, bool) {
         ) {
             continue;
         }
-        match tool_name.as_str() {
-            tool::NAME => todo_touched = true,
-            "edit" | "write" => landed = landed.saturating_add(1),
-            "bash" => {
-                if commands
-                    .iter()
-                    .any(|(id, command)| id == tool_call_id && mutating_command(command))
-                {
-                    landed = landed.saturating_add(1);
-                }
-            }
-            _ => {}
-        }
+        let ran =
+            (commands.iter()).any(|(id, command)| id == tool_call_id && mutating_command(command));
+        count_call(tool_name, ran, (&mut landed, &mut todo_touched));
     }
     (landed, todo_touched)
 }
