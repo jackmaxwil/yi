@@ -578,9 +578,10 @@ def yi_bin():
 
 
 # Incident: rounds on #1138 and #1145 hit the job's limit and posted nothing; a round's retries had
-# no shared window, so a slow host outlasted the job. Its calls now share the job's time.
+# no shared window. Its calls share the job's time, from the first step (review.yml stamps it).
 POST_SECS = 5 * 60
-JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS
+JOB_SPENT = max(0.0, time.time() - float(os.environ.get("REVIEW_JOB_STARTED") or time.time()))
+JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS - JOB_SPENT
 
 
 class Unanswered(Exception):
