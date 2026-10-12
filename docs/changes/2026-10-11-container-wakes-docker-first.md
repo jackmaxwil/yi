@@ -1,0 +1,5 @@
+---
+issue: Closes #1218
+raise: crate runtime +1, comments +1, tests +72
+---
+A container child no longer pulls an image it already has while Docker Desktop's VM sleeps. With Resource Saver on, Docker Desktop answers `docker image inspect` from a cache that holds no images while its VM is stopped, so `node::Container::up` read a present `alpine:3.20` as missing, announced a pull and ran `docker pull`, which in three runs out of three never reached the engine and held the spawn until the test's 60 s timeout (`a_container_child_runs_bash_in_its_container_and_merges_like_a_worktree` and `a_timed_out_container_call_leaves_nothing_running_in_its_container` in `just check`). The lane's `docker rm -f`, which reclaims a dead host's container, now runs before the inspect: the engine must answer it, so it wakes the VM, and the inspect that follows reads the real image store. Docker's own log shows the difference: `404 << GET /v1.49/images/alpine:3.20/json` from its cache before, the same request through the live engine after.
