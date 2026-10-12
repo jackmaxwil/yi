@@ -1,0 +1,4 @@
+---
+issue: Closes #1259
+---
+`tui_see.py harvest <session.jsonl> [--name N] [--view end|tool|long]` turns a recorded session into scenes under `scripts/proof/tui_see`, so a TUI pull request is judged on a real exchange before a hand-written one (Closes #1259, Refs #1160). A solo screen has no scroll, so each view is its own seed cut where it matters: `end` the whole session, `tool` through the largest tool result, `long` through the longest reply, each cut named with kept over total rows. The scrub masks the header and entry ids, which the store refuses as duplicates and a broken chain, so the seed gets unique ids and a chain; the `end` scene also retypes the last prompt and replays the last recorded reply as its cassette under a frozen clock, since a turn's elapsed seconds read the wall clock. Three scenes are harvested from the two recorded sessions: `harvest-pyshell-end`, `harvest-pyshell-tool` and `harvest-assess-long`.

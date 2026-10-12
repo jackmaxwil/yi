@@ -70,6 +70,14 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    keeps the whole run as `run.webp` (cropped to the window, under the 512 KB blob cap for a
    README); it needs at least one `snap` to find the window. On that host `wait-idle` waits for
    the screen to hold still a second with digits ignored, so ticking ages do not count as work.
+   Harvest a scene from a recorded session instead of writing one:
+   `just tui-see harvest crates/tui/tests/fixtures/sessions/<id>.jsonl --name N [--view
+   end|tool|long]` writes `harvest-N-<view>` into scripts/proof/tui_see. A solo screen has no
+   scroll, so each view is its own seed cut where it matters: `end` the whole session, `tool`
+   through the largest tool result, `long` through the longest reply (the cut is named on the
+   way out). The scrub masks ids the store refuses, so the seed gets unique ids and a chain. The
+   `end` scene also retypes the last prompt and plays the last recorded reply as its cassette;
+   that turn freezes the clock, because its elapsed seconds read the wall clock.
 10. On the forge, `.forgejo/workflows/tui.yml` builds the base and head binaries, then runs
    `tui_see.py ci` on a `yi-term` runner (Ghostty is already in that image, so scenes play on the
    `here` host) and upserts one PR comment: each changed snap's cell diff and its crops, at most
@@ -82,3 +90,6 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    The forge serves a release's HTML as `text/plain`, so the asset shows source in a browser: save
    it (`gallery.html` on that page) and open the file. `just tui-see publish <page>` is the verb the
    job runs; it needs the `FORGEJO_*` env that `post` reads and `FORGEJO_HEAD` for the commit.
+12. Fuzzing: `just tui-see monkey --runs 20 --seed 7 [--surface solo|console]` plays seeded random key
+   runs through the headless loops and reports only a crash, a hang or a control character in a
+   cell; the seed's script is `target/see/monkey/<seed>/<surface>.drive`, replayed by `tui_see.py run`.

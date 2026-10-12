@@ -501,12 +501,35 @@ A persistent IPython process per session that reaches the host only through host
 | `subagent.rs` | `rlm.run` (returns at admission), `rlm.result/wait/status/list_subagents/delete_subagent/merge_worktree/discard_worktree/find_models`, `model.info`, parent-side `agent_message.send/request/list_agents` |
 | `mailbox.rs`, `lease.rs`, `subagent/service.rs` | child-side `agent_message.send/request/list_agents`, `rlm.receive`; `rlm.interrupt`, `rlm.revoke`; `rlm.service` |
 | `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.get`, `plan.op` |
+| `kernel_tools.rs` | `tool.list` (the session's table, `ipython` and a root's `ask_user` named as excluded), `tool.call {name, args, cell}` |
+
+- `tool.call` runs the session's own adapter, found at call time, so rules, wall and broker judge
+  each nested call on its own arguments as they judge a model's. Calls keep the loop's order
+  through one read-write lock: reads share it, every other kind takes it alone, since the loop
+  orders them only by awaiting. It answers only a call whose `cell` (the execute request a
+  `pre_run_cell` hook put in a context variable, which tasks inherit) is the request the agent's
+  `ipython` cell holds the kernel as, recorded when the kernel takes it: a task that outlived its
+  cell, even while a later cell runs, a call after an interrupt, a call naming no cell, or a cell
+  typed into the console, even one running while the agent's cell waits, is refused `cancelled`. A failure replies `{ok: false, kind, message, suggestions}`: `unknown_tool`,
+  `excluded_tool`, `invalid_input` (also a cell's own `kernel://` read, which would queue behind
+  the cell), `refused` (a denial), `tool_failure`, `cancelled`.
+- Every call that ran is a `NestedCall` row on its cell's `ipython` result, `details.calls`: the
+  files it named, a sequential call's `command`, an `ask_user` answer, never a write's content.
+  A read row is kept once per tool and files, a cell keeps 256 of them, counting the rest in
+  `callsDropped`, which the summary's `<read-files>` names in a `[…]` row (the paths are not kept;
+  the compaction's details carry the count to the next one); every other row is kept. A
+  call that finished after its cell closed is `outlived` on a later cell's result, even one already
+  open. Compaction's file lists and the todo landed count read the rows, a cell that raised
+  included; the landed count skips an outlived row, which an earlier turn started.
 
 ### 9.3 Python surface
 - The preamble binds `rlm` (the module), `mcp`, `fetch`, `bash`. `@_public` builds `rlm.__all__`:
   async `host_request, run, service, find_models, list_subagents, delete_subagent, send,
   request, receive, followup, status, list_agents, wait, plan_op, interrupt, revoke, result,
   merge_worktree, discard_worktree, fetch`; sync `put, get, ls, bash`.
+- `yi.tools.<name>(**args)` (or `yi.tools.call(name, /, **args)`) calls `tool.call` and returns a `Result` (`text`, the model's view;
+  `details`); it raises `UnknownTool`, `InvalidInput`, `Refused` (widened from plans) or
+  `ToolFailure`. `yi.tools.search` pages with a `[…]` row, and names what `excluded()` leaves out.
 - A public coroutine a cell never awaits runs once in `post_run_cell` and prints its value; a
   mail call (`send`, `followup`, `interrupt`, `revoke`) is a task scheduled at the call.
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and
@@ -1068,7 +1091,7 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 |---|---|---|---|
 | direct deps | 22 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 171 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 8,174,032 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| dist binary | 8,322,720 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
 The binary and startup gates run only after a local dist build; a failed build fails both. Under
