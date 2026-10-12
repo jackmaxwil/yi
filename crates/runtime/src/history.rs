@@ -62,6 +62,8 @@ fn belongs(dir: &Path, repo: &Path) -> Belongs {
     let Some(at) = header_cwd(dir) else {
         return Belongs::Other;
     };
+    // Incident: a header's `/var/…` never matched its own `/private/var/…` repository.
+    let at = at.canonicalize().unwrap_or(at);
     match crate::lane::canonical_repo(&at) {
         Some(other) if other == repo => Belongs::Mine,
         Some(_) => Belongs::Other,
@@ -89,12 +91,81 @@ pub fn repo_sessions(sessions_dir: &Path, cwd: &Path) -> RepoSessions {
     Corpus::default().sessions(sessions_dir, cwd)
 }
 
+/// The session file carrying `id`: this repository's first, then any other repository's.
 pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf> {
     let suffix = format!("_{id}.jsonl");
-    repo_sessions(sessions_dir, cwd)
+    let carries = |file: &PathBuf| file.to_string_lossy().ends_with(&suffix);
+    let mine = repo_sessions(sessions_dir, cwd)
         .files
         .into_iter()
-        .find(|file| file.to_string_lossy().ends_with(&suffix))
+        .find(carries);
+    let anywhere = || {
+        (session_dirs(sessions_dir).iter())
+            .flat_map(|dir| jsonl_files(dir))
+            .find(carries)
+    };
+    mine.or_else(anywhere)
+}
+
+/// The file of the child a root session spawned under `name`, its latest by that name, from the
+/// trail the root keeps on its own transcript (`custom{child}`).
+pub fn child_of(root: &Path, name: &str) -> Option<PathBuf> {
+    let store = yi_session::load_session(root).ok()?;
+    let query = yi_session::EntryQuery {
+        custom_type: Some(yi_types::subagent::CHILD_ENTRY.to_owned()),
+        ..yi_session::EntryQuery::default()
+    };
+    let entries = store.find_entries(&query).ok()?;
+    let spawned = entries.iter().rev().find_map(|entry| match entry {
+        yi_types::entry::Entry::Custom {
+            data: Some(data), ..
+        } => match serde_json::from_value(data.clone()).ok()? {
+            yi_types::subagent::ChildTrail::Spawned(spawned) if spawned.name == name => {
+                Some(spawned)
+            }
+            _ => None,
+        },
+        _ => None,
+    })?;
+    Some(root.parent()?.join(spawned.path))
+}
+
+/// What a session name resolves to: the one session it names, or every candidate it fits.
+pub enum Named {
+    One(PathBuf),
+    Many(Vec<String>),
+    Nothing,
+}
+
+/// The sessions named `name`, this repository's before any other's: a name taken here is never
+/// shadowed by another repository's session of the same name.
+pub fn find_named(sessions_dir: &Path, cwd: &Path, name: &str) -> Named {
+    let repo = repo_of(cwd);
+    let (mut mine, mut others): (Vec<PathBuf>, Vec<PathBuf>) = (Vec::new(), Vec::new());
+    for dir in session_dirs(sessions_dir) {
+        let named = yi_session::list_dir(&dir).unwrap_or_default();
+        let ids = named
+            .iter()
+            .filter(|session| session.name.as_deref() == Some(name));
+        let files: Vec<PathBuf> = ids
+            .filter_map(|session| {
+                let suffix = format!("_{}.jsonl", session.id);
+                jsonl_files(&dir)
+                    .into_iter()
+                    .find(|file| file.to_string_lossy().ends_with(&suffix))
+            })
+            .collect();
+        match belongs(&dir, &repo) {
+            Belongs::Mine => mine.extend(files),
+            Belongs::Other | Belongs::Unknown => others.extend(files),
+        }
+    }
+    let found = if mine.is_empty() { others } else { mine };
+    match found.as_slice() {
+        [] => Named::Nothing,
+        [one] => Named::One(one.clone()),
+        many => Named::Many(many.iter().map(|file| file.display().to_string()).collect()),
+    }
 }
 
 fn text_of(message: &AgentMessage) -> Option<(&'static str, String)> {
@@ -413,6 +484,10 @@ mod tests {
         let file = find_session(&sessions, &repo, "s-lane").unwrap();
         let loaded = yi_session::load_session(&file).unwrap();
         assert!(loaded.entry(&entry).is_some());
-        assert!(find_session(&sessions, &repo, "s-other").is_none());
+        let other = find_session(&sessions, &repo, "s-other");
+        assert!(
+            other.is_some(),
+            "a read reaches another repository's session by id"
+        );
     }
 }

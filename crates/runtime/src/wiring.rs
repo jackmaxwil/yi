@@ -390,11 +390,12 @@ fn wire_fetch(
     log: Arc<crate::fetch::FetchLog>,
     kernels: Arc<crate::fetch::KernelServiceMap>,
 ) -> Arc<crate::fetch::Resolver> {
-    let transcripts = Arc::new(crate::fetch::SessionTranscripts::new(
+    let transcripts = crate::fetch::SessionTranscripts::new(
         Arc::clone(host),
         wiring.sessions_dir.clone(),
         &wiring.cwd,
-    ));
+    );
+    let transcripts = Arc::new(transcripts.walled_by(&wiring.wall));
     let agent = wiring
         .parent_link
         .as_ref()

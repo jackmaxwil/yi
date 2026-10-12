@@ -2,6 +2,7 @@ mod docs;
 mod log;
 mod read;
 mod schemes;
+mod transcripts;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub use log::{
     FetchLog, PinError, Relevance, TerminalRecordError, as_served, relevance_of, rows_of,
 };
 pub use read::route_urls;
+pub use transcripts::SessionTranscripts;
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =
@@ -72,6 +74,11 @@ impl Transcript {
 
 pub trait Transcripts: Send + Sync {
     fn open(&self, agent: &str) -> Option<Transcript>;
+
+    /// The sessions `agent` could name when it opened none, for a refusal that lists them.
+    fn candidates(&self, _agent: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub trait KernelVariables: Send + Sync {
@@ -210,52 +217,6 @@ pub(crate) const SELF: &str = "self";
 /// Invariant: a child is told its task, never the parent id its own header carries.
 const PARENT: &str = "parent";
 
-pub struct SessionTranscripts {
-    host: Arc<crate::subagent::SubagentHost>,
-    sessions_dir: Option<PathBuf>,
-    cwd: String,
-}
-
-impl SessionTranscripts {
-    pub fn new(
-        host: Arc<crate::subagent::SubagentHost>,
-        sessions_dir: Option<PathBuf>,
-        cwd: &Path,
-    ) -> Self {
-        Self {
-            host,
-            sessions_dir,
-            cwd: cwd.to_string_lossy().into_owned(),
-        }
-    }
-}
-
-impl Transcripts for SessionTranscripts {
-    fn open(&self, agent: &str) -> Option<Transcript> {
-        if let Some(live) = self.host.transcript(agent) {
-            return Some(Transcript::Live(live));
-        }
-        if let Some(kept) = self.host.kept_transcript(agent) {
-            return Some(Transcript::Kept(kept));
-        }
-        if let Some(store) = self
-            .host
-            .trail(agent)
-            .and_then(|file| yi_session::load_session(&file).ok())
-        {
-            return Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))));
-        }
-        let dir = self.sessions_dir.clone()?;
-        let mut repo = yi_session::JsonlRepo::new(dir.clone(), self.cwd.clone());
-        if let Ok(session) = yi_session::SessionRepo::open(&mut repo, agent) {
-            return Some(Transcript::Kept(session));
-        }
-        let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
-        let store = yi_session::load_session(&file).ok()?;
-        Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
-    }
-}
-
 /// Invariant: a spawned child's resolver has no session root, so its parent, live from the host
 /// that spawned it, is the one transcript past its own it can open; a sibling's is not its to read.
 pub struct ParentTranscript(pub std::sync::Weak<crate::subagent::SubagentHost>);
@@ -387,6 +348,26 @@ fn unsupported(url: &Url, missing: &'static str) -> FetchError {
     FetchError::Unsupported {
         url: url.to_string(),
         missing,
+    }
+}
+
+/// No transcript opened: a name several sessions carry lists them, so one is read by its id.
+fn unresolved(url: &Url, agent: &str, candidates: &[String]) -> FetchError {
+    match candidates {
+        [] => FetchError::NotFound {
+            url: url.to_string(),
+            what: format!(
+                "agent {agent}: not the attached session, not a live child, and no session on disk carries that id or name"
+            ),
+        },
+        files => FetchError::BadAddress {
+            url: url.to_string(),
+            detail: format!(
+                "{} sessions are named {agent:?}; read one by the id at the end of its file name: {}",
+                files.len(),
+                files.join(", ")
+            ),
+        },
     }
 }
 
