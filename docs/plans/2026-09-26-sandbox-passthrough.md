@@ -572,10 +572,10 @@ Rejected alternatives:
 ## 9. Build order
 
 Each PR lands with its changelog row and, where it changes a settled decision, its D-row and
-ADR. Red-first tests run on macOS with a per-worktree HOME (`env
-HOME=~/Development/.yi-homes/<wt> CARGO_HOME=~/.cargo RUSTUP_HOME=~/.rustup
-UV_CACHE_DIR=~/.cache/uv`) from a worktree under `~/Development`, never under a temp root,
-where every write is allowed and a sandbox test passes vacuously. LOC estimates are the
+ADR. Red-first tests run on macOS with a per-worktree HOME (`scripts/wt_home.sh <cmd>` sets
+HOME to `<worktree>/target/yi-home` and keeps the toolchain and uv caches shared; it replaces
+the earlier `.yi-homes/<wt>` spelling) from a worktree under `~/Development`, never under a temp
+root, where every write is allowed and a sandbox test passes vacuously. LOC estimates are the
 minimalism pass's; every crate sits at its shrink-only ceiling, so each PR carries its growth
 memo.
 

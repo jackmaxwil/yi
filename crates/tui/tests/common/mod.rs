@@ -112,8 +112,14 @@ impl VT100Backend {
             .map(|parser| {
                 let screen = parser.screen();
                 let width = screen.size().1;
+                // A cell no frame wrote shows blank on a real screen, so it reads as a space.
                 (0..width)
-                    .filter_map(|col| screen.cell(row, col).map(vt100::Cell::contents))
+                    .filter_map(|col| screen.cell(row, col))
+                    .filter(|cell| !cell.is_wide_continuation())
+                    .map(|cell| match cell.contents() {
+                        text if text.is_empty() => " ".to_owned(),
+                        text => text,
+                    })
                     .collect::<String>()
             })
             .unwrap_or_default()

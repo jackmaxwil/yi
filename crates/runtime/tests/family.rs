@@ -199,7 +199,7 @@ fn a_compact_entry_is_one_line_with_its_sequence() -> TestResult {
         ),
     )?;
     let entries = recent_entries(&session);
-    let line = compact_entry(entries.first().ok_or("entry")?);
+    let line = compact_entry(entries.first().ok_or("entry")?).0;
     assert!(
         line.starts_with("#1 assistant: running the check bash "),
         "{line}"

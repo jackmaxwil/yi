@@ -38,14 +38,11 @@ pub(crate) fn render_keys(app: &App, frame: &mut Frame<'_>, view: &ViewState, th
         .style(Style::default().bg(theme.selection_bg()));
     let mut lines = vec![Line::from(vec![
         Span::styled(format!(" {:<32}", "what"), theme.dim_style()),
-        Span::styled(
-            format!("{:<14}", if app.cmd_hints { "⌘" } else { "⌥" }),
-            theme.dim_style(),
-        ),
+        Span::styled(format!("{:<14}", "key"), theme.dim_style()),
         Span::styled("ctrl+b then", theme.dim_style()),
     ])];
     for chord in &keys::CHORDS {
-        let key = if app.cmd_hints { chord.cmd } else { chord.alt };
+        let key = chord.key(app.cmd_hints);
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {:<32}", chord.what),
@@ -95,7 +92,7 @@ pub(crate) fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewStat
                 let Some(chord) = keys::CHORDS.get(*index) else {
                     continue;
                 };
-                let key = if app.cmd_hints { chord.cmd } else { chord.alt };
+                let key = chord.key(app.cmd_hints);
                 let pad =
                     inner.saturating_sub(chord.what.chars().count() + key.chars().count() + 4);
                 (
