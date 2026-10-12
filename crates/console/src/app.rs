@@ -59,7 +59,7 @@ pub enum RequestKind {
     Rewind(SessionId),
     Plan(SessionId),
     SetConfig(SessionId),
-    Settings(PaneId),
+    Settings(PaneId, bool),
     Steer,
     Shutdown,
 }
@@ -451,8 +451,8 @@ impl App {
             self.state.quit = true;
             return;
         }
-        if let RequestKind::Settings(pane) = pending.kind {
-            return self.absorb_settings(pane, value);
+        if let RequestKind::Settings(pane, saved) = pending.kind {
+            return self.absorb_settings(pane, saved, value);
         }
         if let Some(error) = value.get("error") {
             let message = error
@@ -515,7 +515,7 @@ impl App {
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig(_)
-            | RequestKind::Settings(_)
+            | RequestKind::Settings(..)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {

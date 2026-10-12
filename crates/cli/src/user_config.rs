@@ -64,10 +64,13 @@ pub(crate) fn set_config(loaded: UserConfig) -> Result<(), String> {
 }
 
 pub(crate) fn config() -> Arc<UserConfig> {
-    let mut slot = CONFIG
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    slot.get_or_insert_with(Arc::default).clone()
+    let read = CONFIG.read().ok().and_then(|slot| slot.clone());
+    read.unwrap_or_else(|| {
+        let mut slot = CONFIG
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.get_or_insert_with(Arc::default).clone()
+    })
 }
 
 /// Invariant: a session starts on the file as it is now, since the settings page saves it while
@@ -83,6 +86,18 @@ pub(crate) fn reload_config() {
     }
 }
 
+pub(crate) fn configured_mode() -> yi_runtime::PermissionMode {
+    match config()
+        .permissions
+        .as_ref()
+        .and_then(|permissions| permissions.mode)
+    {
+        Some(yi_types::config::ModeName::Ask) => yi_runtime::PermissionMode::Ask,
+        Some(yi_types::config::ModeName::Yolo) => yi_runtime::PermissionMode::Yolo,
+        Some(yi_types::config::ModeName::Auto) | None => yi_runtime::PermissionMode::Auto,
+    }
+}
+
 /// The flags the command line did not pin, read again from the config [`reload_config`] left.
 pub(crate) fn refreshed(args: &Args) -> Args {
     let mut args = args.clone();
@@ -91,6 +106,9 @@ pub(crate) fn refreshed(args: &Args) -> Args {
     }
     if !args.thinking_pinned {
         args.thinking = config().thinking;
+    }
+    if !args.mode_pinned {
+        args.mode = configured_mode();
     }
     args
 }

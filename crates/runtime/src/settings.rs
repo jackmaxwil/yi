@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value};
-use yi_types::settings::{SettingRow, lookup, refusal, rows};
+use yi_types::settings::{SettingKind, SettingRow, lookup, refusal, rows};
 
 pub fn config_path(home: &Path) -> PathBuf {
     home.join(".yi/config.json")
@@ -26,10 +26,22 @@ pub fn current(home: &Path) -> Result<Vec<SettingRow>, String> {
     Ok(rows()
         .into_iter()
         .map(|mut row| {
-            row.value = lookup(&config, &row.id).clone();
+            row.value = shown(&row.kind, lookup(&config, &row.id));
             row
         })
         .collect())
+}
+
+/// Incident: the owner once kept an API key under `keys`; a list or JSON value leaves this
+/// process as its entry count, which is all the page shows of it.
+fn shown(kind: &SettingKind, value: &Value) -> Value {
+    match (kind, value) {
+        (SettingKind::List | SettingKind::Json, Value::Array(items)) => Value::from(items.len()),
+        (SettingKind::List | SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
+        (SettingKind::List | SettingKind::Json, Value::Null) => Value::Null,
+        (SettingKind::List | SettingKind::Json, _) => Value::from(1),
+        _ => value.clone(),
+    }
 }
 
 /// One setting saved, `null` unsetting it; refused whole by its row's rule or the strict parse.
@@ -48,8 +60,8 @@ pub fn save(home: &Path, id: &str, value: Value) -> Result<Vec<SettingRow>, Stri
 static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static STAGED: AtomicU64 = AtomicU64::new(0);
 
-/// Invariant: a write is read, edited and renamed under one lock with its own staging name,
-/// so two edits to different keys both land; the shared `.config.json.setup` clobbered one.
+/// Invariant: a write is read, edited and renamed under one lock, so two edits to different keys
+/// both land; its staging name is its own, so `yi setup` running beside the daemon never shares it.
 pub fn write(home: &Path, edits: &[(Vec<&str>, Value)]) -> Result<PathBuf, String> {
     let _held = WRITES
         .lock()
@@ -143,8 +155,8 @@ mod tests {
         Ok(())
     }
 
-    /// Incident: every write staged at one `.config.json.setup`, so two at once clobbered
-    /// each other; eight threads saving eight keys must leave all eight.
+    /// Two consoles save through one daemon: without the lock a read-edit-rename lost the
+    /// other key. Eight threads saving eight keys must leave all eight.
     #[test]
     fn concurrent_saves_of_different_keys_all_land() -> Result<(), Box<dyn std::error::Error>> {
         let home = Scratch::new("yi-settings-concurrent")?;
@@ -185,6 +197,32 @@ mod tests {
         assert_eq!(thinking.value, Value::Null);
         let config: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         assert_eq!(config, json!({"gates": {"x": 1}}));
+        Ok(())
+    }
+
+    /// Incident: the owner once stored an API key under `keys`; the page only ever learns how
+    /// many entries a list or JSON row holds.
+    #[test]
+    fn a_secret_in_a_json_row_never_leaves_as_text() -> Result<(), Box<dyn std::error::Error>> {
+        let home = Scratch::new("yi-settings-redacts")?;
+        let path = config_path(&home);
+        std::fs::create_dir_all(path.parent().ok_or("no parent")?)?;
+        let config =
+            r#"{"keys": {"openrouter": "sk-or-v1-abc"}, "skills": {"global": ["a", "b"]}}"#;
+        std::fs::write(&path, config)?;
+        let rows = current(&home)?;
+        let wire = serde_json::to_string(&rows)?;
+        assert!(!wire.contains("sk-or"), "the key reached the wire");
+        let keys = rows
+            .iter()
+            .find(|row| row.id == "keys")
+            .ok_or("no keys row")?;
+        assert_eq!(keys.value, json!(1));
+        let skills = rows
+            .iter()
+            .find(|row| row.id == "skills.global")
+            .ok_or("no skills row")?;
+        assert_eq!(skills.value, json!(2));
         Ok(())
     }
 }

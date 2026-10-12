@@ -24,6 +24,7 @@ impl App {
 
     /// Focuses the tab's settings pane, opening one beside the focused pane if there is none.
     pub(super) fn open_settings(&mut self, outbound: &Outbound, tab: usize) {
+        let session = self.state.focused_session();
         let open = self.state.tab().and_then(|layout| {
             layout.layout.pane_ids().into_iter().find(|id| {
                 self.state
@@ -35,14 +36,14 @@ impl App {
         let pane = match open {
             Some(pane) => pane,
             None => {
-                let session = self.state.focused_session();
                 let home = self.state.focused_pane_id();
                 self.split_with_anim(ratatui::layout::Direction::Horizontal);
                 let Some(pane) = self.state.focused_pane_id().filter(|id| Some(*id) != home) else {
                     return;
                 };
                 if let Some(slot) = self.state.panes.get_mut(&pane) {
-                    slot.content = PaneContent::Settings(Box::new(Settings::new(session, tab)));
+                    slot.content =
+                        PaneContent::Settings(Box::new(Settings::new(session.clone(), tab)));
                 }
                 pane
             }
@@ -54,10 +55,13 @@ impl App {
         if let Some(settings) = self.settings_pane(pane) {
             settings.tab = tab;
             settings.cursor = 0;
+            if session.is_some() {
+                settings.session = session;
+            }
         }
         self.send_request(
             outbound,
-            RequestKind::Settings(pane),
+            RequestKind::Settings(pane, false),
             "_yi/settings",
             json!({}),
         );
@@ -90,7 +94,7 @@ impl App {
             }
             Intent::SaveDefault { id, value } => self.send_request(
                 outbound,
-                RequestKind::Settings(pane),
+                RequestKind::Settings(pane, true),
                 "_yi/set_default",
                 json!({"id": id, "value": value}),
             ),
@@ -108,7 +112,7 @@ impl App {
     }
 
     /// The daemon's rows, or its refusal named on the pane; the console's own rows apply here.
-    pub(super) fn absorb_settings(&mut self, pane: PaneId, reply: &Value) {
+    pub(super) fn absorb_settings(&mut self, pane: PaneId, saved: bool, reply: &Value) {
         self.dirty = true;
         let refusal = reply.pointer("/error/message").and_then(Value::as_str);
         let rows = reply.pointer("/result/rows").cloned().and_then(|rows| {
@@ -124,7 +128,7 @@ impl App {
         match (refusal, rows) {
             (Some(why), _) => settings.status = Some(format!("not saved: {why}")),
             (None, Some(rows)) => {
-                if settings.rows.is_some() {
+                if saved {
                     settings.status = Some("saved".to_owned());
                 }
                 settings.rows = Some(rows);

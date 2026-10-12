@@ -959,8 +959,8 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   focused pane or session. A verb that never applies is absent, one blocked now is greyed with
   its reason, and a row with a key names it. With more than one pane in a tab, the focused pane's
   title carries `✕` and its close key where the title leaves room, and a sibling's a bare `✕`;
-  a mark closes its pane on a release that did not drag. The palette, the keys overlay and the
-  menu take every press while open and lift the kitty images of the panes they cover.
+  a mark closes its pane on a release that did not drag. The palette and the menu take every
+  press while open and lift the kitty images of the panes they cover.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
 - The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
   those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
@@ -986,7 +986,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   chord, which replaced the keys overlay. An edit saves at once or names why it was refused.
 - State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor, Settings}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
-  `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
+  `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Menu}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
 - Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267, D271
 
