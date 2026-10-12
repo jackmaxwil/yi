@@ -391,6 +391,9 @@ impl ProviderStream {
     }
 
     fn faux_stream(&self) -> Receiver<AssistantMessageEvent> {
+        self.faux_time
+            .requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let (events, lag) = self
             .faux
             .lock()
@@ -623,6 +626,7 @@ async fn paced(
 pub struct FauxTime {
     frozen: Mutex<Option<Frozen>>,
     updates: std::sync::atomic::AtomicU64,
+    requests: std::sync::atomic::AtomicU64,
 }
 
 type Step = (std::time::Duration, AssistantMessageEvent);
@@ -648,18 +652,19 @@ impl FauxTime {
         self.frozen.lock().is_ok_and(|frozen| frozen.is_some())
     }
 
-    /// Stream events sent so far that a screen reduces as updates, so a drive can wait until it
-    /// has reduced as many.
+    /// Stream events sent so far that a screen counts as updates or an end, so a drive can wait
+    /// until it has received as many.
     pub fn updates(&self) -> u64 {
         self.updates.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Model requests served so far, which a drive matches to the turns the loop announced.
+    pub fn requests(&self) -> u64 {
+        self.requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn count(&self, event: &AssistantMessageEvent) {
-        use AssistantMessageEvent as Event;
-        if !matches!(
-            event,
-            Event::Start { .. } | Event::Done { .. } | Event::Error { .. }
-        ) {
+        if !matches!(event, AssistantMessageEvent::Start { .. }) {
             self.updates
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
@@ -1030,7 +1035,7 @@ mod tests {
             .advance(std::time::Duration::from_millis(600));
         // delta, delta, text_end, done.
         assert_eq!(arrived(&mut stream), 4);
-        assert_eq!(provider.faux_time.updates(), 5);
+        assert_eq!(provider.faux_time.updates(), 6);
     }
 
     /// The wall path sleeps the recorded lag in total: a reply recorded at 7.7 s that streamed

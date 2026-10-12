@@ -647,8 +647,16 @@ fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> Test
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    // Incident: the status row ends in the session id, a v7 id whose first eight digits tick
+    // every 65 s, so two runs a minute apart (a loaded lane) differed in that row alone.
     let snap = |frames: &std::path::Path, name: &str| {
-        std::fs::read_to_string(frames.join(format!("snap-{name}.txt")))
+        std::fs::read_to_string(frames.join(format!("snap-{name}.txt"))).map(|frame| {
+            let masked = |word: &str| match word.len() == 8 && word.starts_with("01a") {
+                true => "<id>".to_owned(),
+                false => word.to_owned(),
+            };
+            frame.split(' ').map(masked).collect::<Vec<_>>().join(" ")
+        })
     };
     // The reply took 7.7 s: 984 characters in 62 deltas, the first two the thought.
     let (start, early, middle) = (
@@ -666,7 +674,9 @@ fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> Test
         "{middle}"
     );
     assert!(snap(&first, "done")?.contains("installed skills"));
-    for name in ["start", "early", "middle", "done"] {
+    // `done` is left out: the turn's end reaches the screen in real time after the last delta,
+    // so the clock it is stamped with (`25s` or `7s` in its footer) is the run's, not the stream's.
+    for name in ["start", "early", "middle"] {
         assert_eq!(
             snap(&first, name)?,
             snap(&second, name)?,
