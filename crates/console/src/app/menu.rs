@@ -1,12 +1,17 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use serde_json::{Value, json};
+use yi_types::entry::Entry;
+use yi_types::message::AgentMessage;
+
 use crate::client::Outbound;
 use crate::keys::Action;
 use crate::layout::PaneId;
 use crate::menu::{Facts, Menu, Target, Verb};
-use crate::model::{Mode, PaneContent, Zone};
+use crate::model::{Mode, PaneContent, SessionId, SessionRow, SessionStatus, Zone, now_ms};
 
-use super::{App, MouseKind};
+use super::port::PortRequest;
+use super::{App, MouseKind, RequestKind};
 
 const UNWRAPPED: usize = 10_000;
 
@@ -18,30 +23,38 @@ impl App {
             return Some(Target::Session(*index));
         }
         let pane = &hits.pane_at(x, y)?;
-        let source = match &self.state.panes.get(pane)?.content {
+        let message = match &self.state.panes.get(pane)?.content {
             PaneContent::Session {
                 chat: Some(chat), ..
-            } => chat
-                .app
-                .pane_row(y)
-                .flatten()
-                .and_then(|(_, source)| source)
-                .map(str::to_owned),
+            } => chat.app.pane_row(y).flatten().and_then(|(cell, _)| {
+                let (said, source) = chat.app.said(cell)?;
+                let entry = chat.app.locate(cell, &chat.port.drawn()).cloned();
+                Some((said, source.to_owned(), entry.map(Box::new)))
+            }),
             _ => None,
         };
-        Some(match source {
-            Some(source) => Target::Message {
+        Some(match message {
+            Some((said, source, entry)) => Target::Message {
                 pane: *pane,
                 source,
+                said,
+                entry,
             },
             None => Target::Pane(*pane),
         })
     }
 
     fn open_menu(&mut self, target: Target, at: (u16, u16)) {
+        let running = match &target {
+            Target::Message { pane, .. } => self.state.panes.get(pane).is_some_and(|pane| {
+                matches!(&pane.content, PaneContent::Session { chat: Some(chat), .. } if chat.app.is_running())
+            }),
+            Target::Pane(_) | Target::Session(_) => false,
+        };
         let tab = self.state.tab();
         let facts = Facts {
             cmd: self.cmd_hints,
+            running,
             last_pane: tab.is_none_or(|tab| tab.layout.pane_ids().len() < 2),
             zoomed: tab.is_some_and(|tab| tab.zoomed),
         };
@@ -187,7 +200,17 @@ impl App {
                     .collect();
                 self.copy_out(&crate::select::words(&rows));
             }
-            (Target::Message { pane, source }, Verb::Quote) => {
+            (
+                Target::Message {
+                    pane,
+                    entry: Some(entry),
+                    ..
+                },
+                verb @ (Verb::CopyJson | Verb::Inspect | Verb::Rewind { .. } | Verb::Fork { .. }),
+            ) => {
+                self.ledger_verb(outbound, pane, &entry, verb);
+            }
+            (Target::Message { pane, source, .. }, Verb::Quote) => {
                 self.focus_pane(pane);
                 if let Some(chat) = self.focused_chat() {
                     chat.app.quote(&source);
@@ -216,6 +239,184 @@ impl App {
     }
 }
 
+impl App {
+    fn ledger_verb(&mut self, outbound: &Outbound, pane: PaneId, entry: &Entry, verb: Verb) {
+        let session = self
+            .state
+            .panes
+            .get(&pane)
+            .and_then(|pane| pane.session().cloned());
+        let id = entry.id().to_owned();
+        match (verb, session) {
+            (Verb::CopyJson, _) => {
+                let json = serde_json::to_string_pretty(entry).unwrap_or_default();
+                self.copy_out(&json);
+            }
+            (Verb::Inspect, _) => {
+                let source = inspect(entry);
+                let opened = self.beside(
+                    pane,
+                    PaneContent::Markdown {
+                        path: format!("entry {id}"),
+                        source,
+                    },
+                );
+                // The pane clamps the offset, so the largest one opens it at its top.
+                if let Some(opened) = opened.and_then(|id| self.state.panes.get_mut(&id)) {
+                    opened.scroll_from_bottom = usize::MAX;
+                }
+            }
+            (Verb::Rewind { .. }, _) if self.pane_running(pane) => {
+                self.note("wait for the turn to end");
+            }
+            (Verb::Rewind { files }, Some(session)) => {
+                let request = if files {
+                    PortRequest::RewindFiles(id)
+                } else {
+                    PortRequest::Rewind(id)
+                };
+                self.send_port_request(outbound, pane, &session, request);
+            }
+            (Verb::Fork { at }, Some(session)) => {
+                let Some(new) = self.beside(
+                    pane,
+                    PaneContent::Session {
+                        session: None,
+                        chat: None,
+                    },
+                ) else {
+                    return;
+                };
+                let position = if at { "at" } else { "before" };
+                let params = json!({"sessionId": session.0, "entryId": id, "position": position});
+                self.send_request(outbound, RequestKind::Fork(new), "_yi/fork", params);
+            }
+            _ => self.note("this pane has no session"),
+        }
+    }
+
+    /// Invariant: a rewind re-attaches the history a running turn is writing, and a turn can
+    /// start while the menu is open, so the menu's own reading is checked again here.
+    fn pane_running(&self, pane: PaneId) -> bool {
+        self.state.panes.get(&pane).is_some_and(|pane| {
+            matches!(&pane.content, PaneContent::Session { chat: Some(chat), .. } if chat.app.is_running())
+        })
+    }
+
+    /// A pane opened to the right of `pane` and focused; `None` when the split made none.
+    fn beside(&mut self, pane: PaneId, content: PaneContent) -> Option<PaneId> {
+        self.focus_pane(pane);
+        self.split_with_anim(ratatui::layout::Direction::Horizontal);
+        let new = self.state.focused_pane_id().filter(|id| *id != pane)?;
+        if let Some(slot) = self.state.panes.get_mut(&new) {
+            slot.content = content;
+        }
+        Some(new)
+    }
+
+    /// The fork's session opens in the pane made for it; a re-ask puts the prompt back to edit.
+    pub(super) fn absorb_fork(&mut self, outbound: &Outbound, pane: PaneId, reply: &Value) {
+        // Invariant: the pane was made empty for this fork; one the person has since bound to
+        // another session keeps it.
+        let empty = matches!(
+            self.state.panes.get(&pane).map(|pane| &pane.content),
+            Some(PaneContent::Session {
+                session: None,
+                chat: None
+            })
+        );
+        let id = reply.pointer("/result/sessionId").and_then(Value::as_str);
+        let Some(id) = id.filter(|_| empty) else {
+            if empty {
+                self.focus_pane(pane);
+                self.apply_action(outbound, Action::ClosePane);
+            }
+            let why = reply.pointer("/error/message").and_then(Value::as_str);
+            return self.note(&format!("fork: {}", why.unwrap_or("its pane was reused")));
+        };
+        let session = SessionId(id.to_owned());
+        self.state.upsert_row(SessionRow {
+            id: session.clone(),
+            root: self.state.root.clone(),
+            status: SessionStatus::Idle,
+            attached: true,
+            name: None,
+            created_ms: now_ms(),
+            last_ms: 0,
+        });
+        self.resume_into(outbound, pane, &session);
+        let prefill = reply
+            .pointer("/result/prefill")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(PaneContent::Session {
+            chat: Some(chat), ..
+        }) = self
+            .state
+            .panes
+            .get_mut(&pane)
+            .map(|pane| &mut pane.content)
+            && !prefill.is_empty()
+        {
+            chat.app.set_draft_if_empty(prefill);
+        }
+    }
+}
+
+/// The entry with what its message cost on top; a duration is the gap to the entry before it,
+/// which the ledger does not store, so the pane says it is derived.
+fn inspect(entry: &Entry) -> String {
+    let mut shown = serde_json::to_value(entry).unwrap_or_default();
+    elide_images(&mut shown);
+    let json = serde_json::to_string_pretty(&shown).unwrap_or_default();
+    let mut head = format!("**entry** `{}`", entry.id());
+    if let Entry::Message {
+        message:
+            AgentMessage::Assistant {
+                usage,
+                provider,
+                model,
+                stop_reason,
+                ..
+            },
+        ..
+    } = entry
+    {
+        head.push_str(&format!(
+            "\n\n**model** {provider}/{model} · **stop** {stop_reason:?}\n\n"
+        ));
+        if usage.unknown {
+            head.push_str("**usage** not reported");
+        } else {
+            head.push_str(&format!(
+                "**tokens** in {} · out {} · cache read {} · cache write {} · **cost** ${}",
+                usage.input, usage.output, usage.cache_read, usage.cache_write, usage.cost.total
+            ));
+        }
+    }
+    format!("{head}\n\n```json\n{json}\n```\n")
+}
+
+/// An image block's base64 becomes its size: a pasted screenshot is megabytes the pane would
+/// highlight on every frame. Raw JSON still copies the whole entry.
+fn elide_images(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            let image = fields.get("type").and_then(Value::as_str) == Some("image");
+            for (key, field) in fields.iter_mut() {
+                match (image, key.as_str(), &field) {
+                    (true, "data", Value::String(data)) => {
+                        *field = Value::String(format!("[…] {} bytes of base64", data.len()));
+                    }
+                    _ => elide_images(field),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(elide_images),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +441,7 @@ mod tests {
             .ok_or("no free pane id")?;
         let facts = Facts {
             cmd: false,
+            running: false,
             last_pane: false,
             zoomed: false,
         };
@@ -248,5 +450,19 @@ mod tests {
         outbound.shutdown();
         assert_eq!(open(&app), 2, "Close reached the pane that had focus");
         Ok(())
+    }
+
+    /// A pasted screenshot is megabytes of base64 the pane would highlight every frame; Inspect
+    /// shows its size and keeps every other field.
+    #[test]
+    fn inspect_shows_an_image_by_its_size() {
+        let mut entry = serde_json::json!({"message": {"content": [
+            {"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"},
+            {"type": "text", "text": "see"}]}});
+        elide_images(&mut entry);
+        let blocks = &entry["message"]["content"];
+        assert_eq!(blocks[0]["data"], "[…] 8 bytes of base64");
+        assert_eq!(blocks[0]["mimeType"], "image/png");
+        assert_eq!(blocks[1]["text"], "see");
     }
 }

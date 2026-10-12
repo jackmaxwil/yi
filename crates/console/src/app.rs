@@ -59,6 +59,7 @@ pub enum RequestKind {
     Rewind(SessionId),
     Plan(SessionId),
     SetConfig(SessionId),
+    Fork(PaneId),
     Steer,
     Shutdown,
 }
@@ -450,6 +451,9 @@ impl App {
             self.state.quit = true;
             return;
         }
+        if let RequestKind::Fork(pane) = pending.kind {
+            return self.absorb_fork(outbound, pane, value);
+        }
         if let Some(error) = value.get("error") {
             let message = error
                 .get("message")
@@ -511,6 +515,7 @@ impl App {
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig(_)
+            | RequestKind::Fork(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
