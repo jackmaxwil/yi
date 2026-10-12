@@ -1,0 +1,4 @@
+---
+issue: Closes #1288
+---
+The PTY harness can now audit every frame the terminal would have shown, not only the kitty placements left at exit. `scripts/tui_pty.py --frame-audit` replays the captured bytes through a minimal VT (cursor moves, DECSTBM, scroll up and down, erase, kitty placements that follow a scroll only when fully inside the region) and presents a frame at each `?2026l` and at each read boundary while sync is off. It prints one line per check with a count and the first three offending frames: text under a placement, a placement off the orb's slot above the `[esc] interrupt` row, two placements of one image family on different rows, a frame whose text moved more than one row or downward, and scrollback rows that carry both prose and composer chrome. Any hit exits 1. `--selfcheck` runs each check on a synthetic stream built to trip it, then again with the check disabled, and fails unless the disabled run breaks; `check_guardrails.sh` runs it.
