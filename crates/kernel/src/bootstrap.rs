@@ -199,7 +199,7 @@ pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
                 .map_err(|error| format!("{}: {error}", staging.display()))
         })
         .and_then(|()| {
-            crate::tarball::swap_in(&staging, &target).map(|aside| drop(aside.commit()))
+            crate::tarball::swap_in(&staging, &target).map(crate::tarball::Aside::commit)
         });
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);

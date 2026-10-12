@@ -42,9 +42,9 @@ pub fn add(
         true => Some(yi_kernel::tarball::set_aside(&plugin.dir(home))?),
         false => None,
     };
-    let installed = pinned(plugin, home, fetch);
+    let installed = install_pin(plugin, home, fetch);
     match (aside, &installed) {
-        (Some(aside), Ok(_)) => aside.commit()?,
+        (Some(aside), Ok(_)) => aside.commit(),
         (Some(aside), Err(why)) => aside.restore().map_err(|error| format!("{why}; {error}"))?,
         (None, _) => {}
     }
@@ -63,7 +63,7 @@ pub fn add(
     Ok(path)
 }
 
-fn pinned(
+fn install_pin(
     plugin: &Plugin,
     home: &Path,
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
