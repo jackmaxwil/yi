@@ -69,11 +69,6 @@ impl Default for IdGenerator {
 
 impl IdGenerator {
     pub fn new() -> Self {
-        Self::with_fixed(false)
-    }
-
-    /// Ids for new sessions: a process-wide counter when `YI_FIXED_IDS` is set, else [`Self::new`].
-    pub fn session_ids() -> Self {
         Self::with_fixed(std::env::var_os(FIXED_IDS_VAR).is_some())
     }
 
