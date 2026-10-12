@@ -3688,7 +3688,7 @@ fn quote_puts_the_message_in_the_composer() -> TestResult {
         "menu-quote",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\ntype see\n\
-         mouse right 25 2\nwait-frame 3000 Quote\nkey up\nkey enter\n\
+         mouse right 25 2\nwait-frame 3000 Quote\nkey down\nkey down\nkey enter\n\
          wait-frame 3000 > hello agent\nquit\n",
     )?;
     let draft = frame
@@ -3774,5 +3774,228 @@ fn the_menu_answers_the_mouse() -> TestResult {
         log.contains(&yi_console::select::osc52(plain)),
         "no plain copy in {log:?}"
     );
+    Ok(())
+}
+
+fn refuse(frame: &Value, why: &str) -> Vec<Value> {
+    vec![json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": why}})]
+}
+
+fn fork_at_answer(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e2", "position": "at"}) {
+        return refuse(frame, "wrong fork");
+    }
+    vec![session_result(frame, "s-fork", None, json!({}))]
+}
+
+fn resume_fork(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-fork",
+            &[
+                entry("e1", None, 1, &user_message("hello agent")),
+                entry("e2", Some("e1"), 2, &assistant(UNICODE_REPLY)),
+            ],
+            0,
+            Some("s-fork"),
+        ),
+        session_result(frame, "s-fork", Some("s-fork"), json!({"replayedTo": 2})),
+    ]
+}
+
+/// Fork here asks the worker for a session that ends at this answer and opens it beside the
+/// chat it came from; the fixture refuses any other fork.
+#[test]
+fn fork_here_opens_the_answers_branch_beside_the_chat() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/fork", fork_at_answer));
+    steps.push(Step::Expect("session/resume", resume_fork));
+    let frame = run_frames(
+        "menu-fork",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Fork here\nkey down\nkey down\nkey down\nkey enter\n\
+         wait-frame 5000 s-fork\nwait 200\nquit\n",
+    )?;
+    let replies = frame.matches("Naïve café").count();
+    assert_eq!(
+        replies, 2,
+        "the fork's copy of the answer is not beside the chat:\n{frame}"
+    );
+    Ok(())
+}
+
+fn fork_before_prompt(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e1", "position": "before"}) {
+        return refuse(frame, "wrong fork");
+    }
+    let mut result = session_result(frame, "s-again", None, json!({}));
+    result["result"]["prefill"] = json!("hello agent");
+    vec![result]
+}
+
+fn resume_empty(frame: &Value) -> Vec<Value> {
+    vec![
+        replay("s-again", &[], 0, Some("s-again")),
+        session_result(frame, "s-again", Some("s-again"), json!({"replayedTo": 0})),
+    ]
+}
+
+/// Re-ask from here starts a session before the prompt and hands the prompt back to edit.
+#[test]
+fn re_ask_puts_the_prompt_back_in_a_session_before_it() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/fork", fork_before_prompt));
+    steps.push(Step::Expect("session/resume", resume_empty));
+    let frame = run_frames(
+        "menu-reask",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 25 2\nwait-frame 3000 Re-ask from here\nkey down\nkey down\nkey down\nkey enter\n\
+         wait-frame 5000 s-again\nwait 200\nquit\n",
+    )?;
+    assert_eq!(
+        frame.matches("hello agent").count(),
+        2,
+        "no prompt to edit:\n{frame}"
+    );
+    Ok(())
+}
+
+fn rewind_first(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e1"}) {
+        return refuse(frame, "wrong rewind");
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
+    )]
+}
+
+/// Rewind ▸ Conversation sends the clicked prompt's entry, and the prompt comes back to edit.
+#[test]
+fn rewind_to_here_rewinds_to_the_clicked_prompt() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("_yi/rewind", rewind_first));
+    run(
+        "menu-rewind",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 25 2\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 rewound prompt\nquit\n",
+    )
+}
+
+/// Inspect opens the entry beside the chat: its id and the message as the ledger holds it.
+#[test]
+fn inspect_shows_the_entry_beside_the_chat() -> TestResult {
+    run(
+        "menu-inspect",
+        opened_unicode(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Inspect\nkey up\nkey enter\n\
+         wait-frame 3000 entry e2\nwait-frame 3000 model faux/faux-1\nquit\n",
+    )
+}
+
+fn prompt_committed(frame: &Value) -> Vec<Value> {
+    let mut frames = prompt_stream(frame);
+    let prompt = frame
+        .pointer("/params/prompt/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let asked = entry("e3", Some("e2"), 3, &user_message(prompt));
+    let answered = entry("e4", Some("e3"), 4, &assistant("streamed answer"));
+    for saved in [asked, answered] {
+        frames.push(update(
+            "s-alpha",
+            json!({"sessionUpdate": "_yi/committed", "entry": saved}),
+        ));
+    }
+    frames
+}
+
+/// A reply that streamed in live is in no replay; the worker's committed notice is what lets
+/// its menu reach the ledger, so Inspect opens the entry the notice named.
+#[test]
+fn a_live_reply_is_inspectable_once_committed() -> TestResult {
+    let mut steps = opened_unicode();
+    steps.push(Step::Expect("session/prompt", prompt_committed));
+    run(
+        "menu-live",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         type again\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\n\
+         mouse right 25 13\nwait-frame 3000 Inspect\nkey up\nkey enter\n\
+         wait-frame 3000 entry e4\nquit\n",
+    )
+}
+
+fn resume_twice(frame: &Value) -> Vec<Value> {
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("yes")),
+                entry("e2", Some("e1"), 2, &assistant("first answer")),
+                entry("e3", Some("e2"), 3, &user_message("yes")),
+                entry("e4", Some("e3"), 4, &assistant("second answer")),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 4})),
+    ]
+}
+
+fn rewind_second_yes(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e3"}) {
+        return refuse(frame, &format!("rewound {}", frame["params"]["entryId"]));
+    }
+    vec![ok(
+        frame,
+        json!({"leafId": "e2", "unsent": "second yes", "summarizing": false}),
+    )]
+}
+
+/// Two prompts say "yes": the menu on the second rewinds to the second, not the first match.
+#[test]
+fn a_repeated_prompt_rewinds_to_its_own_turn() -> TestResult {
+    let steps = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_twice),
+        Step::Expect("_yi/seen", seen_ok),
+        Step::Expect("_yi/rewind", rewind_second_yes),
+    ];
+    run(
+        "menu-twice",
+        steps,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 second answer\n\
+         mouse right 25 10\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
+         wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 second yes\nquit\n",
+    )
+}
+
+/// Copy as ▸ Raw JSON hands out the ledger's entry, not the rendered reply.
+#[test]
+fn copy_as_raw_json_copies_the_entry() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-menu-json")?;
+    run_opts(
+        "menu-json",
+        Some(opened_unicode()),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
+         mouse right 30 5\nwait-frame 3000 Copy as\nkey down\nkey right\nwait-frame 3000 Raw JSON\n\
+         key down\nkey enter\nwait-frame 3000 copied\nquit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let saved: yi_types::entry::Entry =
+        serde_json::from_value(entry("e2", Some("e1"), 2, &assistant(UNICODE_REPLY)))?;
+    let want = yi_console::select::osc52(&serde_json::to_string_pretty(&saved)?);
+    assert!(osc_log(&dir)?.contains(&want), "the entry was not copied");
     Ok(())
 }

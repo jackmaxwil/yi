@@ -6,15 +6,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use yi_tui::colors::Theme;
 
+use yi_tui::transcript::Said;
+use yi_types::entry::Entry;
+
 use crate::keys::{Action, chord_for};
 use crate::layout::PaneId;
 
 pub enum Target {
-    /// Invariant: the source is read when the menu opens, so a verb acts on what was clicked
-    /// even when the transcript streams or clears under the open menu.
+    /// Invariant: the source and its entry are read when the menu opens, so a verb acts on what
+    /// was clicked even when the transcript streams or clears under the open menu.
     Message {
         pane: PaneId,
         source: String,
+        said: Said,
+        entry: Option<Box<Entry>>,
     },
     Pane(PaneId),
     Session(usize),
@@ -24,7 +29,11 @@ pub enum Target {
 pub enum Verb {
     Copy,
     CopyPlain,
+    CopyJson,
     Quote,
+    Rewind { files: bool },
+    Fork { at: bool },
+    Inspect,
     Act(Action),
     Open,
     OpenBeside,
@@ -63,6 +72,7 @@ fn item(label: &'static str, verb: Verb, hint: &str) -> Item {
 
 pub struct Facts {
     pub cmd: bool,
+    pub running: bool,
     pub last_pane: bool,
     pub zoomed: bool,
 }
@@ -70,17 +80,7 @@ pub struct Facts {
 pub fn items(target: &Target, facts: &Facts) -> Vec<Item> {
     let act = |label, action| item(label, Verb::Act(action), chord_for(action, facts.cmd));
     match target {
-        Target::Message { .. } => vec![
-            item("Copy", Verb::Copy, ""),
-            Item {
-                label: "Copy as",
-                hint: "▸".to_owned(),
-                verb: None,
-                blocked: None,
-                children: vec![item("Plain text", Verb::CopyPlain, "")],
-            },
-            item("Quote", Verb::Quote, ""),
-        ],
+        Target::Message { said, entry, .. } => message_items(*said, entry.is_some(), facts),
         Target::Pane(_) => vec![
             Item {
                 blocked: facts.last_pane.then_some("last pane"),
@@ -95,6 +95,55 @@ pub fn items(target: &Target, facts: &Facts) -> Vec<Item> {
             item("Open beside", Verb::OpenBeside, ""),
         ],
     }
+}
+
+fn parent(label: &'static str, children: Vec<Item>) -> Item {
+    Item {
+        label,
+        hint: "▸".to_owned(),
+        verb: None,
+        blocked: None,
+        children,
+    }
+}
+
+fn message_items(said: Said, saved: bool, facts: &Facts) -> Vec<Item> {
+    let unsaved = (!saved).then_some("not saved yet");
+    let ledger = |label, verb| Item {
+        blocked: unsaved,
+        ..item(label, verb, "")
+    };
+    let mut items = vec![
+        item("Copy", Verb::Copy, ""),
+        parent(
+            "Copy as",
+            vec![
+                item("Plain text", Verb::CopyPlain, ""),
+                ledger("Raw JSON", Verb::CopyJson),
+            ],
+        ),
+        item("Quote", Verb::Quote, ""),
+    ];
+    let rewind = |label, files| Item {
+        blocked: unsaved.or(facts.running.then_some("wait for the turn to end")),
+        ..item(label, Verb::Rewind { files }, "")
+    };
+    match said {
+        Said::User => {
+            items.push(ledger("Re-ask from here", Verb::Fork { at: false }));
+            items.push(parent(
+                "Rewind to here",
+                vec![
+                    rewind("Conversation", false),
+                    rewind("Conversation and files", true),
+                ],
+            ));
+        }
+        Said::Assistant => items.push(ledger("Fork here", Verb::Fork { at: true })),
+        Said::Thought => {}
+    }
+    items.push(ledger("Inspect", Verb::Inspect));
+    items
 }
 
 impl Menu {
@@ -259,6 +308,7 @@ mod tests {
     fn facts() -> Facts {
         Facts {
             cmd: false,
+            running: false,
             last_pane: false,
             zoomed: false,
         }
@@ -269,6 +319,8 @@ mod tests {
         let target = Target::Message {
             pane: crate::layout::PaneIds::default().allocate(),
             source: "hi".to_owned(),
+            said: Said::Assistant,
+            entry: None,
         };
         let mut menu = Menu::new(target, (70, 3), &facts());
         menu.point(0, 1);
@@ -288,6 +340,73 @@ mod tests {
             sub.y,
             root.y.saturating_add(1),
             "its first row beside Copy as"
+        );
+        Ok(())
+    }
+
+    /// A reply still streaming has no entry and a running turn cannot rewind: both stay on
+    /// the menu, greyed with the reason, rather than vanishing.
+    #[test]
+    fn ledger_verbs_grey_with_their_reason() -> Result<(), String> {
+        let pane = crate::layout::PaneIds::default().allocate();
+        let prompt = Target::Message {
+            pane,
+            source: "go".to_owned(),
+            said: Said::User,
+            entry: None,
+        };
+        let running = Facts {
+            running: true,
+            ..facts()
+        };
+        let menu = Menu::new(prompt, (0, 0), &running);
+        let items = &menu.levels.first().ok_or("no level")?.items;
+        let reason = |label: &str| {
+            items
+                .iter()
+                .find(|item| item.label == label)
+                .and_then(|item| item.blocked)
+        };
+        assert_eq!(reason("Re-ask from here"), Some("not saved yet"));
+        assert_eq!(reason("Inspect"), Some("not saved yet"));
+        let rewind = items
+            .iter()
+            .find(|item| item.label == "Rewind to here")
+            .ok_or("no rewind")?;
+        assert!(
+            rewind
+                .children
+                .iter()
+                .all(|child| child.blocked == Some("not saved yet"))
+        );
+        assert_eq!(reason("Copy"), None, "copy needs no ledger");
+        let saved: Entry =
+            serde_json::from_value(serde_json::json!({"type": "message", "id": "e1",
+            "parentId": null, "timestamp": 0, "seq": 1,
+            "message": {"role": "user", "content": "go", "timestamp": 0}}))
+            .map_err(|error| error.to_string())?;
+        let prompt = Target::Message {
+            pane,
+            source: "go".to_owned(),
+            said: Said::User,
+            entry: Some(Box::new(saved)),
+        };
+        let menu = Menu::new(prompt, (0, 0), &running);
+        let items = &menu.levels.first().ok_or("no level")?.items;
+        let rewind = items
+            .iter()
+            .find(|item| item.label == "Rewind to here")
+            .ok_or("no rewind")?;
+        assert!(
+            rewind
+                .children
+                .iter()
+                .all(|child| child.blocked == Some("wait for the turn to end"))
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.label == "Rewind to here" || item.blocked.is_none())
         );
         Ok(())
     }

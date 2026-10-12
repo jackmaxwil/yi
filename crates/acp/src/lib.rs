@@ -4,6 +4,7 @@
 mod attach;
 pub mod cells;
 pub mod daemon;
+mod fork;
 mod forward;
 pub mod review;
 pub mod update;
@@ -445,6 +446,17 @@ impl AcpState {
             .ok_or((INVALID_PARAMS, format!("unknown session {id}")))
     }
 
+    /// The options a session still building will start on.
+    fn default_options(&self) -> Vec<AcpConfigOption> {
+        self.defaults.as_ref().map_or_else(Vec::new, |defaults| {
+            options_for(
+                &defaults.model,
+                defaults.model.clamp_effort(defaults.effort),
+                mode_value(Some(defaults.mode)),
+            )
+        })
+    }
+
     fn session_result(&self, session_id: &str) -> AcpSessionResult {
         let handle = self.sessions.get(session_id);
         let options = handle
@@ -603,20 +615,15 @@ impl AcpState {
                     .create(CreateOptions::default())
                     .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
                 drop(creating);
-                let Some(defaults) = &self.defaults else {
+                if self.defaults.is_none() {
                     let session_id = self
                         .attach(&store)
                         .map_err(|error| (INTERNAL_ERROR, error))?;
                     return Ok(json!(self.session_result(&session_id)));
-                };
-                let options = options_for(
-                    &defaults.model,
-                    defaults.model.clamp_effort(defaults.effort),
-                    mode_value(Some(defaults.mode)),
-                );
+                }
                 let session_id = self.attach_later(&store);
                 let mut result = self.session_result(&session_id);
-                result.config_options = options;
+                result.config_options = self.default_options();
                 Ok(json!(result))
             }
             "session/cancel" => {
@@ -705,6 +712,7 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/set_config_option" => self.set_config_option(params),
+            "_yi/fork" => self.fork(params),
             "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff" | "_yi/tape"
             | "_yi/kernel_execute" | "_yi/kernel_cancel" | "_yi/slash" => {
                 self.handle_extension(method, params)

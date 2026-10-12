@@ -39,6 +39,8 @@ pub struct RemotePort {
     pub queue: Vec<PortRequest>,
     entries: Vec<Entry>,
     leaf: Option<String>,
+    /// Messages the worker saved since the last replay, in order: all on the current branch.
+    committed: Vec<Entry>,
     goal: Option<GoalView>,
     todos: Option<TodoList>,
     claims: Vec<yi_types::todo::Claim>,
@@ -49,6 +51,7 @@ impl RemotePort {
     pub fn absorb_replay(&mut self, replay: &Replay, entries: Vec<Entry>) {
         if replay.from == 0 {
             self.entries = entries;
+            self.committed.clear();
         } else {
             self.entries.extend(entries);
         }
@@ -57,6 +60,35 @@ impl RemotePort {
         if replay.todos.is_some() {
             self.todos = replay.todos.clone();
         }
+    }
+
+    pub fn commit(&mut self, entry: Entry) {
+        self.committed.push(entry);
+    }
+
+    /// The replayed branch from its leaf back, then what was committed live after it.
+    pub fn branch(&self) -> Vec<Entry> {
+        let by_id: std::collections::HashMap<&str, &Entry> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.id(), entry))
+            .collect();
+        let mut chain: Vec<&Entry> = Vec::new();
+        let mut at = self.leaf.as_deref();
+        while let Some(entry) = at
+            .and_then(|id| by_id.get(id))
+            .filter(|_| chain.len() < by_id.len())
+        {
+            chain.push(entry);
+            at = entry.parent_id();
+        }
+        chain.reverse();
+        for entry in &self.committed {
+            if !chain.iter().any(|kept| kept.id() == entry.id()) {
+                chain.push(entry);
+            }
+        }
+        chain.into_iter().cloned().collect()
     }
 
     pub fn set_goal(&mut self, goal: Option<GoalView>) {
@@ -176,6 +208,7 @@ pub enum Decoded {
         lane: Option<String>,
     },
     Notice(String),
+    Committed(Box<Entry>),
     Other,
 }
 
@@ -310,6 +343,11 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
             config.context_window = fields.get("contextWindow").and_then(Value::as_u64);
             Ok(Decoded::Config(config))
         }
+        "_yi/committed" => fields
+            .remove("entry")
+            .and_then(|entry| serde_json::from_value::<Entry>(entry).ok())
+            .map(|entry| Decoded::Committed(Box::new(entry)))
+            .ok_or(Malformed),
         "_yi/notice" => Ok(Decoded::Notice(
             string(fields.get("text")).ok_or(Malformed)?,
         )),
@@ -329,6 +367,7 @@ pub fn writes_transcript(update: &AcpSessionUpdate) -> bool {
         AcpSessionUpdate::Extension(extension) => !matches!(
             extension.session_update.as_str(),
             "_yi/config"
+                | "_yi/committed"
                 | "_yi/workdir"
                 | "_yi/goal"
                 | "_yi/todo"
