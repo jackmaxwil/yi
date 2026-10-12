@@ -53,6 +53,7 @@ fn leaves() -> Vec<String> {
         skills,
         classifier,
         permissions,
+        open,
     });
     let nested = [
         (
@@ -150,6 +151,9 @@ fn sample(row: &SettingRow) -> Value {
         SettingKind::Text => json!("english"),
         SettingKind::Model => json!("openrouter/z-ai/glm-5.3-flash"),
         SettingKind::List => json!(["one"]),
+        SettingKind::Json if row.id == "open" => {
+            json!([{"name": "zed", "command": ["zed", "{path}"]}])
+        }
         SettingKind::Json => json!({}),
     }
 }
