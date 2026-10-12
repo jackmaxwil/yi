@@ -446,8 +446,8 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             root: "/tmp/demo-root".to_owned(),
             autostart: false,
             auto_side: true,
-            sidebar: SidebarMode::Rail,
             open_apps: Vec::new(),
+            sidebar: SidebarMode::Rail,
             pace: 0,
         },
         DriveOptions {
@@ -4345,4 +4345,74 @@ fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
         None,
         (100, 30),
     )
+}
+
+/// The text between box borders on the dump's row holding `needle`, padding off.
+fn row_holding(frame: &str, needle: &str) -> Result<String, String> {
+    frame
+        .lines()
+        .find(|row| row.contains(needle))
+        .and_then(|row| {
+            let cells = row
+                .split('│')
+                .map(|cell| cell.trim_matches(['"', ',', ' ']));
+            cells
+                .rev()
+                .find(|cell| cell.contains(needle))
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| format!("no row holds {needle:?}:\n{frame}"))
+}
+
+/// A paste fed as keystrokes carries what no key produces. The drive refuses a control
+/// character in a cell, so each of these exited 1 with the surface named in its test.
+#[test]
+fn a_pasted_control_character_is_dropped_behind_a_console_slash_command() -> TestResult {
+    let frame = run_frames(
+        "paste-slash",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         type /model\ntype x\u{7f}y\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "/model")?, "/modelxy█");
+    Ok(())
+}
+
+#[test]
+fn a_pasted_control_character_is_dropped_from_palette_and_find_queries() -> TestResult {
+    let frame = run_frames(
+        "paste-palette",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype x\u{7}y\nwait-frame 3000 › xy\nkey esc\n\
+         cmd-shift-l\ntype x\u{7}y\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "› /xy")?, "› /xy▌");
+    Ok(())
+}
+
+#[test]
+fn a_pasted_control_character_is_dropped_from_a_submitted_console_message() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/prompt", prompt_stream));
+    let frame = run_frames(
+        "paste-transcript",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         type x\u{7}y\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "┃   xy")?, "┃   xy");
+    Ok(())
+}
+
+#[test]
+fn a_pasted_control_character_is_dropped_from_the_notebook_pane_input() -> TestResult {
+    let frame = run_frames(
+        "paste-notebook",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         cmd-i\nwait-frame 3000 nb:s-alpha\ntype x\u{1b}[31mredy\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "[31mredy")?, "x[31mredy");
+    Ok(())
 }
