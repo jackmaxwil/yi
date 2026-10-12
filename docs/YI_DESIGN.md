@@ -513,10 +513,10 @@ A persistent IPython process per session that reaches the host only through host
   the cell), `refused` (a denial), `tool_failure`, `cancelled`.
 - Every call that ran is a `NestedCall` row on its cell's `ipython` result, `details.calls`: the
   files it named, a sequential call's `command`, an `ask_user` answer, never a write's content.
-  A cell keeps 256 read rows and 1,024 write rows; past them reads are counted in `callsDropped`
-  and writes fold into one row per tool holding their paths. A call that finished after its cell
-  ended is `outlived` on the next cell's result. Compaction's file lists and the todo landed count
-  read the rows, a cell that raised included.
+  A cell keeps 256 read rows, counting the rest in `callsDropped`, and every other row whole. A
+  call that finished after its cell closed is `outlived` on a later cell's result, even one already
+  open. Compaction's file lists and the todo landed count read the rows, a cell that raised
+  included; the landed count skips an outlived row, which an earlier turn started.
 
 ### 9.3 Python surface
 - The preamble binds `rlm` (the module), `mcp`, `fetch`, `bash`. `@_public` builds `rlm.__all__`:

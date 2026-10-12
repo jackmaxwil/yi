@@ -296,21 +296,24 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
     );
 
     calls.open();
-    let writes = yi_types::kernel::NESTED_WRITES_KEPT;
-    for n in 0..=writes {
+    let writes = 1024;
+    for n in 0..writes {
         let path = format!("w{n}.txt");
         dispatch(request("write", json!({"path": path, "content": "w\n"})))?.await?;
     }
+    std::fs::create_dir(cwd.join("taken"))?;
+    dispatch(request("write", json!({"path": "taken", "content": "w\n"})))?.await?;
     let (rows, dropped) = calls.close();
     let last = rows.last().ok_or("no rows")?;
     assert_eq!(
         (rows.len(), dropped),
-        (writes + 1, 1),
-        "a write past the cap folds, not vanishes"
+        (writes + 1, 0),
+        "a write past a thousand others is kept, not folded or counted as a dropped read"
     );
     assert_eq!(
-        (last.tool.as_str(), last.paths.clone()),
-        ("write", vec![format!("w{writes}.txt")])
+        (last.tool.as_str(), last.ok, last.paths.clone()),
+        ("write", false, vec!["taken".to_owned()]),
+        "a failed write past a thousand others keeps its own verdict"
     );
 
     calls.open();
@@ -321,14 +324,14 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
     let running = tokio::spawn(slow);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let (during, _) = calls.close();
-    running.await??;
     calls.open();
+    running.await??;
     let (next, _) = calls.close();
     let outlived: Vec<bool> = next.iter().map(|row| row.outlived).collect();
     assert_eq!(
         (during.len(), outlived),
         (0, vec![true]),
-        "a call that outlives its cell says so"
+        "a call that outlives its cell says so on the next cell already open"
     );
     Ok(())
 }
