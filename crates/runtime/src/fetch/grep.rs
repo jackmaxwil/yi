@@ -54,29 +54,51 @@ fn searchable(entry: &Entry) -> Vec<(String, String)> {
     }
 }
 
-/// The entries a root's window names, as `read` serves them: `since/<seq>` after a sequence,
-/// `tail/<n>` the last n, an entry id that entry, and a bare agent the whole transcript.
-fn within<'a>(found: &'a [Entry], window: &str) -> Vec<&'a Entry> {
-    let number = |raw: &str| raw.parse::<u64>().ok();
-    match window.split_once('/') {
-        _ if window.is_empty() => found.iter().collect(),
-        Some(("since", raw)) if number(raw).is_some() => {
-            let after = number(raw).unwrap_or_default();
-            found.iter().filter(|entry| entry.seq() > after).collect()
-        }
-        Some(("tail", raw)) if number(raw).is_some() => {
-            let keep = usize::try_from(number(raw).unwrap_or_default()).unwrap_or(usize::MAX);
-            found
+/// `tail/N` is the last N entries, `since/S` everything after sequence S (D165): the one window
+/// grammar `read` and `grep` both serve.
+pub(super) fn window(selector: &str) -> Option<(&str, u64)> {
+    let (kind, raw) = selector.split_once('/')?;
+    let number = raw.parse::<u64>().ok()?;
+    matches!(kind, "tail" | "since").then_some((kind, number))
+}
+
+pub(super) fn in_window<'a>(
+    entries: &'a [yi_types::entry::Entry],
+    (kind, number): (&str, u64),
+) -> Vec<&'a yi_types::entry::Entry> {
+    match kind {
+        "tail" => {
+            let keep = usize::try_from(number).unwrap_or(usize::MAX);
+            entries
                 .iter()
-                .skip(found.len().saturating_sub(keep))
+                .skip(entries.len().saturating_sub(keep))
                 .collect()
         }
-        _ => found.iter().filter(|entry| entry.id() == window).collect(),
+        _ => entries
+            .iter()
+            .filter(|entry| entry.seq() > number)
+            .collect(),
     }
 }
 
-const NO_CORPUS: &str = "a session root: a spawned reader lists no past sessions, so ask the \
-                         parent, whose grep of history://repo does";
+/// The entries a root's selector names, by `read`'s own grammar; `None` when it names none,
+/// which is refused as `read` refuses it rather than answered as zero hits.
+fn within<'a>(found: &'a [Entry], selector: &str) -> Option<Vec<&'a Entry>> {
+    if selector.is_empty() {
+        return Some(found.iter().collect());
+    }
+    if let Some(window) = window(selector) {
+        return Some(in_window(found, window));
+    }
+    let entry: Vec<&Entry> = found
+        .iter()
+        .filter(|entry| entry.id() == selector)
+        .collect();
+    (!entry.is_empty()).then_some(entry)
+}
+
+const NO_CORPUS: &str = "a session root: a spawned child searches no past sessions, so ask \
+                         the parent, whose grep of history://repo does";
 
 #[derive(Default)]
 struct Hits {
@@ -96,15 +118,18 @@ impl Hits {
         window: &str,
         hit: &dyn Fn(&str) -> bool,
         offset: usize,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let found = store
             .find_entries(&EntryQuery {
                 order: EntryOrder::OldestFirst,
                 ..EntryQuery::default()
             })
             .map_err(|error| error.to_string())?;
+        let Some(chosen) = within(&found, window) else {
+            return Ok(false);
+        };
         self.sessions = self.sessions.saturating_add(1);
-        for entry in within(&found, window) {
+        for entry in chosen {
             let parts = searchable(entry);
             self.entries = self.entries.saturating_add(usize::from(!parts.is_empty()));
             let lines = parts
@@ -123,7 +148,7 @@ impl Hits {
                     .push(format!("history://{agent}/{id} #{seq} {kind}: {kept}{cut}"));
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -149,9 +174,15 @@ impl Resolver {
                     .transcripts()
                     .and_then(|desk| desk.corpus())
                     .ok_or_else(|| super::unsupported(url, NO_CORPUS))?;
-                let own = self
-                    .session_store()
-                    .map(|store| yi_session::lock_session(&store).metadata().id.clone());
+                let own = self.session_store().map(|store| {
+                    let metadata = yi_session::lock_session(&store).metadata().clone();
+                    (metadata.id, metadata.parent_session_id.is_some())
+                });
+                // Invariant: a spawned child reaches its family, never another root session.
+                if own.as_ref().is_some_and(|(_, spawned)| *spawned) {
+                    return Err(super::unsupported(url, NO_CORPUS));
+                }
+                let own = own.map(|(id, _)| id);
                 hits.skipped = listing.skipped;
                 // Invariant: one parsed session is resident at a time, however large the corpus.
                 for file in &listing.files {
@@ -166,23 +197,25 @@ impl Resolver {
                 }
             }
             asked => {
-                let path = target.path();
-                let splits = path.rmatch_indices('/').map(|(at, _)| path.split_at(at));
-                let (session, window) = std::iter::once((path, ""))
-                    .chain(splits)
-                    .find_map(|(agent, rest)| {
-                        let window = rest.strip_prefix('/').unwrap_or(rest);
-                        self.transcript_of(agent).map(|session| (session, window))
-                    })
-                    .ok_or_else(|| FetchError::NotFound {
-                        url: url.to_string(),
-                        what: format!("agent {asked}: no live, kept or on-disk session"),
-                    })?;
+                let (session, window) =
+                    self.history_root(target.path())
+                        .ok_or_else(|| FetchError::NotFound {
+                            url: url.to_string(),
+                            what: format!("agent {asked}: no live, kept or on-disk session"),
+                        })?;
+                let window = window.unwrap_or_default();
                 let agent = asked.strip_suffix(window).unwrap_or(asked);
                 let agent = agent.strip_suffix('/').unwrap_or(agent);
                 let store = yi_session::lock_session(&session);
-                hits.scan(agent, &store, window, hit, offset)
-                    .map_err(backend)?;
+                if !hits
+                    .scan(agent, &store, window, hit, offset)
+                    .map_err(backend)?
+                {
+                    return Err(FetchError::NotFound {
+                        url: url.to_string(),
+                        what: format!("entry {window}"),
+                    });
+                }
             }
         }
         let Hits {

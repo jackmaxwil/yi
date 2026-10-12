@@ -9,7 +9,7 @@ re-seeded, since compact.search indexes replies and would leak it.
     python3 evals/search_gate.py --arm main=/path/yi --arm step1=/path/yi -k 6 --out /scratch
 
 Runs real `yi ask` against the model (GLM 5.3 flash by default), so it spends money: about
-$0.01 a run. Sessions land under ~/.yi/sessions, one directory per throwaway project.
+$0.01 a run. Sessions land in <out>/sessions through `--session-dir`, never ~/.yi/sessions.
 """
 import argparse, json, os, pathlib, re, subprocess, time
 
@@ -32,7 +32,6 @@ PAST_ASK = (
     "release_id did that earlier run print? Reply with the value alone."
 )
 RELEASE = re.compile(r"rel-[0-9a-f]{8}")
-SESSIONS = pathlib.Path.home() / ".yi/sessions"
 
 
 def project(out, name):
@@ -46,13 +45,13 @@ def project(out, name):
     return proj
 
 
-def ask(binary, model, proj, prompt):
-    slug = SESSIONS / ("-" + str(proj).replace("/", "-") + "--")
-    before = set(slug.glob("*.jsonl"))
+def ask(binary, model, sessions, proj, prompt):
+    """One `yi ask` whose store is `sessions`; its root session file is the one it added."""
+    before = set(sessions.glob("*/*.jsonl"))
     started = time.monotonic()
-    done = subprocess.run([binary, "ask", "--model", model, prompt], cwd=proj,
-                          capture_output=True, text=True, timeout=900)
-    new = sorted(set(slug.glob("*.jsonl")) - before, key=os.path.getmtime)
+    done = subprocess.run([binary, "ask", "--model", model, "--session-dir", str(sessions), prompt],
+                          cwd=proj, capture_output=True, text=True, timeout=900)
+    new = sorted(set(sessions.glob("*/*.jsonl")) - before, key=os.path.getmtime)
     return (new[-1] if new else None), time.monotonic() - started, done.returncode
 
 
@@ -110,19 +109,19 @@ def run(args, task, rep, arm):
     binary = args.arms[arm]
     proj = project(args.out, f"{task}-{arm}-{rep}-{time.time_ns()}")
     if task == "long-parent":
-        session, seconds, code = ask(binary, args.model, proj, LONG_PARENT)
+        session, seconds, code = ask(binary, args.model, args.sessions, proj, LONG_PARENT)
         truth = printed(session) if session else None
         children = sorted(session.with_suffix("").glob("children/*/*.jsonl")) if session else []
         actor, files = (children[-1] if children else None), ([session] + children if session else [])
     else:
         seed = None
         for _ in range(4):
-            seed, _, _ = ask(args.arms[args.seed_arm], args.model, proj, PAST_SEED)
+            seed, _, _ = ask(args.arms[args.seed_arm], args.model, args.sessions, proj, PAST_SEED)
             if seed and not echoed(seed):
                 break
             proj = project(args.out, f"{task}-{arm}-{rep}-{time.time_ns()}")
         truth = printed(seed) if seed and not echoed(seed) else None
-        session, seconds, code = ask(binary, args.model, proj, PAST_ASK)
+        session, seconds, code = ask(binary, args.model, args.sessions, proj, PAST_ASK)
         actor, files = session, ([session] if session else [])
     calls, history_greps, cost = tally(files)
     answer = final_text(actor) if actor else ""
@@ -145,7 +144,8 @@ def main():
     args = parser.parse_args()
     args.arms = dict(arm.split("=", 1) for arm in args.arm)
     args.seed_arm = args.seed_arm or next(iter(args.arms))
-    args.out.mkdir(parents=True, exist_ok=True)
+    args.sessions = args.out / "sessions"
+    args.sessions.mkdir(parents=True, exist_ok=True)
     rows = [run(args, task, rep, arm)
             for rep in range(args.k) for task in args.tasks for arm in args.arms]
     with open(args.out / "rows.jsonl", "a") as out:

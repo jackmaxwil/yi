@@ -150,6 +150,18 @@ fn a_child_greps_its_parents_tool_output_by_alias() -> TestResult {
             "{window}: {got}"
         );
     }
+    for typo in ["since/O", "tail/x", "no-such-entry"] {
+        let address = format!("history://parent/{typo}");
+        let child = || resolver(&family, &family.child, Wall::default());
+        let grep = json!({"pattern": "release_id", "path": address});
+        let (grepped, grep_refused) = tool_text(child(), "grep", grep)?;
+        let (read, read_refused) = tool_text(child(), "read", json!({"path": address}))?;
+        assert!(
+            grep_refused && grepped.contains(&format!("not found: entry {typo}")),
+            "{grepped}"
+        );
+        assert!(read_refused && read.contains("not found"), "{read}");
+    }
     let (entry, _) = tool_text(
         resolver(&family, &family.child, Wall::default()),
         "read",
@@ -233,6 +245,12 @@ fn history_repo_greps_this_repositorys_other_sessions() -> TestResult {
         ask.clone(),
     )?;
     assert!(is_error && text.contains("denied"), "{text}");
+    let (text, is_error) = tool_text(
+        resolver(&family, &family.child, Wall::default()),
+        "grep",
+        ask.clone(),
+    )?;
+    assert!(is_error && text.contains("history://repo does"), "{text}");
     let reader = Resolver::new(family.cwd.clone(), Wall::default())
         .with_session("worker", family.child.clone())
         .with_transcripts(Arc::new(yi_runtime::fetch::ParentTranscript(
