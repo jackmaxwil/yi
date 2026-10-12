@@ -24,25 +24,42 @@ jobs:
     # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 45m) bounds it.
     timeout-minutes: 45
     steps:
-      # Main's tree: the merged PR's code runs only inside a token-free clone.
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-      - run: rustup show
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: test
-          cache-on-failure: true
-          save-if: false
-      - run: cargo build -p yi-cli
       - name: install fgj
         run: |
           set -euo pipefail
           curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
           echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
           chmod +x /usr/local/bin/fgj
+      # Incident: the group queues every scheduled pass behind the running one, and a runner backlog
+      # stacked eleven, each a full build and pass over the same PRs (2026-10-12). The newest does it.
+      - name: skip a pass a newer queued one repeats
+        id: queue
+        env:
+          FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
+        run: |
+          newer=$(fgj api --hostname git.example.invalid "repos/${{ github.repository }}/actions/runs?status=waiting" \
+            | python3 -c 'import json,sys; print(sum(r["workflow_id"] == "autofix.yml" and r["id"] > ${{ github.run_id }} for r in json.load(sys.stdin)["workflow_runs"]))' \
+            || echo 0)
+          echo "newer=$newer" >> "$GITHUB_OUTPUT"
+          [ "$newer" = 0 ] || echo "autofix: skipped, $newer newer pass(es) queued"
+      # Main's tree: the merged PR's code runs only inside a token-free clone.
+      - if: steps.queue.outputs.newer == '0'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - if: steps.queue.outputs.newer == '0'
+        run: rustup show
+      - if: steps.queue.outputs.newer == '0'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          cache-on-failure: true
+          save-if: false
+      - if: steps.queue.outputs.newer == '0'
+        run: cargo build -p yi-cli
       - name: fix conflicted PRs as yi-bot
+        if: steps.queue.outputs.newer == '0'
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
