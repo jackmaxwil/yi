@@ -21,6 +21,15 @@ pub(super) fn program_lines(
             };
             bytes = bytes.saturating_add(text.len());
             let n = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
+            if kept.len() >= yi_types::tool_value::PROGRAM_FUSE_ITEMS {
+                let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
+                let cut = format!(
+                    "[kept lines {start}-{} of {}: the program fuse is {fuse} items; read with offset={n} for the rest]",
+                    n.saturating_sub(1),
+                    lines.len()
+                );
+                return (kept, Some(cut));
+            }
             if bytes > yi_types::tool_value::PROGRAM_FUSE_BYTES {
                 let fuse = yi_types::tool_value::PROGRAM_FUSE_BYTES >> 20;
                 let cut = match kept.is_empty() {

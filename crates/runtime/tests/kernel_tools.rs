@@ -410,6 +410,18 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
         "a call naming no cell is refused while none is open"
     );
     calls.open(REQUEST);
+    let kernel_read = dispatch(request("read", json!({"path": "kernel://main/x"})))?.await?;
+    assert_eq!(
+        kernel_read.get("kind"),
+        Some(&json!("invalid_input")),
+        "a cell's own kernel:// read is refused before it queues behind its cell"
+    );
+    let ask = dispatch(request("ask_user", json!({})))?.await?;
+    assert_eq!(
+        ask.get("kind"),
+        Some(&json!("excluded_tool")),
+        "a root's ask_user never runs from a cell; the question would return as ok text"
+    );
     let mut untagged = read();
     untagged.remove("cell");
     let refused = dispatch(untagged)?.await?;

@@ -471,13 +471,7 @@ impl ToolAdapter {
         args: Map<String, Value>,
         program: bool,
     ) -> yi_loop::ProgramFuture<'a> {
-        let value = Arc::new(std::sync::Mutex::new(None));
-        let outcome = self.outcome(tool_call_id, args, program, Arc::clone(&value));
-        Box::pin(async move {
-            let outcome = outcome.await;
-            let value = value.lock().ok().and_then(|mut value| value.take());
-            (outcome, value)
-        })
+        self.outcome(tool_call_id, args, program)
     }
 
     fn outcome<'a>(
@@ -485,8 +479,7 @@ impl ToolAdapter {
         tool_call_id: &'a str,
         args: Map<String, Value>,
         program: bool,
-        value: Arc<std::sync::Mutex<Option<Value>>>,
-    ) -> ToolFuture<'a> {
+    ) -> yi_loop::ProgramFuture<'a> {
         let tool = Arc::clone(&self.tool);
         let args = unsent_empties(&tool.schema(), args);
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
@@ -521,6 +514,15 @@ impl ToolAdapter {
         let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
+            let refuse = |result: yi_types::event::ToolResult| {
+                (
+                    ToolOutcome {
+                        result,
+                        is_error: true,
+                    },
+                    None,
+                )
+            };
             if let Some(ext) = &ext {
                 ext(crate::ext::Event::ToolCall {
                     name: tool.name().to_owned(),
@@ -536,26 +538,20 @@ impl ToolAdapter {
             if let Some(rules) = &rules
                 && let Some(denial) = rules.check_tool(tool.name(), &args_json)
             {
-                return ToolOutcome {
-                    result: yi_loop::tool::error_tool_result_kind(
-                        &denial,
-                        yi_types::event::ToolErrorKind::Denied,
-                    ),
-                    is_error: true,
-                };
+                return refuse(yi_loop::tool::error_tool_result_kind(
+                    &denial,
+                    yi_types::event::ToolErrorKind::Denied,
+                ));
             }
             let kind = match tool.kind_for(&args) {
                 yi_tools::ToolKind::Write => yi_tools::ToolKind::Write,
                 _ => tool.kind(),
             };
             if let Some(denial) = wall.check(tool.name(), kind, &args, &context.cwd) {
-                return ToolOutcome {
-                    result: yi_loop::tool::error_tool_result_kind(
-                        &denial,
-                        yi_types::event::ToolErrorKind::Denied,
-                    ),
-                    is_error: true,
-                };
+                return refuse(yi_loop::tool::error_tool_result_kind(
+                    &denial,
+                    yi_types::event::ToolErrorKind::Denied,
+                ));
             }
             drop(gate_span);
             for command in tool.arms(&args) {
@@ -563,13 +559,10 @@ impl ToolAdapter {
                 let gates = (&rules, &wall, permission.as_ref());
                 let refused = gate_armed(&command, gates, walled, &context).await;
                 if let Some(denial) = refused {
-                    return ToolOutcome {
-                        result: yi_loop::tool::error_tool_result_kind(
-                            &denial,
-                            yi_types::event::ToolErrorKind::Denied,
-                        ),
-                        is_error: true,
-                    };
+                    return refuse(yi_loop::tool::error_tool_result_kind(
+                        &denial,
+                        yi_types::event::ToolErrorKind::Denied,
+                    ));
                 }
             }
             let (mut contained, mut outside): (Option<Arc<PermissionBroker>>, _) = (None, None);
@@ -608,21 +601,15 @@ impl ToolAdapter {
                         }
                     }
                     Ok(outcome) => {
-                        return ToolOutcome {
-                            result: yi_loop::tool::error_tool_result_kind(
-                                &format!("Permission denied: {}", outcome.reason),
-                                yi_types::event::ToolErrorKind::Denied,
-                            ),
-                            is_error: true,
-                        };
+                        return refuse(yi_loop::tool::error_tool_result_kind(
+                            &format!("Permission denied: {}", outcome.reason),
+                            yi_types::event::ToolErrorKind::Denied,
+                        ));
                     }
                     Err(join_error) => {
-                        return ToolOutcome {
-                            result: error_tool_result(&format!(
-                                "permission check failed: {join_error}"
-                            )),
-                            is_error: true,
-                        };
+                        return refuse(error_tool_result(&format!(
+                            "permission check failed: {join_error}"
+                        )));
                     }
                 }
             }
@@ -638,13 +625,10 @@ impl ToolAdapter {
                 .then(|| walled_root_refusal(&command, &walled_roots, &spared, &context.cwd))
                 .flatten()
             {
-                return ToolOutcome {
-                    result: yi_loop::tool::error_tool_result_kind(
-                        &denial,
-                        yi_types::event::ToolErrorKind::Denied,
-                    ),
-                    is_error: true,
-                };
+                return refuse(yi_loop::tool::error_tool_result_kind(
+                    &denial,
+                    yi_types::event::ToolErrorKind::Denied,
+                ));
             }
             let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
                 .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
@@ -657,9 +641,7 @@ impl ToolAdapter {
             match output {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
-                    if let Ok(mut slot) = value.lock() {
-                        *slot = output.value.take();
-                    }
+                    let value = output.value.take();
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     // One at or naming a path under the own walls is never kept: Seatbelt judges
                     // each run, so a retry neither asks to leave nor claims the own transcript.
@@ -728,15 +710,21 @@ impl ToolAdapter {
                             name,
                         });
                     }
-                    ToolOutcome {
-                        result: output.result,
-                        is_error: output.is_error,
-                    }
+                    (
+                        ToolOutcome {
+                            result: output.result,
+                            is_error: output.is_error,
+                        },
+                        value,
+                    )
                 }
-                Err(join_error) => ToolOutcome {
-                    result: error_tool_result(&format!("tool execution failed: {join_error}")),
-                    is_error: true,
-                },
+                Err(join_error) => (
+                    ToolOutcome {
+                        result: error_tool_result(&format!("tool execution failed: {join_error}")),
+                        is_error: true,
+                    },
+                    None,
+                ),
             }
         })
     }
