@@ -48,7 +48,8 @@ jobs:
           shared-key: test
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build -p yi-cli
+      # No build step: scripts/pr_review.py builds yi at its first model call, so a job that finds
+      # nothing to read (91 of 217 on 2026-10-12) spends no build on it.
       - name: install fgj
         run: |
           set -euo pipefail
