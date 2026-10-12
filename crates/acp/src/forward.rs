@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use tokio::task::JoinSet;
-use yi_runtime::session_store::{EntryOrder, EntryQuery, SharedSession, lock_session};
+use yi_runtime::session_store::{
+    BranchBounds, EntryOrder, EntryQuery, SharedSession, lock_session,
+};
 use yi_runtime::{AgentSession, SubagentHost};
 use yi_types::acp::AcpSessionUpdate;
 use yi_types::entry::Entry;
@@ -91,6 +93,29 @@ impl Parent {
             };
             self.children
                 .spawn(forward_child(child.session.subscribe(), forward));
+        }
+    }
+
+    /// Invariant: a message is saved before its end is broadcast, but the leaf may already be a
+    /// later one by the time this lags through, so the entry is found by the message it holds.
+    fn committed(&mut self, message: &AgentMessage) {
+        let query = EntryQuery {
+            entry_type: Some("message"),
+            order: EntryOrder::NewestFirst,
+            limit: Some(256),
+            ..EntryQuery::default()
+        };
+        let entry = self.session.store().and_then(|store| {
+            let found = lock_session(&store)
+                .find_entries_on_branch("main", &query, &BranchBounds::default())
+                .ok()?;
+            found.into_iter().find(
+                |entry| matches!(entry, Entry::Message { message: saved, .. } if saved == message),
+            )
+        });
+        if let Some(entry) = entry.and_then(|entry| serde_json::to_value(entry).ok()) {
+            self.forward
+                .emit(extension("_yi/committed", [("entry", entry)]));
         }
     }
 
@@ -190,6 +215,14 @@ impl Parent {
                 prompt.request,
                 Ok(serde_json::json!(inserted)),
             );
+        }
+        if let AgentEvent::MessageEnd { message } = event
+            && matches!(
+                message,
+                AgentMessage::User { .. } | AgentMessage::Assistant { .. }
+            )
+        {
+            self.committed(message);
         }
         match event {
             AgentEvent::ChildUpdate { .. } => self.adopt_children(),
