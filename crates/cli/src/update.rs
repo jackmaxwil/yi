@@ -656,7 +656,7 @@ mod tests {
     }
 
     /// A release that moved a plugin's pin is only half applied until the installed binary
-    /// syncs; its failure is the update's exit code, and a failed update spawns nothing.
+    /// syncs; its failure makes the update exit 1, and a failed update spawns nothing.
     #[cfg(unix)]
     #[test]
     fn the_installed_binary_is_asked_to_sync_its_plugins() -> Result<(), Box<dyn std::error::Error>>
