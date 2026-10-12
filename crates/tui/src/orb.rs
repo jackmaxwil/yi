@@ -50,6 +50,19 @@ impl Tick {
     }
 }
 
+#[derive(Default)]
+pub struct Images {
+    pub orb: Tick,
+    pub logos: crate::logos::Tick,
+}
+
+impl Images {
+    pub fn tick(&mut self, app: &mut crate::app::App, out: &mut impl std::io::Write) {
+        tick(app, out, &mut self.orb);
+        crate::logos::tick(app, out, &mut self.logos);
+    }
+}
+
 /// Paint a due frame; at rest, or only moved, re-place the image already sent.
 pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mut Tick) {
     if !app.kitty {

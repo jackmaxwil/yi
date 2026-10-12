@@ -38,6 +38,8 @@ pub enum Action {
     Save,
     Undo,
     Redo,
+    Menu,
+    Settings,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -87,6 +89,8 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('y') => Some(Action::ToggleTape),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('?') => Some(Action::Keys),
+        KeyCode::Char('c') => Some(Action::Menu),
+        KeyCode::Char(',') => Some(Action::Settings),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
@@ -142,6 +146,8 @@ pub fn prefixed(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('o') => Some(Action::NewSession),
         KeyCode::Char('g') => Some(Action::Navigator),
         KeyCode::Char('q') => Some(Action::Quit),
+        KeyCode::Char('m') => Some(Action::Menu),
+        KeyCode::Char(',') => Some(Action::Settings),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectTab(n))
@@ -195,7 +201,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 21] = [
+pub const CHORDS: [Chord; 23] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌘1..9", "", None),
@@ -203,6 +209,13 @@ pub const CHORDS: [Chord; 21] = [
     chord("split down", "⌥s", "⌘⇧\\", "s", Some(Action::SplitDown)),
     chord("close pane", "⌥x", "⌘X", "x", Some(Action::ClosePane)),
     chord("zoom pane", "⌥z", "⌘⇧M", "z", Some(Action::Zoom)),
+    chord(
+        "menu for the pane or session",
+        "⌥c",
+        "⌥c",
+        "m",
+        Some(Action::Menu),
+    ),
     chord("focus pane", "⌥←→↑↓", "⌥←→↑↓", "h j k l", None),
     chord(
         "notebook pane",
@@ -254,7 +267,8 @@ pub const CHORDS: [Chord; 21] = [
         "",
         Some(Action::StopDaemon),
     ),
-    chord("all keys", "⌥?", "⌘/", "", Some(Action::Keys)),
+    chord("settings", "⌥,", "⌥,", ",", Some(Action::Settings)),
+    chord("all keys, in settings", "⌥?", "⌘/", "", Some(Action::Keys)),
     chord(
         "chat: cycle normal · thinking · verbose",
         "ctrl+o",
