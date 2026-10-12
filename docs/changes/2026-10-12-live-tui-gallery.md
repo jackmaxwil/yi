@@ -1,0 +1,4 @@
+---
+issue: Closes #1267
+---
+Every push to main that touches the TUI paths now plays every scene on main's binary alone and replaces `gallery.html` on one prerelease, tag `tui-gallery`, so the owner has one page to bookmark: https://git.example.invalid/apex/yi/releases/tag/tui-gallery. `tui_see.py ci` takes one binary (head only, nothing posted), and `tui_see.py publish <page>` creates the release on first use, uploads the new asset before deleting the old one so a refused upload leaves the last gallery, and names a failure. The forge serves a release's HTML as `text/plain`, so the asset is saved and then opened, not viewed in place. The release stays a prerelease because `yi update` installs `releases/latest`. The token is held by a separate `publish` job in `.forgejo/workflows/tui.yml`; the job that plays the scenes has none.
