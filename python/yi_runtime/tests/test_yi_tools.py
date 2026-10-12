@@ -46,10 +46,15 @@ class Tools(unittest.TestCase):
 
     def test_a_call_sends_the_name_and_the_arguments_it_was_given(self) -> None:
         result = asyncio.run(yi.tools.grep(pattern="fn a", path=None))
-        self.assertEqual(self.sent, [("tool.call", {"name": "grep", "args": {"pattern": "fn a"}})])
+        self.assertEqual(self.sent, [("tool.call", {"name": "grep", "args": {"pattern": "fn a"},
+                                                    "cell": None})])
         self.assertEqual(result.text, "[a.rs#1A2B]\n1:fn a() {}")
         self.assertEqual(repr(result), result.text, "a cell's last value shows the view")
         self.assertEqual(result.details["hits"], 1)
+
+    def test_a_tool_argument_called_name_is_sent_as_an_argument(self) -> None:
+        asyncio.run(tools.call("deploy", name="web"))
+        self.assertEqual(self.sent[0][1]["args"], {"name": "web"})
 
     def test_each_failure_raises_what_a_program_can_catch_apart(self) -> None:
         cases = [

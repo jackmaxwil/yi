@@ -17,7 +17,7 @@ struct Rows {
     open: bool,
     cell: u64,
     kept: Vec<NestedCall>,
-    reads: usize,
+    read_keys: std::collections::BTreeSet<(String, Vec<String>)>,
     dropped: u64,
 }
 
@@ -56,11 +56,17 @@ impl Calls {
     fn push(&self, mut row: NestedCall, read: bool, cell: u64) {
         let mut rows = self.rows();
         row.outlived = !rows.open || rows.cell != cell;
-        if read && rows.reads >= NESTED_READS_KEPT {
-            rows.dropped = rows.dropped.saturating_add(1);
-            return;
+        if read {
+            let key = (row.tool.clone(), row.paths.clone());
+            if rows.read_keys.contains(&key) {
+                return;
+            }
+            if rows.read_keys.len() >= NESTED_READS_KEPT {
+                rows.dropped = rows.dropped.saturating_add(1);
+                return;
+            }
+            rows.read_keys.insert(key);
         }
-        rows.reads = rows.reads.saturating_add(usize::from(read));
         rows.kept.push(row);
     }
 }
@@ -75,7 +81,7 @@ impl yi_tools::CellCalls for Calls {
     fn close(&self) -> (Vec<NestedCall>, u64) {
         let mut rows = self.rows();
         rows.open = false;
-        rows.reads = 0;
+        rows.read_keys.clear();
         (
             std::mem::take(&mut rows.kept),
             std::mem::take(&mut rows.dropped),
@@ -169,8 +175,10 @@ async fn call(
             return failure("invalid_input", message, Vec::new());
         }
     };
-    let Some(cell) = calls.open_cell() else {
-        let message = "no cell of the agent's is running: a call from a task that outlived its cell, one made after the cell was interrupted, or one from a cell typed into the console is refused; call it inside an ipython call";
+    // Invariant: a task carries the request its cell ran as, so one an earlier cell left differs.
+    let same = payload.str_of("cell") == payload.str_of("activeCell");
+    let Some(cell) = calls.open_cell().filter(|_| same) else {
+        let message = "not from the agent's running cell: a call from a task that outlived its cell, even while a later cell runs, one made after the cell was interrupted, or one from a cell typed into the console is refused; call it inside an ipython call";
         return failure("cancelled", message.to_owned(), Vec::new());
     };
     if let Some(refusal) = refused_before(name, &args, root) {

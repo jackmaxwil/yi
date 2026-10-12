@@ -111,7 +111,7 @@ pub fn compose_summary(
     view: &CompiledView,
 ) -> (String, CompactionDetails) {
     let (read_files, modified_files) = compute_file_lists(file_ops);
-    let files = format_file_operations(&read_files, &modified_files);
+    let files = format_file_operations(&read_files, &modified_files, file_ops.reads_dropped);
     let view_text = view.render();
     let text = if view_text.is_empty() {
         format!("{summary}{files}")

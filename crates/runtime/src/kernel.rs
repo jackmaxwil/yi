@@ -739,10 +739,6 @@ impl KernelService {
     }
 }
 
-pub fn ipython_tool(service: Arc<KernelService>) -> Arc<dyn yi_tools::Tool> {
-    crate::kernel_tools::ipython_tool(service, None)
-}
-
 impl KernelBridge for KernelService {
     fn execute_cell(
         &self,
