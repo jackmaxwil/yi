@@ -1044,4 +1044,67 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Dies with the chat's orb frozen mid-morph: a loop step that drew no text ran no image
+    /// tick, so the orb moved only on steps that happened to repaint.
+    #[test]
+    fn a_step_that_draws_no_text_still_advances_the_chat_orb_inside_its_own_update()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.kitty = true;
+        app.state.zone = crate::model::Zone::Panes;
+        let session = SessionId("s-a".to_owned());
+        let pane = app.state.focused_pane_id().ok_or("a pane")?;
+        let chat = app.make_chat(pane, &session);
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: Some(chat),
+            };
+        }
+        let chat = app
+            .state
+            .chats_mut(&session)
+            .into_iter()
+            .next()
+            .ok_or("no chat")?;
+        chat.app
+            .reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let mut scheduler = yi_tui::frame::FrameScheduler::default();
+        scheduler.request();
+        let mut owners = std::collections::HashMap::new();
+        let mut out = Vec::new();
+        let mut step = |out: &mut Vec<u8>| {
+            crate::step_frame(
+                &mut app,
+                &mut terminal,
+                &theme,
+                &mut scheduler,
+                &mut owners,
+                out,
+            )
+        };
+        step(&mut out)?;
+        out.clear();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while out.is_empty() {
+            if std::time::Instant::now() > deadline {
+                return Err("2 s of text-free steps never advanced the orb".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            step(&mut out)?;
+        }
+        let written = String::from_utf8_lossy(&out);
+        assert!(
+            written.starts_with("\x1b[?2026h") && written.ends_with("\x1b[?2026l"),
+            "the image work is one update of its own: {written:?}"
+        );
+        assert!(
+            written.contains(",a=t,") && written.contains("\x1b_Ga=p,"),
+            "the next orb frame is sent and placed: {written:?}"
+        );
+        Ok(())
+    }
 }
