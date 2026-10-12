@@ -63,12 +63,7 @@ fn render_history(
             })
             .map_err(|error| backend(error.to_string()))
     };
-    // `tail/N` is the last N entries compact, `since/S` everything after sequence S (D165).
-    let window = entry_id
-        .and_then(|selector| selector.split_once('/'))
-        .filter(|(kind, _)| matches!(*kind, "tail" | "since"))
-        .and_then(|(kind, raw)| raw.parse::<u64>().ok().map(|number| (kind, number)));
-    match (entry_id, window) {
+    match (entry_id, entry_id.and_then(super::grep::window)) {
         (_, Some((kind, number))) => {
             let entries = all(custom)?;
             // A filtered listing is read for its data, which the compact line drops.
@@ -88,22 +83,10 @@ fn render_history(
                     }
                 }
             };
-            let kept: Vec<String> = match kind {
-                "tail" => entries
-                    .iter()
-                    .rev()
-                    .take(usize::try_from(number).unwrap_or(usize::MAX))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .map(line)
-                    .collect(),
-                _ => entries
-                    .iter()
-                    .filter(|entry| entry.seq() > number)
-                    .map(line)
-                    .collect(),
-            };
+            let kept: Vec<String> = super::grep::in_window(&entries, (kind, number))
+                .into_iter()
+                .map(line)
+                .collect();
             let (mut text, served_by, next) = paged(kept, format!("session-{kind}"))?;
             if any_cut {
                 text.push_str(&crate::family::cut_notice());
@@ -284,17 +267,25 @@ impl Resolver {
 
     /// Invariant: an agent name carries its own slash, so the whole path is tried as an agent
     /// before an entry id is split off; splitting first read a reap pin as a missing entry.
-    pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
-        let path = url.path();
+    pub(super) fn history_root<'p>(
+        &self,
+        path: &'p str,
+    ) -> Option<(yi_session::SharedSession, Option<&'p str>)> {
         if let Some(session) = self.transcript_of(path) {
-            return render_history(url, &session, None, page);
+            return Some((session, None));
         }
-        for (at, _) in path.rmatch_indices('/') {
-            let (agent, entry) = path.split_at(at);
-            if let Some(session) = self.transcript_of(agent) {
-                return render_history(url, &session, entry.get(1..), page);
-            }
+        path.rmatch_indices('/').find_map(|(at, _)| {
+            let (agent, rest) = path.split_at(at);
+            self.transcript_of(agent)
+                .map(|session| (session, rest.get(1..)))
+        })
+    }
+
+    pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
+        if let Some((session, entry)) = self.history_root(url.path()) {
+            return render_history(url, &session, entry, page);
         }
+        let path = url.path();
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
         }
