@@ -499,6 +499,57 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
     Ok(())
 }
 
+/// A history commit scrolls region `[0, viewport_top)`, and a terminal keeps the rows that
+/// leaves: scrollback is where the reader finds the answer once it is longer than the screen.
+/// Every line must be there once, in order, with none of the live region's chrome in it.
+#[test]
+fn a_long_streamed_reply_reaches_scrollback_whole() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 500);
+    {
+        use std::io::Write;
+        backend.write_all(&b"\n".repeat(23))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(24);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+
+    let mut body = String::new();
+    for n in 1..=30 {
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str(&format!("Paragraph {n:02} of the reply, one line."));
+        app.reduce_agent(streamed(&body));
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+
+    let transcript = terminal.backend().transcript();
+    let dump = transcript.join("\n");
+    let mut previous = None;
+    for n in 1..=30 {
+        let needle = format!("Paragraph {n:02} of the reply");
+        let at: Vec<usize> = (0..transcript.len())
+            .filter(|row| transcript[*row].contains(&needle))
+            .collect();
+        assert_eq!(at.len(), 1, "{needle:?} must appear once:\n{dump}");
+        assert!(
+            previous < at.first().copied(),
+            "{needle:?} out of order:\n{dump}"
+        );
+        previous = at.first().copied();
+    }
+    for row in transcript.iter().filter(|row| row.contains("Paragraph")) {
+        assert!(
+            !row.contains(['╭', '╰', '─']),
+            "prose and composer share a row: {row:?}"
+        );
+    }
+    Ok(())
+}
+
 /// A screen short enough to leave the live region one row puts the whole floor
 /// under the scroll, and a one-row region is an invalid DECSTBM: the terminal
 /// ignores the margins and the scroll takes the working line and composer with it.
