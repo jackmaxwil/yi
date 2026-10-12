@@ -58,6 +58,15 @@ pub struct UserConfig {
     pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
     pub permissions: Option<PermissionsConfig>,
+    pub mail: Option<MailConfig>,
+}
+
+/// `mail.hopLimit`: the longest chain of letters between sessions, each sent by a turn another
+/// letter woke, before a send is refused; unset is 20.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailConfig {
+    pub hop_limit: Option<u32>,
 }
 
 /// `permissions.mode`: the mode a run starts in when no `--auto`, `--confirm` or `--yolo` is

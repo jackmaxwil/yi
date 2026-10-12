@@ -446,7 +446,12 @@ fn create(
         return Ok(None);
     }
     let first = fresh.first().map_or(last.offset, |entry| entry.offset);
-    let mut todo = Todo::pending(clock::label(job, last.at)?);
+    // Incident: two letters in one second made one label, and labels are unique.
+    let mut label = clock::label(job, last.at)?;
+    if list.items().any(|item| item.label == label) {
+        label = clock::label_with(job, last.at, &format!(" #{}", last.offset))?;
+    }
+    let mut todo = Todo::pending(label);
     todo.note = Some(
         Note::new(format!(
             "{}\n{} message(s) from {}, offsets {first}–{}: the data is in the channel wake beside this todo",
@@ -570,5 +575,33 @@ impl HeartbeatService {
         });
         channel.subscribe(&job.id, unblocks.is_some())?;
         Ok(job)
+    }
+}
+
+impl HeartbeatService {
+    /// A durable root reads its mail through one subscription, made at its first bind and kept:
+    /// one letter per todo, any number open at once, each waiting for the turn it lands in.
+    pub(super) fn ensure_mailbox(&self, session_id: &str) {
+        let Some(home) = self.channels.as_ref() else {
+            return;
+        };
+        let address = crate::post::mailbox(session_id);
+        let held = self.store().snapshot().jobs.iter().any(|job| {
+            job.session_id == session_id
+                && job
+                    .channel
+                    .as_ref()
+                    .is_some_and(|sub| sub.address == address)
+        });
+        if held || crate::post::open(home, session_id).is_err() {
+            return;
+        }
+        let spec = crate::post::subscription(session_id);
+        let Ok(mut job) = self.channel_job(session_id, spec, None, yi_session::now_ms()) else {
+            return;
+        };
+        job.overlap = Some(yi_types::schedule::Overlap::Allow);
+        job.delivery_mode = Some(yi_types::schedule::DeliveryMode::FollowUp);
+        self.store().mutate(|state| state.jobs.push(job));
     }
 }

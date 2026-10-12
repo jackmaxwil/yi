@@ -510,6 +510,7 @@ fn build_session(
     if prompts_close {
         broker.prompts_close_on_settle();
     }
+    yi_runtime::post::configure(config().mail.as_ref().and_then(|mail| mail.hop_limit));
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");
     session.install_extensions(shells::session_extensions(
