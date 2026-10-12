@@ -1,10 +1,14 @@
 # A paced walkthrough for a PR proof: typing is slowed so the recording is
-# watchable, and each beat holds long enough to read.
+# watchable, and each beat holds long enough to read. Played by `just tui-see run <this>
+# --video`: the snaps are the stills, run.gif the motion.
+#! solo --size 80x24
 type-ms 45
 wait 400
 type hello from yi
+snap typed
 wait 600
 key enter
 wait-idle 20000
+snap answered
 wait 900
 quit
