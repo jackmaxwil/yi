@@ -10,7 +10,7 @@ use yi_types::url::Url;
 
 use super::{
     CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Page, Resolver, SESSION_MISSING,
-    Transcript, unsupported,
+    Transcript, unresolved, unsupported,
 };
 use crate::kernel::{VariableName, VariableReadError};
 use crate::plan::import::{parse_document, section_of};
@@ -298,12 +298,11 @@ impl Resolver {
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
         }
-        Err(FetchError::NotFound {
-            url: url.to_string(),
-            what: format!(
-                "agent {path}: not the attached session, not a live child, and no session on disk carries that id"
-            ),
-        })
+        let candidates = self
+            .transcripts()
+            .map(|desk| desk.candidates(path))
+            .unwrap_or_default();
+        Err(unresolved(url, path, &candidates))
     }
 
     /// One address space: this session (by its name or as `self`), a live child, the corpus.

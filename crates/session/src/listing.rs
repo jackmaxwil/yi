@@ -173,7 +173,8 @@ fn save_index(dir: &Path, files: &HashMap<String, Listed>) {
     }
 }
 
-pub(crate) fn list(dir: &Path) -> Result<Vec<SessionMetadata>, SessionError> {
+/// Every session in one sessions directory, named by its name fact or its first prompt's title.
+pub fn list(dir: &Path) -> Result<Vec<SessionMetadata>, SessionError> {
     let storage = |error: std::io::Error| {
         SessionError::Storage(format!(
             "Failed to list sessions directory {}: {error}",

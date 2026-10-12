@@ -374,6 +374,142 @@ fn a_plugin_skill_and_its_files_are_read_by_address() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+/// A session is read by its name as well as its id, in its own repository or another; a name two
+/// sessions carry lists both, and a history wall, which names sessions by id, resolves no name.
+#[test]
+fn a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_owners() -> TestResult
+{
+    use yi_session::SessionRepo;
+    let root = Scratch::new("yi-fetch-named")?;
+    let sessions = root.join("sessions");
+    let (here, there) = (root.join("here"), root.join("there"));
+    std::fs::create_dir_all(&here)?;
+    std::fs::create_dir_all(&there)?;
+    let named = |cwd: &std::path::Path, name: &str, said: &str| -> Result<String, Box<dyn Error>> {
+        let mut repo = yi_session::JsonlRepo::new(sessions.clone(), cwd.to_string_lossy());
+        let store = repo.create(yi_session::CreateOptions::default())?;
+        let reply = yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_text(said)],
+            yi_types::message::StopReason::Stop,
+        );
+        yi_session::lock_session(&store).append_message("main", reply)?;
+        yi_session::lock_session(&store).set_name(Some(name.to_owned()))?;
+        Ok(yi_session::lock_session(&store).metadata().id.clone())
+    };
+    named(&here, "forge-root", "the gate pins runner image v3")?;
+    let ops = named(&there, "ops-root", "the vm runner lives on host 123")?;
+    named(&there, "twin", "one")?;
+    named(&there, "twin", "two")?;
+    named(&here, "shared", "this repository's own")?;
+    named(&there, "shared", "the other repository's")?;
+    let mut repo = yi_session::JsonlRepo::new(sessions.clone(), there.to_string_lossy());
+    let ops_root = repo.open(&ops)?;
+    let ops_file = yi_session::lock_session(&ops_root)
+        .file_path()
+        .cloned()
+        .ok_or("no file")?;
+    let children = ops_file.with_extension("").join("children");
+    let child = yi_session::create_flat_session(
+        children.clone(),
+        there.to_string_lossy(),
+        Some(ops.clone()),
+    )?;
+    let reply = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text("the worker found the stale pin")],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&child).append_message("main", reply)?;
+    let child_file = yi_session::lock_session(&child)
+        .file_path()
+        .cloned()
+        .ok_or("no child file")?;
+    let spawned = yi_types::subagent::ChildTrail::Spawned(yi_types::subagent::ChildSpawned {
+        name: "worker-3".to_owned(),
+        id: yi_types::subagent::ChildId("c1".to_owned()),
+        session: yi_session::lock_session(&child).metadata().id.clone(),
+        path: child_file
+            .strip_prefix(ops_file.parent().ok_or("no dir")?)?
+            .to_string_lossy()
+            .into_owned(),
+        brief: String::new(),
+    });
+    let trail = serde_json::to_value(spawned)?;
+    yi_session::lock_session(&ops_root).append_custom(
+        "main",
+        yi_types::subagent::CHILD_ENTRY,
+        Some(trail),
+    )?;
+    let mut repo = yi_session::JsonlRepo::new(sessions.clone(), here.to_string_lossy());
+    let me = repo.create(yi_session::CreateOptions::default())?;
+    let host = crate::support::family(root.to_path_buf(), here.clone(), me.clone(), None).host;
+    let reader = |wall: Wall| {
+        let desk =
+            yi_runtime::fetch::SessionTranscripts::new(host.clone(), Some(sessions.clone()), &here);
+        Resolver::new(here.clone(), wall.clone())
+            .with_session("main", me.clone())
+            .with_transcripts(Arc::new(desk.walled_by(&wall)))
+    };
+    let read = |wall: Wall, address: &str| {
+        reader(wall).fetch(&address.parse().map_err(|_| FetchError::BadAddress {
+            url: address.to_owned(),
+            detail: String::new(),
+        })?)
+    };
+    let text = |fetched: Result<yi_runtime::fetch::Fetched, FetchError>| {
+        fetched
+            .map(|f| f.text)
+            .unwrap_or_else(|error| format!("{error:?}"))
+    };
+    assert!(text(read(Wall::default(), "history://forge-root")).contains("runner image v3"));
+    assert!(
+        text(read(Wall::default(), "history://ops-root")).contains("host 123"),
+        "another repository"
+    );
+    assert!(
+        text(read(Wall::default(), &format!("history://{ops}"))).contains("host 123"),
+        "by id"
+    );
+    let worker = text(read(Wall::default(), "history://ops-root/worker-3"));
+    assert!(
+        worker.contains("the stale pin"),
+        "a child by its root's name: {worker}"
+    );
+    let shared = text(read(Wall::default(), "history://shared"));
+    assert!(
+        shared.contains("this repository's own"),
+        "a name here is never shadowed: {shared}"
+    );
+    let twins = read(Wall::default(), "history://twin");
+    assert!(
+        matches!(&twins, Err(FetchError::BadAddress { detail, .. }) if detail.starts_with("2 sessions are named \"twin\"")),
+        "{}",
+        text(twins)
+    );
+    let walled = Wall {
+        deny_url: vec![format!("history://{ops}")],
+        ..Wall::default()
+    };
+    let by_name = read(walled.clone(), "history://ops-root");
+    assert!(
+        matches!(by_name, Err(FetchError::NotFound { .. })),
+        "a name around the wall: {}",
+        text(by_name)
+    );
+    let child = read(walled.clone(), "history://ops-root/worker-3");
+    assert!(
+        child.is_err(),
+        "walled, no child by its root's name: {}",
+        text(child)
+    );
+    let other = read(walled, "history://forge-root");
+    assert!(
+        matches!(other, Err(FetchError::NotFound { .. })),
+        "walled, no name resolves: {}",
+        text(other)
+    );
+    Ok(())
+}
+
 /// A child is told its task, never its parent's session id: `history://parent` reads the parent's
 /// transcript off disk as written by the session repo, and a root session has no parent to read.
 #[test]
