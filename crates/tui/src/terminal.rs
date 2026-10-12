@@ -185,11 +185,7 @@ impl<B: Backend> Terminal<B> {
             matched = matched.saturating_add(1);
             // Invariant: a blank matches any blank row (the orb's rows at rest), so only ink proves
             // the line is the one on screen; trailing blank matches are inserted, not adopted.
-            if line
-                .spans
-                .iter()
-                .any(|span| !span.content.trim().is_empty())
-            {
+            if !crate::history::is_blank(line) {
                 adopted = matched;
             }
         }
