@@ -1,0 +1,6 @@
+---
+raise: crate console +14, crate types +31, tests +10, comments +2
+---
+The `_yi/fork` request and the `_yi/committed` notice are typed in yi-types now (`AcpForkParams`, `AcpForkPosition`, `AcpCommitted`), as every wire shape is meant to be, rather than built with ad hoc JSON at each end. Two things changed on the wire with them. A position other than `before` or `at` is refused by name (`position is before or at, not sideways`) where a typo used to read as `before`. And the prompt a re-ask hands back rides `_meta.yi.prefill` on the session result, where the spec puts Yi's own fields, instead of a custom field at the result's root; the console reads it there.
+
+A look at the console in real Ghostty (`tui-see --host term`, scene `menu-term`) confirmed that a menu lifts the sidebar's avatars and the orb under it, and found the settings gear wrong: Ghostty draws U+2699 two cells wide while it advances one, so the glyph ate the space after it and the corner read `⚙⌥,`. A text-presentation selector made it worse, shifting the whole row, so the gear now carries a second space for the glyph to fill; the corner reads `⚙ ⌥,` and the pane title `⚙ Settings`. The scene stays under `scripts/proof/tui_see`, played with the keyboard because the term host cannot replay mouse steps.

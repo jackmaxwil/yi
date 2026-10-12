@@ -1809,8 +1809,18 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
     )?;
     let reply = before.last().ok_or("no reply")?;
     assert_eq!(
-        reply["result"]["prefill"], "first turn",
+        reply["result"]["_meta"]["yi"]["prefill"], "first turn",
         "a re-ask hands back the prompt"
+    );
+    let sideways = client.request(
+        "9",
+        "_yi/fork",
+        json!({"sessionId": session_id, "entryId": asked, "position": "sideways"}),
+    )?;
+    let refused = sideways.last().ok_or("no reply")?;
+    assert_eq!(
+        refused["error"]["message"], "position is before or at, not sideways",
+        "an unknown position is named, not read as before: {refused}"
     );
     Ok(())
 }

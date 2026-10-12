@@ -68,6 +68,10 @@ pub struct ViewState {
     pub framed: bool,
 }
 
+/// Incident: Ghostty draws U+2699 two cells wide while it advances one, so the glyph ate the
+/// space after it (`⚙⌥,`); a second space is what it eats. U+FE0E shifted the whole row.
+const GEAR: &str = "⚙ ";
+
 pub(crate) fn pane_margin(framed: bool) -> ratatui::layout::Margin {
     ratatui::layout::Margin::new(1, u16::from(framed))
 }
@@ -371,7 +375,7 @@ fn pane_view_content(
             let options = options.map_or(&[][..], Vec::as_slice);
             let width = usize::from(inner.width);
             let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
-            ("⚙ Settings".to_owned(), lines, None)
+            (format!("{GEAR} Settings"), lines, None)
         }
         PaneContent::Tape { tape, cursor, .. } => {
             let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
@@ -642,9 +646,9 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     if let Some(gear) = app.hits.as_ref().and_then(|hits| hits.gear) {
         let key = keys::chord_for(keys::Action::Settings, app.cmd_hints);
         let label = if app.state.sidebar == SidebarMode::Full {
-            " ⚙ settings "
+            format!(" {GEAR} settings ")
         } else {
-            " ⚙ "
+            format!(" {GEAR} ")
         };
         let line = Line::from(vec![
             Span::styled(label, theme.accent_style()),
