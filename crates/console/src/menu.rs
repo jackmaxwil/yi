@@ -34,6 +34,7 @@ pub enum Verb {
     Rewind { files: bool },
     Fork { at: bool },
     Inspect,
+    OpenWith(usize),
     Act(Action),
     Open,
     OpenBeside,
@@ -41,7 +42,7 @@ pub enum Verb {
 
 #[derive(Clone)]
 pub struct Item {
-    pub label: &'static str,
+    pub label: String,
     pub hint: String,
     pub verb: Option<Verb>,
     /// Why an item that applies to this target cannot run now; one that never applies is absent.
@@ -60,9 +61,9 @@ pub struct Menu {
     pub levels: Vec<Level>,
 }
 
-fn item(label: &'static str, verb: Verb, hint: &str) -> Item {
+fn item(label: &str, verb: Verb, hint: &str) -> Item {
     Item {
-        label,
+        label: label.to_owned(),
         hint: hint.to_owned(),
         verb: Some(verb),
         blocked: None,
@@ -73,6 +74,8 @@ fn item(label: &'static str, verb: Verb, hint: &str) -> Item {
 pub struct Facts {
     pub cmd: bool,
     pub running: bool,
+    /// The apps `open` in config.json names, in order; empty, there is no Open in.
+    pub open: Vec<String>,
     pub last_pane: bool,
     pub zoomed: bool,
 }
@@ -97,9 +100,9 @@ pub fn items(target: &Target, facts: &Facts) -> Vec<Item> {
     }
 }
 
-fn parent(label: &'static str, children: Vec<Item>) -> Item {
+fn parent(label: &str, children: Vec<Item>) -> Item {
     Item {
-        label,
+        label: label.to_owned(),
         hint: "▸".to_owned(),
         verb: None,
         blocked: None,
@@ -148,6 +151,14 @@ fn message_items(said: Said, saved: bool, facts: &Facts) -> Vec<Item> {
         }
         Said::Assistant => items.push(ledger("Fork here", Verb::Fork { at: true })),
         Said::Thought => {}
+    }
+    if !facts.open.is_empty() {
+        let apps = facts.open.iter().enumerate();
+        items.push(parent(
+            "Open in",
+            apps.map(|(at, name)| item(name, Verb::OpenWith(at), ""))
+                .collect(),
+        ));
     }
     items.push(ledger("Inspect", Verb::Inspect));
     items
@@ -316,6 +327,7 @@ mod tests {
         Facts {
             cmd: false,
             running: false,
+            open: Vec::new(),
             last_pane: false,
             zoomed: false,
         }

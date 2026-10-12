@@ -59,6 +59,7 @@ impl App {
         let facts = Facts {
             cmd: self.cmd_hints,
             running,
+            open: self.state.open_apps.clone(),
             last_pane: tab.is_none_or(|tab| tab.layout.pane_ids().len() < 2),
             zoomed: tab.is_some_and(|tab| tab.zoomed),
         };
@@ -215,6 +216,13 @@ impl App {
                 verb @ (Verb::CopyJson | Verb::Inspect | Verb::Rewind { .. } | Verb::Fork { .. }),
             ) => {
                 self.ledger_verb(outbound, pane, &entry, verb);
+            }
+            (Target::Message { source, .. }, Verb::OpenWith(at)) => {
+                let Some(name) = self.state.open_apps.get(at).cloned() else {
+                    return;
+                };
+                let params = json!({"name": name, "text": source});
+                self.send_request(outbound, RequestKind::Open, "_yi/open", params);
             }
             (Target::Message { pane, source, .. }, Verb::Quote) => {
                 self.focus_pane(pane);
@@ -448,6 +456,7 @@ mod tests {
         let facts = Facts {
             cmd: false,
             running: false,
+            open: Vec::new(),
             last_pane: false,
             zoomed: false,
         };

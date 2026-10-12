@@ -1082,3 +1082,39 @@ fn a_sidecar_on_another_machine_is_left_alone_and_the_log_says_so() -> TestResul
     }
     Ok(())
 }
+
+/// Open in runs the command the person's config names on the message saved as markdown; the
+/// command here copies that file beside the test, so the copy is the proof the app got it.
+#[test]
+fn open_in_runs_the_configured_app_on_the_saved_message() -> TestResult {
+    let dir = Scratch::new("yi-open-in")?;
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join(".yi"))?;
+    let landed = dir.join("landed.md");
+    let copy = format!("cp \"$0\" {}", landed.display());
+    let config =
+        json!({"open": [{"name": "copier", "command": ["/bin/sh", "-c", copy, "{path}"]}]});
+    std::fs::write(home.join(".yi/config.json"), config.to_string())?;
+    let (mut daemon, socket) = spawn_daemon_in(&dir, &home)?;
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let text = "Naïve café — an answer\n";
+        let opened = client.request("o1", "_yi/open", json!({"name": "copier", "text": text}))?;
+        assert!(opened["result"]["argv"].is_array(), "{opened}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !landed.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(std::fs::read_to_string(&landed)?, text);
+        let unknown = client.request("o2", "_yi/open", json!({"name": "nope", "text": text}))?;
+        assert_eq!(
+            unknown["error"]["message"], "no app named nope under `open` in config.json",
+            "{unknown}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}

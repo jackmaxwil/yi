@@ -46,6 +46,7 @@ pub struct ConsoleOptions {
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
 }
 
@@ -240,7 +241,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
-    app.state.auto_side = options.auto_side;
+    configure(&mut app, options);
     app.state.sidebar = options.sidebar;
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
@@ -542,7 +543,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
     }
     app.autostart = options.autostart;
-    app.state.auto_side = options.auto_side;
+    configure(&mut app, options);
     app.state.sidebar = options.sidebar;
     let width = drive.width.max(20);
     let height = drive.height.max(8);
@@ -678,6 +679,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     drop(events);
     join_with_deadline(threads);
     exit_code
+}
+
+fn configure(app: &mut App, options: &ConsoleOptions) {
+    app.state.auto_side = options.auto_side;
+    app.state.open_apps = options.open_apps.clone();
 }
 
 /// What the console wrote outside the grid (clipboard, title), kept beside the frames; the
