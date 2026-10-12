@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{Transcript, Transcripts};
+use yi_types::url::Url;
+
+use super::{FetchError, Resolver, Transcript, Transcripts};
 use crate::wall::Wall;
 
 pub struct SessionTranscripts {
@@ -25,16 +27,6 @@ impl SessionTranscripts {
             cwd: cwd.to_string_lossy().into_owned(),
             names: true,
         }
-    }
-
-    /// A root session's file: by its id in any repository, else by its name.
-    fn session_file(&self, dir: &Path, agent: &str) -> Option<PathBuf> {
-        let cwd = Path::new(&self.cwd);
-        let named = || match crate::history::find_named(dir, cwd, agent) {
-            crate::history::Named::One(file) => Some(file),
-            crate::history::Named::Many(_) | crate::history::Named::Nothing => None,
-        };
-        crate::history::find_session(dir, cwd, agent).or_else(|| self.names.then(named).flatten())
     }
 
     pub fn walled_by(mut self, wall: &Wall) -> Self {
@@ -63,24 +55,167 @@ impl Transcripts for SessionTranscripts {
         if let Ok(session) = yi_session::SessionRepo::open(&mut repo, agent) {
             return Some(Transcript::Kept(session));
         }
-        // `root/child` names a child by the session that spawned it: another spelling of the
-        // child's own id, so like a name it resolves only past no history wall.
-        let child = || {
-            let (root, child) = agent.split_once('/')?;
-            crate::history::child_of(&self.session_file(&dir, root)?, child)
-        };
-        let file = (self.session_file(&dir, agent)).or_else(|| self.names.then(child).flatten())?;
+        let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
         let store = yi_session::load_session(&file).ok()?;
         Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
     }
 
-    fn candidates(&self, agent: &str) -> Vec<String> {
+    /// `root/child` names a child by the session that spawned it: like a name, another spelling
+    /// of the child's own id, so neither resolves past a history wall.
+    fn open_named(&self, agent: &str) -> Option<Transcript> {
+        let dir = self.sessions_dir.as_deref().filter(|_| self.names)?;
+        let cwd = Path::new(&self.cwd);
+        let root = |name: &str| {
+            let named = || match crate::history::find_named(dir, cwd, name) {
+                crate::history::Named::One(file) => Some(file),
+                crate::history::Named::Many(_) | crate::history::Named::Nothing => None,
+            };
+            crate::history::find_session(dir, cwd, name).or_else(named)
+        };
+        let child = || {
+            let (top, path) = agent.split_once('/')?;
+            crate::history::child_of(&root(top)?, path)
+        };
+        let file = agent
+            .contains('/')
+            .then(child)
+            .flatten()
+            .or_else(|| root(agent))?;
+        let store = yi_session::load_session(&file).ok()?;
+        Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
+    }
+
+    fn candidates(&self, agent: &str) -> Vec<crate::history::Candidate> {
         let Some(dir) = self.sessions_dir.as_deref().filter(|_| self.names) else {
             return Vec::new();
         };
         match crate::history::find_named(dir, Path::new(&self.cwd), agent) {
-            crate::history::Named::Many(files) => files,
+            crate::history::Named::Many(candidates) => candidates,
             crate::history::Named::One(_) | crate::history::Named::Nothing => Vec::new(),
         }
+    }
+
+    fn unreachable(&self) -> Option<(&'static str, bool)> {
+        let why =
+            "under a history wall a session is read by its id, never by a name or `root/child`";
+        (!self.names).then_some((why, true))
+    }
+}
+
+impl Resolver {
+    /// The transcript a `history://` path names and the entry part after it: ids first along
+    /// the whole path and each prefix, names only after, and the wall judges every spelling.
+    pub(super) fn locate(
+        &self,
+        url: &Url,
+    ) -> Result<(yi_session::SharedSession, Option<String>), FetchError> {
+        let path = url.path();
+        let cut = |(at, _): (usize, &str)| {
+            let (agent, entry) = path.split_at(at);
+            (agent, entry.get(1..))
+        };
+        let splits = || std::iter::once((path, None)).chain(path.rmatch_indices('/').map(cut));
+        let by_id = splits().find_map(|(agent, entry)| Some((self.transcript_of(agent)?, entry)));
+        let desk = self.transcripts();
+        let named = || {
+            let open = |(agent, entry)| Some((desk?.open_named(agent)?.session(), entry));
+            splits().find_map(open)
+        };
+        let Some((session, entry)) = by_id.or_else(named) else {
+            let candidates = (splits().map(|(agent, _)| agent)).find_map(|agent| {
+                let found = desk.map(|desk| desk.candidates(agent)).unwrap_or_default();
+                (!found.is_empty()).then_some((agent, found))
+            });
+            let why = desk.and_then(|desk| desk.unreachable());
+            return Err(match candidates {
+                Some((agent, found)) => unresolved(url, agent, &found, why),
+                None => unresolved(url, path, &[], why),
+            });
+        };
+        self.spellings_walled(url, &session, entry)?;
+        Ok((session, entry.map(str::to_owned)))
+    }
+
+    /// Invariant: a wall names a session one way and a read may name it another, so the read
+    /// is judged as its id and its name as well as as written (context rule 6).
+    fn spellings_walled(
+        &self,
+        url: &Url,
+        session: &yi_session::SharedSession,
+        entry: Option<&str>,
+    ) -> Result<(), FetchError> {
+        let (id, name) = {
+            let store = yi_session::lock_session(session);
+            (store.metadata().id.clone(), store.name())
+        };
+        let slug = name.map(|name| name.split_whitespace().collect::<Vec<_>>().join("-"));
+        let tail = entry.map(|entry| format!("/{entry}")).unwrap_or_default();
+        for spelling in std::iter::once(id).chain(slug) {
+            let Ok(other) = format!("history://{spelling}{tail}").parse::<Url>() else {
+                continue;
+            };
+            if let Some(refusal) = self.wall().check_url(&other, &self.workspace) {
+                return Err(FetchError::Denied {
+                    url: url.to_string(),
+                    refusal,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Candidates a shared name lists before a `[…]` row names the rest.
+const CANDIDATES_SHOWN: usize = 8;
+
+/// No transcript opened: a name several sessions carry lists them by the address that reads
+/// each, and a desk that cannot reach what another role's could says why.
+fn unresolved(
+    url: &Url,
+    agent: &str,
+    candidates: &[crate::history::Candidate],
+    why: Option<(&str, bool)>,
+) -> FetchError {
+    match why.filter(|_| candidates.is_empty()) {
+        Some((why, true)) => {
+            let refusal = format!("{agent} is not an id, and {why}");
+            return FetchError::Denied {
+                url: url.to_string(),
+                refusal,
+            };
+        }
+        Some((why, false)) => {
+            let what = format!("agent {agent}: {why}");
+            return FetchError::NotFound {
+                url: url.to_string(),
+                what,
+            };
+        }
+        None => {}
+    }
+    if candidates.is_empty() {
+        return FetchError::NotFound {
+            url: url.to_string(),
+            what: format!(
+                "agent {agent}: not the attached session, not a live child, and no session on disk carries that id or name"
+            ),
+        };
+    }
+    let mut rows: Vec<String> = (candidates.iter().take(CANDIDATES_SHOWN))
+        .map(|candidate| format!("history://{} (in {})", candidate.id, candidate.cwd))
+        .collect();
+    if candidates.len() > CANDIDATES_SHOWN {
+        rows.push(format!(
+            "[… {CANDIDATES_SHOWN} of {} shown · at most {CANDIDATES_SHOWN} · rename the one you mean, or read by id]",
+            candidates.len()
+        ));
+    }
+    FetchError::BadAddress {
+        url: url.to_string(),
+        detail: format!(
+            "{} sessions are named {agent:?}; read one by its address:\n{}",
+            candidates.len(),
+            rows.join("\n")
+        ),
     }
 }

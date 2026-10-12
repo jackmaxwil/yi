@@ -382,7 +382,8 @@ fn a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_own
     use yi_session::SessionRepo;
     let root = Scratch::new("yi-fetch-named")?;
     let sessions = root.join("sessions");
-    let (here, there) = (root.join("here"), root.join("there"));
+    // An underscore in a repository's directory once let a path spelling stand for an id.
+    let (here, there) = (root.join("here"), root.join("their_repo"));
     std::fs::create_dir_all(&here)?;
     std::fs::create_dir_all(&there)?;
     let named = |cwd: &std::path::Path, name: &str, said: &str| -> Result<String, Box<dyn Error>> {
@@ -402,6 +403,7 @@ fn a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_own
     named(&there, "twin", "two")?;
     named(&here, "shared", "this repository's own")?;
     named(&there, "shared", "the other repository's")?;
+    named(&here, "Fix The Cache", "a name with spaces")?;
     let mut repo = yi_session::JsonlRepo::new(sessions.clone(), there.to_string_lossy());
     let ops_root = repo.open(&ops)?;
     let ops_file = yi_session::lock_session(&ops_root)
@@ -479,33 +481,77 @@ fn a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_own
         shared.contains("this repository's own"),
         "a name here is never shadowed: {shared}"
     );
-    let twins = read(Wall::default(), "history://twin");
+    let page = text(read(Wall::default(), "history://forge-root/tail/1"));
     assert!(
-        matches!(&twins, Err(FetchError::BadAddress { detail, .. }) if detail.starts_with("2 sessions are named \"twin\"")),
-        "{}",
-        text(twins)
+        page.contains("runner image v3"),
+        "a name with a selector: {page}"
     );
+    let spaced = text(read(Wall::default(), "history://fix-the-cache"));
+    assert!(
+        spaced.contains("a name with spaces"),
+        "spaces read as dashes: {spaced}"
+    );
+    for address in ["history://twin", "history://twin/tail/40"] {
+        let twins = read(Wall::default(), address);
+        assert!(
+            matches!(&twins, Err(FetchError::BadAddress { detail, .. })
+                if detail.starts_with("2 sessions are named \"twin\"") && detail.contains("\nhistory://")),
+            "{address}: {}",
+            text(twins)
+        );
+    }
     let walled = Wall {
         deny_url: vec![format!("history://{ops}")],
         ..Wall::default()
     };
-    let by_name = read(walled.clone(), "history://ops-root");
+    let index = ops_file.parent().ok_or("no dir")?.join(".index.json");
     assert!(
-        matches!(by_name, Err(FetchError::NotFound { .. })),
-        "a name around the wall: {}",
-        text(by_name)
+        !index.exists(),
+        "a read wrote another repository's session index"
     );
-    let child = read(walled.clone(), "history://ops-root/worker-3");
+    let stem = ops_file
+        .file_stem()
+        .ok_or("no stem")?
+        .to_string_lossy()
+        .into_owned();
+    for address in [
+        "history://ops-root".to_owned(),
+        "history://ops-root/worker-3".to_owned(),
+        "history://forge-root".to_owned(),
+        format!("history://repo--/{stem}"),
+    ] {
+        let refused = read(walled.clone(), &address);
+        assert!(
+            matches!(refused, Err(FetchError::Denied { .. })),
+            "{address} under a history wall: {}",
+            text(refused)
+        );
+    }
+    let spelled = read(Wall::default(), &format!("history://repo--/{stem}"));
     assert!(
-        child.is_err(),
-        "walled, no child by its root's name: {}",
-        text(child)
+        spelled.is_err(),
+        "a path spelling opened a session: {}",
+        text(spelled)
     );
-    let other = read(walled, "history://forge-root");
+    let named_wall = Wall {
+        deny_url: vec!["history://ops-root".to_owned()],
+        ..Wall::default()
+    };
+    let by_id = read(named_wall, &format!("history://{ops}"));
     assert!(
-        matches!(other, Err(FetchError::NotFound { .. })),
-        "walled, no name resolves: {}",
-        text(other)
+        matches!(by_id, Err(FetchError::Denied { .. })),
+        "an id around a name's wall: {}",
+        text(by_id)
+    );
+    let parent = Arc::downgrade(&host);
+    let reader_role = Resolver::new(here.clone(), Wall::default())
+        .with_session("worker", me.clone())
+        .with_transcripts(Arc::new(yi_runtime::fetch::ParentTranscript(parent)));
+    let reached = reader_role.fetch(&"history://ops-root".parse()?);
+    assert!(
+        matches!(&reached, Err(FetchError::NotFound { what, .. }) if what.contains("a reader opens")),
+        "{}",
+        text(reached)
     );
     Ok(())
 }
