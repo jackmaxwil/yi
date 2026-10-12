@@ -326,27 +326,49 @@ fn run_interactive(
         if app.dirty {
             scheduler.request();
         }
-        if scheduler.should_draw(Instant::now()) {
-            let start = Instant::now();
-            let mut out = std::io::stdout();
-            if present(app, terminal, theme, &mut orb_owners, &mut out).is_err() {
-                return 1;
-            }
-            set_window_title(app);
-            for sequence in app.osc_out.drain(..) {
-                use std::io::Write;
-                let _ = out.write_all(sequence.as_bytes());
-                let _ = out.flush();
-            }
-            scheduler.mark_drawn(start, Instant::now());
-        } else if app.kitty {
-            let _ = yi_tui::term::framed(&mut std::io::stdout(), |out| {
-                place_chat_orbs(app, &mut orb_owners, out);
-                app.avatars.animate(out);
-            });
+        let mut out = std::io::stdout();
+        if step_frame(
+            app,
+            terminal,
+            theme,
+            &mut scheduler,
+            &mut orb_owners,
+            &mut out,
+        )
+        .is_err()
+        {
+            return 1;
         }
     }
     0
+}
+
+/// Incident: with no text to draw the orb and avatars stopped advancing, so an orb froze
+/// mid-morph once a turn ended; that step still moves them, in an update of their own.
+fn step_frame<B: Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    theme: &Theme,
+    scheduler: &mut yi_tui::frame::FrameScheduler,
+    orb_owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    if scheduler.should_draw(Instant::now()) {
+        let start = Instant::now();
+        present(app, terminal, theme, orb_owners, out)?;
+        set_window_title(app);
+        for sequence in app.osc_out.drain(..) {
+            let _ = out.write_all(sequence.as_bytes());
+            let _ = out.flush();
+        }
+        scheduler.mark_drawn(start, Instant::now());
+    } else if app.kitty {
+        let _ = yi_tui::term::framed(out, |out| {
+            place_chat_orbs(app, orb_owners, out);
+            app.avatars.animate(out);
+        });
+    }
+    Ok(())
 }
 
 /// Incident: images placed after the update closed sat on their old rows over moved text, so
