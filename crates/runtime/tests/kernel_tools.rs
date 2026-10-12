@@ -101,16 +101,18 @@ fn session(cwd: &Path, codes: &[&str]) -> AgentSession {
 
 /// The `ipython` result of `code` run as the model's one cell, the session's tools behind it.
 async fn run_cell(cwd: &Path, code: &str) -> Result<ToolResult, Box<dyn Error>> {
-    let cells = run_cells(cwd, &[code], None).await?;
+    let (cells, _) = run_cells(cwd, &[code], None, None).await?;
     Ok(cells.into_iter().next().ok_or("the cell never ended")?)
 }
 
-/// Each code run as the model's next cell in one session, and their results in order.
+/// Each code run as the model's next cell in one session, and their results in order; a
+/// `console` cell is typed into the booted kernel first and its output returned beside them.
 async fn run_cells(
     cwd: &Path,
     codes: &[&str],
     broker: Option<Arc<PermissionBroker>>,
-) -> Result<Vec<ToolResult>, Box<dyn Error>> {
+    console: Option<&'static str>,
+) -> Result<(Vec<ToolResult>, String), Box<dyn Error>> {
     let mut session = session(cwd, codes);
     let calls = Arc::new(Calls::default());
     let mut registry = HostRegistry::default();
@@ -133,9 +135,24 @@ async fn run_cells(
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service), Some(calls)));
     session.use_tools(tools, cwd.to_path_buf(), broker);
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let typed = match console {
+        Some(code) => {
+            service.execute_user_cell("1", &never).await;
+            let (service, never) = (Arc::clone(&service), Arc::clone(&never));
+            let typed = tokio::spawn(async move { service.execute_user_cell(code, &never).await });
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            Some(typed)
+        }
+        None => None,
+    };
     let mut events = session.subscribe();
     session.prompt("run the cell")?;
     session.wait_idle().await;
+    let console = match typed {
+        Some(typed) => yi_types::message::join_text(&typed.await?.result.content, "\n"),
+        None => String::new(),
+    };
     service.dispose().await;
     let mut cells = Vec::new();
     while let Ok(event) = events.try_recv() {
@@ -147,7 +164,7 @@ async fn run_cells(
             cells.push(result);
         }
     }
-    Ok(cells)
+    Ok((cells, console))
 }
 
 fn stored(cell: &ToolResult, is_error: bool) -> AgentMessage {
@@ -276,7 +293,7 @@ async def late():
 task = asyncio.ensure_future(late())
 "#;
     let second = "import asyncio\nawait asyncio.sleep(1.5)";
-    let cells = run_cells(&cwd, &[first, second, "print(task.result())"], None).await?;
+    let (cells, _) = run_cells(&cwd, &[first, second, "print(task.result())"], None, None).await?;
     let [_, during, after] = cells.as_slice() else {
         return Err(format!("{} cells ended, not 3", cells.len()).into());
     };
@@ -288,6 +305,33 @@ task = asyncio.ensure_future(late())
     );
     let rows = yi_context::nested_calls(Some(&during.details));
     assert!(rows.is_empty(), "the next cell was credited with {rows:?}");
+    Ok(())
+}
+
+/// A cell typed into the console while the agent's cell waits for the kernel is still the
+/// user's: its calls are refused and never land on the agent's cell.
+#[tokio::test]
+async fn a_console_cell_running_while_the_agents_cell_waits_is_refused()
+-> Result<(), Box<dyn Error>> {
+    let (_dir, cwd) = scratch("kernel-tools-console")?;
+    let typed = r#"
+import asyncio
+await asyncio.sleep(1.0)
+try:
+    await yi.tools.write(path="console.txt", content="c\n")
+    print("console wrote")
+except yi.tools.ToolError as error:
+    print("console refused", error.kind)
+"#;
+    let (cells, console) = run_cells(&cwd, &["print('agent')"], None, Some(typed)).await?;
+    assert!(console.contains("console refused cancelled"), "{console}");
+    assert!(!cwd.join("console.txt").exists(), "a console cell wrote");
+    let cell = cells.first().ok_or("the agent's cell never ended")?;
+    let rows = yi_context::nested_calls(Some(&cell.details));
+    assert!(
+        rows.is_empty(),
+        "the agent's cell was credited with {rows:?}"
+    );
     Ok(())
 }
 
@@ -311,7 +355,7 @@ try:
 except yi.Refused:
     print("refused")
 "#;
-    let cells = run_cells(&cwd, &[code], Some(broker)).await?;
+    let (cells, _) = run_cells(&cwd, &[code], Some(broker), None).await?;
     let cell = cells.first().ok_or("the cell never ended")?;
     let text = yi_types::message::join_text(&cell.content, "\n");
     assert!(text.contains("refused"), "{text}");
@@ -322,10 +366,14 @@ except yi.Refused:
     Ok(())
 }
 
+/// The execute request the agent's cell holds the kernel as, which `yi.tools` sends as `cell`.
+const REQUEST: &str = "request-1";
+
 fn request(name: &str, args: serde_json::Value) -> Map<String, serde_json::Value> {
     let mut payload = Map::new();
     payload.insert("name".to_owned(), json!(name));
     payload.insert("args".to_owned(), args);
+    payload.insert("cell".to_owned(), json!(REQUEST));
     payload
 }
 
@@ -353,7 +401,15 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
 
     let closed = dispatch(read())?.await?;
     assert_eq!(closed.get("kind"), Some(&json!("cancelled")), "{closed:?}");
-    calls.open();
+    calls.open(REQUEST);
+    let mut untagged = read();
+    untagged.remove("cell");
+    let refused = dispatch(untagged)?.await?;
+    assert_eq!(
+        refused.get("kind"),
+        Some(&json!("cancelled")),
+        "a call naming no cell is refused while one is open"
+    );
     let kept = yi_types::kernel::NESTED_READS_KEPT;
     for _ in 0..3 {
         dispatch(read())?.await?;
@@ -378,12 +434,20 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
     let mut ops = yi_context::FileOps::default();
     yi_context::details::extract_file_ops_from_message(&stored(&cell, false), &mut ops);
     let view = yi_context::CompiledView::default();
-    let (summary, _) = yi_context::compose_summary("## Goal", &ops, &view);
+    let (summary, details) = yi_context::compose_summary("## Goal", &ops, &view);
     let notice = format!(
-        "[… {kept} read files listed; 1 more read calls from cells are not: a cell keeps {kept} distinct read rows (NESTED_READS_KEPT); their files: grep(pattern=\"yi.tools\", path=\"history://self\")]"
+        "[… {kept} read files listed; 1 more read calls from cells are not, and their paths were not kept: a cell keeps {kept} distinct read rows (NESTED_READS_KEPT); the cells that made them: grep(pattern=\"yi.tools\", path=\"history://self\")]"
     );
     let row = summary.lines().find(|line| line.starts_with("[…"));
     assert_eq!(row, Some(notice.as_str()), "{summary}");
+    let again = yi_context::details::extract_file_ops(&[], Some(&details));
+    let (resummary, _) = yi_context::compose_summary("## Goal", &again, &view);
+    let row = resummary.lines().find(|line| line.starts_with("[…"));
+    assert_eq!(
+        row,
+        Some(notice.as_str()),
+        "the next compaction lost the row"
+    );
     let after = dispatch(read())?.await?;
     assert_eq!(
         after.get("kind"),
@@ -391,7 +455,7 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
         "closing a cell shuts the gate"
     );
 
-    calls.open();
+    calls.open(REQUEST);
     let writes = 1024;
     for n in 0..writes {
         let path = format!("w{n}.txt");
@@ -412,7 +476,7 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
         "a failed write past a thousand others keeps its own verdict"
     );
 
-    calls.open();
+    calls.open(REQUEST);
     let slow = dispatch(request(
         "bash",
         json!({"command": "sleep 0.3; touch late.txt"}),
@@ -420,7 +484,7 @@ async fn a_call_outside_a_cell_is_refused_and_reads_past_the_cap_are_counted()
     let running = tokio::spawn(slow);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let (during, _) = calls.close();
-    calls.open();
+    calls.open("request-2");
     running.await??;
     let (next, _) = calls.close();
     let outlived: Vec<bool> = next.iter().map(|row| row.outlived).collect();

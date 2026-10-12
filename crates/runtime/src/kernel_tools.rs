@@ -14,7 +14,7 @@ pub type ToolsFn = Arc<dyn Fn() -> Vec<Arc<dyn AgentTool>> + Send + Sync>;
 
 #[derive(Default)]
 struct Rows {
-    open: bool,
+    request: Option<String>,
     cell: u64,
     kept: Vec<NestedCall>,
     read_keys: std::collections::BTreeSet<(String, Vec<String>)>,
@@ -48,14 +48,14 @@ impl Calls {
         self.rows.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn open_cell(&self) -> Option<u64> {
+    fn admit(&self, token: Option<&str>) -> Option<u64> {
         let rows = self.rows();
-        rows.open.then_some(rows.cell)
+        (token.is_some() && rows.request.as_deref() == token).then_some(rows.cell)
     }
 
     fn push(&self, mut row: NestedCall, read: bool, cell: u64) {
         let mut rows = self.rows();
-        row.outlived = !rows.open || rows.cell != cell;
+        row.outlived = rows.request.is_none() || rows.cell != cell;
         if read {
             let key = (row.tool.clone(), row.paths.clone());
             if rows.read_keys.contains(&key) {
@@ -72,15 +72,15 @@ impl Calls {
 }
 
 impl yi_tools::CellCalls for Calls {
-    fn open(&self) {
+    fn open(&self, request: &str) {
         let mut rows = self.rows();
-        rows.open = true;
+        rows.request = Some(request.to_owned());
         rows.cell = rows.cell.wrapping_add(1);
     }
 
     fn close(&self) -> (Vec<NestedCall>, u64) {
         let mut rows = self.rows();
-        rows.open = false;
+        rows.request = None;
         rows.read_keys.clear();
         (
             std::mem::take(&mut rows.kept),
@@ -175,10 +175,10 @@ async fn call(
             return failure("invalid_input", message, Vec::new());
         }
     };
-    // Invariant: a task carries the request its cell ran as, so one an earlier cell left differs.
-    let same = payload.str_of("cell") == payload.str_of("activeCell");
-    let Some(cell) = calls.open_cell().filter(|_| same) else {
-        let message = "not from the agent's running cell: a call from a task that outlived its cell, even while a later cell runs, one made after the cell was interrupted, or one from a cell typed into the console is refused; call it inside an ipython call";
+    // Invariant: a call carries the request its cell ran as, which tasks inherit, so a console
+    // cell or a task an earlier cell left never names the agent's open one.
+    let Some(cell) = calls.admit(payload.str_of("cell")) else {
+        let message = "not from the agent's running cell: a call from a task that outlived its cell, even while a later cell runs, one made after the cell was interrupted, one naming no cell (a thread's), or one from a cell typed into the console is refused; call it inside an ipython call";
         return failure("cancelled", message.to_owned(), Vec::new());
     };
     if let Some(refusal) = refused_before(name, &args, root) {
@@ -240,13 +240,31 @@ async fn call(
     reply.as_object().cloned().unwrap_or_default()
 }
 
+impl yi_tools::KernelBridge for KernelService {
+    fn execute_cell(
+        &self,
+        code: &str,
+        cancelled: &yi_tools::CancelFlag,
+        recovery_dir: Option<&std::path::Path>,
+    ) -> Result<yi_tools::KernelCellOutcome, String> {
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| "ipython requires a tokio runtime".to_owned())?;
+        let calls = self.cell_calls.get().cloned();
+        handle.block_on(self.execute_async(code, cancelled, recovery_dir, calls))
+    }
+}
+
 /// The `ipython` tool, its result listing the calls its cell made when `calls` is given.
 pub fn ipython_tool(
     service: Arc<KernelService>,
     calls: Option<Arc<Calls>>,
 ) -> Arc<dyn yi_tools::Tool> {
+    let calls = calls.map(|calls| calls as Arc<dyn yi_tools::CellCalls>);
+    if let Some(calls) = &calls {
+        service.cell_calls.get_or_init(|| Arc::clone(calls));
+    }
     Arc::new(yi_tools::IpythonTool {
         bridge: service,
-        calls: calls.map(|calls| calls as Arc<dyn yi_tools::CellCalls>),
+        calls,
     })
 }
