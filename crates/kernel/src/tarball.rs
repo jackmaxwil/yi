@@ -134,7 +134,7 @@ fn octal(field: &[u8]) -> Option<usize> {
 pub struct Aside {
     target: PathBuf,
     old: Option<PathBuf>,
-    clear: bool,
+    restore_clears_target: bool,
 }
 
 impl Aside {
@@ -142,13 +142,10 @@ impl Aside {
         self.old.as_deref()
     }
 
-    pub fn commit(self) -> Result<(), String> {
-        let Some(old) = self.old else {
-            return Ok(());
-        };
-        std::fs::remove_dir_all(&old)
-            .or_else(|_| std::fs::remove_file(&old))
-            .map_err(|error| format!("{}: {error}", old.display()))
+    pub fn commit(self) {
+        if let Some(old) = self.old {
+            let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
+        }
     }
 
     /// A failed restore names the path the predecessor still sits at, so it can be moved back.
@@ -156,7 +153,9 @@ impl Aside {
         let Some(old) = self.old else {
             return Ok(());
         };
-        if self.clear && std::fs::symlink_metadata(&self.target).is_ok_and(|meta| meta.is_dir()) {
+        if self.restore_clears_target
+            && std::fs::symlink_metadata(&self.target).is_ok_and(|meta| meta.is_dir())
+        {
             let _ = std::fs::remove_dir_all(&self.target);
         }
         std::fs::rename(&old, &self.target).map_err(|error| {
@@ -173,7 +172,7 @@ pub fn set_aside(target: &Path) -> Result<Aside, String> {
     rename_aside(target, old, false)
 }
 
-fn rename_aside(target: &Path, old: PathBuf, clear: bool) -> Result<Aside, String> {
+fn rename_aside(target: &Path, old: PathBuf, restore_clears_target: bool) -> Result<Aside, String> {
     let describe = |error: std::io::Error| format!("{}: {error}", target.display());
     if std::fs::symlink_metadata(target)
         .map_err(describe)?
@@ -189,7 +188,7 @@ fn rename_aside(target: &Path, old: PathBuf, clear: bool) -> Result<Aside, Strin
     Ok(Aside {
         target: target.to_path_buf(),
         old: Some(old),
-        clear,
+        restore_clears_target,
     })
 }
 
@@ -210,7 +209,7 @@ fn swap_in_with(
     let kept = |old| Aside {
         target: target.to_path_buf(),
         old,
-        clear: true,
+        restore_clears_target: true,
     };
     let aside = match std::fs::symlink_metadata(target) {
         Ok(meta) if meta.is_dir() || !staged_file || meta.file_type().is_symlink() => {
