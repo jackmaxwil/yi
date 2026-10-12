@@ -892,6 +892,7 @@ an unknown method −32601, bad JSON −32700.
 | `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3), and one still queued at close gets −32800; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
 | `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/tape`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; the session's ledger over time; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
+| `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again as `prefill`) or `at` it, attached beside the source, which keeps its own branch |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
 
@@ -900,7 +901,8 @@ an unknown method −32601, bad JSON −32700.
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
-`_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
+`_yi/committed{entry}` (each user or assistant message as saved, so a client can act on a reply it
+watched stream), `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
 `yi serve` is a supervisor on `~/.yi/daemon.sock` (mode 0600): one `yi acp --cwd <root>` worker
@@ -952,6 +954,15 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
+- A right-click opens a menu for what is under it: a message (Copy, Copy as plain text or raw
+  JSON, Quote, Inspect; on a prompt Re-ask from here and Rewind to here, the conversation or it and
+  its files; on an answer Fork here, a side session beside the chat),
+  a pane (close, zoom, split) or a sidebar session (open, open beside); ⌥c opens it for the
+  focused pane or session. A verb that never applies is absent, one blocked now is greyed with
+  its reason, and a row with a key names it. With more than one pane in a tab, the focused pane's
+  title carries `✕` and its close key where the title leaves room, and a sibling's a bare `✕`;
+  a mark closes its pane on a release that did not drag. The palette, the keys overlay and the
+  menu take every press while open and lift the kitty images of the panes they cover.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
 - The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
   those sections, two lines a row (name; what it needs or is doing, its list, its age). A done

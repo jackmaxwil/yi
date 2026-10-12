@@ -391,6 +391,7 @@ pub enum Mode {
     Prefix,
     Navigator { query: String, selected: usize },
     Keys,
+    Menu(crate::menu::Menu),
 }
 
 pub struct ConsoleState {
