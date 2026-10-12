@@ -51,6 +51,18 @@ class Tools(unittest.TestCase):
         self.assertEqual(repr(result), result.text, "a cell's last value shows the view")
         self.assertEqual(result.details["hits"], 1)
 
+    def test_a_value_reads_by_key_and_by_attribute_and_names_what_it_has(self) -> None:
+        self.reply = {"ok": True, "text": "view", "details": {},
+                      "value": {"matches": [{"path": "a.rs", "line": 3, "text": "fn a"}], "files": 1}}
+        result = asyncio.run(yi.tools.grep(pattern="fn a"))
+        self.assertEqual(result.value.matches[0].line, 3)
+        self.assertEqual(result.value["matches"][0]["path"], "a.rs")
+        with self.assertRaises(AttributeError) as caught:
+            _ = result.value.match
+        self.assertIn("matches, files", str(caught.exception))
+        self.reply = {"ok": True, "text": "done", "details": {}}
+        self.assertIsNone(asyncio.run(yi.tools.grep(pattern="x")).value, "a tool with no value")
+
     def test_each_failure_raises_what_a_program_can_catch_apart(self) -> None:
         cases = [
             ({"ok": False, "kind": "refused", "message": "Permission denied: outside the tree"},

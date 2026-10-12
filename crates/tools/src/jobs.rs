@@ -630,6 +630,54 @@ pub fn clamp_timeout(seconds: Option<u64>) -> Duration {
     )
 }
 
+/// A command still running at its wait: the turn gets the job and a bounded tail printed so far.
+pub(crate) fn backgrounded_output(
+    mut sections: Vec<String>,
+    id: JobId,
+    (after, timeout): (std::time::Duration, std::time::Duration),
+    owned: bool,
+    program: bool,
+) -> crate::ToolOutput {
+    const TAIL_LINES: usize = 20;
+    const TAIL_BYTES: usize = 2_048;
+    let timeout = timeout.as_secs();
+    let arrival = if owned {
+        "when it exits, starting your next turn: end the turn rather than sleep or poll"
+    } else {
+        "only if it exits while this turn is still running"
+    };
+    sections.push(format!(
+        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own {arrival}; bash job={id} wait=<s> waits for it now.]"
+    ));
+    let chunk = registry().output_since(id, 0);
+    let (so_far, printed) = chunk.map_or((String::new(), 0), |chunk| (chunk.text, chunk.next));
+    let lines: Vec<&str> = so_far.lines().collect();
+    let tail = lines.get(lines.len().saturating_sub(TAIL_LINES)..);
+    let tail = tail.unwrap_or_default().join("\n");
+    let from = (tail.len().saturating_sub(TAIL_BYTES)..tail.len())
+        .find(|at| tail.is_char_boundary(*at))
+        .unwrap_or(tail.len());
+    if lines.len() > TAIL_LINES || from > 0 {
+        sections.push(format!(
+            "[the last {} of {} bytes printed so far (the preview keeps {TAIL_LINES} lines, at most {TAIL_BYTES} bytes); bash job={id} wait=<s> returns its output once it exits]",
+            tail.len().saturating_sub(from),
+            printed
+        ));
+    }
+    sections.extend(
+        tail.get(from..)
+            .filter(|kept| !kept.is_empty())
+            .map(str::to_owned),
+    );
+    let mut output = crate::tool::text_output(sections.join("\n"));
+    output.result.details = serde_json::json!({
+        "job": id.0, "backgrounded": true, "timeoutSecs": timeout,
+        "afterMs": u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+    });
+    output.value = program.then(|| crate::values::job(id));
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

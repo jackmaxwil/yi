@@ -514,6 +514,15 @@ A persistent IPython process per session that reaches the host only through host
   files it named, a sequential call's `command`, an `ask_user` answer, never a write's content.
   A cell keeps 256 read rows and counts the rest in `callsDropped`; compaction's file lists and
   the todo landed count read the rows, a cell that raised included.
+- A nested call runs as a program's (`ToolContext::program`, `AgentTool::execute_program`): the
+  tool fills `ToolOutput::value`, a `yi_types::tool_value` shape the reply carries beside the
+  text and the transcript never holds, and collects past the view's caps up to a 64 MiB fuse that
+  names itself in the value's `cut`. `grep` returns every hit (no tags minted, no paging state
+  touched); `read` the asked window or the whole file, every line of it seen for an edit; a
+  directory, a glob, `edit`, `write`, `bash` (streams before the reducer, or the job), `get_context`
+  (layers unclamped), `todo` (the list), `annotate` (the record), an address (the page and next
+  offset), a child's `ask_user` (the answer) and an exec tool (the JSON it prints) each have one;
+  `plan` has none, since `yi.Plan` already reads plans as data. The line selector never runs.
 
 ### 9.3 Python surface
 - The preamble binds `rlm` (the module), `mcp`, `fetch`, `bash`. `@_public` builds `rlm.__all__`:
@@ -523,6 +532,8 @@ A persistent IPython process per session that reaches the host only through host
 - `yi.tools.<name>(**args)` calls `tool.call` and returns a `Result` (`text`, the model's view;
   `details`); it raises `UnknownTool`, `InvalidInput`, `Refused` (widened from plans) or
   `ToolFailure`. `yi.tools.search` pages with a `[…]` row, and names what `excluded()` leaves out.
+  `Result.value` reads by key or attribute (`hits.value.matches[0].line`), and is `None` for a
+  tool with none.
 - A public coroutine a cell never awaits runs once in `post_run_cell` and prints its value; a
   mail call (`send`, `followup`, `interrupt`, `revoke`) is a task scheduled at the call.
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and

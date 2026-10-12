@@ -23,6 +23,7 @@ mod scratch;
 mod spill;
 mod syntax;
 mod tool;
+mod values;
 
 use std::sync::Arc;
 

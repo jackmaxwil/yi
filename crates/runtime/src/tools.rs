@@ -449,6 +449,44 @@ impl AgentTool for ToolAdapter {
         args: Map<String, Value>,
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
+        let ran = self.run(tool_call_id, args, false);
+        Box::pin(async move { ran.await.0 })
+    }
+
+    fn execute_program<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: Map<String, Value>,
+        _signal: &'a InterruptSignal,
+    ) -> yi_loop::ProgramFuture<'a> {
+        self.run(tool_call_id, args, true)
+    }
+}
+
+impl ToolAdapter {
+    /// One body for both callers, so a program's call meets every gate a model's call does.
+    fn run<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: Map<String, Value>,
+        program: bool,
+    ) -> yi_loop::ProgramFuture<'a> {
+        let value = Arc::new(std::sync::Mutex::new(None));
+        let outcome = self.outcome(tool_call_id, args, program, Arc::clone(&value));
+        Box::pin(async move {
+            let outcome = outcome.await;
+            let value = value.lock().ok().and_then(|mut value| value.take());
+            (outcome, value)
+        })
+    }
+
+    fn outcome<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: Map<String, Value>,
+        program: bool,
+        value: Arc<std::sync::Mutex<Option<Value>>>,
+    ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
         let args = unsent_empties(&tool.schema(), args);
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
@@ -474,6 +512,7 @@ impl AgentTool for ToolAdapter {
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
             job_owner: self.job_owner,
+            program,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
@@ -618,6 +657,9 @@ impl AgentTool for ToolAdapter {
             match output {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
+                    if let Ok(mut slot) = value.lock() {
+                        *slot = output.value.take();
+                    }
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     // One at or naming a path under the own walls is never kept: Seatbelt judges
                     // each run, so a retry neither asks to leave nor claims the own transcript.
@@ -633,9 +675,10 @@ impl AgentTool for ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
-                    if let (Some(selector), Some(spills)) =
-                        (selector.as_deref().filter(|_| name == "bash"), &spills_dir)
-                    {
+                    if let (Some(selector), Some(spills)) = (
+                        selector.as_deref().filter(|_| name == "bash" && !program),
+                        &spills_dir,
+                    ) {
                         crate::select::widen(
                             selector,
                             ledger,

@@ -186,7 +186,7 @@ async fn call(
     let id = format!("cell-{}-{minted}", calls.attached_ms);
     let started = std::time::Instant::now();
     let signal = yi_loop::interrupt::InterruptSignal::default();
-    let outcome = tool.execute(&id, args.clone(), &signal).await;
+    let (outcome, value) = tool.execute_program(&id, args.clone(), &signal).await;
     let text = yi_types::message::join_text(&outcome.result.content, "\n");
     let denied = (outcome
         .result
@@ -217,6 +217,7 @@ async fn call(
         "kind": kind,
         "text": text,
         "details": outcome.result.details,
+        "value": value,
     });
     reply.as_object().cloned().unwrap_or_default()
 }
