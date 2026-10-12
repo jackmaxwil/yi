@@ -3,7 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{Args, effective_cwd, read_config};
+use crate::user_config::read_config;
+use crate::{Args, effective_cwd};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Status {

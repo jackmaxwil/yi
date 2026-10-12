@@ -39,7 +39,23 @@ pub fn draw<B>(
 ) where
     B: ratatui::backend::Backend + std::io::Write,
 {
-    term::sync_frame(terminal, |terminal| draw_frame(app, terminal, port));
+    draw_with_images(app, terminal, port, |_, _| {});
+}
+
+/// Incident: the orb was placed after the frame closed, so for a presented frame it sat on its
+/// old rows over the text that had moved. `images` runs inside the frame, after the paint.
+pub fn draw_with_images<B>(
+    app: &mut App,
+    terminal: &mut crate::terminal::Terminal<B>,
+    port: Option<&dyn SessionPort>,
+    images: impl FnOnce(&mut App, &mut B),
+) where
+    B: ratatui::backend::Backend + std::io::Write,
+{
+    term::sync_frame(terminal, |terminal| {
+        draw_frame(app, terminal, port);
+        images(app, terminal.backend_mut());
+    });
 }
 
 fn draw_frame<B>(
@@ -407,6 +423,10 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
     }
 }
 
+/// Rows that land at once roll in one a frame, as the owner chose, faster only when far behind:
+/// past this many rows behind the step grows, so 200 rows land in under 70 frames, not 200.
+const ROLL_ROWS: usize = 24;
+
 /// Transcript and live frame scroll as one column; `scroll` zero follows the turn, above holds.
 pub fn paint_pane(
     app: &mut App,
@@ -434,18 +454,46 @@ pub fn paint_pane(
     let (shown, owners, thumb) = if *scroll == 0 {
         app.pane_hold = None;
         let history = yi_types::trace::span("tui.history_rows");
+        let follow = app
+            .pane_follow
+            .filter(|&(w, m, _, _)| (w, m) == (width, mode));
         // One spare row: the seam may collapse a blank, and the trim below keeps `above`.
         let want = above.saturating_sub(live.len()).saturating_add(1);
-        let (mut column, mut owners) = app.history.lines(width, &theme, mode, want);
+        // The cell above the pin is read too: a cell's separator row exists only below another.
+        let at_most = follow.map_or(usize::MAX, |(_, _, pinned, _)| pinned.saturating_sub(1));
+        let (_, mut column, owners) = app.history.tail(width, &theme, mode, want, at_most);
         drop(history);
         join_live(&mut column, false, live);
-        let start = column.len().saturating_sub(above);
+        let end = follow
+            .and_then(|(_, _, pinned, below)| {
+                let at = owners.iter().position(|&cell| cell == pinned)?;
+                let behind = column.len().saturating_sub(at).saturating_sub(below);
+                Some(
+                    at.saturating_add(below)
+                        .saturating_add(behind.div_ceil(ROLL_ROWS)),
+                )
+            })
+            .map_or(column.len(), |end| end.min(column.len()));
+        if end < column.len() {
+            app.scheduler.request();
+        }
+        let start = end.saturating_sub(above);
+        let pin = owners.get(start).or(owners.last()).copied();
+        app.pane_follow = pin.and_then(|cell| {
+            let at = owners.iter().position(|&owner| owner == cell)?;
+            Some((width, mode, cell, end.saturating_sub(at)))
+        });
+        column.truncate(end);
         (
             column.split_off(start),
-            owners.split_off(start.min(owners.len())),
+            owners
+                .get(start..end.min(owners.len()))
+                .unwrap_or_default()
+                .to_vec(),
             None,
         )
     } else {
+        app.pane_follow = None;
         // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
         let hold = app
             .pane_hold
