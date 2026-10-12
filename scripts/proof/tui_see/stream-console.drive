@@ -1,0 +1,15 @@
+#! console --size 120x34 --stub stream.txt 90
+# The console's working orb beside its interrupt label while a paced reply streams.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+type stream it
+key enter
+wait-frame 20000 Streaming a reply
+wait-frame 10000 interrupt
+wait 1500
+snap-now midstream
+wait-frame 30000 unmoved
+wait 1500
+snap-now end
+quit
