@@ -10,7 +10,7 @@ use yi_types::url::Url;
 
 use super::{
     CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Page, Resolver, SESSION_MISSING,
-    Transcript, unresolved, unsupported,
+    Transcript, unsupported,
 };
 use crate::kernel::{VariableName, VariableReadError};
 use crate::plan::import::{parse_document, section_of};
@@ -285,24 +285,11 @@ impl Resolver {
     /// Invariant: an agent name carries its own slash, so the whole path is tried as an agent
     /// before an entry id is split off; splitting first read a reap pin as a missing entry.
     pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
-        let path = url.path();
-        if let Some(session) = self.transcript_of(path) {
-            return render_history(url, &session, None, page);
-        }
-        for (at, _) in path.rmatch_indices('/') {
-            let (agent, entry) = path.split_at(at);
-            if let Some(session) = self.transcript_of(agent) {
-                return render_history(url, &session, entry.get(1..), page);
-            }
-        }
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
         }
-        let candidates = self
-            .transcripts()
-            .map(|desk| desk.candidates(path))
-            .unwrap_or_default();
-        Err(unresolved(url, path, &candidates))
+        let (session, entry) = self.locate(url)?;
+        render_history(url, &session, entry.as_deref(), page)
     }
 
     /// One address space: this session (by its name or as `self`), a live child, the corpus.

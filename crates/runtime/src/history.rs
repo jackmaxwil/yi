@@ -64,13 +64,34 @@ fn belongs(dir: &Path, repo: &Path) -> Belongs {
     };
     // Incident: a header's `/var/…` never matched its own `/private/var/…` repository.
     let at = at.canonicalize().unwrap_or(at);
-    match crate::lane::canonical_repo(&at) {
+    match repo_at(&at) {
         Some(other) if other == repo => Belongs::Mine,
         Some(_) => Belongs::Other,
         None if at.starts_with(repo) => Belongs::Mine,
         None if at.exists() => Belongs::Other,
         None => Belongs::Unknown,
     }
+}
+
+/// [`crate::lane::canonical_repo`] with its misses kept too: a gone checkout spawned a git
+/// per session directory on every name lookup.
+fn repo_at(at: &Path) -> Option<PathBuf> {
+    static MISSED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let missed = |at: &Path| {
+        MISSED
+            .lock()
+            .is_ok_and(|missed| missed.iter().any(|known| known == at))
+    };
+    if missed(at) {
+        return None;
+    }
+    let repo = crate::lane::canonical_repo(at);
+    if repo.is_none()
+        && let Ok(mut missed) = MISSED.lock()
+    {
+        missed.push(at.to_path_buf());
+    }
+    repo
 }
 
 fn repo_of(cwd: &Path) -> PathBuf {
@@ -91,49 +112,55 @@ pub fn repo_sessions(sessions_dir: &Path, cwd: &Path) -> RepoSessions {
     Corpus::default().sessions(sessions_dir, cwd)
 }
 
+/// Whether `file` is the session `id`: its name is `<created>_<id>.jsonl` exactly, so no other
+/// spelling of the path can stand for the id a wall names.
+fn carries(file: &Path, id: &str) -> bool {
+    let stem = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".jsonl"));
+    stem.and_then(|stem| stem.split_once('_'))
+        .is_some_and(|(_, rest)| rest == id)
+}
+
 /// The session file carrying `id`: this repository's first, then any other repository's.
 pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf> {
-    let suffix = format!("_{id}.jsonl");
-    let carries = |file: &PathBuf| file.to_string_lossy().ends_with(&suffix);
-    let mine = repo_sessions(sessions_dir, cwd)
-        .files
-        .into_iter()
-        .find(carries);
+    if id.is_empty() || id.contains(['/', '\\']) {
+        return None;
+    }
+    let mine = (repo_sessions(sessions_dir, cwd).files.into_iter()).find(|file| carries(file, id));
     let anywhere = || {
         (session_dirs(sessions_dir).iter())
             .flat_map(|dir| jsonl_files(dir))
-            .find(carries)
+            .find(|file| carries(file, id))
     };
     mine.or_else(anywhere)
 }
 
-/// The file of the child a root session spawned under `name`, its latest by that name, from the
-/// trail the root keeps on its own transcript (`custom{child}`).
-pub fn child_of(root: &Path, name: &str) -> Option<PathBuf> {
-    let store = yi_session::load_session(root).ok()?;
-    let query = yi_session::EntryQuery {
-        custom_type: Some(yi_types::subagent::CHILD_ENTRY.to_owned()),
-        ..yi_session::EntryQuery::default()
-    };
-    let entries = store.find_entries(&query).ok()?;
-    let spawned = entries.iter().rev().find_map(|entry| match entry {
-        yi_types::entry::Entry::Custom {
-            data: Some(data), ..
-        } => match serde_json::from_value(data.clone()).ok()? {
-            yi_types::subagent::ChildTrail::Spawned(spawned) if spawned.name == name => {
-                Some(spawned)
+/// A name as an address spells it: case aside, its spaces as dashes, since a URL holds none.
+fn same_name(name: &str, address: &str) -> bool {
+    let slug: String = (name.trim().chars())
+        .map(|character| {
+            if character.is_whitespace() {
+                '-'
+            } else {
+                character.to_ascii_lowercase()
             }
-            _ => None,
-        },
-        _ => None,
-    })?;
-    Some(root.parent()?.join(spawned.path))
+        })
+        .collect();
+    slug == address.to_ascii_lowercase()
+}
+
+/// One session a name could mean: the address that reads it and the repository it ran in.
+pub struct Candidate {
+    pub id: String,
+    pub cwd: String,
 }
 
 /// What a session name resolves to: the one session it names, or every candidate it fits.
 pub enum Named {
     One(PathBuf),
-    Many(Vec<String>),
+    Many(Vec<Candidate>),
     Nothing,
 }
 
@@ -141,31 +168,79 @@ pub enum Named {
 /// shadowed by another repository's session of the same name.
 pub fn find_named(sessions_dir: &Path, cwd: &Path, name: &str) -> Named {
     let repo = repo_of(cwd);
-    let (mut mine, mut others): (Vec<PathBuf>, Vec<PathBuf>) = (Vec::new(), Vec::new());
+    let (mut mine, mut others) = (Vec::new(), Vec::new());
     for dir in session_dirs(sessions_dir) {
-        let named = yi_session::list_dir(&dir).unwrap_or_default();
-        let ids = named
-            .iter()
-            .filter(|session| session.name.as_deref() == Some(name));
-        let files: Vec<PathBuf> = ids
+        let listed = yi_session::list_dir(&dir).unwrap_or_default();
+        let named = (listed.into_iter()).filter(|session| {
+            session
+                .name
+                .as_deref()
+                .is_some_and(|it| same_name(it, name))
+        });
+        let files = jsonl_files(&dir);
+        let found: Vec<(PathBuf, String)> = named
             .filter_map(|session| {
-                let suffix = format!("_{}.jsonl", session.id);
-                jsonl_files(&dir)
-                    .into_iter()
-                    .find(|file| file.to_string_lossy().ends_with(&suffix))
+                Some((
+                    files
+                        .iter()
+                        .find(|file| carries(file, &session.id))?
+                        .clone(),
+                    session.id,
+                ))
             })
             .collect();
         match belongs(&dir, &repo) {
-            Belongs::Mine => mine.extend(files),
-            Belongs::Other | Belongs::Unknown => others.extend(files),
+            Belongs::Mine => mine.extend(found),
+            Belongs::Other | Belongs::Unknown => others.extend(found),
         }
     }
     let found = if mine.is_empty() { others } else { mine };
     match found.as_slice() {
         [] => Named::Nothing,
-        [one] => Named::One(one.clone()),
-        many => Named::Many(many.iter().map(|file| file.display().to_string()).collect()),
+        [(file, _)] => Named::One(file.clone()),
+        many => Named::Many(
+            (many.iter())
+                .map(|(file, id)| Candidate {
+                    id: id.clone(),
+                    cwd: file
+                        .parent()
+                        .and_then(header_cwd)
+                        .map(|cwd| cwd.display().to_string())
+                        .unwrap_or_default(),
+                })
+                .collect(),
+        ),
     }
+}
+
+/// The file of the child a root spawned under `path`, a name or id per level (`a/b` is a's b),
+/// the first by that name as the host's own lookup takes it, from each parent's `custom{child}`.
+pub fn child_of(root: &Path, path: &str) -> Option<PathBuf> {
+    path.split('/')
+        .try_fold(root.to_path_buf(), |parent, name| one_child(&parent, name))
+}
+
+fn one_child(parent: &Path, name: &str) -> Option<PathBuf> {
+    let store = yi_session::load_session(parent).ok()?;
+    let query = yi_session::EntryQuery {
+        custom_type: Some(yi_types::subagent::CHILD_ENTRY.to_owned()),
+        ..yi_session::EntryQuery::default()
+    };
+    let entries = store.find_entries(&query).ok()?;
+    let spawned = entries.iter().find_map(|entry| match entry {
+        yi_types::entry::Entry::Custom {
+            data: Some(data), ..
+        } => match serde_json::from_value(data.clone()).ok()? {
+            yi_types::subagent::ChildTrail::Spawned(spawned)
+                if spawned.name == name || spawned.id.0 == name =>
+            {
+                Some(spawned)
+            }
+            _ => None,
+        },
+        _ => None,
+    })?;
+    Some(parent.parent()?.join(spawned.path))
 }
 
 fn text_of(message: &AgentMessage) -> Option<(&'static str, String)> {

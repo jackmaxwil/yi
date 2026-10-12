@@ -173,8 +173,17 @@ fn save_index(dir: &Path, files: &HashMap<String, Listed>) {
     }
 }
 
-/// Every session in one sessions directory, named by its name fact or its first prompt's title.
-pub fn list(dir: &Path) -> Result<Vec<SessionMetadata>, SessionError> {
+pub(crate) fn list(dir: &Path) -> Result<Vec<SessionMetadata>, SessionError> {
+    scan(dir, true)
+}
+
+/// Every session in one sessions directory, named by its name fact or its first prompt's
+/// title, read without writing the directory's index: another session's directory is not ours.
+pub fn peek(dir: &Path) -> Result<Vec<SessionMetadata>, SessionError> {
+    scan(dir, false)
+}
+
+fn scan(dir: &Path, persist: bool) -> Result<Vec<SessionMetadata>, SessionError> {
     let storage = |error: std::io::Error| {
         SessionError::Storage(format!(
             "Failed to list sessions directory {}: {error}",
@@ -212,7 +221,7 @@ pub fn list(dir: &Path) -> Result<Vec<SessionMetadata>, SessionError> {
         };
         current.insert(name, listed);
     }
-    if changed || !index.is_empty() {
+    if persist && (changed || !index.is_empty()) {
         save_index(dir, &current);
     }
     let mut listed: Vec<SessionMetadata> = current

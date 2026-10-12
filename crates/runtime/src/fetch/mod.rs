@@ -73,11 +73,22 @@ impl Transcript {
 }
 
 pub trait Transcripts: Send + Sync {
+    /// By id: this session's own children and kept trails, then any session on disk.
     fn open(&self, agent: &str) -> Option<Transcript>;
 
+    /// By a name or `root/child`, tried only once no id anywhere in the address opened one.
+    fn open_named(&self, _agent: &str) -> Option<Transcript> {
+        None
+    }
+
     /// The sessions `agent` could name when it opened none, for a refusal that lists them.
-    fn candidates(&self, _agent: &str) -> Vec<String> {
+    fn candidates(&self, _agent: &str) -> Vec<crate::history::Candidate> {
         Vec::new()
+    }
+
+    /// Why this desk cannot open what another role's could, and whether a wall is the reason.
+    fn unreachable(&self) -> Option<(&'static str, bool)> {
+        None
     }
 }
 
@@ -227,6 +238,11 @@ impl Transcripts for ParentTranscript {
         let id = yi_session::lock_session(&store).metadata().id.clone();
         (id == agent).then_some(Transcript::Live(store))
     }
+
+    fn unreachable(&self) -> Option<(&'static str, bool)> {
+        let why = "a reader opens its own transcript and its parent's only; ask for another session's lines in partition";
+        Some((why, false))
+    }
 }
 
 pub fn open_checkpoint_show(
@@ -348,26 +364,6 @@ fn unsupported(url: &Url, missing: &'static str) -> FetchError {
     FetchError::Unsupported {
         url: url.to_string(),
         missing,
-    }
-}
-
-/// No transcript opened: a name several sessions carry lists them, so one is read by its id.
-fn unresolved(url: &Url, agent: &str, candidates: &[String]) -> FetchError {
-    match candidates {
-        [] => FetchError::NotFound {
-            url: url.to_string(),
-            what: format!(
-                "agent {agent}: not the attached session, not a live child, and no session on disk carries that id or name"
-            ),
-        },
-        files => FetchError::BadAddress {
-            url: url.to_string(),
-            detail: format!(
-                "{} sessions are named {agent:?}; read one by the id at the end of its file name: {}",
-                files.len(),
-                files.join(", ")
-            ),
-        },
     }
 }
 
