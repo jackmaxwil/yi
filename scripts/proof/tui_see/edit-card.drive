@@ -4,7 +4,7 @@ wait-frame 5000 faux-1
 tick 1
 type tighten greet in a scratch copy
 key enter
-wait-frame 30000 +2
+wait-frame 30000 updated; first change at line 5
 wait-frame 30000 Composing
 tick 8000
 wait-idle 30000
