@@ -205,6 +205,21 @@ impl VT100Backend {
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
+    /// The newest rows scrolled off the top, at most a screen's worth: vt100 underflows viewing
+    /// deeper. It keeps only what a full-screen scroll pushed, not what a region scrolled off.
+    #[allow(dead_code)]
+    pub fn scrollback_tail(&self) -> Vec<String> {
+        let Ok(mut parser) = self.parser.0.lock() else {
+            return Vec::new();
+        };
+        let (height, width) = parser.screen().size();
+        parser.set_scrollback(usize::from(height));
+        let shown = parser.screen().scrollback();
+        let rows = parser.screen().rows(0, width).take(shown).collect();
+        parser.set_scrollback(0);
+        rows
+    }
+
     #[allow(dead_code)]
     pub fn row_text(&self, row: u16) -> String {
         self.parser

@@ -91,7 +91,7 @@ fn draw_frame<B>(
     if app.take_pending_clear() {
         clear_screen(terminal);
     }
-    let commits = std::mem::take(&mut app.pending_commit);
+    let mut commits = std::mem::take(&mut app.pending_commit);
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
@@ -100,6 +100,8 @@ fn draw_frame<B>(
     if mark {
         let _ = terminal.backend_mut().write_all(b"\x1b]133;A\x07");
     }
+    let adopted = usize::from(terminal.adopt(&commits));
+    commits.drain(..adopted.min(commits.len()));
     let _ = term::commit_lines(terminal, commits);
     if mark {
         let _ = terminal

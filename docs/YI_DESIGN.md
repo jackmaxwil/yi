@@ -928,9 +928,11 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 `yi-tui` is the solo chat: an inline viewport on the normal screen above native scrollback.
 
 - The UI thread is synchronous; the runtime runs on its own thread; intents return as `Command`s.
-- Finished cells commit above the viewport once, through scroll regions, in one synchronized
-  update per frame. Streaming text commits by byte cursor over stable slices; a thought commits
-  before its prose; a reveal cursor paces the painted tail.
+- Finished cells commit above the viewport once, in one synchronized update per frame: rows the
+  viewport's top already shows are adopted where they stand, the rest arrive through scroll
+  regions of two rows or more, a full-screen scroll and a repaint where none fits. Streaming text
+  commits by byte cursor over stable slices; a thought commits before its prose; a reveal cursor
+  paces the painted tail.
 - Resize and mode change rebuild scrollback from the transcript; text wraps at width less 2; a
   frame draws only on change.
 - A tool call is a card: an outcome-coloured `│` rail, per-tool hue, right-aligned chips, 3 result
