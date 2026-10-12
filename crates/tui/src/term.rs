@@ -220,3 +220,17 @@ where
     }
     result
 }
+
+/// Image work on a tick that drew no text still presents as one update, so a placement and the
+/// delete of the image it replaced never show apart. Writes nothing when `write` wrote nothing.
+pub fn framed(out: &mut impl Write, write: impl FnOnce(&mut Vec<u8>)) -> std::io::Result<()> {
+    let mut bytes = Vec::new();
+    write(&mut bytes);
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    out.write_all(b"\x1b[?2026h")?;
+    out.write_all(&bytes)?;
+    out.write_all(b"\x1b[?2026l")?;
+    out.flush()
+}

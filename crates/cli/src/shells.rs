@@ -82,17 +82,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         session_dir: default_session_dir(args).display().to_string(),
         keys: configured_keys(),
         initial_prompt,
-        // A headless run asserts on frames, so it paints on arrival; a recording is for a
-        // person and keeps the configured pace.
-        pace: if args.headless && args.record.is_none() {
-            0
-        } else {
-            config()
-                .tui
-                .as_ref()
-                .and_then(|tui| tui.pace)
-                .unwrap_or(100)
-        },
+        pace: reveal_pace(args),
     };
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_tui::parse_script) {
@@ -274,6 +264,20 @@ fn load_drive_script<S>(
     })
 }
 
+/// A headless run asserts on frames, so it paints on arrival; a recording is for a person and
+/// keeps the configured pace.
+#[cfg(feature = "tui")]
+fn reveal_pace(args: &Args) -> u16 {
+    if args.headless && args.record.is_none() {
+        return 0;
+    }
+    config()
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.pace)
+        .unwrap_or(100)
+}
+
 /// `yi console` — the workspace shell, an ACP client over the serve daemon.
 #[cfg(feature = "tui")]
 pub fn run_console_command(args: &Args) -> i32 {
@@ -293,6 +297,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .map(|app| app.name.clone())
             .collect(),
         sidebar: yi_console::model::SidebarMode::Rail,
+        pace: reveal_pace(args),
     };
     if !args.headless {
         ensure_daemon(args, &options.socket);
