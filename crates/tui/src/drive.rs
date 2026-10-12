@@ -215,7 +215,33 @@ pub fn key_event(key: &SingleKey) -> KeyEvent {
 
 /// A day. `--deadline` is a convenience for paced proof runs, not a way to
 /// park a headless process, and the seconds are attacker-free but unbounded.
-const DEADLINE_CAP_SECS: u64 = 86_400;
+pub const DEADLINE_CAP_SECS: u64 = 86_400;
+
+/// The wall clock a drive script gets: the seconds clamped to [1, DEADLINE_CAP_SECS]
+/// against the moment the run began.
+pub struct Deadline {
+    secs: u64,
+    start: Instant,
+}
+
+impl Deadline {
+    pub fn new(requested_secs: u64) -> Self {
+        // `Instant + Duration` panics rather than saturating, and the seconds
+        // come straight off the command line.
+        Self {
+            secs: requested_secs.clamp(1, DEADLINE_CAP_SECS),
+            start: Instant::now(),
+        }
+    }
+
+    pub fn passed(&self) -> bool {
+        self.start.elapsed() > Duration::from_secs(self.secs)
+    }
+
+    pub fn report(&self) {
+        eprintln!("error: drive script timed out ({} s wall)", self.secs);
+    }
+}
 
 pub fn typed_events(text: &str) -> Vec<CtEvent> {
     text.chars()
@@ -347,17 +373,14 @@ pub fn run_headless(
     let mut last_frame = String::new();
     let mut steps = drive.script.into_iter();
     let mut current: Option<(Step, Instant)> = None;
-    let deadline_secs = drive.deadline_secs.clamp(1, DEADLINE_CAP_SECS);
-    // `Instant + Duration` panics rather than saturating, and the seconds come
-    // straight off the command line.
-    let start = Instant::now();
+    let deadline = Deadline::new(drive.deadline_secs);
     let mut type_ms = 0_u64;
     let mut exit_code = 0;
     let mut pending_snap = None;
 
     while !app.is_quit() {
-        if start.elapsed() > Duration::from_secs(deadline_secs) {
-            eprintln!("error: drive script timed out ({deadline_secs} s wall)");
+        if deadline.passed() {
+            deadline.report();
             exit_code = 1;
             break;
         }
@@ -385,7 +408,7 @@ pub fn run_headless(
                         std::thread::sleep(Duration::from_millis(type_ms));
                         // The step holds the outer loop, where the wall clock is read, so a
                         // long paced line would otherwise outrun the deadline unchecked.
-                        if start.elapsed() > Duration::from_secs(deadline_secs) {
+                        if deadline.passed() {
                             break;
                         }
                     }

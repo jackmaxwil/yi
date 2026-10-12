@@ -218,3 +218,32 @@ impl Family {
         false
     }
 }
+
+/// A builtin tool behind the runtime's URL routing, run once: its text and whether it refused.
+pub fn routed_tool(
+    resolver: &Arc<yi_runtime::fetch::Resolver>,
+    name: &str,
+    input: serde_json::Value,
+) -> Result<(String, bool), Box<dyn std::error::Error>> {
+    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
+        .into_iter()
+        .filter(|tool| tool.name() == name)
+        .collect();
+    yi_runtime::fetch::route_urls(&mut tools, resolver);
+    let input = input.as_object().cloned().ok_or("input is not an object")?;
+    let output = tools
+        .first()
+        .ok_or("no such tool")?
+        .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
+    let text = yi_types::message::join_text(&output.result.content, "\n");
+    Ok((text, output.is_error))
+}
+
+/// The #1184 gate's report.py output: 301 lines, the fact on line 219.
+pub fn report_output() -> String {
+    let mut lines: Vec<String> = (0..300)
+        .map(|i| format!("setting_{i:03} = fb3f5c"))
+        .collect();
+    lines.insert(218, "release_id = rel-09d88875".to_owned());
+    lines.join("\n")
+}
