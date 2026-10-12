@@ -329,6 +329,9 @@ impl App {
     }
 
     pub(super) fn apply_config(&mut self, id: &SessionId, config: &Config, announce: bool) {
+        self.state
+            .session_options
+            .insert(id.clone(), config.options.clone());
         let Some((provider, model_id)) = &config.model else {
             return;
         };

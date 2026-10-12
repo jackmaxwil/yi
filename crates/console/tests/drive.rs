@@ -1846,15 +1846,17 @@ fn the_hint_row_keeps_whole_keys() -> TestResult {
 /// held rows name their ⌥ chord and the panes moved to ⌘I, ⌘R, ⌘O and ⌘/, which it delivers.
 #[test]
 fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
-    let frame = run_frames(
+    let frame = run_frames_with(
         "cmd-held",
         session_fixture(),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
          cmd-/\n\
-         wait-frame 3000 any key closes\n\
+         wait-frame 3000 ↑↓ move · ←→ tab\n\
          quit\n",
+        SidebarMode::Full,
+        160,
     )?;
     let row = |what: &str| {
         frame
@@ -1866,14 +1868,21 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
         ("notebook pane", "⌘I"),
         ("review pane", "⌘R"),
         ("open a file in a pane", "⌘O"),
-        ("all keys", "⌘/"),
+        ("all keys, in settings", "⌘/"),
         ("jump to rail slot 1..9", "⌥1..9"),
         ("new tab · next · previous", "⌥t ⌥] ⌥["),
         ("command palette", "⌘P"),
         ("close pane", "⌘X"),
     ] {
-        let want = format!(" {what:<32}{key} ");
-        assert!(row(what).contains(&want), "{want:?} in {:?}", row(what));
+        let at = row(what)
+            .find(what)
+            .map(|at| row(what).get(at..).unwrap_or_default());
+        let after = at.unwrap_or_default().trim_start_matches(what).trim_start();
+        assert!(
+            after.starts_with(key),
+            "{key:?} after {what:?} in {:?}",
+            row(what)
+        );
     }
     let hints = frame.lines().last().unwrap_or_default();
     assert!(
@@ -3290,8 +3299,8 @@ fn the_command_palette_runs_an_action_by_name() -> TestResult {
 
 /// ⌥? shows every chord with its keys; the next key closes it.
 #[test]
-fn the_keys_overlay_lists_every_chord() -> TestResult {
-    run(
+fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
+    let frame = run_frames_with(
         "keys",
         vec![
             Step::Expect("initialize", init_reply),
@@ -3301,11 +3310,13 @@ fn the_keys_overlay_lists_every_chord() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key alt-?\n\
          wait-frame 3000 stop the daemon and quit\n\
-         wait-frame 3000 ctrl+b then\n\
-         key esc\n\
-         wait-frame 3000 !ctrl+b then\n\
+         wait-frame 3000 ctrl+b q\n\
          quit\n",
-    )
+        SidebarMode::Full,
+        160,
+    )?;
+    assert!(frame.contains("◂ Keys ▸"), "not on the Keys tab:\n{frame}");
+    Ok(())
 }
 
 #[test]
@@ -3775,6 +3786,128 @@ fn the_menu_answers_the_mouse() -> TestResult {
         "no plain copy in {log:?}"
     );
     Ok(())
+}
+
+fn settings_rows(frame: &Value) -> Vec<Value> {
+    let rows = yi_types::settings::rows();
+    vec![ok(frame, json!({"rows": rows}))]
+}
+
+/// The daemon's half of a save: it answers only the edit the page should have sent.
+fn save_auto_side(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "console.autoSide", "value": false}) {
+        return vec![
+            json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": format!("unexpected {}", frame["params"])}}),
+        ];
+    }
+    let mut rows = yi_types::settings::rows();
+    for row in &mut rows {
+        if row.id == "console.autoSide" {
+            row.value = json!(false);
+        }
+    }
+    vec![ok(frame, json!({"rows": rows}))]
+}
+
+fn refuse_depth(frame: &Value) -> Vec<Value> {
+    vec![json!({"jsonrpc": "2.0", "id": frame["id"],
+        "error": {"code": -32602, "message": "rlm.maxDepth takes at most 3"}})]
+}
+
+/// The gear opens the page beside the chat; a default flips with Enter, the daemon's answer
+/// says saved, and a refused value says why rather than pretending it landed.
+#[test]
+fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
+    let frame = run_frames_with(
+        "settings-save",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("_yi/set_default", save_auto_side),
+            Step::Expect("_yi/set_default", refuse_depth),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         mouse down 3 29\nmouse up 3 29\n\
+         wait-frame 3000 ⚙ Settings\n\
+         key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
+         wait-frame 3000 Open Review beside\n\
+         key enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
+         key left\nkey left\nwait-frame 3000 Family depth\n\
+         key enter\ntype 9\nkey enter\n\
+         wait-frame 3000 not saved: rlm.maxDepth takes at most 3\n\
+         quit\n",
+        SidebarMode::Full,
+        160,
+    )?;
+    let gear = frame.lines().last().unwrap_or_default();
+    assert!(
+        gear.contains("⚙ settings ⌥,"),
+        "no gear in the corner: {gear:?}"
+    );
+    Ok(())
+}
+
+fn resume_with_efforts(frame: &Value) -> Vec<Value> {
+    let options = json!([{"configId": "thought_level", "name": "Thinking level", "type": "select",
+        "currentValue": "medium",
+        "options": [{"value": "low", "name": "low"}, {"value": "medium", "name": "medium"},
+                    {"value": "high", "name": "high"}]}]);
+    let mut result = session_result(frame, "s-alpha", None, json!({"replayedTo": 2}));
+    result["result"]["configOptions"] = options;
+    vec![replay("s-alpha", &alpha_branch(), 0, None), result]
+}
+
+fn set_high(frame: &Value) -> Vec<Value> {
+    let want =
+        json!({"sessionId": "s-alpha", "configId": "thought_level", "type": "id", "value": "high"});
+    if frame["params"] != want {
+        return refuse(frame, "wrong option");
+    }
+    let options = json!([{"configId": "thought_level", "name": "Thinking level", "type": "select",
+        "currentValue": "high",
+        "options": [{"value": "low", "name": "low"}, {"value": "medium", "name": "medium"},
+                    {"value": "high", "name": "high"}]}]);
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "_yi/config", "configOptions": options}),
+        ),
+        ok(frame, json!({})),
+    ]
+}
+
+fn save_thinking(frame: &Value) -> Vec<Value> {
+    if frame["params"] != json!({"id": "thinking", "value": "high"}) {
+        return vec![
+            json!({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32602, "message": "wrong default"}}),
+        ];
+    }
+    vec![ok(frame, json!({"rows": yi_types::settings::rows()}))]
+}
+
+/// The Session tab changes this session through the worker and `d` keeps its value as the
+/// default; the fixture answers only the request the page should have sent.
+#[test]
+fn the_session_tab_sets_the_live_option_and_makes_it_the_default() -> TestResult {
+    run(
+        "settings-session",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_efforts),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/settings", settings_rows),
+            Step::Expect("session/set_config_option", set_high),
+            Step::Expect("_yi/set_default", save_thinking),
+        ],
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-,\nwait-frame 3000 Thinking level\n\
+         key enter\nwait-frame 3000 ‹ medium ›\nkey down\nkey enter\n\
+         key d\nwait-frame 3000 saved\nwait-frame 500 !not saved\nquit\n",
+    )
 }
 
 fn refuse(frame: &Value, why: &str) -> Vec<Value> {
