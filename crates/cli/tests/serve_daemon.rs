@@ -14,7 +14,7 @@ use scratch::Scratch;
 
 #[path = "support/daemon.rs"]
 mod daemon;
-use daemon::{spawn_daemon, spawn_daemon_in};
+use daemon::{spawn_daemon, spawn_daemon_in, spawn_daemon_with};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -226,6 +226,59 @@ fn new_session(
         json!({"cwd": root.display().to_string()}),
     )?;
     session_id_from(&new)
+}
+
+fn current_value(new: &Value, config_id: &str) -> Option<String> {
+    new["result"]["configOptions"]
+        .as_array()?
+        .iter()
+        .find(|option| option["configId"] == config_id)?["currentValue"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// A user who edits `model` or `permissions.mode` and opens a new root must get the edit, not
+/// the values the daemon read at its own start; only a flag on the daemon's own command line wins.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_config_edit_reaches_the_next_roots_worker_without_a_daemon_restart() -> TestResult {
+    let dir = Scratch::new("yi-serve-config-edit")?;
+    let edited = "openrouter/anthropic/claude-opus-5";
+    let settings = |new: &Value| (current_value(new, "model"), current_value(new, "mode"));
+    let expect = |model: &str, mode: &str| (Some(model.to_owned()), Some(mode.to_owned()));
+    let runs: [(&str, &[&str], [&str; 2]); 2] = [
+        ("free", &[], ["auto", "yolo"]),
+        ("pinned", &["--confirm"], ["ask", "ask"]),
+    ];
+    for (name, flags, modes) in runs {
+        let run = dir.join(name);
+        let (alpha, beta, home) = (run.join("alpha"), run.join("beta"), run.join("home"));
+        for path in [&alpha, &beta, &home.join(".yi")] {
+            std::fs::create_dir_all(path)?;
+        }
+        let config = home.join(".yi/config.json");
+        std::fs::write(&config, json!({"model": "faux/faux-1"}).to_string())?;
+        let (mut daemon, socket) = spawn_daemon_with(&run, &home, flags)?;
+        let outcome = (|| -> Result<[Value; 2], Box<dyn Error>> {
+            let mut client = DaemonClient::connect(&socket)?;
+            client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+            let cwd = |root: &Path| json!({"cwd": root.display().to_string()});
+            let before = client.request("2", "session/new", cwd(&alpha))?;
+            let text = json!({"model": edited, "permissions": {"mode": "yolo"}});
+            std::fs::write(&config, text.to_string())?;
+            Ok([before, client.request("3", "session/new", cwd(&beta))?])
+        })();
+        let _cleanup = daemon.kill();
+        let _reaped = daemon.wait();
+        let [before, after] = outcome?;
+        assert_eq!(settings(&before), expect("faux/faux-1", modes[0]), "{name}");
+        assert_eq!(
+            settings(&after),
+            expect(edited, modes[1]),
+            "{name}: a new root's worker reads the edited config unless a daemon flag pinned it"
+        );
+    }
+    Ok(())
 }
 
 /// Two roots must each end up with a scheduler that keeps firing detached: one
@@ -475,6 +528,74 @@ fn two_clients_both_stream_one_session() -> TestResult {
         Ok(())
     })();
 
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
+fn mode_of(new: &Value) -> Option<&str> {
+    new["result"]["configOptions"]
+        .as_array()?
+        .iter()
+        .find(|option| option["configId"] == "mode")?["currentValue"]
+        .as_str()
+}
+
+/// A default the settings page saves reaches the worker's next session with no restart (the
+/// worker read the file once at its own start), and a refused one leaves the file as it was.
+#[test]
+fn a_saved_default_reaches_the_next_session_and_a_refused_one_writes_nothing() -> TestResult {
+    let dir = Scratch::new("yi-settings-save")?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let config = dir.join("home/.yi/config.json");
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let cwd = json!({"cwd": root.display().to_string()});
+        let first = client.request("n1", "session/new", cwd.clone())?;
+        assert_eq!(mode_of(&first), Some("auto"), "{first}");
+        let saved = client.request(
+            "s1",
+            "_yi/set_default",
+            json!({"id": "permissions.mode", "value": "ask"}),
+        )?;
+        let row = saved["result"]["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == "permissions.mode"));
+        assert_eq!(row.map(|row| &row["value"]), Some(&json!("ask")), "{saved}");
+        let second = client.request("n2", "session/new", cwd)?;
+        let built = session_id_from(&second)?;
+        // The new-session reply reads the defaults; the session that was built reports its own
+        // options in a `_yi/config` update once it exists.
+        let frames = client.read_until(|frame| {
+            frame["params"]["sessionId"] == built.as_str()
+                && frame["params"]["update"]["sessionUpdate"] == "_yi/config"
+        })?;
+        let echoed = frames.last().ok_or("no config update")?;
+        let mode = echoed["params"]["update"]["configOptions"]
+            .as_array()
+            .and_then(|options| options.iter().find(|option| option["configId"] == "mode"))
+            .and_then(|option| option["currentValue"].as_str());
+        assert_eq!(mode, Some("ask"), "{echoed}");
+        let before = std::fs::read(&config)?;
+        let refused = client.request(
+            "s2",
+            "_yi/set_default",
+            json!({"id": "rlm.maxDepth", "value": 9}),
+        )?;
+        assert_eq!(
+            refused["error"]["message"], "rlm.maxDepth takes at most 3",
+            "{refused}"
+        );
+        assert_eq!(
+            std::fs::read(&config)?,
+            before,
+            "a refused save touched the file"
+        );
+        Ok(())
+    })();
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome
@@ -960,4 +1081,43 @@ fn a_sidecar_on_another_machine_is_left_alone_and_the_log_says_so() -> TestResul
         return Err(format!("a remote url must start nothing and say so: {said:?}").into());
     }
     Ok(())
+}
+
+/// Open in runs the command the person's config names on the message saved as markdown; the
+/// command here copies that file beside the test, so the copy is the proof the app got it.
+#[test]
+fn open_in_runs_the_configured_app_on_the_saved_message() -> TestResult {
+    let dir = Scratch::new("yi-open-in")?;
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join(".yi"))?;
+    let landed = dir.join("landed.md");
+    let copy = format!("cp \"$0\" {}", landed.display());
+    let config =
+        json!({"open": [{"name": "copier", "command": ["/bin/sh", "-c", copy, "{path}"]}]});
+    std::fs::write(home.join(".yi/config.json"), config.to_string())?;
+    let (mut daemon, socket) = spawn_daemon_in(&dir, &home)?;
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let text = "Naïve café — an answer\n";
+        let opened = client.request("o1", "_yi/open", json!({"name": "copier", "text": text}))?;
+        assert!(opened["result"]["argv"].is_array(), "{opened}");
+        // `cp` creates the file before it writes it, so the wait is for the whole text.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut copied = String::new();
+        while copied != text && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            copied = std::fs::read_to_string(&landed).unwrap_or_default();
+        }
+        assert_eq!(copied, text);
+        let unknown = client.request("o2", "_yi/open", json!({"name": "nope", "text": text}))?;
+        assert_eq!(
+            unknown["error"]["message"], "no app named nope under `open` in config.json",
+            "{unknown}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
 }

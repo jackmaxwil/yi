@@ -218,6 +218,7 @@ pub enum PaneContent {
         armed: bool,
     },
     Editor(Editor),
+    Settings(Box<crate::settings::Settings>),
 }
 
 pub struct Editor {
@@ -376,7 +377,8 @@ impl Pane {
             | PaneContent::Diff { .. }
             | PaneContent::SessionDiff { .. }
             | PaneContent::Tape { .. }
-            | PaneContent::Editor(_) => None,
+            | PaneContent::Editor(_)
+            | PaneContent::Settings(_) => None,
         }
     }
 }
@@ -390,7 +392,7 @@ pub enum Mode {
     Normal,
     Prefix,
     Navigator { query: String, selected: usize },
-    Keys,
+    Menu(crate::menu::Menu),
 }
 
 pub struct ConsoleState {
@@ -415,6 +417,8 @@ pub struct ConsoleState {
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub side_opened: std::collections::BTreeSet<SessionId>,
     pub auto_side: bool,
+    pub open_apps: Vec<String>,
+    pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     pub chat_pace: u16,
     pub root_filter: Option<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
@@ -451,6 +455,8 @@ impl ConsoleState {
             diffs: BTreeMap::new(),
             side_opened: std::collections::BTreeSet::new(),
             auto_side: true,
+            open_apps: Vec::new(),
+            session_options: BTreeMap::new(),
             chat_pace: 0,
             root_filter: None,
             children: BTreeMap::new(),
