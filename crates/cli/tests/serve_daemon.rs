@@ -12,6 +12,9 @@ use yi_types::schedule::ScheduleState;
 mod scratch;
 use scratch::Scratch;
 
+#[path = "support/config_option.rs"]
+mod config_option;
+use config_option::current_value;
 #[path = "support/daemon.rs"]
 mod daemon;
 use daemon::{spawn_daemon, spawn_daemon_in, spawn_daemon_with};
@@ -226,15 +229,6 @@ fn new_session(
         json!({"cwd": root.display().to_string()}),
     )?;
     session_id_from(&new)
-}
-
-fn current_value(new: &Value, config_id: &str) -> Option<String> {
-    new["result"]["configOptions"]
-        .as_array()?
-        .iter()
-        .find(|option| option["configId"] == config_id)?["currentValue"]
-        .as_str()
-        .map(str::to_owned)
 }
 
 /// A user who edits `model` or `permissions.mode` and opens a new root must get the edit, not

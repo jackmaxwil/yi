@@ -1,0 +1,11 @@
+#! solo --size 100x30 --stub stream.txt 90
+# A reply paced like a provider's, grabbed half way and once its last words have landed.
+type stream it
+key enter
+wait-frame 20000 Streaming a reply
+wait 1500
+snap-now midstream
+wait-frame 30000 unmoved
+wait 1500
+snap-now end
+quit

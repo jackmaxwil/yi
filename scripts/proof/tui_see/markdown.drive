@@ -1,0 +1,11 @@
+#! solo --size 100x50 --faux scripts/proof/tui_see/markdown.jsonl
+# A long markdown reply: headings, nested lists, a table, a code fence, a quote, a task list.
+wait-frame 5000 faux-1
+tick 1
+type describe the rail states
+key enter
+wait-frame 30000 Composing
+tick 30000
+wait-idle 30000
+snap reply
+quit
