@@ -897,7 +897,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again as `prefill`) or `at` it, attached beside the source, which keeps its own branch |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
-| `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, the model never names an app |
+| `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
