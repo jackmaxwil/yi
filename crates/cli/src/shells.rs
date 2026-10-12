@@ -160,9 +160,11 @@ pub fn run_tui_command(_args: &Args, _initial_prompt: Option<String>) -> i32 {
     2
 }
 
+/// Incident: forwarding the daemon's start-time config froze `model` and `permissions.mode`
+/// for every later worker; a worker reads its own config unless the daemon's flags pinned one.
 pub fn serve_flags(args: &Args) -> Vec<String> {
     let mut flags = Vec::new();
-    if !args.model.is_empty() {
+    if args.model_pinned {
         flags.push("--model".to_owned());
         flags.push(args.model.clone());
     }
@@ -170,14 +172,16 @@ pub fn serve_flags(args: &Args) -> Vec<String> {
         flags.push("--session-dir".to_owned());
         flags.push(dir.clone());
     }
-    flags.push(
-        match args.mode {
-            yi_runtime::PermissionMode::Yolo => "--yolo",
-            yi_runtime::PermissionMode::Auto => "--auto",
-            yi_runtime::PermissionMode::Ask => "--confirm",
-        }
-        .to_owned(),
-    );
+    if args.mode_pinned {
+        flags.push(
+            match args.mode {
+                yi_runtime::PermissionMode::Yolo => "--yolo",
+                yi_runtime::PermissionMode::Auto => "--auto",
+                yi_runtime::PermissionMode::Ask => "--confirm",
+            }
+            .to_owned(),
+        );
+    }
     flags
 }
 
