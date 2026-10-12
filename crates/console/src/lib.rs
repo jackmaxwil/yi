@@ -46,6 +46,7 @@ pub struct ConsoleOptions {
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
 }
@@ -223,13 +224,6 @@ fn draw<B: Backend>(
     Ok(())
 }
 
-fn configure(app: &mut App, options: &ConsoleOptions) {
-    app.autostart = options.autostart;
-    app.state.auto_side = options.auto_side;
-    app.state.sidebar = options.sidebar;
-    app.state.chat_pace = options.pace;
-}
-
 pub fn run_console(options: &ConsoleOptions) -> i32 {
     let theme = Theme::new(
         detect_tier(
@@ -243,11 +237,11 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
-    configure(&mut app, options);
     app.kitty = crate::kitty::supported(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
+    configure(&mut app, options);
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -694,6 +688,14 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     drop(events);
     join_with_deadline(threads);
     exit_code
+}
+
+fn configure(app: &mut App, options: &ConsoleOptions) {
+    app.autostart = options.autostart;
+    app.state.auto_side = options.auto_side;
+    app.state.open_apps = options.open_apps.clone();
+    app.state.sidebar = options.sidebar;
+    app.state.chat_pace = options.pace;
 }
 
 /// What the console wrote outside the grid (clipboard, title), kept beside the frames; the
