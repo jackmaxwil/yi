@@ -1,16 +1,20 @@
-use serde_json::Value;
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
 
 use super::patcher::{PatchSectionResult, SectionOp};
 
-/// The lines a program asked for, or the whole file, whole and unclipped, until the fuse.
+/// The lines a program asked for, whole and unclipped, until the fuse; `to_end` runs the first
+/// window's start to the end of the file.
 pub(super) fn program_lines(
     lines: &[&str],
-    whole: bool,
+    to_end: bool,
     windows: &[(usize, usize)],
 ) -> (Vec<yi_types::tool_value::Line>, Option<String>) {
-    let all = [(1, lines.len())];
+    let start = windows.first().map_or(1, |window| window.0);
+    let open = [(start, lines.len())];
     let (mut kept, mut bytes) = (Vec::new(), 0_usize);
-    for &(start, end) in if whole { &all[..] } else { windows } {
+    for &(start, end) in if to_end { &open[..] } else { windows } {
         for index in start.saturating_sub(1)..end {
             let Some(text) = lines.get(index) else {
                 continue;
@@ -18,12 +22,18 @@ pub(super) fn program_lines(
             bytes = bytes.saturating_add(text.len());
             let n = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
             if bytes > yi_types::tool_value::PROGRAM_FUSE_BYTES {
-                let fuse = yi_types::tool_value::PROGRAM_FUSE_BYTES / (1024 * 1024);
-                let cut = format!(
-                    "[kept lines up to {} of {}: the program fuse is {fuse} MiB; read with offset={n} for the rest]",
-                    n.saturating_sub(1),
-                    lines.len()
-                );
+                let fuse = yi_types::tool_value::PROGRAM_FUSE_BYTES >> 20;
+                let cut = match kept.is_empty() {
+                    true => format!(
+                        "[line {n} alone is {} bytes, past the {fuse} MiB program fuse; bash `sed -n {n}p` with `cut -c` reads it in parts]",
+                        text.len()
+                    ),
+                    false => format!(
+                        "[kept lines {start}-{} of {}: the program fuse is {fuse} MiB; read with offset={n} for the rest]",
+                        n.saturating_sub(1),
+                        lines.len()
+                    ),
+                };
                 return (kept, Some(cut));
             }
             kept.push(yi_types::tool_value::Line {
@@ -53,4 +63,28 @@ pub(super) fn edit_value(results: &[PatchSectionResult], diff: &str) -> Value {
         patch: diff.to_owned(),
     };
     serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+/// A program's glob is its paths: no file is opened, so a walk of a large tree stays a walk.
+pub(super) fn program_glob(
+    pattern: &str,
+    matches: &[PathBuf],
+    root: &Path,
+    notices: &[String],
+) -> crate::ToolOutput {
+    let shown = |path: &PathBuf| {
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    };
+    let paths: Vec<String> = matches.iter().map(shown).collect();
+    let mut rows = vec![format!("[{} files match {pattern}]", paths.len())];
+    rows.extend(notices.iter().cloned());
+    let mut output = crate::tool::text_output(rows.join("\n"));
+    output.result.details = json!({ "files": paths.len(), "whole": 0 });
+    let cut = (!notices.is_empty()).then(|| notices.join("\n"));
+    let value = yi_types::tool_value::GlobValue { paths, cut };
+    output.value = serde_json::to_value(value).ok();
+    output
 }

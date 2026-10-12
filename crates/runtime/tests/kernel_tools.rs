@@ -305,7 +305,7 @@ print(len(g.value.matches), g.value.matches[-1].line, len(r.value.lines), last.n
 "#;
     let cell = run_cell(&cwd, code).await?;
     let text = yi_types::message::join_text(&cell.content, "\n");
-    assert!(text.contains("2500 2500 3000 3000"), "{text}");
+    assert!(text.contains("2500 2500 3000 3000 True"), "{text}");
     let written = std::fs::read_to_string(cwd.join("big.txt"))?;
     assert_eq!(
         written.lines().last(),

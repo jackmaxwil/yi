@@ -381,13 +381,12 @@ fn read_dir(display_path: &str, path: &Path, context: &ToolContext) -> ToolOutpu
         ));
         rows.extend(skeleton);
     }
-    rows.extend(
-        crate::builtins::Walked {
-            walled,
-            ..Default::default()
-        }
-        .notices(),
-    );
+    let hidden = crate::builtins::Walked {
+        walled,
+        ..Default::default()
+    }
+    .notices();
+    rows.extend(hidden.iter().cloned());
     let mut output = text_output(rows.join("\n"));
     output.result.details = json!({ "dirs": dirs.len(), "files": files.len() });
     output.value = context.program.then(|| {
@@ -402,7 +401,9 @@ fn read_dir(display_path: &str, path: &Path, context: &ToolContext) -> ToolOutpu
             bytes: Some(*bytes),
         };
         let entries = dirs.iter().map(dir).chain(files.iter().map(file)).collect();
-        serde_json::to_value(yi_types::tool_value::ListValue { entries }).unwrap_or(Value::Null)
+        let cut = (!hidden.is_empty()).then(|| hidden.join("\n"));
+        serde_json::to_value(yi_types::tool_value::ListValue { entries, cut })
+            .unwrap_or(Value::Null)
     });
     output
 }
@@ -432,7 +433,10 @@ impl HashlineReadTool {
                 .collect();
             return error_output(rows.join("\n"));
         }
-        let mut sections = vec![if matches.len() >= GLOB_FILES_CAP && !context.program {
+        if context.program {
+            return super::values::program_glob(pattern, &matches, &root, &walled.notices());
+        }
+        let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
             format!(
                 "[first {GLOB_FILES_CAP} files matching {pattern}; the walk stopped there — narrow the glob for the rest]"
             )
@@ -487,16 +491,6 @@ impl HashlineReadTool {
         sections.extend(walled.notices());
         let mut output = text_output(sections.join("\n\n"));
         output.result.details = json!({ "files": matches.len(), "whole": whole });
-        output.value = context.program.then(|| {
-            let shown = |path: &std::path::PathBuf| {
-                path.strip_prefix(&root)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            let paths = matches.iter().map(shown).collect();
-            serde_json::to_value(yi_types::tool_value::GlobValue { paths }).unwrap_or(Value::Null)
-        });
         output
     }
 
@@ -614,16 +608,20 @@ impl HashlineReadTool {
             .unwrap_or_else(|_| path.to_path_buf())
             .to_string_lossy()
             .into_owned();
-        let whole = !explicit_window && found.is_none();
-        let program = context
-            .program
-            .then(|| super::values::program_lines(&all_lines[..line_count], whole, &windows));
-        // A program edits the lines it was handed, so those are the lines it has seen.
-        let seen =
-            (program.as_ref()).map_or(seen, |(lines, _)| lines.iter().map(|line| line.n).collect());
-        let tag = lock_state(&self.state)
-            .snapshots
-            .record(&canonical, &normalized, Some(&seen));
+        // A program's open window runs to the end: the page is the model's cap, not its.
+        let to_end =
+            found.is_none() && !input.contains_key("limit") && !input.contains_key("ranges");
+        let program = (context.program)
+            .then(|| super::values::program_lines(&all_lines[..line_count], to_end, &windows));
+        let mut state = lock_state(&self.state);
+        let tag = state.snapshots.record(&canonical, &normalized, Some(&seen));
+        if let Some((lines, _)) = &program {
+            let numbers: Vec<u64> = lines.iter().map(|line| line.n).collect();
+            state
+                .snapshots
+                .record_program_lines(&canonical, tag, &numbers);
+        }
+        drop(state);
 
         let empty = rows.is_empty();
         let mut rendered = vec![format_hashline_header(display_path, tag)];
@@ -976,6 +974,7 @@ impl Tool for HashlineEditTool {
         let applying = yi_types::trace::span("edit.apply");
         let mut patcher = Patcher::new(snapshots, context.cwd.clone());
         patcher.walls = context.write_walls();
+        patcher.program = context.program;
         let results = patcher.apply(&patch, &mut host_clipboard);
         drop(applying);
         *clipboard = host_clipboard;
