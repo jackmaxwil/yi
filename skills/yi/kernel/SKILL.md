@@ -1,11 +1,11 @@
 ---
 name: kernel
 description: >
-  Write one program in the kernel instead of many tool calls. Use when a
-  change spans three or more sites, when results feed a loop, a count or a
-  table, when several questions or commands can run at once, or when a step
-  needs the last one's output without you reading it. Do NOT use for one
-  read or one edit: call the tool.
+  Write one program in the kernel instead of many tool calls. Use when
+  files feed a loop, a count or a table, when a task's requirements must be
+  checked together before stopping, when each edit's new text is computed,
+  or when readers or a long command can run while you work. Do NOT use for
+  one read, one edit, or what one shell command already does.
 covers: tool:ipython
 ---
 
@@ -16,12 +16,14 @@ prints. Reach for a cell when you would otherwise read data just to copy it into
 
 | The work | As separate calls | As one cell |
 |---|---|---|
-| Rename a function at twelve call sites | grep, read each file, twelve edits | grep's value, a loop of edits, a second grep that must come back empty |
-| Count, rank or tabulate across files | every file read into context | a loop over values, one printed table |
-| Three independent questions about the tree | three reader turns | `asyncio.gather` over three `rlm.ask` calls |
-| A long build while you keep working | the build blocks the turn | `h = rlm.bash("cargo build")`, other work, then `await h` |
+| Turn a directory of logs, CSVs or JSON into one answer | each file read into context | a loop over the files, one printed table or number |
+| Check every requirement of a task before stopping | one command per check, each read and remembered | one `verify()` over a dict of checks, PASS or FAIL per line (the `unattended` skill has the template) |
+| Edit many sites where each new text is computed, such as a number doubled or a value looked up | a regex that cannot compute, or one edit per site | grep's value, compute each line, one edit per file from the read's tag |
+| Map an unfamiliar tree, library or vendor directory | many reads, the context filling up | `asyncio.gather` over `rlm.ask` readers, one question each |
+| A long build, download or test run while you keep working | the command blocks the turn | `h = rlm.bash("make -j8")`, other work, then `await h` |
 
-One read or one edit is a tool call, not a cell: the cell adds a boot and a print for nothing.
+One read, one edit, or a rename one `sed` covers is a tool call, not a cell: the cell adds a boot
+and a print for nothing.
 
 ## Values, not views
 
