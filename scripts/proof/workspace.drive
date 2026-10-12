@@ -11,9 +11,9 @@ wait-frame 10000 faux:
 cmd-i
 wait-frame 3000 ▤ nb:
 cmd-i
-cmd-r
+cmd-shift-r
 wait-frame 3000 Δ 
-cmd-r
+cmd-shift-r
 cmd-b
 wait 400
 cmd-b

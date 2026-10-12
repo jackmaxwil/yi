@@ -46,6 +46,7 @@ pub mod schema;
 mod scratch;
 pub mod select;
 pub mod session;
+pub mod settings;
 pub mod skills;
 pub mod slash;
 pub mod spend;
