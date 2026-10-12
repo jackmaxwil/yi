@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import unittest
 
 import rlm
@@ -62,6 +63,12 @@ class Tools(unittest.TestCase):
         self.assertIn("matches, files", str(caught.exception))
         self.reply = {"ok": True, "text": "done", "details": {}}
         self.assertIsNone(asyncio.run(yi.tools.grep(pattern="x")).value, "a tool with no value")
+        self.reply = {"ok": True, "text": "list", "details": {},
+                      "value": {"phases": [{"name": "now", "items": [{"label": "one"}]}]}}
+        phase = asyncio.run(tools.call("todo", op="view")).value.phases[0]
+        self.assertEqual(phase.items[0].label, "one", "a key named like a dict method is the key")
+        listed = asyncio.run(tools.call("todo", op="view"))
+        self.assertEqual(json.loads(json.dumps(listed.data))["phases"][0]["items"], [{"label": "one"}])
 
     def test_each_failure_raises_what_a_program_can_catch_apart(self) -> None:
         cases = [

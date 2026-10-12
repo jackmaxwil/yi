@@ -44,3 +44,17 @@ pub(crate) fn job(id: JobId) -> Value {
     };
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
+
+/// A finished job a program polled: its output arrives as one interleaved stream, kept whole.
+pub(crate) fn polled(id: JobId, exit_code: Option<i32>, output: &str, killed: bool) -> Value {
+    let value = BashValue {
+        exit_code: exit_code.map(i64::from),
+        stdout: output.to_owned(),
+        stderr: String::new(),
+        timed_out: false,
+        cancelled: killed,
+        cut: None,
+        job: Some(id.0),
+    };
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}

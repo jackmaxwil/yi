@@ -51,16 +51,22 @@ pub struct Entry {
     pub bytes: Option<u64>,
 }
 
-/// A directory `read`: every entry the wall shows, dirs first, each group by name.
+/// A directory `read`: every entry the wall shows, dirs first, each group by name; `cut` names
+/// the entries the wall hid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListValue {
     pub entries: Vec<Entry>,
+    #[serde(default)]
+    pub cut: Option<String>,
 }
 
-/// A glob `read`: every file it matched, by the path the view names, sorted.
+/// A glob `read`: every file it matched, by the path the view names, sorted; `cut` names what
+/// the walk skipped or where it stopped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobValue {
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub cut: Option<String>,
 }
 
 /// One file an `edit` section touched: its op (`updated`, `deleted`, `noop`), its tag after the

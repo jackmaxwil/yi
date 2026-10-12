@@ -56,19 +56,44 @@ class ToolFailure(ToolError):
     """The tool ran and failed; ``result`` holds what it returned."""
 
 
-class Value(dict):
-    """A tool's data, read as ``value["matches"]`` or ``value.matches``; nested dicts read alike."""
+class Value:
+    """A tool's data read by attribute or key: ``value.matches[0].line``, ``value["matches"]``.
+    It holds no methods a key could collide with; ``Result.data`` is the same data as plain JSON.
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        object.__setattr__(self, "_data", data)
 
     def __getattr__(self, name: str) -> Any:
         try:
-            return self[name]
+            return _wrap(self._data[name])
         except KeyError:
-            raise AttributeError(f"this value has no {name!r}; it has {', '.join(self)}") from None
+            raise AttributeError(f"this value has no {name!r}; it has {', '.join(self._data)}") from None
+
+    def __getitem__(self, key: str) -> Any:
+        return _wrap(self._data[key])
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __eq__(self, other: object) -> bool:
+        return self._data == (other._data if isinstance(other, Value) else other)
+
+    def __repr__(self) -> str:
+        return repr(self._data)
 
 
 def _wrap(data: Any) -> Any:
     if isinstance(data, dict):
-        return Value({key: _wrap(item) for key, item in data.items()})
+        return Value(data)
     if isinstance(data, list):
         return [_wrap(item) for item in data]
     return data
@@ -76,13 +101,15 @@ def _wrap(data: Any) -> Any:
 
 class Result:
     """One call's outcome: ``text`` is what the model would have read, ``details`` the tool's
-    fields, and ``value`` the data the text was drawn from, whole, or ``None`` for a tool with none.
+    fields, ``value`` the data the text was drawn from, whole (``None`` for a tool with none), and
+    ``data`` that data as plain JSON.
     """
 
     def __init__(self, tool: str, text: str, details: dict[str, Any], value: Any = None) -> None:
         self.tool = tool
         self.text = text
         self.details = details
+        self.data = value
         self.value = _wrap(value)
 
     def __str__(self) -> str:

@@ -790,7 +790,7 @@ impl Tool for BashTool {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if command.trim().is_empty() {
-            return poll_job(&input, &context.cancelled);
+            return poll_job(&input, &context.cancelled, context.program);
         }
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
@@ -962,7 +962,11 @@ fn timed_out_notes(timeout: std::time::Duration, nudged: bool, asked: Option<u64
 }
 
 /// The same tool with no command; it holds the job's report so what it returns is not resent.
-fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOutput {
+fn poll_job(
+    input: &Map<String, Value>,
+    cancelled: &crate::CancelFlag,
+    program: bool,
+) -> ToolOutput {
     let jobs = crate::jobs::registry();
     let requested = input
         .get("job")
@@ -989,7 +993,11 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
             let killed =
                 report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
             let details = json!({ "job": id.0, "exitCode": exit_code });
-            return crate::tool::ran_output(text, details, killed);
+            let value = program
+                .then(|| crate::values::polled(id, report.exit_code, &report.output, killed));
+            let mut output = crate::tool::ran_output(text, details, killed);
+            output.value = value;
+            return output;
         }
         match deadline {
             // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
@@ -1001,6 +1009,7 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
                 jobs.set_reported(id, false);
                 let mut output = text_output(report.headline());
                 output.result.details = json!({ "job": id.0, "running": true });
+                output.value = program.then(|| crate::values::job(id));
                 return output;
             }
         }

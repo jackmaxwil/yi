@@ -121,9 +121,9 @@ impl Tool for UrlRead {
                     url: fetched.url.to_string(),
                     text: fetched.text.clone(),
                     served_by: fetched.served_by.clone(),
-                    next_offset: fetched
-                        .next_offset
-                        .map(|next| u64::try_from(next).unwrap_or(u64::MAX)),
+                    // The tool's `offset` is 1-based; a program feeds this straight back to it.
+                    next_offset: (fetched.next_offset)
+                        .map(|next| u64::try_from(next.saturating_add(1)).unwrap_or(u64::MAX)),
                 };
                 let mut output = text_output(fetched.text);
                 output.value = serde_json::to_value(value).ok();
