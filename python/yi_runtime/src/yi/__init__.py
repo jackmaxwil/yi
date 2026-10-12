@@ -24,6 +24,7 @@ source is recorded in the plan before its first effect and is never run again.
 from .contract import cmd, contract, example, schema
 from .plan import Plan, PlanError, Refused, Run, RunActive, SpecDrift, Stale, Todo, in_order
 from . import mail, shapes
+from .mail import HopLimit
 from .recipes.review_pod import review_pod
 from .roles import Reader, Writer, verify_quotes
 from .shapes import Geometry, fork_join, scatter
@@ -49,5 +50,6 @@ __all__ = [
     "Stale",
     "SpecDrift",
     "RunActive",
+    "HopLimit",
     "Geometry",
 ]

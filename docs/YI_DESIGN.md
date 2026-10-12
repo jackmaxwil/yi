@@ -638,10 +638,20 @@ A family message: an envelope in the receiver's inbox before delivery, then its 
 - `rlm.wait` clamps to 1-300 s and returns `state` (`asks`, `settled`, `moved`, `timeout`),
   a cursor and `causes`; `rlm.receive` takes queued envelopes into `agent_message_read`.
 - A target resolves by exact name, else the one child named `.../<target>`; ambiguity refuses.
+- A letter to another session: a root sends to `history://<id or name>`, resolved as a read of
+  it is and judged by the same wall. It is appended to `channel://mail-<id>` under that
+  session's sessions directory, receipt `stored`. `from` is the sender's `history://<id>`, its
+  reply address; `origin` and `intent` point at the sender's entry and the user's words.
+- Each durable root subscribes to its own mail channel at bind: one letter per todo, any number
+  open, `FollowUp`. The wake shows the envelope as fenced data, never as a prompt.
+- Only a root sends outside; a child is refused and asks its root. `request` refuses another
+  session, whose reply comes back as a letter. The envelope must fit the 16 KiB channel cap.
+- `hops`: a letter carries the hop count of the latest mail wake in its sender's ledger since the
+  user last typed, plus one; past `mail.hopLimit` (20) the send is refused with `yi.HopLimit`.
 - State: `Kind { Inform, Request, Reply, Progress, Failure, Cancel }`,
-  `Delivery { Queued, Woken, Inboxed, Answered }`.
+  `Delivery { Queued, Woken, Inboxed, Answered, Stored }`.
 - Owner: [`runtime/src/mail.rs`](../crates/runtime/src/mail.rs),
-  [`mailbox.rs`](../crates/runtime/src/mailbox.rs),
+  [`mailbox.rs`](../crates/runtime/src/mailbox.rs), [`post.rs`](../crates/runtime/src/post.rs),
   [`session/run.rs`](../crates/runtime/src/session/run.rs)
 - Shapes: [`types/src/mail.rs`](../crates/types/src/mail.rs) (`Envelope`, `Receipt`)
 - Settled by: D214, D230, D233, D235, D236

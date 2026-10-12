@@ -136,6 +136,14 @@ impl Resolver {
         Ok((session, entry.map(str::to_owned)))
     }
 
+    /// The session a letter is addressed to, refused as a read of it would be.
+    pub(crate) fn locate_session(
+        &self,
+        url: &Url,
+    ) -> Result<(yi_session::SharedSession, Option<String>), String> {
+        self.locate(url).map_err(|error| error.to_string())
+    }
+
     /// Invariant: a wall names a session one way and a read may name it another, so the read
     /// is judged as its id and its name as well as as written (context rule 6).
     fn spellings_walled(
