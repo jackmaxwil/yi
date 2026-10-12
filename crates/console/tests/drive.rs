@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use yi_console::model::SidebarMode;
@@ -414,6 +415,7 @@ fn run_console(
             script: steps,
             frames_dir: Some(frames.clone()),
             record: None,
+            deadline_secs: 60,
             width,
             height,
         },
@@ -428,6 +430,42 @@ fn run_console(
     if code != 0 {
         return Err(format!("console exited {code}").into());
     }
+    Ok(())
+}
+
+/// A paced type step sleeps per character while it holds the wall clock, so a
+/// long line otherwise outruns the deadline the scene author asked for.
+#[test]
+fn paced_type_step_respects_the_deadline() -> TestResult {
+    let (_dir, socket) = scratch_socket("paced-type-deadline")?;
+    let steps = parse_script("type-ms 200\ntype 0123456789abcdefghij")?;
+    let started = Instant::now();
+    let code = run_headless(
+        &ConsoleOptions {
+            socket,
+            root: "/tmp/demo-root".to_owned(),
+            autostart: false,
+            auto_side: true,
+            sidebar: SidebarMode::Rail,
+            open_apps: Vec::new(),
+            pace: 0,
+        },
+        DriveOptions {
+            script: steps,
+            frames_dir: None,
+            record: None,
+            deadline_secs: 1,
+            width: 100,
+            height: 30,
+        },
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(code, 1, "the deadline must end the run with exit code 1");
+    // The full line takes 4 s at 200 ms a character; the wall gives it 1 s.
+    assert!(
+        elapsed < Duration::from_millis(2500),
+        "a paced type step ran past the deadline unchecked: {elapsed:?}"
+    );
     Ok(())
 }
 
@@ -1200,7 +1238,7 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          key alt-/\n\
          wait-frame 3000 ⌥n new\n\
          key esc\n\
-         cmd-d\n\
+         cmd-\\\n\
          wait-frame 3000 no session\n\
          cmd-p\n\
          wait-frame 3000 ⌘⇧N new\n\
@@ -1383,7 +1421,7 @@ fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
     )
 }
 
-/// An edit outside git accumulates but opens nothing; ⌘R shows it on demand.
+/// An edit outside git accumulates but opens nothing; ⌘⇧R shows it on demand.
 #[test]
 fn untracked_edit_accumulates_without_opening() -> TestResult {
     run(
@@ -1402,9 +1440,9 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
          wait-frame 5000 replayed world\n\
          wait-frame 3000 brand new line\n\
          wait-frame 2000 !Review ·\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 Review · session · 1 file +1 −0\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 !Review ·\n\
          quit\n",
     )
@@ -1576,7 +1614,7 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1615,7 +1653,7 @@ fn an_untitled_session_does_not_land_from_review() -> TestResult {
         "wait-frame 5000 untitled\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-r\n\
+         cmd-shift-r\n\
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
@@ -1857,22 +1895,26 @@ fn the_hint_row_keeps_whole_keys() -> TestResult {
     Ok(())
 }
 
-/// Ghostty's defaults take ⌘1..9, ⌘⇧T, ⌘J, ⌘G, ⌘E and ⌘? before the console sees them, so
-/// held rows name their ⌥ chord and the panes moved to ⌘I, ⌘R, ⌘O and ⌘/, which it delivers.
+/// Ghostty and kitty take ⌘1..9, ⌘⇧T, ⌘J, ⌘G, ⌘E, ⌘R and ⌘? first, so the overlay and the
+/// hint row name chords both deliver, and rail slots name only their ⌥ chord.
 #[test]
 fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
-    let frame = run_frames_with(
+    let dir = Scratch::new("yi-console-frames-cmd-held")?;
+    run_opts(
         "cmd-held",
-        session_fixture(),
+        Some(session_fixture()),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
          cmd-/\n\
          wait-frame 3000 ↑↓ move · ←→ tab\n\
          quit\n",
+        false,
         SidebarMode::Full,
-        160,
+        Some(dir.to_path_buf()),
+        (160, 40),
     )?;
+    let frame = last_frame(&dir)?;
     let row = |what: &str| {
         frame
             .lines()
@@ -1881,11 +1923,12 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
     };
     for (what, key) in [
         ("notebook pane", "⌘I"),
-        ("review pane", "⌘R"),
+        ("review pane", "⌘⇧R"),
         ("open a file in a pane", "⌘O"),
         ("all keys, in settings", "⌘/"),
         ("jump to rail slot 1..9", "⌥1..9"),
-        ("new tab · next · previous", "⌥t ⌥] ⌥["),
+        ("new tab · next · previous", "⌘⇧O"),
+        ("editor: save, find, undo, redo", "⌘S ⌘⇧L ⌘U ⌘⇧U"),
         ("command palette", "⌘P"),
         ("close pane", "⌘X"),
     ] {
@@ -1901,7 +1944,7 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
     }
     let hints = frame.lines().last().unwrap_or_default();
     assert!(
-        hints.contains("⌘P command palette") && hints.contains("   ⌘R diff   ⌘/ keys"),
+        hints.contains("⌘P command palette") && hints.contains("   ⌘⇧R diff   ⌘/ keys"),
         "the hint row names only chords Ghostty delivers: {hints:?}"
     );
     Ok(())
@@ -1950,6 +1993,26 @@ fn cmd_u_undoes_and_cmd_shift_u_redoes() -> TestResult {
     )?;
     let _ = std::fs::remove_file(&path);
     Ok(())
+}
+
+/// ⌘U in a chat pane undoes the draft's last edit and ⌘⇧U redoes it, as in the editor.
+#[test]
+fn cmd_u_undoes_the_chat_draft() -> TestResult {
+    run(
+        "chat-undo",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type undo me\n\
+         wait-frame 3000 undo me\n\
+         cmd-u\n\
+         wait-frame 3000 !undo me\n\
+         wait-frame 3000 undo m\n\
+         cmd-shift-u\n\
+         wait-frame 3000 undo me\n\
+         quit\n",
+    )
 }
 
 /// A click places the cursor on that cell; a drag selects, and backspace removes the run.
@@ -2044,9 +2107,9 @@ fn dirty_editor_shows_reload_bar_and_r_reloads() -> TestResult {
     Ok(())
 }
 
-/// ⌘L then `/needle` scrolls the editor to the match; Ghostty holds ⌘F for its own search.
+/// ⌘⇧L then `/needle` scrolls the editor to the match; Ghostty holds ⌘F and kitty ⌘L.
 #[test]
-fn cmd_l_scrolls_to_match() -> TestResult {
+fn cmd_shift_l_scrolls_to_match() -> TestResult {
     let body: String = (1..=60)
         .map(|n| {
             if n == 55 {
@@ -2062,7 +2125,7 @@ fn cmd_l_scrolls_to_match() -> TestResult {
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-l\ntype needle\nkey enter\n\
+            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-shift-l\ntype needle\nkey enter\n\
              wait-frame 3000 let needle = 1;\nquit\n",
         ),
     )?;
@@ -3845,7 +3908,7 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
         ],
         "wait-frame 5000 s-alpha\n\
          mouse down 3 29\nmouse up 3 29\n\
-         wait-frame 3000 ⚙ Settings\n\
+         wait-frame 3000 Settings\n\
          key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
          wait-frame 3000 Open Review beside\n\
          key enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
@@ -3858,7 +3921,7 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
     )?;
     let gear = frame.lines().last().unwrap_or_default();
     assert!(
-        gear.contains("⚙ settings ⌥,"),
+        gear.contains("⚙  settings ⌥,"),
         "no gear in the corner: {gear:?}"
     );
     Ok(())
@@ -3978,7 +4041,7 @@ fn fork_before_prompt(frame: &Value) -> Vec<Value> {
         return refuse(frame, "wrong fork");
     }
     let mut result = session_result(frame, "s-again", None, json!({}));
-    result["result"]["prefill"] = json!("hello agent");
+    result["result"]["_meta"]["yi"]["prefill"] = json!("hello agent");
     vec![result]
 }
 

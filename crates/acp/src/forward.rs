@@ -113,9 +113,9 @@ impl Parent {
                 |entry| matches!(entry, Entry::Message { message: saved, .. } if saved == message),
             )
         });
-        if let Some(entry) = entry.and_then(|entry| serde_json::to_value(entry).ok()) {
-            self.forward
-                .emit(extension("_yi/committed", [("entry", entry)]));
+        let committed = entry.map(|entry| yi_types::acp::AcpCommitted { entry });
+        if let Some(Value::Object(fields)) = committed.and_then(|c| serde_json::to_value(c).ok()) {
+            self.forward.emit(extension("_yi/committed", fields));
         }
     }
 
