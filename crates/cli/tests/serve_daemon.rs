@@ -15,7 +15,6 @@ use scratch::Scratch;
 #[path = "support/config_option.rs"]
 mod config_option;
 use config_option::current_value;
-
 #[path = "support/daemon.rs"]
 mod daemon;
 use daemon::{spawn_daemon, spawn_daemon_in, spawn_daemon_with};
