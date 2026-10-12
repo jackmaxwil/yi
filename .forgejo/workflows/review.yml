@@ -26,7 +26,9 @@ jobs:
     # Every same-repo PR, draft or not: a PR opened without `just pr open` skipped review entirely.
     # A fork's head never runs with the bot's key.
     if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # Incident: a round waits an hour or two on the model at a few percent of one CPU, and with every
+    # review on `ubuntu-latest` the gates queued behind them for up to four hours (2026-10-12).
+    runs-on: llm
     # The one place the review job's limit is set; pr_review.py budgets its sweep from it, and the
     # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 120m) bounds it.
     timeout-minutes: 120
