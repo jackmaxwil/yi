@@ -583,10 +583,14 @@ pub fn edit_key(textarea: &mut TextArea<'_>, key: KeyEvent) -> bool {
         KeyCode::Backspace if cmd => clear_line(textarea),
         KeyCode::Backspace if ctrl => textarea.delete_word(),
         KeyCode::Delete if ctrl => textarea.delete_next_word(),
-        KeyCode::Char('z' | 'Z') if (ctrl || cmd) && (shift || key.code == KeyCode::Char('Z')) => {
+        KeyCode::Char('z' | 'Z') if ctrl && (shift || key.code == KeyCode::Char('Z')) => {
             textarea.redo()
         }
-        KeyCode::Char('z') if ctrl || cmd => textarea.undo(),
+        KeyCode::Char('u' | 'U') if cmd && (shift || key.code == KeyCode::Char('U')) => {
+            textarea.redo()
+        }
+        KeyCode::Char('z') if ctrl => textarea.undo(),
+        KeyCode::Char('u') if cmd => textarea.undo(),
         KeyCode::Char('j') if ctrl => {
             textarea.insert_newline();
             true
