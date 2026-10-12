@@ -1805,7 +1805,7 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
     let before = client.request(
         "8",
         "_yi/fork",
-        json!({"sessionId": session_id, "entryId": asked, "position": "before"}),
+        json!({"sessionId": session_id, "entryId": asked}),
     )?;
     let reply = before.last().ok_or("no reply")?;
     assert_eq!(
