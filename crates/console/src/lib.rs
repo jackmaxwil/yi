@@ -237,14 +237,11 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
-    app.autostart = options.autostart;
     app.kitty = crate::kitty::supported(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
     configure(&mut app, options);
-    app.state.sidebar = options.sidebar;
-    app.state.chat_pace = options.pace;
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -542,16 +539,6 @@ fn join_with_deadline(threads: client::ClientThreads) {
     }
 }
 
-fn headless_working(app: &App) -> bool {
-    app.state
-        .focused_session()
-        .as_ref()
-        .and_then(|id| app.state.sessions.get(id))
-        .is_some_and(|row| row.status == SessionStatus::Working)
-        || app.chat_running()
-        || app.state.link == Link::Connecting
-}
-
 /// The same loop over an in-memory screen, driven by a script (the
 /// .ruler/085-tui.md drive contract for this crate).
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
@@ -566,10 +553,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     {
         app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
     }
-    app.autostart = options.autostart;
     configure(&mut app, options);
-    app.state.sidebar = options.sidebar;
-    app.state.chat_pace = options.pace;
     let width = drive.width.max(20);
     let height = drive.height.max(8);
     let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
@@ -593,10 +577,10 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         return 1;
     }
 
-    let mut current: Option<(ConsoleStep, Instant)> = None;
     let mut frame_index = 0_u32;
     let mut last_frame = String::new();
     let mut steps = drive.script.into_iter();
+    let mut current: Option<(ConsoleStep, Instant)> = None;
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut exit_code = 0;
     let mut type_ms = 0;
@@ -648,7 +632,14 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 }
             }
             (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
-                let working = headless_working(&app);
+                let working = app
+                    .state
+                    .focused_session()
+                    .as_ref()
+                    .and_then(|id| app.state.sessions.get(id))
+                    .is_some_and(|row| row.status == SessionStatus::Working)
+                    || app.chat_running()
+                    || app.state.link == Link::Connecting;
                 match poll_condition(!working, started, ms, "wait-idle") {
                     WaitPoll::Retry => {
                         current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
@@ -700,8 +691,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
 }
 
 fn configure(app: &mut App, options: &ConsoleOptions) {
+    app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
     app.state.open_apps = options.open_apps.clone();
+    app.state.sidebar = options.sidebar;
+    app.state.chat_pace = options.pace;
 }
 
 /// What the console wrote outside the grid (clipboard, title), kept beside the frames; the

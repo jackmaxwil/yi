@@ -2120,6 +2120,18 @@ fn an_orb_that_cannot_fit_its_rows_is_not_placed() -> TestResult {
     Ok(())
 }
 
+/// The 1-based row the first kitty placement in `written` lands on, from its cursor move.
+fn placement_row(written: &str) -> Option<u16> {
+    let (before, _) = written.split_once("\x1b_Ga=p,")?;
+    before
+        .rsplit("\x1b[")
+        .next()?
+        .split(';')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// The owner asked for the orb two thirds bigger: a 10x5 cell image whose five reserved rows
 /// carry the working label on the middle one, beside the image's centre rather than its top.
 #[test]
@@ -2133,9 +2145,8 @@ fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResu
     let mut out = Vec::new();
     yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
     let out = String::from_utf8_lossy(&out);
-    let (before, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
-    let cup = before.rsplit("\x1b[").next().ok_or("no cursor move")?;
-    let row: u16 = cup.split(';').next().ok_or("no row")?.parse()?;
+    let row = placement_row(&out).ok_or("no placement")?;
+    let (_, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
     let keys: Vec<&str> = after
         .split("\x1b\\")
         .next()
@@ -2179,20 +2190,10 @@ fn an_orb_moved_by_a_commit_is_placed_in_the_frame_that_moved_it() -> TestResult
         terminal.backend_mut().take_written()
     };
     let first = frame(&mut app, &mut terminal);
-    let placed_row = |written: &str| -> Option<u16> {
-        let (before, _) = written.split_once("\x1b_Ga=p,")?;
-        before
-            .rsplit("\x1b[")
-            .next()?
-            .split(';')
-            .next()?
-            .parse()
-            .ok()
-    };
-    let was = placed_row(&first).ok_or("the first frame placed no orb")?;
+    let was = placement_row(&first).ok_or("the first frame placed no orb")?;
     app.notice("one\ntwo\nthree");
     let written = frame(&mut app, &mut terminal);
-    let now = placed_row(&written).ok_or("the moved orb was not placed")?;
+    let now = placement_row(&written).ok_or("the moved orb was not placed")?;
     assert!(
         now > was,
         "the commit moved the orb down: row {was} then {now}"
