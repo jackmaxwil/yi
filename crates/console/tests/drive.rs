@@ -408,6 +408,7 @@ fn run_console(
             auto_side: true,
             open_apps,
             sidebar,
+            pace: 0,
         },
         DriveOptions {
             script: steps,
