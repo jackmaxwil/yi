@@ -59,6 +59,7 @@ pub enum RequestKind {
     Rewind(SessionId),
     Plan(SessionId),
     SetConfig(SessionId),
+    Fork(PaneId),
     Steer,
     Shutdown,
 }
@@ -89,6 +90,7 @@ pub struct App {
     pub autostart: bool,
     next_disk_check: Instant,
     editor_drag: bool,
+    pending_close: Option<PaneId>,
     notes: NoteQueue,
     pub osc_flavor: OscFlavor,
     pub osc_out: Vec<String>,
@@ -153,6 +155,7 @@ impl App {
             autostart: false,
             next_disk_check: Instant::now(),
             editor_drag: false,
+            pending_close: None,
             animate: false,
             notes: NoteQueue::default(),
             osc_flavor: OscFlavor::None,
@@ -448,6 +451,9 @@ impl App {
             self.state.quit = true;
             return;
         }
+        if let RequestKind::Fork(pane) = pending.kind {
+            return self.absorb_fork(outbound, pane, value);
+        }
         if let Some(error) = value.get("error") {
             let message = error
                 .get("message")
@@ -509,6 +515,7 @@ impl App {
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig(_)
+            | RequestKind::Fork(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
@@ -944,6 +951,7 @@ impl App {
             Action::Quit => self.state.quit = true,
             Action::StopDaemon => self.stop_daemon_and_quit(outbound),
             Action::Keys => self.state.mode = Mode::Keys,
+            Action::Menu => self.open_menu_for_focus(),
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
@@ -1040,20 +1048,7 @@ impl App {
                 self.pending_clear = true;
                 self.dirty = true;
             }
-            CtEvent::Mouse(mouse) => {
-                use ratatui::crossterm::event::MouseEventKind;
-                let kind = match mouse.kind {
-                    MouseEventKind::Down(_) => Some(MouseKind::Down),
-                    MouseEventKind::Up(_) => Some(MouseKind::Up),
-                    MouseEventKind::Drag(_) => Some(MouseKind::Drag),
-                    MouseEventKind::ScrollUp => Some(MouseKind::ScrollUp),
-                    MouseEventKind::ScrollDown => Some(MouseKind::ScrollDown),
-                    _ => None,
-                };
-                if let Some(kind) = kind {
-                    self.handle_mouse(outbound, kind, mouse.column, mouse.row);
-                }
-            }
+            CtEvent::Mouse(mouse) => self.mouse_event(outbound, mouse),
             CtEvent::Paste(text) => {
                 if self.state.zone == Zone::Panes && matches!(self.state.mode, Mode::Normal) {
                     self.chat_event(CtEvent::Paste(text));
@@ -1069,6 +1064,9 @@ impl App {
         }
         if matches!(self.state.mode, Mode::Navigator { .. }) {
             return self.handle_navigator_key(outbound, key);
+        }
+        if matches!(self.state.mode, Mode::Menu(_)) {
+            return self.menu_key(outbound, key);
         }
         if matches!(self.state.mode, Mode::Keys) {
             self.state.mode = Mode::Normal;
@@ -1178,6 +1176,7 @@ impl App {
 mod chat;
 mod diffs;
 mod editor;
+mod menu;
 mod mouse;
 mod navigator;
 mod notebook;
