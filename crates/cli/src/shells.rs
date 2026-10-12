@@ -232,23 +232,28 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
     )
 }
 
-pub fn faux_replies(args: &Args) -> Result<Vec<yi_types::message::AgentMessage>, String> {
+pub fn faux_replies(
+    args: &Args,
+) -> Result<Vec<(yi_types::message::AgentMessage, std::time::Duration)>, String> {
     let Some(path) = &args.faux else {
-        return Ok(vec![yi_runtime::faux::faux_assistant_message(
+        let reply = yi_runtime::faux::faux_assistant_message(
             vec![yi_runtime::faux::faux_text(&format!(
                 "faux: {}",
                 args.prompt
             ))],
             yi_types::message::StopReason::Stop,
-        )]);
+        );
+        return Ok(vec![(reply, std::time::Duration::ZERO)]);
     };
     let source =
         std::fs::read_to_string(path).map_err(|error| format!("--faux {path}: {error}"))?;
-    source
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).map_err(|error| format!("--faux {path}: {error}")))
-        .collect()
+    let mut replies = yi_runtime::session_store::cassette(&source)
+        .map_err(|error| format!("--faux {path}: {error}"))?;
+    for (_, lag) in &mut replies {
+        *lag = std::time::Duration::try_from_secs_f64(lag.as_secs_f64() * args.faux_pace)
+            .unwrap_or_default();
+    }
+    Ok(replies)
 }
 
 #[cfg(feature = "tui")]
