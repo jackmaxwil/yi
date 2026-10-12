@@ -178,7 +178,7 @@ impl Resolver {
                     let metadata = yi_session::lock_session(&store).metadata().clone();
                     (metadata.id, metadata.parent_session_id.is_some())
                 });
-                // Invariant: a spawned child reaches its family, never another root session.
+                // Invariant: a spawned child never walks the corpus; its parent searches it.
                 if own.as_ref().is_some_and(|(_, spawned)| *spawned) {
                     return Err(super::unsupported(url, NO_CORPUS));
                 }
