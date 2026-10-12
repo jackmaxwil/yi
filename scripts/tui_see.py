@@ -10,7 +10,9 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
   tui_see.py gallery [ROOT] [PAGE]     # every scene and label under ROOT on one HTML page
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
   tui_see.py ci BASE_BIN HEAD_BIN      # every scene on both, then the PR comment (post)
+  tui_see.py ci HEAD_BIN               # every scene on one binary and the gallery, nothing posted
   tui_see.py post OUT                  # upsert the comment `ci` left in OUT (FORGEJO_* env)
+  tui_see.py publish PAGE              # replace the live gallery release's asset (FORGEJO_* env)
   tui_see.py --selfcheck
 
 `--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
@@ -1057,9 +1059,10 @@ MARKER = "TUI snapshots for this pull request (scripts/tui_see.py)"
 HEAD_MARK = "<!-- tui-see head={} -->"
 
 
-def ci(base_bin: Path, head_bin: Path) -> None:
+def ci(base_bin: Path | None, head_bin: Path) -> None:
     """The PR job inside the yi-term image: every scene under scripts/proof/tui_see on the base
-    and the head binary, in Ghostty, then one comment on the PR."""
+    and the head binary, in Ghostty, then one comment on the PR. Without a base (main's own
+    push) only the head plays and the gallery is all it leaves."""
     out = Path("target/see").resolve()
     failed: list[str] = []
     played = 0
@@ -1067,6 +1070,8 @@ def ci(base_bin: Path, head_bin: Path) -> None:
         if "--stub" in header(scene)[1]:
             continue  # a live-paced stream differs between any two runs, so a cell diff would be noise
         for label, binary in (("base", base_bin), ("head", head_bin)):
+            if binary is None:
+                continue
             played += 1
             try:
                 run(scene, label, out, binary, "here")
@@ -1074,14 +1079,15 @@ def ci(base_bin: Path, head_bin: Path) -> None:
                 failed.append(f"{scene.stem} ({label}, exit {stop.code})")
             except (subprocess.SubprocessError, OSError, ValueError) as error:
                 failed.append(f"{scene.stem} ({label}, {type(error).__name__})")
-        if (out / scene.stem / "head" / "frames").is_dir() and (out / scene.stem / "base").is_dir():
+        if base_bin and (out / scene.stem / "head" / "frames").is_dir() and (out / scene.stem / "base").is_dir():
             try:
                 diff(out / scene.stem / "base", out / scene.stem / "head")
             except (subprocess.SubprocessError, OSError, ValueError) as error:
                 failed.append(f"{scene.stem} (diff, {type(error).__name__})")
     gallery(out, out / "gallery.html")
     (out / "failed.json").write_text(json.dumps(failed))
-    post(out)
+    if base_bin:
+        post(out)
     if failed and len(failed) == played:
         sys.exit("ci: no scene ran on either binary")
 
@@ -1169,19 +1175,61 @@ def post(out: Path) -> None:
     forge.send("PATCH", f"{api}/repos/{repo}/issues/comments/{comment['id']}", {"body": body})
 
 
-def upload(url: str, path: Path) -> str:
-    """One multipart POST of a picture as a comment asset; the forge answers with its URL."""
+def upload(url: str, path: Path, kind: str = "image/png") -> str:
+    """One multipart POST of a file as an asset; the forge answers with its URL."""
     import urllib.request
 
     boundary = f"tui-see-{os.getpid()}-{time.time_ns()}"
     data = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"attachment\"; "
-            f"filename=\"{path.name}\"\r\nContent-Type: image/png\r\n\r\n").encode()
+            f"filename=\"{path.name}\"\r\nContent-Type: {kind}\r\n\r\n").encode()
     data += path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
     request = urllib.request.Request(url, data=data, method="POST", headers={
         "Authorization": f"token {os.environ['FORGEJO_TOKEN']}", "Accept": "application/json",
         "Content-Type": f"multipart/form-data; boundary={boundary}"})
     with urllib.request.urlopen(request, timeout=60) as response:
         return json.load(response)["browser_download_url"]
+
+# One release on one fixed tag holds the live gallery: the tag is the bookmark, the asset is
+# replaced per run. The forge serves a release's HTML as text/plain, so the page is saved, not viewed.
+# Invariant: the release stays a prerelease, because `yi update` installs `releases/latest`.
+GALLERY_TAG = "tui-gallery"
+
+
+def publish(page: Path) -> None:
+    """Replaces the live gallery release's asset with `page`, creating the release on first use.
+    The new asset goes up before the old ones go, so a refused upload leaves the last gallery."""
+    import urllib.error
+
+    import forgejo_pr_comment as forge
+
+    api, repo = (os.environ[k] for k in ("FORGEJO_API_URL", "FORGEJO_REPOSITORY"))
+    sha = os.environ.get("FORGEJO_HEAD", "")
+    size = page.stat().st_size
+    over = (f"\n[… the page is {size / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB page cap "
+            "(PAGE_CAP) and published whole; gallery a narrower root for a smaller one]"
+            if size > PAGE_CAP else "")
+    body = (f"Newest gallery: `{sha[:12]}` on main, {size / 1e6:.1f} MB. The forge serves this "
+            f"asset as plain text, so save `{page.name}` and open the file.{over}")
+    releases = f"{api}/repos/{repo}/releases"
+    try:
+        try:
+            release = forge.send("GET", f"{releases}/tags/{GALLERY_TAG}", None)
+            forge.send("PATCH", f"{releases}/{release['id']}", {"body": body, "prerelease": True})
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+            release = forge.send("POST", releases, {"tag_name": GALLERY_TAG, "target_commitish": sha or "main",
+                                                    "name": "TUI gallery (live)", "body": body,
+                                                    "prerelease": True})
+        assets = f"{releases}/{release['id']}/assets"
+        old = [a["id"] for a in forge.send("GET", assets, None) or [] if a["name"] == page.name]
+        url = upload(f"{assets}?name={page.name}", page, "text/html")
+        for asset in old:
+            forge.send("DELETE", f"{assets}/{asset}", None)
+    except (OSError, KeyError) as error:
+        sys.exit(f"[… the gallery was not published ({type(error).__name__}: {error}); "
+                 "the job's tui-gallery artifact holds it]")
+    print(f"published: {url}")
 
 
 def selfcheck() -> None:
@@ -1337,6 +1385,66 @@ def selfcheck() -> None:
         grown = next((Path(tmp) / "run" / "sessions").glob(f"*/*_{session}.jsonl"))
         grown.write_text(grown.read_text() + '{"kind":"message"}\n')
         assert pristine_seed(Path(tmp) / "run", session).read_text() == seed.read_text()
+    # Publishing: the release is created once, the asset is replaced rather than added, the old
+    # one goes only after the new is up, and a refusal is named with the last gallery left alone.
+    import forgejo_pr_comment as forge
+    import urllib.error
+    with tempfile.TemporaryDirectory() as tmp:
+        page = Path(tmp) / "gallery.html"
+        page.write_text("<title>x</title>")
+        calls, state = [], {"release": None, "refuse": False}
+        releases = "https://f/api/repos/o/r/releases"
+
+        def fake(method, url, payload):
+            calls.append((method, url))
+            if method == "GET" and url.endswith(f"/tags/{GALLERY_TAG}"):
+                if state["release"] is None:
+                    raise urllib.error.HTTPError(url, 404, "not found", None, None)
+                return state["release"]
+            if method == "GET":
+                return [{"id": 5, "name": "gallery.html"}, {"id": 6, "name": "other.txt"}]
+            calls[-1] += (payload,)
+            return {"id": 4}
+
+        def put(url, path, kind="image/png"):
+            calls.append(("UPLOAD", url, kind))
+            if state["refuse"]:
+                raise OSError("refused")
+            return "https://f/gallery.html"
+
+        keep = forge.send, globals()["upload"], dict(os.environ)
+        forge.send, globals()["upload"] = fake, put
+        os.environ.update(FORGEJO_API_URL="https://f/api", FORGEJO_REPOSITORY="o/r", FORGEJO_HEAD="ab12" * 10)
+        try:
+            publish(page)
+            assert calls[1][:2] == ("POST", releases) and calls[1][2]["tag_name"] == GALLERY_TAG, calls
+            assert calls[1][2]["prerelease"] is True, "a release `yi update` could pick as latest"
+            assert not any(c[0] == "PATCH" for c in calls), calls
+            state["release"] = {"id": 4}
+            calls.clear()
+            publish(page)
+            assert [c[0] for c in calls] == ["GET", "PATCH", "GET", "UPLOAD", "DELETE"], calls
+            assert calls[3][1] == f"{releases}/4/assets?name=gallery.html", calls[3]
+            assert calls[4][1] == f"{releases}/4/assets/5", "only the old gallery.html goes"
+            assert calls[1][2]["prerelease"] is True, "the PATCH must keep it out of releases/latest"
+            assert "ab12ab12ab12" in calls[1][2]["body"] and "plain text" in calls[1][2]["body"]
+            state["refuse"] = True
+            calls.clear()
+            try:
+                publish(page)
+                raise AssertionError("a refused upload published")
+            except SystemExit as stop:
+                assert "the gallery was not published (OSError: refused)" in str(stop), stop
+            assert not any(c[0] == "DELETE" for c in calls), "the last gallery must survive a refusal"
+            state["refuse"] = False
+            page.write_bytes(b"x" * (PAGE_CAP + 1))
+            calls.clear()
+            publish(page)
+            assert "past the 15 MB page cap (PAGE_CAP)" in calls[1][2]["body"], calls[1]
+        finally:
+            forge.send, globals()["upload"] = keep[0], keep[1]
+            os.environ.clear()
+            os.environ.update(keep[2])
     print("tui_see selfcheck: ok")
 
 
@@ -1348,8 +1456,10 @@ def main(argv: list[str]) -> None:
         return None
     if argv[:1] == ["term-inner"]:
         return term_inner(argv[1], argv[2], Path(argv[3]), argv[4], argv[5:])
-    if argv[:1] == ["ci"] and len(argv) == 3:
-        return ci(Path(argv[1]).resolve(), Path(argv[2]).resolve())
+    if argv[:1] == ["ci"] and len(argv) in (2, 3):
+        return ci(Path(argv[1]).resolve() if len(argv) == 3 else None, Path(argv[-1]).resolve())
+    if argv[:1] == ["publish"] and len(argv) == 2:
+        return publish(Path(argv[1]).resolve())
     if argv[:1] == ["post"] and len(argv) == 2:
         return post(Path(argv[1]).resolve())
     if argv[:1] == ["proxy"]:
