@@ -168,21 +168,30 @@ impl<B: Backend> Terminal<B> {
         let area = self.viewport_area;
         let width = usize::from(area.width);
         let mut row = Buffer::empty(Rect::new(0, 0, area.width, 1));
-        let mut adopted = 0u16;
+        let (mut matched, mut adopted) = (0u16, 0u16);
         for line in lines
             .iter()
             .take(usize::from(area.height.saturating_sub(1)))
         {
             row.reset();
             row.set_line(0, 0, line, area.width);
-            let at = usize::from(adopted).saturating_mul(width);
+            let at = usize::from(matched).saturating_mul(width);
             let drawn = self.buffers[1 - self.current]
                 .content
                 .get(at..at.saturating_add(width));
             if drawn != Some(row.content.as_slice()) {
                 break;
             }
-            adopted = adopted.saturating_add(1);
+            matched = matched.saturating_add(1);
+            // Invariant: a blank matches any blank row (the orb's rows at rest), so only ink proves
+            // the line is the one on screen; trailing blank matches are inserted, not adopted.
+            if line
+                .spans
+                .iter()
+                .any(|span| !span.content.trim().is_empty())
+            {
+                adopted = matched;
+            }
         }
         if adopted > 0 {
             let kept = Rect {

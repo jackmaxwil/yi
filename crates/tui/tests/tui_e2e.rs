@@ -423,6 +423,43 @@ fn a_paragraph_that_commits_on_screen_moves_nothing() -> TestResult {
     Ok(())
 }
 
+/// Dies with a blank commit row adopted against the orb's blank rows at rest: the viewport shrank
+/// and grew back, repainting every row for a commit that only had to be inserted.
+#[test]
+fn a_blank_row_is_never_adopted_without_the_ink_below_it() -> TestResult {
+    use ratatui::text::Line;
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 100);
+    backend.write_all(&b"\n".repeat(23))?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    terminal.draw(|frame| {
+        let area = frame.area();
+        frame.buffer_mut().set_string(
+            area.x,
+            area.y + 1,
+            "on screen",
+            ratatui::style::Style::default(),
+        );
+    })?;
+    let blank_then_new = [Line::default(), Line::from("a new prompt")];
+    assert_eq!(
+        terminal.adopt(&blank_then_new[..1]),
+        0,
+        "a lone blank was adopted"
+    );
+    assert_eq!(
+        terminal.adopt(&blank_then_new),
+        0,
+        "a blank was adopted above new text"
+    );
+    assert_eq!(
+        terminal.adopt(&[Line::default(), Line::from("on screen")]),
+        2,
+        "a blank above the ink it belongs to was not adopted"
+    );
+    Ok(())
+}
+
 /// Dies with a one-row scroll region on a short screen: a terminal ignores it and scrolls the
 /// whole screen, and the region it left shifted wrote composer rows into scrollback.
 #[test]
