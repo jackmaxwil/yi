@@ -2196,7 +2196,10 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
                 cell_ceiling: None,
             }));
             child.use_tools(
-                vec![yi_runtime::kernel::ipython_tool(Arc::clone(&kernel))],
+                vec![yi_runtime::kernel_tools::ipython_tool(
+                    Arc::clone(&kernel),
+                    None,
+                )],
                 dir.clone(),
                 None,
             );
