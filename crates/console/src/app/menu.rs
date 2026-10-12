@@ -32,7 +32,7 @@ impl App {
                 chat: Some(chat), ..
             } => chat.app.pane_row(y).flatten().and_then(|(cell, _)| {
                 let (said, source) = chat.app.said(cell)?;
-                let entry = chat.app.locate(cell, &chat.port.branch()).cloned();
+                let entry = chat.app.locate(cell, &chat.port.drawn()).cloned();
                 Some((said, source.to_owned(), entry.map(Box::new)))
             }),
             _ => None,
@@ -272,6 +272,9 @@ impl App {
                     opened.scroll_from_bottom = usize::MAX;
                 }
             }
+            (Verb::Rewind { .. }, _) if self.pane_running(pane) => {
+                self.note("wait for the turn to end");
+            }
             (Verb::Rewind { files }, Some(session)) => {
                 let request = if files {
                     PortRequest::RewindFiles(id)
@@ -298,6 +301,14 @@ impl App {
         }
     }
 
+    /// Invariant: a rewind re-attaches the history a running turn is writing, and a turn can
+    /// start while the menu is open, so the menu's own reading is checked again here.
+    fn pane_running(&self, pane: PaneId) -> bool {
+        self.state.panes.get(&pane).is_some_and(|pane| {
+            matches!(&pane.content, PaneContent::Session { chat: Some(chat), .. } if chat.app.is_running())
+        })
+    }
+
     /// A pane opened to the right of `pane` and focused; `None` when the split made none.
     fn beside(&mut self, pane: PaneId, content: PaneContent) -> Option<PaneId> {
         self.focus_pane(pane);
@@ -311,9 +322,23 @@ impl App {
 
     /// The fork's session opens in the pane made for it; a re-ask puts the prompt back to edit.
     pub(super) fn absorb_fork(&mut self, outbound: &Outbound, pane: PaneId, reply: &Value) {
-        let Some(id) = reply.pointer("/result/sessionId").and_then(Value::as_str) else {
+        // Invariant: the pane was made empty for this fork; one the person has since bound to
+        // another session keeps it.
+        let empty = matches!(
+            self.state.panes.get(&pane).map(|pane| &pane.content),
+            Some(PaneContent::Session {
+                session: None,
+                chat: None
+            })
+        );
+        let id = reply.pointer("/result/sessionId").and_then(Value::as_str);
+        let Some(id) = id.filter(|_| empty) else {
+            if empty {
+                self.focus_pane(pane);
+                self.apply_action(outbound, Action::ClosePane);
+            }
             let why = reply.pointer("/error/message").and_then(Value::as_str);
-            return self.note(&format!("fork: {}", why.unwrap_or("no session came back")));
+            return self.note(&format!("fork: {}", why.unwrap_or("its pane was reused")));
         };
         let session = SessionId(id.to_owned());
         self.state.upsert_row(SessionRow {
@@ -347,7 +372,9 @@ impl App {
 /// The entry with what its message cost on top; a duration is the gap to the entry before it,
 /// which the ledger does not store, so the pane says it is derived.
 fn inspect(entry: &Entry) -> String {
-    let json = serde_json::to_string_pretty(entry).unwrap_or_default();
+    let mut shown = serde_json::to_value(entry).unwrap_or_default();
+    elide_images(&mut shown);
+    let json = serde_json::to_string_pretty(&shown).unwrap_or_default();
     let mut head = format!("**entry** `{}`", entry.id());
     if let Entry::Message {
         message:
@@ -374,6 +401,26 @@ fn inspect(entry: &Entry) -> String {
         }
     }
     format!("{head}\n\n```json\n{json}\n```\n")
+}
+
+/// An image block's base64 becomes its size: a pasted screenshot is megabytes the pane would
+/// highlight on every frame. Raw JSON still copies the whole entry.
+fn elide_images(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            let image = fields.get("type").and_then(Value::as_str) == Some("image");
+            for (key, field) in fields.iter_mut() {
+                match (image, key.as_str(), &field) {
+                    (true, "data", Value::String(data)) => {
+                        *field = Value::String(format!("[…] {} bytes of base64", data.len()));
+                    }
+                    _ => elide_images(field),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(elide_images),
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -409,5 +456,19 @@ mod tests {
         outbound.shutdown();
         assert_eq!(open(&app), 2, "Close reached the pane that had focus");
         Ok(())
+    }
+
+    /// A pasted screenshot is megabytes of base64 the pane would highlight every frame; Inspect
+    /// shows its size and keeps every other field.
+    #[test]
+    fn inspect_shows_an_image_by_its_size() {
+        let mut entry = serde_json::json!({"message": {"content": [
+            {"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"},
+            {"type": "text", "text": "see"}]}});
+        elide_images(&mut entry);
+        let blocks = &entry["message"]["content"];
+        assert_eq!(blocks[0]["data"], "[…] 8 bytes of base64");
+        assert_eq!(blocks[0]["mimeType"], "image/png");
+        assert_eq!(blocks[1]["text"], "see");
     }
 }

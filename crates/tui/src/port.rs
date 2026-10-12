@@ -299,15 +299,16 @@ impl App {
         self.history.said(index)
     }
 
-    /// The entry on `branch` that drew transcript cell `index`: the n-th entry saying what the
-    /// n-th identical cell says, so a repeated "yes" still finds its own turn.
-    pub fn locate<'e>(&self, index: usize, branch: &'e [Entry]) -> Option<&'e Entry> {
+    /// The entry that drew transcript cell `index`, from `drawn` in drawing order: the n-th entry
+    /// saying what the n-th identical cell says, so a repeated "yes" still finds its own turn.
+    pub fn locate<'e>(&self, index: usize, drawn: &[&'e Entry]) -> Option<&'e Entry> {
         let (said, source) = self.said(index)?;
         let nth = (0..index)
             .filter(|earlier| self.said(*earlier) == Some((said, source)))
             .count();
-        branch
+        drawn
             .iter()
+            .copied()
             .filter(|entry| {
                 crate::transcript::said_in(entry)
                     .iter()

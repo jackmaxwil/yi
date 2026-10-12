@@ -108,7 +108,14 @@ fn parent(label: &'static str, children: Vec<Item>) -> Item {
 }
 
 fn message_items(said: Said, saved: bool, facts: &Facts) -> Vec<Item> {
-    let unsaved = (!saved).then_some("not saved yet");
+    // A reply still streaming is saved when its turn ends; one that never matches stays found
+    // by nothing, and saying "not saved yet" forever would be a lie.
+    let missing = if facts.running {
+        "not saved yet"
+    } else {
+        "not found in the ledger"
+    };
+    let unsaved = (!saved).then_some(missing);
     let ledger = |label, verb| Item {
         blocked: unsaved,
         ..item(label, verb, "")

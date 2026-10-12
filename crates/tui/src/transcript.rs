@@ -311,11 +311,20 @@ pub enum Said {
 /// The cells one message entry draws, by kind and source, as replay draws them.
 pub fn said_in(entry: &yi_types::entry::Entry) -> Vec<(Said, String)> {
     use yi_types::message::{AgentMessage, Content};
-    let yi_types::entry::Entry::Message { message, .. } = entry else {
+    let yi_types::entry::Entry::Message {
+        message, timestamp, ..
+    } = entry
+    else {
         return Vec::new();
     };
     match message {
-        AgentMessage::User { content, .. } => vec![(Said::User, user_text(content))],
+        // A host message (a heartbeat, a nudge) draws as a notice, never as a typed prompt.
+        AgentMessage::User {
+            content,
+            attribution,
+            ..
+        } if attribution.reads_as_typed(*timestamp) => vec![(Said::User, user_text(content))],
+        AgentMessage::User { .. } => Vec::new(),
         AgentMessage::Assistant { content, .. } => {
             let mut said: Vec<(Said, String)> = content
                 .iter()
