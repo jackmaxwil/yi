@@ -363,8 +363,11 @@ impl App {
             last_ms: 0,
         });
         self.resume_into(outbound, pane, &session);
+        // Incident: a daemon from the last build keeps serving after a rebuild, and its worker
+        // still puts the prompt at the result's root.
         let prefill = reply
             .pointer("/result/_meta/yi/prefill")
+            .or_else(|| reply.pointer("/result/prefill"))
             .and_then(Value::as_str)
             .unwrap_or("");
         if let Some(PaneContent::Session {
