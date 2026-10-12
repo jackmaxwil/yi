@@ -146,7 +146,8 @@ pub struct NestedCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     pub duration_ms: u64,
-    /// Set on a call that finished after the cell that started it ended: it lands on the next.
+    /// Set on a call that finished after the cell that started it closed: it lands on a later
+    /// cell's result, and the todo landed count does not credit it to that cell's turn.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outlived: bool,
 }
@@ -155,10 +156,8 @@ pub struct NestedCall {
 pub const NESTED_CALLS: &str = "calls";
 /// The `details` key counting read rows a cell made past [`NESTED_READS_KEPT`].
 pub const NESTED_READS_DROPPED: &str = "callsDropped";
-/// Read rows one cell keeps.
+/// Read rows one cell keeps; every other row is kept, since a row holds paths, never content.
 pub const NESTED_READS_KEPT: usize = 256;
-/// Write rows one cell keeps whole; past it, one row per tool carries the remaining paths.
-pub const NESTED_WRITES_KEPT: usize = 1024;
 
 /// `.bootstrap-version` marker (design §9.1): any mismatch forces a full venv
 /// rebuild.
