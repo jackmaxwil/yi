@@ -111,6 +111,24 @@ impl App {
         }
     }
 
+    /// A reply that belongs to the pane that asked, error or not; false for every other kind.
+    pub(super) fn pane_reply(
+        &mut self,
+        outbound: &Outbound,
+        kind: &RequestKind,
+        reply: &Value,
+    ) -> bool {
+        if let RequestKind::Settings(pane, saved) = kind {
+            self.absorb_settings(*pane, *saved, reply);
+            return true;
+        }
+        if let RequestKind::Fork(pane) = kind {
+            self.absorb_fork(outbound, *pane, reply);
+            return true;
+        }
+        false
+    }
+
     /// The daemon's rows, or its refusal named on the pane; the console's own rows apply here.
     pub(super) fn absorb_settings(&mut self, pane: PaneId, saved: bool, reply: &Value) {
         self.dirty = true;
