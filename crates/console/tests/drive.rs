@@ -3908,7 +3908,7 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
         ],
         "wait-frame 5000 s-alpha\n\
          mouse down 3 29\nmouse up 3 29\n\
-         wait-frame 3000 ⚙ Settings\n\
+         wait-frame 3000 Settings\n\
          key right\nkey right\nkey right\nkey right\nkey right\nkey right\n\
          wait-frame 3000 Open Review beside\n\
          key enter\nwait-frame 3000 saved\nwait-frame 500 !not saved\n\
@@ -3921,7 +3921,7 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
     )?;
     let gear = frame.lines().last().unwrap_or_default();
     assert!(
-        gear.contains("⚙ settings ⌥,"),
+        gear.contains("⚙  settings ⌥,"),
         "no gear in the corner: {gear:?}"
     );
     Ok(())
@@ -4041,7 +4041,7 @@ fn fork_before_prompt(frame: &Value) -> Vec<Value> {
         return refuse(frame, "wrong fork");
     }
     let mut result = session_result(frame, "s-again", None, json!({}));
-    result["result"]["prefill"] = json!("hello agent");
+    result["result"]["_meta"]["yi"]["prefill"] = json!("hello agent");
     vec![result]
 }
 
