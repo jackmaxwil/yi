@@ -9,6 +9,8 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
   tui_see.py diff RUN_A RUN_B          # two run dirs; writes RUN_B/diff-vs-<A>/summary.md
   tui_see.py gallery [ROOT] [PAGE]     # every scene and label under ROOT on one HTML page
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
+  tui_see.py harvest SESSION [--name N] [--view end|tool|long] [--size WxH]
+                                       # a recorded session as harvest-N-<view> scenes under SCENES
   tui_see.py ci BASE_BIN HEAD_BIN      # every scene on both, then the PR comment (post)
   tui_see.py ci HEAD_BIN               # every scene on one binary and the gallery, nothing posted
   tui_see.py post OUT                  # upsert the comment `ci` left in OUT (FORGEJO_* env)
@@ -29,6 +31,7 @@ region before and after, then the whole frame. Pictures never gate anything.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -47,6 +50,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 SCENES = ROOT / "scripts" / "proof" / "tui_see"
+sys.path.insert(0, str(ROOT / "evals"))
+import record  # noqa: E402  the record-time scrub (§10) harvest must apply before a seed lands
 # Loud caps: a cut names what it kept, the cap and the call that gets the rest (045-loud-caps).
 MAX_REGIONS = 6
 MAX_CROP_PX = 1200
@@ -1139,6 +1144,131 @@ def publish(page: Path) -> None:
     print(f"published: {url}")
 
 
+MASK = "[MASKED]"
+VIEWS = ("end", "tool", "long")
+
+
+def resumable(rows: list[dict]) -> list[dict]:
+    """The scrub (evals/record.py) masks the header id and most entry ids, which `--seed` refuses:
+    duplicate ids, then a parent that is not the lane leaf. Masked ids become the row's seq in
+    hex and masked parents the previous entry; the header id is derived from the content."""
+    digest = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+    if rows[0].get("id") == MASK:
+        rows[0]["id"] = f"01a0{digest[:4]}-{digest[4:8]}-7{digest[8:11]}-8{digest[11:14]}-{digest[14:26]}"
+    leaf = None
+    for row in rows[1:]:
+        if row.get("id") == MASK:
+            row["id"] = f"{row['seq']:08x}"
+        if row.get("parentId") == MASK:
+            row["parentId"] = leaf
+        if row.get("kind") == "entry":
+            leaf = row["id"]
+    return rows
+
+
+def text_of(message: dict) -> str:
+    content = message["content"]
+    if isinstance(content, str):
+        return content
+    return "".join(block.get("text", "") for block in content if block.get("type") == "text")
+
+
+def cut(rows: list[dict], view: str) -> int | None:
+    """How many rows a view keeps: all of them, through the largest tool result, or through the
+    longest reply; the last two run on past their pick to the next turn so no call is left open.
+    None when the session has no row of the view's kind."""
+    picks = [(i, row["message"]) for i, row in enumerate(rows) if row.get("type") == "message"]
+    if view == "end":
+        return len(rows)
+    if view == "tool":
+        candidates = [i for i, m in picks if m["role"] == "toolResult"]
+    else:
+        candidates = [i for i, m in picks if m["role"] == "assistant"]
+    if not candidates:
+        return None
+    key = (lambda i: len(json.dumps(rows[i]))) if view == "tool" \
+        else (lambda i: len(text_of(rows[i]["message"])))
+    pick = max(candidates, key=key)
+    end = pick + 1
+    while end < len(rows) and (rows[end].get("message") or {}).get("role") not in ("user", "assistant"):
+        end += 1
+    return end
+
+
+def continuation(rows: list[dict]) -> tuple[str, dict, str] | None:
+    """The last typed prompt and the last reply that has text, as the faux cassette line that
+    answers it; None when the session has either missing. Skipped prompts: ones the scrub left
+    fully "[MASKED]", and Yi's own subagent notifications (the "[subagent …]" shape the runtime
+    inserts as user rows); a real prompt that starts with '[' is kept. Line breaks flatten to
+    spaces, which the drive's one-step-per-line grammar cannot carry, and the note says when."""
+    messages = [row["message"] for row in rows if row.get("type") == "message"]
+    def typed(text: str) -> bool:
+        return bool(text.replace(MASK, "").strip()) and not text.startswith("[subagent ")
+    prompts = [text_of(m) for m in messages if m["role"] == "user" and typed(text_of(m))]
+    replies = [m for m in messages if m["role"] == "assistant" and text_of(m)]
+    if not prompts or not replies:
+        return None
+    reply = {key: replies[-1][key] for key in ("role", "api", "provider", "model", "usage",
+                                              "stopReason", "timestamp") if key in replies[-1]}
+    reply["content"] = [{"type": "text", "text": text_of(replies[-1])}]
+    prompt = prompts[-1]
+    note = ""
+    if re.search(r"\r\n?|\n", prompt):
+        prompt = re.sub(r"\r\n?|\n", " ", prompt)
+        note = ("the recorded prompt had line breaks, flattened to spaces: the drive grammar"
+                " carries one step per line")
+    return prompt, reply, note
+
+
+def harvest(session: Path, name: str, views: tuple[str, ...], size: str,
+            out: Path = SCENES) -> list[Path]:
+    """Writes a session as scenes: per view a seed cut at that view's end and a drive that snaps
+    it; the `end` view then types the last prompt and plays the recorded reply as a cassette.
+    Seed content goes through record.py's scrub, the redaction a recorded session already carries,
+    so a seed from an unscrubbed input still lands masked."""
+    if not NAME.fullmatch(name):
+        sys.exit(f"name {name!r} is not [a-z0-9_-]+")
+    raw = [record.scrub_values(json.loads(line)) for line in session.read_text().splitlines()]
+    if raw[0].get("id") != MASK:
+        print(f"[… {session.name} was not record.py-scrubbed: seed content is redacted]")
+    rows = resumable(raw)
+    where = out.relative_to(ROOT) if out.is_relative_to(ROOT) else out
+    written, cuts = [], {}
+    for view in views:
+        kept = cut(rows, view)
+        if kept is None:
+            print(f"[… view {view} has no {'toolResult' if view == 'tool' else 'reply'} row:"
+                  " no scene written]")
+            continue
+        if kept in cuts:
+            print(f"[… view {view} cuts where {cuts[kept]} does: no scene written]")
+            continue
+        stem = f"harvest-{name}-{view}"
+        flags = f"--size {size} --seed {where}/{stem}.jsonl"
+        steps = ["wait-frame 5000 faux-1", f"snap {view}"]
+        flat = ""
+        again = continuation(rows) if view == "end" else None
+        if again:
+            prompt, reply, flat = again
+            (out / f"{stem}.reply.jsonl").write_text(json.dumps(reply) + "\n")
+            flags += f" --faux {where}/{stem}.reply.jsonl"
+            # Incident: a turn's elapsed seconds read the wall clock and flipped between two runs;
+            # a `tick` freezes it, and the reveal then moves only on ticks, so the scene waits on
+            # the spinner coming and going rather than on a duration.
+            steps += [f"type {prompt}", "key enter", "wait-frame 10000 Composing", "tick 30000",
+                      "wait-idle 30000", "wait-frame 10000 !Composing", "snap continued"]
+        (out / f"{stem}.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows[:kept]))
+        (out / f"{stem}.drive").write_text(
+            f"#! solo {flags}\n# Harvested from {session.name} by `tui_see.py harvest`: view {view}.\n"
+            + (f"# {flat}\n" if flat else "")
+            + "\n".join(steps + ["quit"]) + "\n")
+        written.append(out / f"{stem}.drive")
+        if kept < len(rows):
+            print(cap_notice(kept, len(rows), "rows", f"{session.name} holds the whole session"))
+    print("scenes: " + ", ".join(str(where / p.name) for p in written))
+    return written
+
+
 def selfcheck() -> None:
     """Fixtures are real snaps from `yi tui --headless`; their `.txt` comes from the Rust side."""
     runs = [SCENES / "empty", SCENES / "typed"]
@@ -1277,6 +1407,84 @@ def selfcheck() -> None:
         grown = next((Path(tmp) / "run" / "sessions").glob(f"*/*_{session}.jsonl"))
         grown.write_text(grown.read_text() + '{"kind":"message"}\n')
         assert pristine_seed(Path(tmp) / "run", session).read_text() == seed.read_text()
+    # A scrubbed session harvests into seeds the store accepts: unique ids, each entry's parent
+    # the entry before it (its records carry no parent), and each view cut where it says.
+    fixture = ROOT / "crates/tui/tests/fixtures/sessions/01a0648f.jsonl"
+    with tempfile.TemporaryDirectory() as tmp:
+        scenes = harvest(fixture, "x", VIEWS, "80x24", Path(tmp))
+        assert [p.name for p in scenes] == [f"harvest-x-{v}.drive" for v in VIEWS], scenes
+        seeds = {v: [json.loads(line) for line in (Path(tmp) / f"harvest-x-{v}.jsonl").read_text().splitlines()]
+                 for v in VIEWS}
+        for view, rows in seeds.items():
+            assert re.fullmatch(r"[0-9a-f-]+", rows[0]["id"]), f"{view}: header id {rows[0]['id']}"
+            ids = [row["id"] for row in rows[1:]]
+            assert len(set(ids)) == len(ids) and MASK not in ids, f"{view}: duplicate or masked ids"
+            leaf = None
+            for row in rows[1:]:
+                if row["kind"] == "entry":
+                    assert row["parentId"] == leaf, f"{view} seq {row['seq']}: parent {row['parentId']}"
+                    leaf = row["id"]
+        original = [json.loads(line) for line in fixture.read_text().splitlines()]
+        assert original[0]["id"] == MASK and len(seeds["end"]) == len(original), "end keeps every row"
+        results = [r for r in original if r.get("message", {}).get("role") == "toolResult"]
+        shown = [r for r in seeds["tool"] if r.get("message", {}).get("role") == "toolResult"][-1]
+        assert shown["message"] == max(results, key=lambda r: len(json.dumps(r)))["message"], "tool view"
+        replies = [r["message"] for r in original if r.get("message", {}).get("role") == "assistant"]
+        last = [r["message"] for r in seeds["long"] if r.get("message", {}).get("role") == "assistant"][-1]
+        assert len(text_of(last)) == max(len(text_of(m)) for m in replies), "long view ends on the longest reply"
+        surface, flags = header(scenes[0])
+        cassette = Path(flags[flags.index("--faux") + 1])
+        reply = json.loads(cassette.read_text())
+        assert surface == "solo" and Path(flags[flags.index("--seed") + 1]).exists(), flags
+        assert reply["content"][0]["text"].startswith("Tooling works. Results:"), reply
+        assert all("--faux" not in header(p)[1] for p in scenes[1:]), "only the end view continues"
+    import contextlib, io
+
+    def recorded(tmp: Path, name: str, messages: list[dict]) -> Path:
+        path = Path(tmp) / name
+        rows = [{"kind": "header", "version": 4, "id": MASK, "createdAt": 1790000000000, "cwd": "."}]
+        rows += [{"kind": "entry", "type": "message", "id": MASK, "parentId": MASK, "seq": n,
+                  "message": m} for n, m in enumerate(messages, 1)]
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return path
+    with tempfile.TemporaryDirectory() as tmp:
+        chat = recorded(tmp, "chat.jsonl", [{"role": "user", "content": "hi"},
+                                            {"role": "assistant", "content": "hello"}])
+        with contextlib.redirect_stdout(io.StringIO()) as seen:
+            assert harvest(chat, "y", ("tool",), "80x24", Path(tmp)) == [], "chat-only: no tool scene"
+        assert "no scene written" in seen.getvalue(), seen.getvalue()
+        spoken = recorded(tmp, "spoken.jsonl", [{"role": "user", "content": "hi"}])
+        with contextlib.redirect_stdout(io.StringIO()) as seen:
+            assert harvest(spoken, "y", ("long",), "80x24", Path(tmp)) == [], "no reply: no long scene"
+        assert "no scene written" in seen.getvalue(), seen.getvalue()
+        bracket = recorded(tmp, "bracket.jsonl", [
+            {"role": "user", "content": "[review notes]\nkeep  the  spacing"},
+            {"role": "assistant", "content": "on it"},
+        ])
+        harvest(bracket, "b", ("end",), "80x24", Path(tmp))
+        drive = (Path(tmp) / "harvest-b-end.drive").read_text()
+        assert "type [review notes] keep  the  spacing\n" in drive, drive
+        assert "line breaks" in drive, drive
+        secret = recorded(tmp, "secret.jsonl", [
+            {"role": "user", "content": "run the tool"},
+            {"role": "toolResult", "toolCallId": "call_x", "toolName": "bash",
+             "content": "api_key = hunter2supersecret\n"},
+            {"role": "assistant", "content": "done"},
+        ])
+        harvest(secret, "z", ("end",), "80x24", Path(tmp))
+        seed = (Path(tmp) / "harvest-z-end.jsonl").read_text()
+        assert "hunter2supersecret" not in seed and MASK in seed, seed
+    keep_harvest = globals()["harvest"]
+    try:
+        globals()["harvest"] = lambda *args, **kw: (_ for _ in ()).throw(RuntimeError("harvest ran"))
+        try:
+            main(["harvest", str(fixture)])
+        except SystemExit as exit_code:
+            assert "--view is required" in str(exit_code), exit_code
+        else:
+            raise AssertionError("harvest without --view ran all views")
+    finally:
+        globals()["harvest"] = keep_harvest
     # Publishing: the release is created once, the asset is replaced rather than added, the old
     # one goes only after the new is up, and a refusal is named with the last gallery left alone.
     import forgejo_pr_comment as forge
@@ -1351,6 +1559,18 @@ def main(argv: list[str]) -> None:
         return None
     if argv[:1] == ["term-inner"]:
         return term_inner(argv[1], argv[2], Path(argv[3]), argv[4], argv[5:])
+    if argv[:1] == ["ci"] and len(argv) == 3:
+        return ci(Path(argv[1]).resolve(), Path(argv[2]).resolve())
+    if argv[:1] == ["harvest"] and len(argv) >= 2:
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        unknown = set(opts) - {"--name", "--view", "--size"}
+        if unknown or len(argv[2:]) % 2 or "--view" not in opts or opts["--view"] not in VIEWS:
+            sys.exit(f"harvest: unknown or valueless flags {sorted(unknown) or argv[-1:]}, --view"
+                     f" is required and one of {', '.join(VIEWS)}")
+        session = Path(argv[1]).resolve()
+        harvest(session, opts.get("--name", session.stem.lower()), (opts["--view"],),
+                opts.get("--size", "100x40"))
+        return None
     if argv[:1] == ["ci"] and len(argv) in (2, 3):
         return ci(Path(argv[1]).resolve() if len(argv) == 3 else None, Path(argv[-1]).resolve())
     if argv[:1] == ["publish"] and len(argv) == 2:
