@@ -39,6 +39,8 @@ pub struct RemotePort {
     pub queue: Vec<PortRequest>,
     entries: Vec<Entry>,
     leaf: Option<String>,
+    /// Messages the worker saved since the last replay, in order: all on the current branch.
+    committed: Vec<Entry>,
     goal: Option<GoalView>,
     todos: Option<TodoList>,
     claims: Vec<yi_types::todo::Claim>,
@@ -49,6 +51,7 @@ impl RemotePort {
     pub fn absorb_replay(&mut self, replay: &Replay, entries: Vec<Entry>) {
         if replay.from == 0 {
             self.entries = entries;
+            self.committed.clear();
         } else {
             self.entries.extend(entries);
         }
@@ -57,6 +60,22 @@ impl RemotePort {
         if replay.todos.is_some() {
             self.todos = replay.todos.clone();
         }
+    }
+
+    pub fn commit(&mut self, entry: Entry) {
+        self.committed.push(entry);
+    }
+
+    /// Every entry in the order the transcript drew it: a replay draws abandoned branches too,
+    /// so matching a cell against the leaf's chain alone found the wrong turn after a rewind.
+    pub fn drawn(&self) -> Vec<&Entry> {
+        let replayed: std::collections::HashSet<&str> =
+            self.entries.iter().map(Entry::id).collect();
+        let live = self
+            .committed
+            .iter()
+            .filter(|entry| !replayed.contains(entry.id()));
+        self.entries.iter().chain(live).collect()
     }
 
     pub fn set_goal(&mut self, goal: Option<GoalView>) {
@@ -149,11 +168,13 @@ pub struct Replay {
     pub stats: Option<yi_types::wire::SessionStats>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Config {
     pub model: Option<(String, String)>,
     pub effort: Option<Effort>,
     pub context_window: Option<u64>,
+    /// Every option as the worker sent it, which the settings page's Session tab lists.
+    pub options: Vec<AcpConfigOption>,
 }
 
 pub enum Decoded {
@@ -176,6 +197,7 @@ pub enum Decoded {
         lane: Option<String>,
     },
     Notice(String),
+    Committed(Box<Entry>),
     Other,
 }
 
@@ -199,7 +221,10 @@ pub fn goal_view(value: &Value) -> Option<GoalView> {
 }
 
 pub fn config_of(options: &[AcpConfigOption]) -> Config {
-    let mut config = Config::default();
+    let mut config = Config {
+        options: options.to_vec(),
+        ..Config::default()
+    };
     for option in options {
         let value = option.current_value.as_str();
         match option.config_id.as_str() {
@@ -310,6 +335,11 @@ pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
             config.context_window = fields.get("contextWindow").and_then(Value::as_u64);
             Ok(Decoded::Config(config))
         }
+        "_yi/committed" => fields
+            .remove("entry")
+            .and_then(|entry| serde_json::from_value::<Entry>(entry).ok())
+            .map(|entry| Decoded::Committed(Box::new(entry)))
+            .ok_or(Malformed),
         "_yi/notice" => Ok(Decoded::Notice(
             string(fields.get("text")).ok_or(Malformed)?,
         )),
@@ -329,6 +359,7 @@ pub fn writes_transcript(update: &AcpSessionUpdate) -> bool {
         AcpSessionUpdate::Extension(extension) => !matches!(
             extension.session_update.as_str(),
             "_yi/config"
+                | "_yi/committed"
                 | "_yi/workdir"
                 | "_yi/goal"
                 | "_yi/todo"
