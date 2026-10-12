@@ -58,6 +58,25 @@ pub fn draw_with_images<B>(
     });
 }
 
+/// Incident: without the else arm the orb froze mid-morph once a turn ended, as nothing ran its
+/// tick on a loop step that drew no text; that step still advances the images, in an update.
+pub fn step_frame<B>(
+    app: &mut App,
+    terminal: &mut crate::terminal::Terminal<B>,
+    port: Option<&dyn SessionPort>,
+    images: &mut crate::orb::Images,
+) where
+    B: ratatui::backend::Backend + std::io::Write,
+{
+    if app.scheduler.should_draw(std::time::Instant::now()) {
+        let start = std::time::Instant::now();
+        draw_with_images(app, terminal, port, |app, out| images.tick(app, out));
+        app.scheduler.mark_drawn(start, std::time::Instant::now());
+    } else {
+        let _ = term::framed(terminal.backend_mut(), |out| images.tick(app, out));
+    }
+}
+
 fn draw_frame<B>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
@@ -72,7 +91,7 @@ fn draw_frame<B>(
     if app.take_pending_clear() {
         clear_screen(terminal);
     }
-    let commits = std::mem::take(&mut app.pending_commit);
+    let mut commits = std::mem::take(&mut app.pending_commit);
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
     // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
@@ -81,6 +100,8 @@ fn draw_frame<B>(
     if mark {
         let _ = terminal.backend_mut().write_all(b"\x1b]133;A\x07");
     }
+    let adopted = usize::from(terminal.adopt(&commits));
+    commits.drain(..adopted.min(commits.len()));
     let _ = term::commit_lines(terminal, commits);
     if mark {
         let _ = terminal
@@ -452,11 +473,16 @@ pub fn paint_pane(
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
     let (shown, owners, thumb) = if *scroll == 0 {
-        app.pane_hold = None;
         let history = yi_types::trace::span("tui.history_rows");
-        let follow = app
-            .pane_follow
-            .filter(|&(w, m, _, _)| (w, m) == (width, mode));
+        // A turn's first cell has nothing above it to pin to yet; it rolls in from its own top,
+        // unless the pane was just scrolled or resized away from it, which settles in place.
+        let held = app.pane_hold.take().is_some();
+        let fresh = app.running && app.history.len() == 1 && !held;
+        let follow = match app.pane_follow {
+            Some((w, m, _, _)) if (w, m) != (width, mode) => None,
+            None if fresh => Some((width, mode, 0, 0)),
+            pin => pin,
+        };
         // One spare row: the seam may collapse a blank, and the trim below keeps `above`.
         let want = above.saturating_sub(live.len()).saturating_add(1);
         // The cell above the pin is read too: a cell's separator row exists only below another.
