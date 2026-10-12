@@ -2135,6 +2135,41 @@ fn an_orb_moved_by_a_commit_is_placed_in_the_frame_that_moved_it() -> TestResult
     Ok(())
 }
 
+/// Dies with the orb frozen mid-morph: a loop step that drew no text ran no image tick, so the
+/// orb advanced only on steps that happened to repaint, and not at all after a turn ended.
+#[test]
+fn a_step_that_draws_no_text_still_advances_the_orb_inside_its_own_update() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut images = yi_tui::orb::Images::default();
+    yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
+    terminal.backend_mut().take_written();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let written = loop {
+        yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
+        let written = terminal.backend_mut().take_written();
+        if !written.is_empty() {
+            break written;
+        }
+        if Instant::now() > deadline {
+            return Err("2 s of text-free steps never advanced the orb".into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert!(
+        written.starts_with("\x1b[?2026h") && written.ends_with("\x1b[?2026l"),
+        "the image work is one update of its own: {written:?}"
+    );
+    assert!(
+        written.contains(",a=t,") && written.contains("\x1b_Ga=p,"),
+        "the next orb frame is sent and placed: {written:?}"
+    );
+    Ok(())
+}
+
 /// The screenshot's fourth defect: a host notice arrived as a user-role
 /// message, so it retitled the window, opened a turn with a divider, and drew
 /// the user's `›` rail on text the user never typed.
