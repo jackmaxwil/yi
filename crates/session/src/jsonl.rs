@@ -234,7 +234,7 @@ impl JsonlRepo {
             root,
             cwd: cwd.into(),
             nested: true,
-            ids: IdGenerator::session_ids(),
+            ids: IdGenerator::new(),
         }
     }
 
