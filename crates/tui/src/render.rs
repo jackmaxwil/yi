@@ -58,6 +58,25 @@ pub fn draw_with_images<B>(
     });
 }
 
+/// Incident: without the else arm the orb froze mid-morph once a turn ended, as nothing ran its
+/// tick on a loop step that drew no text; that step still advances the images, in an update.
+pub fn step_frame<B>(
+    app: &mut App,
+    terminal: &mut crate::terminal::Terminal<B>,
+    port: Option<&dyn SessionPort>,
+    images: &mut crate::orb::Images,
+) where
+    B: ratatui::backend::Backend + std::io::Write,
+{
+    if app.scheduler.should_draw(std::time::Instant::now()) {
+        let start = std::time::Instant::now();
+        draw_with_images(app, terminal, port, |app, out| images.tick(app, out));
+        app.scheduler.mark_drawn(start, std::time::Instant::now());
+    } else {
+        let _ = term::framed(terminal.backend_mut(), |out| images.tick(app, out));
+    }
+}
+
 fn draw_frame<B>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
