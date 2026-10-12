@@ -20,6 +20,11 @@ impl App {
             .unwrap_or(0)
     }
 
+    /// Stream updates reduced so far, which a drive waits on to match what the provider sent.
+    pub fn stream_updates(&self) -> u64 {
+        self.pacing.updates
+    }
+
     /// The streaming message's end has arrived: reduced, or held behind a reveal a frozen clock
     /// has not moved yet.
     pub fn stream_settled(&self) -> bool {

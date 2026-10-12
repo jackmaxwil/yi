@@ -50,6 +50,8 @@ struct Args {
     keys: Option<String>,
     frames: Option<String>,
     faux: Option<String>,
+    /// `--faux-pace X`: a recorded session cassette takes X times as long as it did; 0 is instant.
+    faux_pace: f64,
     record: Option<String>,
     snap: Option<String>,
     /// `--size COLSxROWS`: the headless screen, 80x24 when absent.
@@ -98,6 +100,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut keys = None;
     let mut frames = None;
     let mut faux = None;
+    let mut faux_pace = 1.0;
     let mut record = None;
     let mut snap = None;
     let mut size = None;
@@ -130,6 +133,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("keys") => keys = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
             Long("faux") => faux = Some(parser.value()?.string()?),
+            Long("faux-pace") => faux_pace = parse_pace(&parser.value()?.string()?)?,
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
             Long("size") => size = Some(parse_size(&parser.value()?.string()?)?),
@@ -201,6 +205,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         keys,
         frames,
         faux,
+        faux_pace,
         record,
         snap,
         size,
@@ -232,6 +237,15 @@ fn parse_size(raw: &str) -> Result<(u16, u16), lexopt::Error> {
                 format!("--size wants COLSxROWS within 20..=1000 by 8..=500, not {raw}").into(),
             )
         })
+}
+
+fn parse_pace(text: &str) -> Result<f64, lexopt::Error> {
+    match text.parse::<f64>() {
+        Ok(pace) if pace.is_finite() && (0.0..=1000.0).contains(&pace) => Ok(pace),
+        _ => Err(lexopt::Error::Custom(
+            format!("--faux-pace wants a number from 0 to 1000, got `{text}`").into(),
+        )),
+    }
 }
 
 fn faux_model() -> Model {
@@ -457,7 +471,7 @@ fn build_session(
         catalog::spawn_refresh(&model.provider, Some(&credential.secret), proxy.as_ref());
     }
     if faux {
-        provider.queue_faux(shells::faux_replies(args).map_err(|reason| Refused {
+        provider.queue_faux_timed(shells::faux_replies(args).map_err(|reason| Refused {
             code: 2,
             reason,
             class: yi_types::telemetry::ErrorClass::RefusalConfig,

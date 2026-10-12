@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod cassette;
 mod error;
 mod id;
 mod jsonl;
@@ -10,6 +11,7 @@ mod repo;
 mod state;
 mod store;
 
+pub use cassette::cassette;
 pub use error::SessionError;
 pub use id::{IdGenerator, age_label, nonce, now_ms, session_title, validate_session_id};
 pub use jsonl::{

@@ -328,6 +328,7 @@ pub fn run_headless(
     app.set_rows(usize::from(height));
     if frozen {
         app.set_clock(crate::motion::Clock::Fixed(Instant::now()));
+        session.provider().faux_time.freeze();
     }
     let (ui_rx, cmd_tx, runtime_thread) = crate::app::spawn_runtime_bridge(
         runtime,
@@ -394,12 +395,31 @@ pub fn run_headless(
             (Step::TypeMs(ms), _) => type_ms = ms,
             (Step::Snap(name), _) => pending_snap = Some(name),
             (Step::Tick(ms), _) => {
+                let faux_time = &session.provider().faux_time;
                 let mut left = ms;
-                while left > 0 {
+                while left > 0 && exit_code == 0 {
                     let step = left.min(TICK_STEP_MS);
                     app.advance_clock(Duration::from_millis(step));
+                    faux_time.advance(Duration::from_millis(step));
+                    // Every update the provider owes by now is on screen before the next step,
+                    // or a frame would depend on how fast two threads ran.
+                    let waiting = Instant::now();
                     crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
+                    while app.stream_updates() < faux_time.updates() {
+                        if waiting.elapsed() > Duration::from_secs(5) {
+                            eprintln!(
+                                "error: tick: the faux stream's updates did not arrive within 5 s"
+                            );
+                            exit_code = 1;
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                        crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
+                    }
                     left -= step;
+                }
+                if exit_code != 0 {
+                    break;
                 }
             }
             (Step::Hold(kind, nth), _) => session.provider().faux_hold.arm(&kind, nth),

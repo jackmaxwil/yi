@@ -605,6 +605,77 @@ fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
     Ok(())
 }
 
+/// A cassette cut from a recorded session streams at the recorded cadence, and on a frozen clock
+/// only the clock moves it: the same ticks show the same words on every run, whatever the wall
+/// did between them.
+#[test]
+fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> TestResult {
+    let dir = Scratch::new("yi-tui-paced")?;
+    let home = dir.home()?;
+    let cassette = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/proof/tui_see/paced.jsonl");
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 5000 faux-1\ntype what tools do you have available?\nkey enter\n\
+         wait-frame 5000 what tools do you have\nsnap start\ntick 2000\nsnap early\n\
+         tick 3000\nsnap middle\ntick 20000\nwait-idle 10000\nsnap done\nquit\n",
+    )?;
+    let run = |frames: &std::path::Path| -> std::io::Result<std::process::Output> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+        )]
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(["tui", "--headless", "--model", "faux/faux-1", "--faux"])
+            .arg(&cassette)
+            .arg("--session-dir")
+            .arg(dir.join("sessions"))
+            .arg("--keys")
+            .arg(&keys)
+            .arg("--frames")
+            .arg(frames)
+            .env("HOME", &home)
+            .output()
+    };
+    let (first, second) = (dir.join("first"), dir.join("second"));
+    for frames in [&first, &second] {
+        let output = run(frames)?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let snap = |frames: &std::path::Path, name: &str| {
+        std::fs::read_to_string(frames.join(format!("snap-{name}.txt")))
+    };
+    // The reply took 7.7 s: 984 characters in 62 deltas, the first two the thought.
+    let (start, early, middle) = (
+        snap(&first, "start")?,
+        snap(&first, "early")?,
+        snap(&first, "middle")?,
+    );
+    assert!(!start.contains("Core tools"), "{start}");
+    assert!(
+        early.contains("Core tools") && !early.contains("ipython"),
+        "{early}"
+    );
+    assert!(
+        middle.contains("ipython") && !middle.contains("get_context"),
+        "{middle}"
+    );
+    assert!(snap(&first, "done")?.contains("installed skills"));
+    for name in ["start", "early", "middle", "done"] {
+        assert_eq!(
+            snap(&first, name)?,
+            snap(&second, name)?,
+            "{name} differed between two runs"
+        );
+    }
+    Ok(())
+}
+
 /// One path for `--record` and `--snap` left the still truncating the
 /// recording still open on it, and the run exited 0 having lost it.
 #[test]

@@ -65,6 +65,9 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
    past the reveal before waiting. Hold is solo only; the console's model lives in the daemon,
    and the term host refuses `tick` and `hold`.
+   A cassette cut from a recorded session file (lines with `kind: entry`) streams each reply over
+   the time its entry took; on a frozen clock `tick` moves it (`paced.drive`), and `--faux-pace 0.5`
+   halves it on a live run.
 9. Iterating: `just tui-see watch <scene> [--host term]` keeps a `base` run and, on every save
    under crates/tui, crates/console or crates/orb, rebuilds, reruns as `head`, diffs and rewrites
    `target/see/gallery.html`. `just tui-see gallery [root] [page]` builds that page on its own:

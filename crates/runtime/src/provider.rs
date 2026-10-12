@@ -82,6 +82,7 @@ pub struct ProviderStream {
     pub faux: Arc<Mutex<FauxProvider>>,
     pub(crate) faux_pace: Arc<Mutex<Option<std::time::Duration>>>,
     pub faux_hold: Arc<FauxHold>,
+    pub faux_time: Arc<FauxTime>,
     long_cache: bool,
     /// What the session ledger says of the next gap and write, for its loop requests' TTL
     /// (D315); `None` for a stream no ledger feeds, a child's included.
@@ -116,6 +117,7 @@ impl ProviderStream {
             faux: Arc::default(),
             faux_pace: Arc::default(),
             faux_hold: Arc::default(),
+            faux_time: Arc::default(),
             long_cache: false,
             ttl_estimate: Mutex::new(None),
             proxy: None,
@@ -150,6 +152,7 @@ impl ProviderStream {
             faux_pace: Arc::clone(&self.faux_pace),
             // A drive holds the root's turn; a child's deltas must not count toward it.
             faux_hold: Arc::default(),
+            faux_time: Arc::default(),
             long_cache: false,
             ttl_estimate: Mutex::new(None),
             proxy: self.proxy.clone(),
@@ -246,6 +249,13 @@ impl ProviderStream {
     pub fn queue_faux(&self, responses: Vec<AgentMessage>) {
         if let Ok(mut faux) = self.faux.lock() {
             faux.append_responses(responses);
+        }
+    }
+
+    /// Each reply streams over the time its recording took (see [`yi_session::cassette`]).
+    pub fn queue_faux_timed(&self, responses: Vec<(AgentMessage, std::time::Duration)>) {
+        if let Ok(mut faux) = self.faux.lock() {
+            faux.append_timed(responses);
         }
     }
 }
@@ -381,19 +391,28 @@ impl ProviderStream {
     }
 
     fn faux_stream(&self) -> Receiver<AssistantMessageEvent> {
-        let events = self
+        let (events, lag) = self
             .faux
             .lock()
-            .map(|mut faux| faux.stream())
+            .map(|mut faux| faux.stream_timed())
             .unwrap_or_default();
         let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
         let pace = self.faux_pace.lock().ok().and_then(|pace| *pace);
-        if pace.is_some() || self.faux_hold.armed() {
-            let hold = Arc::clone(&self.faux_hold);
-            drop(tokio::spawn(paced(sender, events, pace, hold)));
+        let delays = delays(&events, pace, lag);
+        let timed = delays.iter().any(|delay| !delay.is_zero());
+        let steps = delays.into_iter().zip(events);
+        if timed && self.faux_time.frozen() {
+            self.faux_time.schedule(sender, steps.collect());
             return receiver;
         }
-        for event in events {
+        if timed || self.faux_hold.armed() {
+            let hold = Arc::clone(&self.faux_hold);
+            let time = Arc::clone(&self.faux_time);
+            drop(tokio::spawn(paced(sender, steps.collect(), hold, time)));
+            return receiver;
+        }
+        for (_, event) in steps {
+            self.faux_time.count(&event);
             let _ = sender.try_send(event);
         }
         receiver
@@ -556,23 +575,138 @@ impl FauxHold {
     }
 }
 
-async fn paced(
-    sender: tokio::sync::mpsc::Sender<yi_types::event::AssistantMessageEvent>,
-    events: Vec<yi_types::event::AssistantMessageEvent>,
+/// The pause before each event: a fixed `pace` per streamed word, else the recorded `lag` split
+/// evenly over the deltas, so the last delta lands when the recorded model finished.
+fn delays(
+    events: &[AssistantMessageEvent],
     pace: Option<std::time::Duration>,
+    lag: std::time::Duration,
+) -> Vec<std::time::Duration> {
+    use AssistantMessageEvent as Event;
+    let words =
+        |event: &Event| matches!(event, Event::TextDelta { .. } | Event::ThinkingDelta { .. });
+    let delta = |event: &Event| words(event) || matches!(event, Event::ToolCallDelta { .. });
+    let count =
+        u32::try_from(events.iter().filter(|event| delta(event)).count()).unwrap_or(u32::MAX);
+    let each = lag.checked_div(count).unwrap_or_default();
+    events
+        .iter()
+        .map(|event| match pace {
+            Some(pace) if words(event) => pace,
+            None if delta(event) => each,
+            _ => std::time::Duration::ZERO,
+        })
+        .collect()
+}
+
+async fn paced(
+    sender: tokio::sync::mpsc::Sender<AssistantMessageEvent>,
+    steps: Vec<Step>,
     hold: Arc<FauxHold>,
+    time: Arc<FauxTime>,
 ) {
-    use yi_types::event::AssistantMessageEvent as Event;
-    for event in events {
-        if let Some(pace) = pace
-            && matches!(event, Event::TextDelta { .. } | Event::ThinkingDelta { .. })
-        {
-            tokio::time::sleep(pace).await;
+    for (delay, event) in steps {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
         hold.pass(&event).await;
+        time.count(&event);
         if sender.send(event).await.is_err() {
             return;
         }
+    }
+}
+
+/// Virtual time for paced faux streams. A drive that freezes its clock freezes this one too: an
+/// event waits for [`FauxTime::advance`] to reach its due time instead of for the wall.
+#[derive(Debug, Default)]
+pub struct FauxTime {
+    frozen: Mutex<Option<Frozen>>,
+    updates: std::sync::atomic::AtomicU64,
+}
+
+type Step = (std::time::Duration, AssistantMessageEvent);
+type Pending = (
+    tokio::sync::mpsc::Sender<AssistantMessageEvent>,
+    std::collections::VecDeque<Step>,
+);
+
+#[derive(Debug, Default)]
+struct Frozen {
+    now: std::time::Duration,
+    streams: Vec<Pending>,
+}
+
+impl FauxTime {
+    pub fn freeze(&self) {
+        if let Ok(mut frozen) = self.frozen.lock() {
+            frozen.get_or_insert_with(Frozen::default);
+        }
+    }
+
+    fn frozen(&self) -> bool {
+        self.frozen.lock().is_ok_and(|frozen| frozen.is_some())
+    }
+
+    /// Stream events sent so far that a screen reduces as updates, so a drive can wait until it
+    /// has reduced as many.
+    pub fn updates(&self) -> u64 {
+        self.updates.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn count(&self, event: &AssistantMessageEvent) {
+        use AssistantMessageEvent as Event;
+        if !matches!(
+            event,
+            Event::Start { .. } | Event::Done { .. } | Event::Error { .. }
+        ) {
+            self.updates
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn schedule(&self, sender: tokio::sync::mpsc::Sender<AssistantMessageEvent>, steps: Vec<Step>) {
+        let Ok(mut guard) = self.frozen.lock() else {
+            return;
+        };
+        let Some(frozen) = guard.as_mut() else {
+            return;
+        };
+        let mut due = frozen.now;
+        let queued = steps
+            .into_iter()
+            .map(|(delay, event)| {
+                due = due.saturating_add(delay);
+                (due, event)
+            })
+            .collect();
+        frozen.streams.push((sender, queued));
+        self.release(frozen);
+    }
+
+    pub fn advance(&self, by: std::time::Duration) {
+        if let Ok(mut guard) = self.frozen.lock()
+            && let Some(frozen) = guard.as_mut()
+        {
+            frozen.now = frozen.now.saturating_add(by);
+            self.release(frozen);
+        }
+    }
+
+    fn release(&self, frozen: &mut Frozen) {
+        let now = frozen.now;
+        frozen.streams.retain_mut(|(sender, queue)| {
+            while queue.front().is_some_and(|(due, _)| *due <= now) {
+                let Some((_, event)) = queue.pop_front() else {
+                    break;
+                };
+                self.count(&event);
+                if sender.try_send(event).is_err() {
+                    return false;
+                }
+            }
+            !queue.is_empty()
+        });
     }
 }
 
@@ -855,5 +989,76 @@ mod tests {
         let forced = ProviderStream::new(None).with_forced_faux(true);
         assert!(forced.has_credential(provider));
         assert!(forced.for_child().forces_faux());
+    }
+
+    fn answer_in(lag_ms: u64) -> (ProviderStream, std::time::Duration) {
+        // 48 characters: three text deltas of 16, so a lag of 900 ms is 300 ms a delta.
+        let reply = yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_text(&"x".repeat(48))],
+            yi_types::message::StopReason::Stop,
+        );
+        let lag = std::time::Duration::from_millis(lag_ms);
+        let provider = ProviderStream::new(None);
+        provider.queue_faux_timed(vec![(reply, lag)]);
+        (provider, lag)
+    }
+
+    fn arrived(receiver: &mut Receiver<AssistantMessageEvent>) -> usize {
+        std::iter::from_fn(|| receiver.try_recv().ok()).count()
+    }
+
+    /// A frozen clock decides when each delta of a recorded reply lands, and the wall decides
+    /// nothing: a scene that ticks 1.9 s must show the same words on every machine.
+    #[test]
+    fn a_frozen_reply_streams_as_the_clock_advances_and_not_before() {
+        let (provider, _) = answer_in(900);
+        provider.faux_time.freeze();
+        let mut stream = provider.faux_stream();
+        // start, text_start: nothing waited yet.
+        assert_eq!(arrived(&mut stream), 2);
+        provider
+            .faux_time
+            .advance(std::time::Duration::from_millis(299));
+        assert_eq!(arrived(&mut stream), 0);
+        provider
+            .faux_time
+            .advance(std::time::Duration::from_millis(1));
+        assert_eq!(arrived(&mut stream), 1);
+        assert_eq!(provider.faux_time.updates(), 2);
+        provider
+            .faux_time
+            .advance(std::time::Duration::from_millis(600));
+        // delta, delta, text_end, done.
+        assert_eq!(arrived(&mut stream), 4);
+        assert_eq!(provider.faux_time.updates(), 5);
+    }
+
+    /// The wall path sleeps the recorded lag in total: a reply recorded at 7.7 s that streamed
+    /// in 1 s would hide how long a person waits.
+    #[tokio::test]
+    async fn a_live_reply_takes_the_recorded_time() {
+        let (provider, lag) = answer_in(240);
+        let started = std::time::Instant::now();
+        let mut stream = provider.faux_stream();
+        assert_eq!(
+            arrived(&mut stream),
+            0,
+            "the first delta waits for its share"
+        );
+        let mut count = 0;
+        while stream.recv().await.is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 7);
+        assert!(started.elapsed() >= lag, "{:?}", started.elapsed());
+    }
+
+    /// A cassette with no recorded time is the scripted reply it always was: every event is
+    /// there before the first poll.
+    #[test]
+    fn an_untimed_reply_is_all_there_at_once() {
+        let (provider, _) = answer_in(0);
+        let mut stream = provider.faux_stream();
+        assert_eq!(arrived(&mut stream), 7);
     }
 }
