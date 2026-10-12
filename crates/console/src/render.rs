@@ -31,6 +31,7 @@ pub struct PaneView {
     pub chat: bool,
 }
 
+#[derive(Default)]
 pub struct Hits {
     pub sidebar_width: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
@@ -40,6 +41,19 @@ pub struct Hits {
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
     pub tabs: Vec<(Rect, usize)>,
+    pub closers: Vec<(PaneId, Rect)>,
+    /// Popups over the panes, outermost first: they take every click and hide kitty images.
+    pub overlays: Vec<Rect>,
+    pub dismiss: Option<Rect>,
+    pub gear: Option<Rect>,
+}
+
+impl Hits {
+    pub fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
+        let at = ratatui::layout::Position::new(x, y);
+        let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
+        Some(*pane)
+    }
 }
 
 pub struct ViewState {
@@ -53,6 +67,10 @@ pub struct ViewState {
     pub banner: Option<Rect>,
     pub framed: bool,
 }
+
+/// Incident: Ghostty draws U+2699 two cells wide while it advances one, so the glyph ate the
+/// space after it (`⚙⌥,`); a second space is what it eats. U+FE0E shifted the whole row.
+const GEAR: &str = "⚙ ";
 
 pub(crate) fn pane_margin(framed: bool) -> ratatui::layout::Margin {
     ratatui::layout::Margin::new(1, u16::from(framed))
@@ -99,6 +117,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     } else {
         0
     };
+    let (sidebar, gear) = split_off_bottom(sidebar, u16::from(sidebar_width > 0));
     let (sidebar, roots_area) = split_off_bottom(sidebar, roots_height);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
@@ -162,6 +181,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
                     diffs,
                     sessions,
                     notes: &notes,
+                    options: &app.state.session_options,
+                    cmd: app.cmd_hints,
                 };
                 pane_view_content(pane, &view, inner, theme, close_hint)
             }
@@ -198,16 +219,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             (y < roots_area.y.saturating_add(roots_area.height)).then_some((y, index))
         })
         .collect();
-    let mut tab_hits = Vec::new();
-    if let Some(bar) = tab_bar {
-        let mut x = bar.x;
-        // Invariant: hit widths come from the label builder the bar draws with.
-        for (index, tab) in app.state.tabs.iter().enumerate() {
-            let width = u16::try_from(tab_label(index, tab.zoomed).chars().count()).unwrap_or(3);
-            tab_hits.push((Rect::new(x, bar.y, width, 1), index));
-            x = x.saturating_add(width);
-        }
-    }
+    let tab_hits = tab_bar.map_or_else(Vec::new, |bar| tab_hits(app, bar));
     app.hits = Some(Hits {
         sidebar_width,
         sidebar_rows,
@@ -216,6 +228,10 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
+        closers: Vec::new(),
+        overlays: Vec::new(),
+        dismiss: None,
+        gear: (gear.height > 0).then_some(gear),
     });
 
     ViewState {
@@ -229,6 +245,18 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         banner,
         framed,
     }
+}
+
+/// Invariant: hit widths come from the label builder the bar draws with.
+fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
+    let mut x = bar.x;
+    let mut hits = Vec::new();
+    for (index, tab) in app.state.tabs.iter().enumerate() {
+        let width = u16::try_from(tab_label(index, tab.zoomed).chars().count()).unwrap_or(3);
+        hits.push((Rect::new(x, bar.y, width, 1), index));
+        x = x.saturating_add(width);
+    }
+    hits
 }
 
 fn sidebar_hits(
@@ -282,6 +310,8 @@ struct PaneData<'a> {
     diffs: &'a std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
     sessions: &'a std::collections::BTreeMap<SessionId, SessionRow>,
     notes: &'a std::collections::BTreeMap<SessionId, String>,
+    options: &'a std::collections::BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
+    cmd: bool,
 }
 
 fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> String {
@@ -337,6 +367,16 @@ fn pane_view_content(
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
+        PaneContent::Settings(settings) => {
+            let options = settings
+                .session
+                .as_ref()
+                .and_then(|id| view.options.get(id));
+            let options = options.map_or(&[][..], Vec::as_slice);
+            let width = usize::from(inner.width);
+            let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
+            (format!("{GEAR} Settings"), lines, None)
+        }
         PaneContent::Tape { tape, cursor, .. } => {
             let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
             (title, all, None)
@@ -603,6 +643,19 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     if view.roots.height > 0 {
         crate::sidebar::render_roots(app, frame, view.roots, theme);
     }
+    if let Some(gear) = app.hits.as_ref().and_then(|hits| hits.gear) {
+        let key = keys::chord_for(keys::Action::Settings, app.cmd_hints);
+        let label = if app.state.sidebar == SidebarMode::Full {
+            format!(" {GEAR} settings ")
+        } else {
+            format!(" {GEAR} ")
+        };
+        let line = Line::from(vec![
+            Span::styled(label, theme.accent_style()),
+            Span::styled(key, theme.dim_style()),
+        ]);
+        frame.render_widget(Paragraph::new(line), gear);
+    }
     if let Some(bar) = view.tab_bar {
         render_tab_bar(app, frame, bar, theme);
     }
@@ -643,11 +696,21 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     if let Some(area) = view.banner {
         render_banner(app, frame, area, theme);
     }
-    if matches!(app.state.mode, Mode::Navigator { .. }) {
-        crate::palette::render_navigator(app, frame, view, theme);
-    }
-    if matches!(app.state.mode, Mode::Keys) {
-        crate::palette::render_keys(app, frame, view, theme);
+    let popup = match &app.state.mode {
+        Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
+        Mode::Menu(menu) => {
+            let rects = crate::menu::rects(menu, frame.area());
+            crate::menu::render(menu, &rects, frame, theme);
+            if let Some(hits) = app.hits.as_mut() {
+                hits.overlays = rects;
+            }
+            None
+        }
+        Mode::Normal | Mode::Prefix => None,
+    };
+    if let (Some(popup), Some(hits)) = (popup, app.hits.as_mut()) {
+        hits.overlays = vec![popup];
+        hits.dismiss = Some(crate::palette::dismiss_mark(popup));
     }
 }
 
@@ -849,6 +912,14 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             });
         }
     }
+    let closable = app
+        .state
+        .tab()
+        .is_some_and(|tab| tab.layout.pane_ids().len() > 1);
+    let closer = format!(
+        " ✕ {} ",
+        keys::chord_for(keys::Action::ClosePane, app.cmd_hints)
+    );
     for pane in &view.panes {
         let r = pane.rect;
         if r.width < 8 {
@@ -874,8 +945,31 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                     app.accent_of(&row.id.0, row.seed()),
                 )
             });
+        let text = format!(" {} {} ", status.glyph(), pane.title);
+        let tile = if seed.is_some() { 3 } else { 0 };
+        let room = usize::from(r.width.saturating_sub(4)).saturating_sub(tile);
+        let need = text.chars().count();
+        // Invariant: the key closes the focused pane only, so only its mark names the key; a
+        // sibling's bare mark leaves a 40-column Review header its counts.
+        let named = pane.focused && need.saturating_add(closer.chars().count()) <= room;
+        let mark = closable.then_some(if named { closer.as_str() } else { " ✕ " });
+        let mut right = r.right().saturating_sub(1);
+        if let Some(mark) = mark {
+            let width = u16::try_from(mark.chars().count()).unwrap_or(3);
+            right = right.saturating_sub(width);
+            let style = if pane.focused {
+                theme.accent_style()
+            } else {
+                theme.dim_style()
+            };
+            buffer.set_span(right, r.y, &Span::styled(mark, style), width);
+            if let Some(hits) = app.hits.as_mut() {
+                hits.closers
+                    .push((pane.id, Rect::new(right, r.y, width, 1)));
+            }
+        }
         let mut x = r.x.saturating_add(2);
-        let mut max = r.width.saturating_sub(4);
+        let mut max = right.saturating_sub(x).saturating_sub(1);
         if let Some((id, seed, hue)) = &seed {
             let tile = title_tile(app, id, seed, *hue, x.saturating_add(1), r.y);
             buffer.set_span(x, r.y, &Span::raw(" "), max);
@@ -883,7 +977,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             x = x.saturating_add(3);
             max = max.saturating_sub(3);
         }
-        let text = format!(" {} {} ", status.glyph(), pane.title);
         let text: String = text.chars().take(usize::from(max)).collect();
         let style = if pane.focused {
             theme
