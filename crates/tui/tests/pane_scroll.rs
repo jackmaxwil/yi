@@ -269,3 +269,66 @@ fn each_painted_row_names_the_cell_it_was_drawn_from() -> TestResult {
     }
     Ok(())
 }
+
+/// Rows the column moved up between two frames, read off the first written row of `now`.
+fn shift(before: &[String], now: &[String]) -> Option<usize> {
+    let row = now.iter().position(|row| !row.trim().is_empty())?;
+    let was = before.iter().position(|old| *old == now[row])?;
+    was.checked_sub(row)
+}
+
+/// Commits a `lines`-row fence at the bottom of a full pane and paints until its last line is
+/// on screen; returns each frame's move and whether every lagging frame asked for the next.
+fn roll_in(lines: usize) -> Result<(Vec<usize>, bool), Box<dyn Error>> {
+    let mut app = seeded();
+    let mut scroll = 0;
+    let (mut before, _) = paint(&mut app, &mut scroll);
+    let code: Vec<String> = (0..lines).map(|i| format!("let x{i:03} = {i};")).collect();
+    app.commit_cell(&Cell::Assistant {
+        markdown: format!("```rust\n{}\n```\n", code.join("\n")),
+    });
+    let last = format!("let x{:03}", lines - 1);
+    let (mut moves, mut asked, mut phase) = (Vec::new(), true, 0);
+    for _ in 0..lines.saturating_mul(2) {
+        let _ = app.take_redraw(&mut phase);
+        let (now, _) = paint(&mut app, &mut scroll);
+        moves.push(
+            shift(&before, &now).ok_or(
+                "a frame shares no row with the one before: the column jumped past a screen",
+            )?,
+        );
+        if now.iter().any(|row| row.contains(&last)) {
+            return Ok((moves, asked));
+        }
+        asked &= app.take_redraw(&mut phase);
+        before = now;
+    }
+    Err(format!("`{last}` never reached the screen: {moves:?}").into())
+}
+
+/// Dies with a block that landed at once moving the column by its height in one frame; the
+/// measured console reply jumped two or three rows at every paragraph and fence.
+#[test]
+fn a_block_that_lands_at_once_rolls_in_a_row_a_frame() -> TestResult {
+    let (moves, asked) = roll_in(20)?;
+    assert!(moves.iter().all(|&rows| rows <= 1), "{moves:?}");
+    assert!(
+        moves.len() >= 20,
+        "the block rolled in, not jumped: {moves:?}"
+    );
+    assert!(asked, "a pane behind its bottom asks for the next frame");
+    Ok(())
+}
+
+/// Dies with a long block crawling a row a frame for seconds, or landing in one jump.
+#[test]
+fn a_long_block_catches_up_without_jumping() -> TestResult {
+    let (moves, _) = roll_in(200)?;
+    assert!(
+        moves.len() <= 70,
+        "200 rows took {} frames: {moves:?}",
+        moves.len()
+    );
+    assert!(moves.iter().all(|&rows| rows <= 9), "{moves:?}");
+    Ok(())
+}
