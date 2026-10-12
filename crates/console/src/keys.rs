@@ -102,21 +102,21 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('\\') => Some(Action::SplitRight),
         KeyCode::Char('d') | KeyCode::Char('D') if shift => Some(Action::SplitDown),
         KeyCode::Char('d') => Some(Action::SplitRight),
-        KeyCode::Char('x') | KeyCode::Char('w') => Some(Action::ClosePane),
+        KeyCode::Char('x') => Some(Action::ClosePane),
         KeyCode::Char('m') | KeyCode::Char('M') if shift => Some(Action::Zoom),
         KeyCode::Char('t') | KeyCode::Char('T') if shift => Some(Action::NewTab),
         KeyCode::Char('n') | KeyCode::Char('N') if shift => Some(Action::NewSession),
         KeyCode::Char('p') => Some(Action::Navigator),
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
-        KeyCode::Char('j') => Some(Action::ToggleNotebook),
-        KeyCode::Char('g') => Some(Action::ToggleDiff),
+        KeyCode::Char('i') => Some(Action::ToggleNotebook),
+        KeyCode::Char('r') => Some(Action::ToggleDiff),
         KeyCode::Char('y') => Some(Action::ToggleTape),
-        KeyCode::Char('e') => Some(Action::OpenEditor),
-        KeyCode::Char('f') => Some(Action::Find),
+        KeyCode::Char('o') => Some(Action::OpenEditor),
+        KeyCode::Char('l') => Some(Action::Find),
         KeyCode::Char('s') => Some(Action::Save),
-        KeyCode::Char('z' | 'Z') if shift => Some(Action::Redo),
-        KeyCode::Char('z') => Some(Action::Undo),
-        KeyCode::Char('?') | KeyCode::Char('/') => Some(Action::Keys),
+        KeyCode::Char('u' | 'U') if shift => Some(Action::Redo),
+        KeyCode::Char('u') => Some(Action::Undo),
+        KeyCode::Char('/') => Some(Action::Keys),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
@@ -158,6 +158,27 @@ pub struct Chord {
     pub action: Option<Action>,
 }
 
+/// Incident: Ghostty 1.3.1's default keybinds take these before the console sees them
+/// (`ghostty +list-keybinds --default`), so the hints named keys that did nothing.
+const TERMINAL_HELD: [&str; 2] = ["⌘1..9", "⌘⇧T"];
+
+impl Chord {
+    pub fn key(&self, cmd: bool) -> &'static str {
+        if cmd && !TERMINAL_HELD.contains(&self.cmd) {
+            self.cmd
+        } else {
+            self.alt
+        }
+    }
+}
+
+pub fn chord_for(action: Action, cmd: bool) -> &'static str {
+    CHORDS
+        .iter()
+        .find(|chord| chord.action == Some(action))
+        .map_or("", |chord| chord.key(cmd))
+}
+
 const fn chord(
     what: &'static str,
     alt: &'static str,
@@ -186,11 +207,11 @@ pub const CHORDS: [Chord; 21] = [
     chord(
         "notebook pane",
         "⌥⇧J",
-        "⌘J",
+        "⌘I",
         "",
         Some(Action::ToggleNotebook),
     ),
-    chord("review pane", "⌥g", "⌘G", "", Some(Action::ToggleDiff)),
+    chord("review pane", "⌥g", "⌘R", "", Some(Action::ToggleDiff)),
     chord(
         "tape: where the time went",
         "⌥y",
@@ -201,7 +222,7 @@ pub const CHORDS: [Chord; 21] = [
     chord(
         "open a file in a pane",
         "⌥e",
-        "⌘E",
+        "⌘O",
         "",
         Some(Action::OpenEditor),
     ),
@@ -233,7 +254,7 @@ pub const CHORDS: [Chord; 21] = [
         "",
         Some(Action::StopDaemon),
     ),
-    chord("all keys", "⌥?", "⌘?", "", Some(Action::Keys)),
+    chord("all keys", "⌥?", "⌘/", "", Some(Action::Keys)),
     chord(
         "chat: cycle normal · thinking · verbose",
         "ctrl+o",
@@ -275,39 +296,35 @@ const PREFIX_HINTS: [Hint; 10] = [
     ("g palette", 0),
     ("q leave", KEEP),
 ];
-const CMD_HINTS: [Hint; 6] = [
-    ("⌘P command palette", 4),
-    ("⌘⇧N new session", 3),
-    ("⌘B sidebar", 1),
-    ("⌘J notebook", 0),
-    ("⌘G diff", 2),
-    ("⌘? keys", KEEP),
-];
-const ALT_HINTS: [Hint; 6] = [
-    ("⌥/ command palette", 4),
-    ("⌥n new session", 3),
-    ("⌥b sidebar", 1),
-    ("⌥⇧J notebook", 0),
-    ("⌥g diff", 2),
-    ("⌥? keys", KEEP),
+const HINTS: [(Action, &str, u8); 6] = [
+    (Action::Navigator, "command palette", 4),
+    (Action::NewSession, "new session", 3),
+    (Action::ToggleSidebar, "sidebar", 1),
+    (Action::ToggleNotebook, "notebook", 0),
+    (Action::ToggleDiff, "diff", 2),
+    (Action::Keys, "keys", KEEP),
 ];
 
 /// The hint row, indented three cells, that fits `width` cells: keys drop whole, by
 /// rank, never cut mid-key.
 pub fn hint(prefix_armed: bool, cmd: bool, width: usize) -> String {
-    let (items, sep): (&[Hint], &str) = if prefix_armed {
-        (&PREFIX_HINTS, " ")
-    } else if cmd {
-        (&CMD_HINTS, "   ")
+    let (items, sep): (Vec<(String, u8)>, &str) = if prefix_armed {
+        let items = PREFIX_HINTS
+            .iter()
+            .map(|(text, rank)| ((*text).to_owned(), *rank));
+        (items.collect(), " ")
     } else {
-        (&ALT_HINTS, "   ")
+        let items = HINTS
+            .iter()
+            .map(|(action, what, rank)| (format!("{} {what}", chord_for(*action, cmd)), *rank));
+        (items.collect(), "   ")
     };
     let mut floor = 0;
     loop {
         let kept: Vec<&str> = items
             .iter()
             .filter(|(_, rank)| *rank >= floor)
-            .map(|(text, _)| *text)
+            .map(|(text, _)| text.as_str())
             .collect();
         let row = format!("   {}", kept.join(sep));
         if floor == KEEP || ratatui::text::Line::raw(row.as_str()).width() <= width {
@@ -340,7 +357,7 @@ mod hint_tests {
                 false,
                 true,
                 63,
-                "   ⌘P command palette   ⌘⇧N new session   ⌘G diff   ⌘? keys",
+                "   ⌘P command palette   ⌘⇧N new session   ⌘R diff   ⌘/ keys",
             ),
             (true, false, 18, "   PREFIX  q leave"),
         ];
