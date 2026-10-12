@@ -1589,6 +1589,7 @@ impl yi_tools::CellCalls for OneWrite {
             command: None,
             answer: None,
             duration_ms: 1,
+            outlived: false,
         };
         (vec![row], 3)
     }
