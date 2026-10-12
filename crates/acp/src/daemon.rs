@@ -17,6 +17,8 @@ pub struct DaemonOptions {
     /// yolo — the serve invocation's own surface).
     pub worker_args: Vec<String>,
     pub agent_version: String,
+    /// Where the `config.json` the settings page reads and saves lives.
+    pub home: PathBuf,
 }
 
 type ClientId = u64;
@@ -30,6 +32,7 @@ enum Input {
     WorkerLine(String, Value, String),
     WorkerReply(String, Value),
     WorkerClosed(String),
+    Answer(ClientId, String),
     Shutdown,
 }
 
@@ -447,6 +450,8 @@ impl Supervisor {
                 let _ = self.input.send(Input::Shutdown);
             }
             "_yi/seen" => self.mark_seen(client, id, &frame),
+            "_yi/settings" | "_yi/set_default" => self.settings(client, id, &method, &frame),
+            "_yi/open" => self.open(client, id, &frame),
             _ => {
                 let Some(root) = self.root_of(&frame) else {
                     if let Some(id) = id {
@@ -663,6 +668,63 @@ impl Supervisor {
             .retain(|session_id, _| self.sessions.contains_key(session_id));
     }
 
+    /// The daemon answers for the config, not a worker: a worker holds the copy it started on.
+    /// The read and fsync run off the routing loop, which every client and worker waits on.
+    fn settings(&mut self, client: ClientId, id: Option<Value>, method: &str, frame: &Value) {
+        let Some(id) = id else { return };
+        let home = self.options.home.clone();
+        let save = method == "_yi/set_default";
+        let setting = frame
+            .pointer("/params/id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let value = frame.pointer("/params/value").cloned();
+        let input = self.input.clone();
+        tokio::task::spawn_blocking(move || {
+            let answer = match (save, setting, value) {
+                (false, _, _) => yi_runtime::settings::current(&home),
+                (true, Some(setting), Some(value)) => {
+                    yi_runtime::settings::save(&home, &setting, value)
+                }
+                (true, _, _) => Err("a save names an id and a value; null unsets".to_owned()),
+            };
+            let line = match answer {
+                Ok(rows) => result_frame(id, json!({"rows": rows})),
+                Err(why) => error_frame(id, -32602, &why),
+            };
+            let _ = input.send(Input::Answer(client, line));
+        });
+    }
+
+    /// A message opened in an app the person listed: the daemon runs it, since the console never
+    /// spawns, and only an app named in config.json can run.
+    fn open(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
+        let Some(id) = id else { return };
+        let home = self.options.home.clone();
+        let name = frame
+            .pointer("/params/name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let text = frame
+            .pointer("/params/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let input = self.input.clone();
+        tokio::task::spawn_blocking(move || {
+            let opened = yi_runtime::settings::open(&home, &name, &text).and_then(|argv| {
+                spawn_app(&argv).map_err(|error| format!("{name}: {error}"))?;
+                Ok(argv)
+            });
+            let line = match opened {
+                Ok(argv) => result_frame(id, json!({"argv": argv})),
+                Err(why) => error_frame(id, -32602, &why),
+            };
+            let _ = input.send(Input::Answer(client, line));
+        });
+    }
+
     fn handle_client_closed(&mut self, client: ClientId) {
         self.clients.remove(&client);
         for entry in self.sessions.values_mut() {
@@ -706,6 +768,26 @@ fn spawn_client(stream: UnixStream, client: ClientId, input: mpsc::UnboundedSend
         }
         let _ = input.send(Input::ClientClosed(client));
     });
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "an Open in app is one the person named in config.json; nothing else can be run"
+)]
+fn spawn_app(argv: &[String]) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let (program, args) = argv.split_first().ok_or(std::io::ErrorKind::InvalidInput)?;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    // Invariant: a dropped Child is never reaped, so each launch would leave a zombie in the
+    // long-lived daemon; a thread waits it out without holding the reply.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 #[expect(
@@ -802,6 +884,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                     supervisor.forward_response_to_worker(&root, frame).await;
                 }
                 Input::WorkerClosed(root) => supervisor.handle_worker_closed(root),
+                Input::Answer(client, line) => supervisor.send_client(client, line),
                 Input::Shutdown => break,
             }
         }

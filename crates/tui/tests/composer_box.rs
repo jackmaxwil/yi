@@ -213,6 +213,24 @@ fn ctrl_z_undoes_and_ctrl_shift_z_redoes() -> TestResult {
     Ok(())
 }
 
+/// Dies with Cmd+U typed as nothing: Ghostty keeps Cmd+Z and Cmd+Shift+Z for its own undo.
+#[test]
+fn cmd_u_undoes_and_cmd_shift_u_redoes() -> TestResult {
+    let mut composer = Composer::default();
+    for ch in ['a', 'b'] {
+        press(&mut composer, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    press(&mut composer, KeyCode::Char('u'), KeyModifiers::SUPER);
+    assert_eq!(composer.text(), "a");
+    press(
+        &mut composer,
+        KeyCode::Char('U'),
+        KeyModifiers::SUPER | KeyModifiers::SHIFT,
+    );
+    assert_eq!(composer.text(), "ab");
+    Ok(())
+}
+
 /// Dies with Option+Left jumping to a sibling agent mid-sentence: kitty, WezTerm and iTerm2
 /// report Option+Left as alt+left, which the keymap gave to focus whatever the box held.
 #[test]

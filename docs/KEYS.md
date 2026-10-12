@@ -24,7 +24,7 @@ session in front wears a tinted row.
 
 | keys | |
 |---|---|
-| `⌥1..9` / `⌘1..9` | resume that rail slot into the focused pane |
+| `⌥1..9` | resume that rail slot into the focused pane |
 | `⌥n` | new session in the focused pane |
 | `⌥v` `⌥s` `⌥x` `⌥z` | split right, split down, close, zoom |
 | `⌥←→↑↓` | move focus between panes (solo child focus when there is one pane) |
@@ -33,6 +33,12 @@ session in front wears a tinted row.
 | `⌥⇧j` `⌥g` | notebook pane, diff pane for the focused session |
 | `Tab` | sidebar ↔ panes |
 | `ctrl+b` | prefix for terminals that eat alt |
+| `⌘P` `⌘⇧N` `⌘\` `⌘⇧\` `⌘X` `⌘⇧M` | over kitty or Ghostty: palette, new session, split right, split down, close, zoom |
+| `⌘I` `⌘⇧R` `⌘Y` `⌘O` `⌘B` `⌘⇧O` `⌘/` | notebook, review, tape, open a file, sidebar, new tab, all keys |
+| `⌘S` `⌘⇧L` `⌘U` `⌘⇧U` | in an editor pane: save, find, undo, redo (`⌘U` `⌘⇧U` also in a chat draft) |
+
+No ⌘ chord is one Ghostty or kitty binds by default, so every one reaches the console;
+digits, ⌘T, ⌘W and the rest belong to the terminal.
 
 A chat pane is solo's chat, the same code: composer with history and paste
 markers, `/` verbs, `@` files, `esc esc` for the entry tree, `/plantree`, the
