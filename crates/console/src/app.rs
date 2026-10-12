@@ -60,6 +60,7 @@ pub enum RequestKind {
     Plan(SessionId),
     SetConfig(SessionId),
     Settings(PaneId, bool),
+    Fork(PaneId),
     Steer,
     Shutdown,
 }
@@ -447,12 +448,8 @@ impl App {
         };
         trace_answered(&pending);
         let _span = yi_types::trace::span("console.reduce_response");
-        if pending.kind == RequestKind::Shutdown {
-            self.state.quit = true;
+        if self.pane_reply(outbound, &pending.kind, value) {
             return;
-        }
-        if let RequestKind::Settings(pane, saved) = pending.kind {
-            return self.absorb_settings(pane, saved, value);
         }
         if let Some(error) = value.get("error") {
             let message = error
@@ -516,6 +513,7 @@ impl App {
             | RequestKind::KernelCancel
             | RequestKind::SetConfig(_)
             | RequestKind::Settings(..)
+            | RequestKind::Fork(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
