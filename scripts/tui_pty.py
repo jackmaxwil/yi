@@ -33,27 +33,6 @@ import termios
 import time
 
 
-def kitty_ledger(out: bytes) -> dict:
-    """Kitty image placements still live after replaying the output: a=p adds
-    (image, placement) at the last ESC[r;cH, a=d with d=i/I drops that image,
-    ESC[2J drops them all."""
-    live, at = {}, (1, 1)
-    pattern = rb"\x1b\[(\d+);(\d+)H|\x1b\[2J|\x1b_G([^;\x1b]*)"
-    for match in re.finditer(pattern, out):
-        if match.group(1):
-            at = (int(match.group(1)), int(match.group(2)))
-        elif match.group(3) is None:
-            live.clear()
-        else:
-            keys = dict(pair.split(b"=", 1) for pair in match.group(3).split(b",")
-                        if b"=" in pair)
-            image = keys.get(b"i", b"?").decode()
-            if keys.get(b"a") == b"p":
-                live[(image, keys.get(b"p", b"-").decode())] = at
-            elif keys.get(b"a") == b"d" and keys.get(b"d") in (b"i", b"I"):
-                live = {key: cell for key, cell in live.items() if key[0] != image}
-    return live
-
 ORB_COLS, ORB_ROWS = 10, 5
 CHECKS = ("text under placement", "placement off the orb slot",
           "two placements of one family on different rows",
@@ -68,6 +47,16 @@ TOKEN = re.compile(
     rb"|([^\x1b\r\n\b]+)", re.S)
 CHROME = re.compile(r"[╭╰╮╯]|─{3,}|\[esc\] interrupt|esc again to interrupt")
 SLOT_ABOVE = 2
+SOLO_ORB = ("7601", "7602")
+
+
+def orb_family(image: str):
+    """The double-buffered pair an orb image id belongs to, or None for a logo,
+    avatar or notebook image: solo's 7601/7602, console pane k's 7800+2k/7801+2k."""
+    if image in SOLO_ORB:
+        return "solo"
+    number = int(image) if (image or "").isdigit() else 0
+    return f"pane {(number - 7800) // 2}" if 7800 <= number < 8000 else None
 
 
 class Screen:
@@ -175,7 +164,7 @@ class Screen:
         if keys.get("a") in ("p", "T"):
             self.place[(keys.get("i"), keys.get("p", "1"))] = [
                 self.y, self.x, int(keys.get("r", ORB_ROWS)), int(keys.get("c", ORB_COLS))]
-        elif keys.get("a") == "d":
+        elif keys.get("a") == "d" and keys.get("d") in ("i", "I"):
             for key in [k for k in self.place if k[0] == keys.get("i")]:
                 del self.place[key]
 
@@ -192,9 +181,10 @@ def content_shift(prev: list, cur: list) -> int:
     return shift
 
 
-def frame_audit(out: bytes, bounds: list, rows: int, cols: int, off=()) -> dict:
+def frame_audit(out: bytes, bounds: list, rows: int, cols: int, off=()) -> tuple:
     """Replay the capture and judge every presented frame: one at each ?2026l and
-    at each read boundary (`bounds`: output length after each read) while sync is off."""
+    at each read boundary (`bounds`: output length after each read) while sync is off.
+    Returns the hits per check and the placements still live at the end."""
     screen = Screen(rows, cols)
     found = {name: [] for name in CHECKS}
     state = {"frame": 0, "prev": None, "dirty": False}
@@ -214,14 +204,15 @@ def frame_audit(out: bytes, bounds: list, rows: int, cols: int, off=()) -> dict:
                       for ch in screen.grid[y][col:col + wide] if ch.strip())
             if ink:
                 flag(CHECKS[0], at, f"image {image} at row {row} covers {ink} text cells")
-            if label is not None and row != label - SLOT_ABOVE:
+            if image in SOLO_ORB and label is not None and row != label - SLOT_ABOVE:
                 flag(CHECKS[1], at, f"image {image} at row {row}, slot is row {label - SLOT_ABOVE}")
         family = {}
         for (image, _), cell in screen.place.items():
-            family.setdefault(int(image or 0) // 10, set()).add(cell[0])
+            if orb_family(image):
+                family.setdefault(orb_family(image), set()).add(cell[0])
         for fam, spots in family.items():
             if len(spots) > 1:
-                flag(CHECKS[2], at, f"family {fam}x placed on rows {sorted(spots)}")
+                flag(CHECKS[2], at, f"orb {fam} placed on rows {sorted(spots)}")
         prev = state["prev"]
         if prev is not None and prev != text:
             shift = content_shift(prev, text)
@@ -273,7 +264,7 @@ def frame_audit(out: bytes, bounds: list, rows: int, cols: int, off=()) -> dict:
         if CHROME.search(line) and re.search(r"[A-Za-z]{3,}", CHROME.sub("", stripped)):
             if CHECKS[4] not in off:
                 found[CHECKS[4]].append(f"scrollback row: {line.strip()[:70]!r}")
-    return found
+    return found, screen.place
 
 
 def selfcheck(off=frozenset()) -> int:
@@ -293,14 +284,16 @@ def selfcheck(off=frozenset()) -> int:
         CHECKS[3]: sync(block(1)) + sync("\x1b[2J" + block(4)),
         CHECKS[4]: sync(at(1, 1) + "prose words ╭────╮" + at(12, 1) + "\n"),
     }
-    run = lambda stream, bounds=(): frame_audit(stream.encode(), list(bounds), 12, 40, off)
+    run = lambda stream, bounds=(): frame_audit(stream.encode(), list(bounds), 12, 40, off)[0]
     for check, stream in cases.items():
         assert run(stream)[check], f"{check}: its stream passed"
     unsynced = label + slot + at(7, 3) + "x"
     assert run(unsynced, [len((label + slot).encode()), len(unsynced.encode())])[CHECKS[0]], \
         "text under a placement went unseen without ?2026"
     quiet = (clean, sync(block(2)) + sync("\x1b[2J" + block(1)),
-             sync(at(1, 1) + "prose words" + at(12, 1) + "\n" + at(1, 1) + "╭────╮"))
+             sync(at(1, 1) + "prose words" + at(12, 1) + "\n" + at(1, 1) + "╭────╮"),
+             sync(label + slot + at(1, 1) + orb(7610) + at(3, 1) + orb(7611)
+                  + at(1, 20) + orb(7802) + at(3, 20) + orb(7804)))
     for stream in quiet:
         assert not any(run(stream).values()), f"clean stream flagged: {run(stream)}"
     if not off:
@@ -333,7 +326,8 @@ def main() -> int:
                         help="fail unless the captured screen contains this "
                              "text; repeatable")
     parser.add_argument("--kitty-ledger", action="store_true",
-                        help="print the kitty image placements still live at exit")
+                        help="print the kitty image placements the frame replay "
+                             "leaves live at exit")
     parser.add_argument("--frame-audit", action="store_true",
                         help="replay the output and judge every presented frame: "
                              "text under a kitty placement, placements off the orb "
@@ -449,18 +443,19 @@ def main() -> int:
     print(f"exit: {exit_status if exit_status is not None else 'killed'}")
     print(f"bytes: {len(out)}")
     print(plain)
+    sizes = [(options.cols, options.rows), *(tuple(map(int, spec.split("x"))) for spec in options.resize)]
+    hits, live = frame_audit(bytes(out), bounds, max(r for _, r in sizes), max(c for c, _ in sizes))
     if options.kitty_ledger:
-        live = kitty_ledger(bytes(out))
         print(f"kitty placements live: {len(live)}")
-        for (image, placement), (row, col) in sorted(live.items()):
-            print(f"  image {image} placement {placement} at row {row} col {col}")
+        for (image, placement), (row, col, _, _) in sorted(live.items()):
+            print(f"  image {image} placement {placement} at row {row + 1} col {col + 1}")
     audit_failed = False
     if options.frame_audit:
-        for check, hits in frame_audit(bytes(out), bounds, options.rows, options.cols).items():
-            print(f"frame audit: {len(hits):4d}  {check}")
-            for hit in hits[:3]:
+        for check, found in hits.items():
+            print(f"frame audit: {len(found):4d}  {check}")
+            for hit in found[:3]:
                 print(f"    {hit}")
-            audit_failed = audit_failed or bool(hits)
+            audit_failed = audit_failed or bool(found)
     # A killed child exits 0 here, so without --expect a run that rendered
     # nothing still passes; the journey lane needs the screen asserted.
     missing = [needle for needle in options.expect if needle not in plain]
