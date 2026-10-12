@@ -89,14 +89,15 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             Ok(script) => script,
             Err(code) => return code,
         };
+        let common = drive_common(args);
         let drive = yi_tui::DriveOptions {
             script,
-            frames_dir: args.frames.clone().map(std::path::PathBuf::from),
-            record: args.record.clone().map(std::path::PathBuf::from),
+            frames_dir: common.frames_dir,
+            record: common.record,
             snap: args.snap.clone().map(std::path::PathBuf::from),
-            deadline_secs: args.deadline.unwrap_or(60),
-            width: args.size.map_or(80, |(cols, _)| cols),
-            height: args.size.map_or(24, |(_, rows)| rows),
+            deadline_secs: common.deadline_secs,
+            width: common.width,
+            height: common.height,
         };
         let session = std::sync::Arc::new(session);
         let code = yi_tui::run_headless(
@@ -307,16 +308,36 @@ pub fn run_console_command(args: &Args) -> i32 {
             Ok(script) => script,
             Err(code) => return code,
         };
+        let common = drive_common(args);
         let drive = yi_console::DriveOptions {
             script,
-            frames_dir: args.frames.clone().map(std::path::PathBuf::from),
-            record: args.record.clone().map(std::path::PathBuf::from),
-            width: args.size.map_or(80, |(cols, _)| cols),
-            height: args.size.map_or(24, |(_, rows)| rows),
+            frames_dir: common.frames_dir,
+            record: common.record,
+            deadline_secs: common.deadline_secs,
+            width: common.width,
+            height: common.height,
         };
         return yi_console::run_headless(&options, drive);
     }
     yi_console::run_console(&options)
+}
+
+struct DriveCommon {
+    frames_dir: Option<std::path::PathBuf>,
+    record: Option<std::path::PathBuf>,
+    deadline_secs: u64,
+    width: u16,
+    height: u16,
+}
+
+fn drive_common(args: &Args) -> DriveCommon {
+    DriveCommon {
+        frames_dir: args.frames.clone().map(std::path::PathBuf::from),
+        record: args.record.clone().map(std::path::PathBuf::from),
+        deadline_secs: args.deadline.unwrap_or(60),
+        width: args.size.map_or(80, |(cols, _)| cols),
+        height: args.size.map_or(24, |(_, rows)| rows),
+    }
 }
 
 #[cfg(not(feature = "tui"))]
