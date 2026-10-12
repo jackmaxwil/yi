@@ -25,6 +25,9 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "5"
   NEXTEST_TEST_THREADS: "5"
+  # Incident: upload-artifact runs on Node, which ignores the system store, and failed every
+  # chunk with "unable to get local issuer certificate" against the forge's internal CA.
+  NODE_EXTRA_CA_CERTS: /etc/ssl/certs/buildhost-root-ca.pem
 
 jobs:
   gate:
@@ -63,6 +66,17 @@ jobs:
           # only by later runs of that PR and costs the shared disk every push.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just lane ${{ matrix.lane }}
+      # A failing test keeps a copy of its scratch dir under target/tmp/failed, and every console
+      # drive run its frames under target/tmp/drive.
+      - uses: actions/upload-artifact@v3
+        if: failure() && matrix.lane == 'test'
+        with:
+          name: failed-tests
+          path: |
+            target/tmp/failed/
+            target/tmp/drive/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Title and body, and only CI can see either: neither exists in the tree the
   # local hook scans, and the body's rule asks the forge whether the issue it
@@ -142,7 +156,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # Relace drops the whole cache on a prefix a few tokens past a 256-token page, so the
           # verdict hung on which upstream served the run. postmerge and weekly pin the same one.
-          EVAL_ROUTING: '{"order":["deepinfra"],"allow_fallbacks":false}'
+          EVAL_ROUTING: '{"order":["coreweave/nvfp4"],"allow_fallbacks":false}'
         run: |
           set -euo pipefail
           mkdir -p live-out

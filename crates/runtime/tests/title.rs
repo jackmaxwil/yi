@@ -205,13 +205,7 @@ async fn a_side_call_that_reports_no_spend_books_no_row() -> Result<(), Box<dyn 
     .await?;
     let title = yi_runtime::title::title_session(&session).await?;
     assert_eq!(title.as_deref(), Some("Fix the context gauge"));
-    let booked = lock_session(&store)
-        .find_records(&yi_session::RecordQuery::default())?
-        .into_iter()
-        .filter(|record| {
-            matches!(record, yi_types::record::LaneRecord::Usage { cause, .. } if cause.starts_with("side:"))
-        })
-        .count();
+    let booked = crate::support::booked(&store, |cause| cause.starts_with("side:"))?;
     assert_eq!(booked, 0);
     Ok(())
 }

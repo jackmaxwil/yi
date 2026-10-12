@@ -12,6 +12,7 @@ mod usage_record;
 mod agents;
 mod asks;
 mod cards;
+mod composer_box;
 mod diffview;
 mod highlight;
 mod hud_todos;
