@@ -82,17 +82,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         session_dir: default_session_dir(args).display().to_string(),
         keys: configured_keys(),
         initial_prompt,
-        // A headless run asserts on frames, so it paints on arrival; a recording is for a
-        // person and keeps the configured pace.
-        pace: if args.headless && args.record.is_none() {
-            0
-        } else {
-            config()
-                .tui
-                .as_ref()
-                .and_then(|tui| tui.pace)
-                .unwrap_or(100)
-        },
+        pace: reveal_pace(args),
     };
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_tui::parse_script) {
@@ -160,9 +150,11 @@ pub fn run_tui_command(_args: &Args, _initial_prompt: Option<String>) -> i32 {
     2
 }
 
+/// Incident: forwarding the daemon's start-time config froze `model` and `permissions.mode`
+/// for every later worker; a worker reads its own config unless the daemon's flags pinned one.
 pub fn serve_flags(args: &Args) -> Vec<String> {
     let mut flags = Vec::new();
-    if !args.model.is_empty() {
+    if args.model_pinned {
         flags.push("--model".to_owned());
         flags.push(args.model.clone());
     }
@@ -170,14 +162,16 @@ pub fn serve_flags(args: &Args) -> Vec<String> {
         flags.push("--session-dir".to_owned());
         flags.push(dir.clone());
     }
-    flags.push(
-        match args.mode {
-            yi_runtime::PermissionMode::Yolo => "--yolo",
-            yi_runtime::PermissionMode::Auto => "--auto",
-            yi_runtime::PermissionMode::Ask => "--confirm",
-        }
-        .to_owned(),
-    );
+    if args.mode_pinned {
+        flags.push(
+            match args.mode {
+                yi_runtime::PermissionMode::Yolo => "--yolo",
+                yi_runtime::PermissionMode::Auto => "--auto",
+                yi_runtime::PermissionMode::Ask => "--confirm",
+            }
+            .to_owned(),
+        );
+    }
     flags
 }
 
@@ -227,6 +221,7 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
             socket,
             worker_args,
             agent_version: version.to_owned(),
+            home: crate::home().to_path_buf(),
         },
         runtime,
     )
@@ -269,6 +264,20 @@ fn load_drive_script<S>(
     })
 }
 
+/// A headless run asserts on frames, so it paints on arrival; a recording is for a person and
+/// keeps the configured pace.
+#[cfg(feature = "tui")]
+fn reveal_pace(args: &Args) -> u16 {
+    if args.headless && args.record.is_none() {
+        return 0;
+    }
+    config()
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.pace)
+        .unwrap_or(100)
+}
+
 /// `yi console` — the workspace shell, an ACP client over the serve daemon.
 #[cfg(feature = "tui")]
 pub fn run_console_command(args: &Args) -> i32 {
@@ -281,7 +290,14 @@ pub fn run_console_command(args: &Args) -> i32 {
             .as_ref()
             .and_then(|console| console.auto_side)
             .unwrap_or(true),
+        open_apps: config()
+            .open
+            .iter()
+            .flatten()
+            .map(|app| app.name.clone())
+            .collect(),
         sidebar: yi_console::model::SidebarMode::Rail,
+        pace: reveal_pace(args),
     };
     if !args.headless {
         ensure_daemon(args, &options.socket);
