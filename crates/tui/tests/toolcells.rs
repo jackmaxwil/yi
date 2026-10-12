@@ -526,3 +526,109 @@ fn a_window_title_carries_no_control_character() {
     let osc = yi_tui::term::window_title_osc("Fix\u{7}\u{1b}]52;c;ZWNobyBwd25lZA==\u{9c} now");
     assert_eq!(osc, "\u{1b}]2;Fix]52;c;ZWNobyBwd25lZA== now\u{7}");
 }
+
+/// The edit cell's rows on a real screen, top to bottom, from the diff's last row to the card's end.
+fn rows_under_diff(app: &mut App, last_diff: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let rows = common::rows_at(app, 60)?;
+    let at = (rows.iter())
+        .position(|row| row.ends_with(last_diff))
+        .ok_or_else(|| format!("no diff row {last_diff:?}: {rows:#?}"))?;
+    Ok(rows
+        .into_iter()
+        .skip(at.saturating_add(1))
+        .take_while(|row| row.starts_with('│'))
+        .collect())
+}
+
+/// Incident (#1042): the model quoted ripwire's caller check while the edit cell showed only the
+/// diff. Producer: `yi ask --faux` editing a committed a.py whose caller b.py, ripwire 0.6.5.
+#[test]
+fn an_edit_cell_shows_the_check_rows_the_model_read_under_its_diff() -> TestResult {
+    let mut app = app();
+    let session = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sessions/01a129b6.jsonl"
+    );
+    common::replay_stream(&mut app, std::path::Path::new(session))?;
+    let under = rows_under_diff(&mut app, "+  2 │     return f\"hi {name}\"")?;
+    assert_eq!(
+        under,
+        [
+            "│   syntax: ok",
+            "│   [ripwire check]",
+            "│   greet at a.py:1: params,broken-callers changed, params 2 -> 1; 1 callers,",
+            "│     1 incompatible",
+            "│     <file-scope> b.py:1 — incompatible at line 3",
+        ]
+    );
+    Ok(())
+}
+
+/// A result with no verdict rows draws the diff and nothing else: the numbered window the model
+/// anchors on is not a check row.
+#[test]
+fn an_edit_cell_without_check_rows_ends_at_its_diff() -> TestResult {
+    let mut app = app();
+    started(&mut app, "e0", "edit", "notes.md");
+    let details = edit_cell("notes.md").details;
+    let text = "[notes.md#5B1C]\nupdated; first change at line 1\n1:two";
+    ended_with(&mut app, "e0", "edit", text, false, details);
+    assert_eq!(
+        rows_under_diff(&mut app, "+    │ two")?,
+        Vec::<String>::new()
+    );
+    Ok(())
+}
+
+/// A multi-file edit prints one `[path#TAG]` per file; its verdict rows without them name no file.
+#[test]
+fn a_multi_file_edit_names_the_file_above_each_verdict() -> TestResult {
+    let mut app = app();
+    started(&mut app, "e0", "edit", "a.py");
+    let details = edit_cell("a.py").details;
+    let text = concat!(
+        "[a.py#1A2B]\nupdated; first change at line 1\n1:two\nsyntax: ok\n\n",
+        "[b.py#3C4D]\nupdated; first change at line 3\n3:x = (\nsyntax: error line 3: '(' was never closed",
+    );
+    ended_with(&mut app, "e0", "edit", text, false, details);
+    assert_eq!(
+        rows_under_diff(&mut app, "+    │ two")?,
+        [
+            "│   [a.py#1A2B]",
+            "│   syntax: ok",
+            "│   [b.py#3C4D]",
+            "│   syntax: error line 3: '(' was never closed",
+        ]
+    );
+    Ok(())
+}
+
+/// Invariant: a preview row's colour follows its own text, not details["syntax"]:
+/// worst() keeps only the first failure, so a second file's error row must stay red.
+#[test]
+fn every_syntax_error_row_under_a_diff_carries_the_error_colour() -> TestResult {
+    let theme = theme();
+    let mut cell = edit_cell("a.py");
+    cell.details["syntax"] = json!("syntax: error a.py:1: expected an expression");
+    cell.preview = vec![
+        "a.py: syntax: error a.py:1: expected an expression".to_owned(),
+        "b.py: syntax: error b.py:9: unterminated string".to_owned(),
+        "syntax: ok".to_owned(),
+    ];
+    let rows = cell.lines(80, &theme, TranscriptMode::Normal, 0);
+    let spans: Vec<(String, Option<ratatui::style::Color>)> = rows
+        .iter()
+        .flat_map(|row| row.spans.iter())
+        .map(|span| (span.content.to_string(), span.style.fg))
+        .collect();
+    for (text, fg) in &spans {
+        if text.contains("syntax: error") {
+            assert_eq!(*fg, Some(theme.error), "muted error row: {text}");
+        }
+    }
+    assert!(
+        spans.iter().any(|(text, _)| text.contains("b.py")),
+        "second file's verdict row missing: {spans:?}"
+    );
+    Ok(())
+}
