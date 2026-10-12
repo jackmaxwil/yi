@@ -447,6 +447,8 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             autostart: false,
             auto_side: true,
             sidebar: SidebarMode::Rail,
+            open_apps: Vec::new(),
+            pace: 0,
         },
         DriveOptions {
             script: steps,
