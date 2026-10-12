@@ -55,6 +55,9 @@ jobs:
           curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
           echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
           chmod +x /usr/local/bin/fgj
+      # Incident: unpinned, OpenRouter served glm-5.3-flash from hosts measured at 51 to 235 tok/s and
+      # rounds ran 36 to 113 minutes; CoreWeave took a 40k-token prompt in 1.6 to 2.9 s (2026-10-12).
+      - run: mkdir -p ~/.yi && echo '{"routing":{"order":["coreweave/nvfp4"],"allow_fallbacks":false}}' > ~/.yi/config.json
       - name: review the head as yi-bot
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
