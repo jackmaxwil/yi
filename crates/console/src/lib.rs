@@ -32,7 +32,7 @@ use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
 use yi_tui::drive::{
-    DEADLINE_CAP_SECS, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
+    Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
 };
 use yi_tui::term::ControlPictures;
 
@@ -497,6 +497,16 @@ fn join_with_deadline(threads: client::ClientThreads) {
     }
 }
 
+fn drive_idle(app: &App) -> bool {
+    app.state
+        .focused_session()
+        .as_ref()
+        .and_then(|id| app.state.sessions.get(id))
+        .is_some_and(|row| row.status == SessionStatus::Working)
+        || app.chat_running()
+        || app.state.link == Link::Connecting
+}
+
 /// The same loop over an in-memory screen, driven by a script (the
 /// .ruler/085-tui.md drive contract for this crate).
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
@@ -541,15 +551,14 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let mut last_frame = String::new();
     let mut steps = drive.script.into_iter();
     let mut current: Option<(ConsoleStep, Instant)> = None;
-    let deadline_secs = drive.deadline_secs.clamp(1, DEADLINE_CAP_SECS);
-    let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+    let deadline = Deadline::new(drive.deadline_secs);
     let mut exit_code = 0;
     let mut type_ms = 0;
     let mut pending_snap = None;
 
     while !app.state.quit {
-        if Instant::now() > deadline {
-            eprintln!("error: drive script timed out ({deadline_secs} s wall)");
+        if deadline.passed() {
+            deadline.report();
             exit_code = 1;
             break;
         }
@@ -583,6 +592,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     app.handle_event(&outbound, event);
                     if type_ms > 0 {
                         std::thread::sleep(Duration::from_millis(type_ms));
+                        if deadline.passed() {
+                            break;
+                        }
                     }
                 }
             }
@@ -593,15 +605,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 }
             }
             (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
-                let working = app
-                    .state
-                    .focused_session()
-                    .as_ref()
-                    .and_then(|id| app.state.sessions.get(id))
-                    .is_some_and(|row| row.status == SessionStatus::Working)
-                    || app.chat_running()
-                    || app.state.link == Link::Connecting;
-                match poll_condition(!working, started, ms, "wait-idle") {
+                match poll_condition(!drive_idle(&app), started, ms, "wait-idle") {
                     WaitPoll::Retry => {
                         current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
                     }

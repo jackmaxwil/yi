@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use yi_console::model::SidebarMode;
@@ -414,6 +415,40 @@ fn run_opts(
     if code != 0 {
         return Err(format!("console exited {code}").into());
     }
+    Ok(())
+}
+
+/// A paced type step sleeps per character while it holds the wall clock, so a
+/// long line otherwise outruns the deadline the scene author asked for.
+#[test]
+fn paced_type_step_respects_the_deadline() -> TestResult {
+    let (_dir, socket) = scratch_socket("paced-type-deadline")?;
+    let steps = parse_script("type-ms 200\ntype 0123456789abcdefghij")?;
+    let started = Instant::now();
+    let code = run_headless(
+        &ConsoleOptions {
+            socket,
+            root: "/tmp/demo-root".to_owned(),
+            autostart: false,
+            auto_side: true,
+            sidebar: SidebarMode::Rail,
+        },
+        DriveOptions {
+            script: steps,
+            frames_dir: None,
+            record: None,
+            deadline_secs: 1,
+            width: 100,
+            height: 30,
+        },
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(code, 1, "the deadline must end the run with exit code 1");
+    // The full line takes 4 s at 200 ms a character; the wall gives it 1 s.
+    assert!(
+        elapsed < Duration::from_millis(2500),
+        "a paced type step ran past the deadline unchecked: {elapsed:?}"
+    );
     Ok(())
 }
 
