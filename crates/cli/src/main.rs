@@ -46,6 +46,7 @@ struct Args {
     thinking_pinned: bool,
     json: bool,
     mode: yi_runtime::PermissionMode,
+    mode_pinned: bool,
     session_dir: Option<String>,
     cwd: Option<String>,
     here: bool,
@@ -84,7 +85,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    let mut mode = match config()
+    let configured_mode = match config()
         .permissions
         .as_ref()
         .and_then(|permissions| permissions.mode)
@@ -93,6 +94,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         Some(yi_types::config::ModeName::Yolo) => yi_runtime::PermissionMode::Yolo,
         Some(yi_types::config::ModeName::Auto) | None => yi_runtime::PermissionMode::Auto,
     };
+    let mut mode = None;
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
@@ -122,9 +124,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("system") => system = parser.value()?.string()?,
             Long("thinking") => thinking = Some(parse_effort(&parser.value()?.string()?)?),
             Long("json") => json = true,
-            Long("yolo") => mode = yi_runtime::PermissionMode::Yolo,
-            Long("auto") => mode = yi_runtime::PermissionMode::Auto,
-            Long("confirm") => mode = yi_runtime::PermissionMode::Ask,
+            Long("yolo") => mode = Some(yi_runtime::PermissionMode::Yolo),
+            Long("auto") => mode = Some(yi_runtime::PermissionMode::Auto),
+            Long("confirm") => mode = Some(yi_runtime::PermissionMode::Ask),
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("here") => here = true,
@@ -197,7 +199,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         thinking_pinned: thinking.is_some(),
         thinking: thinking.or(config().thinking),
         json,
-        mode,
+        mode: mode.unwrap_or(configured_mode),
+        mode_pinned: mode.is_some(),
         session_dir,
         cwd,
         here,
