@@ -2,6 +2,8 @@
 # under scripts/proof/tui_see run on the base and the head binary, in real Ghostty where the
 # scene allows, and one comment carries what changed. It never fails a pull request on looks
 # (owner: "Never fail, just show"); a red run here means the scenes could not run.
+# A push to main that touches the same paths plays the scenes on main's binary alone and
+# republishes the gallery to the `tui-gallery` release (https://git.example.invalid/apex/yi/releases/tag/tui-gallery).
 name: tui
 
 on:
@@ -13,9 +15,18 @@ on:
       - "scripts/tui_see.py"
       - "scripts/proof/tui_see/**"
       - ".forgejo/workflows/tui.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/tui/**"
+      - "crates/console/**"
+      - "crates/orb/**"
+      - "scripts/tui_see.py"
+      - "scripts/proof/tui_see/**"
+      - ".forgejo/workflows/tui.yml"
 
 concurrency:
-  group: tui-${{ github.event.pull_request.number }}
+  group: tui-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -42,12 +53,16 @@ jobs:
           shared-key: test
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: build the head and the base binary
+      - name: build the head binary
         run: |
           set -euo pipefail
           mkdir -p bins
           cargo build -q -p yi-cli
           cp target/debug/yi bins/head
+      - name: build the base binary
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
           # The fork point, not the base tip: main commits the head lacks are not the PR's change.
           git worktree add -q ../base "$(git merge-base "${{ github.event.pull_request.base.sha }}" HEAD)"
           CARGO_TARGET_DIR="$PWD/target" cargo build -q -p yi-cli --manifest-path ../base/Cargo.toml
@@ -74,10 +89,17 @@ jobs:
           path: bins
       # No token here: the scenes run the pull request's own binaries and script.
       - name: snap every scene on base and head
+        if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           chmod +x bins/base bins/head
           python3 scripts/tui_see.py ci bins/base bins/head
+      - name: snap every scene on main
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          chmod +x bins/head
+          python3 scripts/tui_see.py ci bins/head
       - uses: actions/upload-artifact@v3
         if: always()
         with:
@@ -95,7 +117,7 @@ jobs:
   # the pull request wrote never holds the token. Forgejo ignores `permissions:` blocks.
   comment:
     needs: shots
-    if: always() && needs.shots.result != 'skipped'
+    if: always() && github.event_name == 'pull_request' && needs.shots.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -121,3 +143,26 @@ jobs:
           python3 scripts/tui_see.py post target/see || rc=$?
           if [ "$rc" = 2 ]; then echo "[… the base's tui_see.py has no post verb; no comment]"; exit 0; fi
           exit "$rc"
+
+  # Main's own script holds the token here, over the shots job's output: same split as `comment`.
+  # The forge serves a release's HTML as text, so the bookmarked asset is saved and then opened.
+  publish:
+    needs: shots
+    if: github.event_name == 'push' && needs.shots.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v3
+        with:
+          name: tui-see
+          path: target/see
+      - name: replace the live gallery
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_HEAD: ${{ github.sha }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/tui_see.py publish target/see/gallery.html
