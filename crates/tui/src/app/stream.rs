@@ -596,7 +596,7 @@ impl App {
             || self.pacing.thought.behind(self.live_thought.len())
     }
 
-    pub(crate) fn reveal_wake(&self) -> Duration {
+    pub fn reveal_wake(&self) -> Duration {
         let moving = |reveal: &Reveal, len: usize| reveal.behind(len) && !reveal.waiting();
         if moving(&self.pacing.prose, self.live_markdown.len())
             || moving(&self.pacing.thought, self.live_thought.len())

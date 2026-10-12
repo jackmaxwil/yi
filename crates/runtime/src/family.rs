@@ -10,7 +10,14 @@ use yi_types::todo::TodoRecord;
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
 const RECENT_ENTRIES: usize = 3;
-const NOTE_CHARS: usize = 120;
+pub(crate) const NOTE_CHARS: usize = 120;
+
+pub(crate) fn cut_notice() -> String {
+    format!(
+        "\n[… a line is cut to its first line and {NOTE_CHARS} chars (NOTE_CHARS), a user line at \
+         {USER_CHARS} (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberState {
@@ -139,12 +146,53 @@ pub struct MemberView {
     pub worktree: Option<String>,
 }
 
+/// Incident: a child sent to find what its parent was told read the parent's opening message cut
+/// at 120 chars and reported the fact absent; a person's words are what it cannot re-derive.
+pub(crate) const USER_CHARS: usize = 2_000;
+
+fn cut_user(text: &str) -> (String, bool) {
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut rest = false;
+    'outer: for (index, line) in text.lines().enumerate() {
+        for ch in if index > 0 { " ⏎ " } else { "" }.chars() {
+            if count == USER_CHARS {
+                rest = true;
+                break 'outer;
+            }
+            out.push(ch);
+            count += 1;
+        }
+        for ch in line.chars() {
+            if count == USER_CHARS {
+                rest = true;
+                break 'outer;
+            }
+            out.push(ch);
+            count += 1;
+        }
+    }
+    if rest {
+        out.push('…');
+    }
+    (out, rest)
+}
+
 fn cut(text: &str) -> String {
+    cut_note(text).0
+}
+
+/// Incident: a 301-line bash result rendered as its first line, unmarked, and a child answered
+/// with that line as the whole output; dropped lines are a cut and are counted.
+fn cut_note(text: &str) -> (String, bool) {
     let line = text.lines().next().unwrap_or_default();
-    if line.chars().count() > NOTE_CHARS {
-        format!("{}…", line.chars().take(NOTE_CHARS).collect::<String>())
-    } else {
-        line.to_owned()
+    let more = text.lines().count().saturating_sub(1);
+    let kept = line.chars().take(NOTE_CHARS).collect::<String>();
+    let long = kept.len() < line.len();
+    match (long, more) {
+        (false, 0) => (kept, false),
+        (_, 0) => (format!("{kept}…"), true),
+        (_, more) => (format!("{kept}… (+{more} lines)"), true),
     }
 }
 
@@ -325,7 +373,7 @@ pub fn children_line(views: &[MemberView]) -> Option<String> {
 }
 
 /// One line per entry for `history://<agent>/tail/N`: the sequence, who, and the first line.
-pub fn compact_entry(entry: &Entry) -> String {
+pub fn compact_entry(entry: &Entry) -> (String, bool) {
     let seq = match entry {
         Entry::Message { seq, .. }
         | Entry::ModelChange { seq, .. }
@@ -335,45 +383,57 @@ pub fn compact_entry(entry: &Entry) -> String {
         | Entry::BranchSummary { seq, .. }
         | Entry::Custom { seq, .. } => *seq,
     };
+    let mut cut_any = false;
     let body = match entry {
         Entry::Message { message, .. } => match message {
             AgentMessage::Assistant { content, .. } => {
-                let calls: Vec<String> = content
-                    .iter()
-                    .filter_map(|block| match block {
+                let mut calls = Vec::new();
+                let mut text = Vec::new();
+                for block in content {
+                    match block {
                         Content::ToolCall {
                             name, arguments, ..
-                        } => Some(format!(
-                            "{name} {}",
-                            cut(&Value::Object(arguments.clone()).to_string())
-                        )),
-                        _ => None,
-                    })
-                    .collect();
-                let text: String = content
-                    .iter()
-                    .filter_map(|block| match block {
-                        Content::Text { text, .. } => Some(cut(text)),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("assistant: {}", [text, calls.join("; ")].join(" ").trim())
+                        } => {
+                            let (line, this) =
+                                cut_note(&Value::Object(arguments.clone()).to_string());
+                            cut_any = cut_any || this;
+                            calls.push(format!("{name} {line}"));
+                        }
+                        Content::Text {
+                            text: block_text, ..
+                        } => {
+                            let (line, this) = cut_note(block_text);
+                            cut_any = cut_any || this;
+                            text.push(line);
+                        }
+                        _ => {}
+                    }
+                }
+                format!(
+                    "assistant: {}",
+                    [text.join(" "), calls.join("; ")].join(" ").trim()
+                )
             }
             AgentMessage::ToolResult {
                 tool_name, content, ..
             } => {
-                let first = content
-                    .iter()
-                    .find_map(|block| match block {
-                        Content::Text { text, .. } => Some(cut(text)),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let mut first = String::new();
+                for block in content {
+                    if let Content::Text { text, .. } = block {
+                        let (line, this) = cut_note(text);
+                        cut_any = cut_any || this;
+                        first = line;
+                        break;
+                    }
+                }
                 format!("result {tool_name}: {first}")
             }
             AgentMessage::User { content, .. } => match content {
-                yi_types::message::UserContent::Text(text) => format!("user: {}", cut(text)),
+                yi_types::message::UserContent::Text(text) => {
+                    let (line, this) = cut_user(text);
+                    cut_any = cut_any || this;
+                    format!("user: {line}")
+                }
                 yi_types::message::UserContent::Blocks(_) => "user: [blocks]".to_owned(),
             },
             AgentMessage::Custom {
@@ -382,7 +442,9 @@ pub fn compact_entry(entry: &Entry) -> String {
                 ..
             } => match content {
                 yi_types::message::UserContent::Text(text) => {
-                    format!("{custom_type}: {}", cut(text))
+                    let (line, this) = cut_note(text);
+                    cut_any = cut_any || this;
+                    format!("{custom_type}: {line}")
                 }
                 yi_types::message::UserContent::Blocks(_) => custom_type.clone(),
             },
@@ -397,5 +459,5 @@ pub fn compact_entry(entry: &Entry) -> String {
         Entry::ActiveToolsChange { .. } => "tools changed".to_owned(),
         Entry::Compaction { .. } => "compaction".to_owned(),
     };
-    format!("#{seq} {body}")
+    (format!("#{seq} {body}"), cut_any)
 }

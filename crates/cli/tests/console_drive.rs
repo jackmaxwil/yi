@@ -35,6 +35,7 @@ fn run_console(dir: &Path, socket: &Path, root: &Path, script: &str, extra: &[&s
             &keys.display().to_string(),
         ])
         .args(extra)
+        .env("HOME", dir.join("home"))
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -58,9 +59,9 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
             &dir,
             &socket,
             &root,
-            "wait-frame 8000 !connecting…\n\
+            "wait-frame 8000 no sessions for this root\n\
              key alt-n\n\
-             wait-frame 8000 ○\n\
+             wait-frame 8000 untitled\n\
              type hello daemon\n\
              key enter\n\
              wait-frame 15000 faux:\n\
@@ -91,6 +92,67 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome
+}
+
+/// The reply rows a frame dump shows, as the chat pane draws them after its `•`.
+fn reply_rows(frames: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(frames_of(frames)?
+        .lines()
+        .filter_map(|line| line.split_once("│ • "))
+        .map(|(_, row)| row.trim_end_matches('"').trim().to_owned())
+        .collect())
+}
+
+/// Dies with `yi console` painting each network burst whole again: `tui.pace` dropped on its way
+/// through `ConsoleOptions` to a chat, which no other test sees as the faux reply is one short row.
+#[test]
+fn a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_whole() -> TestResult
+{
+    let script = "wait-frame 8000 no sessions for this root\n\
+                  key alt-n\n\
+                  wait-frame 8000 untitled\n\
+                  type hello daemon\n\
+                  key enter\n\
+                  wait-frame 15000 faux:\n\
+                  wait-idle 15000\n\
+                  quit\n";
+    let mut rows = Vec::new();
+    // Invariant: a daemon per run, so the rail starts empty and `untitled` can only be this run's.
+    for (name, record) in [("plain", false), ("recorded", true)] {
+        let dir = Scratch::new(&format!("yi-console-pace-{name}"))?;
+        dir.home()?;
+        let root = dir.join("repo");
+        std::fs::create_dir_all(&root)?;
+        let (mut daemon, socket) = spawn_daemon(&dir)?;
+        let (frames, cast) = (dir.join("frames"), dir.join("run.cast"));
+        let mut extra = vec!["--frames".to_owned(), frames.display().to_string()];
+        if record {
+            extra.extend(["--record".to_owned(), cast.display().to_string()]);
+        }
+        let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+        let outcome = run_console(&dir, &socket, &root, script, &extra);
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        outcome?;
+        rows.push(reply_rows(&frames)?);
+    }
+    let partial = |rows: &[String]| {
+        rows.iter()
+            .any(|row| !row.is_empty() && row != "faux:" && "faux:".starts_with(row.as_str()))
+    };
+    let [plain, recorded] = rows.as_slice() else {
+        return Err("two runs".into());
+    };
+    assert!(plain.iter().any(|row| row == "faux:"), "{plain:?}");
+    assert!(
+        !partial(plain),
+        "a headless run paints the reply whole: {plain:?}"
+    );
+    assert!(
+        partial(recorded),
+        "a recorded run keeps the configured pace, so a frame shows the reply half-revealed: {recorded:?}"
+    );
+    Ok(())
 }
 
 /// Dies with 80-column frames: the console's headless screen ignored `--size`, so no console
@@ -221,5 +283,31 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
         assert!(solo.contains(needle), "solo frames lack {needle:?}");
         assert!(console.contains(needle), "console frames lack {needle:?}");
     }
+    Ok(())
+}
+
+/// A paced console scene outlives the 60 s an assertion run needs; `--deadline` is its wall.
+#[test]
+fn a_console_drive_honours_its_deadline() -> TestResult {
+    let dir = Scratch::new("yi-console-deadline")?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait 3000\nquit\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "true E2E: the shipped binary's own drive clock"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["console", "--headless", "--deadline", "1", "--keys"])
+        .arg(&keys)
+        .arg("--socket")
+        .arg(dir.join("no-daemon.sock"))
+        .env("HOME", dir.home()?)
+        .stdin(Stdio::null())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && stderr.contains("drive script timed out (1 s wall)"),
+        "a 3 s script must stop at the 1 s deadline: {stderr}"
+    );
     Ok(())
 }
