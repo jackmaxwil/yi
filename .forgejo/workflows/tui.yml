@@ -12,6 +12,9 @@ on:
       - "crates/tui/**"
       - "crates/console/**"
       - "crates/orb/**"
+      # What the TUI renders and draws with: the wire shapes and the locked dependencies.
+      - "crates/types/**"
+      - "Cargo.lock"
       - "scripts/tui_see.py"
       - "scripts/proof/tui_see/**"
       - ".forgejo/workflows/tui.yml"
