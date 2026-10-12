@@ -15,6 +15,7 @@ Transport and the model are parameters where the decisions are, so the selfcheck
 without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
 import argparse
+import fcntl
 import fnmatch
 import functools
 import hashlib
@@ -984,6 +985,10 @@ def cmd_sweep(args):
 
 
 def selfcheck():
+    # Incident: a fixer commit dropped `import fcntl` and every review round died on its lock;
+    # nothing else here takes it, so this row does (`held` is also a local name below).
+    with globals()["held"](0) as got:
+        assert got, "a free round lock is taken"
     me = {"jack", "yi-bot"}
     finding = {"lens": "correctness", "severity": "high", "claim": "drops the anchor", "path": "a.rs", "line": 2, "quote": "let x = 1;", "fix": "keep it"}
     body = render(2, 588, "4f1c2e9a", "3503ed74", [finding], 3, None, "shadow")
