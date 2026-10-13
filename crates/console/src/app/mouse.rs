@@ -30,10 +30,11 @@ impl App {
     }
 
     pub(super) fn mouse_event(&mut self, outbound: &Outbound, mouse: MouseEvent) {
-        if crate::title_playing(self) {
-            if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                self.skip_title();
-            }
+        let playing = crate::title_playing(self);
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.skip_title();
+        }
+        if playing {
             return;
         }
         let kind = match mouse.kind {

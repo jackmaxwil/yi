@@ -937,6 +937,30 @@ mod tests {
         outbound.shutdown();
     }
 
+    /// Pointer motion under the cover is dropped, a press skips it, and once it is over the same
+    /// motion lands: a hover on a screen nobody can see must not light a hint button.
+    #[test]
+    fn the_pointer_does_nothing_under_the_title_but_a_press_skips_it() {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.state.title = Some(yi_tui::title::Scene::Echo);
+        app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+        app.state.title_start = app.clock.now();
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-title-pointer-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        let at = |kind| CtEvent::Mouse(mouse_event(kind, 3, 4));
+        app.handle_event(&outbound, at(MouseKind::Moved));
+        assert_eq!(app.pointer, None, "a hover under the cover is dropped");
+        assert!(title_playing(&app), "and does not end it");
+        app.handle_event(&outbound, at(MouseKind::Down));
+        assert!(!title_playing(&app), "a press ends it");
+        assert_eq!(app.pointer, None, "and is not also a press on the screen");
+        app.handle_event(&outbound, at(MouseKind::Moved));
+        assert_eq!(app.pointer, Some((3, 4)), "afterwards the pointer counts");
+        outbound.shutdown();
+    }
+
     #[test]
     fn a_scene_that_does_not_exist_is_refused_with_the_key_named() {
         let refused = TitleOptions::new(
