@@ -103,6 +103,13 @@ fn typed(kind: &SettingKind, text: &str) -> Result<Value, String> {
         SettingKind::Number { .. } => serde_json::from_str::<serde_json::Number>(text.trim())
             .map(Value::Number)
             .map_err(|_| format!("{text:?} is not a number")),
+        SettingKind::List => Ok(Value::Array(
+            text.split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(|item| Value::String(item.to_owned()))
+                .collect(),
+        )),
         _ => Ok(Value::String(text.to_owned())),
     }
 }
@@ -179,7 +186,7 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
                 .get(settings.cursor)
                 .map(|row| (&row.kind, row.id.clone()))
             {
-                Some((SettingKind::List | SettingKind::Json, id)) => {
+                Some((SettingKind::Json, id)) => {
                     Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
                 }
                 _ => commit(settings, options, Value::Null),
@@ -247,18 +254,17 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
             });
             Intent::None
         }
-        SettingKind::Number { .. } | SettingKind::Text | SettingKind::Model => {
+        SettingKind::Number { .. } | SettingKind::Text | SettingKind::Model | SettingKind::List => {
             let text = match &row.value {
                 Value::String(text) => text.clone(),
                 Value::Null => String::new(),
+                Value::Array(_) => shown_value(&row.value),
                 other => other.to_string(),
             };
             settings.edit = Some(Edit::Type(text));
             Intent::None
         }
-        SettingKind::List | SettingKind::Json => {
-            Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id))
-        }
+        SettingKind::Json => Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id)),
     }
 }
 
@@ -302,7 +308,7 @@ fn commit_typed(settings: &Settings, options: &[AcpConfigOption], text: &str) ->
 }
 
 fn shown(row: &SettingRow) -> String {
-    let entries = matches!(row.kind, SettingKind::List | SettingKind::Json);
+    let entries = matches!(row.kind, SettingKind::Json);
     match (&row.value, &row.default) {
         (Value::Number(count), _) if entries => format!("{count} entries"),
         (Value::Null, Value::Bool(true)) => "on (default)".to_owned(),
@@ -558,5 +564,45 @@ mod tests {
             "{narrow}"
         );
         assert!(narrow.chars().count() <= 30, "{narrow}");
+    }
+
+    /// A provider list typed as "DeepInfra, Together" must save as the array OpenRouter takes,
+    /// and reopen as the same text rather than as JSON.
+    #[test]
+    fn a_list_row_is_typed_as_comma_separated_names_and_saves_an_array() {
+        use ratatui::crossterm::event::KeyModifiers;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut rows = yi_types::settings::rows();
+        let at = rows
+            .iter()
+            .position(|row| row.id == "routing.order")
+            .unwrap_or(0);
+        rows[at].value = serde_json::json!(["Together"]);
+        let tab = TABS
+            .iter()
+            .position(|tab| *tab == rows[at].tab)
+            .unwrap_or(0)
+            + 1;
+        let mut settings = Settings::new(None, tab);
+        settings.rows = Some(rows);
+        settings.cursor = settings
+            .tab_rows()
+            .iter()
+            .position(|row| row.id == "routing.order")
+            .unwrap_or(0);
+        assert!(matches!(
+            key(&mut settings, press(KeyCode::Enter), &[]),
+            Intent::None
+        ));
+        assert!(matches!(&settings.edit, Some(Edit::Type(text)) if text == "Together"));
+        for ch in ", DeepInfra ,".chars() {
+            key(&mut settings, press(KeyCode::Char(ch)), &[]);
+        }
+        let saved = key(&mut settings, press(KeyCode::Enter), &[]);
+        assert!(matches!(
+            saved,
+            Intent::SaveDefault { ref id, ref value }
+                if id == "routing.order" && *value == serde_json::json!(["Together", "DeepInfra"])
+        ));
     }
 }

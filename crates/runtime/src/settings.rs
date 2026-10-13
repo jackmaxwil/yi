@@ -33,14 +33,13 @@ pub fn current(home: &Path) -> Result<Vec<SettingRow>, String> {
         .collect())
 }
 
-/// Incident: the owner once kept an API key under `keys`; a list or JSON value leaves this
-/// process as its entry count, which is all the page shows of it.
+/// Incident: the owner once kept an API key under `keys`; a JSON value leaves this process as
+/// its entry count, which is all the page shows of it. A list holds names and paths and shows whole.
 fn shown(kind: &SettingKind, value: &Value) -> Value {
     match (kind, value) {
-        (SettingKind::List | SettingKind::Json, Value::Array(items)) => Value::from(items.len()),
-        (SettingKind::List | SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
-        (SettingKind::List | SettingKind::Json, Value::Null) => Value::Null,
-        (SettingKind::List | SettingKind::Json, _) => Value::from(1),
+        (SettingKind::Json, Value::Array(items)) => Value::from(items.len()),
+        (SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
+        (SettingKind::Json, _) => Value::from(1),
         _ => value.clone(),
     }
 }
@@ -271,7 +270,7 @@ mod tests {
     }
 
     /// Incident: the owner once stored an API key under `keys`; the page only ever learns how
-    /// many entries a list or JSON row holds.
+    /// many entries a JSON row holds; a list of names shows whole so it can be edited.
     #[test]
     fn a_secret_in_a_json_row_never_leaves_as_text() -> Result<(), Box<dyn std::error::Error>> {
         let home = Scratch::new("yi-settings-redacts")?;
@@ -292,7 +291,7 @@ mod tests {
             .iter()
             .find(|row| row.id == "skills.global")
             .ok_or("no skills row")?;
-        assert_eq!(skills.value, json!(2));
+        assert_eq!(skills.value, json!(["a", "b"]));
         Ok(())
     }
 
