@@ -315,6 +315,7 @@ fn build_session(
     asker: Option<yi_runtime::Asker>,
     session_id: Option<&str>,
     prompts_close: bool,
+    unattended: bool,
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     // Invariant: the first statement here, so no lever is read on both sides of the
     // override and a refused file stops the run before the session, and any model call.
@@ -431,8 +432,6 @@ fn build_session(
     let work = lane
         .as_ref()
         .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
-    // Only `yi ask` runs with nobody at all: an rpc or acp client is a person's surface.
-    let unattended = asker.is_none() && args.command == "ask";
     let broker = std::sync::Arc::new(
         yi_runtime::PermissionBroker::new(
             args.mode,
@@ -993,7 +992,7 @@ fn dispatch(args: Args) {
             };
             let session = {
                 let _guard = runtime.enter();
-                match build_session(&args, None, None, false) {
+                match build_session(&args, None, None, false, false) {
                     Ok((session, _host)) => session,
                     Err(refused) => std::process::exit(exit_refused(refused)),
                 }
@@ -1024,7 +1023,7 @@ fn dispatch(args: Args) {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker, session| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker, session, false)
+                    build_session(&build_args, asker, session, false, false)
                         .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
                 })
             };

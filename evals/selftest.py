@@ -107,6 +107,38 @@ def check_command():
         raise AssertionError(f"model name {bad!r} must be rejected")
 
 
+def check_warm_kernel():
+    """#1315: warm_kernel itself stops a trial whose kernel failed to boot on a present toolchain
+    (row 0072) and lets a toolchain-less image through to run bash-only (#329)."""
+    import asyncio
+
+    agent = harbor_agent()
+
+    class Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    class Doctor(agent.Yi):
+        def __init__(self, stdout):
+            self.stdout = stdout
+        async def exec_as_agent(self, environment, command):
+            return Result(self.stdout)
+
+    booted_dead = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv"},
+                              {"name": "kernel-boot", "status": "fail", "detail": "kernel_info timed out"}])
+    no_toolchain = json.dumps([{"name": "kernel-toolchain", "status": "fail", "detail": "no uv and no python3"}])
+    green = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv"},
+                        {"name": "kernel-boot", "status": "fixed", "detail": "built"}])
+    try:
+        asyncio.run(Doctor(booted_dead).warm_kernel(None))
+    except RuntimeError as error:
+        assert "kernel-boot" in str(error), error
+    else:
+        raise AssertionError("row 0072: a dead boot on a present toolchain must stop the trial")
+    asyncio.run(Doctor(no_toolchain).warm_kernel(None))
+    asyncio.run(Doctor(green).warm_kernel(None))
+
+
 def check_install():
     """S2: the adapter builds the kernel venv at install and reports an image it cannot boot on;
     #329: with no toolchain it runs bash-only; #1315: a boot that failed on a toolchain stops it."""
@@ -957,10 +989,8 @@ def check_plugins():
             pass
 
 
-def check_plugin_upload():
-    """#1041: install uploads each carried plugin into the container and runs it there, and
-    URL mode carries none while its fingerprint still says `+plugins{}`."""
-    import asyncio
+def harbor_agent():
+    """The harbor adapter module over stub harbor classes, as far as the selftest needs."""
     import importlib
     import types as types_mod
 
@@ -1003,7 +1033,15 @@ def check_plugin_upload():
             pass
         context.AgentContext = AgentContext
         agent_models.context = context
-    agent = importlib.import_module("yi_harbor.agent")
+    return importlib.import_module("yi_harbor.agent")
+
+
+def check_plugin_upload():
+    """#1041: install uploads each carried plugin into the container and runs it there, and
+    URL mode carries none while its fingerprint still says `+plugins{}`."""
+    import asyncio
+
+    agent = harbor_agent()
 
     class Result:
         stdout = None
@@ -1127,6 +1165,7 @@ CHECKS = (
     check_rule_fires,
     check_command,
     check_install,
+    check_warm_kernel,
     check_adapter_imports,
     check_usage,
     check_budget_sentence,

@@ -8,6 +8,10 @@ use serde_json::{Value, json};
 mod scratch;
 use scratch::Scratch;
 
+#[path = "support/prompt_slots.rs"]
+mod prompt_slots_support;
+use prompt_slots_support::prompt_slots;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Workspace(Scratch);
@@ -2283,34 +2287,11 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
     Ok(())
 }
 
-/// The prompt slots each session in `home/sessions` recorded, by slot name, one list per file.
-fn prompt_slots(workspace: &Workspace) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-    let mut found = Vec::new();
-    for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
-        for path in std::fs::read_dir(project?.path())? {
-            let path = path?.path();
-            if !path.is_file() || path.extension().is_none_or(|ext| ext != "jsonl") {
-                continue;
-            }
-            let mut names = Vec::new();
-            for line in std::fs::read_to_string(&path)?.lines() {
-                let entry: Value = serde_json::from_str(line)?;
-                if entry["customType"] == "ext_state" {
-                    let slots = entry["data"]["slots"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    names.extend(
-                        slots
-                            .iter()
-                            .filter_map(|slot| slot["name"].as_str().map(str::to_owned)),
-                    );
-                }
-            }
-            found.push(names);
-        }
-    }
-    Ok(found)
+fn told_it_is_alone(workspace: &Workspace) -> Result<bool, Box<dyn Error>> {
+    let slots = prompt_slots(&workspace.0.join("home/sessions"))?;
+    Ok(slots
+        .iter()
+        .any(|names| names.iter().any(|name| name == "unattended")))
 }
 
 /// Dies with an unattended run told nothing about its graders: `yi ask` with no terminal on
@@ -2319,12 +2300,21 @@ fn prompt_slots(workspace: &Workspace) -> Result<Vec<Vec<String>>, Box<dyn Error
 fn a_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
     let alone = Workspace::new("unattended-ask")?;
     ask(&alone, "build the report", &[])?;
-    let slots = prompt_slots(&alone)?;
+    assert!(told_it_is_alone(&alone)?);
+    Ok(())
+}
+
+/// Dies with the bare-words spelling (`yi build the report`), which runs the same ask path
+/// with `command` set to its first word, told nothing.
+#[test]
+fn a_bare_words_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
+    let alone = Workspace::new("unattended-bare")?;
+    let out = alone.yi(&["--model", "faux/faux-1", "build", "the", "report"])?;
     assert!(
-        slots
-            .iter()
-            .any(|names| names.iter().any(|name| name == "unattended")),
-        "{slots:?}"
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
+    assert!(told_it_is_alone(&alone)?);
     Ok(())
 }

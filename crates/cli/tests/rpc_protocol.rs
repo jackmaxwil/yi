@@ -8,6 +8,10 @@ use serde_json::Value;
 mod scratch;
 use scratch::Scratch;
 
+#[path = "support/prompt_slots.rs"]
+mod prompt_slots_support;
+use prompt_slots_support::prompt_slots;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
@@ -393,27 +397,7 @@ fn an_rpc_session_is_not_told_it_is_alone() -> TestResult {
         &dir,
         &[serde_json::json!({"id": "p", "type": "prompt", "message": "hello"})],
     )?;
-    let mut names = Vec::new();
-    for project in std::fs::read_dir(dir.join("sessions"))? {
-        for path in std::fs::read_dir(project?.path())? {
-            let path = path?.path();
-            if path.extension().is_none_or(|ext| ext != "jsonl") {
-                continue;
-            }
-            for line in std::fs::read_to_string(&path)?.lines() {
-                let entry: Value = serde_json::from_str(line)?;
-                let slots = entry["data"]["slots"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                names.extend(
-                    slots
-                        .iter()
-                        .filter_map(|slot| slot["name"].as_str().map(str::to_owned)),
-                );
-            }
-        }
-    }
+    let names: Vec<String> = prompt_slots(&dir.join("sessions"))?.concat();
     assert!(
         names.iter().any(|name| name == "doctrine"),
         "no prompt slots recorded: {names:?}"

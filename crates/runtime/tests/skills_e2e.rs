@@ -625,8 +625,8 @@ fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
     Ok(())
 }
 
-/// Dies with one repository's recipe listed in every other: a skill that names a path with
-/// `within:` is offered only where the repository holds that path.
+/// Dies with one repository's recipe offered in every other: a skill that names a path with
+/// `within:` is listed, triggered, classified and read only where the repository holds that path.
 #[test]
 fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
     let home = Scratch::new("yi-skills-within")?;
@@ -646,5 +646,7 @@ fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
     };
     assert_eq!(names(&ours), ["land"]);
     assert!(names(&theirs).is_empty(), "{:?}", names(&theirs));
+    let reachable = |cwd: &std::path::Path| yi_runtime::skills::discover(cwd, &home).len();
+    assert_eq!((reachable(&ours), reachable(&theirs)), (1, 0));
     Ok(())
 }

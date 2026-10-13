@@ -17,16 +17,23 @@ pub fn roots(cwd: &Path, home: &Path) -> Vec<PathBuf> {
     crate::ext::resource_roots(cwd, home, "skills")
 }
 
+/// A skill written for one repository names a path only that repository has; the listing,
+/// triggers, classifier and reads all route through this one predicate.
+fn within(skill: &Skill, root: &Path) -> bool {
+    (skill.frontmatter.get("within")).is_none_or(|path| root.join(path).exists())
+}
+
 /// Every skill a read can reach: the listed ones, then those a `requires:` holds back, then each
 /// installed plugin's, which are reached only through a pointer and never listed.
 pub fn discover(cwd: &Path, home: &Path) -> Vec<Skill> {
+    let root = crate::ext::git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let (mut global, project) = scan_split(cwd, home);
     global.extend(project);
     for root in (yi_tools::plugin::PLUGINS.iter()).filter_map(|plugin| plugin.skill_root(home)) {
         global.extend(scan(&root));
     }
     let mut found: BTreeMap<String, Skill> = BTreeMap::new();
-    for skill in global {
+    for skill in global.into_iter().filter(|skill| within(skill, &root)) {
         found.entry(skill.name.clone()).or_insert(skill);
     }
     found.into_values().collect()
@@ -42,9 +49,7 @@ pub fn discover_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
             yi_tools::plugin::Plugin::named(name)
                 .is_some_and(|plugin| plugin.skill_root(home).is_some())
         });
-        // A skill written for one repository names a path only that repository has.
-        let within = (skill.frontmatter.get("within")).is_none_or(|path| root.join(path).exists());
-        plugin && within
+        plugin && within(skill, &root)
     };
     (
         global.into_iter().filter(present).collect(),
