@@ -188,6 +188,47 @@ fn a_headless_console_renders_at_the_size_it_is_given() -> TestResult {
     Ok(())
 }
 
+/// A console start under `console.titleIntro` is covered whole by the title, the hint row
+/// included, and one key gives the screen back at once instead of at its 3 s end.
+#[test]
+fn a_console_start_is_covered_by_the_title_and_any_key_gives_the_screen_back() -> TestResult {
+    let dir = Scratch::new("yi-console-title")?;
+    let home = dir.home()?;
+    std::fs::write(
+        home.join(".yi/config.json"),
+        r#"{"kernel":{"prewarm":false},"console":{"titleIntro":true,"titleWeights":{"kali":1}}}"#,
+    )?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let frames = dir.join("frames");
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = run_console(
+        &dir,
+        &socket,
+        &root,
+        "wait 300\ntick 2100\nsnap covered\nkey x\nwait-frame 8000 no sessions for this root\nsnap skipped\nquit\n",
+        &["--frames", &frames.display().to_string()],
+    );
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome?;
+    let covered = std::fs::read_to_string(frames.join("snap-covered.txt"))?;
+    assert!(
+        !covered.contains("no sessions for this root"),
+        "the hint row shows through:\n{covered}"
+    );
+    assert!(
+        covered.matches('@').count() > 50,
+        "no title drawn:\n{covered}"
+    );
+    let skipped = std::fs::read_to_string(frames.join("snap-skipped.txt"))?;
+    assert!(
+        skipped.contains("no sessions for this root"),
+        "the screen did not come back:\n{skipped}"
+    );
+    Ok(())
+}
+
 fn frames_of(dir: &Path) -> Result<String, Box<dyn Error>> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(Result::ok).collect();
     entries.sort_by_key(std::fs::DirEntry::file_name);
