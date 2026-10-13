@@ -34,6 +34,7 @@ def job_secs(workflow):
     return int(found.group(1)) * 60
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
@@ -270,7 +271,7 @@ def binary_ratchet(topic):
         print(text.strip())
         return 1
     path = BASELINES / "binary_size_budget.json"
-    path.write_text(f'{{"max_bytes": {grown.group(1)}}}\n')
+    path.write_text(merge_baseline.layout({"max_bytes": int(grown.group(1))}))
     subject = ratchet_subject([f"dist binary {grown.group(2)} -> {grown.group(1)}"], topic)
     git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
     print(f"ratchet: {subject}")
