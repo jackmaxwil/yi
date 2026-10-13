@@ -212,6 +212,8 @@ pub enum PaneContent {
         session: Option<SessionId>,
         cells: Vec<NbCell>,
         full: bool,
+        /// Invariant: the rows drawn at a width, cleared by every cell update and by `v`.
+        drawn: Option<(usize, Vec<ratatui::text::Line<'static>>)>,
     },
     SessionDiff {
         session: SessionId,

@@ -374,12 +374,12 @@ fn pane_view_content(
         }
         PaneContent::Markdown { path, source } => {
             let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
             (format!("¶ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Diff { path, source } => {
             let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
@@ -406,20 +406,25 @@ fn pane_view_content(
                 usize::from(inner.width),
                 theme,
             );
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
         PaneContent::Notebook {
             session,
             cells,
             full,
+            drawn,
         } => {
             let title = session.as_ref().map_or_else(
                 || "▤ notebook".to_owned(),
                 |id| format!("▤ {}", label_of(sessions, id, usize::from(inner.width))),
             );
             let width = usize::from(inner.width);
-            let all = crate::panes::notebook_lines(cells, width, *full, theme, close_hint);
+            if drawn.as_ref().is_none_or(|(at, _)| *at != width) {
+                let all = crate::panes::notebook_lines(cells, width, *full, theme, close_hint);
+                *drawn = Some((width, all));
+            }
+            let all = drawn.as_ref().map_or(&[][..], |(_, all)| all.as_slice());
             let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
@@ -427,7 +432,7 @@ fn pane_view_content(
 }
 
 fn windowed(
-    all: Vec<Line<'static>>,
+    all: &[Line<'static>],
     from_bottom: &mut usize,
     visible: usize,
 ) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
@@ -440,7 +445,7 @@ fn windowed(
     (window(all, from_bottom, visible), extent)
 }
 
-fn window(all: Vec<Line<'static>>, from_bottom: usize, visible: usize) -> Vec<Line<'static>> {
+fn window(all: &[Line<'static>], from_bottom: usize, visible: usize) -> Vec<Line<'static>> {
     let end = all.len().saturating_sub(from_bottom);
     let start = end.saturating_sub(visible);
     all.get(start..end)

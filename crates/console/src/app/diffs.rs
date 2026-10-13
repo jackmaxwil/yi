@@ -227,6 +227,7 @@ impl App {
                     session,
                     cells: Vec::new(),
                     full: false,
+                    drawn: None,
                 },
             };
             pane.scroll_from_bottom = 0;

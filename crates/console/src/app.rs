@@ -734,9 +734,10 @@ impl App {
             if pane.session() != Some(&id) {
                 continue;
             }
-            if let PaneContent::Notebook { cells, .. } = &mut pane.content
+            if let PaneContent::Notebook { cells, drawn, .. } = &mut pane.content
                 && apply_notebook(cells, &update)
             {
+                *drawn = None;
                 pane.scroll_from_bottom = 0;
                 if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
                     *seen = Instant::now();
@@ -1095,11 +1096,12 @@ impl App {
             },
             Zone::Panes if self.on_editor() => self.editor_key(key),
             Zone::Panes if self.on_notebook() => {
-                if let (KeyCode::Char('v'), Some(PaneContent::Notebook { full, .. })) = (
+                if let (KeyCode::Char('v'), Some(PaneContent::Notebook { full, drawn, .. })) = (
                     key.code,
                     self.state.focused_pane_mut().map(|pane| &mut pane.content),
                 ) {
                     *full = !*full;
+                    *drawn = None;
                     self.dirty = true;
                 }
             }
@@ -1117,7 +1119,7 @@ mod editor;
 mod menu;
 mod mouse;
 mod navigator;
-pub mod notebook;
+mod notebook;
 pub mod port;
 mod review;
 mod settings;
