@@ -1,5 +1,5 @@
 //! The title animation: a function of a screen's size, a scene and the seconds since the console
-//! started, drawn over every cell of the screen and over in 5.4 s.
+//! started, drawn over every cell of the screen and over in 3 s.
 
 use std::time::Duration;
 
@@ -82,7 +82,7 @@ fn distance_is_signed_from_the_stroke_edge() {
 #[test]
 fn the_cover_replaces_every_cell_while_it_holds() {
     for (size, stem) in [((80, 24), (35, 14)), ((200, 50), (90, 29))] {
-        let held = screen(Scene::Kali, size, 4.0, None);
+        let held = screen(Scene::Kali, size, 2.1, None);
         assert_eq!(
             count(&held, |g| g == 'X'),
             0,
@@ -158,7 +158,7 @@ fn the_fold_opens_from_nothing_and_fills_the_screen() {
         0,
         "nothing drawn, and nothing of the TUI left"
     );
-    let open = screen(Scene::Kali, (80, 24), 3.0, None);
+    let open = screen(Scene::Kali, (80, 24), 1.5, None);
     assert!(
         count(&open, |g| g != ' ') > 600,
         "the fold fills the screen"
@@ -168,11 +168,11 @@ fn the_fold_opens_from_nothing_and_fills_the_screen() {
 #[test]
 fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
     for (width, height) in [(0, 0), (0, 10), (10, 0), (1, 1), (1, 40), (300, 1)] {
-        screen(Scene::Echo, (width, height), 3.0, None);
+        screen(Scene::Echo, (width, height), 2.0, None);
         screen(
             Scene::Kali,
             (width, height),
-            5.0,
+            2.6,
             Some(Rect::new(0, 0, 10, 5)),
         );
     }
@@ -186,7 +186,7 @@ fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
 fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
     let landing = Rect::new(2, 1, 10, 5);
     let at = |secs: f64| screen(Scene::Kali, (80, 24), secs, Some(landing));
-    let held = at(4.0);
+    let held = at(2.1);
     assert_eq!(
         count(&held, |g| g == 'X'),
         0,
@@ -194,7 +194,7 @@ fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
     );
     assert_eq!(held[14][35], '@', "the name is in the middle");
 
-    let landed = at(5.39);
+    let landed = at(2.99);
     assert_eq!(
         landed[4][5], '@',
         "the stem's foot is on the small mark's stem"
@@ -210,7 +210,7 @@ fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
         "the TUI is back everywhere but the name, on the small mark"
     );
 
-    let over = at(5.4);
+    let over = at(3.0);
     assert_eq!(count(&over, |g| g != 'X'), 0, "and then it is over");
 }
 
@@ -221,7 +221,7 @@ fn the_screen_comes_back_a_few_cells_at_a_time() {
         let glyphs = screen(Scene::Kali, (80, 24), secs, Some(Rect::new(2, 1, 10, 5)));
         count(&glyphs, |g| g == 'X') as f64 / area
     };
-    let (early, mid, late) = (back(4.4), back(4.8), back(5.2));
+    let (early, mid, late) = (back(2.4), back(2.6), back(2.8));
     assert!(early < mid && mid < late, "{early:.2} {mid:.2} {late:.2}");
     assert!(early < 0.35 && late > 0.65, "{early:.2} {late:.2}");
 }

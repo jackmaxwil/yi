@@ -1,19 +1,19 @@
 #! console --size 120x34 --config '{"console":{"titleIntro":true,"titleWeights":{"kali":1}}}'
 # A console start with the Kali fold pinned: the animation covers the whole screen, the rail and
-# the hint row included; the name holds, then the screen comes back around it, and it is over.
+# the hint row included; the name holds briefly, then the screen comes back around it, and it is over at 3 s.
 # The clock is frozen, so each snap is the frame at that second. A key would end it at once.
 # The cover hides the hint row, so there is no text to wait for: a pause lets the first frame draw.
 wait 400
-tick 1000
+tick 500
 snap opening
-tick 1500
-snap name-rising
-tick 1500
-snap held
-tick 800
-snap landing
-tick 800
-snap landed
 tick 1000
+snap name-rising
+tick 600
+snap held
+tick 400
+snap landing
+tick 400
+snap landed
+tick 200
 snap over
 quit
