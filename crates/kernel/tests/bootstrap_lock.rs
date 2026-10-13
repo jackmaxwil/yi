@@ -94,6 +94,7 @@ fn a_boot_sweeps_only_the_venvs_nothing_uses() -> Result<(), Box<dyn std::error:
     let age = |dir: &std::path::Path| std::fs::File::open(dir)?.set_modified(days_ago);
     let current = venv("kernel-venv-cccc0000")?;
     let old = venv("kernel-venv-aaaa0000")?;
+    let legacy = venv("kernel-venv")?;
     let building = venv("kernel-venv-bbbb0000")?;
     let lock = yi.join("kernel-venv-bbbb0000.bootstrap.flock");
     let building_lock = std::fs::File::create(&lock)?;
@@ -105,7 +106,7 @@ fn a_boot_sweeps_only_the_venvs_nothing_uses() -> Result<(), Box<dyn std::error:
     let other = yi.join("sessions");
     std::fs::create_dir_all(&other)?;
     let fresh = venv("kernel-venv-eeee0000")?;
-    for dir in [&current, &old, &building, &running] {
+    for dir in [&current, &old, &legacy, &building, &running] {
         age(dir)?;
     }
     #[expect(
@@ -116,8 +117,10 @@ fn a_boot_sweeps_only_the_venvs_nothing_uses() -> Result<(), Box<dyn std::error:
     let removed = yi_kernel::bootstrap::remove_stale_venvs(&current);
     kernel.kill()?;
     kernel.wait()?;
-    assert_eq!(removed, std::slice::from_ref(&old));
-    assert!(!old.exists());
+    let mut removed = removed;
+    removed.sort();
+    assert_eq!(removed, [legacy.clone(), old.clone()]);
+    assert!(!old.exists() && !legacy.exists());
     for kept in [&current, &building, &running, &fresh, &other] {
         assert!(kept.is_dir(), "{} was swept", kept.display());
     }

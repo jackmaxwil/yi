@@ -149,7 +149,11 @@ pub fn ripwire_reads<'w>(args: impl Iterator<Item = &'w str>) -> bool {
         None => {
             roots = roots.saturating_add(1);
             roots == 1
-                && (word == "." || word == ".." || word.starts_with(['/']) || word.starts_with("./") || word.starts_with("../"))
+                && (word == "."
+                    || word == ".."
+                    || word.starts_with(['/'])
+                    || word.starts_with("./")
+                    || word.starts_with("../"))
                 && !word.contains([':', '@'])
         }
     })
@@ -431,7 +435,9 @@ pub fn classify(argv: &[String]) -> Class {
         "git" => git_class(argv),
         "cargo" => cargo_class(argv),
         "find" => find_class(argv),
-        "ripwire" if argv0 == "ripwire" && ripwire_reads(argv.iter().skip(1).map(String::as_str)) => {
+        "ripwire"
+            if argv0 == "ripwire" && ripwire_reads(argv.iter().skip(1).map(String::as_str)) =>
+        {
             Class::Safe
         }
         "curl" | "wget" | "http" => network_class(argv),

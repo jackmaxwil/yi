@@ -1,0 +1,5 @@
+#! solo --size 100x40 --seed scripts/proof/tui_see/harvest-assess-long.jsonl
+# Harvested from 01a0d6e4.jsonl by `tui_see.py harvest`: view long.
+wait-frame 5000 faux-1
+snap long
+quit

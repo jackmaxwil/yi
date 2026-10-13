@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::image::image_defect;
-use yi_types::kernel::{ExecuteResult, ExecuteStatus};
+use yi_types::kernel::{
+    ExecuteResult, ExecuteStatus, NESTED_CALLS, NESTED_READS_DROPPED, NestedCall,
+};
 use yi_types::message::Content;
 
 use crate::spill::{Spill, Stream};
@@ -67,8 +69,18 @@ impl CellSpill {
     }
 }
 
+/// The calls a cell makes through the host, taken only while the cell is open.
+pub trait CellCalls: Send + Sync {
+    /// The bridge opens the cell once its execute `request` holds the kernel; only calls naming
+    /// that request count.
+    fn open(&self, request: &str);
+    /// Closes the cell: its rows, and how many read rows it made past the kept count.
+    fn close(&self) -> (Vec<NestedCall>, u64);
+}
+
 pub struct IpythonTool {
     pub bridge: Arc<dyn KernelBridge>,
+    pub calls: Option<Arc<dyn CellCalls>>,
 }
 
 fn shell_cell(code: &str) -> Option<String> {
@@ -89,7 +101,7 @@ impl Tool for IpythonTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `%%bash` runs a shell in the kernel's env (on macOS loopback only, so `%pip install` fails); pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout or stderr past 65,536 characters is cut, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a displayed value past that is cut with no file; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
+        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `yi.tools.read(path=...)`, `yi.tools.edit(patch=...)` and the rest call your own tools from a cell, judged and recorded as your calls are; `%%bash` runs a shell in the kernel's env (on macOS loopback only, so `%pip install` fails); pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout or stderr past 65,536 characters is cut, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a displayed value past that is cut with no file; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
     }
 
     fn schema(&self) -> Value {
@@ -127,11 +139,25 @@ impl Tool for IpythonTool {
             Err(message) => return error_output(message),
         };
         let (cancelled, dir) = (&context.cancelled, context.recovery_dir.as_deref());
-        let outcome = match self.bridge.execute_cell(code, cancelled, dir) {
-            Ok(outcome) => outcome,
-            Err(message) => return error_output(message),
+        let outcome = self.bridge.execute_cell(code, cancelled, dir);
+        let (rows, dropped) = self
+            .calls
+            .as_ref()
+            .map(|calls| calls.close())
+            .unwrap_or_default();
+        let mut output = match outcome {
+            Ok(outcome) => cell_output(code, outcome),
+            Err(message) => error_output(message),
         };
-        cell_output(code, outcome)
+        if let Value::Object(details) = &mut output.result.details {
+            if !rows.is_empty() {
+                details.insert(NESTED_CALLS.to_owned(), json!(rows));
+            }
+            if dropped > 0 {
+                details.insert(NESTED_READS_DROPPED.to_owned(), json!(dropped));
+            }
+        }
+        output
     }
 }
 

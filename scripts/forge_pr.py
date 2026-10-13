@@ -454,7 +454,6 @@ def required():
             return required_jobs(protection.get("status_check_contexts") or [])
     return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
 
-
 def jobs_of(pr):
     tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
     return job_table(tasks.get("workflow_runs", []), pr["head"]["sha"])

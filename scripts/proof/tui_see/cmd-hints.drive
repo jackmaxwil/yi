@@ -1,0 +1,12 @@
+#! console --size 120x34
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+wait-frame 5000 0 / 128K
+cmd-/
+wait-frame 3000 ↑↓ move · ←→ tab
+snap keys
+key esc
+wait-frame 3000 !↑↓ move · ←→ tab
+snap hints
+quit
