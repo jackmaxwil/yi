@@ -7,7 +7,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -16,11 +16,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::client::ClientEvent;
+use crate::render::short_path;
 
 const SCROLLBACK_ROWS: usize = 5_000;
 
 pub struct Pty {
     master: File,
+    writes: mpsc::Sender<Vec<u8>>,
+    faults: Arc<Mutex<Option<std::io::Error>>>,
     parser: Arc<Mutex<vt100::Parser>>,
     fresh: Arc<AtomicBool>,
     child: Option<Child>,
@@ -36,13 +39,6 @@ fn winsize(rows: u16, cols: u16) -> rustix::termios::Winsize {
         ws_xpixel: 0,
         ws_ypixel: 0,
     }
-}
-
-fn base(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
 }
 
 impl Pty {
@@ -75,6 +71,9 @@ impl Pty {
             .spawn()?;
         let master = File::from(master);
         let mut reader = master.try_clone()?;
+        let mut writer = master.try_clone()?;
+        let (writes, pending) = mpsc::channel::<Vec<u8>>();
+        let faults = Arc::new(Mutex::new(None));
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_ROWS)));
         let fresh = Arc::new(AtomicBool::new(true));
         let (feed, flag) = (Arc::clone(&parser), Arc::clone(&fresh));
@@ -96,14 +95,25 @@ impl Pty {
                 }
             }
         });
+        let slot = Arc::clone(&faults);
+        std::thread::spawn(move || {
+            for bytes in pending {
+                if let Err(error) = writer.write_all(&bytes) {
+                    *lock(&slot) = Some(error);
+                    break;
+                }
+            }
+        });
         Ok(Self {
             master,
+            writes,
+            faults,
             parser,
             fresh,
             child: Some(child),
             exited: None,
             size: (rows, cols),
-            title: format!(">_ {} · {}", base(shell), base(cwd)),
+            title: format!(">_ {} · {}", short_path(shell), short_path(cwd)),
         })
     }
 
@@ -111,10 +121,15 @@ impl Pty {
         self.exited.is_some()
     }
 
-    /// ponytail: a write blocks on a full PTY input queue; a writer thread if a stopped child
-    /// ever holds a paste long enough to freeze the console.
+    /// Invariant: the console loop never writes the master; a full PTY input queue holds
+    /// only the writer thread, so a stopped child cannot freeze the loop.
     pub fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.master.write_all(bytes)
+        if let Some(error) = lock(&self.faults).take() {
+            return Err(error);
+        }
+        self.writes
+            .send(bytes.to_vec())
+            .map_err(|_| std::io::Error::new(ErrorKind::BrokenPipe, "terminal writer stopped"))
     }
 
     pub fn paste(&mut self, text: &str) -> std::io::Result<()> {
@@ -199,8 +214,8 @@ impl Drop for Pty {
     }
 }
 
-fn lock(parser: &Mutex<vt100::Parser>) -> MutexGuard<'_, vt100::Parser> {
-    parser.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn row_line(screen: &vt100::Screen, row: u16, cols: u16) -> Line<'static> {

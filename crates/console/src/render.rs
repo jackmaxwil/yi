@@ -636,7 +636,7 @@ fn editor_view(
     (format!("✎ {}{mark}", short_path(&editor.path)), out, extent)
 }
 
-fn short_path(path: &str) -> String {
+pub(crate) fn short_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 

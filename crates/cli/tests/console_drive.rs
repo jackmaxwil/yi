@@ -371,6 +371,9 @@ fn a_terminal_pane_runs_a_command_and_says_how_its_shell_ended() -> TestResult {
          key enter\n\
          wait-frame 8000 yi-term-ok\n\
          snap printed\n\
+         paste printf 'pasted-%s\\n' mark\n\
+         key enter\n\
+         wait-frame 8000 pasted-mark\n\
          type seq 1 $((20*2))\n\
          key enter\n\
          wait-frame 8000 40\n\
