@@ -15,7 +15,7 @@ pub(crate) fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
     let mut x = bar.x;
     let mut hits = Vec::new();
     for (index, tab) in app.state.tabs.iter().enumerate() {
-        let width = u16::try_from(tab_label(index, tab.zoomed).chars().count()).unwrap_or(3);
+        let width = label_width(&tab_label(index, tab.zoomed));
         hits.push((Rect::new(x, bar.y, width, 1), index));
         x = x.saturating_add(width);
     }
@@ -82,7 +82,7 @@ pub(crate) fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, theme:
         let Some((glyph, word, _)) = HEADER_BUTTONS.iter().find(|(.., a)| a == action) else {
             continue;
         };
-        let worded = rect.width > 4;
+        let worded = rect.width > label_width(&button_label(glyph, word, false));
         let chip = Style::default()
             .fg(theme.muted)
             .add_modifier(Modifier::REVERSED | Modifier::BOLD);

@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
-use yi_tui::colors::{Theme, name_tile, tile_style_at};
+use yi_tui::colors::{ColorTier, Theme, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
@@ -33,11 +33,21 @@ pub struct PaneView {
     pub chat: bool,
 }
 
+/// The one control table hover and press both walk; press maps it to an action, hover to a rect.
+pub enum Target {
+    Tab(usize),
+    Settings(PaneId, usize),
+    Button(keys::Action),
+    Gear,
+    Title(PaneId),
+    Root(usize),
+    Session(usize),
+}
+
 #[derive(Default)]
 pub struct Hits {
     pub sidebar_width: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
-    /// (column, row, session) of every avatar cell on screen; the kitty pass places there.
     pub avatars: Vec<crate::avatar::Placement>,
     pub root_rows: Vec<(u16, usize)>,
     pub panes: Vec<(PaneId, Rect)>,
@@ -46,7 +56,6 @@ pub struct Hits {
     pub closers: Vec<(PaneId, Rect)>,
     pub titles: Vec<(PaneId, Rect)>,
     pub settings_tabs: Vec<(Rect, PaneId, usize)>,
-    /// Popups over the panes, outermost first: they take every click and hide kitty images.
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
     pub gear: Option<Rect>,
@@ -60,35 +69,74 @@ impl Hits {
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
     }
+    pub fn target_at(&self, x: u16, y: u16) -> Option<(Rect, Target)> {
+        let at = ratatui::layout::Position::new(x, y);
+        let in_sidebar = x < self.sidebar_width;
+        self.tabs
+            .iter()
+            .find(|(rect, _)| rect.contains(at))
+            .map(|(rect, index)| (*rect, Target::Tab(*index)))
+            .or_else(|| {
+                self.settings_tabs
+                    .iter()
+                    .find(|(rect, ..)| rect.contains(at))
+                    .map(|(rect, pane, tab)| (*rect, Target::Settings(*pane, *tab)))
+            })
+            .or_else(|| {
+                (self.hint_buttons.iter().chain(&self.header_buttons))
+                    .find(|(rect, _)| rect.contains(at))
+                    .map(|(rect, action)| (*rect, Target::Button(*action)))
+            })
+            .or_else(|| {
+                self.gear
+                    .filter(|gear| gear.contains(at))
+                    .map(|gear| (gear, Target::Gear))
+            })
+            .or_else(|| {
+                self.titles
+                    .iter()
+                    .find(|(_, rect)| rect.contains(at))
+                    .map(|(pane, rect)| (*rect, Target::Title(*pane)))
+            })
+            .or_else(|| {
+                in_sidebar
+                    .then(|| self.root_rows.iter().find(|(row_y, _)| *row_y == y))
+                    .flatten()
+                    .map(|(row_y, index)| {
+                        (
+                            Rect::new(0, *row_y, self.sidebar_width, 1),
+                            Target::Root(*index),
+                        )
+                    })
+            })
+            .or_else(|| {
+                in_sidebar
+                    .then(|| self.sidebar_rows.iter().find(|(row_y, _)| *row_y == y))
+                    .flatten()
+                    .map(|(_, index)| {
+                        (
+                            Rect::new(0, y, self.sidebar_width, 1),
+                            Target::Session(*index),
+                        )
+                    })
+            })
+    }
 
     /// The control under the pointer; a move redraws only when this changes. A session's
     /// rows lift together, as one click target.
     pub fn hover_at(&self, x: u16, y: u16) -> Option<Rect> {
-        let at = ratatui::layout::Position::new(x, y);
-        let session = self.sidebar_rows.iter().find(|(row, _)| *row == y);
-        let row = session
-            .filter(|_| x < self.sidebar_width)
-            .map(|(_, index)| {
-                let rows = self.sidebar_rows.iter().filter(|(_, i)| i == index);
-                let (top, bottom) =
-                    rows.fold((y, y), |(t, b), (row, _)| (t.min(*row), b.max(*row)));
-                Rect::new(
-                    0,
-                    top,
-                    self.sidebar_width,
-                    bottom.saturating_sub(top).saturating_add(1),
-                )
-            });
-        let hints = self.hint_buttons.iter().map(|(rect, _)| *rect);
-        hints
-            .chain(self.closers.iter().map(|(_, rect)| *rect))
-            .chain(self.header_buttons.iter().map(|(rect, _)| *rect))
-            .chain(self.tabs.iter().map(|(rect, _)| *rect))
-            .chain(self.titles.iter().map(|(_, rect)| *rect))
-            .chain(self.settings_tabs.iter().map(|(rect, ..)| *rect))
-            .chain(self.gear)
-            .find(|rect| rect.contains(at))
-            .or(row)
+        let (rect, target) = self.target_at(x, y)?;
+        if let Target::Session(index) = target {
+            let rows = self.sidebar_rows.iter().filter(|(_, i)| *i == index);
+            let (top, bottom) = rows.fold((y, y), |(t, b), (row, _)| (t.min(*row), b.max(*row)));
+            return Some(Rect::new(
+                0,
+                top,
+                self.sidebar_width,
+                bottom.saturating_sub(top).saturating_add(1),
+            ));
+        }
+        Some(rect)
     }
 }
 
@@ -964,8 +1012,6 @@ fn title_tile(app: &mut App, id: &str, seed: &str, hue: usize, x: u16, y: u16) -
     Span::raw(" ".repeat(text.chars().count()))
 }
 
-/// Border cells with edge-bit union, so shared pane edges resolve to real
-/// junctions instead of doubled lines.
 fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
     #[derive(Default, Clone, Copy)]
     struct EdgeCell {
@@ -1066,6 +1112,8 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         let chip = Style::default().fg(pane.hue);
         let style = if pane.focused {
             chip.add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else if matches!(theme.tier, ColorTier::Ansi16) {
+            theme.dim_style()
         } else {
             chip
         };

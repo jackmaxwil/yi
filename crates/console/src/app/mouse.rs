@@ -120,61 +120,63 @@ impl App {
         // Incident: a lower pane's mark sits on the split it can be dragged by, and a press meant
         // as a resize closed the pane; a mark closes on a release over it that did not drag.
         self.pending_close = self.closer_at(x, y);
-        if let Some((_, index)) = hits
-            .tabs
-            .iter()
-            .find(|(rect, _)| rect.contains(Position::new(x, y)))
-        {
-            let index = *index;
-            self.state.select_tab(index);
-            self.dirty = true;
-            return;
-        }
-        let strip = hits.settings_tabs.iter();
-        if let Some((_, pane, tab)) = strip.copied().find(|(r, ..)| r.contains((x, y).into())) {
-            if let Some(layout) = self.state.tab_mut() {
-                layout.layout.focus_pane(pane);
+        let target = hits.target_at(x, y);
+        match target {
+            Some((_, crate::render::Target::Tab(index))) => {
+                self.state.select_tab(index);
+                self.dirty = true;
+                return;
             }
-            self.state.zone = Zone::Panes;
-            if let Some(settings) = self.settings_pane(pane) {
-                (settings.tab, settings.cursor) = (tab, 0);
+            Some((_, crate::render::Target::Settings(pane, tab))) => {
+                if let Some(layout) = self.state.tab_mut() {
+                    layout.layout.focus_pane(pane);
+                }
+                self.state.zone = Zone::Panes;
+                if let Some(settings) = self.settings_pane(pane) {
+                    (settings.tab, settings.cursor) = (tab, 0);
+                }
+                self.dirty = true;
+                return;
             }
-            self.dirty = true;
-            return;
-        }
-        let hint = (hits.hint_buttons.iter().chain(&hits.header_buttons))
-            .find(|(rect, _)| rect.contains(Position::new(x, y)));
-        if let Some((_, action)) = hint {
-            return self.apply_action(outbound, *action);
-        }
-        if hits
-            .gear
-            .is_some_and(|gear| gear.contains(Position::new(x, y)))
-        {
-            let Some(pane) = self.open_settings_pane() else {
-                return self.apply_action(outbound, Action::Settings);
-            };
-            if let Some(tab) = self.state.tab_mut() {
-                tab.layout.focus_pane(pane);
+            Some((_, crate::render::Target::Button(action))) => {
+                return self.apply_action(outbound, action);
             }
-            self.dirty = true;
-            return self.apply_action(outbound, Action::ClosePane);
-        }
-        if x < hits.sidebar_width {
-            if let Some((_, index)) = hits.root_rows.iter().find(|(row_y, _)| *row_y == y) {
-                let root = self.state.roots().get(*index).cloned();
+            Some((_, crate::render::Target::Gear)) => {
+                let Some(pane) = self.open_settings_pane() else {
+                    return self.apply_action(outbound, Action::Settings);
+                };
+                if let Some(tab) = self.state.tab_mut() {
+                    tab.layout.focus_pane(pane);
+                }
+                self.dirty = true;
+                return self.apply_action(outbound, Action::ClosePane);
+            }
+            Some((_, crate::render::Target::Root(index))) => {
+                let root = self.state.roots().get(index).cloned();
                 let next = root.filter(|r| self.state.root_filter.as_ref() != Some(r));
                 self.state.set_root_filter(next);
                 self.state.zone = Zone::Sidebar;
                 self.dirty = true;
                 return;
             }
-            if let Some((_, index)) = hits.sidebar_rows.iter().find(|(row_y, _)| *row_y == y) {
-                self.state.selected = *index;
+            Some((_, crate::render::Target::Session(index))) => {
+                self.state.selected = index;
                 self.state.cursor_moved = true;
                 self.state.zone = Zone::Sidebar;
                 self.open_selected(outbound);
+                return;
             }
+            Some((_, crate::render::Target::Title(pane))) => {
+                if let Some(tab) = self.state.tab_mut() {
+                    tab.layout.focus_pane(pane);
+                }
+                self.state.zone = Zone::Panes;
+                self.dirty = true;
+                return;
+            }
+            None => {}
+        }
+        if x < hits.sidebar_width {
             return;
         }
         let split = hits.splits.iter().find(|border| match border.direction {
