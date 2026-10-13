@@ -65,14 +65,14 @@ const RING_FREQ: f64 = 4.0;
 pub const RING_SECS: f64 = 1.8;
 const KALI_SECS: f64 = 16.0;
 /// The fold opens from a deep zoom over this long, then the name rises over the next second.
-const OPEN_SECS: f64 = 3.2;
-const NAME_FROM: f64 = 2.4;
-const NAME_TO: f64 = 3.4;
+const OPEN_SECS: f64 = 1.6;
+const NAME_FROM: f64 = 1.2;
+const NAME_TO: f64 = 1.9;
 /// The name holds in full until here, then lands on the small mark over `LAND_SECS`.
-const HOLD_SECS: f64 = 4.2;
-const LAND_SECS: f64 = 1.2;
+const HOLD_SECS: f64 = 2.2;
+const LAND_SECS: f64 = 0.8;
 /// After this the animation is over and draws nothing.
-pub const OVER: Duration = Duration::from_millis(5400);
+pub const OVER: Duration = Duration::from_millis(3000);
 const KALI_FOLDS: u8 = 11;
 const KALI_SAMPLES: u8 = 3;
 /// The fold's accumulated change of length at the 5th and 97th percentile over a loop.
@@ -198,7 +198,7 @@ fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
     ((raw - KALI_LO) / (KALI_HI - KALI_LO))
         .clamp(0.0, 1.0)
         .powf(1.1)
-        * smooth(t / 0.6)
+        * smooth(t / 0.3)
 }
 
 /// Dim the field near the strokes and fill them: `rise` 0 leaves the field, 1 is the name.
