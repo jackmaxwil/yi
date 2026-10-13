@@ -315,12 +315,8 @@ fn read_only_command(command: &str) -> bool {
 }
 
 fn read_only_segment(segment: &str) -> bool {
-    let Some(tokens) = yi_permission::shell_words(segment) else {
-        return false;
-    };
-    let tokens: Vec<&str> = tokens
-        .iter()
-        .map(String::as_str)
+    let tokens: Vec<&str> = segment
+        .split_whitespace()
         // `2>/dev/null` overwrites nothing that exists.
         .filter(|token| !(token.contains('>') && token.ends_with("/dev/null")))
         .collect();
@@ -330,14 +326,19 @@ fn read_only_segment(segment: &str) -> bool {
     {
         return false;
     }
-    let mut words = tokens.iter().copied().skip_while(|word| word.contains('='));
+    let mut words = tokens.iter().skip_while(|word| word.contains('='));
     let Some(verb) = words.next() else {
         return true;
     };
     let verb = verb.rsplit('/').next().unwrap_or(verb);
     match verb {
-        "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(&sub)),
-        "ripwire" => yi_permission::ripwire_reads(words),
+        "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub)),
+        // The permission wall's own verdict: the label and the decision cannot disagree.
+        "ripwire" => matches!(
+            yi_permission::parse(segment),
+            yi_permission::Parsed::Segments(argvs)
+                if matches!(argvs.as_slice(), [argv] if yi_permission::classify(argv) == yi_permission::Class::Safe)
+        ),
         _ => READ_ONLY_VERBS.contains(&verb),
     }
 }
