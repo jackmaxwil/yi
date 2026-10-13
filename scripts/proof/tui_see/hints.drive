@@ -1,0 +1,5 @@
+#! console --size 120x34
+# The hint row as colour keycaps on a dock; the term host plays no mouse steps, so hover is a test.
+wait-frame 15000 command palette
+snap rest
+quit

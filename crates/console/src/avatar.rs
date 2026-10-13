@@ -124,6 +124,113 @@ pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Art {
+    Identicon,
+    Gear {
+        width: usize,
+        height: usize,
+    },
+    Closer {
+        width: usize,
+        height: usize,
+    },
+    Cap {
+        width: usize,
+        height: usize,
+        left: bool,
+    },
+}
+
+fn gear_distance(x: f64, y: f64) -> f64 {
+    let r = x.hypot(y);
+    let step = std::f64::consts::FRAC_PI_4;
+    let theta = y.atan2(x);
+    let off = theta - (theta / step).round() * step;
+    let (round, half) = (0.05, (0.16, 0.15));
+    let qx = (r * off.cos() - 0.82).abs() - half.0 + round;
+    let qy = (r * off.sin()).abs() - half.1 + round;
+    let tooth = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round;
+    (r - 0.7).min(tooth)
+}
+
+/// Coverage comes from the distance to the outline, so every edge is one pixel of blend.
+pub fn gear_rgba(fg: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
+    let radius = (width as f64).min(height as f64 * 0.5) / 2.0;
+    let stroke = (radius * 0.09).max(1.5) / 2.0;
+    let (cx, cy) = (width as f64 / 2.0, height as f64 / 2.0);
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+    for py in 0..height {
+        for px in 0..width {
+            let x = (px as f64 + 0.5 - cx) / radius;
+            let y = (py as f64 + 0.5 - cy) / radius;
+            let edge = gear_distance(x, y).abs().min((x.hypot(y) - 0.28).abs());
+            let alpha = (stroke - edge * radius + 0.5).clamp(0.0, 1.0);
+            out.extend_from_slice(&[fg.0, fg.1, fg.2, (alpha * 255.0).round() as u8]);
+        }
+    }
+    out
+}
+
+fn rounded_box((x, y): (f64, f64), (half_w, half_h): (f64, f64), round: f64) -> f64 {
+    let (qx, qy) = (x.abs() - half_w + round, y.abs() - half_h + round);
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round
+}
+
+/// One rounded end of a pill whose body is cell background, so the far side runs off the image.
+pub fn cap_rgba(fill: (u8, u8, u8), width: usize, height: usize, left: bool) -> Vec<u8> {
+    let (w, h) = (width as f64, height as f64);
+    let centre = if left { 1.5 * w } else { -0.5 * w };
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+    for py in 0..height {
+        for px in 0..width {
+            let at = (px as f64 + 0.5 - centre, py as f64 + 0.5 - h / 2.0);
+            let edge = rounded_box(at, (1.5 * w, h / 2.0), (h * 0.32).min(w));
+            let alpha = ((0.5 - edge).clamp(0.0, 1.0) * 255.0).round() as u8;
+            out.extend_from_slice(&[fill.0, fill.1, fill.2, alpha]);
+        }
+    }
+    out
+}
+
+fn segment((x, y): (f64, f64), a: f64) -> f64 {
+    let t = ((x + y) / 2.0).clamp(-a, a);
+    (x - t).hypot(y - t)
+}
+
+/// The X is knocked out of the chip, so the terminal's own ground shows through the strokes.
+pub fn closer_rgba(fill: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
+    let (w, h) = (width as f64, height as f64);
+    let (round, arm, stroke) = (h * 0.22, h * 0.2, (h * 0.05).max(0.9));
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+    for py in 0..height {
+        for px in 0..width {
+            let (x, y) = (px as f64 + 0.5 - w / 2.0, py as f64 + 0.5 - h / 2.0);
+            let chip = (0.5 - rounded_box((x, y), (w / 2.0, h / 2.0), round)).clamp(0.0, 1.0);
+            let cross = segment((x, y), arm).min(segment((x, -y), arm));
+            let cut = (stroke - cross + 0.5).clamp(0.0, 1.0);
+            let alpha = (chip * (1.0 - cut) * 255.0).round() as u8;
+            out.extend_from_slice(&[fill.0, fill.1, fill.2, alpha]);
+        }
+    }
+    out
+}
+
+fn pixels(place: &Placement) -> (Vec<u8>, (usize, usize)) {
+    match place.art {
+        Art::Identicon => (rgba(&grid(&place.seed), place.accent), (PX, PX)),
+        Art::Gear { width, height } => (gear_rgba(place.accent, width, height), (width, height)),
+        Art::Closer { width, height } => {
+            (closer_rgba(place.accent, width, height), (width, height))
+        }
+        Art::Cap {
+            width,
+            height,
+            left,
+        } => (cap_rgba(place.accent, width, height, left), (width, height)),
+    }
+}
+
 /// Where one session's avatar goes this frame, and the colour its name earned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
@@ -135,6 +242,7 @@ pub struct Placement {
     pub seed: String,
     pub accent: (u8, u8, u8),
     pub state: Option<yi_tui::orb::OrbState>,
+    pub art: Art,
 }
 
 /// Incident: kitty images draw above text, so an avatar under an open popup showed through it;
@@ -209,12 +317,8 @@ impl Avatars {
                     let Some(image) = self.pool.allocate() else {
                         continue;
                     };
-                    let _ = kitty::transmit(
-                        out,
-                        image.raw(),
-                        &rgba(&grid(&place.seed), place.accent),
-                        (PX, PX),
-                    );
+                    let (data, size) = pixels(place);
+                    let _ = kitty::transmit(out, image.raw(), &data, size);
                     self.ids.insert(place.key.clone(), image);
                     image
                 }
@@ -303,6 +407,7 @@ mod tests {
             key,
             accent: (1, 2, 3),
             state,
+            art: Art::Identicon,
         }
     }
 
@@ -322,6 +427,60 @@ mod tests {
         assert_eq!(rgba(&g, (1, 2, 3)).len(), PX * PX * 4);
     }
 
+    #[test]
+    fn the_gear_is_a_thin_outline_with_a_hub_ring_and_tooth_gaps() {
+        let (w, h) = (64, 96);
+        let gear = gear_rgba((1, 2, 3), w, h);
+        assert_eq!(gear.len(), w * h * 4);
+        let alpha = |x: f64, y: f64| {
+            let (x, y) = (32.0 + x * 24.0, 48.0 + y * 24.0);
+            gear.get((y as usize * w + x as usize) * 4 + 3).copied()
+        };
+        assert_eq!(alpha(0.0, 0.0), Some(0), "the hub is open");
+        assert_eq!(alpha(0.28, 0.0), Some(255), "the hub ring is drawn");
+        assert_eq!(alpha(0.5, 0.0), Some(0), "the body is outlined, not filled");
+        assert_eq!(alpha(0.97, 0.0), Some(255), "a tooth's tip is drawn");
+        assert_eq!(
+            alpha(0.79, 0.33),
+            Some(0),
+            "the gap between two teeth is open"
+        );
+        assert_eq!(
+            alpha(0.0, -1.6),
+            Some(0),
+            "the rect above the gear is clear"
+        );
+    }
+
+    #[test]
+    fn a_left_cap_rounds_its_outer_corners_and_meets_the_body_flush() {
+        let (w, h) = (16, 32);
+        let cap = cap_rgba((1, 2, 3), w, h, true);
+        let alpha = |x: usize, y: usize| cap.get((y * w + x) * 4 + 3).copied();
+        assert_eq!(alpha(0, 0), Some(0), "the outer top corner is cut round");
+        assert_eq!(
+            alpha(0, h - 1),
+            Some(0),
+            "the outer bottom corner is cut round"
+        );
+        assert_eq!(
+            alpha(w - 1, 0),
+            Some(255),
+            "the inner edge is square to meet the body"
+        );
+        assert_eq!(
+            alpha(1, h / 2),
+            Some(255),
+            "the middle is filled to the outer edge"
+        );
+        let right = cap_rgba((1, 2, 3), w, h, false);
+        assert_eq!(
+            right.get(3).copied(),
+            Some(255),
+            "a right cap's inner edge is the left one"
+        );
+    }
+
     /// Kitty images draw above text: an avatar under the open palette showed through it.
     #[test]
     fn a_popup_hides_the_avatars_it_covers_and_keeps_the_rest() {
@@ -334,6 +493,7 @@ mod tests {
             seed: String::new(),
             accent: (0, 0, 0),
             state: None,
+            art: Art::Identicon,
         };
         let popup = ratatui::layout::Rect::new(0, 3, 30, 4);
         let kept = uncovered(vec![at(1), at(4), at(9)], &[popup]);
