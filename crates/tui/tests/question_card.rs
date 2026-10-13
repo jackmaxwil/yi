@@ -188,3 +188,86 @@ fn the_highlighted_option_shows_its_preview_and_names_a_cut() -> TestResult {
     assert!(cut.contains("at most 5"), "{cut:?}");
     Ok(())
 }
+
+/// Dies with a fifth question dropped without a word: the card must page every question the
+/// turn asked, or the person answers four and the model waits on a fifth it never shows.
+#[test]
+fn five_questions_are_five_pages() -> TestResult {
+    let mut app = app();
+    let calls: Vec<Value> = (1..=5)
+        .map(|n| json!({"question": format!("Question {n}?"), "options": ["Yes", "No"]}))
+        .collect();
+    asked(&mut app, &calls);
+    for _ in 0..4 {
+        assert_eq!(press(&mut app, &keys("1")), Vec::<String>::new());
+    }
+    let rows = common::live_rows(&mut app)?;
+    assert!(row_with(&rows, "5/5").is_some(), "{rows:#?}");
+    let sent = press(&mut app, &keys("2"));
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(
+        sent.first()
+            .is_some_and(|text| text.ends_with("Question 5? → No"))
+    );
+    Ok(())
+}
+
+/// Dies with an open question left as a bare tool row: with no option the card is the answer
+/// field alone and takes typing at once.
+#[test]
+fn a_question_with_no_options_takes_typing_at_once() -> TestResult {
+    let mut app = app();
+    asked(
+        &mut app,
+        &[json!({"question": "What should the lane be called?"})],
+    );
+    let rows = common::live_rows(&mut app)?;
+    assert!(
+        row_with(&rows, "What should the lane").is_some(),
+        "{rows:#?}"
+    );
+    assert!(row_with(&rows, "Answer").is_some(), "{rows:#?}");
+    let mut script = keys("auth-fix");
+    script.push(KeyCode::Enter);
+    assert_eq!(press(&mut app, &script), ["auth-fix"]);
+    Ok(())
+}
+
+/// Dies with the limit and one past it treated alike: five preview lines show whole, six name
+/// the cut. Bare-string options (a child's form) read as labels.
+#[test]
+fn a_five_line_preview_is_whole_and_bare_string_options_read() -> TestResult {
+    let mut app = app();
+    let five = (1..=5)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    asked(
+        &mut app,
+        &[json!({"question": "Which?", "options": [{"label": "A", "preview": five}, "B"]})],
+    );
+    let rows = common::live_rows(&mut app)?;
+    assert!(row_with(&rows, "line 5").is_some(), "{rows:#?}");
+    assert!(row_with(&rows, "showing").is_none(), "{rows:#?}");
+    assert!(row_with(&rows, " B ").is_some(), "{rows:#?}");
+    Ok(())
+}
+
+/// Dies with a wide-glyph label overflowing a 40-column screen into the number key.
+#[test]
+fn wide_glyphs_keep_the_key_on_the_row_at_forty_columns() -> TestResult {
+    let mut app = app();
+    asked(
+        &mut app,
+        &[
+            json!({"question": "どれにしますか?", "options": ["静かな見た目にする", "賑やかな見た目にする"]}),
+        ],
+    );
+    let rows = common::rows_at(&mut app, 24)?;
+    let first = row_with(&rows, "静かな").ok_or(format!("{rows:#?}"))?;
+    assert!(
+        first.trim_end().ends_with('1') || first.contains('…'),
+        "{first:?}"
+    );
+    Ok(())
+}

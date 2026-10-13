@@ -600,6 +600,33 @@ fn a_question_ends_the_turn_and_lists_its_options() -> TestResult {
     Ok(())
 }
 
+/// Dies with an object option read as nothing: a child's parent saw no choices when options
+/// carried `label` and `description`, and the user a card with no trade-off.
+#[test]
+fn an_option_with_a_description_lists_both_and_one_without_a_label_is_skipped() -> TestResult {
+    use yi_tools::Tool;
+    let tool = yi_runtime::auto_review::AskUserTool::new(None);
+    let mut input = serde_json::Map::new();
+    input.insert("question".to_owned(), serde_json::json!("Which look?"));
+    input.insert(
+        "options".to_owned(),
+        serde_json::json!([
+            {"label": "Quiet", "description": "One dim line."},
+            {"description": "no label"},
+            "Loud"
+        ]),
+    );
+    tool.validate(&input)?;
+    let output = tool.execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
+    let text = match output.result.content.first() {
+        Some(yi_types::message::Content::Text { text, .. }) => text.clone(),
+        _ => String::new(),
+    };
+    assert!(text.contains("  1. Quiet: One dim line."), "{text}");
+    assert!(text.contains("  3. Loud"), "{text}");
+    Ok(())
+}
+
 /// Dies with the user asked twice: two `ask_user` calls for one request in one message run in
 /// parallel, and only one of them may put it to the user.
 #[tokio::test]
