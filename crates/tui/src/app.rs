@@ -185,6 +185,7 @@ pub struct App {
     pub(crate) kitty: bool,
     /// Where the picker's first model row sits, set by the last paint; the logo slot column.
     pub(crate) logo_rows: Option<(u16, u16)>,
+    pub(crate) card_at: Option<(u16, u16)>,
     pub(crate) orb_placement: Option<(u16, u16)>,
     /// Incident: a resize reflows the text a kitty placement scrolls with, but
     /// [`crate::terminal::Terminal::resize_viewport`] reports only viewport-rect moves.
@@ -310,6 +311,7 @@ impl App {
             mode: TranscriptMode::default(),
             kitty: false,
             logo_rows: None,
+            card_at: None,
             orb_placement: None,
             orb_stale: false,
             pending_title: Some("Yi".to_owned()),

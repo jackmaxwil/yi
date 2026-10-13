@@ -163,6 +163,7 @@ pub struct Chat {
     pub orb: yi_tui::orb::Tick,
     pub phase: usize,
     pub logos: yi_tui::logos::Tick,
+    pub card: yi_tui::question::CardTick,
     pub ask: Option<PendingAsk>,
     pub events: (Sender<UiEvent>, Receiver<UiEvent>),
     pub commands: (CommandSender, CommandReceiver),

@@ -522,9 +522,11 @@ fn place_chat_orbs(
         if Some(*id) == shown {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
             yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
+            yi_tui::question::tick(&chat.app, out, &mut chat.card);
         } else {
             chat.orb.hide(out);
             yi_tui::logos::delete_all(out, &mut chat.logos);
+            yi_tui::question::hide(out, &mut chat.card);
         }
     }
 }

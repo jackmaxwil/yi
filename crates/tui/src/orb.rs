@@ -54,12 +54,14 @@ impl Tick {
 pub struct Images {
     pub orb: Tick,
     pub logos: crate::logos::Tick,
+    pub card: crate::question::CardTick,
 }
 
 impl Images {
     pub fn tick(&mut self, app: &mut crate::app::App, out: &mut impl std::io::Write) {
         tick(app, out, &mut self.orb);
         crate::logos::tick(app, out, &mut self.logos);
+        crate::question::tick(app, out, &mut self.card);
     }
 }
 

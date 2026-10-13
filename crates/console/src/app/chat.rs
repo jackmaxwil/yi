@@ -55,6 +55,7 @@ impl App {
             Some(mut chat) => {
                 chat.orb = yi_tui::orb::Tick::with_ids(orb_ids(pane_id));
                 chat.logos = yi_tui::logos::Tick::default();
+                chat.card = yi_tui::question::CardTick::default();
                 chat
             }
             None => self.make_chat(pane_id, session),
@@ -86,6 +87,7 @@ impl App {
             orb: yi_tui::orb::Tick::with_ids(orb_ids(pane_id)),
             phase: 0,
             logos: yi_tui::logos::Tick::default(),
+            card: yi_tui::question::CardTick::default(),
             ask: None,
             events: std::sync::mpsc::channel(),
             commands: command_channel(),
