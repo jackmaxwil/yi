@@ -185,7 +185,7 @@ fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
 #[test]
 fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
     let landing = Rect::new(2, 1, 10, 5);
-    for which in [Scene::Kali, Scene::Solid] {
+    for which in [Scene::Kali, Scene::Solid, Scene::Mobius] {
         let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
         let held = at(2.1);
         assert_eq!(
@@ -293,6 +293,7 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("kali"), Some(Scene::Kali));
     assert_eq!(Scene::named("echo"), Some(Scene::Echo));
     assert_eq!(Scene::named("solid"), Some(Scene::Solid));
+    assert_eq!(Scene::named("mobius"), Some(Scene::Mobius));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
@@ -353,4 +354,28 @@ fn the_first_message_makes_the_session_not_idle() {
         text: "hello".to_owned(),
     });
     assert!(!app.title_idle());
+}
+
+/// The vortex is the name sampled through a flow that is gone by 2 s: the first frame is not the
+/// held frame, and the held frame has the name where every other scene has it.
+#[test]
+fn the_mobius_name_comes_out_of_a_vortex_and_settles() {
+    let at = |secs: f64| screen(Scene::Mobius, (80, 24), secs, None);
+    let (first, held) = (at(0.1), at(2.1));
+    assert_eq!(
+        count(&first, |g| g == 'X'),
+        0,
+        "the vortex covers the screen too"
+    );
+    let moved = first
+        .iter()
+        .flatten()
+        .zip(held.iter().flatten())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        moved > 300,
+        "the vortex moved only {moved} cells by the hold"
+    );
+    assert_eq!(held[14][35], '@', "the Y stem is where the others put it");
 }
