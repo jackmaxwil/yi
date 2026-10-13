@@ -319,27 +319,48 @@ const HINTS: [(Action, &str, u8); 6] = [
 /// The hint row, indented three cells, that fits `width` cells: keys drop whole, by
 /// rank, never cut mid-key.
 pub fn hint(prefix_armed: bool, cmd: bool, width: usize) -> String {
-    let (items, sep): (Vec<(String, u8)>, &str) = if prefix_armed {
-        let items = PREFIX_HINTS
+    let sep = hint_sep(prefix_armed);
+    let kept: Vec<String> = hint_items(prefix_armed, cmd, width)
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
+    format!("   {}", kept.join(sep))
+}
+
+pub fn hint_sep(prefix_armed: bool) -> &'static str {
+    if prefix_armed { " " } else { "   " }
+}
+
+/// The keys [`hint`] keeps, each with the action a press on it runs; the prefix row has none.
+pub fn hint_items(prefix_armed: bool, cmd: bool, width: usize) -> Vec<(String, Option<Action>)> {
+    let items: Vec<(String, Option<Action>, u8)> = if prefix_armed {
+        PREFIX_HINTS
             .iter()
-            .map(|(text, rank)| ((*text).to_owned(), *rank));
-        (items.collect(), " ")
+            .map(|(text, rank)| ((*text).to_owned(), None, *rank))
+            .collect()
     } else {
-        let items = HINTS
+        HINTS
             .iter()
-            .map(|(action, what, rank)| (format!("{} {what}", chord_for(*action, cmd)), *rank));
-        (items.collect(), "   ")
+            .map(|(action, what, rank)| {
+                (
+                    format!("{} {what}", chord_for(*action, cmd)),
+                    Some(*action),
+                    *rank,
+                )
+            })
+            .collect()
     };
     let mut floor = 0;
     loop {
-        let kept: Vec<&str> = items
+        let kept: Vec<(String, Option<Action>)> = items
             .iter()
-            .filter(|(_, rank)| *rank >= floor)
-            .map(|(text, _)| text.as_str())
+            .filter(|(_, _, rank)| *rank >= floor)
+            .map(|(text, action, _)| (text.clone(), *action))
             .collect();
-        let row = format!("   {}", kept.join(sep));
+        let texts: Vec<&str> = kept.iter().map(|(text, _)| text.as_str()).collect();
+        let row = format!("   {}", texts.join(hint_sep(prefix_armed)));
         if floor == KEEP || ratatui::text::Line::raw(row.as_str()).width() <= width {
-            return row;
+            return kept;
         }
         floor += 1;
     }

@@ -84,6 +84,10 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         initial_prompt,
         pace: reveal_pace(args),
     };
+    let control = match control(args) {
+        Ok(control) => control,
+        Err(code) => return code,
+    };
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_tui::parse_script) {
             Ok(script) => script,
@@ -119,10 +123,28 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         host,
         ask_rx,
         options,
+        control,
     );
     leave_lane(&session);
     print_resume_hint(&session, &session_name);
     code
+}
+
+#[cfg(feature = "tui")]
+fn control(args: &Args) -> Result<Option<yi_tui::drive::Control>, i32> {
+    let Some(path) = &args.control else {
+        return Ok(None);
+    };
+    if args.headless {
+        eprintln!("error: --control drives an interactive run; a headless one reads --keys");
+        return Err(2);
+    }
+    yi_tui::drive::Control::connect(std::path::Path::new(path))
+        .map(Some)
+        .map_err(|error| {
+            eprintln!("error: --control {path}: {error}");
+            2
+        })
 }
 
 /// The quit line says where the work is before the slot is handed back.
@@ -228,23 +250,24 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
     )
 }
 
-pub fn faux_replies(args: &Args) -> Result<Vec<yi_types::message::AgentMessage>, String> {
+pub fn faux_replies(
+    args: &Args,
+) -> Result<Vec<(yi_types::message::AgentMessage, std::time::Duration)>, String> {
     let Some(path) = &args.faux else {
-        return Ok(vec![yi_runtime::faux::faux_assistant_message(
+        let reply = yi_runtime::faux::faux_assistant_message(
             vec![yi_runtime::faux::faux_text(&format!(
                 "faux: {}",
                 args.prompt
             ))],
             yi_types::message::StopReason::Stop,
-        )]);
+        );
+        return Ok(vec![(reply, std::time::Duration::ZERO)]);
     };
     let source =
         std::fs::read_to_string(path).map_err(|error| format!("--faux {path}: {error}"))?;
-    source
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).map_err(|error| format!("--faux {path}: {error}")))
-        .collect()
+    let replies = yi_runtime::session_store::cassette(&source)
+        .map_err(|error| format!("--faux {path}: {error}"))?;
+    Ok(replies)
 }
 
 #[cfg(feature = "tui")]
@@ -300,6 +323,10 @@ pub fn run_console_command(args: &Args) -> i32 {
         sidebar: yi_console::model::SidebarMode::Rail,
         pace: reveal_pace(args),
     };
+    let control = match control(args) {
+        Ok(control) => control,
+        Err(code) => return code,
+    };
     if !args.headless {
         ensure_daemon(args, &options.socket);
     }
@@ -319,7 +346,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         };
         return yi_console::run_headless(&options, drive);
     }
-    yi_console::run_console(&options)
+    yi_console::run_console(&options, control)
 }
 
 struct DriveCommon {
