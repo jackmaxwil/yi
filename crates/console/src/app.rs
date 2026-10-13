@@ -1033,7 +1033,9 @@ impl App {
         match event {
             CtEvent::Key(key) if yi_tui::keymap::is_pasted_control(&key) => {}
             CtEvent::Key(key) => {
-                self.state.title = None;
+                if self.skip_title() {
+                    return;
+                }
                 if self.selection.take().is_some() {
                     self.dirty = true;
                 }
