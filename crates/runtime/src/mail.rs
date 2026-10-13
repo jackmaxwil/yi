@@ -474,7 +474,7 @@ impl SubagentHost {
             return Err("a request has one respondent; send to \"all\" instead".to_owned());
         }
         if target.starts_with("history://") {
-            return Err("a request to another session is answered by mail, not by this call: a root posts it with rlm.send(address, text, kind=\"request\") and the reply arrives as a todo; a child asks its root to".to_owned());
+            return Err("a request to another session is answered by mail, not by this call: the root sends it with rlm.send(address, text, kind=\"request\"), and the reply arrives as a todo".to_owned());
         }
         let timeout_ms = timeout_ms.min(crate::mailbox::WAIT_MAX_MS);
         let respondent = self.member_name(target);
