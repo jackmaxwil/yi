@@ -153,7 +153,7 @@ pub(crate) fn render_gear(app: &mut App, frame: &mut Frame<'_>, gear: Rect, them
         } else {
             format!(" {GEAR} ")
         };
-        let line = Line::from(vec![Span::styled(label, theme.accent_style()), key]);
+        let line = Line::from(vec![Span::styled(label, theme.muted_style()), key]);
         frame.render_widget(Paragraph::new(line), gear);
         return;
     }
@@ -161,7 +161,7 @@ pub(crate) fn render_gear(app: &mut App, frame: &mut Frame<'_>, gear: Rect, them
     let (cell_w, cell_h) = cell_pixels();
     let width = cell_w.saturating_mul(usize::from(GEAR_COLS)).clamp(8, 384);
     let height = cell_h.saturating_mul(usize::from(GEAR_ROWS)).clamp(8, 384);
-    let accent = rgb(theme.accent);
+    let accent = rgb(theme.muted);
     if let Some(hits) = app.hits.as_mut() {
         hits.avatars.push(crate::avatar::Placement {
             col,
@@ -177,7 +177,7 @@ pub(crate) fn render_gear(app: &mut App, frame: &mut Frame<'_>, gear: Rect, them
     }
     if full {
         let x = col.saturating_add(GEAR_COLS).saturating_add(1);
-        let bold = theme.accent_style().add_modifier(Modifier::BOLD);
+        let bold = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
         let at = Rect::new(
             x,
             gear.y.saturating_add(1),
@@ -192,11 +192,7 @@ pub(crate) fn render_gear(app: &mut App, frame: &mut Frame<'_>, gear: Rect, them
 }
 
 pub(crate) fn closer_image(hits: &mut Hits, pane: &PaneView, at: Rect, theme: &Theme) {
-    let fill = rgb(if pane.focused {
-        theme.accent
-    } else {
-        theme.dim
-    });
+    let fill = rgb(if pane.focused { theme.muted } else { theme.dim });
     let (cell_w, cell_h) = cell_pixels();
     let (w, h) = (cell_w.saturating_mul(usize::from(at.width)), cell_h);
     hits.avatars.push(crate::avatar::Placement {

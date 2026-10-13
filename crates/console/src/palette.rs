@@ -50,16 +50,16 @@ pub(crate) fn render_navigator(
     frame.render_widget(ratatui::widgets::Clear, popup);
     let block = ratatui::widgets::Block::bordered()
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(theme.accent_style())
+        .border_style(theme.muted_style())
         .title(" Command Palette ")
-        .title_top(Line::from(DISMISS).right_aligned())
-        .style(Style::default().bg(theme.selection_bg()));
+        .title_top(Line::from(DISMISS).right_aligned());
     let inner = usize::from(width.saturating_sub(4));
+    let amber = Style::default().fg(theme.warning);
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(" › ", theme.accent_style()),
+            Span::styled(" › ", amber),
             Span::styled(query.clone(), Style::default().fg(theme.text)),
-            Span::styled("▌", theme.accent_style()),
+            Span::styled("▌", amber),
         ]),
         Line::default(),
     ];
@@ -71,6 +71,14 @@ pub(crate) fn render_navigator(
     for (index, entry) in entries.iter().enumerate().skip(first).take(visible) {
         let picked = index == picked_index;
         let marker = if picked { " ▸ " } else { "   " };
+        let row_style = if picked {
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text)
+        };
         let (heading, spans) = match entry {
             crate::app::PaletteEntry::Action { index } => {
                 let Some(chord) = keys::CHORDS.get(*index) else {
@@ -82,15 +90,8 @@ pub(crate) fn render_navigator(
                 (
                     "actions",
                     vec![
-                        Span::styled(marker, theme.accent_style()),
-                        Span::styled(
-                            chord.what,
-                            if picked {
-                                theme.accent_style().add_modifier(Modifier::BOLD)
-                            } else {
-                                Style::default().fg(theme.text)
-                            },
-                        ),
+                        Span::styled(marker, row_style),
+                        Span::styled(chord.what, row_style),
                         Span::styled(format!("{}{key}", " ".repeat(pad)), theme.muted_style()),
                     ],
                 )
@@ -110,7 +111,7 @@ pub(crate) fn render_navigator(
                 (
                     "sessions",
                     vec![
-                        Span::styled(marker, theme.accent_style()),
+                        Span::styled(marker, row_style),
                         Span::styled(name_tile(&seed), tile_style_at(hue)),
                         Span::styled(
                             format!(" {} ", row_status.glyph()),
@@ -118,11 +119,7 @@ pub(crate) fn render_navigator(
                         ),
                         Span::styled(
                             label_of(&app.state.sessions, id, inner.saturating_sub(8)),
-                            if picked {
-                                theme.accent_style().add_modifier(Modifier::BOLD)
-                            } else {
-                                Style::default().fg(theme.text)
-                            },
+                            row_style,
                         ),
                     ],
                 )
@@ -132,7 +129,12 @@ pub(crate) fn render_navigator(
             section = Some(heading);
             lines.push(Line::styled(format!(" {heading}"), theme.dim_style()));
         }
-        lines.push(Line::from(spans));
+        let mut line = Line::from(spans);
+        if picked {
+            let rest = usize::from(width.saturating_sub(2)).saturating_sub(line.width());
+            line.push_span(Span::styled(" ".repeat(rest), row_style));
+        }
+        lines.push(line);
     }
     if entries.is_empty() {
         lines.push(Line::styled(

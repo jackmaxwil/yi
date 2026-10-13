@@ -282,7 +282,7 @@ pub fn render(menu: &Menu, rects: &[Rect], frame: &mut Frame<'_>, theme: &Theme)
         frame.render_widget(Clear, *rect);
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(theme.accent_style())
+            .border_style(theme.muted_style())
             .style(Style::default().bg(theme.selection_bg()));
         let label_width = level
             .items

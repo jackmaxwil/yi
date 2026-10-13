@@ -381,9 +381,10 @@ fn strip(settings: &Settings, width: usize) -> Vec<(String, Option<usize>)> {
 }
 
 fn tab_bar(settings: &Settings, width: usize, theme: &Theme) -> Line<'static> {
-    let chip = theme
-        .accent_style()
-        .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    let chip = Style::default()
+        .fg(theme.text)
+        .bg(theme.selection_bg())
+        .add_modifier(Modifier::BOLD);
     let spans = strip(settings, width).into_iter().map(|(text, tab)| {
         let current = tab == Some(settings.tab);
         Span::styled(text, if current { chip } else { theme.dim_style() })
@@ -512,7 +513,7 @@ pub fn view(
                 format!(" {marker}{}", clip(name, label.saturating_sub(3))),
                 style,
             ),
-            Span::styled(clip(&shown, value), theme.accent_style()),
+            Span::styled(clip(&shown, value), Style::default().fg(theme.teal)),
             Span::styled(clip(applies, tail), theme.dim_style()),
         ]));
     }
@@ -538,7 +539,10 @@ pub fn view(
             .take(3),
     );
     if let Some(status) = &settings.status {
-        lines.push(Line::styled(format!(" {status}"), theme.accent_style()));
+        lines.push(Line::styled(
+            format!(" {status}"),
+            Style::default().fg(theme.warning),
+        ));
     }
     let hint = match (&settings.edit, settings.tab) {
         (Some(Edit::Type(_)), _) => " type · enter save · empty unsets · esc cancel",

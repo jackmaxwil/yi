@@ -197,3 +197,194 @@ fn the_sidebar_keeps_one_column_between_tile_and_text() -> TestResult {
     assert_eq!(label, Some(6), "{full}");
     Ok(())
 }
+
+fn row_of(id: &str, name: &str) -> SessionRow {
+    SessionRow {
+        id: SessionId(id.to_owned()),
+        root: "/repo".to_owned(),
+        status: SessionStatus::Idle,
+        attached: true,
+        name: Some(name.to_owned()),
+        created_ms: 0,
+        last_ms: 0,
+    }
+}
+
+/// Two sessions side by side, `s-alpha` on the left and `s-beta` on the right, focus on the right.
+fn pair() -> Result<(App, PaneId, PaneId), Box<dyn Error>> {
+    let mut app = App::new("/repo".to_owned(), theme());
+    app.state.link = Link::Connected;
+    app.state.upsert_row(row_of("s-alpha", "alpha"));
+    app.state.upsert_row(row_of("s-beta", "beta"));
+    let left = app.state.focused_pane_id().ok_or("no home pane")?;
+    let right = app
+        .state
+        .split_focused(Direction::Horizontal)
+        .ok_or("no split")?;
+    for (pane, id) in [(left, "s-alpha"), (right, "s-beta")] {
+        let slot = app.state.panes.get_mut(&pane).ok_or("no pane")?;
+        slot.content = PaneContent::Session {
+            session: Some(SessionId(id.to_owned())),
+            chat: None,
+        };
+    }
+    app.state.zone = Zone::Panes;
+    Ok((app, left, right))
+}
+
+fn cell_at(
+    terminal: &Terminal<TestBackend>,
+    x: u16,
+    y: u16,
+) -> Result<ratatui::buffer::Cell, Box<dyn Error>> {
+    Ok(terminal
+        .backend()
+        .buffer()
+        .cell((x, y))
+        .ok_or("off screen")?
+        .clone())
+}
+
+fn hue_of(app: &App, id: &str, name: &str) -> ratatui::style::Color {
+    let row = row_of(id, name);
+    yi_tui::colors::accent(app.accent_of(id, row.seed()))
+}
+
+#[test]
+fn each_pane_wears_its_own_sessions_hue_and_an_unfocused_one_is_dim() -> TestResult {
+    use ratatui::style::Modifier;
+    let (mut app, left, right) = pair()?;
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let (alpha, beta) = (
+        hue_of(&app, "s-alpha", "alpha"),
+        hue_of(&app, "s-beta", "beta"),
+    );
+    assert_ne!(alpha, beta, "two sessions share one hue");
+    let found = hits(&app)?;
+    let rect_of = |id: PaneId| {
+        found
+            .panes
+            .iter()
+            .find(|(at, _)| *at == id)
+            .map(|(_, r)| *r)
+    };
+    let title_of = |id: PaneId| {
+        found
+            .titles
+            .iter()
+            .find(|(at, _)| *at == id)
+            .map(|(_, r)| *r)
+    };
+    let (left_rect, right_rect) = (
+        rect_of(left).ok_or("no left rect")?,
+        rect_of(right).ok_or("no right rect")?,
+    );
+    let (left_title, right_title) = (
+        title_of(left).ok_or("no left title")?,
+        title_of(right).ok_or("no right title")?,
+    );
+    let dim = theme().dim;
+    let side = left_rect.y.saturating_add(3);
+    let cases = [
+        ("left", left_title, left_rect.x, alpha, false),
+        (
+            "right",
+            right_title,
+            right_rect.right().saturating_sub(1),
+            beta,
+            true,
+        ),
+    ];
+    for (name, title, edge, hue, focused) in cases {
+        let chip = cell_at(&terminal, title.x, title.y)?;
+        assert_eq!(chip.fg, hue, "the {name} title is not its session's hue");
+        assert_eq!(
+            chip.modifier.contains(Modifier::REVERSED),
+            focused,
+            "the {name} title is a chip only when focused"
+        );
+        let border = cell_at(&terminal, edge, side)?;
+        let want = if focused { hue } else { dim };
+        assert_eq!(border.fg, want, "the {name} border has the wrong colour");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_framed_pane_keeps_one_blank_column_inside_its_border() -> TestResult {
+    let (mut app, pane) = console()?;
+    let slot = app.state.panes.get_mut(&pane).ok_or("no pane")?;
+    slot.content = PaneContent::Markdown {
+        path: "/repo/NOTES.md".to_owned(),
+        source: "hello".to_owned(),
+    };
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let rect = hits(&app)?
+        .panes
+        .iter()
+        .find(|(at, _)| *at == pane)
+        .map(|(_, rect)| *rect)
+        .ok_or("no pane rect")?;
+    let y = rect.y.saturating_add(1);
+    let row: Vec<String> = row_text(&terminal, y).chars().map(String::from).collect();
+    let at = usize::from(rect.x);
+    assert_eq!(row.get(at).map(String::as_str), Some("│"), "{row:?}");
+    assert_eq!(row.get(at + 1).map(String::as_str), Some(" "), "{row:?}");
+    assert_eq!(row.get(at + 2).map(String::as_str), Some("h"), "{row:?}");
+    Ok(())
+}
+
+#[test]
+fn the_palette_and_the_settings_tabs_use_no_accent_blue() -> TestResult {
+    use ratatui::style::Modifier;
+    let (mut app, _) = console()?;
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let tab = hits(&app)?
+        .settings_tabs
+        .iter()
+        .find(|(_, _, tab)| *tab == 0)
+        .map(|(rect, ..)| *rect)
+        .ok_or("no first tab")?;
+    let chip = cell_at(&terminal, tab.x.saturating_add(1), tab.y)?;
+    assert_eq!(
+        chip.bg,
+        theme().selection_bg(),
+        "the selected tab has no band"
+    );
+    assert!(chip.modifier.contains(Modifier::BOLD));
+    assert!(!chip.modifier.contains(Modifier::REVERSED));
+    app.state.mode = yi_console::model::Mode::Navigator {
+        query: String::new(),
+        selected: 0,
+    };
+    draw(&mut app, &mut terminal)?;
+    let popup = *hits(&app)?.overlays.first().ok_or("no palette")?;
+    let blue = theme().accent;
+    for at in popup.positions() {
+        let cell = cell_at(&terminal, at.x, at.y)?;
+        assert!(
+            cell.fg != blue && cell.bg != blue,
+            "accent blue at {at:?}: {:?}",
+            cell.symbol()
+        );
+    }
+    let prompt = popup.y.saturating_add(1);
+    let glyph = cell_at(&terminal, popup.x.saturating_add(2), prompt)?;
+    assert_eq!(glyph.symbol(), "›");
+    assert_eq!(glyph.fg, theme().warning, "the prompt glyph is not amber");
+    let picked = (popup.y..popup.bottom())
+        .find(|y| {
+            cell_at(&terminal, popup.x.saturating_add(2), *y).is_ok_and(|c| c.symbol() == "▸")
+        })
+        .ok_or("no selected row")?;
+    let band = cell_at(&terminal, popup.right().saturating_sub(3), picked)?;
+    assert_eq!(
+        band.bg,
+        theme().selection_bg(),
+        "the selected row has no band"
+    );
+    Ok(())
+}
