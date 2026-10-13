@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use crate::scratch::Scratch;
 
 use crate::acp_schema::Schema;
+use crate::session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -189,14 +190,10 @@ fn v2_client_drives_a_session_end_to_end() -> TestResult {
     );
     client.finish()?;
 
-    let session_files = std::fs::read_dir(dir.join("sessions"))?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .flat_map(|entry| std::fs::read_dir(entry.path()).into_iter().flatten())
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
-        .count();
-    assert!(session_files >= 1, "the session must persist as v4 JSONL");
+    assert!(
+        !session_files(&dir.join("sessions"))?.is_empty(),
+        "the session must persist as v4 JSONL"
+    );
     Ok(())
 }
 

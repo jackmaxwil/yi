@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
+use crate::session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -94,16 +95,11 @@ fn responds_per_command_streams_events_and_persists_v4() -> TestResult {
         .count();
     assert!(message_ends >= 2, "user + assistant message_end expected");
 
-    // The corpus also holds `family/` and `kernels/` (#580); the transcript's directory is
-    // the one holding a `.jsonl`.
-    let session_file = std::fs::read_dir(dir.join("sessions"))?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
-        .flat_map(|files| files.filter_map(Result::ok))
-        .find(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+    let session_file = session_files(&dir.join("sessions"))?
+        .into_iter()
+        .next()
         .ok_or("no session file")?;
-    let content = std::fs::read_to_string(session_file.path())?;
+    let content = std::fs::read_to_string(session_file)?;
     let lines: Vec<Value> = content
         .lines()
         .map(serde_json::from_str)
