@@ -37,16 +37,17 @@ it fails with `unexpected argument`):
 
 ```
 cargo nextest run -p <crate>                      # one crate
-cargo nextest run -p <crate> -E 'binary(<file>)'  # one integration test file
+cargo nextest run -p <crate> -E 'test(/^<file>::/)'  # one integration test file
 cargo nextest run -p <crate> -E 'test(<name>)'    # tests whose name contains <name>
 cargo nextest run --workspace --no-fail-fast      # everything, all failures listed
 ```
 
 A bare word after `-p <crate>` is a test-name filter over unit tests only;
-an integration test file needs `binary(<file stem>)`. `0 tests run, N
-skipped` means the filter matched nothing, not that the tests passed.
+an integration test file is a module of the crate's one `integration` binary,
+so it needs `test(/^<file stem>::/)`. `0 tests run, N skipped` means the
+filter matched nothing, not that the tests passed.
 
-Doctests run separately: `cargo test --workspace --doc`.
+The workspace has no doctests, so there is no doctest lane.
 
 ## Reading a failure
 

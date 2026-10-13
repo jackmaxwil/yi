@@ -8,9 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use yi_tools::{Converter, Documents, Tool, ToolContext, builtin_tools, builtin_tools_with};
 use yi_types::message::Content;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

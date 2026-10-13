@@ -11,9 +11,16 @@ kernel = { max-threads = 1 }
 # bound, not a coverage one — every test still runs. Three, because the PR
 # runners have three and four cores; raise it when the runners grow.
 subprocess = { max-threads = 3 }
+# The `local` profile's wider cap: a 16-core Mac ran the suite in 83-85 s at eight against
+# 103-140 s at three, same CPU. CI keeps the default profile and its three.
+subprocess-wide = { max-threads = 8 }
 
 [[profile.default.overrides]]
-filter = 'binary(cli_surfaces) + binary(tui_drive) + binary(mcp_oauth) + binary(acp_protocol) + binary(serve_daemon) + binary(mcp_cli) + binary(rpc_protocol) + binary(ready_check) + binary(request_budget) + binary(orient) + binary(tools) + binary(journeys)'
+filter = '''
+binary(ready_check) + binary(request_budget)
+| (package(yi-cli) & binary(integration) & test(/^(cli_surfaces|tui_drive|mcp_oauth|acp_protocol|serve_daemon|mcp_cli|rpc_protocol|journeys)::/))
+| (package(yi-tools) & binary(integration) & test(/^(orient|tools)::/))
+'''
 test-group = 'subprocess'
 
 # Longest first: 10-45 s each, and each reached late in scheduling order. In a run whose
@@ -29,3 +36,14 @@ test(a_last_word_that_streams_for_twenty_seconds_lands_inside_the_deadline)
 | test(a_large_sheet_points_at_a_pandas_route_that_works)
 '''
 priority = 100
+
+[profile.local]
+inherits = "default"
+
+[[profile.local.overrides]]
+filter = '''
+binary(ready_check) + binary(request_budget)
+| (package(yi-cli) & binary(integration) & test(/^(cli_surfaces|tui_drive|mcp_oauth|acp_protocol|serve_daemon|mcp_cli|rpc_protocol|journeys)::/))
+| (package(yi-tools) & binary(integration) & test(/^(orient|tools)::/))
+'''
+test-group = 'subprocess-wide'

@@ -8,9 +8,7 @@ use yi_permission::{
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

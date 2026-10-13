@@ -16,9 +16,7 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::plan::doc::{AgentId, Todo, TodoLabel, TodoState};
 use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Responder = fn(&Value) -> Vec<Value>;
@@ -420,7 +418,7 @@ fn run_console(
             height,
         },
     );
-    scratch::keep(&frames, "drive", name.as_ref());
+    crate::scratch::keep(&frames, "drive", name.as_ref());
     // The console shut the socket down; the fixture thread ends with it.
     match server.map(JoinHandle::join) {
         None | Some(Ok(Ok(()))) => {}
