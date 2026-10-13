@@ -194,7 +194,7 @@ fn drawn_below(grid: &[Vec<char>], from: usize) -> usize {
 }
 
 #[test]
-fn an_empty_idle_pane_shows_the_field_under_the_chat_only_when_enabled() -> TestResult {
+fn an_empty_idle_pane_is_filled_by_the_field_only_when_enabled() -> TestResult {
     let mut off = app();
     let plain = pane(&mut off);
     assert_eq!(
@@ -204,14 +204,17 @@ fn an_empty_idle_pane_shows_the_field_under_the_chat_only_when_enabled() -> Test
     );
 
     let mut on = app();
-    on.set_title(Some((Scene::Echo, Duration::ZERO)));
+    on.set_title(Some((Scene::Kali, Duration::from_secs(4))));
     assert!(on.title_visible());
     let shown = pane(&mut on);
-    assert!(drawn_below(&shown, 4) > 50, "the field fills the free rows");
+    assert!(
+        drawn_below(&shown, 4) > 500,
+        "the field fills the rows below the chat"
+    );
     assert_eq!(
         plain.get(..4),
         shown.get(..4),
-        "the composer box and status row, the chat's own four, are never touched"
+        "the composer, its inside and the status row stay as the chat drew them"
     );
     Ok(())
 }
@@ -263,17 +266,6 @@ fn the_fold_opens_from_nothing_and_the_name_settles_in() {
 }
 
 #[test]
-fn the_fold_loops_exactly_once_open() {
-    let at = |secs: f64| scene(Scene::Kali, 80, 24, Duration::from_secs_f64(secs));
-    assert_eq!(at(5.25), at(5.25 + title::KALI_SECS));
-    assert_ne!(
-        at(5.25),
-        at(5.25 + title::KALI_SECS / 4.0),
-        "a quarter loop is another frame"
-    );
-}
-
-#[test]
 fn the_draw_follows_the_weights_and_the_seed() {
     let weights = [(Scene::Kali, 8), (Scene::Echo, 2)];
     let kali = (0..20_000)
@@ -300,4 +292,80 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("echo"), Some(Scene::Echo));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
+}
+
+/// The small mark's cells: 10 by 5 at column 2, row 1. In `MARK_STROKES` the Y's stem is the line
+/// x = -0.28, which the orb draws at (32 - 0.28 * 1.0256 * 24.96) / 64 = 0.388 of the image's
+/// width, so column 2 + 3.88 = 5.88 and cell 5; its foot y = -0.62 is at 0.748 of the height,
+/// row 1 + 3.74 = 4.74 and cell 4.
+#[test]
+fn the_name_lands_on_the_small_mark_and_the_field_is_gone() {
+    let area = Rect::new(0, 0, 80, 24);
+    let landing = Rect::new(2, 1, 10, 5);
+    let at = |secs: f64| {
+        let mut buffer = Buffer::empty(area);
+        title::paint_with(
+            &mut buffer,
+            area,
+            (Scene::Kali, Duration::from_secs_f64(secs)),
+            (Some(landing), None),
+            &theme(),
+        );
+        rows(&buffer, area)
+    };
+    let early = at(4.0);
+    assert_eq!(
+        early[14][35], '@',
+        "held in the middle until the landing starts"
+    );
+    let landed = at(5.39);
+    assert_eq!(
+        landed[4][5], '@',
+        "the stem's foot is on the small mark's stem"
+    );
+    let outside = landed
+        .iter()
+        .enumerate()
+        .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
+        .filter(|(x, y, glyph)| *glyph != ' ' && !(1..=12).contains(x) | !(0..=6).contains(y))
+        .count();
+    assert_eq!(
+        outside, 0,
+        "nothing is left but the name, on the small mark"
+    );
+    assert_eq!(lit(&at(5.4)), 0, "and then it is over");
+}
+
+/// Incident: the small mark showed beside the big one, two logos at once. The orb's image stays
+/// unplaced while the title plays and appears when it is over.
+#[test]
+fn the_small_mark_waits_for_the_big_one_to_land() {
+    let placed = |elapsed: Duration| {
+        let mut app = app();
+        app.set_kitty(true);
+        app.set_title(Some((Scene::Echo, elapsed)));
+        pane(&mut app);
+        let mut out = Vec::new();
+        yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+        String::from_utf8_lossy(&out).contains("a=p")
+    };
+    assert!(
+        !placed(Duration::from_secs(1)),
+        "no second logo while the name plays"
+    );
+    assert!(placed(title::OVER), "the small mark is there once it ends");
+}
+
+/// With the small mark's rows above the composer, the field reaches them too: the pane is full.
+#[test]
+fn the_field_reaches_the_rows_the_small_mark_would_hold() {
+    let mut app = app();
+    app.set_kitty(true);
+    app.set_title(Some((Scene::Kali, Duration::from_secs(4))));
+    let grid = pane(&mut app);
+    let top: usize = grid.iter().take(5).flatten().filter(|g| **g != ' ').count();
+    assert!(
+        top > 100,
+        "only {top} cells drawn in the five rows above the composer"
+    );
 }

@@ -239,11 +239,15 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     title_tick(app);
 }
 
-/// A title field on screen moves with the clock and no event announces that, so it asks for
-/// a frame once a frame's interval has passed; asking on every loop turn drew at 58 fps.
+fn title_playing(app: &App) -> bool {
+    app.state.title.is_some() && app.clock.since(app.state.title_start) < yi_tui::title::OVER
+}
+
+/// No event announces a title's motion, so it asks for one frame per interval (every loop turn
+/// drew 58 a second) and one last frame when it ends, which wipes it.
 fn title_tick(app: &mut App) {
     use crate::model::PaneContent;
-    let on = app.state.title.is_some();
+    let on = title_playing(app);
     let showing = app.state.panes.values().any(|pane| match &pane.content {
         PaneContent::Session { chat: None, .. } => on,
         PaneContent::Session {
@@ -259,6 +263,8 @@ fn title_tick(app: &mut App) {
     if showing && due {
         app.dirty = true;
         app.state.title_frame = Some(now);
+    } else if !showing && app.state.title_frame.take().is_some() {
+        app.dirty = true;
     }
 }
 
@@ -520,7 +526,7 @@ fn chat_wake(app: &App) -> Duration {
         .panes
         .values()
         .filter_map(|pane| match &pane.content {
-            PaneContent::Session { chat: None, .. } if app.state.title.is_some() => {
+            PaneContent::Session { chat: None, .. } if title_playing(app) => {
                 Some(yi_tui::title::FRAME)
             }
             PaneContent::Session {
@@ -888,6 +894,9 @@ mod tests {
         assert!(!asks(&mut app), "half an interval is not a frame");
         app.clock.advance(yi_tui::title::FRAME / 2);
         assert!(asks(&mut app), "a whole interval is");
+        app.clock.advance(yi_tui::title::OVER);
+        assert!(asks(&mut app), "one last frame wipes it when it ends");
+        assert!(!asks(&mut app), "and then nothing is asked for");
     }
 
     /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,

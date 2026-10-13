@@ -1,13 +1,20 @@
 #! console --size 120x34 --config '{"console":{"titleIntro":true,"titleWeights":{"kali":1}}}'
-# A cold console start with the Kali fold pinned: the fold opens from a deep zoom, then the
-# name rises through it. The clock is frozen, so each snap is the frame at that second.
+# A console start with the Kali fold pinned: the fold opens from a deep zoom, the name rises
+# through it, holds, then shrinks onto the small mark while the fold fades, and it is over.
+# The clock is frozen, so each snap is the frame at that second.
 wait-frame 15000 command palette
-tick 100
-snap start
-tick 900
+key alt-n
+wait-frame 10000 untitled
+tick 1000
 snap opening
 tick 1500
 snap name-rising
-tick 2500
-snap settled
+tick 1500
+snap held
+tick 800
+snap landing
+tick 800
+snap landed
+tick 1000
+snap over
 quit
