@@ -181,6 +181,7 @@ pub struct App {
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
+    pub(crate) title: bool,
     /// Where the picker's first model row sits, set by the last paint; the logo slot column.
     pub(crate) logo_rows: Option<(u16, u16)>,
     pub(crate) orb_placement: Option<(u16, u16)>,
@@ -306,6 +307,7 @@ impl App {
             user_turns: 0,
             mode: TranscriptMode::default(),
             kitty: false,
+            title: false,
             logo_rows: None,
             orb_placement: None,
             orb_stale: false,

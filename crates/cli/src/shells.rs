@@ -314,6 +314,11 @@ pub fn run_console_command(args: &Args) -> i32 {
             .as_ref()
             .and_then(|console| console.auto_side)
             .unwrap_or(true),
+        title: config()
+            .console
+            .as_ref()
+            .and_then(|console| console.title_intro)
+            .unwrap_or(false),
         open_apps: config()
             .open
             .iter()

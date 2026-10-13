@@ -235,19 +235,22 @@ fn on_band(u: V, v: V, a: f64, off: f64) -> V {
     norm(add(add(scale(u, a.cos()), v, a.sin()), cross(u, v), off))
 }
 
+/// The `Yi` mark as five segments `((x1, y1), (x2, y2))`: the arms and stem of the Y, the stem
+/// of the i and its dot. The title field measures its distance to these same segments.
+pub const MARK_STROKES: [((f64, f64), (f64, f64)); 5] = [
+    ((-0.62, 0.62), (-0.28, 0.06)),
+    ((0.06, 0.62), (-0.28, 0.06)),
+    ((-0.28, 0.06), (-0.28, -0.62)),
+    ((0.46, 0.30), (0.46, -0.62)),
+    ((0.46, 0.60), (0.46, 0.56)),
+];
+
 fn mark() -> Vec<Point> {
-    const STROKES: [((f64, f64), (f64, f64)); 5] = [
-        ((-0.62, 0.62), (-0.28, 0.06)),
-        ((0.06, 0.62), (-0.28, 0.06)),
-        ((-0.28, 0.06), (-0.28, -0.62)),
-        ((0.46, 0.30), (0.46, -0.62)),
-        ((0.46, 0.60), (0.46, 0.56)),
-    ];
     let span = 0.40 / 0.39;
-    let lengths = STROKES.map(|((x1, y1), (x2, y2))| (x2 - x1).hypot(y2 - y1).max(0.02));
+    let lengths = MARK_STROKES.map(|((x1, y1), (x2, y2))| (x2 - x1).hypot(y2 - y1).max(0.02));
     let total: f64 = lengths.iter().sum();
     let mut out = Vec::with_capacity(POINTS);
-    for (((x1, y1), (x2, y2)), length) in STROKES.iter().zip(lengths) {
+    for (((x1, y1), (x2, y2)), length) in MARK_STROKES.iter().zip(lengths) {
         let count = ((length / total) * 132.0).round().max(2.0) as usize;
         for step in 0..count {
             let f = step as f64 / (count - 1) as f64;

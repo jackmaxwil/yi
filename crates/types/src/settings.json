@@ -40,6 +40,7 @@
 {"id": "spend.dayAlertUsd", "label": "Day alert USD", "tab": "Budget", "help": "a notice per multiple spent in the local day", "kind": {"type": "number", "integer": false, "min": 0, "max": null}, "applies": "nextSession"},
 {"id": "compaction.at", "label": "Compact at tokens", "tab": "Budget", "help": "compact past this many tokens; unset or 0, the window decides", "kind": {"type": "number", "integer": true, "min": 0, "max": 18446744073709551615}, "applies": "nextSession"},
 {"id": "console.autoSide", "label": "Open Review beside", "tab": "Interface", "help": "open the Review pane beside a session that edits files", "kind": {"type": "toggle"}, "applies": "live", "default": true},
+{"id": "console.titleIntro", "label": "Title field", "tab": "Interface", "help": "draw the title field in an empty console session", "kind": {"type": "toggle"}, "applies": "consoleRestart", "default": false},
 {"id": "telemetry.enabled", "label": "Telemetry", "tab": "Interface", "help": "write one span per request, tool call and turn beside the session", "kind": {"type": "toggle"}, "applies": "nextSession", "default": false},
 {"id": "tui.pace", "label": "Reveal pace %", "tab": "Interface", "help": "the solo TUI's streaming speed; 0 paints at once", "kind": {"type": "number", "integer": true, "min": 0, "max": 1000}, "applies": "soloTui"},
 {"id": "keys", "label": "Solo keymap", "tab": "Interface", "help": "the solo TUI's key bindings; edit in config.json", "kind": {"type": "json"}, "applies": "soloTui"},

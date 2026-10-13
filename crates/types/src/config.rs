@@ -247,10 +247,12 @@ pub struct CatalogConfig {
     pub refresh_hours: Option<u64>,
 }
 
+/// `console.titleIntro`: draw the title field in an empty console session; off until it ships.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConsoleConfig {
     pub auto_side: Option<bool>,
+    pub title_intro: Option<bool>,
 }
 
 /// `kernel.prewarm`: boot the IPython kernel in the background at session open so the first

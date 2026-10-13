@@ -49,6 +49,7 @@ pub struct ConsoleOptions {
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub title: bool,
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
@@ -203,6 +204,16 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     span.set("events", count);
     let _tick = yi_types::trace::span("console.tick");
     app.tick(outbound);
+    title_tick(app);
+}
+
+/// A title field on screen moves with the clock and no event announces that, so it asks for
+/// its own frame.
+fn title_tick(app: &mut App) {
+    use crate::model::PaneContent;
+    app.dirty |= app.state.panes.values().any(|pane| {
+        matches!(&pane.content, PaneContent::Session { chat: Some(chat), .. } if chat.app.title_visible())
+    });
 }
 
 fn draw<B: Backend>(
@@ -467,7 +478,13 @@ fn chat_wake(app: &App) -> Duration {
                 chat: Some(chat), ..
             } => {
                 let orb = chat.app.orb_animating().then(|| chat.orb.wake());
-                Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
+                let title = chat.app.title_wake();
+                Some(
+                    chat.app
+                        .reveal_wake()
+                        .min(orb.unwrap_or(Duration::MAX))
+                        .min(title.unwrap_or(Duration::MAX)),
+                )
             }
             _ => None,
         })
@@ -767,6 +784,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
 fn configure(app: &mut App, options: &ConsoleOptions) {
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
+    app.state.title = options.title;
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;

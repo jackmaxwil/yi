@@ -740,6 +740,7 @@ fn paint_chat_pane(
     theme: &Theme,
 ) {
     let kitty = app.kitty;
+    let title_on = app.state.title;
     let title = (!framed)
         .then(|| {
             app.state
@@ -771,6 +772,7 @@ fn paint_chat_pane(
         return;
     };
     chat.app.set_kitty(kitty && view.focused);
+    chat.app.set_title(title_on);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
