@@ -1142,6 +1142,93 @@ def selfcheck() -> None:
     apc = ApcFilter()
     fed = apc.feed(b"left \x1b_Ga=p,i=8003;AAAA") + apc.feed(b"BBBB\x1b") + apc.feed(b"\\ right\x1b")
     assert fed + apc.feed(b"[0m") == b"left  right\x1b[0m", fed
+    # The Ghostty replay starts from the seed as staged, whatever the headless drive appended.
+    with tempfile.TemporaryDirectory() as tmp:
+        seed = Path(tmp) / "s.jsonl"
+        seed.write_text(json.dumps({"kind": "header", "version": 4, "id": FIXED_ID,
+                                    "createdAt": 1790000000000, "cwd": tmp}) + "\n")
+        session = stage_seed(Path(tmp) / "run", seed)
+        grown = next((Path(tmp) / "run" / "sessions").glob(f"*/*_{session}.jsonl"))
+        grown.write_text(grown.read_text() + '{"kind":"message"}\n')
+        assert pristine_seed(Path(tmp) / "run", session).read_text() == seed.read_text()
+    # A scrubbed session harvests into seeds the store accepts: unique ids, each entry's parent
+    # the entry before it (its records carry no parent), and each view cut where it says.
+    fixture = ROOT / "crates/tui/tests/fixtures/sessions/01a0648f.jsonl"
+    with tempfile.TemporaryDirectory() as tmp:
+        scenes = harvest(fixture, "x", VIEWS, "80x24", Path(tmp))
+        assert [p.name for p in scenes] == [f"harvest-x-{v}.drive" for v in VIEWS], scenes
+        seeds = {v: [json.loads(line) for line in (Path(tmp) / f"harvest-x-{v}.jsonl").read_text().splitlines()]
+                 for v in VIEWS}
+        for view, rows in seeds.items():
+            assert re.fullmatch(r"[0-9a-f-]+", rows[0]["id"]), f"{view}: header id {rows[0]['id']}"
+            ids = [row["id"] for row in rows[1:]]
+            assert len(set(ids)) == len(ids) and MASK not in ids, f"{view}: duplicate or masked ids"
+            leaf = None
+            for row in rows[1:]:
+                if row["kind"] == "entry":
+                    assert row["parentId"] == leaf, f"{view} seq {row['seq']}: parent {row['parentId']}"
+                    leaf = row["id"]
+        original = [json.loads(line) for line in fixture.read_text().splitlines()]
+        assert original[0]["id"] == MASK and len(seeds["end"]) == len(original), "end keeps every row"
+        results = [r for r in original if r.get("message", {}).get("role") == "toolResult"]
+        shown = [r for r in seeds["tool"] if r.get("message", {}).get("role") == "toolResult"][-1]
+        assert shown["message"] == max(results, key=lambda r: len(json.dumps(r)))["message"], "tool view"
+        replies = [r["message"] for r in original if r.get("message", {}).get("role") == "assistant"]
+        last = [r["message"] for r in seeds["long"] if r.get("message", {}).get("role") == "assistant"][-1]
+        assert len(text_of(last)) == max(len(text_of(m)) for m in replies), "long view ends on the longest reply"
+        surface, flags = header(scenes[0])
+        cassette = Path(flags[flags.index("--faux") + 1])
+        reply = json.loads(cassette.read_text())
+        assert surface == "solo" and Path(flags[flags.index("--seed") + 1]).exists(), flags
+        assert reply["content"][0]["text"].startswith("Tooling works. Results:"), reply
+        assert all("--faux" not in header(p)[1] for p in scenes[1:]), "only the end view continues"
+    import contextlib, io
+
+    def recorded(tmp: Path, name: str, messages: list[dict]) -> Path:
+        path = Path(tmp) / name
+        rows = [{"kind": "header", "version": 4, "id": MASK, "createdAt": 1790000000000, "cwd": "."}]
+        rows += [{"kind": "entry", "type": "message", "id": MASK, "parentId": MASK, "seq": n,
+                  "message": m} for n, m in enumerate(messages, 1)]
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return path
+    with tempfile.TemporaryDirectory() as tmp:
+        chat = recorded(tmp, "chat.jsonl", [{"role": "user", "content": "hi"},
+                                            {"role": "assistant", "content": "hello"}])
+        with contextlib.redirect_stdout(io.StringIO()) as seen:
+            assert harvest(chat, "y", ("tool",), "80x24", Path(tmp)) == [], "chat-only: no tool scene"
+        assert "no scene written" in seen.getvalue(), seen.getvalue()
+        spoken = recorded(tmp, "spoken.jsonl", [{"role": "user", "content": "hi"}])
+        with contextlib.redirect_stdout(io.StringIO()) as seen:
+            assert harvest(spoken, "y", ("long",), "80x24", Path(tmp)) == [], "no reply: no long scene"
+        assert "no scene written" in seen.getvalue(), seen.getvalue()
+        bracket = recorded(tmp, "bracket.jsonl", [
+            {"role": "user", "content": "[review notes]\nkeep  the  spacing"},
+            {"role": "assistant", "content": "on it"},
+        ])
+        harvest(bracket, "b", ("end",), "80x24", Path(tmp))
+        drive = (Path(tmp) / "harvest-b-end.drive").read_text()
+        assert "type [review notes] keep  the  spacing\n" in drive, drive
+        assert "line breaks" in drive, drive
+        secret = recorded(tmp, "secret.jsonl", [
+            {"role": "user", "content": "run the tool"},
+            {"role": "toolResult", "toolCallId": "call_x", "toolName": "bash",
+             "content": "api_key = hunter2supersecret\n"},
+            {"role": "assistant", "content": "done"},
+        ])
+        harvest(secret, "z", ("end",), "80x24", Path(tmp))
+        seed = (Path(tmp) / "harvest-z-end.jsonl").read_text()
+        assert "hunter2supersecret" not in seed and MASK in seed, seed
+    keep_harvest = globals()["harvest"]
+    try:
+        globals()["harvest"] = lambda *args, **kw: (_ for _ in ()).throw(RuntimeError("harvest ran"))
+        try:
+            main(["harvest", str(fixture)])
+        except SystemExit as exit_code:
+            assert "--view is required" in str(exit_code), exit_code
+        else:
+            raise AssertionError("harvest without --view ran all views")
+    finally:
+        globals()["harvest"] = keep_harvest
     print("tui_see selfcheck: ok")
 
 
