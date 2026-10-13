@@ -1,12 +1,12 @@
 ---
 issue: Closes #1381
 decision: A root session always has ask_user and a question is drawn as a card | the owner asked Yi to ask many more multiple-choice questions in design talk, recommended option first, and to show what each option looks like; a root with no reviewer had no question tool, so a question was prose or a muted todo row, and the card needs a producer on every root | restore the `wire_role` guard on `parent`, the §1.2 cut-list entry, and drop `crates/tui/src/question.rs`
-growth: +333 the card is one new view (`question.rs`, about 290 lines) and the runtime nets -5, since the ask_user schema became one const string and object options and root registration cost less than the json! macro it replaced; the HUD's muted option rows were weighed for deletion and stay, since a blocked todo's `Ask` has no card yet
-raise: tests +188
-raise: comments +5
-raise: crate tui +338
+growth: +337 the card is one new view (`question.rs`, about 290 lines) and the runtime nets -5, since the ask_user schema became one const string and object options and root registration cost less than the json! macro it replaced; the HUD's muted option rows were weighed for deletion and stay, since a blocked todo's `Ask` has no card yet
+raise: tests +298
+raise: comments +4
+raise: crate tui +342
 ---
-A root's `ask_user` call now opens a question card in place of the composer. The card carries one question per page, up to four from one turn: a plain sentence, each option as a bold label with a one-line trade-off under it, a number key on the right edge, the first option marked recommended, an Other row that takes the person's own words, and `s` to skip. A highlighted option that carries a `preview` shows up to five lines of it under its trade-off, and a longer one says how many lines it kept and the cap. The last page's pick goes out as one user message, so the session ledger keeps the person's words; a skip tells the model to go with its recommendation and say so.
+A root's `ask_user` call now opens a question card in place of the composer. The card carries one question per page, as many as one turn asked (the guide advises four): a plain sentence, each option as a bold label with a one-line trade-off under it, a number key on the right edge, the first option marked recommended, an Other row that takes the person's own words, and `s` to skip. A question with no options is the answer field alone, already taking typing. A highlighted option that carries a `preview` shows up to five lines of it under its trade-off, and a longer one says how many lines it kept and the cap. The last page's pick goes out as one user message, so the session ledger keeps the person's words; a skip tells the model to go with its recommendation and say so.
 
 `ask_user` options are now `{label, description?, preview?}` (a bare string still reads), and the tool is registered for a root whether or not auto-review names a reviewer, which reverses the cut that demoted it when `annotate` entered. Its guide and one line of the doctrine's Planning paragraph tell the model to ask more in design talk (a brainstorm, a change plan, an architecture, target metrics and eval targets, a choice between looks), in rounds of up to four, after reading what a file already answers. The old doctrine sentence that proceeded on a default when unanswered now applies to unattended runs only; an attended question waits for the person.
 

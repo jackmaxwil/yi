@@ -11,7 +11,6 @@ use crate::keymap::{KeyCodeValue, SingleKey};
 use crate::popup::{BottomView, PopupResult};
 use crate::wrap::{fit, wrap_line};
 
-const PAGES_MAX: usize = 4;
 const PREVIEW_LINES: usize = 5;
 const SKIPPED: &str = "Skip: go with your recommendation and say which.";
 
@@ -53,17 +52,17 @@ pub(crate) struct Question {
 }
 
 impl Question {
-    /// `None` below two options: a one-option question has nothing to pick, so the tool row
-    /// it leaves is all there is to show.
+    /// With no option it is an open question: the card is the Other row alone, already typing.
     pub(crate) fn from_args(args: &Value) -> Option<Self> {
         let prompt = args.get("question")?.as_str()?.trim().to_owned();
         let choices: Vec<Choice> = args
-            .get("options")?
-            .as_array()?
-            .iter()
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
             .filter_map(Choice::from_value)
             .collect();
-        (!prompt.is_empty() && choices.len() >= 2).then_some(Self { prompt, choices })
+        (!prompt.is_empty()).then_some(Self { prompt, choices })
     }
 }
 
@@ -78,11 +77,14 @@ pub(crate) struct QuestionView {
 
 impl QuestionView {
     pub(crate) fn new(questions: Vec<Question>) -> Self {
+        let open = questions
+            .first()
+            .is_some_and(|question| question.choices.is_empty());
         Self {
             questions,
             page: 0,
             cursor: 0,
-            typing: false,
+            typing: open,
             other: String::new(),
             answers: Vec::new(),
         }
@@ -98,9 +100,9 @@ impl QuestionView {
         self.answers.push(text);
         self.page = self.page.saturating_add(1);
         self.cursor = 0;
-        self.typing = false;
         self.other.clear();
-        if self.page < self.questions.len() {
+        if let Some(next) = self.current() {
+            self.typing = next.choices.is_empty();
             return PopupResult::Open;
         }
         let reply = match self.answers.as_slice() {
@@ -218,7 +220,10 @@ impl BottomView for QuestionView {
             false => Span::styled("type your own answer", theme.dim_style()),
         };
         out.push(keyed(
-            vec![label(others, "Other  "), typed],
+            vec![
+                label(others, if others == 0 { "Answer  " } else { "Other  " }),
+                typed,
+            ],
             others.saturating_add(1),
             width,
             theme,
@@ -300,7 +305,6 @@ impl BottomView for QuestionView {
 impl App {
     pub(crate) fn note_question(&mut self, tool_name: &str, args: &Value) {
         if tool_name == "ask_user"
-            && self.asked.len() < PAGES_MAX
             && let Some(question) = Question::from_args(args)
         {
             self.asked.push(question);
