@@ -598,12 +598,26 @@ impl ConsoleState {
             rows: pinned,
             folded: false,
         }];
-        for root in self.roots() {
-            let mut rows: Vec<usize> = (0..self.order.len())
-                .filter(|index| {
-                    row(index).is_some_and(|row| row.root == root && row.pinned.is_none())
-                })
-                .collect();
+        let mut buckets: Vec<(String, Vec<usize>)> = vec![(self.root.clone(), Vec::new())];
+        let mut slot_of = std::collections::HashMap::from([(self.root.clone(), 0)]);
+        for index in 0..self.order.len() {
+            let Some(r) = row(&index) else {
+                continue;
+            };
+            if r.pinned.is_some() {
+                continue;
+            }
+            let slot = match slot_of.get(&r.root) {
+                Some(slot) => *slot,
+                None => {
+                    slot_of.insert(r.root.clone(), buckets.len());
+                    buckets.push((r.root.clone(), Vec::new()));
+                    buckets.len() - 1
+                }
+            };
+            buckets[slot].1.push(index);
+        }
+        for (root, mut rows) in buckets {
             rows.sort_by_key(|index| {
                 let row = row(index);
                 (
@@ -633,13 +647,25 @@ impl ConsoleState {
         if !self.folded.remove(root) {
             self.folded.insert(root.to_owned());
         }
+        let rows = self.visible_rows();
+        if rows.contains(&self.selected) {
+            return;
+        }
+        let next = rows
+            .iter()
+            .find(|index| **index >= self.selected)
+            .or_else(|| rows.first());
+        if let Some(next) = next {
+            self.selected = *next;
+        }
     }
 
     pub fn roots(&self) -> Vec<String> {
         let mut roots = vec![self.root.clone()];
+        let mut seen = std::collections::HashSet::from([self.root.clone()]);
         for id in &self.order {
             if let Some(row) = self.sessions.get(id)
-                && !roots.contains(&row.root)
+                && seen.insert(row.root.clone())
             {
                 roots.push(row.root.clone());
             }

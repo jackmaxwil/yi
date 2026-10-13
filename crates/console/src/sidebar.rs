@@ -206,17 +206,19 @@ fn group_header(
         if folded { " ▸" } else { " ▾" }.to_owned(),
         theme.dim_style(),
     )];
+    // Invariant: a fold must not hide a session that needs you; a red gate ranks need 2, so
+    // the mark reads need_of, the same rank the group's sort uses.
     let worst = rows
         .iter()
         .filter_map(|index| app.state.order.get(*index))
         .filter_map(|id| app.state.sessions.get(id))
-        .map(|row| row.status)
-        .min_by_key(|status| status.need())
-        .filter(|status| folded && status.need() <= 1);
-    if let Some(worst) = worst {
+        .map(|row| (app.state.need_of(row), row))
+        .min_by_key(|(need, _)| *need)
+        .filter(|(need, _)| folded && *need <= 2);
+    if let Some((_, worst)) = worst {
         tail.push(Span::styled(
-            format!(" {}", worst.glyph()),
-            status_style(theme, worst),
+            format!(" {}", worst.status.glyph()),
+            status_style(theme, worst.status),
         ));
     }
     let tail_cols: usize = tail.iter().map(|span| drawn_width(&span.content)).sum();
@@ -234,6 +236,21 @@ fn group_header(
         control: Some(Control::Fold(root.to_owned())),
         ..SidebarRow::plain(None, Line::from(spans))
     }
+}
+
+/// Invariant: the `+` is the header's last span, so the hit column is read back from the
+/// drawn line and cannot drift from the glyph the row paints.
+pub(crate) fn plus_split(line: &Line<'_>) -> (usize, usize) {
+    let total: usize = line
+        .spans
+        .iter()
+        .map(|span| drawn_width(&span.content))
+        .sum();
+    let plus = line
+        .spans
+        .last()
+        .map_or(0, |span| drawn_width(&span.content));
+    (total.saturating_sub(plus), plus)
 }
 
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {

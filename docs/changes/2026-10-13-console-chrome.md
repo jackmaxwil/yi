@@ -1,6 +1,5 @@
 ---
 issue: Closes #1371
-raise: tests +203, comments +4, crate console +150
 decision: a lane session's status row names the repo alone: `LaneHandle::row` stays the one builder and `_yi/workdir` still carries its text, but the `⎇ lane <slot>` suffix is gone (amends D208) | the owner asked for no "⎇ lane 0" on the console status row (#1371); the slot number is pool bookkeeping nobody acts on, and the row already says which tree by its repo | restore `format!("{repo} ⎇ lane {}", lane.slot())` in `LaneHandle::row`
 ---
 The console's chrome answers the pointer (Closes #1371). A click on a settings tab opens that

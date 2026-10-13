@@ -669,6 +669,7 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 5000 ·  yi \n\
+         wait-frame 3000 !⎇ lane\n\
          quit\n",
     )
 }
@@ -1731,7 +1732,7 @@ fn a_click_on_a_workspace_header_folds_it() -> TestResult {
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", other_root_ledger),
         ],
-        "wait-frame 5000 s-gamma\n\
+        "wait-frame 5000 s-beta\n\
          wait-frame 3000 demo-root ▾\n\
          mouse down 3 2\n\
          wait-frame 3000 demo-root ▸\n\
@@ -1763,14 +1764,49 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
             Step::Expect("session/list", other_root_ledger),
             Step::Expect("session/new", new_in_other_root),
         ],
-        "wait-frame 5000 s-gamma\n\
+        "wait-frame 5000 s-beta\n\
          mouse down 16 7\n\
-         wait-frame 3000 SN  untitled\n\
+         wait-frame 3000 SN  s-new\n\
          quit\n",
     )?;
     let at = sidebar_order(&frame, &["demo-root ▾", "other-root ▾", "SN  untitled"])?;
     assert!(at.is_sorted(), "{at:?}\n{frame}");
     Ok(())
+}
+
+/// A press on the sidebar's own New row starts a session in the console's root.
+#[test]
+fn the_sidebars_new_row_starts_a_session() -> TestResult {
+    run(
+        "new",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/new", new_session_reply),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse down 3 0\n\
+         wait-frame 3000 SN  s-new\n\
+         quit\n",
+    )
+}
+
+/// A press on the sidebar's Search row opens the command palette.
+#[test]
+fn the_sidebars_search_row_opens_the_palette() -> TestResult {
+    run(
+        "search",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse down 3 1\n\
+         wait-frame 3000 Command Palette\n\
+         quit\n",
+    )
 }
 
 fn pinned_at(frame: &Value) -> Vec<Value> {
