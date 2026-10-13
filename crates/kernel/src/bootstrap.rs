@@ -207,9 +207,8 @@ pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
     result.map(|()| target)
 }
 
-/// Directory holding `yi_runtime` and `skills`: `python/` in the tree above the exe, then
-/// `~/.yi/python` unpacked from the embed, then the compile-time path (the build machine's).
-fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
+/// The `python/` tree above the executable, when one sits there.
+fn walk_up_python_root(exe: Option<&Path>) -> Option<PathBuf> {
     let mut dir: Option<PathBuf> = exe.and_then(Path::parent).map(Path::to_path_buf);
     // deps/ -> debug/ -> target/ -> root is three; the spare levels cost a
     // stat each and keep nested target dirs (worktrees, `--target`) working.
@@ -218,9 +217,18 @@ fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBu
         let canonical = std::fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
         let python = canonical.join("python");
         if has_python_sources(&python) {
-            return candidate.join("python");
+            return Some(candidate.join("python"));
         }
         dir = canonical.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+/// Directory holding `yi_runtime` and `skills`: `python/` in the tree above the exe, then
+/// `~/.yi/python` unpacked from the embed, then the compile-time path (the build machine's).
+fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
+    if let Some(found) = walk_up_python_root(exe) {
+        return found;
     }
     let Some(home) = home else { return fallback };
     let root = home.join(".yi").join("python");
@@ -238,21 +246,35 @@ fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBu
         }
     }
 }
+fn python_root_for(exe: Option<&Path>, home: Option<&Path>, build_tree: &Path) -> PathBuf {
+    if let Some(found) = walk_up_python_root(exe) {
+        // Incident: a test binary in a target dir shared across worktrees walked
+        // up to another checkout's python tree and served its stale runtime; the
+        // checkout the binary was compiled against outranks that foreign tree.
+        if same_root(&found, build_tree) {
+            return found;
+        }
+        if has_python_sources(build_tree) {
+            return build_tree.to_path_buf();
+        }
+        return found;
+    }
+    resolve_python_root(exe, home, build_tree.to_path_buf())
+}
+
+fn same_root(left: &Path, right: &Path) -> bool {
+    let canon = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canon(left) == canon(right)
+}
 
 pub fn python_root() -> PathBuf {
-    let build_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("python");
-    // Incident: a test binary in a target dir shared across worktrees walked
-    // up to another checkout's python tree and served its stale runtime.
-    if has_python_sources(&build_tree) {
-        return build_tree;
-    }
-    resolve_python_root(
+    python_root_for(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-        build_tree,
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("python"),
     )
 }
 
@@ -1081,6 +1103,44 @@ mod tests {
             resolve_python_root(Some(&on_path), None, fallback.clone()),
             fallback,
             "with nothing to find, the compile-time path is the last resort"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_installed_binary_keeps_its_embed_when_the_build_tree_survives() -> Result<(), String> {
+        let base = Scratch::new("yi-python-installed").map_err(|error| error.to_string())?;
+        let home = base.join("home");
+        let installed = home.join(".yi").join("python");
+        std::fs::create_dir_all(installed.join("yi_runtime")).map_err(|error| error.to_string())?;
+        std::fs::write(installed.join(PYTHON_STAMP_FILE), embed_stamp())
+            .map_err(|error| error.to_string())?;
+        let build_tree = base.join("build-tree").join("python");
+        std::fs::create_dir_all(build_tree.join("yi_runtime"))
+            .map_err(|error| error.to_string())?;
+        let on_path = home.join("bin").join("yi");
+        assert_eq!(
+            python_root_for(Some(&on_path), Some(&home), &build_tree),
+            installed,
+            "the compile-time path never serves an installed binary"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_build_tree_outranks_a_foreign_tree_above_the_exe() -> Result<(), String> {
+        let base = Scratch::new("yi-python-foreign").map_err(|error| error.to_string())?;
+        let foreign = base.join("other");
+        std::fs::create_dir_all(foreign.join("python").join("yi_runtime"))
+            .map_err(|error| error.to_string())?;
+        let exe = foreign.join("target").join("debug").join("deps").join("yi");
+        let build_tree = base.join("build-tree").join("python");
+        std::fs::create_dir_all(build_tree.join("yi_runtime"))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(
+            python_root_for(Some(&exe), None, &build_tree),
+            build_tree,
+            "a target dir shared across worktrees must serve the compiled-from checkout"
         );
         Ok(())
     }
