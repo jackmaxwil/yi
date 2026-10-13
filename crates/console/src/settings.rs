@@ -103,12 +103,14 @@ fn typed(kind: &SettingKind, text: &str) -> Result<Value, String> {
         SettingKind::Number { .. } => serde_json::from_str::<serde_json::Number>(text.trim())
             .map(Value::Number)
             .map_err(|_| format!("{text:?} is not a number")),
-        SettingKind::List => Ok(Value::Array(
-            yi_types::settings::comma_list(text)
-                .into_iter()
-                .map(Value::String)
-                .collect(),
-        )),
+        SettingKind::List => {
+            let items = yi_types::settings::comma_list(text);
+            Ok(if items.is_empty() {
+                Value::Null
+            } else {
+                Value::Array(items.into_iter().map(Value::String).collect())
+            })
+        }
         _ => Ok(Value::String(text.to_owned())),
     }
 }
@@ -269,7 +271,13 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
             settings.edit = Some(Edit::Type(String::new()));
             Intent::None
         }
-        SettingKind::List if pane_edits_list(&row.id) && row.value.is_array() => {
+        SettingKind::List
+            if pane_edits_list(&row.id)
+                && row
+                    .value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(Value::is_string)) =>
+        {
             settings.edit = Some(Edit::Type(shown_value(&row.value)));
             Intent::None
         }
@@ -563,6 +571,17 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn a_separator_only_list_unsets_instead_of_saving_an_empty_array() {
+        for text in [",", ", ,", ""] {
+            assert_eq!(typed(&SettingKind::List, text), Ok(Value::Null), "{text:?}");
+        }
+        assert_eq!(
+            typed(&SettingKind::List, "a, b"),
+            Ok(Value::Array(vec!["a".into(), "b".into()]))
+        );
     }
 
     #[test]
