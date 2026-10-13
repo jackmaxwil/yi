@@ -302,7 +302,18 @@ pub fn timing_step(
             let mut left = *ms;
             while left > 0 {
                 let frame = left.min(TICK_STEP_MS);
+                // Incident: a step reduced in two halves revealed less than one reduced whole,
+                // and a clock moved before the model request existed started its stream late.
+                if let Some(error) = settle_faux(app, port, ui_rx, cmd_tx) {
+                    return Some(WaitPoll::Failed(error));
+                }
                 app.advance_clock(Duration::from_millis(frame));
+                port.provider()
+                    .faux_time
+                    .advance(Duration::from_millis(frame));
+                if let Some(error) = settle_faux(app, port, ui_rx, cmd_tx) {
+                    return Some(WaitPoll::Failed(error));
+                }
                 crate::port::tick(app, port, ui_rx, cmd_tx);
                 left -= frame;
             }
@@ -451,6 +462,37 @@ pub struct DriveOptions {
     pub height: u16,
 }
 
+/// Waits until the screen has what the provider owes it; `None` once it does, or the reason it
+/// gave up, after 5 s.
+fn settle_faux(
+    app: &mut App,
+    port: &mut Arc<AgentSession>,
+    ui_rx: &Receiver<UiEvent>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+) -> Option<String> {
+    let waiting = Instant::now();
+    while app.awaiting_turn() {
+        if waiting.elapsed() > Duration::from_secs(5) {
+            return Some("tick: the turn did not start within 5 s".to_owned());
+        }
+        crate::port::tick(app, port, ui_rx, cmd_tx);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    loop {
+        app.pacing.receive(ui_rx);
+        if !app.stream_owed(
+            port.provider().faux_time.requests(),
+            port.provider().faux_time.updates(),
+        ) {
+            return None;
+        }
+        if waiting.elapsed() > Duration::from_secs(5) {
+            return Some("tick: the faux stream's updates did not arrive within 5 s".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// The real loop — same App, reduce and draw path — over an in-memory screen,
 /// with script steps for the keyboard. Draws dump to `frames_dir/NNNN.txt`.
 pub fn run_headless(
@@ -516,6 +558,7 @@ pub fn run_headless(
     app.set_rows(usize::from(height));
     if frozen {
         app.set_clock(crate::motion::Clock::Fixed(Instant::now()));
+        session.provider().faux_time.freeze();
     }
     let (ui_rx, cmd_tx, runtime_thread) = crate::app::spawn_runtime_bridge(
         runtime,
