@@ -265,12 +265,8 @@ pub fn faux_replies(
     };
     let source =
         std::fs::read_to_string(path).map_err(|error| format!("--faux {path}: {error}"))?;
-    let mut replies = yi_runtime::session_store::cassette(&source)
+    let replies = yi_runtime::session_store::cassette(&source)
         .map_err(|error| format!("--faux {path}: {error}"))?;
-    for (_, lag) in &mut replies {
-        *lag = std::time::Duration::try_from_secs_f64(lag.as_secs_f64() * args.faux_pace)
-            .unwrap_or_default();
-    }
     Ok(replies)
 }
 
