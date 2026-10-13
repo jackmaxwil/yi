@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
 use yi_tui::colors::{Theme, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
@@ -46,6 +46,7 @@ pub struct Hits {
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
     pub gear: Option<Rect>,
+    pub hint_buttons: Vec<(Rect, keys::Action)>,
 }
 
 impl Hits {
@@ -66,11 +67,12 @@ pub struct ViewState {
     pub split_borders: Vec<SplitBorder>,
     pub banner: Option<Rect>,
     pub framed: bool,
+    pub rail_edge: Option<u16>,
 }
 
 /// Incident: Ghostty draws U+2699 two cells wide while it advances one, so the glyph ate the
 /// space after it (`⚙⌥,`); a second space is what it eats. U+FE0E shifted the whole row.
-const GEAR: &str = "⚙ ";
+pub(crate) const GEAR: &str = "⚙ ";
 
 pub(crate) fn pane_margin(framed: bool) -> ratatui::layout::Margin {
     ratatui::layout::Margin::new(1, u16::from(framed))
@@ -117,7 +119,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     } else {
         0
     };
-    let (sidebar, gear) = split_off_bottom(sidebar, if sidebar_width > 0 { 3 } else { 0 });
+    let gear_rows = crate::chrome::gear_height(sidebar_width, app.kitty);
+    let (sidebar, gear) = split_off_bottom(sidebar, gear_rows);
     let (sidebar, roots_area) = split_off_bottom(sidebar, roots_height);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
@@ -126,12 +129,19 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     };
     let (transcript_area, banner) = split_off_bottom(main, 1);
     let banner = Some(banner);
-    let (tab_bar, panes_area) = if app.state.tabs.len() > 1 {
+    let (tab_bar, mut panes_area) = if app.state.tabs.len() > 1 {
         let (bar, rest) = split_off_top(transcript_area, 1);
         (Some(bar), rest)
     } else {
         (None, transcript_area)
     };
+    let framed = frames_panes(app);
+    // Invariant: framed panes stand on the rail's own line, so one line parts rail and pane.
+    let rail_edge = (framed && sidebar_width > 0 && app.state.sidebar == SidebarMode::Rail)
+        .then(|| main.x.saturating_sub(1));
+    if let Some(x) = rail_edge {
+        (panes_area.x, panes_area.width) = (x, panes_area.width.saturating_add(1));
+    }
 
     let mut pane_rects = Vec::new();
     let mut split_borders = Vec::new();
@@ -148,12 +158,6 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         }
     }
 
-    let lone_chat = pane_rects.len() == 1
-        && pane_rects
-            .first()
-            .and_then(|pane_rect| app.state.panes.get(&pane_rect.id))
-            .is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }));
-    let framed = !lone_chat || app.state.tab().is_some_and(|tab| tab.zoomed);
     let panes_zone = app.state.zone == Zone::Panes;
     let close_hint = keys::chord_for(keys::Action::ToggleNotebook, app.cmd_hints);
     let mut panes = Vec::new();
@@ -232,6 +236,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         overlays: Vec::new(),
         dismiss: None,
         gear: (gear.height > 0).then_some(gear),
+        hint_buttons: Vec::new(),
     });
 
     ViewState {
@@ -244,7 +249,18 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         split_borders,
         banner,
         framed,
+        rail_edge,
     }
+}
+
+fn frames_panes(app: &App) -> bool {
+    app.state.tab().is_none_or(|tab| {
+        let lone = tab.layout.pane_count() == 1;
+        let chat = app.state.panes.get(&tab.layout.focused());
+        tab.zoomed
+            || !lone
+            || !chat.is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }))
+    })
 }
 
 /// Invariant: hit widths come from the label builder the bar draws with.
@@ -644,20 +660,16 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         crate::sidebar::render_roots(app, frame, view.roots, theme);
     }
     if let Some(gear) = app.hits.as_ref().and_then(|hits| hits.gear) {
-        let key = keys::chord_for(keys::Action::Settings, app.cmd_hints);
-        let label = if app.state.sidebar == SidebarMode::Full {
-            format!("{GEAR} settings ")
-        } else {
-            GEAR.to_owned()
-        };
-        let line = Line::from(vec![
-            Span::styled(label, theme.accent_style().add_modifier(Modifier::BOLD)),
-            Span::styled(key, theme.dim_style()),
-        ]);
-        let button = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(theme.accent_style());
-        frame.render_widget(Paragraph::new(line).centered().block(button), gear);
+        crate::chrome::render_gear(app, frame, gear, theme);
+        if app.state.sidebar == SidebarMode::Rail {
+            let x = gear.right().saturating_sub(1);
+            let style = crate::sidebar::rail_style(app, theme);
+            for y in gear.y..gear.bottom() {
+                if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                    cell.set_symbol("│").set_style(style);
+                }
+            }
+        }
     }
     if let Some(bar) = view.tab_bar {
         render_tab_bar(app, frame, bar, theme);
@@ -790,7 +802,7 @@ fn paint_chat_pane(
     }
 }
 
-fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+fn render_banner(app: &mut App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let mut spans = Vec::new();
     match &app.state.link {
         Link::Connecting => spans.push(Span::styled(" connecting… ", theme.dim_style())),
@@ -829,6 +841,9 @@ fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         );
         return;
     }
+    if spans.is_empty() && !matches!(app.state.mode, Mode::Prefix) {
+        return crate::chrome::render_hint_buttons(app, frame, area, theme);
+    }
     if spans.is_empty() {
         let armed = matches!(app.state.mode, Mode::Prefix);
         spans.push(Span::styled(
@@ -858,6 +873,7 @@ fn title_tile(app: &mut App, id: &str, seed: &str, hue: usize, x: u16, y: u16) -
             seed: id.to_owned(),
             accent: yi_tui::colors::accent_rgb(hue),
             state: None,
+            art: crate::avatar::Art::Identicon,
         });
     }
     Span::raw(" ".repeat(text.chars().count()))
@@ -875,6 +891,13 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         focused: bool,
     }
     let mut raster: HashMap<(u16, u16), EdgeCell> = HashMap::new();
+    if let Some(x) = view.rail_edge {
+        let screen = frame.area();
+        for y in screen.y..screen.bottom() {
+            let cell = raster.entry((x, y)).or_default();
+            (cell.up, cell.down) = (y > screen.y, true);
+        }
+    }
     for pane in &view.panes {
         let r = pane.rect;
         if r.width < 2 || r.height < 2 {
@@ -954,11 +977,18 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             } else {
                 theme.dim_style()
             };
-            let button = Span::styled(" ✕ ", style.add_modifier(Modifier::REVERSED));
+            let button = if app.kitty {
+                Span::raw("   ")
+            } else {
+                Span::styled(" ✕ ", style.add_modifier(Modifier::REVERSED))
+            };
             buffer.set_span(right, r.y, &button, width);
             if let Some(hits) = app.hits.as_mut() {
                 hits.closers
                     .push((pane.id, Rect::new(right, r.y, width, 1)));
+                if app.kitty {
+                    crate::chrome::closer_image(hits, pane, Rect::new(right, r.y, width, 1), theme);
+                }
             }
         }
         let mut x = r.x.saturating_add(2);
