@@ -2207,7 +2207,7 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         .try_iter()
         .find(|body| body.get("messages").is_some())
         .ok_or_else(|| format!("no request: {}", String::from_utf8_lossy(&answered.stderr)))?;
-    let session = files_under(&workspace.0.join("home/sessions"))
+    let session = session_files(&workspace.0.join("home/sessions"))?
         .into_iter()
         .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
         .find_map(|name| {
@@ -2217,19 +2217,6 @@ fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
         .ok_or("no session file")?;
     assert_eq!(body["session_id"], session.as_str(), "{body}");
     Ok(())
-}
-
-fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            found.extend(files_under(&path));
-        } else {
-            found.push(path);
-        }
-    }
-    found
 }
 
 /// A plugin yi installed at a version it no longer pins is off, and both `yi plugin list` and
