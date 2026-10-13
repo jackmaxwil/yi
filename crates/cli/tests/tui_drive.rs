@@ -757,8 +757,11 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
     let stored = || -> std::io::Result<String> {
         let mut text = String::new();
         for project in std::fs::read_dir(&sessions)? {
-            for file in std::fs::read_dir(project?.path())?.flatten() {
-                text += &std::fs::read_to_string(file.path()).unwrap_or_default();
+            for file in std::fs::read_dir(project?.path())? {
+                let path = file?.path();
+                if path.extension().is_some_and(|ext| ext == "jsonl") {
+                    text += &std::fs::read_to_string(path)?;
+                }
             }
         }
         Ok(text)
