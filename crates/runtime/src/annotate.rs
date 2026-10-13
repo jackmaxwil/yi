@@ -161,7 +161,7 @@ impl Tool for AnnotateTool {
         }
     }
 
-    fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
+    fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
         if let Err(refusal) = self.validate(&input) {
             return error_output(refusal);
         }
@@ -222,14 +222,17 @@ impl Tool for AnnotateTool {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .note(&record);
+        let value = (context.program).then(|| serde_json::to_value(&record).unwrap_or(Value::Null));
         let call = call.unwrap_or_default();
-        text_output(match kind.as_str() {
+        let mut output = text_output(match kind.as_str() {
             "pin" => format!("Pinned {call}: no cut takes it, however old."),
             "discard" => format!(
                 "Discarded {call}: a cut may now take it however young or short; cuts come once dropping pays, and the placeholder names the read that restores it."
             ),
             _ => "Finding recorded: every compaction view lists it.".to_owned(),
-        })
+        });
+        output.value = value;
+        output
     }
 }
 
@@ -356,6 +359,24 @@ mod tests {
         assert_eq!(
             (target.tool_call_id.as_str(), target.entry_id.as_deref()),
             ("c3", Some(read.as_str()))
+        );
+        Ok(())
+    }
+
+    /// A program reads the mark it recorded as the record the ledger holds.
+    #[test]
+    fn a_program_gets_the_annotation_it_recorded() -> Fallible {
+        let (store, _) = session()?;
+        let tool = AnnotateTool::new(Arc::new(move || Some(Arc::clone(&store))), Arc::default());
+        let mut program = context();
+        program.program = true;
+        let input = json!({"kind": "pin", "call": "src/lib.rs"});
+        let input = input.as_object().cloned().unwrap_or_default();
+        let value = tool.execute(input, &program).value.ok_or("no value")?;
+        let record: AnnotationRecord = serde_json::from_value(value)?;
+        assert_eq!(
+            (record.kind.as_str(), record.call.as_deref()),
+            ("pin", Some("read `src/lib.rs`"))
         );
         Ok(())
     }

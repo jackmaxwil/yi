@@ -38,6 +38,9 @@ pub struct ToolContext {
     /// own right can name the cell that is waiting. Empty when no id exists.
     pub call_id: String,
     pub job_owner: Option<crate::jobs::JobOwner>,
+    /// Invariant: set for a call a kernel program made; a tool then fills [`ToolOutput::value`]
+    /// and collects past the caps of the model's view, since the program reads the value.
+    pub program: bool,
 }
 
 impl ToolContext {
@@ -72,6 +75,7 @@ impl ToolContext {
             container: None,
             call_id: String::new(),
             job_owner: None,
+            program: false,
         }
     }
 }
@@ -80,6 +84,9 @@ impl ToolContext {
 pub struct ToolOutput {
     pub result: ToolResult,
     pub is_error: bool,
+    /// The data the text was rendered from, a `yi_types::tool_value` shape, filled only for a
+    /// [`ToolContext::program`] call and never written to the transcript.
+    pub value: Option<Value>,
 }
 
 pub trait Tool: Send + Sync {
@@ -136,6 +143,7 @@ pub fn text_output(text: impl Into<String>) -> ToolOutput {
             terminate: None,
         },
         is_error: false,
+        value: None,
     }
 }
 

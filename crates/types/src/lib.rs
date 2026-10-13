@@ -53,6 +53,7 @@ pub mod subagent;
 pub mod tape;
 pub mod telemetry;
 pub mod todo;
+pub mod tool_value;
 pub mod trace;
 pub mod url;
 pub mod wire;

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
+import json
+import pickle
 import unittest
 
 import rlm
@@ -51,6 +54,32 @@ class Tools(unittest.TestCase):
         self.assertEqual(result.text, "[a.rs#1A2B]\n1:fn a() {}")
         self.assertEqual(repr(result), result.text, "a cell's last value shows the view")
         self.assertEqual(result.details["hits"], 1)
+
+    def test_a_value_reads_by_key_and_by_attribute_and_names_what_it_has(self) -> None:
+        self.reply = {"ok": True, "text": "view", "details": {},
+                      "value": {"matches": [{"path": "a.rs", "line": 3, "text": "fn a"}], "files": 1}}
+        result = asyncio.run(yi.tools.grep(pattern="fn a"))
+        self.assertEqual(result.value.matches[0].line, 3)
+        self.assertEqual(result.value["matches"][0]["path"], "a.rs")
+        with self.assertRaises(AttributeError) as caught:
+            _ = result.value.match
+        self.assertIn("matches, files", str(caught.exception))
+        self.reply = {"ok": True, "text": "done", "details": {}}
+        self.assertIsNone(asyncio.run(yi.tools.grep(pattern="x")).value, "a tool with no value")
+        self.reply = {"ok": True, "text": "list", "details": {},
+                      "value": {"phases": [{"name": "now", "items": [{"label": "one"}]}]}}
+        phase = asyncio.run(tools.call("todo", op="view")).value.phases[0]
+        self.assertEqual(phase.items[0].label, "one", "a key named like a dict method is the key")
+        listed = asyncio.run(tools.call("todo", op="view"))
+        self.assertEqual(json.loads(json.dumps(listed.data))["phases"][0]["items"], [{"label": "one"}])
+
+    def test_a_result_holding_a_value_survives_the_snapshot_round_trip(self) -> None:
+        self.reply = {"ok": True, "text": "view", "details": {},
+                      "value": {"matches": [{"path": "a.rs", "line": 3, "text": "fn a"}]}}
+        result = asyncio.run(yi.tools.grep(pattern="fn a"))
+        restored = pickle.loads(pickle.dumps(result))
+        self.assertEqual(restored.value.matches[0].line, 3, "the kernel snapshot pickles cell variables")
+        self.assertEqual(copy.deepcopy(result.value).matches[0].path, "a.rs")
 
     def test_a_tool_argument_called_name_is_sent_as_an_argument(self) -> None:
         asyncio.run(tools.call("deploy", name="web"))
