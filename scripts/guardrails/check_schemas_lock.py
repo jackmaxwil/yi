@@ -51,7 +51,7 @@ def current():
 def main():
     shapes = current()
     if "--update" in sys.argv:
-        LOCK.write_text(json.dumps(shapes, indent=1, sort_keys=True) + "\n")
+        LOCK.write_text(json.dumps(shapes, indent=2, sort_keys=True) + "\n")
         print(f"ok   schemas_lock (baseline updated: {len(shapes)} shapes)")
         return
     locked = json.loads(LOCK.read_text() or "{}")
