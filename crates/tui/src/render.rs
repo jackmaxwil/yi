@@ -291,6 +291,7 @@ pub fn layout_chat(
     } else {
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
+            Some(Bottom::Question(view)) => Some(view.lines(width, &theme)),
             Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Model(popup)) => Some(popup.lines(width, &theme)),

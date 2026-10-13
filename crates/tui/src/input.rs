@@ -47,7 +47,7 @@ pub fn handle_terminal_event(
                 return;
             }
             if app.bottom.is_some() {
-                handle_bottom_key(app, &key);
+                handle_bottom_key(app, cmd_tx, &key);
                 return;
             }
             let ctx = EvalContext {
@@ -122,7 +122,11 @@ pub(crate) fn handle_plan_tree_key(app: &mut App, key: &SingleKey) {
     }
 }
 
-pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
+pub(crate) fn handle_bottom_key(
+    app: &mut App,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+    key: &SingleKey,
+) {
     if key.code == KeyCodeValue::Char('c')
         && key.ctrl
         && !matches!(app.bottom, Some(Bottom::Approval(..)))
@@ -135,6 +139,7 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
     };
     let result = match &mut bottom {
         Bottom::Approval(view, _) => view.handle_key(key),
+        Bottom::Question(view) => view.handle_key(key),
         Bottom::Command(popup) | Bottom::File(popup) => popup.handle_key(key),
         Bottom::Agents(popup) => popup.handle_key(key),
         Bottom::Model(popup) => popup.handle_key(key),
@@ -155,7 +160,7 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
                     app.select(model, effort);
                 }
             }
-            Bottom::Command(_) | Bottom::File(_) => {}
+            Bottom::Command(_) | Bottom::File(_) | Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
             Bottom::Command(_) => {
@@ -170,8 +175,19 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
             Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
+            Bottom::Question(_) => send_message(app, cmd_tx, text),
             Bottom::Agents(_) | Bottom::Model(_) => {}
         },
+    }
+}
+
+fn send_message(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
+    if app.running {
+        app.steering.push(text.clone());
+        let _ = cmd_tx.send(Command::Steer(text));
+    } else {
+        app.note_submission();
+        let _ = cmd_tx.send(Command::Prompt(text));
     }
 }
 
@@ -201,13 +217,7 @@ pub(crate) fn handle_action(
                     });
                     return;
                 }
-                if app.running {
-                    app.steering.push(text.clone());
-                    let _ = cmd_tx.send(Command::Steer(text));
-                } else {
-                    app.note_submission();
-                    let _ = cmd_tx.send(Command::Prompt(text));
-                }
+                send_message(app, cmd_tx, text);
             }
         }
         Action::InsertNewline => app.composer.insert_newline(),

@@ -253,9 +253,10 @@ more than the reading order. A plan is decision-complete: its implementer
 makes no operational decisions, only coding ones. Ground unknowns by
 exploring, not asking; when a fact is discoverable, discover it and
 present the candidates with a recommendation; when it is a preference,
-offer two to four real options with a default, and proceed on the default
-if the user does not answer, saying so. Group tasks by behaviour or
-subsystem, not by file. Never invent a schema, precedence rule, or wire
+put two to four real options to the user with ask_user, the recommended
+one first. In design talk ask more, in rounds of up to four (read
+yi://tools/ask_user); unattended, proceed on the default, saying so.
+Group tasks by behaviour or subsystem, not by file. Never invent a schema, precedence rule, or wire
 shape the request did not establish. "Create a plan" always means write
 one; "should I proceed" is never asked, the plan is the question.
 

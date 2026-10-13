@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use yi_permission::{ReviewedAsk, UserVerdict};
 use yi_types::message::AgentMessage;
 use yi_types::model::Model;
@@ -155,13 +155,21 @@ fn question_text(input: &Map<String, Value>) -> Option<String> {
         return None;
     }
     let mut text = question.to_owned();
-    let options: Vec<&str> = input
-        .get("options")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    for (index, option) in options.iter().enumerate() {
-        text.push_str(&format!("\n  {}. {option}", index.saturating_add(1)));
+    let options = input.get("options").and_then(Value::as_array);
+    for (index, option) in options.into_iter().flatten().enumerate() {
+        let (label, description) = match option {
+            Value::Object(parts) => (
+                parts.get("label").and_then(Value::as_str),
+                parts.get("description").and_then(Value::as_str),
+            ),
+            other => (other.as_str(), None),
+        };
+        let Some(label) = label else { continue };
+        let number = index.saturating_add(1);
+        match description {
+            Some(description) => text.push_str(&format!("\n  {number}. {label}: {description}")),
+            None => text.push_str(&format!("\n  {number}. {label}")),
+        }
     }
     if let Some(default) = input.get("default").and_then(Value::as_str) {
         text.push_str(&format!("\nDefault if unanswered: {default}"));
@@ -169,7 +177,9 @@ fn question_text(input: &Map<String, Value>) -> Option<String> {
     Some(text)
 }
 
-pub const ASK_USER_GUIDE: &str = "Ask the user something only they can decide, and end the turn on it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose. Block the todo it waits on first. With auto-review on, `request` (the number a denial quoted) puts that denial to the user instead; a denial you do not escalate stays denied.";
+const SCHEMA: &str = r#"{"type":"object","properties":{"question":{"type":"string","description":"What only the user can decide, in one sentence"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"description":{"type":"string","description":"One line: what it costs or buys"},"preview":{"type":"string","description":"A mock, snippet or prose, five lines"}},"required":["label"]},"description":"Two to four choices, the recommended one first"},"default":{"type":"string","description":"The option you proceed on if the user does not answer"},"request":{"type":"integer","description":"The request number quoted in an auto-review denial."}}}"#;
+
+pub const ASK_USER_GUIDE: &str = "Ask the user something only they can decide, and end the turn on it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose. Block the todo it waits on first. With auto-review on, `request` (the number a denial quoted) puts that denial to the user instead; a denial you do not escalate stays denied.\n\nIn design talk (brainstorm, change plan, architecture, targets, a choice between looks) ask more: read first, then put up to four questions in one turn, one call each, in plain words. Each option is {label, description}: a few words, then one line on what it costs or buys. Option 1 is your recommendation. When options differ in how they look or run, add a `preview` (a mock, snippet or prose; five lines show). A skip means go with option 1 and say so.";
 
 impl yi_tools::Tool for AskUserTool {
     fn name(&self) -> &str {
@@ -184,18 +194,7 @@ impl yi_tools::Tool for AskUserTool {
     }
 
     fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "question": {"type": "string", "description": "What only the user can decide, in one sentence"},
-                "options": {"type": "array", "items": {"type": "string"}, "description": "Two to four choices, the recommended one first"},
-                "default": {"type": "string", "description": "The option you proceed on if the user does not answer"},
-                "request": {
-                    "type": "integer",
-                    "description": "The request number quoted in an auto-review denial."
-                }
-            }
-        })
+        serde_json::from_str(SCHEMA).unwrap_or_default()
     }
 
     fn kind(&self) -> yi_tools::ToolKind {
@@ -294,11 +293,7 @@ pub fn wire_role(
     parent: Option<crate::mailbox::ParentLink>,
 ) {
     let (Some(model), Some(broker)) = (role, broker) else {
-        // Demoted for annotations (one in, one out): with no reviewer it serves only a child,
-        // whose parent answers; a root asks in its reply, which ends the turn the same way.
-        if parent.is_some() {
-            tools.push(Arc::new(AskUserTool::new(None).asking(parent)));
-        }
+        tools.push(Arc::new(AskUserTool::new(None).asking(parent)));
         return;
     };
     broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(provider), model)));
