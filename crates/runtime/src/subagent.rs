@@ -236,6 +236,7 @@ pub struct SubagentHost {
     /// The board a long reply is kept on: the wiring's, set once after construction (D242).
     pub(crate) family: std::sync::OnceLock<PathBuf>,
     pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
+    pub(crate) mailboxes: std::sync::OnceLock<PathBuf>,
     pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
     pub(crate) leads: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
 }
@@ -475,6 +476,7 @@ impl SubagentHost {
             stuck: Mutex::default(),
             family: std::sync::OnceLock::new(),
             resolver: std::sync::OnceLock::new(),
+            mailboxes: std::sync::OnceLock::new(),
             partitions: Mutex::default(),
             leads: Mutex::default(),
         }
@@ -1023,8 +1025,13 @@ impl SubagentHost {
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("agent_message.send", move |payload| {
-            let reply = host.send(PARENT_NAME, &payload);
-            Box::pin(async move { reply })
+            let host = Arc::clone(&host);
+            // A letter to another session walks the sessions directory, off the reactor.
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || host.send(PARENT_NAME, &payload))
+                    .await
+                    .map_err(|error| error.to_string())?
+            })
         });
         let host = Arc::clone(self);
         registry.register("agent_message.request", move |payload| {

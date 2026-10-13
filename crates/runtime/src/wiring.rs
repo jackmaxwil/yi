@@ -422,6 +422,9 @@ fn wire_fetch(
     }
     let resolver = Arc::new(resolver);
     host.set_resolver(Arc::clone(&resolver));
+    if let (Some(sessions), 0) = (&wiring.sessions_dir, wiring.depth) {
+        crate::post::wire(host, sessions.join("channels"));
+    }
     let handler = Arc::clone(&resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);

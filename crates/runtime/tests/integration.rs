@@ -79,6 +79,7 @@ mod schedule_e2e;
 mod schedule_unit;
 mod schema;
 mod session_faux;
+mod session_mail;
 mod skills_e2e;
 mod snapshot_e2e;
 mod subagent;

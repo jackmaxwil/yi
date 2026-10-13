@@ -82,6 +82,7 @@ fn presented_when(state: Delivery) -> &'static str {
             "when its next turn starts: it is idle and this message wakes nothing (followup=True wakes it)"
         }
         Delivery::Answered => "never: it is the reply its request's call returned",
+        Delivery::Stored => crate::post::STORED,
     }
 }
 
@@ -237,6 +238,9 @@ impl SubagentHost {
         }
         if target == from {
             return Err(format!("agent \"{from}\" cannot send to itself"));
+        }
+        if target.starts_with("history://") {
+            return self.post(from, target, draft);
         }
         draft.admit(from)?;
         let (answer, hint) = match self.as_answer(from, target, draft) {
