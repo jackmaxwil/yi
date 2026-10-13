@@ -1,8 +1,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::{App, Bottom, ORB_COLS, ORB_ROWS};
 use crate::cell::{Cell, TaskStatus, TranscriptMode};

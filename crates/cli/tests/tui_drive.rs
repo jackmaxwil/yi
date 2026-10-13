@@ -605,6 +605,189 @@ fn a_frozen_scene_moves_only_when_it_ticks() -> TestResult {
     Ok(())
 }
 
+/// A cassette cut from a recorded session streams at the recorded cadence, and on a frozen clock
+/// only the clock moves it: the same ticks show the same words on every run, whatever the wall
+/// did between them.
+#[test]
+fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> TestResult {
+    let dir = Scratch::new("yi-tui-paced")?;
+    let home = dir.home()?;
+    let cassette = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/proof/tui_see/paced.jsonl");
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 5000 faux-1\ntype what tools do you have available?\nkey enter\n\
+         wait-frame 5000 what tools do you have\nsnap start\ntick 2000\nsnap early\n\
+         tick 3000\nsnap middle\ntick 20000\nwait-idle 10000\nsnap done\nquit\n",
+    )?;
+    let run = |frames: &std::path::Path| -> std::io::Result<std::process::Output> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+        )]
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(["tui", "--headless", "--model", "faux/faux-1", "--faux"])
+            .arg(&cassette)
+            .arg("--session-dir")
+            .arg(dir.join("sessions"))
+            .arg("--keys")
+            .arg(&keys)
+            .arg("--frames")
+            .arg(frames)
+            .env("HOME", &home)
+            .output()
+    };
+    let (first, second) = (dir.join("first"), dir.join("second"));
+    for frames in [&first, &second] {
+        let output = run(frames)?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // Incident: the status row ends in the session id, a v7 id whose first eight digits tick
+    // every 65 s, so two runs a minute apart (a loaded lane) differed in that row alone.
+    let snap = |frames: &std::path::Path, name: &str| {
+        std::fs::read_to_string(frames.join(format!("snap-{name}.txt"))).map(|frame| {
+            let masked = |word: &str| match word.len() == 8 && word.starts_with("01a") {
+                true => "<id>".to_owned(),
+                false => word.to_owned(),
+            };
+            frame.split(' ').map(masked).collect::<Vec<_>>().join(" ")
+        })
+    };
+    // The reply took 7.7 s: 984 characters in 62 deltas, the first two the thought.
+    let (start, early, middle) = (
+        snap(&first, "start")?,
+        snap(&first, "early")?,
+        snap(&first, "middle")?,
+    );
+    assert!(!start.contains("Core tools"), "{start}");
+    assert!(
+        early.contains("Core tools") && !early.contains("ipython"),
+        "{early}"
+    );
+    assert!(
+        middle.contains("ipython") && !middle.contains("get_context"),
+        "{middle}"
+    );
+    assert!(snap(&first, "done")?.contains("installed skills"));
+    // `done` is left out: the turn's end reaches the screen in real time after the last delta,
+    // so the clock it is stamped with (`25s` or `7s` in its footer) is the run's, not the stream's.
+    for name in ["start", "early", "middle"] {
+        assert_eq!(
+            snap(&first, name)?,
+            snap(&second, name)?,
+            "{name} differed between two runs"
+        );
+    }
+    Ok(())
+}
+
+/// Over `--control`, `wait-idle` answers once the typed turn has ended, a `tick` waits for an
+/// armed hold, and a step only the keyboard plays is refused rather than dropped.
+#[test]
+fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult {
+    use std::io::{BufRead, Write};
+    let dir = Scratch::new("yi-tui-control")?;
+    let home = dir.home()?;
+    let cassette = dir.join("cassette.jsonl");
+    let held = "The rail is calmer now. ".repeat(6);
+    std::fs::write(
+        &cassette,
+        cassette_lines(&[], "First reply.") + &cassette_lines(&[], &held),
+    )?;
+    let socket = dir.join("c.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    let sessions = dir.join("sessions");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the control socket only exists on an interactive run, which needs a real pty"
+    )]
+    let mut pty = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/tui_pty.py"
+        ))
+        .args(["--seconds", "60", "--stdin"])
+        .args(["--binary", env!("CARGO_BIN_EXE_yi"), "--home"])
+        .arg(&home)
+        .args(["--", "tui", "--model", "faux/faux-1", "--faux"])
+        .arg(&cassette)
+        .arg("--session-dir")
+        .arg(&sessions)
+        .arg("--control")
+        .arg(&socket)
+        .current_dir(&*dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()?;
+    let mut keys = pty.stdin.take().ok_or("no stdin")?;
+    keys.write_all(b"first\r")?;
+    listener.set_nonblocking(true)?;
+    let started = std::time::Instant::now();
+    let stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(_) if started.elapsed() < std::time::Duration::from_secs(10) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => return Err(format!("the run never connected: {error}").into()),
+        }
+    };
+    stream.set_nonblocking(false)?;
+    let mut control = (std::io::BufReader::new(stream.try_clone()?), stream);
+    type Channel = (
+        std::io::BufReader<std::os::unix::net::UnixStream>,
+        std::os::unix::net::UnixStream,
+    );
+    fn answer(control: &mut Channel, wait_ms: u64) -> std::io::Result<String> {
+        let wait = std::time::Duration::from_millis(wait_ms);
+        control.1.set_read_timeout(Some(wait))?;
+        let mut line = String::new();
+        control.0.read_line(&mut line)?;
+        Ok(line.trim_end().to_owned())
+    }
+    fn ask(control: &mut Channel, step: &str) -> std::io::Result<String> {
+        writeln!(control.1, "{step}")?;
+        answer(control, 20_000)
+    }
+    let stored = || -> std::io::Result<String> {
+        let mut text = String::new();
+        for project in std::fs::read_dir(&sessions)? {
+            for file in std::fs::read_dir(project?.path())? {
+                text += &std::fs::read_to_string(file?.path())?;
+            }
+        }
+        Ok(text)
+    };
+    assert_eq!(ask(&mut control, "wait-idle 8000")?, "ok");
+    assert!(
+        stored()?.contains("First reply."),
+        "idle before the turn ended"
+    );
+    assert_eq!(ask(&mut control, "hold text_delta 2")?, "ok");
+    writeln!(control.1, "tick 400")?;
+    assert!(
+        answer(&mut control, 300).is_err(),
+        "a tick ran before its hold was reached"
+    );
+    keys.write_all(b"second\r")?;
+    assert_eq!(answer(&mut control, 20_000)?, "ok");
+    assert!(!stored()?.contains("The rail"), "the held reply was stored");
+    assert_eq!(ask(&mut control, "release")?, "ok");
+    assert_eq!(ask(&mut control, "tick 8000")?, "ok");
+    assert_eq!(ask(&mut control, "wait-idle 8000")?, "ok");
+    assert!(stored()?.contains(held.trim_end()), "{}", stored()?);
+    let refused = ask(&mut control, "type x")?;
+    assert!(refused.starts_with("error: "), "{refused}");
+    pty.kill()?;
+    pty.wait()?;
+    Ok(())
+}
+
 /// One path for `--record` and `--snap` left the still truncating the
 /// recording still open on it, and the run exited 0 having lost it.
 #[test]

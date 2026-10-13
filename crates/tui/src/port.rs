@@ -13,8 +13,7 @@ use yi_types::model::{Effort, Model};
 use yi_types::plan::doc::Plan;
 
 use crate::app::App;
-use crate::cell::Cell;
-use crate::cell::{ToolCell, ToolStatus};
+use crate::cell::{Cell, ToolCell, ToolStatus};
 use crate::hud::GoalView;
 use crate::plantree::PlanTreeView;
 use crate::transcript::{arg_summary, text_of, user_text};
@@ -530,7 +529,7 @@ pub fn tick(
     events: &std::sync::mpsc::Receiver<crate::app::UiEvent>,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::app::Command>,
 ) {
-    app.pacing.held.extend(events.try_iter());
+    app.pacing.receive(events);
     while let Some(ui_event) = app.pacing.held.pop_front() {
         // The end waits behind the reveal, and everything after it waits too, so a tool row
         // never commits above prose the reader has not seen yet.
