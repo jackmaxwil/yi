@@ -807,6 +807,7 @@ mod tests {
                     ..crate::model::NbCell::default()
                 }],
                 full: false,
+                drawn: None,
             };
         }
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
@@ -844,6 +845,7 @@ mod tests {
                     ..crate::model::NbCell::default()
                 }],
                 full: false,
+                drawn: None,
             };
         }
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40))?;
@@ -886,6 +888,7 @@ mod tests {
                     ..crate::model::NbCell::default()
                 }],
                 full: false,
+                drawn: None,
             };
         }
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
