@@ -261,7 +261,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
                     .unwrap_or("default")
                     .to_owned(),
                 scopes: option(&options, "--scopes")
-                    .map(yi_types::settings::comma_list)
+                    .map(|value| value.split(',').map(str::to_owned).collect())
                     .unwrap_or_default(),
                 client_id: option(&options, "--client-id").map(str::to_owned),
                 no_browser: option(&options, "--no-browser").is_some(),
