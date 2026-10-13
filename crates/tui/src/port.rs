@@ -13,8 +13,7 @@ use yi_types::model::{Effort, Model};
 use yi_types::plan::doc::Plan;
 
 use crate::app::App;
-use crate::cell::Cell;
-use crate::cell::{ToolCell, ToolStatus};
+use crate::cell::{Cell, ToolCell, ToolStatus};
 use crate::hud::GoalView;
 use crate::plantree::PlanTreeView;
 use crate::transcript::{arg_summary, text_of, user_text};
