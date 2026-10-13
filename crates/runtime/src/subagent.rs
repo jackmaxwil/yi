@@ -19,7 +19,7 @@ pub mod reader;
 mod record;
 mod runs;
 pub(crate) mod service;
-mod trail;
+pub(crate) mod trail;
 pub use record::ChildFeed;
 pub(crate) use record::Step;
 use record::preview;
