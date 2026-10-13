@@ -9,6 +9,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+use crate::session_files::session_files;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 /// A throwaway project and the home the binary writes sessions and checkpoints
@@ -515,13 +517,9 @@ fn write_skill(journey: &Journey, name: &str, frontmatter: &str) -> TestResult {
 /// The session file in order: `user`, `assistant`, and each skill pointer as `reminder: <text>`.
 fn trace(journey: &Journey) -> Result<Vec<String>, Box<dyn Error>> {
     let sessions = journey.root.join("home/sessions");
-    let file = std::fs::read_dir(&sessions)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
-        .flat_map(|files| files.filter_map(Result::ok))
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+    let file = session_files(&sessions)?
+        .into_iter()
+        .next()
         .ok_or("no session file")?;
     let mut seen = Vec::new();
     for line in std::fs::read_to_string(file)?.lines() {

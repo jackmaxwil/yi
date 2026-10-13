@@ -104,11 +104,16 @@ fn reply_rows(frames: &Path) -> Result<Vec<String>, Box<dyn Error>> {
 #[test]
 fn a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_whole() -> TestResult
 {
+    // Incident: a loaded console took the reply and its end in one drain, and drain mode showed
+    // "faux:" whole in one 50 ms step; two paused `type` steps replay the batch, then a slow frame.
     let script = "wait-frame 8000 no sessions for this root\n\
                   key alt-n\n\
                   wait-frame 8000 untitled\n\
                   type hello daemon\n\
                   key enter\n\
+                  type-ms 1500\n\
+                  type x\n\
+                  type y\n\
                   wait-frame 15000 faux:\n\
                   wait-idle 15000\n\
                   quit\n";
@@ -116,7 +121,11 @@ fn a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_w
     // Invariant: a daemon per run, so the rail starts empty and `untitled` can only be this run's.
     for (name, record) in [("plain", false), ("recorded", true)] {
         let dir = Scratch::new(&format!("yi-console-pace-{name}"))?;
-        dir.home()?;
+        // At 10% pace each character outlasts a 50 ms step even in drain mode, so a frame shows part.
+        let config = dir.home()?.join(".yi/config.json");
+        let mut value: serde_json::Value = std::fs::read_to_string(&config)?.parse()?;
+        value["tui"] = serde_json::json!({"pace": 10});
+        std::fs::write(&config, value.to_string())?;
         let root = dir.join("repo");
         std::fs::create_dir_all(&root)?;
         let (mut daemon, socket) = spawn_daemon(&dir)?;

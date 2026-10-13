@@ -14,6 +14,8 @@ mod prompt_slots_support;
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "support/session_files.rs"]
+mod session_files;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
 

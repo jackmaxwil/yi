@@ -1,5 +1,5 @@
 ---
 issue: Closes #1369
-raise: tests +20
+raise: tests +12
 ---
 The test lane stops paying for work that produced nothing, and a dev machine stops being sized like a CI runner (Closes #1369). `cargo test --doc` ran 15 rustdoc invocations over zero doctests (2.5-8 s a run) and left `just test` and `just dist-suite`. The yi-cli, yi-tools, yi-console and yi-permission test files, 34 binaries each linked and each scanned by Gatekeeper on first exec, are modules of one `integration` binary per crate (yi-tools keeps `spill`, whose counting global allocator must not reach the others); the nextest `subprocess` group selects the same 299 tests by module prefix, and the two tests that rerun themselves with `--exact` now qualify the name. `just test` runs nextest's new `local` profile unless `CI` is set, which lets eight subprocess tests run at once instead of three: 83-85 s against 103-140 s on a 16-core Mac, the same CPU. `just sweep` deletes the artifacts of superseded units and the incremental caches no live unit uses. Measured and rejected: `CARGO_INCREMENTAL=0` (a one-line edit rebuild went from 7-11 s to 23-29 s), `debug = 0`, proc-macro `opt-level = 3` (+190 s CPU cold), and cloning `target/` into a new worktree (24 s to save 8 s).
