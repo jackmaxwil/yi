@@ -664,7 +664,7 @@ def selfcheck():
     # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
     import contextlib, io
 
-    capped = "FAIL binary_size\n  dist binary 9000000 > hard cap 8388608 bytes (8 MiB, D249)\n"
+    capped = "FAIL binary_size\n  dist binary 9500000 > hard cap 9437184 bytes (9 MiB, D249)\n"
     real_run = subprocess.run
     subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, int("check_binary" in cmd[-1]), capped, "")
     try:
