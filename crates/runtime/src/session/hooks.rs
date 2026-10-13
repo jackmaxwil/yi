@@ -30,6 +30,16 @@ pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
     (model, effort)
 }
 
+/// Incident: the kernel registry holds the heartbeat service, whose lane holds `shared`: no drop
+/// broke that cycle, so an ended session's timer rewrote its ledger over the next holder's edits.
+impl Drop for AgentSession {
+    fn drop(&mut self) {
+        if let Some(service) = self.heartbeat_service() {
+            service.end();
+        }
+    }
+}
+
 impl AgentSession {
     /// Invariant: a resumed session's state is a fold of its ledger, never a count from zero;
     /// `fold` reads each store attached after this call (id, branch, totals) before a request.

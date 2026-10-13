@@ -62,43 +62,55 @@ impl Transcripts for SessionTranscripts {
 
     /// `root/child` names a child by the session that spawned it: like a name, another spelling
     /// of the child's own id, so neither resolves past a history wall.
-    fn open_named(&self, agent: &str) -> Option<Transcript> {
-        let dir = self.sessions_dir.as_deref().filter(|_| self.names)?;
-        let cwd = Path::new(&self.cwd);
-        let root = |name: &str| {
-            let named = || match crate::history::find_named(dir, cwd, name) {
-                crate::history::Named::One(file) => Some(file),
-                crate::history::Named::Many(_) | crate::history::Named::Nothing => None,
+    fn open_named(
+        &self,
+        path: &str,
+    ) -> Result<(Transcript, usize), Vec<crate::history::Candidate>> {
+        let dir = (self.sessions_dir.as_deref().filter(|_| self.names)).ok_or_else(Vec::new)?;
+        let (top, rest) = path.split_once('/').unwrap_or((path, ""));
+        let mut file = match crate::history::find_named(dir, Path::new(&self.cwd), top) {
+            crate::history::Named::One(file) => file,
+            crate::history::Named::Many(found) => return Err(found),
+            crate::history::Named::Nothing => return Err(Vec::new()),
+        };
+        let load = |file: &Path| yi_session::load_session(file).map_err(|_| Vec::new());
+        let mut store = load(&file)?;
+        let mut used = top.len();
+        // Invariant: another session's trail is data, so a child's path stays below its parent's.
+        for name in rest.split('/').filter(|name| !name.is_empty()) {
+            let base = file.parent().ok_or_else(Vec::new)?;
+            let Some(child) = crate::subagent::trail::spawned_path(&store, base, name) else {
+                break;
             };
-            crate::history::find_session(dir, cwd, name).or_else(named)
-        };
-        let child = || {
-            let (top, path) = agent.split_once('/')?;
-            crate::history::child_of(&root(top)?, path)
-        };
-        let file = agent
-            .contains('/')
-            .then(child)
-            .flatten()
-            .or_else(|| root(agent))?;
-        let store = yi_session::load_session(&file).ok()?;
-        Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
-    }
-
-    fn candidates(&self, agent: &str) -> Vec<crate::history::Candidate> {
-        let Some(dir) = self.sessions_dir.as_deref().filter(|_| self.names) else {
-            return Vec::new();
-        };
-        match crate::history::find_named(dir, Path::new(&self.cwd), agent) {
-            crate::history::Named::Many(candidates) => candidates,
-            crate::history::Named::One(_) | crate::history::Named::Nothing => Vec::new(),
+            let inside = (child.strip_prefix(base)).is_ok_and(|below| {
+                (below.components()).all(|part| matches!(part, std::path::Component::Normal(_)))
+            });
+            if !inside {
+                break;
+            }
+            store = load(&child)?;
+            file = child;
+            used = used.saturating_add(1).saturating_add(name.len());
         }
+        Ok((
+            Transcript::Kept(Arc::new(std::sync::Mutex::new(store))),
+            used,
+        ))
     }
 
     fn unreachable(&self) -> Option<(&'static str, bool)> {
         let why =
             "under a history wall a session is read by its id, never by a name or `root/child`";
         (!self.names).then_some((why, true))
+    }
+
+    fn corpus(&self) -> Option<crate::history::RepoSessions> {
+        let mut listed =
+            crate::history::repo_sessions(self.sessions_dir.as_ref()?, Path::new(&self.cwd));
+        listed
+            .files
+            .sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        Some(listed)
     }
 }
 
@@ -110,28 +122,23 @@ impl Resolver {
         url: &Url,
     ) -> Result<(yi_session::SharedSession, Option<String>), FetchError> {
         let path = url.path();
-        let cut = |(at, _): (usize, &str)| {
-            let (agent, entry) = path.split_at(at);
-            (agent, entry.get(1..))
-        };
-        let splits = || std::iter::once((path, None)).chain(path.rmatch_indices('/').map(cut));
-        let by_id = splits().find_map(|(agent, entry)| Some((self.transcript_of(agent)?, entry)));
         let desk = self.transcripts();
-        let named = || {
-            let open = |(agent, entry)| Some((desk?.open_named(agent)?.session(), entry));
-            splits().find_map(open)
+        let found = match self.history_root(path) {
+            Some(hit) => Ok(hit),
+            None => (desk.map_or(Err(Vec::new()), |desk| desk.open_named(path))).map(
+                |(transcript, used)| (transcript.session(), path.get(used.saturating_add(1)..)),
+            ),
         };
-        let Some((session, entry)) = by_id.or_else(named) else {
-            let candidates = (splits().map(|(agent, _)| agent)).find_map(|agent| {
-                let found = desk.map(|desk| desk.candidates(agent)).unwrap_or_default();
-                (!found.is_empty()).then_some((agent, found))
-            });
+        let (session, entry) = found.map_err(|candidates| {
             let why = desk.and_then(|desk| desk.unreachable());
-            return Err(match candidates {
-                Some((agent, found)) => unresolved(url, agent, &found, why),
-                None => unresolved(url, path, &[], why),
-            });
-        };
+            match candidates.is_empty() {
+                true => unresolved(url, path, &[], why),
+                false => {
+                    let top = path.split('/').next().unwrap_or(path);
+                    unresolved(url, top, &candidates, why)
+                }
+            }
+        })?;
         self.spellings_walled(url, &session, entry)?;
         Ok((session, entry.map(str::to_owned)))
     }
@@ -145,8 +152,8 @@ impl Resolver {
     }
 
     /// Invariant: a wall names a session one way and a read may name it another, so the read
-    /// is judged as its id and its name as well as as written (context rule 6).
-    fn spellings_walled(
+    /// is judged as its id, its name as an address resolves it (lowercase) and its name as typed.
+    pub(super) fn spellings_walled(
         &self,
         url: &Url,
         session: &yi_session::SharedSession,
@@ -156,9 +163,12 @@ impl Resolver {
             let store = yi_session::lock_session(session);
             (store.metadata().id.clone(), store.name())
         };
-        let slug = name.map(|name| name.split_whitespace().collect::<Vec<_>>().join("-"));
+        let slug = name.as_deref().map(crate::history::slug);
+        let dashed = name
+            .as_deref()
+            .map(|name| name.trim().replace(char::is_whitespace, "-"));
         let tail = entry.map(|entry| format!("/{entry}")).unwrap_or_default();
-        for spelling in std::iter::once(id).chain(slug) {
+        for spelling in std::iter::once(id).chain(slug).chain(dashed) {
             let Ok(other) = format!("history://{spelling}{tail}").parse::<Url>() else {
                 continue;
             };
@@ -186,7 +196,7 @@ fn unresolved(
 ) -> FetchError {
     match why.filter(|_| candidates.is_empty()) {
         Some((why, true)) => {
-            let refusal = format!("{agent} is not an id, and {why}");
+            let refusal = format!("{agent} opened no session by id, and {why}");
             return FetchError::Denied {
                 url: url.to_string(),
                 refusal,

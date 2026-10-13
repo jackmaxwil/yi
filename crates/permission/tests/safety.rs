@@ -489,3 +489,34 @@ fn each_segment_says_why_it_leaves() {
         [None, Some("installs")]
     );
 }
+
+/// ripwire 0.6.5 refuses `--top-k 20` (flag values are `--flag=value`), so a second bare word
+/// is never a value; the one bare word it takes is the root, and `wrap`, `src` or a URL is not one.
+#[test]
+fn a_ripwire_read_is_query_flags_over_at_most_one_local_root() {
+    let class = |command: &str| classify(&argv(command)[0]);
+    for read in [
+        "ripwire . --hotspots --legend=compact",
+        "ripwire --hotspots",
+        "ripwire ./crates/tools --callers=parse_config",
+        "ripwire /work/repo --for='fix the bold split' --json",
+    ] {
+        assert_eq!(class(read), Class::Safe, "{read}");
+    }
+    for contained in [
+        "ripwire . --quality-delta",
+        "ripwire . -h",
+        "ripwire . --top-k 20",
+        "ripwire wrap claude",
+        "ripwire . wrap",
+        "ripwire src --hotspots",
+        "ripwire https://host/repo.git --hotspots",
+        "ripwire git@host:o/r.git --hotspots",
+        "ripwire ./a ./b --hotspots",
+        "./ripwire . --hotspots",
+        "/tmp/planted/ripwire . --hotspots",
+        "PATH=bin ripwire . --hotspots",
+    ] {
+        assert_ne!(verdict(contained), Verdict::Allow, "{contained}");
+    }
+}

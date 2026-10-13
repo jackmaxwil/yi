@@ -1,12 +1,18 @@
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
+
 use crate::client::Outbound;
+use crate::keys::Action;
 use crate::layout::PaneId;
-use crate::model::{Editor, PaneContent, SessionStatus, Zone};
+use crate::model::{Editor, Mode, PaneContent, SessionStatus, Zone};
 
 use super::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseKind {
     Down,
+    RightDown,
+    Moved,
     Up,
     Drag,
     ScrollUp,
@@ -14,8 +20,22 @@ pub enum MouseKind {
 }
 
 impl App {
+    pub(super) fn mouse_event(&mut self, outbound: &Outbound, mouse: MouseEvent) {
+        let kind = match mouse.kind {
+            MouseEventKind::Down(MouseButton::Right) => MouseKind::RightDown,
+            MouseEventKind::Down(_) => MouseKind::Down,
+            MouseEventKind::Up(_) => MouseKind::Up,
+            MouseEventKind::Drag(_) => MouseKind::Drag,
+            MouseEventKind::Moved => MouseKind::Moved,
+            MouseEventKind::ScrollUp => MouseKind::ScrollUp,
+            MouseEventKind::ScrollDown => MouseKind::ScrollDown,
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => return,
+        };
+        self.handle_mouse(outbound, kind, mouse.column, mouse.row);
+    }
+
     /// A drag copies without the user reaching for a key.
-    fn copy_out(&mut self, text: &str) {
+    pub(super) fn copy_out(&mut self, text: &str) {
         self.osc_out.push(crate::select::osc52(text));
         let lines = text.lines().count();
         let noun = if lines == 1 { "line" } else { "lines" };
@@ -39,12 +59,7 @@ impl App {
     }
 
     fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
-        let target = self.hits.as_ref().and_then(|hits| {
-            hits.panes
-                .iter()
-                .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
-                .map(|(id, _)| *id)
-        });
+        let target = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y));
         if let Some(pane_id) = target
             && let Some(pane) = self.state.panes.get_mut(&pane_id)
         {
@@ -82,21 +97,53 @@ impl App {
         Some((row, col))
     }
 
+    fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {
+        let hits = self.hits.as_ref()?;
+        let (pane, _) = hits
+            .closers
+            .iter()
+            .find(|(_, rect)| rect.contains(Position::new(x, y)))?;
+        Some(*pane)
+    }
+
     fn press(&mut self, outbound: &Outbound, x: u16, y: u16) {
         // Any new click drops the last drag's highlight.
         if self.selection.take().is_some() {
             self.dirty = true;
         }
         let Some(hits) = &self.hits else { return };
+        // Incident: a lower pane's mark sits on the split it can be dragged by, and a press meant
+        // as a resize closed the pane; a mark closes on a release over it that did not drag.
+        self.pending_close = self.closer_at(x, y);
         if let Some((_, index)) = hits
             .tabs
             .iter()
-            .find(|(rect, _)| rect.contains(ratatui::layout::Position::new(x, y)))
+            .find(|(rect, _)| rect.contains(Position::new(x, y)))
         {
             let index = *index;
             self.state.select_tab(index);
             self.dirty = true;
             return;
+        }
+        let hint = hits
+            .hint_buttons
+            .iter()
+            .find(|(rect, _)| rect.contains(Position::new(x, y)));
+        if let Some((_, action)) = hint {
+            return self.apply_action(outbound, *action);
+        }
+        if hits
+            .gear
+            .is_some_and(|gear| gear.contains(Position::new(x, y)))
+        {
+            let Some(pane) = self.open_settings_pane() else {
+                return self.apply_action(outbound, Action::Settings);
+            };
+            if let Some(tab) = self.state.tab_mut() {
+                tab.layout.focus_pane(pane);
+            }
+            self.dirty = true;
+            return self.apply_action(outbound, Action::ClosePane);
         }
         if x < hits.sidebar_width {
             if let Some((_, index)) = hits.root_rows.iter().find(|(row_y, _)| *row_y == y) {
@@ -131,12 +178,10 @@ impl App {
             self.drag = Some((self.state.active_tab, border.path.clone()));
             return;
         }
-        if let Some((pane_id, _)) = hits
-            .panes
-            .iter()
-            .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
-        {
-            let pane_id = *pane_id;
+        if self.pending_close.is_some() {
+            return;
+        }
+        if let Some(pane_id) = hits.pane_at(x, y) {
             if let Some(tab) = self.state.tab_mut() {
                 tab.layout.focus_pane(pane_id);
             }
@@ -169,16 +214,50 @@ impl App {
         }
     }
 
+    /// Incident: a click with the palette open reached the pane under it. A popup takes every
+    /// press now: outside it, or on its close mark, the press dismisses it and goes no further.
+    fn overlay_press(&mut self, kind: MouseKind, x: u16, y: u16) {
+        if !matches!(kind, MouseKind::Down | MouseKind::RightDown) {
+            return;
+        }
+        let at = Position::new(x, y);
+        let Some(hits) = &self.hits else { return };
+        let inside = hits.overlays.iter().any(|rect| rect.contains(at));
+        if !inside || hits.dismiss.is_some_and(|rect| rect.contains(at)) {
+            self.state.mode = Mode::Normal;
+            self.dirty = true;
+        }
+    }
+
     /// Clicks and drags resolve against the last draw's hit table, so the
     /// mouse can never disagree with what was on screen.
     pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
+        match self.state.mode {
+            Mode::Menu(_) => return self.menu_mouse(outbound, kind, x, y),
+            Mode::Navigator { .. } => return self.overlay_press(kind, x, y),
+            Mode::Normal | Mode::Prefix => {}
+        }
         match kind {
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
                 let delta: isize = if kind == MouseKind::ScrollUp { 3 } else { -3 };
                 self.scroll_pane_under(x, y, delta);
             }
             MouseKind::Down => self.press(outbound, x, y),
+            MouseKind::RightDown => self.right_click(x, y),
+            MouseKind::Moved => {
+                let over = |at: Option<(u16, u16)>| {
+                    let hits = self.hits.as_ref()?;
+                    let at = Position::from(at?);
+                    hits.hint_buttons
+                        .iter()
+                        .position(|(rect, _)| rect.contains(at))
+                };
+                let before = over(self.pointer);
+                self.pointer = Some((x, y));
+                self.dirty |= before != over(self.pointer);
+            }
             MouseKind::Drag => {
+                self.pending_close = None;
                 if self.editor_drag {
                     let cell = self
                         .state
@@ -228,6 +307,18 @@ impl App {
             }
             MouseKind::Up => {
                 self.drag = None;
+                if let Some(pane) = self
+                    .pending_close
+                    .take()
+                    .filter(|pane| self.closer_at(x, y) == Some(*pane))
+                {
+                    if let Some(tab) = self.state.tab_mut() {
+                        tab.layout.focus_pane(pane);
+                    }
+                    self.apply_action(outbound, Action::ClosePane);
+                    self.dirty = true;
+                    return;
+                }
                 if std::mem::take(&mut self.editor_drag) {
                     let copied = self.editor_mut().and_then(Editor::release);
                     if let Some(text) = copied {
@@ -246,5 +337,41 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+    use yi_tui::colors::{ColorTier, Theme};
+
+    #[test]
+    fn a_press_outside_the_palette_closes_it_and_goes_no_further() {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        app.hits = Some(crate::render::Hits {
+            sidebar_width: 20,
+            sidebar_rows: vec![(3, 1)],
+            overlays: vec![Rect::new(30, 1, 40, 10)],
+            hint_buttons: Vec::new(),
+            ..crate::render::Hits::default()
+        });
+        app.state.mode = Mode::Navigator {
+            query: String::new(),
+            selected: 0,
+        };
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-overlay-press-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.handle_mouse(&outbound, MouseKind::Down, 5, 3);
+        outbound.shutdown();
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "the palette stayed open"
+        );
+        assert_eq!(
+            app.state.selected, 0,
+            "the press reached the sidebar row under it"
+        );
     }
 }

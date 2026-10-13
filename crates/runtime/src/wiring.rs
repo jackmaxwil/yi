@@ -957,6 +957,9 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&fetch_log),
         Arc::clone(&resolver),
     );
+    let calls = Arc::new(crate::kernel_tools::Calls::default());
+    let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
+    crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, &wiring, registry);
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {
@@ -973,7 +976,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     );
     let mut tools = (wiring.tools)();
     crate::fetch::route_urls(&mut tools, &resolver);
-    tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
+    let ipython = crate::kernel_tools::ipython_tool(Arc::clone(&service), Some(calls));
+    tools.push(ipython);
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
     tools.push(Arc::new(annotate));
     crate::auto_review::wire(session, &wiring, &mut tools);

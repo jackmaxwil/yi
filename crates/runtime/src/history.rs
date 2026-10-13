@@ -138,8 +138,8 @@ pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf
 }
 
 /// A name as an address spells it: case aside, its spaces as dashes, since a URL holds none.
-fn same_name(name: &str, address: &str) -> bool {
-    let slug: String = (name.trim().chars())
+pub(crate) fn slug(name: &str) -> String {
+    (name.trim().chars())
         .map(|character| {
             if character.is_whitespace() {
                 '-'
@@ -147,8 +147,11 @@ fn same_name(name: &str, address: &str) -> bool {
                 character.to_ascii_lowercase()
             }
         })
-        .collect();
-    slug == address.to_ascii_lowercase()
+        .collect()
+}
+
+fn same_name(name: &str, address: &str) -> bool {
+    slug(name) == address.to_ascii_lowercase()
 }
 
 /// One session a name could mean: the address that reads it and the repository it ran in.
@@ -211,36 +214,6 @@ pub fn find_named(sessions_dir: &Path, cwd: &Path, name: &str) -> Named {
                 .collect(),
         ),
     }
-}
-
-/// The file of the child a root spawned under `path`, a name or id per level (`a/b` is a's b),
-/// the first by that name as the host's own lookup takes it, from each parent's `custom{child}`.
-pub fn child_of(root: &Path, path: &str) -> Option<PathBuf> {
-    path.split('/')
-        .try_fold(root.to_path_buf(), |parent, name| one_child(&parent, name))
-}
-
-fn one_child(parent: &Path, name: &str) -> Option<PathBuf> {
-    let store = yi_session::load_session(parent).ok()?;
-    let query = yi_session::EntryQuery {
-        custom_type: Some(yi_types::subagent::CHILD_ENTRY.to_owned()),
-        ..yi_session::EntryQuery::default()
-    };
-    let entries = store.find_entries(&query).ok()?;
-    let spawned = entries.iter().find_map(|entry| match entry {
-        yi_types::entry::Entry::Custom {
-            data: Some(data), ..
-        } => match serde_json::from_value(data.clone()).ok()? {
-            yi_types::subagent::ChildTrail::Spawned(spawned)
-                if spawned.name == name || spawned.id.0 == name =>
-            {
-                Some(spawned)
-            }
-            _ => None,
-        },
-        _ => None,
-    })?;
-    Some(parent.parent()?.join(spawned.path))
 }
 
 fn text_of(message: &AgentMessage) -> Option<(&'static str, String)> {

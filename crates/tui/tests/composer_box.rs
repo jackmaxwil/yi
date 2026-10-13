@@ -85,12 +85,12 @@ fn a_typed_paragraph_wraps_inside_the_box_and_keeps_every_word() -> TestResult {
     Ok(())
 }
 
-/// An empty box rests at three text rows on a pane of 24 rows or more, one below that.
+/// Incident: an empty box rested at three text rows on a full-size pane and read as wasted space.
 #[test]
-fn an_empty_box_rests_at_three_rows_on_a_full_size_pane() -> TestResult {
+fn an_empty_box_rests_at_one_row_on_any_pane() -> TestResult {
     let mut composer = Composer::default();
-    assert_eq!(composer.layout(80, 24), 5);
-    assert_eq!(composer.layout(80, 23), 3);
+    assert_eq!(composer.layout(80, 60), 3);
+    assert_eq!(composer.layout(80, 24), 3);
     Ok(())
 }
 
@@ -208,6 +208,24 @@ fn ctrl_z_undoes_and_ctrl_shift_z_redoes() -> TestResult {
         &mut composer,
         KeyCode::Char('Z'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(composer.text(), "ab");
+    Ok(())
+}
+
+/// Dies with Cmd+U typed as nothing: Ghostty keeps Cmd+Z and Cmd+Shift+Z for its own undo.
+#[test]
+fn cmd_u_undoes_and_cmd_shift_u_redoes() -> TestResult {
+    let mut composer = Composer::default();
+    for ch in ['a', 'b'] {
+        press(&mut composer, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    press(&mut composer, KeyCode::Char('u'), KeyModifiers::SUPER);
+    assert_eq!(composer.text(), "a");
+    press(
+        &mut composer,
+        KeyCode::Char('U'),
+        KeyModifiers::SUPER | KeyModifiers::SHIFT,
     );
     assert_eq!(composer.text(), "ab");
     Ok(())

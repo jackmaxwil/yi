@@ -14,12 +14,112 @@ use ratatui::prelude::CrosstermBackend;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
-pub struct SharedParser(Arc<Mutex<vt100::Parser>>, Arc<Mutex<Vec<u8>>>);
+pub struct SharedParser(
+    Arc<Mutex<vt100::Parser>>,
+    Arc<Mutex<Vec<u8>>>,
+    Arc<Mutex<Scrolled>>,
+);
+
+/// Incident: vt100 drops rows a scroll region scrolls off; kitty and Ghostty keep them if the
+/// region starts at row 0. Logs them as those do; rows moved by a bare linefeed are not seen.
+#[derive(Default)]
+struct Scrolled {
+    scan: Scan,
+    region: Option<(u16, u16)>,
+    rows: Vec<String>,
+}
+
+/// Crossterm writes one escape in several pieces, so the scan outlives a single write.
+#[derive(Default)]
+enum Scan {
+    #[default]
+    Ground,
+    Esc,
+    Csi(Vec<u8>),
+}
+
+impl Scrolled {
+    /// Feeds one byte; returns how many top rows a scroll-up is about to push off the screen.
+    fn step(&mut self, byte: u8, screen_rows: u16) -> Option<usize> {
+        let mut off = None;
+        self.scan = match (std::mem::take(&mut self.scan), byte) {
+            (_, 0x1b) => Scan::Esc,
+            (Scan::Esc, b'[') => Scan::Csi(Vec::new()),
+            (Scan::Csi(mut params), 0x20..=0x3f) if params.len() < 32 => {
+                params.push(byte);
+                Scan::Csi(params)
+            }
+            (Scan::Csi(params), b'r') => {
+                self.set_region(&params, screen_rows);
+                Scan::Ground
+            }
+            (Scan::Csi(params), b'S') => {
+                off = self.scroll_off(&params, screen_rows);
+                Scan::Ground
+            }
+            _ => Scan::Ground,
+        };
+        off
+    }
+
+    fn numbers(params: &[u8]) -> Option<Vec<u16>> {
+        params
+            .iter()
+            .all(|b| b.is_ascii_digit() || *b == b';')
+            .then(|| {
+                params
+                    .split(|b| *b == b';')
+                    .map(|part| {
+                        std::str::from_utf8(part)
+                            .ok()
+                            .and_then(|text| text.parse().ok())
+                            .unwrap_or(0)
+                    })
+                    .collect()
+            })
+    }
+
+    /// vt100's own rule: a region needs top < bottom, anything else is the full screen.
+    fn set_region(&mut self, params: &[u8], screen_rows: u16) {
+        let Some(numbers) = Self::numbers(params) else {
+            return;
+        };
+        let at = |i: usize, default: u16| match numbers.get(i) {
+            Some(0) | None => default,
+            Some(n) => *n,
+        };
+        let top = at(0, 1).saturating_sub(1);
+        let bottom = at(1, screen_rows)
+            .saturating_sub(1)
+            .min(screen_rows.saturating_sub(1));
+        self.region = (top < bottom).then_some((top, bottom));
+    }
+
+    fn scroll_off(&self, params: &[u8], screen_rows: u16) -> Option<usize> {
+        let count = match Self::numbers(params)?.first() {
+            Some(0) | None => 1,
+            Some(n) => usize::from(*n),
+        };
+        let (top, bottom) = self.region.unwrap_or((0, screen_rows.saturating_sub(1)));
+        (top == 0).then(|| count.min(usize::from(bottom) + 1))
+    }
+}
 
 impl Write for SharedParser {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Ok(mut parser) = self.0.lock() {
-            parser.process(buf);
+        if let (Ok(mut parser), Ok(mut scrolled)) = (self.0.lock(), self.2.lock()) {
+            let mut fed = 0;
+            for (at, byte) in buf.iter().enumerate() {
+                let (rows, width) = parser.screen().size();
+                if let Some(count) = scrolled.step(*byte, rows) {
+                    parser.process(buf.get(fed..at).unwrap_or_default());
+                    fed = at;
+                    scrolled
+                        .rows
+                        .extend(parser.screen().rows(0, width).take(count));
+                }
+            }
+            parser.process(buf.get(fed..).unwrap_or_default());
         }
         if let Ok(mut log) = self.1.lock() {
             log.extend_from_slice(buf);
@@ -52,6 +152,7 @@ impl VT100Backend {
                 scrollback_len,
             ))),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Scrolled::default())),
         );
         Self {
             parser: parser.clone(),
@@ -74,6 +175,21 @@ impl VT100Backend {
         if let Ok(mut parser) = self.parser.0.lock() {
             parser.set_size(height, width);
         }
+        if let Ok(mut scrolled) = self.parser.2.lock() {
+            scrolled.region = None;
+        }
+    }
+
+    /// Every row that scrolled off the top, oldest first, then the visible screen.
+    #[allow(dead_code)]
+    pub fn transcript(&self) -> Vec<String> {
+        let (Ok(parser), Ok(scrolled)) = (self.parser.0.lock(), self.parser.2.lock()) else {
+            return Vec::new();
+        };
+        let width = parser.screen().size().1;
+        let mut rows = scrolled.rows.clone();
+        rows.extend(parser.screen().rows(0, width));
+        rows
     }
 
     /// Drains the bytes written since the last call: what one frame actually
@@ -87,6 +203,21 @@ impl VT100Backend {
             .map(|mut log| std::mem::take(&mut *log))
             .unwrap_or_default();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// The newest rows scrolled off the top, at most a screen's worth: vt100 underflows viewing
+    /// deeper. It keeps only what a full-screen scroll pushed, not what a region scrolled off.
+    #[allow(dead_code)]
+    pub fn scrollback_tail(&self) -> Vec<String> {
+        let Ok(mut parser) = self.parser.0.lock() else {
+            return Vec::new();
+        };
+        let (height, width) = parser.screen().size();
+        parser.set_scrollback(usize::from(height));
+        let shown = parser.screen().scrollback();
+        let rows = parser.screen().rows(0, width).take(shown).collect();
+        parser.set_scrollback(0);
+        rows
     }
 
     #[allow(dead_code)]
@@ -341,8 +472,18 @@ pub fn replay_stream(
 
 /// The live region as rows of a real screen.
 pub fn live_rows(app: &mut yi_tui::app::App) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(80, 24), 4)?;
+    rows_at(app, 24)
+}
+
+/// The live region as rows of a screen `height` rows tall, trailing blanks trimmed.
+pub fn rows_at(
+    app: &mut yi_tui::app::App,
+    height: u16,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(80, height), 4)?;
     yi_tui::render::draw(app, &mut terminal, None);
     let backend = terminal.backend();
-    Ok((0..24).map(|row| backend.row_text(row)).collect())
+    Ok((0..height)
+        .map(|row| backend.row_text(row).trim_end().to_owned())
+        .collect())
 }
