@@ -324,7 +324,10 @@ fn capped(
     let mut rows: Vec<Line<'static>> = text
         .lines()
         .flat_map(|line| {
-            let line = Line::from(vec![lead.clone(), Span::styled(line.to_owned(), style)]);
+            let line = Line::from(vec![
+                lead.clone(),
+                Span::styled(yi_tui::transcript::show_controls(line), style),
+            ]);
             yi_tui::wrap::wrap_line(&line, width, &indent)
         })
         .collect();
@@ -356,7 +359,10 @@ fn capped(
 /// Incident: a `│` gutter read as part of the `cargo tree` box-drawing a cell parsed, so rows
 /// are numbered; a wrapped row hangs past its own indent so the Python still reads.
 fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'static>> {
-    let lines: Vec<&str> = code.lines().collect();
+    let lines: Vec<String> = code
+        .lines()
+        .map(|line| yi_tui::pycell::redact(&yi_tui::transcript::show_controls(line)))
+        .collect();
     let gutter = lines.len().to_string().len().max(2);
     let shown = if full {
         lines.len()
@@ -368,8 +374,8 @@ fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'s
     let mut out = Vec::new();
     for (index, line) in lines.iter().take(shown).enumerate() {
         let spans = match lang.as_mut() {
-            Some(lang) => yi_tui::highlight::spans(line, lang, theme, base),
-            None => vec![Span::styled((*line).to_owned(), base)],
+            Some(lang) => yi_tui::highlight::spans(line.as_str(), lang, theme, base),
+            None => vec![Span::styled(line.clone(), base)],
         };
         let depth = line.chars().take_while(|c| c.is_whitespace()).count();
         let hang = " ".repeat(depth.min(width / 2).saturating_add(4));

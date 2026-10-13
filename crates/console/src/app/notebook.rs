@@ -386,6 +386,27 @@ mod tests {
     }
 
     #[test]
+    fn a_cell_with_a_tab_and_an_escape_reaches_no_span_raw() -> TestResult {
+        let cell = NbCell {
+            call_id: "c".to_owned(),
+            number: 1,
+            code: "if x:\n\ty = 1\x1b[31m\r".to_owned(),
+            stdout: "a\tb\x1b[2J\rc".to_owned(),
+            stderr: "e\tf\x1b]0;t\x07".to_owned(),
+            result: Some("r\t1\x1b[0m".to_owned()),
+            error: Some("Trace\tback\x1b[1m".to_owned()),
+            ..NbCell::default()
+        };
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let lines = notebook_lines(&[cell], WIDTH, false, &theme, "⌘W");
+        for span in lines.iter().flat_map(|line| line.spans.iter()) {
+            let bad = span.content.chars().find(|c| c.is_control());
+            assert_eq!(bad, None, "{:?}", span.content);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn every_cell_cap_speaks_one_row_past_its_limit() -> TestResult {
         type Fill = fn(&mut NbCell, String);
         let fields: [(&str, usize, bool, Fill); 5] = [
