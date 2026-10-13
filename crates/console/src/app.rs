@@ -117,7 +117,7 @@ pub struct App {
     pub(crate) replayed: std::collections::HashSet<SessionId>,
     /// The first ctrl+c anywhere; a second inside the window stops the daemon and quits.
     quit_at: Option<Instant>,
-    /// When `_yi/shutdown` went out; the reply or two seconds ends the console.
+    /// When `_yi/shutdown` went out; the daemon hanging up or two seconds ends the console.
     shutdown_at: Option<Instant>,
     /// Auto-opened notebook panes by their last kernel activity; an idle one closes itself.
     pub(crate) auto_notebooks: HashMap<PaneId, Instant>,
@@ -368,6 +368,9 @@ impl App {
                     "initialize",
                     json!({"protocolVersion": 2, "clientInfo": {"name": "yi-console"}}),
                 );
+            }
+            ClientEvent::Disconnected { .. } if self.shutdown_at.is_some() => {
+                self.state.quit = true;
             }
             ClientEvent::Disconnected { reason } => {
                 self.state.link = Link::Disconnected { reason };
