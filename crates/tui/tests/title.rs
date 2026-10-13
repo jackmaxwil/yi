@@ -201,6 +201,7 @@ fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
         Scene::Growth,
         Scene::Spirals,
         Scene::Attractor,
+        Scene::Streamlines,
     ] {
         let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
         let held = at(2.1);
@@ -314,6 +315,7 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("growth"), Some(Scene::Growth));
     assert_eq!(Scene::named("spirals"), Some(Scene::Spirals));
     assert_eq!(Scene::named("attractor"), Some(Scene::Attractor));
+    assert_eq!(Scene::named("streamlines"), Some(Scene::Streamlines));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
@@ -519,4 +521,22 @@ fn the_attractor_stays_inside_its_box_and_drifts() {
         .filter(|(a, b)| a != b)
         .count();
     assert!(moved > 200, "a second of drift moved only {moved} cells");
+}
+
+/// The lines stand still and the light rides them: no cell comes or goes between two frames, and
+/// the glyphs of many of them change.
+#[test]
+fn the_streamlines_stand_still_while_the_light_moves() {
+    let frame = |secs: f64| screen(Scene::Streamlines, (120, 40), secs, None);
+    let (first, later) = (frame(0.1), frame(0.7));
+    let drawn = |a: &[Vec<char>]| a.iter().flatten().map(|g| *g != ' ').collect::<Vec<bool>>();
+    assert!(count(&first, |g| g != ' ') > 400, "too few lines to see");
+    assert_eq!(drawn(&first), drawn(&later), "a line came or went");
+    let changed = first
+        .iter()
+        .flatten()
+        .zip(later.iter().flatten())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(changed > 150, "the light moved only {changed} cells");
 }

@@ -25,10 +25,11 @@ pub enum Scene {
     Growth,
     Spirals,
     Attractor,
+    Streamlines,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 8] = [
+    pub const ALL: [(&'static str, Scene); 9] = [
         ("kali", Scene::Kali),
         ("echo", Scene::Echo),
         ("solid", Scene::Solid),
@@ -37,6 +38,7 @@ impl Scene {
         ("growth", Scene::Growth),
         ("spirals", Scene::Spirals),
         ("attractor", Scene::Attractor),
+        ("streamlines", Scene::Streamlines),
     ];
 
     pub fn named(name: &str) -> Option<Scene> {
@@ -48,7 +50,7 @@ impl Scene {
 }
 
 /// Used when the config names no weights: the Kali fold eight parts in twelve.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 8] = [
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 9] = [
     (Scene::Kali, 8),
     (Scene::Echo, 2),
     (Scene::Solid, 2),
@@ -57,6 +59,7 @@ pub const DEFAULT_WEIGHTS: [(Scene, u32); 8] = [
     (Scene::Growth, 2),
     (Scene::Spirals, 2),
     (Scene::Attractor, 2),
+    (Scene::Streamlines, 2),
 ];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
@@ -293,6 +296,49 @@ fn attractor((width, height): (u16, u16), t: f64) -> Vec<f32> {
         .collect()
 }
 
+/// Lines of constant stream function from a jittered grid of seeds, so none cross, with a pulse of
+/// light riding each one along the flow; the lines stand still and the light moves.
+fn streamlines((width, height): (u16, u16), t: f64) -> Vec<f32> {
+    const REACH: i32 = 24;
+    let (w, h) = (usize::from(width), usize::from(height));
+    let scale = f64::from(height.max(1));
+    let psi = |u: f64, v: f64| noise(u * 2.2 + 7.0, v * 2.2 + 3.0);
+    let flow = |u: f64, v: f64| {
+        let e = 0.01;
+        let (dx, dy) = (psi(u + e, v) - psi(u - e, v), psi(u, v + e) - psi(u, v - e));
+        let n = dx.hypot(dy).max(1e-6);
+        (dy / n, -dx / n)
+    };
+    let mut grid = vec![0.0_f32; w * h];
+    for j in 0..h.div_ceil(3) {
+        for i in 0..w.div_ceil(7) {
+            let (si, sj) = (i as i32, j as i32);
+            let col = (i as f64 + lattice(si, sj)) * 7.0;
+            let row = (j as f64 + lattice(si + 50, sj)) * 3.0;
+            let phase = lattice(si, sj + 50);
+            for dir in [1.0, -1.0] {
+                let (mut u, mut v) = ((col - w as f64 / 2.0) / scale, (scale - 2.0 * row) / scale);
+                for k in 0..=REACH {
+                    let (fx, fy) = flow(u, v);
+                    (u, v) = (u + dir * fx / scale, v + dir * fy / scale);
+                    let (x, y) = (
+                        (u * scale + w as f64 / 2.0).floor(),
+                        ((scale - v * scale) / 2.0).floor(),
+                    );
+                    if !((0.0..w as f64).contains(&x) && (0.0..h as f64).contains(&y)) {
+                        break;
+                    }
+                    let along = dir * f64::from(k) / 16.0 - t * 0.9 + phase;
+                    let light = (TAU * along).cos().max(0.0).powi(4);
+                    let at = y as usize * w + x as usize;
+                    grid[at] = grid[at].max((0.35 + 0.65 * light) as f32);
+                }
+            }
+        }
+    }
+    grid
+}
+
 /// Where the plane is sampled for the name: a loxodromic Möbius flow with fixed points at `u = ±1`
 /// that unwinds to the identity by 2 s, so the name comes out of a vortex and settles.
 fn mobius(u: f64, v: f64, t: f64) -> (f64, f64) {
@@ -412,9 +458,12 @@ pub fn cover(
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
     let rise = match scene {
-        Scene::Kali | Scene::Clouds | Scene::Growth | Scene::Spirals | Scene::Attractor => {
-            smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM))
-        }
+        Scene::Kali
+        | Scene::Clouds
+        | Scene::Growth
+        | Scene::Spirals
+        | Scene::Attractor
+        | Scene::Streamlines => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
         Scene::Echo | Scene::Mobius => 1.0,
         Scene::Solid => 0.0,
     };
@@ -423,8 +472,9 @@ pub fn cover(
     let reveal = smooth((leave - 0.1) / 0.9);
     let (strokes, thick) = landed(area, landing, leave);
     let size = (area.width, area.height);
-    let density = match scene {
+    let plot = match scene {
         Scene::Attractor if fade > 0.0 => attractor(size, t),
+        Scene::Streamlines if fade > 0.0 => streamlines(size, t),
         _ => Vec::new(),
     };
     let sim: Option<Box<dyn Fn(f64, f64) -> f64 + '_>> = match scene {
@@ -465,9 +515,9 @@ pub fn cover(
                 Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
                 Scene::Mobius => rings(d, t) * fade,
                 Scene::Clouds => clouds(u, v, t) * fade,
-                Scene::Attractor => {
+                Scene::Attractor | Scene::Streamlines => {
                     let at = usize::from(y) * usize::from(area.width) + usize::from(x);
-                    density.get(at).map_or(0.0, |d| f64::from(*d)) * fade
+                    plot.get(at).map_or(0.0, |d| f64::from(*d)) * fade
                 }
                 Scene::Growth | Scene::Spirals => sim.as_ref().map_or(0.0, |at| at(u, v)) * fade,
             };
