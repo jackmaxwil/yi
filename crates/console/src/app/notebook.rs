@@ -109,6 +109,7 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
     use yi_tui::colors::{ColorTier, Theme};
     use yi_types::acp::{AcpSessionUpdate, AcpToolCallStatus, AcpToolCallUpdate};
+    use yi_types::message::{AgentMessage, Content};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -146,30 +147,44 @@ mod tests {
     }
 
     // The scrubber masks call ids, so results pair with calls in order.
+    mod session {
+        include!("../../../tui/tests/common/session.rs");
+    }
+
     fn replay(session: &str) -> Result<Vec<NbCell>, serde_json::Error> {
         let (mut cells, mut calls, mut results) = (Vec::new(), 0_usize, 0_usize);
-        for line in session.lines() {
-            let entry: Value = serde_json::from_str(line)?;
-            let message = entry.get("message").cloned().unwrap_or_default();
-            let field = |key: &str| message.get(key).and_then(Value::as_str).unwrap_or_default();
-            if field("role") == "assistant" {
-                for call in message
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    let text = |key: &str| call.get(key).and_then(Value::as_str);
-                    if text("type") == Some("toolCall") && text("name") == Some("ipython") {
-                        calls += 1;
-                        let args = call.get("arguments").cloned().unwrap_or_default();
-                        apply_notebook(&mut cells, &start(&format!("call-{calls}"), args));
+        for message in session::session_entries(session)? {
+            match &message {
+                AgentMessage::Assistant { content, .. } => {
+                    for call in content {
+                        if let Content::ToolCall {
+                            name, arguments, ..
+                        } = call
+                            && name == "ipython"
+                        {
+                            calls += 1;
+                            apply_notebook(
+                                &mut cells,
+                                &start(&format!("call-{calls}"), Value::Object(arguments.clone())),
+                            );
+                        }
                     }
                 }
-            } else if field("role") == "toolResult" && field("toolName") == "ipython" {
-                results += 1;
-                let details = message.get("details").cloned().unwrap_or_default();
-                apply_notebook(&mut cells, &end(&format!("call-{results}"), details));
+                AgentMessage::ToolResult {
+                    tool_name, details, ..
+                } => {
+                    if tool_name == "ipython" {
+                        results += 1;
+                        apply_notebook(
+                            &mut cells,
+                            &end(
+                                &format!("call-{results}"),
+                                details.clone().unwrap_or_default(),
+                            ),
+                        );
+                    }
+                }
+                _ => {}
             }
         }
         Ok(cells)
@@ -364,6 +379,65 @@ mod tests {
             "{}",
             screen(&terminal)
         );
+        Ok(())
+    }
+    fn numbered(count: usize) -> String {
+        (1..=count).map(|n| format!("x{n}\n")).collect()
+    }
+
+    #[test]
+    fn every_cell_cap_speaks_one_row_past_its_limit() -> TestResult {
+        type Fill = fn(&mut NbCell, String);
+        let fields: [(&str, usize, bool, Fill); 5] = [
+            ("code", 24, false, |cell, text| cell.code = text),
+            ("stdout", 40, false, |cell, text| cell.stdout = text),
+            ("stderr", 40, false, |cell, text| cell.stderr = text),
+            ("result", 20, false, |cell, text| cell.result = Some(text)),
+            ("traceback", 12, true, |cell, text| cell.error = Some(text)),
+        ];
+        for (noun, cap, tail, fill) in fields {
+            let mut cell = NbCell {
+                number: 1,
+                ..NbCell::default()
+            };
+            fill(&mut cell, numbered(cap));
+            let whole = rows(std::slice::from_ref(&cell), 80, false);
+            assert!(
+                !whole.iter().any(|row| row.contains("[…]")),
+                "{noun} at cap: {whole:#?}"
+            );
+            assert!(
+                whole.iter().any(|row| row.ends_with(&format!("x{cap}"))),
+                "{noun}"
+            );
+            fill(&mut cell, numbered(cap + 1));
+            let cut = rows(std::slice::from_ref(&cell), 80, false);
+            let unit = if noun == "code" { "lines" } else { "rows" };
+            let end = if tail { "last" } else { "first" };
+            let said = format!("[…] {noun} {end} {cap} of {} {unit}", cap + 1);
+            assert!(
+                cut.iter().any(|row| row.contains(&said)),
+                "{said:?}: {cut:#?}"
+            );
+            let gone = if tail {
+                "x1".to_owned()
+            } else {
+                format!("x{}", cap + 1)
+            };
+            assert!(
+                !cut.iter().any(|row| row.ends_with(&gone)),
+                "{noun} kept {gone}"
+            );
+            let all = rows(std::slice::from_ref(&cell), 80, true);
+            assert!(
+                !all.iter().any(|row| row.contains("[…]")),
+                "{noun} in full view"
+            );
+            assert!(
+                all.iter().any(|row| row.ends_with(&gone)),
+                "{noun} full lost {gone}"
+            );
+        }
         Ok(())
     }
 }
