@@ -23,16 +23,18 @@ pub enum Scene {
     Mobius,
     Clouds,
     Growth,
+    Spirals,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 6] = [
+    pub const ALL: [(&'static str, Scene); 7] = [
         ("kali", Scene::Kali),
         ("echo", Scene::Echo),
         ("solid", Scene::Solid),
         ("mobius", Scene::Mobius),
         ("clouds", Scene::Clouds),
         ("growth", Scene::Growth),
+        ("spirals", Scene::Spirals),
     ];
 
     pub fn named(name: &str) -> Option<Scene> {
@@ -44,13 +46,14 @@ impl Scene {
 }
 
 /// Used when the config names no weights: the Kali fold eight parts in twelve.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 6] = [
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 7] = [
     (Scene::Kali, 8),
     (Scene::Echo, 2),
     (Scene::Solid, 2),
     (Scene::Mobius, 2),
     (Scene::Clouds, 2),
     (Scene::Growth, 2),
+    (Scene::Spirals, 2),
 ];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
@@ -377,7 +380,7 @@ pub fn cover(
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
     let rise = match scene {
-        Scene::Kali | Scene::Clouds | Scene::Growth => {
+        Scene::Kali | Scene::Clouds | Scene::Growth | Scene::Spirals => {
             smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM))
         }
         Scene::Echo | Scene::Mobius => 1.0,
@@ -387,8 +390,19 @@ pub fn cover(
     let fade = 1.0 - smooth(leave * 1.25);
     let reveal = smooth((leave - 0.1) / 0.9);
     let (strokes, thick) = landed(area, landing, leave);
-    let coral =
-        (scene == Scene::Growth && fade > 0.0).then(|| cache.growth((area.width, area.height), t));
+    let size = (area.width, area.height);
+    let sim: Option<Box<dyn Fn(f64, f64) -> f64 + '_>> = match scene {
+        _ if fade <= 0.0 => None,
+        Scene::Growth => {
+            let coral = cache.growth(size, t);
+            Some(Box::new(move |u, v| coral.at(u, v)))
+        }
+        Scene::Spirals => {
+            let spirals = cache.spirals(size, t);
+            Some(Box::new(move |u, v| spirals.at(u, v)))
+        }
+        _ => None,
+    };
     for y in 0..area.height {
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
@@ -415,7 +429,7 @@ pub fn cover(
                 Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
                 Scene::Mobius => rings(d, t) * fade,
                 Scene::Clouds => clouds(u, v, t) * fade,
-                Scene::Growth => coral.map_or(0.0, |coral| coral.at(u, v)) * fade,
+                Scene::Growth | Scene::Spirals => sim.as_ref().map_or(0.0, |at| at(u, v)) * fade,
             };
             let value = match solid_hit {
                 Some(lit) => lit,
