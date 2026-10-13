@@ -333,16 +333,9 @@ impl SessionStore {
         }
         let limit = limit.clamp(1, GREP_PAGE_MAX);
         let lowered_needle = needle.to_lowercase();
-        let query = EntryQuery {
-            order: EntryOrder::OldestFirst,
-            ..EntryQuery::default()
-        };
-        let Ok(entries) = self.find_entries(&query) else {
-            return (Vec::new(), 0);
-        };
         let mut total = 0usize;
         let mut hits = Vec::new();
-        for entry in &entries {
+        for entry in self.state.entries() {
             let lowered = searchable_text(entry).to_lowercase();
             if !lowered.contains(&lowered_needle) {
                 continue;
