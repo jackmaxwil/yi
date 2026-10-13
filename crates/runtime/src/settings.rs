@@ -181,22 +181,25 @@ fn stage(staging: &Path, text: &str, mode: u32) -> std::io::Result<()> {
 }
 
 fn set(root: &mut Value, keys: &[&str], value: Value) -> Result<(), String> {
-    let (last, parents) = keys.split_last().ok_or("an empty key path")?;
-    let mut node = root;
-    for key in parents {
-        node = node
-            .as_object_mut()
-            .ok_or_else(|| format!("`{key}` sits under a value that is not an object"))?
-            .entry((*key).to_owned())
-            .or_insert_with(|| Value::Object(Map::new()));
-    }
-    let object = node
+    let (first, rest) = keys.split_first().ok_or("an empty key path")?;
+    let object = root
         .as_object_mut()
-        .ok_or_else(|| format!("`{last}` sits under a value that is not an object"))?;
-    if value.is_null() {
-        object.remove(*last);
-    } else {
-        object.insert((*last).to_owned(), value);
+        .ok_or_else(|| format!("`{first}` sits under a value that is not an object"))?;
+    if rest.is_empty() {
+        if value.is_null() {
+            object.remove(*first);
+        } else {
+            object.insert((*first).to_owned(), value);
+        }
+        return Ok(());
+    }
+    let unset = value.is_null();
+    let child = object
+        .entry((*first).to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    set(child, rest, value)?;
+    if unset && child.as_object().is_some_and(Map::is_empty) {
+        object.remove(*first);
     }
     Ok(())
 }
@@ -251,6 +254,14 @@ mod tests {
         for id in ids {
             assert_eq!(lookup(&config, id), &json!(false), "{id} was lost");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn unsetting_the_last_nested_key_prunes_the_empty_parent() -> Result<(), String> {
+        let mut config = json!({"thinking": "high", "routing": {"order": ["a"]}});
+        set(&mut config, &["routing", "order"], Value::Null)?;
+        assert_eq!(config, json!({"thinking": "high"}));
         Ok(())
     }
 
