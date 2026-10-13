@@ -37,15 +37,19 @@ it fails with `unexpected argument`):
 
 ```
 cargo nextest run -p <crate>                      # one crate
-cargo nextest run -p <crate> -E 'test(/^<file>::/)'  # one integration test file
+cargo nextest run -p <crate> -E 'test(/^<file>::/)'  # one file of the `integration` binary
+cargo nextest run -p <crate> -E 'binary(<file>)'  # one standalone test binary
 cargo nextest run -p <crate> -E 'test(<name>)'    # tests whose name contains <name>
 cargo nextest run --workspace --no-fail-fast      # everything, all failures listed
 ```
 
 A bare word after `-p <crate>` is a test-name filter over unit tests only;
-an integration test file is a module of the crate's one `integration` binary,
-so it needs `test(/^<file stem>::/)`. `0 tests run, N skipped` means the
-filter matched nothing, not that the tests passed.
+an integration test file is usually a module of the crate's one `integration`
+binary, so it needs `test(/^<file stem>::/)`. A standalone binary (`spill` in
+yi-tools, `behavior` and `request_budget` in yi-runtime, every yi-kernel test
+file such as `ready_check`) names its tests with no module prefix, so it needs
+`binary(<file stem>)`. `0 tests run, N skipped` means the filter matched
+nothing, not that the tests passed.
 
 The workspace has no doctests, so there is no doctest lane.
 

@@ -15,3 +15,11 @@ mod paths;
 mod program_values;
 mod sandbox;
 mod tools;
+
+/// Invariant: `--exact` matches the whole name path, which starts at the caller's file module.
+fn exact_path(module_path: &str, name: &str) -> String {
+    module_path.split_once("::").map_or_else(
+        || name.to_owned(),
+        |(_, module)| format!("{module}::{name}"),
+    )
+}
