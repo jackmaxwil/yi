@@ -311,3 +311,164 @@ fn a_console_drive_honours_its_deadline() -> TestResult {
     );
     Ok(())
 }
+
+/// Runs `script` in a daemonless console whose terminal panes start `/bin/sh` in `repo`, and
+/// returns the scratch dir, its frames under `frames/`.
+fn terminal_run(name: &str, script: &str) -> Result<Scratch, Box<dyn Error>> {
+    let dir = Scratch::new(name)?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, script)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "true E2E: the shipped binary opens a real PTY through its own shim"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["console", "--headless", "--size", "100x24", "--keys"])
+        .arg(&keys)
+        .arg("--frames")
+        .arg(dir.join("frames"))
+        .arg("--cwd")
+        .arg(&root)
+        .arg("--socket")
+        .arg(dir.join("no-daemon.sock"))
+        .env_clear()
+        .env("HOME", dir.home()?)
+        .env("PATH", "/usr/bin:/bin")
+        .env("SHELL", "/bin/sh")
+        .env("PS1", "$ ")
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("console exited {}: {stderr}", output.status).into());
+    }
+    Ok(dir)
+}
+
+/// Every pane cell of a snap frame, one per bordered segment of each row, untrimmed.
+fn snap_cells(dir: &Scratch, snap: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let frame = std::fs::read_to_string(dir.join("frames").join(format!("snap-{snap}.txt")))?;
+    Ok(frame
+        .lines()
+        .flat_map(|line| line.trim_matches('"').split('│'))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Dies with the terminal button opening nothing a shell runs in: no pane, keys that never
+/// reach the PTY, output that never comes back, a wheel that cannot reach older rows, or an
+/// exit unnoticed.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_terminal_pane_runs_a_command_and_says_how_its_shell_ended() -> TestResult {
+    let dir = terminal_run(
+        "yi-term-printf",
+        "cmd-y\n\
+         wait-frame 8000 >_ sh\n\
+         type printf 'yi-term-%s\\n' ok\n\
+         key enter\n\
+         wait-frame 8000 yi-term-ok\n\
+         snap printed\n\
+         type seq 1 $((20*2))\n\
+         key enter\n\
+         wait-frame 8000 40\n\
+         snap bottom\n\
+         mouse scrollup 75 10\n\
+         wait-frame 8000 · ↑3\n\
+         snap scrolled\n\
+         type exit 3\n\
+         key enter\n\
+         wait-frame 8000 [exited 3]\n\
+         quit\n",
+    )?;
+    let row = |snap: &str, text: &str| -> Result<bool, Box<dyn Error>> {
+        Ok(snap_cells(&dir, snap)?
+            .iter()
+            .any(|cell| cell.trim() == text))
+    };
+    assert!(row("printed", "yi-term-ok")?, "the command's output row");
+    assert!(
+        !row("bottom", "18")? && row("scrolled", "18")?,
+        "the wheel shows older rows"
+    );
+    Ok(())
+}
+
+/// Dies with a shell that still believes its first size: a split narrows the pane, and `stty`
+/// inside it must report the columns the pane now draws.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_terminal_pane_tells_its_shell_each_new_size() -> TestResult {
+    let dir = terminal_run(
+        "yi-term-resize",
+        "cmd-y\n\
+         wait-frame 8000 >_ sh\n\
+         type stty size; echo mark-$((1+1))\n\
+         key enter\n\
+         wait-frame 8000 mark-2\n\
+         snap wide\n\
+         key ctrl-b\n\
+         key v\n\
+         key alt-left\n\
+         type stty size; echo mark-$((2+1))\n\
+         key enter\n\
+         wait-frame 8000 mark-3\n\
+         snap narrow\n\
+         quit\n",
+    )?;
+    let mut seen = Vec::new();
+    for (snap, mark) in [("wide", "mark-2"), ("narrow", "mark-3")] {
+        let cells = snap_cells(&dir, snap)?;
+        let drawn = cells
+            .iter()
+            .find(|cell| cell.trim() == mark)
+            .map(|cell| cell.chars().count())
+            .ok_or_else(|| format!("{mark} not on its own row: {cells:#?}"))?;
+        let reported = cells
+            .iter()
+            .rev()
+            .find_map(|cell| {
+                let (rows, cols) = cell.trim().split_once(' ')?;
+                Some((rows.parse::<usize>().ok()?, cols.parse::<usize>().ok()?))
+            })
+            .ok_or_else(|| format!("no `stty size` row: {cells:#?}"))?;
+        assert_eq!(reported.1, drawn, "{snap}: stty columns vs the drawn pane");
+        seen.push(reported);
+    }
+    assert!(
+        seen[1].1 < seen[0].1,
+        "the split narrowed the shell: {seen:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a shell left running behind a closed pane, holding its directory and jobs.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
+    let dir = terminal_run(
+        "yi-term-close",
+        "cmd-y\n\
+         wait-frame 8000 >_ sh\n\
+         type echo $$ > pid; echo mark-$((1+1))\n\
+         key enter\n\
+         wait-frame 8000 mark-2\n\
+         key ctrl-b\n\
+         key x\n\
+         cmd-y\n\
+         wait-frame 8000 >_ sh\n\
+         type for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $(cat pid) 2>/dev/null || break; sleep 0.3; done; kill -0 $(cat pid) 2>/dev/null && echo alive-$((40+2)) || echo gone-$((40+2))\n\
+         key enter\n\
+         wait-frame 8000 -42\n\
+         snap checked\n\
+         quit\n",
+    )?;
+    let cells = snap_cells(&dir, "checked")?;
+    assert!(
+        cells.iter().any(|cell| cell.trim() == "gone-42"),
+        "{cells:#?}"
+    );
+    Ok(())
+}

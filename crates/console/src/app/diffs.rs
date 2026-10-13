@@ -17,7 +17,6 @@ pub(crate) const NOTEBOOK_IDLE: Duration = Duration::from_secs(20);
 pub(super) enum SideKind {
     Notebook,
     Diff,
-    Tape,
 }
 
 pub(super) fn path_of_patch(patch: &str) -> Option<String> {
@@ -201,10 +200,8 @@ impl App {
         session: Option<SessionId>,
         kind: SideKind,
     ) -> Option<PaneId> {
-        match (kind, &session) {
-            (SideKind::Diff, Some(session)) => self.refresh_branch(session),
-            (SideKind::Tape, Some(session)) => self.refresh_tape(session),
-            _ => {}
+        if let (SideKind::Diff, Some(session)) = (kind, &session) {
+            self.refresh_branch(session);
         }
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);
@@ -216,12 +213,6 @@ impl App {
                 (SideKind::Diff, Some(session)) => PaneContent::SessionDiff {
                     session,
                     scope: crate::model::ReviewScope::default(),
-                },
-                (SideKind::Tape, Some(session)) => PaneContent::Tape {
-                    session,
-                    tape: None,
-                    cursor: 0,
-                    armed: false,
                 },
                 (_, session) => PaneContent::Notebook {
                     session,
@@ -245,7 +236,6 @@ impl App {
         let on_side = self.state.panes.get(&home).is_some_and(|pane| match kind {
             SideKind::Notebook => matches!(pane.content, PaneContent::Notebook { .. }),
             SideKind::Diff => matches!(pane.content, PaneContent::SessionDiff { .. }),
-            SideKind::Tape => matches!(pane.content, PaneContent::Tape { .. }),
         });
         if on_side {
             return self.apply_action(outbound, Action::ClosePane);
@@ -258,7 +248,6 @@ impl App {
         let matches_kind = |pane: &crate::model::Pane| match kind {
             SideKind::Notebook => matches!(pane.content, PaneContent::Notebook { .. }),
             SideKind::Diff => matches!(pane.content, PaneContent::SessionDiff { .. }),
-            SideKind::Tape => matches!(pane.content, PaneContent::Tape { .. }),
         };
         let side = self
             .state

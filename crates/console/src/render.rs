@@ -196,12 +196,12 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             app.state.panes.get(&pane_rect.id).is_some_and(|pane| {
                 matches!(pane.content, PaneContent::Session { chat: Some(_), .. })
             });
-        if pane_rect.focused
-            && panes_zone
-            && let Some(PaneContent::Editor(editor)) =
-                app.state.panes.get(&pane_rect.id).map(|pane| &pane.content)
-        {
-            editor_cursor = editor_cursor_cell(editor, inner);
+        if pane_rect.focused && panes_zone {
+            editor_cursor = match app.state.panes.get(&pane_rect.id).map(|pane| &pane.content) {
+                Some(PaneContent::Editor(editor)) => editor_cursor_cell(editor, inner),
+                Some(PaneContent::Terminal(pty)) => pty.cursor(inner),
+                _ => editor_cursor,
+            };
         }
         panes.push(PaneView {
             scroll,
@@ -353,7 +353,7 @@ fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> Strin
     note
 }
 
-pub use crate::panes::{hunk_lines, review_files, review_view, tape_view};
+pub use crate::panes::{hunk_lines, review_files, review_view};
 
 fn pane_view_content(
     pane: &mut crate::model::Pane,
@@ -393,9 +393,9 @@ fn pane_view_content(
             let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
             (format!("{GEAR} Settings"), lines, None)
         }
-        PaneContent::Tape { tape, cursor, .. } => {
-            let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
-            (title, all, None)
+        PaneContent::Terminal(pty) => {
+            let (title, lines) = pty.view(inner, &mut pane.scroll_from_bottom);
+            (title, lines, None)
         }
         PaneContent::SessionDiff { session, scope } => {
             let note = view.notes.get(session).map_or("", String::as_str);

@@ -16,6 +16,7 @@ pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
+pub mod pty;
 pub mod render;
 pub mod select;
 pub mod settings;
@@ -267,6 +268,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx.clone());
     app.kitty = crate::kitty::supported(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -617,8 +619,9 @@ fn drive_idle(app: &App) -> bool {
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
     let (event_tx, events) = client::events();
-    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx);
+    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx);
     if drive
         .script
         .iter()

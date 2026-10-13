@@ -211,12 +211,7 @@ pub enum PaneContent {
         session: SessionId,
         scope: ReviewScope,
     },
-    Tape {
-        session: SessionId,
-        tape: Option<yi_types::tape::Tape>,
-        cursor: usize,
-        armed: bool,
-    },
+    Terminal(Box<crate::pty::Pty>),
     Editor(Editor),
     Settings(Box<crate::settings::Settings>),
 }
@@ -305,7 +300,6 @@ pub struct SessionDiff {
     pub reads: BTreeMap<String, u32>,
     pub branch: Option<yi_types::lane::BranchDiff>,
     pub branch_due: bool,
-    pub tape_due: bool,
     pub selected: usize,
     pub why: BTreeMap<String, Vec<String>>,
     pub why_due: Option<(String, Vec<u32>)>,
@@ -376,7 +370,7 @@ impl Pane {
             PaneContent::Markdown { .. }
             | PaneContent::Diff { .. }
             | PaneContent::SessionDiff { .. }
-            | PaneContent::Tape { .. }
+            | PaneContent::Terminal(_)
             | PaneContent::Editor(_)
             | PaneContent::Settings(_) => None,
         }
