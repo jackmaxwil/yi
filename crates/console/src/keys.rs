@@ -122,7 +122,7 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         ('i', false) => Action::ToggleNotebook,
         ('y', false) => Action::ToggleTape,
         ('b', true) => Action::OpenBrowser,
-
+        ('o', false) => Action::OpenEditor,
         ('s', false) => Action::Save,
         ('u', false) => Action::Undo,
         ('/', false) => Action::Keys,

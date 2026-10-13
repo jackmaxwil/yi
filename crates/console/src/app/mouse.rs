@@ -120,28 +120,24 @@ impl App {
         // Incident: a lower pane's mark sits on the split it can be dragged by, and a press meant
         // as a resize closed the pane; a mark closes on a release over it that did not drag.
         self.pending_close = self.closer_at(x, y);
-        let target = hits.target_at(x, y);
-        match target {
-            Some((_, crate::render::Target::Tab(index))) => {
+        match hits.hit_at(x, y) {
+            Some((_, crate::render::Hit::Tab(index))) => {
                 self.state.select_tab(index);
                 self.dirty = true;
                 return;
             }
-            Some((_, crate::render::Target::Settings(pane, tab))) => {
-                if let Some(layout) = self.state.tab_mut() {
-                    layout.layout.focus_pane(pane);
-                }
-                self.state.zone = Zone::Panes;
+            Some((_, crate::render::Hit::Settings(pane, tab))) => {
+                self.focus_pane(pane);
                 if let Some(settings) = self.settings_pane(pane) {
                     (settings.tab, settings.cursor) = (tab, 0);
                 }
                 self.dirty = true;
                 return;
             }
-            Some((_, crate::render::Target::Button(action))) => {
+            Some((_, crate::render::Hit::Button(action))) => {
                 return self.apply_action(outbound, action);
             }
-            Some((_, crate::render::Target::Gear)) => {
+            Some((_, crate::render::Hit::Gear)) => {
                 let Some(pane) = self.open_settings_pane() else {
                     return self.apply_action(outbound, Action::Settings);
                 };
@@ -151,7 +147,7 @@ impl App {
                 self.dirty = true;
                 return self.apply_action(outbound, Action::ClosePane);
             }
-            Some((_, crate::render::Target::Root(index))) => {
+            Some((_, crate::render::Hit::Root(index))) => {
                 let root = self.state.roots().get(index).cloned();
                 let next = root.filter(|r| self.state.root_filter.as_ref() != Some(r));
                 self.state.set_root_filter(next);
@@ -159,18 +155,15 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            Some((_, crate::render::Target::Session(index))) => {
+            Some((_, crate::render::Hit::Session(index))) => {
                 self.state.selected = index;
                 self.state.cursor_moved = true;
                 self.state.zone = Zone::Sidebar;
                 self.open_selected(outbound);
                 return;
             }
-            Some((_, crate::render::Target::Title(pane))) => {
-                if let Some(tab) = self.state.tab_mut() {
-                    tab.layout.focus_pane(pane);
-                }
-                self.state.zone = Zone::Panes;
+            Some((_, crate::render::Hit::Title(pane))) => {
+                self.focus_pane(pane);
                 self.dirty = true;
                 return;
             }
