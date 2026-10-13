@@ -270,7 +270,7 @@ fn clouds(u: f64, v: f64, t: f64) -> f64 {
 /// A Clifford orbit binned onto the cells, shaded by the log of visits. `c` and `d` fix its bounds
 /// at |x| < 2, |y| < 1.7, so `a` and `b` drift and the shape stays on screen; rerun each frame.
 fn attractor((width, height): (u16, u16), t: f64) -> Vec<f32> {
-    const POINTS: u32 = 30_000;
+    const POINTS: u32 = 20_000;
     let (w, h) = (usize::from(width), usize::from(height));
     let (a, b) = (
         -1.4 + 0.12 * (0.7 * t).sin(),
@@ -290,16 +290,18 @@ fn attractor((width, height): (u16, u16), t: f64) -> Vec<f32> {
             bins[row as usize * w + col as usize] += 1;
         }
     }
-    let top = f64::from(bins.iter().copied().max().unwrap_or(0).max(1)).ln_1p();
+    let mut seen: Vec<u32> = bins.iter().copied().filter(|n| *n > 0).collect();
+    seen.sort_unstable();
+    let top = f64::from(seen.get(seen.len() * 9 / 10).copied().unwrap_or(1).max(1));
     bins.iter()
-        .map(|n| (f64::from(*n).ln_1p() / top).powf(0.9) as f32)
+        .map(|n| (f64::from(*n) / top).min(1.0).powf(0.55) as f32)
         .collect()
 }
 
 /// Lines of constant stream function from a jittered grid of seeds, so none cross, with a pulse of
 /// light riding each one along the flow; the lines stand still and the light moves.
 fn streamlines((width, height): (u16, u16), t: f64) -> Vec<f32> {
-    const REACH: i32 = 24;
+    const REACH: i32 = 20;
     let (w, h) = (usize::from(width), usize::from(height));
     let scale = f64::from(height.max(1));
     let psi = |u: f64, v: f64| noise(u * 2.2 + 7.0, v * 2.2 + 3.0);
@@ -310,11 +312,11 @@ fn streamlines((width, height): (u16, u16), t: f64) -> Vec<f32> {
         (dy / n, -dx / n)
     };
     let mut grid = vec![0.0_f32; w * h];
-    for j in 0..h.div_ceil(3) {
-        for i in 0..w.div_ceil(7) {
+    for j in 0..h.div_ceil(5) {
+        for i in 0..w.div_ceil(11) {
             let (si, sj) = (i as i32, j as i32);
-            let col = (i as f64 + lattice(si, sj)) * 7.0;
-            let row = (j as f64 + lattice(si + 50, sj)) * 3.0;
+            let col = (i as f64 + lattice(si, sj)) * 11.0;
+            let row = (j as f64 + lattice(si + 50, sj)) * 5.0;
             let phase = lattice(si, sj + 50);
             for dir in [1.0, -1.0] {
                 let (mut u, mut v) = ((col - w as f64 / 2.0) / scale, (scale - 2.0 * row) / scale);

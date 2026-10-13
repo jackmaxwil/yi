@@ -9,6 +9,7 @@ const GROWTH_COLS: usize = 80;
 const GROWTH_ROWS: usize = 32;
 const SPIRAL_STATES: u8 = 12;
 const SPIRAL_STEPS_PER_SEC: f64 = 55.0;
+const SPIRAL_WARMUP: u32 = 70;
 
 /// What the stateful scenes keep between frames; one per console, empty until a scene asks.
 #[derive(Default)]
@@ -122,12 +123,17 @@ impl Spirals {
                 (lattice(x, y + 90) * f64::from(SPIRAL_STATES)) as u8 % SPIRAL_STATES
             })
             .collect();
-        Self {
+        let mut spirals = Self {
             size,
             grid,
             steps: 0,
             cells,
+        };
+        for _ in 0..SPIRAL_WARMUP {
+            spirals.step();
         }
+        spirals.steps = 0;
+        spirals
     }
 
     fn step(&mut self) {
