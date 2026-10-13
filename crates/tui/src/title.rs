@@ -16,13 +16,15 @@ pub enum Scene {
     Kali,
     Echo,
     Solid,
+    Mobius,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 3] = [
+    pub const ALL: [(&'static str, Scene); 4] = [
         ("kali", Scene::Kali),
         ("echo", Scene::Echo),
         ("solid", Scene::Solid),
+        ("mobius", Scene::Mobius),
     ];
 
     pub fn named(name: &str) -> Option<Scene> {
@@ -34,8 +36,12 @@ impl Scene {
 }
 
 /// Used when the config names no weights: the Kali fold eight parts in twelve.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 3] =
-    [(Scene::Kali, 8), (Scene::Echo, 2), (Scene::Solid, 2)];
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 4] = [
+    (Scene::Kali, 8),
+    (Scene::Echo, 2),
+    (Scene::Solid, 2),
+    (Scene::Mobius, 2),
+];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
 pub fn pick(weights: &[(Scene, u32)], seed: u64) -> Option<Scene> {
@@ -207,6 +213,30 @@ fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
         * smooth(t / 0.3)
 }
 
+/// Where the plane is sampled for the name: a loxodromic Möbius flow with fixed points at `u = ±1`
+/// that unwinds to the identity by 2 s, so the name comes out of a vortex and settles.
+fn mobius(u: f64, v: f64, t: f64) -> (f64, f64) {
+    let s = 1.7 * (1.0 - smooth(t / 2.0));
+    if s < 1e-3 {
+        return (u, v);
+    }
+    let (re, im) = (s * 0.9, s * 1.6);
+    let lam = (re.exp() * im.cos(), re.exp() * im.sin());
+    let div = |a: (f64, f64), b: (f64, f64)| {
+        let n = (b.0 * b.0 + b.1 * b.1).max(1e-12);
+        ((a.0 * b.0 + a.1 * b.1) / n, (a.1 * b.0 - a.0 * b.1) / n)
+    };
+    let q = div(div((u + 1.0, v), (u - 1.0, v)), lam);
+    div((-1.0 - q.0, -q.1), (1.0 - q.0, -q.1))
+}
+
+/// Rings of distance that drift outward, solid inside the name: the vortex's own texture.
+fn rings(d: f64, t: f64) -> f64 {
+    let d = d.max(0.0);
+    let ring = 0.5 + 0.5 * (TAU * (d * 5.0 - 0.3 * t)).cos();
+    ring.powi(4) * (-1.3 * d).exp()
+}
+
 /// Cells farther than this from every stroke cannot see the extruded name.
 const SOLID_NEAR: f64 = 0.45;
 
@@ -302,7 +332,7 @@ pub fn cover(
     let cell = (1.0 / h, 2.0 / h);
     let rise = match scene {
         Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
-        Scene::Echo => 1.0,
+        Scene::Echo | Scene::Mobius => 1.0,
         Scene::Solid => 0.0,
     };
     let leave = smooth((t - HOLD_SECS) / LAND_SECS);
@@ -312,7 +342,11 @@ pub fn cover(
     for y in 0..area.height {
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
-            let d = distance_to(&strokes, thick, u, v);
+            let (wu, wv) = match scene {
+                Scene::Mobius => mobius(u, v, t),
+                _ => (u, v),
+            };
+            let d = distance_to(&strokes, thick, wu, wv);
             let solid_hit = match scene {
                 Scene::Solid if d < SOLID_NEAR => solid(&strokes, thick, (u, v), t, leave),
                 _ => None,
@@ -329,6 +363,7 @@ pub fn cover(
                 Scene::Kali => kali(u, v, cell, t) * fade,
                 Scene::Echo => echo(d, t) * fade,
                 Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
+                Scene::Mobius => rings(d, t) * fade,
             };
             let value = match solid_hit {
                 Some(lit) => lit,
