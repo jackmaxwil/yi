@@ -8,6 +8,10 @@ use serde_json::Value;
 mod scratch;
 use scratch::Scratch;
 
+#[path = "support/prompt_slots.rs"]
+mod prompt_slots_support;
+use prompt_slots_support::prompt_slots;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
@@ -381,5 +385,23 @@ fn a_socket_client_cannot_confirm_an_administrative_op() -> TestResult {
         !recorded.contains(r#""op":"fuse_reset""#) && !recorded.contains("user://"),
         "a peer reached the journal as a user: {recorded}"
     );
+    Ok(())
+}
+
+/// Dies with a person's session told nobody is there: an rpc client wires no asker, as `yi ask`
+/// with no terminal does, yet its session records no unattended slot.
+#[test]
+fn an_rpc_session_is_not_told_it_is_alone() -> TestResult {
+    let dir = temp_dir("attended")?;
+    run_rpc(
+        &dir,
+        &[serde_json::json!({"id": "p", "type": "prompt", "message": "hello"})],
+    )?;
+    let names: Vec<String> = prompt_slots(&dir.join("sessions"))?.concat();
+    assert!(
+        names.iter().any(|name| name == "doctrine"),
+        "no prompt slots recorded: {names:?}"
+    );
+    assert!(!names.iter().any(|name| name == "unattended"), "{names:?}");
     Ok(())
 }

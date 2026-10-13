@@ -361,6 +361,129 @@ fn streamed(body: &str) -> yi_types::event::AgentEvent {
     }
 }
 
+/// Streams paragraphs of `sentences`, one sentence a draw, on an 80-column screen `rows` high and
+/// pre-scrolled to its last row, calling `frame` after every draw with the bytes it wrote.
+fn stream_paragraphs(
+    rows: u16,
+    (paragraphs, sentences): (usize, usize),
+    mut frame: impl FnMut(&VT100Backend, &str, usize) -> TestResult,
+) -> TestResult {
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, rows, 400);
+    backend.write_all(&b"\n".repeat(usize::from(rows - 1)))?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(usize::from(rows));
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut body = String::new();
+    for p in 0..paragraphs {
+        for s in 0..sentences {
+            body.push_str(&format!(
+                "Paragraph {p} sentence {s} says a little more about it. "
+            ));
+            app.reduce_agent(streamed(&body));
+            let _ = terminal.backend_mut().take_written();
+            yi_tui::render::draw(&mut app, &mut terminal, None);
+            let written = terminal.backend_mut().take_written();
+            frame(terminal.backend(), &written, p)?;
+        }
+        body.push_str("\n\n");
+    }
+    Ok(())
+}
+
+/// Dies with a paragraph that committed while on screen being written above the region again:
+/// the region then shrank, the composer jumped up by the paragraph and the frame repainted.
+#[test]
+fn a_paragraph_that_commits_on_screen_moves_nothing() -> TestResult {
+    let status =
+        |screen: &VT100Backend| (0..24).find(|&row| screen.row_text(row).contains("faux-1"));
+    let (mut held, mut was) = (0, None);
+    stream_paragraphs(24, (12, 3), |screen, written, p| {
+        let now = status(screen);
+        if was == Some(23) {
+            held += 1;
+            assert_eq!(
+                now,
+                Some(23),
+                "the composer left the bottom row at paragraph {p}"
+            );
+            assert!(
+                !written.contains("\u{1b}[J"),
+                "paragraph {p} repainted the region"
+            );
+        }
+        was = now;
+        Ok(())
+    })?;
+    assert!(
+        held > 20,
+        "the region reached the bottom row for only {held} frames"
+    );
+    Ok(())
+}
+
+/// Dies with a blank commit row adopted against the orb's blank rows at rest: the viewport shrank
+/// and grew back, repainting every row for a commit that only had to be inserted.
+#[test]
+fn a_blank_row_is_never_adopted_without_the_ink_below_it() -> TestResult {
+    use ratatui::text::Line;
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 100);
+    backend.write_all(&b"\n".repeat(23))?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    terminal.draw(|frame| {
+        let area = frame.area();
+        frame.buffer_mut().set_string(
+            area.x,
+            area.y + 1,
+            "on screen",
+            ratatui::style::Style::default(),
+        );
+    })?;
+    let blank_then_new = [Line::default(), Line::from("a new prompt")];
+    assert_eq!(
+        terminal.adopt(&blank_then_new[..1]),
+        0,
+        "a lone blank was adopted"
+    );
+    assert_eq!(
+        terminal.adopt(&blank_then_new),
+        0,
+        "a blank was adopted above new text"
+    );
+    assert_eq!(
+        terminal.adopt(&[Line::default(), Line::from("on screen")]),
+        2,
+        "a blank above the ink it belongs to was not adopted"
+    );
+    Ok(())
+}
+
+/// Dies with a one-row scroll region on a short screen: a terminal ignores it and scrolls the
+/// whole screen, and the region it left shifted wrote composer rows into scrollback.
+#[test]
+fn a_screen_too_short_for_a_scroll_region_keeps_its_chrome_out_of_scrollback() -> TestResult {
+    let mut pushed = Vec::new();
+    stream_paragraphs(10, (6, 8), |screen, _, _| {
+        pushed.extend(screen.scrollback_tail());
+        Ok(())
+    })?;
+    assert!(
+        !pushed.is_empty(),
+        "nothing was scrolled off the 10-row screen"
+    );
+    let chrome: Vec<&String> = pushed
+        .iter()
+        .filter(|row| row.contains(['╭', '╰', '─']) || row.contains("faux-1"))
+        .collect();
+    assert!(
+        chrome.is_empty(),
+        "composer rows in scrollback: {chrome:#?}"
+    );
+    Ok(())
+}
+
 fn tool_start(id: &str) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
@@ -384,8 +507,8 @@ fn viewport_height_follows_the_live_region_and_stays_bottom_anchored() -> TestRe
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let idle_height = terminal.viewport_area().height;
     assert_eq!(
-        idle_height, 6,
-        "idle live region is a three-row composer box + status"
+        idle_height, 4,
+        "idle live region is a one-row composer box + status"
     );
     assert!(
         terminal.backend().row_text(23).contains("faux-1"),
@@ -496,6 +619,57 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
         !written.contains("\u{1b}[J") && written.contains("\u{1b}[1S"),
         "a saturated tail scrolls its committed item off instead of repainting: {written:?}"
     );
+    Ok(())
+}
+
+/// A history commit scrolls region `[0, viewport_top)`, and a terminal keeps the rows that
+/// leaves: scrollback is where the reader finds the answer once it is longer than the screen.
+/// Every line must be there once, in order, with none of the live region's chrome in it.
+#[test]
+fn a_long_streamed_reply_reaches_scrollback_whole() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 500);
+    {
+        use std::io::Write;
+        backend.write_all(&b"\n".repeat(23))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(24);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+
+    let mut body = String::new();
+    for n in 1..=30 {
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str(&format!("Paragraph {n:02} of the reply, one line."));
+        app.reduce_agent(streamed(&body));
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+
+    let transcript = terminal.backend().transcript();
+    let dump = transcript.join("\n");
+    let mut previous = None;
+    for n in 1..=30 {
+        let needle = format!("Paragraph {n:02} of the reply");
+        let at: Vec<usize> = (0..transcript.len())
+            .filter(|row| transcript[*row].contains(&needle))
+            .collect();
+        assert_eq!(at.len(), 1, "{needle:?} must appear once:\n{dump}");
+        assert!(
+            previous < at.first().copied(),
+            "{needle:?} out of order:\n{dump}"
+        );
+        previous = at.first().copied();
+    }
+    for row in transcript.iter().filter(|row| row.contains("Paragraph")) {
+        assert!(
+            !row.contains(['╭', '╰', '─']),
+            "prose and composer share a row: {row:?}"
+        );
+    }
     Ok(())
 }
 
@@ -2034,6 +2208,18 @@ fn an_orb_that_cannot_fit_its_rows_is_not_placed() -> TestResult {
     Ok(())
 }
 
+/// The 1-based row the first kitty placement in `written` lands on, from its cursor move.
+fn placement_row(written: &str) -> Option<u16> {
+    let (before, _) = written.split_once("\x1b_Ga=p,")?;
+    before
+        .rsplit("\x1b[")
+        .next()?
+        .split(';')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// The owner asked for the orb two thirds bigger: a 10x5 cell image whose five reserved rows
 /// carry the working label on the middle one, beside the image's centre rather than its top.
 #[test]
@@ -2047,9 +2233,8 @@ fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResu
     let mut out = Vec::new();
     yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
     let out = String::from_utf8_lossy(&out);
-    let (before, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
-    let cup = before.rsplit("\x1b[").next().ok_or("no cursor move")?;
-    let row: u16 = cup.split(';').next().ok_or("no row")?.parse()?;
+    let row = placement_row(&out).ok_or("no placement")?;
+    let (_, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;
     let keys: Vec<&str> = after
         .split("\x1b\\")
         .next()
@@ -2073,6 +2258,89 @@ fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResu
             "row {band}:\n{screen}"
         );
     }
+    Ok(())
+}
+
+/// Dies with the orb placed after its frame closed: for a presented frame it sat on its old rows,
+/// over the text that frame had just moved under it (19 such frames in a measured console reply).
+#[test]
+fn an_orb_moved_by_a_commit_is_placed_in_the_frame_that_moved_it() -> TestResult {
+    use std::io::Write;
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    backend.write_all(b"$ yi\r\n")?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut images = yi_tui::orb::Images::default();
+    let mut frame = |app: &mut App, terminal: &mut yi_tui::terminal::Terminal<VT100Backend>| {
+        yi_tui::render::draw_with_images(app, terminal, None, |app, out| images.tick(app, out));
+        terminal.backend_mut().take_written()
+    };
+    let first = frame(&mut app, &mut terminal);
+    let was = placement_row(&first).ok_or("the first frame placed no orb")?;
+    app.notice("one\ntwo\nthree");
+    let written = frame(&mut app, &mut terminal);
+    let now = placement_row(&written).ok_or("the moved orb was not placed")?;
+    assert!(
+        now > was,
+        "the commit moved the orb down: row {was} then {now}"
+    );
+    let open = written.find("\x1b[?2026h").ok_or("no update opened")?;
+    let place = written.find("\x1b_Ga=p,").ok_or("no placement")?;
+    let close = written.rfind("\x1b[?2026l").ok_or("no update closed")?;
+    assert_eq!(
+        (
+            written.matches("\x1b[?2026h").count(),
+            written.matches("\x1b[?2026l").count()
+        ),
+        (1, 1),
+        "the text and the orb share one update: {written:?}"
+    );
+    assert!(
+        open < place && place < close,
+        "the placement lies inside it: {written:?}"
+    );
+    let label = terminal.backend().row_text(now.saturating_add(1));
+    assert!(
+        label.contains("[esc] interrupt"),
+        "the orb's middle row is its label's: {label:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the orb frozen mid-morph: a loop step that drew no text ran no image tick, so the
+/// orb advanced only on steps that happened to repaint, and not at all after a turn ended.
+#[test]
+fn a_step_that_draws_no_text_still_advances_the_orb_inside_its_own_update() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut images = yi_tui::orb::Images::default();
+    yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
+    terminal.backend_mut().take_written();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let written = loop {
+        yi_tui::render::step_frame(&mut app, &mut terminal, None, &mut images);
+        let written = terminal.backend_mut().take_written();
+        if !written.is_empty() {
+            break written;
+        }
+        if Instant::now() > deadline {
+            return Err("2 s of text-free steps never advanced the orb".into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert!(
+        written.starts_with("\x1b[?2026h") && written.ends_with("\x1b[?2026l"),
+        "the image work is one update of its own: {written:?}"
+    );
+    assert!(
+        written.contains(",a=t,") && written.contains("\x1b_Ga=p,"),
+        "the next orb frame is sent and placed: {written:?}"
+    );
     Ok(())
 }
 

@@ -19,16 +19,18 @@ an agent decided or found, and output that is no longer on screen.
 | The fact | Where it was written | The call |
 |---|---|---|
 | Code, a file's text | the tree | `grep`, then `read` |
-| Output this session saw, now reclaimed or compacted | this session's log | `await compact.recall("needle")`, then `read("history://self/<entryId>")` |
-| What the parent asked for, decided or found | the parent's transcript | `read("history://parent/since/0")` |
+| Output this session saw, now reclaimed or compacted | this session's log | `grep` with `path="history://self"`, then `read` the hit's address |
+| What the parent asked for, decided or found | the parent's transcript | `read("history://parent/since/0")`; one line of its output: `grep` with `path="history://parent"` |
 | What a child did or found | the child's transcript | `read("history://<child name>/since/0")`, or `rlm.result` once it ended |
 | What another session found or was told, in any repository | its transcript | `read("history://<its name or id>/tail/40")`; `history://<root>/<child>` for its child |
 | Whether this repository met the problem before | past root sessions | `await compact.search("words")`, then `read(hit["url"])` |
+| A line an earlier session's command printed | past root sessions' tool output | `grep` with `path="history://repo"` |
 | A saved note | notes | `await memory.search("words")` |
 | An MCP tool | the MCP snapshot | `yi mcp grep "words"` in bash, when MCP is on |
 
 `compact.search` and `memory.search` answer the root session only; a child asks its parent
-for them. `compact.search` indexes what people and agents wrote, not tool output.
+for them. `compact.search` indexes what people and agents wrote, not tool output; `grep` on a `history://`
+root matches every line, tool output included, and each hit's address is a `read`.
 
 ## Patterns
 

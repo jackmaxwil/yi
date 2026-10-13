@@ -58,6 +58,16 @@ pub struct UserConfig {
     pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
     pub permissions: Option<PermissionsConfig>,
+    /// `open`: the apps a console message's Open in submenu lists, each a name and a command
+    /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
+    pub open: Option<Vec<OpenApp>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenApp {
+    pub name: String,
+    pub command: Vec<String>,
 }
 
 /// `permissions.mode`: the mode a run starts in when no `--auto`, `--confirm` or `--yolo` is

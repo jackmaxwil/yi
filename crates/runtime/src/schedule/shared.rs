@@ -29,9 +29,19 @@ impl DeliveryHub {
         lock_lanes(&self.stops).insert(session_id, stop);
     }
 
-    pub(crate) fn unregister(&self, session_id: &str) {
-        lock_lanes(&self.lanes).remove(session_id);
+    /// Invariant: a session reopened before its old handle drops re-registered under the same id,
+    /// so only the lane `deliver` put there is removed; `false` means another holder owns it.
+    pub(crate) fn unregister(&self, session_id: &str, deliver: &Arc<DeliverFn>) -> bool {
+        let mut lanes = lock_lanes(&self.lanes);
+        if !lanes
+            .get(session_id)
+            .is_some_and(|lane| Arc::ptr_eq(lane, deliver))
+        {
+            return false;
+        }
+        lanes.remove(session_id);
         lock_lanes(&self.stops).remove(session_id);
+        true
     }
 
     pub(crate) fn stop_all(&self, on: bool) -> u64 {
@@ -240,6 +250,8 @@ mod tests {
     #[test]
     fn the_kill_switch_reaches_every_bound_session_and_no_ended_one() {
         let hub = DeliveryHub::new();
+        let lane: Arc<DeliverFn> = Arc::new(|_, _| Ok(RunOutcome::Ran));
+        hub.register("running".to_owned(), Arc::clone(&lane));
         hub.register_stop("running".to_owned(), Arc::new(|_| true));
         hub.register_stop("idle".to_owned(), Arc::new(|_| false));
         assert_eq!(
@@ -247,18 +259,19 @@ mod tests {
             1,
             "only the running turn was interrupted"
         );
-        hub.unregister("running");
+        hub.unregister("running", &lane);
         assert_eq!(hub.stop_all(true), 0, "an ended session's stop still ran");
     }
 
     #[test]
     fn an_ended_session_stops_dispatching_and_leaves_no_lane() {
         let hub = Arc::new(DeliveryHub::new());
-        hub.register("a".to_owned(), Arc::new(|_, _| Ok(RunOutcome::Ran)));
+        let lane: Arc<DeliverFn> = Arc::new(|_, _| Ok(RunOutcome::Ran));
+        hub.register("a".to_owned(), Arc::clone(&lane));
         hub.register("b".to_owned(), Arc::new(|_, _| Ok(RunOutcome::Ran)));
         assert_eq!(hub.dispatch(&job("a"), &Firing::at(0)), Ok(RunOutcome::Ran));
 
-        hub.unregister("a");
+        hub.unregister("a", &lane);
 
         assert_eq!(
             hub.dispatch(&job("a"), &Firing::at(0)),
@@ -313,6 +326,27 @@ mod tests {
             "the rebind left session a's lane behind"
         );
         assert_eq!(hub.dispatch(&job("b"), &Firing::at(0)), Ok(RunOutcome::Ran));
+        Ok(())
+    }
+
+    #[test]
+    fn an_old_handle_dropping_after_a_reopen_keeps_the_new_lane() -> std::io::Result<()> {
+        let dir = Scratch::new("yi-hub-reopen")?;
+        let hub = Arc::new(DeliveryHub::new());
+        let (_old_store, old) = lane_service(&dir, &hub);
+        old.bind_session("a".to_owned());
+        let (_new_store, new) = lane_service(&dir, &hub);
+        new.bind_session("a".to_owned());
+
+        drop(old);
+
+        assert_eq!(
+            hub.dispatch(&job("a"), &Firing::at(0)),
+            Ok(RunOutcome::Ran),
+            "the old handle's drop withdrew the reopened session's lane"
+        );
+        drop(new);
+        assert_eq!(hub.lane_count(), 0, "the reopened session's lane leaked");
         Ok(())
     }
 

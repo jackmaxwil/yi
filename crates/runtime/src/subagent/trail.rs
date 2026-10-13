@@ -81,26 +81,35 @@ impl super::SubagentHost {
     pub fn trail(&self, name: &str) -> Option<PathBuf> {
         let base = self.parent_file()?.parent()?.to_path_buf();
         let store = (self.options.store)()?;
-        let query = yi_session::EntryQuery {
-            custom_type: Some(CHILD_ENTRY.to_owned()),
-            ..Default::default()
-        };
-        let entries = yi_session::lock_session(&store).find_entries(&query).ok()?;
-        entries.iter().find_map(|entry| {
-            let yi_types::entry::Entry::Custom {
-                data: Some(data), ..
-            } = entry
-            else {
-                return None;
-            };
-            match serde_json::from_value(data.clone()).ok()? {
-                ChildTrail::Spawned(line) if line.name == name || line.id.as_str() == name => {
-                    Some(base.join(line.path))
-                }
-                _ => None,
-            }
-        })
+        let store = yi_session::lock_session(&store);
+        spawned_path(&store, &base, name)
     }
+}
+
+/// The file of the child `name` (or id) that `store`'s trail records as spawned, under `base`.
+pub(crate) fn spawned_path(
+    store: &yi_session::SessionStore,
+    base: &std::path::Path,
+    name: &str,
+) -> Option<PathBuf> {
+    let query = yi_session::EntryQuery {
+        custom_type: Some(CHILD_ENTRY.to_owned()),
+        ..Default::default()
+    };
+    store.find_entries(&query).ok()?.iter().find_map(|entry| {
+        let yi_types::entry::Entry::Custom {
+            data: Some(data), ..
+        } = entry
+        else {
+            return None;
+        };
+        match serde_json::from_value(data.clone()).ok()? {
+            ChildTrail::Spawned(line) if line.name == name || line.id.as_str() == name => {
+                Some(base.join(line.path))
+            }
+            _ => None,
+        }
+    })
 }
 
 fn journal(store: &yi_session::SharedSession, line: &ChildTrail) {
