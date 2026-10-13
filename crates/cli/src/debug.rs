@@ -182,7 +182,7 @@ fn show_config(args: &Args) -> i32 {
             "model": args.model,
             "thinking": args.thinking.map(|effort| effort.to_string()),
             "mode": format!("{:?}", args.mode).to_lowercase(),
-            "console": {"autoSide": config().console.as_ref().and_then(|console| console.auto_side), "titleIntro": config().console.as_ref().and_then(|console| console.title_intro)},
+            "console": {"autoSide": config().console.as_ref().and_then(|console| console.auto_side), "titleIntro": config().console.as_ref().and_then(|console| console.title_intro), "titleWeights": config().console.as_ref().and_then(|console| console.title_weights.clone())},
         },
     });
     println!(

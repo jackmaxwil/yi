@@ -683,6 +683,15 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
             paint_chat_pane(app, pane, inner, frame.buffer_mut(), dim, framed, theme);
             continue;
         }
+        if let Some(scene) = app.state.title
+            && matches!(
+                app.state.panes.get(&pane.id).map(|p| &p.content),
+                Some(PaneContent::Session { chat: None, .. })
+            )
+        {
+            let elapsed = app.clock.since(app.state.title_start);
+            yi_tui::title::paint(frame.buffer_mut(), inner, scene, elapsed, theme);
+        }
         let body = Paragraph::new(pane.lines.clone());
         let body = if dim {
             body.style(Style::default().add_modifier(Modifier::DIM))
@@ -740,7 +749,10 @@ fn paint_chat_pane(
     theme: &Theme,
 ) {
     let kitty = app.kitty;
-    let title_on = app.state.title;
+    let field = app
+        .state
+        .title
+        .map(|scene| (scene, app.clock.since(app.state.title_start)));
     let title = (!framed)
         .then(|| {
             app.state
@@ -772,7 +784,7 @@ fn paint_chat_pane(
         return;
     };
     chat.app.set_kitty(kitty && view.focused);
-    chat.app.set_title(title_on);
+    chat.app.set_title(field);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![

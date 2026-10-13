@@ -1,5 +1,5 @@
 //! The title field: a scalar over a pane's free rows, sampled into glyph cells; a pure function
-//! of their size and one elapsed time, so a frozen [`crate::motion::Clock`] replays any frame.
+//! of their size, a scene and the seconds since the console started, so a frozen clock replays it.
 
 use std::f64::consts::TAU;
 use std::time::Duration;
@@ -11,15 +11,75 @@ use ratatui::style::{Modifier, Style};
 use crate::app::App;
 use crate::colors::Theme;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scene {
+    Kali,
+    Echo,
+}
+
+impl Scene {
+    pub const ALL: [(&'static str, Scene); 2] = [("kali", Scene::Kali), ("echo", Scene::Echo)];
+
+    pub fn named(name: &str) -> Option<Scene> {
+        Self::ALL
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|(_, scene)| *scene)
+    }
+}
+
+/// Used when the config names no weights: the Kali fold four times in five.
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 2] = [(Scene::Kali, 8), (Scene::Echo, 2)];
+
+/// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
+pub fn pick(weights: &[(Scene, u32)], seed: u64) -> Option<Scene> {
+    let total = weights.iter().fold(0_u64, |sum, (_, weight)| {
+        sum.saturating_add(u64::from(*weight))
+    });
+    let mut left = mix(seed).checked_rem(total)?;
+    for &(scene, weight) in weights {
+        let weight = u64::from(weight);
+        if left < weight {
+            return Some(scene);
+        }
+        left -= weight;
+    }
+    None
+}
+
+/// The splitmix64 finalizer: neighbouring seeds, such as clock nanoseconds, land far apart.
+fn mix(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 const RAMP: [char; 10] = [' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
 const TOP: u8 = 9;
 /// Half a stroke's width, in units of half the rows' height.
 const THICK: f64 = 0.06;
 const SCALE: f64 = 0.95;
 const RING_FREQ: f64 = 4.0;
-/// Seconds a ring takes to reach the place of the next: the field's exact loop.
+/// Seconds a ring takes to reach the place of the next: the echo's exact loop.
 pub const RING_SECS: f64 = 1.8;
+/// Seconds the fold takes to turn once and come back: the Kali loop once it has opened.
+pub const KALI_SECS: f64 = 16.0;
+/// The fold opens from a deep zoom over this long, then the name rises over the next second.
+const OPEN_SECS: f64 = 3.2;
+const NAME_FROM: f64 = 2.4;
+const NAME_TO: f64 = 3.4;
+const KALI_FOLDS: u8 = 11;
+const KALI_SAMPLES: u8 = 3;
+/// The fold's accumulated change of length at the 5th and 97th percentile over a loop.
+const KALI_LO: f64 = 0.56;
+const KALI_HI: f64 = 4.5;
 pub const FRAME: Duration = Duration::from_millis(50);
+
+fn smooth(x: f64) -> f64 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
+}
 
 fn strokes() -> [([f64; 2], [f64; 2]); 5] {
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
@@ -53,12 +113,60 @@ pub fn distance(u: f64, v: f64) -> f64 {
     near - THICK
 }
 
-fn echo(d: f64, seconds: f64) -> f64 {
-    if d < 0.0 {
-        return 1.0;
+fn echo(d: f64, t: f64) -> f64 {
+    let ring = 0.5 + 0.5 * (TAU * (d.max(0.0) * RING_FREQ - (t % RING_SECS) / RING_SECS)).cos();
+    ring * ring * (-0.9 * d.max(0.0)).exp()
+}
+
+fn fold(mut x: f64, mut y: f64, cx: f64, cy: f64) -> f64 {
+    let mut prev = x.hypot(y);
+    let mut total = 0.0;
+    for _ in 0..KALI_FOLDS {
+        let r2 = x * x + y * y + 1e-9;
+        x = x.abs() / r2 - cx;
+        y = y.abs() / r2 - cy;
+        let len = x.hypot(y);
+        total += (len - prev).abs();
+        prev = len;
     }
-    let ring = 0.5 + 0.5 * (TAU * (d * RING_FREQ - seconds / RING_SECS)).cos();
-    ring * ring * (-0.9 * d).exp() * (1.0 - 0.85 * (-9.0 * d).exp())
+    total / f64::from(KALI_FOLDS)
+}
+
+/// The Kali fold at `(u, v)`, each cell averaged over `du` by `dv` of samples: the plane turns
+/// once a loop while `c` circles and the scale breathes; the first seconds zoom out of the fold.
+fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
+    let a = TAU * (t % KALI_SECS) / KALI_SECS;
+    let (sin, cos) = a.sin_cos();
+    let (cx, cy) = (0.80 + 0.03 * sin, 0.55 + 0.03 * cos);
+    let scale = 0.5 * (1.0 + 0.18 * sin) * (0.3 + 0.7 * smooth(t / OPEN_SECS));
+    let n = f64::from(KALI_SAMPLES);
+    let mut sum = 0.0;
+    for j in 0..KALI_SAMPLES {
+        for i in 0..KALI_SAMPLES {
+            let su = u + ((f64::from(i) + 0.5) / n - 0.5) * du;
+            let sv = v + ((f64::from(j) + 0.5) / n - 0.5) * dv;
+            sum += fold(
+                (su * cos - sv * sin) * scale,
+                (su * sin + sv * cos) * scale,
+                cx,
+                cy,
+            );
+        }
+    }
+    let raw = sum / (n * n);
+    ((raw - KALI_LO) / (KALI_HI - KALI_LO))
+        .clamp(0.0, 1.0)
+        .powf(1.1)
+        * smooth(t / 0.6)
+}
+
+/// Dim the field near the strokes and fill them: `rise` 0 leaves the field, 1 is the name.
+fn name(field: f64, d: f64, rise: f64) -> f64 {
+    if d < 0.0 {
+        field + (1.0 - field) * rise
+    } else {
+        field * (1.0 - rise * 0.85 * (-9.0 * d).exp())
+    }
 }
 
 /// A cell is twice as tall as wide, so a row spans two units of `v` where a column spans one
@@ -78,16 +186,27 @@ fn style(step: usize, theme: &Theme) -> Style {
     }
 }
 
-/// Draw the field over `area`; a cell whose value rounds to empty keeps what it held.
-pub fn paint(buffer: &mut Buffer, area: Rect, elapsed: Duration, theme: &Theme) {
-    let seconds = elapsed.as_secs_f64() % RING_SECS;
+/// Draw `scene` over `area`; a cell whose value rounds to empty keeps what it held.
+pub fn paint(buffer: &mut Buffer, area: Rect, scene: Scene, elapsed: Duration, theme: &Theme) {
+    let t = elapsed.as_secs_f64();
+    let h = f64::from(area.height);
+    let cell = (1.0 / h, 2.0 / h);
+    let rise = match scene {
+        Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
+        Scene::Echo => 1.0,
+    };
     for y in 0..area.height {
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
-            let value = echo(distance(u, v), seconds).clamp(0.0, 1.0);
+            let d = distance(u, v);
+            let field = match scene {
+                Scene::Kali => kali(u, v, cell, t),
+                Scene::Echo => echo(d, t),
+            };
+            let value = name(field, d, rise).clamp(0.0, 1.0);
             let step = usize::from((value * f64::from(TOP)).round() as u8);
-            let cell = (area.x.saturating_add(x), area.y.saturating_add(y));
-            if let (Some(cell), Some(glyph)) = (buffer.cell_mut(cell), RAMP.get(step))
+            let at = (area.x.saturating_add(x), area.y.saturating_add(y));
+            if let (Some(cell), Some(glyph)) = (buffer.cell_mut(at), RAMP.get(step))
                 && step > 0
             {
                 cell.set_char(*glyph).set_style(style(step, theme));
@@ -97,7 +216,7 @@ pub fn paint(buffer: &mut Buffer, area: Rect, elapsed: Duration, theme: &Theme) 
 }
 
 pub(crate) fn paint_below(app: &App, buffer: &mut Buffer, area: Rect, used: u16) {
-    if app.title_visible() {
+    if let (true, Some((scene, elapsed))) = (app.title_visible(), app.title) {
         let top = area.top().saturating_add(used).min(area.bottom());
         let free = Rect::new(
             area.left(),
@@ -105,24 +224,22 @@ pub(crate) fn paint_below(app: &App, buffer: &mut Buffer, area: Rect, used: u16)
             area.width,
             area.bottom().saturating_sub(top),
         );
-        paint(buffer, free, app.clock.since(app.started_at), &app.theme);
+        paint(buffer, free, scene, elapsed, &app.theme);
     }
 }
 
 impl App {
-    pub fn set_title(&mut self, on: bool) {
-        self.title = on;
+    /// The scene to draw and the seconds the console has been up; `None` draws nothing.
+    pub fn set_title(&mut self, title: Option<(Scene, Duration)>) {
+        self.title = title;
     }
 
     /// An empty, idle session is the title screen; the first prompt ends it.
     pub fn title_visible(&self) -> bool {
-        self.title && self.history.is_empty() && !self.running
+        self.title.is_some() && self.history.is_empty() && !self.running
     }
 
     pub fn title_wake(&self) -> Option<Duration> {
-        let into = self.clock.since(self.started_at).as_millis() % FRAME.as_millis();
-        let into = Duration::from_millis(u64::try_from(into).unwrap_or(0));
-        self.title_visible()
-            .then(|| FRAME.saturating_sub(into).max(Duration::from_millis(1)))
+        self.title_visible().then_some(FRAME)
     }
 }

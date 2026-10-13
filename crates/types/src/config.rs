@@ -247,12 +247,14 @@ pub struct CatalogConfig {
     pub refresh_hours: Option<u64>,
 }
 
-/// `console.titleIntro`: draw the title field in an empty console session; off until it ships.
+/// `console.titleIntro`: draw the title field at console start and in an empty session (on);
+/// `console.titleWeights`: scene name to weight, the draw's odds; absent, Kali four in five.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConsoleConfig {
     pub auto_side: Option<bool>,
     pub title_intro: Option<bool>,
+    pub title_weights: Option<std::collections::BTreeMap<String, u32>>,
 }
 
 /// `kernel.prewarm`: boot the IPython kernel in the background at session open so the first
