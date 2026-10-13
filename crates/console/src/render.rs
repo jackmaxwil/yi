@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use yi_tui::SessionPort;
 use yi_tui::colors::{Theme, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
@@ -117,7 +117,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     } else {
         0
     };
-    let (sidebar, gear) = split_off_bottom(sidebar, u16::from(sidebar_width > 0));
+    let (sidebar, gear) = split_off_bottom(sidebar, if sidebar_width > 0 { 3 } else { 0 });
     let (sidebar, roots_area) = split_off_bottom(sidebar, roots_height);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
@@ -646,15 +646,18 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     if let Some(gear) = app.hits.as_ref().and_then(|hits| hits.gear) {
         let key = keys::chord_for(keys::Action::Settings, app.cmd_hints);
         let label = if app.state.sidebar == SidebarMode::Full {
-            format!(" {GEAR} settings ")
+            format!("{GEAR} settings ")
         } else {
-            format!(" {GEAR} ")
+            GEAR.to_owned()
         };
         let line = Line::from(vec![
-            Span::styled(label, theme.accent_style()),
+            Span::styled(label, theme.accent_style().add_modifier(Modifier::BOLD)),
             Span::styled(key, theme.dim_style()),
         ]);
-        frame.render_widget(Paragraph::new(line), gear);
+        let button = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(theme.accent_style());
+        frame.render_widget(Paragraph::new(line).centered().block(button), gear);
     }
     if let Some(bar) = view.tab_bar {
         render_tab_bar(app, frame, bar, theme);
@@ -916,10 +919,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         .state
         .tab()
         .is_some_and(|tab| tab.layout.pane_ids().len() > 1);
-    let closer = format!(
-        " ✕ {} ",
-        keys::chord_for(keys::Action::ClosePane, app.cmd_hints)
-    );
     for pane in &view.panes {
         let r = pane.rect;
         if r.width < 8 {
@@ -946,23 +945,17 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 )
             });
         let text = format!(" {} {} ", status.glyph(), pane.title);
-        let tile = if seed.is_some() { 3 } else { 0 };
-        let room = usize::from(r.width.saturating_sub(4)).saturating_sub(tile);
-        let need = text.chars().count();
-        // Invariant: the key closes the focused pane only, so only its mark names the key; a
-        // sibling's bare mark leaves a 40-column Review header its counts.
-        let named = pane.focused && need.saturating_add(closer.chars().count()) <= room;
-        let mark = closable.then_some(if named { closer.as_str() } else { " ✕ " });
         let mut right = r.right().saturating_sub(1);
-        if let Some(mark) = mark {
-            let width = u16::try_from(mark.chars().count()).unwrap_or(3);
+        if closable {
+            let width = 3;
             right = right.saturating_sub(width);
             let style = if pane.focused {
                 theme.accent_style()
             } else {
                 theme.dim_style()
             };
-            buffer.set_span(right, r.y, &Span::styled(mark, style), width);
+            let button = Span::styled(" ✕ ", style.add_modifier(Modifier::REVERSED));
+            buffer.set_span(right, r.y, &button, width);
             if let Some(hits) = app.hits.as_mut() {
                 hits.closers
                     .push((pane.id, Rect::new(right, r.y, width, 1)));
