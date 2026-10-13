@@ -47,6 +47,7 @@ fn a_recorded_pipe_replays_into_the_commands_chrome_answered()
             Update::Frame(_) => "frame that is not a PNG",
             Update::Url(url) if url == SECOND => "second",
             Update::Url(_) => "another url",
+            Update::NavigateFailed(_) => "navigate failed",
             Update::Failed(_) => "failed",
         })
         .collect();
@@ -66,6 +67,45 @@ fn an_error_answer_names_its_method_and_a_stray_id_is_ignored()
     assert_eq!(
         router.feed(refused),
         Some(Update::Failed("Target.createTarget: no target".to_owned()))
+    );
+    Ok(())
+}
+
+/// Input typed while Chrome is still attaching would reach it with no session and be refused,
+/// failing the pane; it is dropped until the page session exists.
+#[test]
+fn input_before_the_page_session_sends_nothing() -> Result<(), Box<dyn std::error::Error>> {
+    let mut router = Router::new("about:blank", (10, 10));
+    router.take();
+    router.insert_text("a");
+    router.reload();
+    assert!(sent(&mut router)?.is_empty());
+    Ok(())
+}
+
+/// A bad URL is a page outcome, not a dead browser.
+#[test]
+fn a_navigation_error_is_not_a_failure() -> Result<(), Box<dyn std::error::Error>> {
+    let mut router = Router::new("about:blank", (10, 10));
+    router.take();
+    let target: CdpMessage = serde_json::from_str(r#"{"id": 1, "result": {"targetId": "T"}}"#)?;
+    router.feed(target);
+    let attach: CdpMessage = serde_json::from_str(r#"{"id": 2, "result": {"sessionId": "S"}}"#)?;
+    router.feed(attach);
+    router.take();
+    router.navigate("http://nope.invalid/");
+    let id = sent(&mut router)?
+        .first()
+        .and_then(|command| command.get("id")?.as_u64())
+        .ok_or("a navigate command")?;
+    let answer: CdpMessage = serde_json::from_str(&format!(
+        r#"{{"id": {id}, "result": {{"errorText": "net::ERR_NAME_NOT_RESOLVED"}}}}"#
+    ))?;
+    assert_eq!(
+        router.feed(answer),
+        Some(Update::NavigateFailed(
+            "net::ERR_NAME_NOT_RESOLVED".to_owned()
+        ))
     );
     Ok(())
 }

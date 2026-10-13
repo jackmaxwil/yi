@@ -13,6 +13,8 @@ pub enum Update {
     /// A screencast frame, base64 PNG as Chrome sent it.
     Frame(String),
     Url(String),
+    /// A navigation Chrome could not finish; the page stays usable.
+    NavigateFailed(String),
     Failed(String),
 }
 
@@ -113,7 +115,7 @@ impl Router {
                 let error = result.get("errorText").and_then(Value::as_str);
                 return error
                     .filter(|text| !text.is_empty())
-                    .map(|text| Update::Failed(text.to_owned()));
+                    .map(|text| Update::NavigateFailed(text.to_owned()));
             }
             Waiting::History(step) => {
                 let history: NavigationHistory = serde_json::from_value(result.clone()).ok()?;
@@ -155,13 +157,21 @@ impl Router {
         self.call(Waiting::Other, "Page.startScreencast", cast);
     }
 
+    /// Invariant: Chrome rejects a page command with no session, so input before the attach
+    /// answer is dropped rather than sent.
+    fn page_call(&mut self, waiting: Waiting, method: &str, params: Value) {
+        if self.session.is_some() {
+            self.call(waiting, method, params);
+        }
+    }
+
     pub fn navigate(&mut self, url: &str) {
-        self.call(Waiting::Navigate, "Page.navigate", json!({ "url": url }));
+        self.page_call(Waiting::Navigate, "Page.navigate", json!({ "url": url }));
     }
 
     /// Back is -1 and forward +1; a step past either end of the history does nothing.
     pub fn go(&mut self, step: i64) {
-        self.call(
+        self.page_call(
             Waiting::History(step),
             "Page.getNavigationHistory",
             json!({}),
@@ -169,20 +179,20 @@ impl Router {
     }
 
     pub fn reload(&mut self) {
-        self.call(Waiting::Other, "Page.reload", json!({}));
+        self.page_call(Waiting::Other, "Page.reload", json!({}));
     }
 
     pub fn mouse(&mut self, input: &MouseInput) {
         let params = serde_json::to_value(input).unwrap_or_default();
-        self.call(Waiting::Other, "Input.dispatchMouseEvent", params);
+        self.page_call(Waiting::Other, "Input.dispatchMouseEvent", params);
     }
 
     pub fn key(&mut self, input: &KeyInput) {
         let params = serde_json::to_value(input).unwrap_or_default();
-        self.call(Waiting::Other, "Input.dispatchKeyEvent", params);
+        self.page_call(Waiting::Other, "Input.dispatchKeyEvent", params);
     }
 
     pub fn insert_text(&mut self, text: &str) {
-        self.call(Waiting::Other, "Input.insertText", json!({ "text": text }));
+        self.page_call(Waiting::Other, "Input.insertText", json!({ "text": text }));
     }
 }

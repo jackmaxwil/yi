@@ -39,6 +39,12 @@ pub fn transmit_png(out: &mut impl Write, id: u32, base64_png: &str) -> std::io:
     if !yi_types::image::is_strict_base64(base64_png) {
         return Ok(false);
     }
+    transmit_base64(out, id, base64_png)?;
+    Ok(true)
+}
+
+/// Transmits base64 its caller already checked with [`yi_types::image::is_strict_base64`].
+pub fn transmit_base64(out: &mut impl Write, id: u32, base64_png: &str) -> std::io::Result<()> {
     let bytes = base64_png.as_bytes();
     let mut offset = 0;
     let mut first = true;
@@ -56,7 +62,7 @@ pub fn transmit_png(out: &mut impl Write, id: u32, base64_png: &str) -> std::io:
         write!(out, "\u{1b}\\")?;
         offset = end;
     }
-    Ok(true)
+    Ok(())
 }
 
 pub fn delete(out: &mut impl Write) -> std::io::Result<()> {

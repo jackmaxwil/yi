@@ -70,17 +70,41 @@ pub fn install_tree(
     let archive =
         fetch(pin.url).map_err(|error| format!("couldn't download {}: {error}", pin.label))?;
     checked(pin.url, &archive, pin.sha256, "; not installing")?;
-    let parent = pin
-        .dir
+    let adopt = || checked_file(&pin.dir.join(pin.member), pin.member_sha256, "").is_ok();
+    stage(
+        pin.dir,
+        pin.label,
+        |staging| publish_tree(staging, pin, &archive),
+        adopt,
+    )?;
+    Ok(pin.dir.join(pin.member))
+}
+
+/// Builds `dir` in a sibling staging directory through `body`, publishes it by one rename,
+/// and removes whatever staging is left; `adopt` judges a `dir` the rename lost to.
+fn stage(
+    dir: &Path,
+    label: &str,
+    body: impl FnOnce(&Path) -> Result<(), String>,
+    adopt: impl Fn() -> bool,
+) -> Result<(), String> {
+    let parent = dir
         .parent()
-        .ok_or_else(|| format!("{}: no parent to stage {} in", pin.dir.display(), pin.label))?;
+        .ok_or_else(|| format!("{}: no parent to stage {label} in", dir.display()))?;
     std::fs::create_dir_all(parent).map_err(at(parent))?;
     let tick = STAGING.fetch_add(1, Ordering::Relaxed);
     let staging = parent.join(format!(".staging-{}-{tick}", std::process::id()));
-    let published = publish_tree(&staging, pin, &archive);
+    let published = body(&staging).and_then(|()| {
+        // Incident: the rename can lose to a concurrent installer or find a tree a poisoned
+        // cache wrote, so an existing tree is adopted only when `adopt` finds the pinned bytes.
+        match std::fs::rename(&staging, dir) {
+            Ok(()) => Ok(()),
+            Err(_) if adopt() => Ok(()),
+            Err(error) => Err(at(dir)(error)),
+        }
+    });
     let _ = std::fs::remove_dir_all(&staging);
-    published?;
-    Ok(pin.dir.join(pin.member))
+    published
 }
 
 fn publish_tree(staging: &Path, pin: &Unzipped<'_>, archive: &[u8]) -> Result<(), String> {
@@ -94,13 +118,7 @@ fn publish_tree(staging: &Path, pin: &Unzipped<'_>, archive: &[u8]) -> Result<()
             pin.label, pin.member
         ));
     }
-    // Incident: the rename can lose to a concurrent installer or find a tree a poisoned cache
-    // wrote, so an existing tree is adopted only when its member is the pinned bytes.
-    match std::fs::rename(staging, pin.dir) {
-        Ok(()) => Ok(()),
-        Err(_) if checked_file(&pin.dir.join(pin.member), pin.member_sha256, "").is_ok() => Ok(()),
-        Err(error) => Err(at(pin.dir)(error)),
-    }
+    Ok(())
 }
 
 /// Downloads through `fetch`, checks the digest before reading a byte of the archive, and
@@ -121,16 +139,13 @@ pub fn install(
         .map(|entry| entry.bytes)
         .ok_or_else(|| format!("the {} archive carries no {}", pin.label, pin.member))?;
     let tree = tree(pin, &entries)?;
-    let parent = pin
-        .dir
-        .parent()
-        .ok_or_else(|| format!("{}: no parent to stage {} in", pin.dir.display(), pin.label))?;
-    std::fs::create_dir_all(parent).map_err(at(parent))?;
-    let tick = STAGING.fetch_add(1, Ordering::Relaxed);
-    let staging = parent.join(format!(".staging-{}-{tick}", std::process::id()));
-    let published = publish(&staging, pin, binary, &tree);
-    let _ = std::fs::remove_dir_all(&staging);
-    published?;
+    let adopt = || std::fs::read(pin.dir.join(pin.file)).is_ok_and(|existing| existing == binary);
+    stage(
+        pin.dir,
+        pin.label,
+        |staging| publish(staging, pin, binary, &tree),
+        adopt,
+    )?;
     let path = pin.dir.join(pin.file);
     crate::bootstrap::is_executable(&path)
         .then_some(path)
@@ -204,17 +219,7 @@ fn publish(
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
             .map_err(at(&file))?;
     }
-    // Incident: the rename can lose to a concurrent installer or find a target written by a
-    // poisoned cache, so an existing file is adopted only when it is the verified bytes.
-    match std::fs::rename(staging, pin.dir) {
-        Ok(()) => Ok(()),
-        Err(_)
-            if std::fs::read(pin.dir.join(pin.file)).is_ok_and(|existing| existing == binary) =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(at(pin.dir)(error)),
-    }
+    Ok(())
 }
 
 fn at(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {

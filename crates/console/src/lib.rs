@@ -511,7 +511,7 @@ fn place_chat_orbs(
     let covered = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
             let pane = hits.panes.iter().find(|(pane, _)| *pane == id);
-            pane.is_some_and(|(_, rect)| hits.overlays.iter().any(|cover| cover.intersects(*rect)))
+            pane.is_some_and(|(_, rect)| hits.covered(*rect))
         })
     };
     let shown = focused.filter(|id| !covered(*id));
@@ -574,10 +574,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
         height: inner.height / 2,
         ..inner
     };
-    let covered = app
-        .hits
-        .as_ref()
-        .is_some_and(|hits| hits.overlays.iter().any(|cover| cover.intersects(half)));
+    let covered = app.hits.as_ref().is_some_and(|hits| hits.covered(half));
     if half.height < 3 || half.width < 8 || covered {
         return clear(out, placed);
     }
