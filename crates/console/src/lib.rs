@@ -475,8 +475,8 @@ fn chat_wake(app: &App) -> Duration {
         .unwrap_or(IDLE_POLL)
 }
 
-/// One orb per drawn chat pane on its own image ids; the model logos' ids are fixed, so only the
-/// focused pane holds them. Incident: a closed or switched pane kept its orb.
+/// One orb per drawn chat pane on its own image ids; only the focused pane animates, the rest
+/// hold one placed frame. Incident: a closed or switched pane kept its orb.
 fn place_chat_orbs(
     app: &mut App,
     owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
@@ -525,8 +525,10 @@ fn place_chat_orbs(
             continue;
         };
         owners.entry(*id).or_insert_with(|| session.clone());
-        if shown.contains(id) {
+        if shown.contains(id) && Some(*id) == focused {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
+        } else if shown.contains(id) {
+            yi_tui::orb::place(&mut chat.app, out, &mut chat.orb);
         } else {
             chat.orb.hide(out);
         }

@@ -118,6 +118,45 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
     }
 }
 
+/// Show the orb without animating it: transmit once when first shown, re-place when moved; the
+/// focused pane keeps animating through [`tick`].
+pub fn place(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mut Tick) {
+    if !app.kitty {
+        return;
+    }
+    let stale = app.take_orb_stale();
+    let Some((col, row)) = app.orb_placement else {
+        if state.shown {
+            state.hide(out);
+        }
+        return;
+    };
+    if state.shown && !stale && state.at == Some((col, row)) {
+        state.last = app.clock.now();
+        return;
+    }
+    if !state.shown {
+        let want = app.orb_state();
+        let frame = app.orb.frame(app.clock.since(state.last), want);
+        let (width, height) = pixel_size();
+        let rgba = kitty::paint_rgba(&frame, 64.0, width, height);
+        let _ = kitty::transmit(out, state.ids[state.front], &rgba, (width, height));
+    }
+    let placed = kitty::place(
+        out,
+        state.ids[state.front],
+        col,
+        row,
+        crate::app::ORB_COLS,
+        crate::app::ORB_ROWS,
+    );
+    if placed.is_ok() {
+        state.shown = true;
+        state.at = Some((col, row));
+    }
+    state.last = app.clock.now();
+}
+
 const MAX_ORB_PX: usize = 384;
 
 /// The orb's rect in the terminal's own pixels (square fallback without one, 384 cap).

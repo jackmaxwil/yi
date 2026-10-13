@@ -391,7 +391,7 @@ fn tab_bar(settings: &Settings, width: usize, theme: &Theme) -> Line<'static> {
     Line::from(spans.collect::<Vec<_>>())
 }
 
-pub fn tab_targets(settings: &Settings, width: usize) -> Vec<(u16, u16, usize)> {
+pub(crate) fn tab_targets(settings: &Settings, width: usize) -> Vec<(u16, u16, usize)> {
     let mut x = 0_u16;
     let mut targets = Vec::new();
     for (text, tab) in strip(settings, width) {
