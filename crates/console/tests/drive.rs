@@ -3791,7 +3791,7 @@ fn quote_puts_the_message_in_the_composer() -> TestResult {
     Ok(())
 }
 
-/// Two panes: each title carries the close mark and its key, and a click on it closes that
+/// Two panes: each title carries a close button and no key, and a click on it closes that
 /// pane. One pane is the last, and the last pane cannot close, so it carries none.
 #[test]
 fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
@@ -3799,8 +3799,8 @@ fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
         "close-mark",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-v\nwait-frame 3000 ✕ ⌥x\nmouse down 97 0\nmouse up 97 0\n\
-         wait-frame 3000 !✕ ⌥x\nquit\n",
+         key alt-v\nwait-frame 3000 ✕\nmouse down 97 0\nmouse up 97 0\n\
+         wait-frame 3000 !✕\nquit\n",
     )?;
     assert!(
         !frame.contains('✕'),
@@ -3829,7 +3829,7 @@ fn a_drag_from_the_lower_panes_mark_resizes_and_closes_nothing() -> TestResult {
         "close-mark-drag",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-s\nwait-frame 3000 ✕ ⌥x\nmouse down 95 14\nmouse drag 95 18\nmouse up 95 18\n\
+         key alt-s\nwait-frame 3000 ✕\nmouse down 97 14\nmouse drag 97 18\nmouse up 97 18\n\
          wait 100\nquit\n",
     )?;
     assert!(
@@ -3919,7 +3919,7 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
         SidebarMode::Full,
         160,
     )?;
-    let gear = frame.lines().last().unwrap_or_default();
+    let gear = frame.lines().rev().nth(1).unwrap_or_default();
     assert!(
         gear.contains("⚙  settings ⌥,"),
         "no gear in the corner: {gear:?}"
