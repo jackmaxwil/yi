@@ -156,6 +156,20 @@ struct Motion {
 
 const MOTION_FRAME: Duration = Duration::from_millis(66);
 
+/// Incident: kitty deletes an id's placements when new data arrives for it and Ghostty keeps
+/// them, so an animating avatar vanished in kitty alone; new pixels are placed again (#1335).
+fn retransmit(
+    out: &mut impl Write,
+    image: ImageId,
+    rgba: &[u8],
+    at: Option<&(u16, u16, u16, u16)>,
+) {
+    let _ = kitty::transmit(out, image.raw(), rgba, (PX, PX));
+    if let Some(&(col, row, cols, rows)) = at {
+        let _ = kitty::place(out, image.raw(), col, row, cols, rows);
+    }
+}
+
 /// One placement per rail row on screen; moved rows re-place, gone rows delete.
 #[derive(Default)]
 pub struct Avatars {
@@ -218,7 +232,7 @@ impl Avatars {
                 (None, Some(_)) => {
                     self.motion.remove(&place.key);
                     let identicon = rgba(&grid(&place.seed), place.accent);
-                    let _ = kitty::transmit(out, image.raw(), &identicon, (PX, PX));
+                    retransmit(out, image, &identicon, self.placed.get(&place.key));
                 }
                 (None, None) => {}
             }
@@ -243,7 +257,7 @@ impl Avatars {
             motion.last = Instant::now();
             let frame = motion.orb.frame(elapsed, Some(motion.state));
             let pixels = kitty::paint_rgba(&frame, 64.0, PX, PX);
-            let _ = kitty::transmit(out, image.raw(), &pixels, (PX, PX));
+            retransmit(out, *image, &pixels, self.placed.get(key));
         }
     }
 
@@ -276,6 +290,21 @@ impl Avatars {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn alpha(state: Option<yi_tui::orb::OrbState>) -> Placement {
+        let key = "s-alpha".to_owned();
+        let (col, row, cols, rows) = (2, 0, 4, 2);
+        Placement {
+            col,
+            row,
+            cols,
+            rows,
+            seed: key.clone(),
+            key,
+            accent: (1, 2, 3),
+            state,
+        }
+    }
 
     #[test]
     fn grids_are_deterministic_symmetric_and_distinct() {
@@ -314,16 +343,7 @@ mod tests {
 
     #[test]
     fn a_forgotten_ledger_deletes_what_it_placed() {
-        let place = Placement {
-            col: 2,
-            row: 0,
-            cols: 4,
-            rows: 2,
-            key: "s-alpha".to_owned(),
-            seed: "s-alpha".to_owned(),
-            accent: (1, 2, 3),
-            state: None,
-        };
+        let place = alpha(None);
         let mut avatars = Avatars::default();
         let mut first = Vec::new();
         avatars.sync(&mut first, std::slice::from_ref(&place));
@@ -349,16 +369,7 @@ mod tests {
 
     #[test]
     fn a_row_that_scrolls_back_in_transmits_again() {
-        let place = Placement {
-            col: 2,
-            row: 0,
-            cols: 4,
-            rows: 2,
-            key: "s-alpha".to_owned(),
-            seed: "s-alpha".to_owned(),
-            accent: (1, 2, 3),
-            state: None,
-        };
+        let place = alpha(None);
         let mut avatars = Avatars::default();
         avatars.sync(&mut Vec::new(), std::slice::from_ref(&place));
         let mut gone = Vec::new();
@@ -375,6 +386,35 @@ mod tests {
             "transmitted again, not placed over freed data"
         );
         assert!(back.contains("a=p,i="), "placed");
+    }
+
+    #[test]
+    fn every_retransmit_of_a_placed_avatar_is_placed_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut place = alpha(Some(yi_tui::orb::OrbState::Thinking));
+        let mut avatars = Avatars::default();
+        avatars.sync(&mut Vec::new(), std::slice::from_ref(&place));
+        let motion = avatars.motion.get_mut("s-alpha").ok_or("no motion")?;
+        motion.last = Instant::now().checked_sub(MOTION_FRAME).ok_or("clock")?;
+        let mut frame = Vec::new();
+        avatars.animate(&mut frame);
+        place.state = None;
+        let mut settled = Vec::new();
+        avatars.sync(&mut settled, std::slice::from_ref(&place));
+        for (name, bytes) in [("animation frame", frame), ("settle to identicon", settled)] {
+            let written = String::from_utf8_lossy(&bytes);
+            let transmit = written
+                .rfind(&format!("a=t,i={FIRST_ID},"))
+                .ok_or(format!("{name}: no transmit in {written:?}"))?;
+            let placed = written.get(transmit..).is_some_and(|tail| {
+                tail.contains(&format!("\x1b[1;3H\x1b_Ga=p,i={FIRST_ID},p=1,"))
+            });
+            assert!(
+                placed,
+                "{name}: transmit not placed again at row 1 col 3: {written:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
