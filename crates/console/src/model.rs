@@ -586,7 +586,7 @@ impl ConsoleState {
         }
     }
 
-    /// Invariant: a pinned row leaves its workspace's group; the rail folds nothing.
+    /// Invariant: a pinned row leaves its group, which stays when empty; the rail folds nothing.
     pub fn groups(&self) -> Vec<Group> {
         let row = |index: &usize| self.order.get(*index).and_then(|id| self.sessions.get(id));
         let mut pinned: Vec<usize> = (0..self.order.len())
@@ -604,9 +604,6 @@ impl ConsoleState {
             let Some(r) = row(&index) else {
                 continue;
             };
-            if r.pinned.is_some() {
-                continue;
-            }
             let slot = match slot_of.get(&r.root) {
                 Some(slot) => *slot,
                 None => {
@@ -615,7 +612,9 @@ impl ConsoleState {
                     buckets.len() - 1
                 }
             };
-            buckets[slot].1.push(index);
+            if r.pinned.is_none() {
+                buckets[slot].1.push(index);
+            }
         }
         for (root, mut rows) in buckets {
             rows.sort_by_key(|index| {
