@@ -49,7 +49,7 @@ pub fn build_snapshot_code(
     // keeps working even when the user namespace shadows names like list/open.
     format!(
         r#"def _yi_snapshot_state():
-    import builtins as _b, io, json, os, sys, datetime
+    import builtins as _b, hashlib, io, json, os, sys, datetime
     try:
         import dill
     except _b.Exception as _err:
@@ -146,22 +146,58 @@ pub fn build_snapshot_code(
         return os.fdopen(os.open(path, flags, 0o600), mode)
 
     os.makedirs(os.path.dirname({out}), exist_ok=True)
-    tmp = {out} + ".tmp-" + _b.str(os.getpid())
-    try:
-        with fresh(tmp, "wb") as fh:
-            dill.dump(payload, fh)
-        os.replace(tmp, {out})
-    except _b.BaseException as _err:
+    blobs = os.path.splitext({out})[0] + ".blobs"
+    os.makedirs(blobs, exist_ok=True)
+
+    def durable(path, data):
+        tmp = path + ".tmp-" + _b.str(os.getpid())
         try:
-            os.remove(tmp)
-        except _b.Exception:
-            pass
+            with fresh(tmp, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except _b.BaseException:
+            try:
+                os.remove(tmp)
+            except _b.Exception:
+                pass
+            raise
+
+    def sync_dir(path):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    # Each variable is a content-named blob written once; the index is the commit point, so a
+    # cell that changed one small name rewrites one small file, not the whole namespace.
+    index = {{}}
+    try:
+        for name, blob in payload.items():
+            digest = hashlib.blake2b(blob, digest_size=16).hexdigest()
+            index[name] = digest
+            path = os.path.join(blobs, digest + ".pkl")
+            if not os.path.exists(path):
+                durable(path, blob)
+        sync_dir(blobs)
+        durable({out}, dill.dumps(index))
+        sync_dir(os.path.dirname({out}))
+    except _b.BaseException as _err:
         if not _b.isinstance(_err, _b.Exception):
             raise
         _b.print({marker} + json.dumps({{"error": "write failed: " + _b.str(_err)}}))
         return
+    keep = {{digest + ".pkl" for digest in index.values()}}
+    for entry in os.listdir(blobs):
+        if entry not in keep:
+            try:
+                os.remove(os.path.join(blobs, entry))
+            except _b.Exception:
+                pass
 
-    bytes_written = os.path.getsize({out})
+    bytes_written = _b.sum(_b.len(blob) for blob in payload.values())
     saved = _b.sorted(payload.keys())
     pruned = _b.sorted(name for name in oversized if name in ns) if identify_oversized else []
     manifest = {{
@@ -248,8 +284,13 @@ pub fn build_restore_code(in_path: &Path) -> String {
 
     restored = []
     failed = []
+    blobs = os.path.splitext({source})[0] + ".blobs"
     for name, blob in payload.items():
         try:
+            # A digest names a blob beside the index; bytes are the pre-blob single-file form.
+            if _b.isinstance(blob, _b.str):
+                with _b.open(os.path.join(blobs, blob + ".pkl"), "rb") as fh:
+                    blob = fh.read()
             ns[name] = dill.loads(blob)
             restored.append(name)
         except _b.Exception as _err:
