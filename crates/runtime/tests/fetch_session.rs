@@ -282,6 +282,37 @@ fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
     Ok(())
 }
 
+/// A program pages an address by feeding `next_offset` back as the tool's 1-based `offset`.
+#[test]
+fn a_program_pages_an_address_by_feeding_back_its_next_offset() -> Result<(), Box<dyn Error>> {
+    let (_workspace, resolver, _store) = paged_workspace()?;
+    let resolver = Arc::new(resolver);
+    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = (yi_tools::builtin_tools().into_iter())
+        .filter(|tool| tool.name() == "read")
+        .collect();
+    yi_runtime::fetch::route_urls(&mut tools, &resolver);
+    let tool = tools.first().ok_or("no read tool")?;
+    let mut context = yi_tools::ToolContext::new(std::env::temp_dir());
+    context.program = true;
+    let page = |offset: u64| -> Result<yi_types::tool_value::FetchedValue, Box<dyn Error>> {
+        let input = serde_json::json!({"path": "history://main", "offset": offset, "limit": 1});
+        let output = tool.execute(input.as_object().cloned().unwrap_or_default(), &context);
+        Ok(serde_json::from_value(output.value.ok_or("no value")?)?)
+    };
+    let first = page(1)?;
+    assert_eq!(first.text, read(&resolver, "history://main", 0, 1)?.0);
+    let next = first
+        .next_offset
+        .ok_or("the listing has more than one entry")?;
+    let second = page(next)?;
+    assert_eq!(
+        second.text,
+        read(&resolver, "history://main", 1, 1)?.0,
+        "the next page, not the same one"
+    );
+    Ok(())
+}
+
 /// Dies with a url's `offset` and `limit` dropped, its unit unnamed, `limit: 0` read as the
 /// rest of the listing, or a negative offset read as none.
 #[test]

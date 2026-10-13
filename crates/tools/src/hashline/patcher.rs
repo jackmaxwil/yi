@@ -76,6 +76,8 @@ pub struct Patcher<'a> {
     gate: yi_permission::ReadGate,
     /// The wall's lists, judged on the file each open lands on.
     pub walls: Vec<PathBuf>,
+    /// A kernel program's edit, which may also anchor to the lines its own reads returned.
+    pub program: bool,
 }
 
 /// Chosen by extension: indentation-scoped languages have no closer to scan for.
@@ -99,6 +101,7 @@ impl<'a> Patcher<'a> {
             cwd,
             gate,
             walls: Vec::new(),
+            program: false,
         }
     }
 
@@ -471,10 +474,11 @@ impl<'a> Patcher<'a> {
         }
         let lines = split_addressable_file_lines(&snapshot.text);
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
+        let read = |line: &u64| self.program && snapshot.program_lines.contains(line);
         let unseen: Vec<u64> = section
             .collect_anchor_lines()?
             .into_iter()
-            .filter(|line| *line <= total && !seen.contains(line))
+            .filter(|line| *line <= total && !seen.contains(line) && !read(line))
             .collect();
         if unseen.is_empty() {
             return Ok(());

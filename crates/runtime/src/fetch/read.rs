@@ -12,7 +12,7 @@ const LISTING_BYTES: usize = 50 * 1024;
 struct UrlRouted {
     inner: Arc<dyn Tool>,
     resolver: Arc<Resolver>,
-    serve: fn(&Resolver, &Map<String, Value>) -> Option<ToolOutput>,
+    serve: fn(&Resolver, &Map<String, Value>, &ToolContext) -> Option<ToolOutput>,
 }
 
 fn page(input: &Map<String, Value>) -> Result<Option<Page>, String> {
@@ -78,7 +78,11 @@ fn address(input: &Map<String, Value>) -> Option<&str> {
     (!scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_lowercase())).then_some(path)
 }
 
-fn serve_read(resolver: &Resolver, input: &Map<String, Value>) -> Option<ToolOutput> {
+fn serve_read(
+    resolver: &Resolver,
+    input: &Map<String, Value>,
+    context: &ToolContext,
+) -> Option<ToolOutput> {
     let raw = address(input)?;
     let fetched = raw
         .parse::<Url>()
@@ -90,6 +94,19 @@ fn serve_read(resolver: &Resolver, input: &Map<String, Value>) -> Option<ToolOut
                 .map_err(|error| error.to_string())
         });
     Some(match fetched {
+        Ok(fetched) if context.program => {
+            let value = yi_types::tool_value::FetchedValue {
+                url: fetched.url.to_string(),
+                text: fetched.text.clone(),
+                served_by: fetched.served_by.clone(),
+                // The tool's `offset` is 1-based; a program feeds this straight back to it.
+                next_offset: (fetched.next_offset)
+                    .map(|next| u64::try_from(next.saturating_add(1)).unwrap_or(u64::MAX)),
+            };
+            let mut output = text_output(fetched.text);
+            output.value = serde_json::to_value(value).ok();
+            output
+        }
         Ok(fetched) => match fetched.next_offset {
             Some(next) => text_output(format!(
                 "{}\n[more from offset {}; offset and limit count {} here]",
@@ -129,7 +146,7 @@ impl Tool for UrlRouted {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        match (self.serve)(&self.resolver, &input) {
+        match (self.serve)(&self.resolver, &input, context) {
             Some(output) => output,
             None => self.inner.execute(input, context),
         }

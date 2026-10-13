@@ -452,6 +452,35 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
     Ok(())
 }
 
+/// An exec tool declares only its input, so a program's value is whatever JSON the tool prints.
+#[cfg(unix)]
+#[test]
+fn an_exec_tool_hands_a_program_the_json_it_prints() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_dir("exec-value")?;
+    let script = dir.join("count");
+    fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  printf '{\"name\":\"count\",\"description\":\"counts\",\"input_schema\":{\"type\":\"object\"},\"kind\":\"read\"}'\n  exit 0\nfi\nprintf '{\"files\": 3}'\n",
+    )?;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+    let tools = discover_exec_tools(&dir);
+    let tool = tools.first().ok_or("no exec tool found")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    assert_eq!(
+        tool.execute(Map::new(), &context).value,
+        None,
+        "the model's call carries none"
+    );
+    context.program = true;
+    assert_eq!(
+        tool.execute(Map::new(), &context).value,
+        Some(json!({"files": 3}))
+    );
+    Ok(())
+}
+
 #[test]
 fn glob_skips_gitignored_paths() -> TestResult {
     let dir = temp_dir("gitignore")?;

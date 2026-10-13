@@ -326,6 +326,11 @@ fn collect(
     let mut documents_searched = 0_usize;
     let mut documents_unsearched: Vec<String> = Vec::new();
     let (cwd, deny, gate) = (&context.cwd, &context.deny_read, context.read_gate());
+    // A program reads the value, not the page, so only the fuse bounds what it collects.
+    let (cap, byte_cap) = match context.program {
+        true => (usize::MAX, yi_types::tool_value::PROGRAM_FUSE_BYTES),
+        false => (COLLECTION_CAP, COLLECTION_BYTE_CAP),
+    };
     let mut search_file = |path: &Path| -> bool {
         if include.is_some_and(|include| !include.matches(path)) {
             return true;
@@ -368,7 +373,7 @@ fn collect(
         if hits.is_empty() {
             return true;
         }
-        let room = COLLECTION_CAP.saturating_sub(total);
+        let room = cap.saturating_sub(total);
         if room == 0 {
             collection_capped = true;
             return false;
@@ -379,7 +384,7 @@ fn collect(
         }
         total = total.saturating_add(hits.len());
         retained = retained.saturating_add(normalized.len());
-        if retained >= COLLECTION_BYTE_CAP {
+        if retained >= byte_cap {
             collection_capped = true;
         }
         files.push(FileHits {
@@ -856,11 +861,18 @@ fn walled_write(
     ))
 }
 
-fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<String>) {
-    rows.extend(collected.walled.notices());
+fn cut_notices(collected: &Collected, context_asked: usize, program: bool) -> Vec<String> {
+    let mut rows = collected.walled.notices();
     if collected.collection_capped {
+        let cap = match program {
+            true => format!(
+                "the {} MiB program fuse",
+                yi_types::tool_value::PROGRAM_FUSE_BYTES >> 20
+            ),
+            false => COLLECTION_CAP.to_string(),
+        };
         rows.push(format!(
-            "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"
+            "[match collection stopped at {cap} before every file was scanned — narrow with path, include, or type]"
         ));
     }
     if context_asked > CONTEXT_CAP {
@@ -894,6 +906,7 @@ fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<Strin
             collected.binary_skipped
         ));
     }
+    rows
 }
 
 impl GrepTool {
@@ -971,7 +984,6 @@ impl Tool for GrepTool {
             Err(output) => return *output,
         };
         let context_lines = context_asked.min(CONTEXT_CAP);
-
         let collected = collect(
             context,
             &root,
@@ -1060,8 +1072,8 @@ impl Tool for GrepTool {
                     continue;
                 }
                 taken = taken.saturating_add(page_hits.len());
-                let mint = tagged < TAG_FILES_CAP;
-                if tagged == TAG_FILES_CAP {
+                let mint = tagged < TAG_FILES_CAP && !context.program;
+                if tagged == TAG_FILES_CAP && !context.program {
                     rows.push(format!(
                         "[tags minted for the first {TAG_FILES_CAP} files of this page; the rows below name their file and anchor nothing — page with offset to tag them]"
                     ));
@@ -1079,8 +1091,10 @@ impl Tool for GrepTool {
                 ));
             }
         }
-        rows.extend(self.sweep_row(&input, offset, &collected));
-        cut_notices(&collected, context_asked, &mut rows);
+        let swept = (!context.program).then(|| self.sweep_row(&input, offset, &collected));
+        rows.extend(swept.flatten());
+        let notices = cut_notices(&collected, context_asked, context.program);
+        rows.extend(notices.iter().cloned());
         if let Some(asked) = context_ignored {
             rows.push(format!(
                 "[context ignored: asked {asked}, not a non-negative integer; 0 used]"
@@ -1104,6 +1118,53 @@ impl Tool for GrepTool {
             "files": collected.files.len(),
             "collectionCapped": collected.collection_capped,
         });
+        let value = || program_value(&collected, &notices, &options, offset);
+        output.value = context.program.then(value);
         output
     }
+}
+
+/// Every hit collected from `paged` on, whole lines in walk order, with every row naming what
+/// the walk or the item fuse left out.
+fn program_value(collected: &Collected, notices: &[String], options: &Options, at: usize) -> Value {
+    // In the count and files modes `offset` pages files, so the value starts at the first match.
+    let paged = (!options.count && !options.files_only).then_some(at);
+    let offset = paged.unwrap_or_default();
+    let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
+    let (mut matches, mut skipped, mut more) = (Vec::new(), 0_usize, false);
+    'files: for file in &collected.files {
+        let skip_here = file.hits.len().min(offset.saturating_sub(skipped));
+        skipped = skipped.saturating_add(skip_here);
+        if skip_here == file.hits.len() {
+            continue;
+        }
+        let lines: Vec<&str> = file.normalized.split('\n').collect();
+        for &index in file.hits.iter().skip(skip_here) {
+            if matches.len() >= fuse {
+                more = true;
+                break 'files;
+            }
+            matches.push(yi_types::tool_value::GrepMatch {
+                path: file.display.clone(),
+                line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                text: lines.get(index).copied().unwrap_or_default().to_owned(),
+            });
+        }
+    }
+    let mut cut = notices.to_vec();
+    if more {
+        let next = offset.saturating_add(fuse);
+        let mode = paged.map_or(" and neither count nor files_with_matches", |_| "");
+        cut.push(format!(
+            "[kept matches {}-{next} of {}: the program fuse is {fuse} matches; grep with offset={next}{mode} for the rest]",
+            offset.saturating_add(1),
+            collected.total
+        ));
+    }
+    let value = yi_types::tool_value::GrepValue {
+        matches,
+        files: u64::try_from(collected.files.len()).unwrap_or(u64::MAX),
+        cut: (!cut.is_empty()).then(|| cut.join("\n")),
+    };
+    serde_json::to_value(value).unwrap_or(Value::Null)
 }

@@ -381,15 +381,30 @@ fn read_dir(display_path: &str, path: &Path, context: &ToolContext) -> ToolOutpu
         ));
         rows.extend(skeleton);
     }
-    rows.extend(
-        crate::builtins::Walked {
-            walled,
-            ..Default::default()
-        }
-        .notices(),
-    );
+    let hidden = crate::builtins::Walked {
+        walled,
+        ..Default::default()
+    }
+    .notices();
+    rows.extend(hidden.iter().cloned());
     let mut output = text_output(rows.join("\n"));
     output.result.details = json!({ "dirs": dirs.len(), "files": files.len() });
+    output.value = context.program.then(|| {
+        let dir = |name: &String| yi_types::tool_value::Entry {
+            name: name.clone(),
+            kind: "dir".to_owned(),
+            bytes: None,
+        };
+        let file = |(name, bytes): &(String, u64)| yi_types::tool_value::Entry {
+            name: name.clone(),
+            kind: "file".to_owned(),
+            bytes: Some(*bytes),
+        };
+        let entries = dirs.iter().map(dir).chain(files.iter().map(file)).collect();
+        let cut = (!hidden.is_empty()).then(|| hidden.join("\n"));
+        serde_json::to_value(yi_types::tool_value::ListValue { entries, cut })
+            .unwrap_or(Value::Null)
+    });
     output
 }
 
@@ -407,7 +422,11 @@ impl HashlineReadTool {
             if glob.matches(path) {
                 matches.push(path.to_path_buf());
             }
-            matches.len() < GLOB_FILES_CAP && !(context.cancelled)()
+            let room = match context.program {
+                true => matches.len() <= yi_types::tool_value::PROGRAM_FUSE_ITEMS,
+                false => matches.len() < GLOB_FILES_CAP,
+            };
+            room && !(context.cancelled)()
         });
         matches.sort();
         if matches.is_empty() {
@@ -417,6 +436,9 @@ impl HashlineReadTool {
                 .chain(notices)
                 .collect();
             return error_output(rows.join("\n"));
+        }
+        if context.program {
+            return super::values::program_glob(pattern, &matches, &root, &walled.notices());
         }
         let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
             format!(
@@ -590,9 +612,20 @@ impl HashlineReadTool {
             .unwrap_or_else(|_| path.to_path_buf())
             .to_string_lossy()
             .into_owned();
-        let tag = lock_state(&self.state)
-            .snapshots
-            .record(&canonical, &normalized, Some(&seen));
+        // A program's open window runs to the end: the page is the model's cap, not its.
+        let to_end =
+            found.is_none() && !input.contains_key("limit") && !input.contains_key("ranges");
+        let program = (context.program)
+            .then(|| super::values::program_lines(&all_lines[..line_count], to_end, &windows));
+        let mut state = lock_state(&self.state);
+        let tag = state.snapshots.record(&canonical, &normalized, Some(&seen));
+        if let Some((lines, _)) = &program {
+            let numbers: Vec<u64> = lines.iter().map(|line| line.n).collect();
+            state
+                .snapshots
+                .record_program_lines(&canonical, tag, &numbers);
+        }
+        drop(state);
 
         let empty = rows.is_empty();
         let mut rendered = vec![format_hashline_header(display_path, tag)];
@@ -684,6 +717,16 @@ impl HashlineReadTool {
             "windows": windows.len(),
             "skeleton": capped,
             "refs": refs_total,
+        });
+        output.value = program.map(|(lines, cut)| {
+            let value = yi_types::tool_value::ReadValue {
+                path: display_path.to_owned(),
+                tag: tag.to_string(),
+                lines,
+                total_lines: u64::try_from(line_count).unwrap_or(u64::MAX),
+                cut,
+            };
+            serde_json::to_value(value).unwrap_or(Value::Null)
         });
         output
     }
@@ -935,6 +978,7 @@ impl Tool for HashlineEditTool {
         let applying = yi_types::trace::span("edit.apply");
         let mut patcher = Patcher::new(snapshots, context.cwd.clone());
         patcher.walls = context.write_walls();
+        patcher.program = context.program;
         let results = patcher.apply(&patch, &mut host_clipboard);
         drop(applying);
         *clipboard = host_clipboard;
@@ -1015,6 +1059,9 @@ impl Tool for HashlineEditTool {
             layer.name()
         });
         let mut output = text_output(rendered.join("\n\n"));
+        output.value = context
+            .program
+            .then(|| super::values::edit_value(&results, &diff));
         if !diff.is_empty() {
             output.result.details = crate::diff::patch_details(&GitPatch::from_text(diff));
         }

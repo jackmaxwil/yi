@@ -235,7 +235,14 @@ impl yi_tools::Tool for AskUserTool {
         };
         if let Some(parent) = &self.parent {
             return match parent.ask(&text, &context.cancelled) {
-                Ok(answer) => yi_tools::text_output(format!("Your parent answered: {answer}")),
+                Ok(answer) => {
+                    let mut output =
+                        yi_tools::text_output(format!("Your parent answered: {answer}"));
+                    let value = yi_types::tool_value::AnswerValue { answer };
+                    output.value = (context.program)
+                        .then(|| serde_json::to_value(value).unwrap_or(Value::Null));
+                    output
+                }
                 Err(refusal) => yi_tools::error_output(refusal),
             };
         }

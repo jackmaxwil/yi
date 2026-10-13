@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 use yi_session::{EntryOrder, EntryQuery};
-use yi_tools::{ToolOutput, error_output, text_output};
+use yi_tools::{ToolContext, ToolOutput, error_output, text_output};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
 use yi_types::url::{Scheme, Url};
@@ -256,7 +256,11 @@ impl Resolver {
     }
 }
 
-pub(super) fn serve_grep(resolver: &Resolver, input: &Map<String, Value>) -> Option<ToolOutput> {
+pub(super) fn serve_grep(
+    resolver: &Resolver,
+    input: &Map<String, Value>,
+    _context: &ToolContext,
+) -> Option<ToolOutput> {
     let path = input.get("path").and_then(Value::as_str)?;
     let url = match path.parse::<Url>() {
         Ok(url) if *url.scheme() == Scheme::History => url,
