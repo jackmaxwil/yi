@@ -77,7 +77,7 @@ fn transmits(bytes: &[u8]) -> usize {
 /// could not show which sessions were doing what; one back at rest shows its identicon again.
 #[test]
 fn a_working_avatar_plays_its_loop_and_rests_as_its_identicon() {
-    use yi_console::avatar::{Avatars, Placement};
+    use yi_console::avatar::{Art, Avatars, Placement};
     use yi_tui::orb::OrbState;
     let place = |state: Option<OrbState>| Placement {
         col: 2,
@@ -88,6 +88,7 @@ fn a_working_avatar_plays_its_loop_and_rests_as_its_identicon() {
         seed: "s1".to_owned(),
         accent: (200, 211, 245),
         state,
+        art: Art::Identicon,
     };
     let mut avatars = Avatars::default();
     let mut out = Vec::new();

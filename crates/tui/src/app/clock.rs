@@ -31,4 +31,21 @@ impl App {
                 ))
             )
     }
+
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    pub fn has_run(&self) -> bool {
+        self.seen_turn
+    }
+
+    /// A prompt has been submitted whose turn has not started yet.
+    pub fn awaiting_turn(&self) -> bool {
+        self.submitted_turns > self.started_turns
+    }
+
+    pub fn turn_idle(&self) -> bool {
+        self.seen_turn && !self.running && !self.awaiting_turn()
+    }
 }

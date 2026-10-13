@@ -124,6 +124,113 @@ pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Art {
+    Identicon,
+    Gear {
+        width: usize,
+        height: usize,
+    },
+    Closer {
+        width: usize,
+        height: usize,
+    },
+    Cap {
+        width: usize,
+        height: usize,
+        left: bool,
+    },
+}
+
+fn gear_distance(x: f64, y: f64) -> f64 {
+    let r = x.hypot(y);
+    let step = std::f64::consts::FRAC_PI_4;
+    let theta = y.atan2(x);
+    let off = theta - (theta / step).round() * step;
+    let (round, half) = (0.05, (0.16, 0.15));
+    let qx = (r * off.cos() - 0.82).abs() - half.0 + round;
+    let qy = (r * off.sin()).abs() - half.1 + round;
+    let tooth = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round;
+    (r - 0.7).min(tooth)
+}
+
+/// Coverage comes from the distance to the outline, so every edge is one pixel of blend.
+pub fn gear_rgba(fg: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
+    let radius = (width as f64).min(height as f64 * 0.5) / 2.0;
+    let stroke = (radius * 0.09).max(1.5) / 2.0;
+    let (cx, cy) = (width as f64 / 2.0, height as f64 / 2.0);
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+    for py in 0..height {
+        for px in 0..width {
+            let x = (px as f64 + 0.5 - cx) / radius;
+            let y = (py as f64 + 0.5 - cy) / radius;
+            let edge = gear_distance(x, y).abs().min((x.hypot(y) - 0.28).abs());
+            let alpha = (stroke - edge * radius + 0.5).clamp(0.0, 1.0);
+            out.extend_from_slice(&[fg.0, fg.1, fg.2, (alpha * 255.0).round() as u8]);
+        }
+    }
+    out
+}
+
+fn rounded_box((x, y): (f64, f64), (half_w, half_h): (f64, f64), round: f64) -> f64 {
+    let (qx, qy) = (x.abs() - half_w + round, y.abs() - half_h + round);
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round
+}
+
+/// One rounded end of a pill whose body is cell background, so the far side runs off the image.
+pub fn cap_rgba(fill: (u8, u8, u8), width: usize, height: usize, left: bool) -> Vec<u8> {
+    let (w, h) = (width as f64, height as f64);
+    let centre = if left { 1.5 * w } else { -0.5 * w };
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+    for py in 0..height {
+        for px in 0..width {
+            let at = (px as f64 + 0.5 - centre, py as f64 + 0.5 - h / 2.0);
+            let edge = rounded_box(at, (1.5 * w, h / 2.0), (h * 0.32).min(w));
+            let alpha = ((0.5 - edge).clamp(0.0, 1.0) * 255.0).round() as u8;
+            out.extend_from_slice(&[fill.0, fill.1, fill.2, alpha]);
+        }
+    }
+    out
+}
+
+fn segment((x, y): (f64, f64), a: f64) -> f64 {
+    let t = ((x + y) / 2.0).clamp(-a, a);
+    (x - t).hypot(y - t)
+}
+
+/// The X is knocked out of the chip, so the terminal's own ground shows through the strokes.
+pub fn closer_rgba(fill: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
+    let (w, h) = (width as f64, height as f64);
+    let (round, arm, stroke) = (h * 0.22, h * 0.2, (h * 0.05).max(0.9));
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+    for py in 0..height {
+        for px in 0..width {
+            let (x, y) = (px as f64 + 0.5 - w / 2.0, py as f64 + 0.5 - h / 2.0);
+            let chip = (0.5 - rounded_box((x, y), (w / 2.0, h / 2.0), round)).clamp(0.0, 1.0);
+            let cross = segment((x, y), arm).min(segment((x, -y), arm));
+            let cut = (stroke - cross + 0.5).clamp(0.0, 1.0);
+            let alpha = (chip * (1.0 - cut) * 255.0).round() as u8;
+            out.extend_from_slice(&[fill.0, fill.1, fill.2, alpha]);
+        }
+    }
+    out
+}
+
+fn pixels(place: &Placement) -> (Vec<u8>, (usize, usize)) {
+    match place.art {
+        Art::Identicon => (rgba(&grid(&place.seed), place.accent), (PX, PX)),
+        Art::Gear { width, height } => (gear_rgba(place.accent, width, height), (width, height)),
+        Art::Closer { width, height } => {
+            (closer_rgba(place.accent, width, height), (width, height))
+        }
+        Art::Cap {
+            width,
+            height,
+            left,
+        } => (cap_rgba(place.accent, width, height, left), (width, height)),
+    }
+}
+
 /// Where one session's avatar goes this frame, and the colour its name earned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
@@ -135,6 +242,18 @@ pub struct Placement {
     pub seed: String,
     pub accent: (u8, u8, u8),
     pub state: Option<yi_tui::orb::OrbState>,
+    pub art: Art,
+}
+
+/// Incident: kitty images draw above text, so an avatar under an open popup showed through it;
+/// a placement a popup covers is left out until the popup closes.
+pub fn uncovered(rows: Vec<Placement>, covers: &[ratatui::layout::Rect]) -> Vec<Placement> {
+    rows.into_iter()
+        .filter(|place| {
+            let at = ratatui::layout::Rect::new(place.col, place.row, place.cols, place.rows);
+            !covers.iter().any(|cover| cover.intersects(at))
+        })
+        .collect()
 }
 
 struct Motion {
@@ -144,6 +263,20 @@ struct Motion {
 }
 
 const MOTION_FRAME: Duration = Duration::from_millis(66);
+
+/// Incident: kitty deletes an id's placements when new data arrives for it and Ghostty keeps
+/// them, so an animating avatar vanished in kitty alone; new pixels are placed again (#1335).
+fn retransmit(
+    out: &mut impl Write,
+    image: ImageId,
+    rgba: &[u8],
+    at: Option<&(u16, u16, u16, u16)>,
+) {
+    let _ = kitty::transmit(out, image.raw(), rgba, (PX, PX));
+    if let Some(&(col, row, cols, rows)) = at {
+        let _ = kitty::place(out, image.raw(), col, row, cols, rows);
+    }
+}
 
 /// One placement per rail row on screen; moved rows re-place, gone rows delete.
 #[derive(Default)]
@@ -184,12 +317,8 @@ impl Avatars {
                     let Some(image) = self.pool.allocate() else {
                         continue;
                     };
-                    let _ = kitty::transmit(
-                        out,
-                        image.raw(),
-                        &rgba(&grid(&place.seed), place.accent),
-                        (PX, PX),
-                    );
+                    let (data, size) = pixels(place);
+                    let _ = kitty::transmit(out, image.raw(), &data, size);
                     self.ids.insert(place.key.clone(), image);
                     image
                 }
@@ -207,7 +336,7 @@ impl Avatars {
                 (None, Some(_)) => {
                     self.motion.remove(&place.key);
                     let identicon = rgba(&grid(&place.seed), place.accent);
-                    let _ = kitty::transmit(out, image.raw(), &identicon, (PX, PX));
+                    retransmit(out, image, &identicon, self.placed.get(&place.key));
                 }
                 (None, None) => {}
             }
@@ -232,7 +361,7 @@ impl Avatars {
             motion.last = Instant::now();
             let frame = motion.orb.frame(elapsed, Some(motion.state));
             let pixels = kitty::paint_rgba(&frame, 64.0, PX, PX);
-            let _ = kitty::transmit(out, image.raw(), &pixels, (PX, PX));
+            retransmit(out, *image, &pixels, self.placed.get(key));
         }
     }
 
@@ -266,6 +395,22 @@ impl Avatars {
 mod tests {
     use super::*;
 
+    fn alpha(state: Option<yi_tui::orb::OrbState>) -> Placement {
+        let key = "s-alpha".to_owned();
+        let (col, row, cols, rows) = (2, 0, 4, 2);
+        Placement {
+            col,
+            row,
+            cols,
+            rows,
+            seed: key.clone(),
+            key,
+            accent: (1, 2, 3),
+            state,
+            art: Art::Identicon,
+        }
+    }
+
     #[test]
     fn grids_are_deterministic_symmetric_and_distinct() {
         assert_eq!(grid("s-alpha"), grid("s-alpha"));
@@ -283,17 +428,82 @@ mod tests {
     }
 
     #[test]
-    fn a_forgotten_ledger_deletes_what_it_placed() {
-        let place = Placement {
-            col: 2,
-            row: 0,
-            cols: 4,
-            rows: 2,
-            key: "s-alpha".to_owned(),
-            seed: "s-alpha".to_owned(),
-            accent: (1, 2, 3),
-            state: None,
+    fn the_gear_is_a_thin_outline_with_a_hub_ring_and_tooth_gaps() {
+        let (w, h) = (64, 96);
+        let gear = gear_rgba((1, 2, 3), w, h);
+        assert_eq!(gear.len(), w * h * 4);
+        let alpha = |x: f64, y: f64| {
+            let (x, y) = (32.0 + x * 24.0, 48.0 + y * 24.0);
+            gear.get((y as usize * w + x as usize) * 4 + 3).copied()
         };
+        assert_eq!(alpha(0.0, 0.0), Some(0), "the hub is open");
+        assert_eq!(alpha(0.28, 0.0), Some(255), "the hub ring is drawn");
+        assert_eq!(alpha(0.5, 0.0), Some(0), "the body is outlined, not filled");
+        assert_eq!(alpha(0.97, 0.0), Some(255), "a tooth's tip is drawn");
+        assert_eq!(
+            alpha(0.79, 0.33),
+            Some(0),
+            "the gap between two teeth is open"
+        );
+        assert_eq!(
+            alpha(0.0, -1.6),
+            Some(0),
+            "the rect above the gear is clear"
+        );
+    }
+
+    #[test]
+    fn a_left_cap_rounds_its_outer_corners_and_meets_the_body_flush() {
+        let (w, h) = (16, 32);
+        let cap = cap_rgba((1, 2, 3), w, h, true);
+        let alpha = |x: usize, y: usize| cap.get((y * w + x) * 4 + 3).copied();
+        assert_eq!(alpha(0, 0), Some(0), "the outer top corner is cut round");
+        assert_eq!(
+            alpha(0, h - 1),
+            Some(0),
+            "the outer bottom corner is cut round"
+        );
+        assert_eq!(
+            alpha(w - 1, 0),
+            Some(255),
+            "the inner edge is square to meet the body"
+        );
+        assert_eq!(
+            alpha(1, h / 2),
+            Some(255),
+            "the middle is filled to the outer edge"
+        );
+        let right = cap_rgba((1, 2, 3), w, h, false);
+        assert_eq!(
+            right.get(3).copied(),
+            Some(255),
+            "a right cap's inner edge is the left one"
+        );
+    }
+
+    /// Kitty images draw above text: an avatar under the open palette showed through it.
+    #[test]
+    fn a_popup_hides_the_avatars_it_covers_and_keeps_the_rest() {
+        let at = |row| Placement {
+            col: 2,
+            row,
+            cols: 2,
+            rows: 1,
+            key: format!("s-{row}"),
+            seed: String::new(),
+            accent: (0, 0, 0),
+            state: None,
+            art: Art::Identicon,
+        };
+        let popup = ratatui::layout::Rect::new(0, 3, 30, 4);
+        let kept = uncovered(vec![at(1), at(4), at(9)], &[popup]);
+        let rows: Vec<u16> = kept.iter().map(|place| place.row).collect();
+        assert_eq!(rows, vec![1, 9]);
+    }
+
+    #[test]
+    fn a_forgotten_ledger_deletes_what_it_placed() {
+        let place = alpha(None);
         let mut avatars = Avatars::default();
         let mut first = Vec::new();
         avatars.sync(&mut first, std::slice::from_ref(&place));
@@ -319,16 +529,7 @@ mod tests {
 
     #[test]
     fn a_row_that_scrolls_back_in_transmits_again() {
-        let place = Placement {
-            col: 2,
-            row: 0,
-            cols: 4,
-            rows: 2,
-            key: "s-alpha".to_owned(),
-            seed: "s-alpha".to_owned(),
-            accent: (1, 2, 3),
-            state: None,
-        };
+        let place = alpha(None);
         let mut avatars = Avatars::default();
         avatars.sync(&mut Vec::new(), std::slice::from_ref(&place));
         let mut gone = Vec::new();
@@ -345,6 +546,35 @@ mod tests {
             "transmitted again, not placed over freed data"
         );
         assert!(back.contains("a=p,i="), "placed");
+    }
+
+    #[test]
+    fn every_retransmit_of_a_placed_avatar_is_placed_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut place = alpha(Some(yi_tui::orb::OrbState::Thinking));
+        let mut avatars = Avatars::default();
+        avatars.sync(&mut Vec::new(), std::slice::from_ref(&place));
+        let motion = avatars.motion.get_mut("s-alpha").ok_or("no motion")?;
+        motion.last = Instant::now().checked_sub(MOTION_FRAME).ok_or("clock")?;
+        let mut frame = Vec::new();
+        avatars.animate(&mut frame);
+        place.state = None;
+        let mut settled = Vec::new();
+        avatars.sync(&mut settled, std::slice::from_ref(&place));
+        for (name, bytes) in [("animation frame", frame), ("settle to identicon", settled)] {
+            let written = String::from_utf8_lossy(&bytes);
+            let transmit = written
+                .rfind(&format!("a=t,i={FIRST_ID},"))
+                .ok_or(format!("{name}: no transmit in {written:?}"))?;
+            let placed = written.get(transmit..).is_some_and(|tail| {
+                tail.contains(&format!("\x1b[1;3H\x1b_Ga=p,i={FIRST_ID},p=1,"))
+            });
+            assert!(
+                placed,
+                "{name}: transmit not placed again at row 1 col 3: {written:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
