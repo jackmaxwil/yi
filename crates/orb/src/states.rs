@@ -237,6 +237,8 @@ fn on_band(u: V, v: V, a: f64, off: f64) -> V {
 
 /// The `Yi` mark as five segments `((x1, y1), (x2, y2))`: the arms and stem of the Y, the stem
 /// of the i and its dot. The title field measures its distance to these same segments.
+pub(crate) const MARK_SPAN: f64 = 0.40 / 0.39;
+
 pub const MARK_STROKES: [((f64, f64), (f64, f64)); 5] = [
     ((-0.62, 0.62), (-0.28, 0.06)),
     ((0.06, 0.62), (-0.28, 0.06)),
@@ -246,7 +248,7 @@ pub const MARK_STROKES: [((f64, f64), (f64, f64)); 5] = [
 ];
 
 fn mark() -> Vec<Point> {
-    let span = 0.40 / 0.39;
+    let span = MARK_SPAN;
     let lengths = MARK_STROKES.map(|((x1, y1), (x2, y2))| (x2 - x1).hypot(y2 - y1).max(0.02));
     let total: f64 = lengths.iter().sum();
     let mut out = Vec::with_capacity(POINTS);

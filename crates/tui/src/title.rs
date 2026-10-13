@@ -1,5 +1,5 @@
-//! The title field: a scalar over a pane's free rows, sampled into glyph cells; a pure function
-//! of their size, a scene and the seconds since the console started, so a frozen clock replays it.
+//! The title animation: a scalar over a whole pane, sampled into glyph cells, a pure function of
+//! size, scene and seconds since the console started. The name lands on the orb's own mark.
 
 use std::f64::consts::TAU;
 use std::time::Duration;
@@ -63,12 +63,16 @@ const SCALE: f64 = 0.95;
 const RING_FREQ: f64 = 4.0;
 /// Seconds a ring takes to reach the place of the next: the echo's exact loop.
 pub const RING_SECS: f64 = 1.8;
-/// Seconds the fold takes to turn once and come back: the Kali loop once it has opened.
-pub const KALI_SECS: f64 = 16.0;
+const KALI_SECS: f64 = 16.0;
 /// The fold opens from a deep zoom over this long, then the name rises over the next second.
 const OPEN_SECS: f64 = 3.2;
 const NAME_FROM: f64 = 2.4;
 const NAME_TO: f64 = 3.4;
+/// The name holds in full until here, then lands on the small mark over `LAND_SECS`.
+const HOLD_SECS: f64 = 4.2;
+const LAND_SECS: f64 = 1.2;
+/// After this the animation is over and draws nothing.
+pub const OVER: Duration = Duration::from_millis(5400);
 const KALI_FOLDS: u8 = 11;
 const KALI_SAMPLES: u8 = 3;
 /// The fold's accumulated change of length at the 5th and 97th percentile over a loop.
@@ -103,14 +107,51 @@ fn to_segment(u: f64, v: f64, a: [f64; 2], b: [f64; 2]) -> f64 {
     (u - a[0] - t * dx).hypot(v - a[1] - t * dy)
 }
 
-/// Signed distance to the `Yi` strokes, negative inside one, with the mark centred on the
-/// origin; `u` and `v` run along the width and up the height in units of half the height.
-pub fn distance(u: f64, v: f64) -> f64 {
-    let near = strokes()
+type Strokes = [([f64; 2], [f64; 2]); 5];
+
+fn distance_to(strokes: &Strokes, thick: f64, u: f64, v: f64) -> f64 {
+    let near = strokes
         .iter()
         .map(|&(a, b)| to_segment(u, v, a, b))
         .fold(f64::INFINITY, f64::min);
-    near - THICK
+    near - thick
+}
+
+/// Signed distance to the `Yi` strokes, negative inside one, with the mark centred on the
+/// origin; `u` and `v` run along the width and up the height in units of half the height.
+pub fn distance(u: f64, v: f64) -> f64 {
+    distance_to(&strokes(), THICK, u, v)
+}
+
+/// The strokes `leave` of the way from the centre onto the small mark in `landing`, and their
+/// half-width: a column's half at the end, so the shrunk name is still a line of glyphs.
+fn landed(area: Rect, landing: Option<Rect>, leave: f64) -> (Strokes, f64) {
+    let centred = strokes();
+    let Some(land) = landing else {
+        return (centred, THICK);
+    };
+    let h = f64::from(area.height);
+    let at = |(x, y): (f64, f64)| {
+        let col = f64::from(land.x) + x * f64::from(land.width);
+        let row = f64::from(land.y) + y * f64::from(land.height);
+        [
+            (col - f64::from(area.x) - f64::from(area.width) / 2.0) / h,
+            (h - 2.0 * (row - f64::from(area.y))) / h,
+        ]
+    };
+    let mark = |x: f64, y: f64| at(yi_orb::mark_at(x, y));
+    let mut out = centred;
+    for (stroke, &((x1, y1), (x2, y2))) in out.iter_mut().zip(&yi_orb::MARK_STROKES) {
+        let (a, b) = (mark(x1, y1), mark(x2, y2));
+        let lerp = |from: [f64; 2], to: [f64; 2]| {
+            [
+                from[0] + (to[0] - from[0]) * leave,
+                from[1] + (to[1] - from[1]) * leave,
+            ]
+        };
+        *stroke = (lerp(stroke.0, a), lerp(stroke.1, b));
+    }
+    (out, THICK + (0.5 / h - THICK) * leave)
 }
 
 fn echo(d: f64, t: f64) -> f64 {
@@ -135,7 +176,7 @@ fn fold(mut x: f64, mut y: f64, cx: f64, cy: f64) -> f64 {
 /// The Kali fold at `(u, v)`, each cell averaged over `du` by `dv` of samples: the plane turns
 /// once a loop while `c` circles and the scale breathes; the first seconds zoom out of the fold.
 fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
-    let a = TAU * (t % KALI_SECS) / KALI_SECS;
+    let a = TAU * t / KALI_SECS;
     let (sin, cos) = a.sin_cos();
     let (cx, cy) = (0.80 + 0.03 * sin, 0.55 + 0.03 * cos);
     let scale = 0.5 * (1.0 + 0.18 * sin) * (0.3 + 0.7 * smooth(t / OPEN_SECS));
@@ -186,8 +227,23 @@ fn style(step: usize, theme: &Theme) -> Style {
     }
 }
 
-/// Draw `scene` over `area`; a cell whose value rounds to empty keeps what it held.
+/// Draw `scene` over all of `area`, nothing once it is over.
 pub fn paint(buffer: &mut Buffer, area: Rect, scene: Scene, elapsed: Duration, theme: &Theme) {
+    paint_with(buffer, area, (scene, elapsed), (None, None), theme);
+}
+
+/// As [`paint`], with the name landing on `landing`, the small mark's cells, and `keep` left
+/// clear. A cell that already holds something is never drawn over.
+pub fn paint_with(
+    buffer: &mut Buffer,
+    area: Rect,
+    (scene, elapsed): (Scene, Duration),
+    (landing, keep): (Option<Rect>, Option<Rect>),
+    theme: &Theme,
+) {
+    if elapsed >= OVER {
+        return;
+    }
     let t = elapsed.as_secs_f64();
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
@@ -195,36 +251,47 @@ pub fn paint(buffer: &mut Buffer, area: Rect, scene: Scene, elapsed: Duration, t
         Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
         Scene::Echo => 1.0,
     };
+    let leave = smooth((t - HOLD_SECS) / LAND_SECS);
+    let fade = 1.0 - smooth(leave * 1.25);
+    let name_fade = if landing.is_some() { 1.0 } else { fade };
+    let (strokes, thick) = landed(area, landing, leave);
     for y in 0..area.height {
         for x in 0..area.width {
-            let (u, v) = at(x, y, area.width, area.height);
-            let d = distance(u, v);
-            let field = match scene {
-                Scene::Kali => kali(u, v, cell, t),
-                Scene::Echo => echo(d, t),
+            let (col, row) = (area.x.saturating_add(x), area.y.saturating_add(y));
+            if keep.is_some_and(|keep| keep.contains((col, row).into())) {
+                continue;
+            }
+            let Some(target) = buffer.cell_mut((col, row)) else {
+                continue;
             };
-            let value = name(field, d, rise).clamp(0.0, 1.0);
+            if target.symbol() != " " {
+                continue;
+            }
+            let (u, v) = at(x, y, area.width, area.height);
+            let d = distance_to(&strokes, thick, u, v);
+            let field = match scene {
+                _ if fade <= 0.0 => 0.0,
+                Scene::Kali => kali(u, v, cell, t) * fade,
+                Scene::Echo => echo(d, t) * fade,
+            };
+            let value = (name(field, d, rise) * name_fade).clamp(0.0, 1.0);
             let step = usize::from((value * f64::from(TOP)).round() as u8);
-            let at = (area.x.saturating_add(x), area.y.saturating_add(y));
-            if let (Some(cell), Some(glyph)) = (buffer.cell_mut(at), RAMP.get(step))
-                && step > 0
-            {
-                cell.set_char(*glyph).set_style(style(step, theme));
+            if let (Some(glyph), true) = (RAMP.get(step), step > 0) {
+                target.set_char(*glyph).set_style(style(step, theme));
             }
         }
     }
 }
 
-pub(crate) fn paint_below(app: &App, buffer: &mut Buffer, area: Rect, used: u16) {
-    if let (true, Some((scene, elapsed))) = (app.title_visible(), app.title) {
-        let top = area.top().saturating_add(used).min(area.bottom());
-        let free = Rect::new(
-            area.left(),
-            top,
-            area.width,
-            area.bottom().saturating_sub(top),
-        );
-        paint(buffer, free, scene, elapsed, &app.theme);
+pub(crate) fn paint_over(
+    app: &App,
+    buffer: &mut Buffer,
+    area: Rect,
+    landing: Option<Rect>,
+    keep: Option<Rect>,
+) {
+    if let (true, Some(title)) = (app.title_visible(), app.title) {
+        paint_with(buffer, area, title, (landing, keep), &app.theme);
     }
 }
 
@@ -234,9 +301,11 @@ impl App {
         self.title = title;
     }
 
-    /// An empty, idle session is the title screen; the first prompt ends it.
+    /// Plays at startup in an empty, idle session and ends on its own or at the first prompt.
     pub fn title_visible(&self) -> bool {
-        self.title.is_some() && self.history.is_empty() && !self.running
+        self.title.is_some_and(|(_, elapsed)| elapsed < OVER)
+            && self.history.is_empty()
+            && !self.running
     }
 
     pub fn title_wake(&self) -> Option<Duration> {

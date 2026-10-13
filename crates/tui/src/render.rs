@@ -383,6 +383,7 @@ pub fn layout_chat(
 pub struct Placed {
     pub orb: Option<(u16, u16)>,
     pub bottom: Option<(u16, u16)>,
+    pub composer: Option<Rect>,
 }
 
 /// The picker's first model row is one below its query line; the slot is its second cell.
@@ -395,6 +396,7 @@ fn logo_rows(bottom_at: Option<(u16, u16)>) -> Option<(u16, u16)> {
 pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rect) -> Placed {
     let mut orb_at = None;
     let mut bottom_at = None;
+    let mut composer_at = None;
     let mut y = area.top();
     let put = |buffer: &mut Buffer, lines: &[Line<'static>], y: &mut u16| {
         let height = u16::try_from(lines.len()).unwrap_or(0);
@@ -432,6 +434,7 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
                     height,
                 );
                 app.composer.render(rect, buffer);
+                composer_at = Some(rect);
                 y = y.saturating_add(height);
             }
         }
@@ -440,6 +443,7 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
     Placed {
         orb: orb_at,
         bottom: bottom_at,
+        composer: composer_at,
     }
 }
 
@@ -568,8 +572,14 @@ pub fn paint_pane(
         area.height.saturating_sub(rows),
     );
     let placed = paint_chat(app, &layout, buffer, chat_area);
-    crate::title::paint_below(app, buffer, chat_area, floor);
-    app.orb_placement = placed.orb;
+    let landing = placed
+        .orb
+        .map(|(col, row)| Rect::new(col, row, ORB_COLS, ORB_ROWS));
+    let chat_band = placed
+        .composer
+        .map(|c| Rect::new(area.left(), c.y, area.width, c.height.saturating_add(1)));
+    crate::title::paint_over(app, buffer, area, landing, chat_band);
+    app.orb_placement = placed.orb.filter(|_| !app.title_visible());
     app.logo_rows = logo_rows(placed.bottom);
     thumb
 }
