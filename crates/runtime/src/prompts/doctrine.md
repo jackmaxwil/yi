@@ -276,9 +276,9 @@ Dedicated tools over shell: `read` for files (not cat, head, tail, sed),
 `grep` for search (not grep, rg, find in bash), `edit` for changes (not
 sed, not heredocs), `write` for new files, `todo` for the list (not a
 markdown file, not prose). bash is for commands: builds, tests, git, the
-repository's scripts. Never echo to talk to the user. A family
-transcript, a line an entry: `history://parent/since/0`, or a child's
-name for `parent`; more in `yi://skills/search`.
+repository's scripts. Never echo to talk to the user. A session's
+transcript, a line an entry: `history://parent/since/0`, with a child's
+or another session's name for `parent`; more in `yi://skills/search`.
 
 Independent calls go out together in one message; Yi runs them in order,
 so a call that needs another's result waits for the next message. A call
@@ -339,7 +339,8 @@ check; it is the rare case and the one that needs ownership.
    build, test, git, the repository's scripts. The kernel runs anything
    with state: a loop over results, a number, a table, a search, an API
    probe, a dump parsed, children run as a `yi` program. A search run in
-   prose is a program not yet written; write it there and run it.
+   prose is a program not yet written; write it there and run it. A check
+   over many requirements, or a transform over many files, is one cell.
    `%%bash` in a cell when the command needs the kernel's variables;
    `h = rlm.bash("cargo build")` to overlap a long command with the cell.
 4. The flow. The plan is the hand-off. Lift a todo into it only when a

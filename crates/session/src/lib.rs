@@ -18,6 +18,7 @@ pub use jsonl::{
     JsonlRepo, create_flat_session, load_session, lock_file, replace_file, session_directory_name,
     try_lock_file,
 };
+pub use listing::peek as list_dir;
 pub use query::{
     BranchBounds, CreateOptions, EntryOrder, EntryQuery, ForkPosition, ForkScope, HistoryHit,
     LanePointer, LogOptions, RecordQuery, SessionMetadata, SessionStats,

@@ -62,13 +62,36 @@ fn belongs(dir: &Path, repo: &Path) -> Belongs {
     let Some(at) = header_cwd(dir) else {
         return Belongs::Other;
     };
-    match crate::lane::canonical_repo(&at) {
+    // Incident: a header's `/var/…` never matched its own `/private/var/…` repository.
+    let at = at.canonicalize().unwrap_or(at);
+    match repo_at(&at) {
         Some(other) if other == repo => Belongs::Mine,
         Some(_) => Belongs::Other,
         None if at.starts_with(repo) => Belongs::Mine,
         None if at.exists() => Belongs::Other,
         None => Belongs::Unknown,
     }
+}
+
+/// [`crate::lane::canonical_repo`] with its misses kept too: a gone checkout spawned a git
+/// per session directory on every name lookup.
+fn repo_at(at: &Path) -> Option<PathBuf> {
+    static MISSED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let missed = |at: &Path| {
+        MISSED
+            .lock()
+            .is_ok_and(|missed| missed.iter().any(|known| known == at))
+    };
+    if missed(at) {
+        return None;
+    }
+    let repo = crate::lane::canonical_repo(at);
+    if repo.is_none()
+        && let Ok(mut missed) = MISSED.lock()
+    {
+        missed.push(at.to_path_buf());
+    }
+    repo
 }
 
 fn repo_of(cwd: &Path) -> PathBuf {
@@ -89,12 +112,108 @@ pub fn repo_sessions(sessions_dir: &Path, cwd: &Path) -> RepoSessions {
     Corpus::default().sessions(sessions_dir, cwd)
 }
 
+/// Whether `file` is the session `id`: its name is `<created>_<id>.jsonl` exactly, so no other
+/// spelling of the path can stand for the id a wall names.
+fn carries(file: &Path, id: &str) -> bool {
+    let stem = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".jsonl"));
+    stem.and_then(|stem| stem.split_once('_'))
+        .is_some_and(|(_, rest)| rest == id)
+}
+
+/// The session file carrying `id`: this repository's first, then any other repository's.
 pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf> {
-    let suffix = format!("_{id}.jsonl");
-    repo_sessions(sessions_dir, cwd)
-        .files
-        .into_iter()
-        .find(|file| file.to_string_lossy().ends_with(&suffix))
+    if id.is_empty() || id.contains(['/', '\\']) {
+        return None;
+    }
+    let mine = (repo_sessions(sessions_dir, cwd).files.into_iter()).find(|file| carries(file, id));
+    let anywhere = || {
+        (session_dirs(sessions_dir).iter())
+            .flat_map(|dir| jsonl_files(dir))
+            .find(|file| carries(file, id))
+    };
+    mine.or_else(anywhere)
+}
+
+/// A name as an address spells it: case aside, its spaces as dashes, since a URL holds none.
+pub(crate) fn slug(name: &str) -> String {
+    (name.trim().chars())
+        .map(|character| {
+            if character.is_whitespace() {
+                '-'
+            } else {
+                character.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
+fn same_name(name: &str, address: &str) -> bool {
+    slug(name) == address.to_ascii_lowercase()
+}
+
+/// One session a name could mean: the address that reads it and the repository it ran in.
+pub struct Candidate {
+    pub id: String,
+    pub cwd: String,
+}
+
+/// What a session name resolves to: the one session it names, or every candidate it fits.
+pub enum Named {
+    One(PathBuf),
+    Many(Vec<Candidate>),
+    Nothing,
+}
+
+/// The sessions named `name`, this repository's before any other's: a name taken here is never
+/// shadowed by another repository's session of the same name.
+pub fn find_named(sessions_dir: &Path, cwd: &Path, name: &str) -> Named {
+    let repo = repo_of(cwd);
+    let (mut mine, mut others) = (Vec::new(), Vec::new());
+    for dir in session_dirs(sessions_dir) {
+        let listed = yi_session::list_dir(&dir).unwrap_or_default();
+        let named = (listed.into_iter()).filter(|session| {
+            session
+                .name
+                .as_deref()
+                .is_some_and(|it| same_name(it, name))
+        });
+        let files = jsonl_files(&dir);
+        let found: Vec<(PathBuf, String)> = named
+            .filter_map(|session| {
+                Some((
+                    files
+                        .iter()
+                        .find(|file| carries(file, &session.id))?
+                        .clone(),
+                    session.id,
+                ))
+            })
+            .collect();
+        match belongs(&dir, &repo) {
+            Belongs::Mine => mine.extend(found),
+            Belongs::Other | Belongs::Unknown => others.extend(found),
+        }
+    }
+    let found = if mine.is_empty() { others } else { mine };
+    match found.as_slice() {
+        [] => Named::Nothing,
+        [(file, _)] => Named::One(file.clone()),
+        many => Named::Many(
+            (many.iter())
+                .map(|(file, id)| Candidate {
+                    id: id.clone(),
+                    cwd: file
+                        .parent()
+                        .and_then(header_cwd)
+                        .map(|cwd| cwd.display().to_string())
+                        .unwrap_or_default(),
+                })
+                .collect(),
+        ),
+    }
 }
 
 fn text_of(message: &AgentMessage) -> Option<(&'static str, String)> {
@@ -413,6 +532,10 @@ mod tests {
         let file = find_session(&sessions, &repo, "s-lane").unwrap();
         let loaded = yi_session::load_session(&file).unwrap();
         assert!(loaded.entry(&entry).is_some());
-        assert!(find_session(&sessions, &repo, "s-other").is_none());
+        let other = find_session(&sessions, &repo, "s-other");
+        assert!(
+            other.is_some(),
+            "a read reaches another repository's session by id"
+        );
     }
 }

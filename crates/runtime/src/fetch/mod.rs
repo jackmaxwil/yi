@@ -3,6 +3,7 @@ mod grep;
 mod log;
 mod read;
 mod schemes;
+mod transcripts;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,6 +24,7 @@ pub use log::{
     FetchLog, PinError, Relevance, TerminalRecordError, as_served, relevance_of, rows_of,
 };
 pub use read::route_urls;
+pub use transcripts::SessionTranscripts;
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =
@@ -72,7 +74,22 @@ impl Transcript {
 }
 
 pub trait Transcripts: Send + Sync {
+    /// By id: this session's own children and kept trails, then any session on disk.
     fn open(&self, agent: &str) -> Option<Transcript>;
+
+    /// By a name or `root/child`, once no id along the address opened one: `Ok` with the bytes of
+    /// `path` that named the session, `Err` with the sessions a shared name could mean.
+    fn open_named(
+        &self,
+        _path: &str,
+    ) -> Result<(Transcript, usize), Vec<crate::history::Candidate>> {
+        Err(Vec::new())
+    }
+
+    /// Why this desk cannot open what another role's could, and whether a wall is the reason.
+    fn unreachable(&self) -> Option<(&'static str, bool)> {
+        None
+    }
 
     /// This repository's root session files on disk, newest first; `None` for a role with no
     /// session root, which is refused rather than served an empty search.
@@ -217,61 +234,6 @@ pub(crate) const SELF: &str = "self";
 /// Invariant: a child is told its task, never the parent id its own header carries.
 const PARENT: &str = "parent";
 
-pub struct SessionTranscripts {
-    host: Arc<crate::subagent::SubagentHost>,
-    sessions_dir: Option<PathBuf>,
-    cwd: String,
-}
-
-impl SessionTranscripts {
-    pub fn new(
-        host: Arc<crate::subagent::SubagentHost>,
-        sessions_dir: Option<PathBuf>,
-        cwd: &Path,
-    ) -> Self {
-        Self {
-            host,
-            sessions_dir,
-            cwd: cwd.to_string_lossy().into_owned(),
-        }
-    }
-}
-
-impl Transcripts for SessionTranscripts {
-    fn open(&self, agent: &str) -> Option<Transcript> {
-        if let Some(live) = self.host.transcript(agent) {
-            return Some(Transcript::Live(live));
-        }
-        if let Some(kept) = self.host.kept_transcript(agent) {
-            return Some(Transcript::Kept(kept));
-        }
-        if let Some(store) = self
-            .host
-            .trail(agent)
-            .and_then(|file| yi_session::load_session(&file).ok())
-        {
-            return Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))));
-        }
-        let dir = self.sessions_dir.clone()?;
-        let mut repo = yi_session::JsonlRepo::new(dir.clone(), self.cwd.clone());
-        if let Ok(session) = yi_session::SessionRepo::open(&mut repo, agent) {
-            return Some(Transcript::Kept(session));
-        }
-        let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
-        let store = yi_session::load_session(&file).ok()?;
-        Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
-    }
-
-    fn corpus(&self) -> Option<crate::history::RepoSessions> {
-        let mut listed =
-            crate::history::repo_sessions(self.sessions_dir.as_ref()?, Path::new(&self.cwd));
-        listed
-            .files
-            .sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-        Some(listed)
-    }
-}
-
 /// Invariant: a spawned child's resolver has no session root, so its parent, live from the host
 /// that spawned it, is the one transcript past its own it can open; a sibling's is not its to read.
 pub struct ParentTranscript(pub std::sync::Weak<crate::subagent::SubagentHost>);
@@ -281,6 +243,11 @@ impl Transcripts for ParentTranscript {
         let store = (self.0.upgrade()?.options.store)()?;
         let id = yi_session::lock_session(&store).metadata().id.clone();
         (id == agent).then_some(Transcript::Live(store))
+    }
+
+    fn unreachable(&self) -> Option<(&'static str, bool)> {
+        let why = "a reader opens its own transcript and its parent's only; ask for another session's lines in partition";
+        Some((why, false))
     }
 }
 

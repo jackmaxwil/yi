@@ -319,6 +319,7 @@ fn build_session(
     asker: Option<yi_runtime::Asker>,
     session_id: Option<&str>,
     prompts_close: bool,
+    unattended: bool,
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     // Invariant: the first statement here, so no lever is read on both sides of the
     // override and a refused file stops the run before the session, and any model call.
@@ -451,11 +452,12 @@ fn build_session(
     }
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");
-    session.install_extensions(shells::session_extensions(
-        args,
-        &work,
-        session.model().context_window,
-    ));
+    let mut host = shells::session_extensions(args, &work, session.model().context_window);
+    if unattended {
+        let slot = yi_runtime::ext::Slot::new(yi_runtime::ext::Rank::Mode, "unattended");
+        host.attach(slot, yi_runtime::unattended_fragment().to_owned());
+    }
+    session.install_extensions(host);
     drop(extensions);
     let provider = std::sync::Arc::clone(session_provider(&session));
     let freeform_grammar = config()
@@ -994,7 +996,7 @@ fn dispatch(args: Args) {
             };
             let session = {
                 let _guard = runtime.enter();
-                match build_session(&args, None, None, false) {
+                match build_session(&args, None, None, false, false) {
                     Ok((session, _host)) => session,
                     Err(refused) => std::process::exit(exit_refused(refused)),
                 }
@@ -1025,7 +1027,7 @@ fn dispatch(args: Args) {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker, session| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker, session, false)
+                    build_session(&build_args, asker, session, false, false)
                         .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
                 })
             };
