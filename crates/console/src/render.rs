@@ -34,7 +34,7 @@ pub struct PaneView {
 }
 
 /// The one control table hover and press both walk; press maps it to an action, hover to a rect.
-pub enum Target {
+pub enum Hit {
     Tab(usize),
     Settings(PaneId, usize),
     Button(keys::Action),
@@ -69,34 +69,34 @@ impl Hits {
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
     }
-    pub fn target_at(&self, x: u16, y: u16) -> Option<(Rect, Target)> {
+    pub fn hit_at(&self, x: u16, y: u16) -> Option<(Rect, Hit)> {
         let at = ratatui::layout::Position::new(x, y);
         let in_sidebar = x < self.sidebar_width;
         self.tabs
             .iter()
             .find(|(rect, _)| rect.contains(at))
-            .map(|(rect, index)| (*rect, Target::Tab(*index)))
+            .map(|(rect, index)| (*rect, Hit::Tab(*index)))
             .or_else(|| {
                 self.settings_tabs
                     .iter()
                     .find(|(rect, ..)| rect.contains(at))
-                    .map(|(rect, pane, tab)| (*rect, Target::Settings(*pane, *tab)))
+                    .map(|(rect, pane, tab)| (*rect, Hit::Settings(*pane, *tab)))
             })
             .or_else(|| {
                 (self.hint_buttons.iter().chain(&self.header_buttons))
                     .find(|(rect, _)| rect.contains(at))
-                    .map(|(rect, action)| (*rect, Target::Button(*action)))
+                    .map(|(rect, action)| (*rect, Hit::Button(*action)))
             })
             .or_else(|| {
                 self.gear
                     .filter(|gear| gear.contains(at))
-                    .map(|gear| (gear, Target::Gear))
+                    .map(|gear| (gear, Hit::Gear))
             })
             .or_else(|| {
                 self.titles
                     .iter()
                     .find(|(_, rect)| rect.contains(at))
-                    .map(|(pane, rect)| (*rect, Target::Title(*pane)))
+                    .map(|(pane, rect)| (*rect, Hit::Title(*pane)))
             })
             .or_else(|| {
                 in_sidebar
@@ -105,38 +105,35 @@ impl Hits {
                     .map(|(row_y, index)| {
                         (
                             Rect::new(0, *row_y, self.sidebar_width, 1),
-                            Target::Root(*index),
+                            Hit::Root(*index),
                         )
                     })
             })
             .or_else(|| {
-                in_sidebar
+                let (_, index) = in_sidebar
                     .then(|| self.sidebar_rows.iter().find(|(row_y, _)| *row_y == y))
-                    .flatten()
-                    .map(|(_, index)| {
-                        (
-                            Rect::new(0, y, self.sidebar_width, 1),
-                            Target::Session(*index),
-                        )
-                    })
+                    .flatten()?;
+                let rows = self.sidebar_rows.iter().filter(|(_, i)| i == index);
+                let (top, bottom) =
+                    rows.fold((y, y), |(t, b), (row, _)| (t.min(*row), b.max(*row)));
+                let height = bottom.saturating_sub(top).saturating_add(1);
+                Some((
+                    Rect::new(0, top, self.sidebar_width, height),
+                    Hit::Session(*index),
+                ))
             })
     }
 
-    /// The control under the pointer; a move redraws only when this changes. A session's
-    /// rows lift together, as one click target.
+    /// The control under the pointer; a move redraws only when this changes. A close mark is
+    /// hovered here but pressed apart, since it closes on a release that did not drag.
     pub fn hover_at(&self, x: u16, y: u16) -> Option<Rect> {
-        let (rect, target) = self.target_at(x, y)?;
-        if let Target::Session(index) = target {
-            let rows = self.sidebar_rows.iter().filter(|(_, i)| *i == index);
-            let (top, bottom) = rows.fold((y, y), |(t, b), (row, _)| (t.min(*row), b.max(*row)));
-            return Some(Rect::new(
-                0,
-                top,
-                self.sidebar_width,
-                bottom.saturating_sub(top).saturating_add(1),
-            ));
-        }
-        Some(rect)
+        let at = ratatui::layout::Position::new(x, y);
+        let closer = self
+            .closers
+            .iter()
+            .map(|(_, rect)| *rect)
+            .find(|r| r.contains(at));
+        self.hit_at(x, y).map(|(rect, _)| rect).or(closer)
     }
 }
 
