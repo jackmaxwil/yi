@@ -450,8 +450,7 @@ impl Composer {
         let rows = usize::from(rows);
         // Invariant: the box never takes more than 38.2% of the pane, the golden split.
         let cap = (rows.saturating_mul(382) / 1000).saturating_sub(2).max(1);
-        let rest = if rows >= 24 { 3 } else { 1 };
-        let want = wrapped.len().max(rest);
+        let want = wrapped.len().max(1);
         let step = GROWTH
             .iter()
             .copied()
@@ -583,10 +582,14 @@ pub fn edit_key(textarea: &mut TextArea<'_>, key: KeyEvent) -> bool {
         KeyCode::Backspace if cmd => clear_line(textarea),
         KeyCode::Backspace if ctrl => textarea.delete_word(),
         KeyCode::Delete if ctrl => textarea.delete_next_word(),
-        KeyCode::Char('z' | 'Z') if (ctrl || cmd) && (shift || key.code == KeyCode::Char('Z')) => {
+        KeyCode::Char('z' | 'Z') if ctrl && (shift || key.code == KeyCode::Char('Z')) => {
             textarea.redo()
         }
-        KeyCode::Char('z') if ctrl || cmd => textarea.undo(),
+        KeyCode::Char('u' | 'U') if cmd && (shift || key.code == KeyCode::Char('U')) => {
+            textarea.redo()
+        }
+        KeyCode::Char('z') if ctrl => textarea.undo(),
+        KeyCode::Char('u') if cmd => textarea.undo(),
         KeyCode::Char('j') if ctrl => {
             textarea.insert_newline();
             true
@@ -617,4 +620,18 @@ fn clear_line(textarea: &mut TextArea<'_>) -> bool {
         .get(line)
         .is_some_and(|text| !text.is_empty())
         && textarea.delete_line_by_end()
+}
+
+impl crate::app::App {
+    /// Invariant: a quote lands whole on its own lines; a long one never folds into a paste marker.
+    pub fn quote(&mut self, text: &str) {
+        let quoted: String = sanitize_paste(text)
+            .lines()
+            .map(|line| format!("> {line}\n"))
+            .collect();
+        if self.composer.textarea.cursor().1 != 0 {
+            self.composer.textarea.insert_newline();
+        }
+        self.composer.textarea.insert_str(quoted);
+    }
 }

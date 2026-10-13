@@ -9,6 +9,7 @@
     in_order  the default shape; fork_join and scatter are the other two (``help(yi.shapes)``)
     review_pod  a recipe: readers, then an arbiter whose command decides (``help(yi.recipes.review_pod)``)
     mail      send, request and inbox: messages between family members (``help(yi.mail)``)
+    tools     this session's own tools from a cell: ``await yi.tools.grep(pattern=...)``
 
 The host decides everything: admission, step legality, verification. A refusal
 raises ``PlanError`` (``Refused`` and ``Stale`` from ``done``, ``SpecDrift`` from
@@ -23,7 +24,7 @@ source is recorded in the plan before its first effect and is never run again.
 """
 from .contract import cmd, contract, example, schema
 from .plan import Plan, PlanError, Refused, Run, RunActive, SpecDrift, Stale, Todo, in_order
-from . import mail, shapes
+from . import mail, shapes, tools
 from .mail import HopLimit
 from .recipes.review_pod import review_pod
 from .roles import Reader, Writer, verify_quotes
@@ -39,6 +40,7 @@ __all__ = [
     "review_pod",
     "verify_quotes",
     "mail",
+    "tools",
     "contract",
     "cmd",
     "schema",

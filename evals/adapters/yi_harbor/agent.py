@@ -5,11 +5,14 @@ Register out of tree:
 """
 
 
+import hashlib
 import json
 import os
 import shlex
 import subprocess
 import sys
+import tarfile
+import tempfile
 from pathlib import Path
 
 from harbor.agents.model_connection import ModelConnectionSpec
@@ -25,6 +28,7 @@ from yi_usage import (
     SESSIONS_SUBDIR,
     config_fingerprint,
     eval_config,
+    kernel_broken,
     kernel_problems,
     levers_label,
     local_plugins,
@@ -57,6 +61,29 @@ VERSION_CHECK = f"{REMOTE_BINARY} --version"
 # The kernel venv is built at install, inside the agent-setup cap and off the hour;
 # a v4 image without python3 is an install error here, never a bash-only run.
 DOCTOR_COMMAND = f"{REMOTE_BINARY} doctor --fix --json || true"
+# Incident (#1315): the binary embeds only the kernel's own skills, and `yi update` installs
+# `skills/yi`, so every trial before ran with no bundled skill; the arm's own tree rides along.
+SKILLS_ENV = "EVAL_SKILLS"
+REMOTE_SKILLS_TAR = "/logs/agent/yi/skills.tgz"
+
+
+def bundled_skills():
+    """`EVAL_SKILLS`, else this checkout's `skills/yi`: the tree a real install of the binary has."""
+    named = os.environ.get(SKILLS_ENV)
+    path = Path(named) if named else Path(__file__).resolve().parents[3] / "skills" / "yi"
+    return path if path.is_dir() else None
+
+
+def skills_label():
+    """Two arms with different skill trees never share a fingerprint."""
+    path = bundled_skills()
+    if path is None:
+        return "+skills{}"
+    digest = hashlib.sha256()
+    for file in sorted(p for p in path.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        digest.update(str(file.relative_to(path)).encode())
+        digest.update(file.read_bytes())
+    return "+skills{" + digest.hexdigest()[:12] + "}"
 
 
 def mode_label():
@@ -65,13 +92,13 @@ def mode_label():
     defaults must never share a fingerprint (plan §4, E16)."""
     mult = os.environ.get(TIMEOUT_MULT_ENV)
     return ("yolo" + (f"+t{mult}" if mult else "") + routing_label(os.environ)
-            + levers_label(os.environ) + plugins_label(carried_plugins()))
+            + levers_label(os.environ) + skills_label() + plugins_label(carried_plugins()))
 
 
 def carried_plugins():
     """#1041: path mode carries the plugins `yi plugin add` installed on this host, as the
-    binary itself reports them. URL mode, and the pier adapter which installs by URL, carry
-    none: there is no host build to ask, and the fingerprint says `+plugins{}`."""
+    binary itself reports them. URL mode carries none, since there is no host build to ask,
+    and its fingerprint says `+plugins{}`. The pier adapter carries none and has no label."""
     if os.environ.get(BINARY_URL_ENV):
         return []
     return local_plugins(os.environ, plugin_report())
@@ -137,6 +164,7 @@ class Yi(BaseInstalledAgent):
             await self.exec_as_agent(environment, command=config_command())
             await self.upload_ca_bundle(environment)
             await self.upload_levers(environment)
+            await self.upload_skills(environment)
             await self.warm_kernel(environment)
             return
         await environment.upload_file(Path(local_binary()), REMOTE_BINARY)
@@ -148,6 +176,7 @@ class Yi(BaseInstalledAgent):
         await self.exec_as_agent(environment, command=config_command())
         await self.upload_ca_bundle(environment)
         await self.upload_levers(environment)
+        await self.upload_skills(environment)
         await self.warm_kernel(environment)
 
     async def upload_plugins(self, environment: BaseEnvironment) -> None:
@@ -169,15 +198,33 @@ class Yi(BaseInstalledAgent):
         await self.exec_as_agent(environment, command=f"mkdir -p {Path(REMOTE_LEVERS_PATH).parent}")
         await environment.upload_file(Path(local), REMOTE_LEVERS_PATH)
 
+    async def upload_skills(self, environment: BaseEnvironment) -> None:
+        local = bundled_skills()
+        if local is None:
+            print("skills: no bundled tree; the trial runs with none", file=sys.stderr)
+            return
+        with tempfile.TemporaryDirectory() as scratch:
+            archive = Path(scratch, "skills.tgz")
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(local, arcname="yi", filter=lambda info: None if "__pycache__" in info.name else info)
+            await self.exec_as_agent(environment, command=f"mkdir -p {Path(REMOTE_SKILLS_TAR).parent} ~/.yi/skills")
+            await environment.upload_file(archive, REMOTE_SKILLS_TAR)
+        await self.exec_as_agent(
+            environment, command=f"set -euo pipefail; tar -xzf {REMOTE_SKILLS_TAR} -C ~/.yi/skills"
+        )
+
     async def warm_kernel(self, environment: BaseEnvironment) -> None:
         result = await self.exec_as_agent(environment, command=DOCTOR_COMMAND)
         stdout = getattr(result, "stdout", None)
         if stdout is None:
             return
         problems = kernel_problems(stdout)
+        if kernel_broken(problems):
+            raise RuntimeError("kernel preflight red with its toolchain present, so the trial "
+                               "would score a broken install: " + "; ".join(problems))
         if problems:
-            # the trial runs anyway: the environment block tells the model the kernel is
-            # unavailable and the row counts `kernel_dead` (#329)
+            # no toolchain: the trial runs bash-only, the environment block tells the model the
+            # kernel is unavailable and the row counts `kernel_dead` (#329)
             print("kernel: " + "; ".join(problems), file=sys.stderr)
 
     async def upload_ca_bundle(self, environment: BaseEnvironment) -> None:

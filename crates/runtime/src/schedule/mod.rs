@@ -972,11 +972,12 @@ impl HeartbeatService {
     /// Invariant: the interned timer outlives every session on its ledger, so a departing one
     /// loses its lane and pauses its Active jobs; left claimable they re-arm forever.
     fn withdraw(&self, session_id: &str) {
-        let Some(hub) = self.hub() else { return };
-        if session_id.is_empty() {
+        let (Some(hub), Some(deliver)) = (self.hub(), &self.deliver) else {
+            return;
+        };
+        if session_id.is_empty() || !hub.unregister(session_id, deliver) {
             return;
         }
-        hub.unregister(session_id);
         if self.durable.is_some() {
             // Its own file keeps the jobs Active for the next process; only its timer stops.
             shared::release(&self.store());
@@ -1004,13 +1005,21 @@ impl HeartbeatService {
     fn owns(&self, job: &Job) -> bool {
         job.session_id == self.session_id()
     }
+
+    /// Invariant: the plan timer and kernel handlers outlive the session, so the id is cleared
+    /// and every later write through this service is refused instead of persisting a stale ledger.
+    pub(crate) fn end(&self) {
+        let mut bound = lock_or_poisoned(&self.session_id);
+        self.withdraw(&bound);
+        bound.clear();
+    }
 }
 
 /// Invariant: a lane is withdrawn by whichever comes first, the session dropping or
 /// [`HeartbeatService::bind_session`] rebinding; neither alone covers a rebind with no drop.
 impl Drop for HeartbeatService {
     fn drop(&mut self) {
-        self.withdraw(&self.session_id());
+        self.end();
     }
 }
 

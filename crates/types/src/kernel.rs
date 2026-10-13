@@ -130,6 +130,35 @@ pub struct ExecuteResult {
     pub duration_ms: u64,
 }
 
+/// One tool a cell called through `tool.call`, listed on that cell's `ipython` result (design
+/// §9.2): the files a write named, a command it ran, a person's reply; never the content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedCall {
+    pub tool: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    pub duration_ms: u64,
+    /// Set on a call that finished after the cell that started it closed: it lands on a later
+    /// cell's result, and the todo landed count does not credit it to that cell's turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outlived: bool,
+}
+
+/// The `ipython` result's `details` key holding its cell's [`NestedCall`] rows.
+pub const NESTED_CALLS: &str = "calls";
+/// The `details` key counting read rows a cell made past [`NESTED_READS_KEPT`].
+pub const NESTED_READS_DROPPED: &str = "callsDropped";
+/// Read rows one cell keeps; every other row is kept, since a row holds paths, never content.
+pub const NESTED_READS_KEPT: usize = 256;
+
 /// `.bootstrap-version` marker (design §9.1): any mismatch forces a full venv
 /// rebuild.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

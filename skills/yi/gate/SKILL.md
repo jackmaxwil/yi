@@ -8,6 +8,7 @@ description: >
   PermissionDenied. Do NOT use to decide whether to run the gate at all: an
   assessment quotes the record instead of running it.
 trigger: cargo nextest, cargo test, just check, cargo clippy, PermissionDenied
+within: scripts/guardrails/check_guardrails.sh
 ---
 
 # gate

@@ -579,7 +579,8 @@ fn the_ripwire_index_names_every_published_skill_and_no_other() -> TestResult {
     published.sort_unstable();
     assert_eq!(named, published);
     let digest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/tools/tests/fixtures/ripwire/skills-0.6.5.sha256");
+        .join("../tools/tests/fixtures/ripwire")
+        .join(format!("skills-{}.sha256", ripwire.version));
     let manifest = std::fs::read_to_string(digest)?;
     let mut shipped: Vec<&str> = manifest
         .lines()
@@ -621,5 +622,31 @@ fn the_installed_ripwire_skills_match_the_recorded_release() -> TestResult {
         "{}",
         orient.text
     );
+    Ok(())
+}
+
+/// Dies with one repository's recipe offered in every other: a skill that names a path with
+/// `within:` is listed, triggered, classified and read only where the repository holds that path.
+#[test]
+fn a_skill_within_a_repository_is_listed_only_there() -> TestResult {
+    let home = Scratch::new("yi-skills-within")?;
+    std::fs::create_dir_all(home.join(".yi/skills"))?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "land",
+        "---\nname: land\ndescription: Land on this forge.\nwithin: scripts/forge_pr.py\n---\nbody\n",
+    )?;
+    let (ours, theirs) = (home.join("ours"), home.join("theirs"));
+    std::fs::create_dir_all(ours.join("scripts"))?;
+    std::fs::create_dir_all(&theirs)?;
+    std::fs::write(ours.join("scripts/forge_pr.py"), "")?;
+    let names = |cwd: &std::path::Path| -> Vec<String> {
+        let (global, _) = yi_runtime::skills::discover_split(cwd, &home);
+        global.into_iter().map(|skill| skill.name).collect()
+    };
+    assert_eq!(names(&ours), ["land"]);
+    assert!(names(&theirs).is_empty(), "{:?}", names(&theirs));
+    let reachable = |cwd: &std::path::Path| yi_runtime::skills::discover(cwd, &home).len();
+    assert_eq!((reachable(&ours), reachable(&theirs)), (1, 0));
     Ok(())
 }

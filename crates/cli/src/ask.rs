@@ -49,7 +49,8 @@ pub(super) fn run(args: &Args) -> i32 {
         let _guard = runtime.enter();
         let asker: Option<yi_runtime::Asker> =
             interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
-        match build_session(args, asker, Some(&target.id), false) {
+        // Every spelling of a headless ask (`ask`, bare prompt words) lands here: no tty, no asker.
+        match build_session(args, asker, Some(&target.id), false, !interactive) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
