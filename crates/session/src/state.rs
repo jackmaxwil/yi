@@ -22,11 +22,9 @@ pub(crate) fn validate_limit(limit: Option<usize>) -> Result<(), SessionError> {
 pub struct SessionState {
     sequence: u64,
     used_ids: HashSet<String>,
-    /// Invariant: positions in the append-only mutation log; the log owns the one copy of each
+    /// Indices are positions in the append-only mutation log; the log owns the one copy of each
     /// entry and record, since a second copy doubled a long session's resident size.
-    entries: Vec<usize>,
     entries_by_id: HashMap<String, usize>,
-    records: Vec<usize>,
     open_ops_by_lane: HashMap<String, Vec<usize>>,
     lanes: Vec<(String, Option<String>)>,
     log: Vec<Mutation>,
@@ -46,12 +44,10 @@ impl Default for SessionState {
 impl SessionState {
     pub fn new() -> Self {
         Self {
+            entries_by_id: HashMap::new(),
+            open_ops_by_lane: HashMap::new(),
             sequence: 0,
             used_ids: HashSet::new(),
-            entries: Vec::new(),
-            entries_by_id: HashMap::new(),
-            records: Vec::new(),
-            open_ops_by_lane: HashMap::new(),
             lanes: vec![("main".to_owned(), None)],
             log: Vec::new(),
             stats: SessionStats::zero(),
@@ -120,7 +116,7 @@ impl SessionState {
         self.open_ops_by_lane
             .get(lane)
             .and_then(|indices| indices.last())
-            .and_then(|index| record_in(&self.log, &self.records, *index))
+            .and_then(|index| record_at(&self.log, *index))
             .map(LaneRecord::id)
     }
 
@@ -179,7 +175,6 @@ impl SessionState {
                 self.used_ids.insert(entry.id().to_owned());
                 self.entries_by_id
                     .insert(entry.id().to_owned(), self.log.len());
-                self.entries.push(self.log.len());
                 if let Some(lane) = lane
                     && let Some(slot) = self.lanes.iter_mut().find(|(name, _)| name == lane)
                 {
@@ -202,20 +197,18 @@ impl SessionState {
                 }
                 self.sequence = seq;
                 self.used_ids.insert(record.id().to_owned());
-                let index = self.records.len();
-                self.records.push(self.log.len());
                 match record {
                     LaneRecord::OperationStarted { .. } => {
                         self.open_ops_by_lane
                             .entry(record.lane().to_owned())
                             .or_default()
-                            .push(index);
+                            .push(self.log.len());
                     }
                     LaneRecord::OperationFinished { run_id, .. } => {
                         if let Some(open) = self.open_ops_by_lane.get_mut(record.lane()) {
-                            let (records, log) = (&self.records, &self.log);
+                            let log = &self.log;
                             open.retain(|open_index| {
-                                record_in(log, records, *open_index)
+                                record_at(log, *open_index)
                                     .is_none_or(|started| started.id() != run_id)
                             });
                         }
@@ -286,13 +279,17 @@ impl SessionState {
     }
 
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = &Entry> {
-        self.entries
-            .iter()
-            .filter_map(|index| entry_at(&self.log, *index))
+        self.log.iter().filter_map(|mutation| match mutation {
+            Mutation::Entry { entry, .. } => Some(entry),
+            Mutation::Record { .. } | Mutation::Lane { .. } | Mutation::Fact { .. } => None,
+        })
     }
 
     fn records(&self) -> impl DoubleEndedIterator<Item = &LaneRecord> {
-        (0..self.records.len()).filter_map(|index| record_in(&self.log, &self.records, index))
+        self.log.iter().filter_map(|mutation| match mutation {
+            Mutation::Record { record } => Some(record),
+            Mutation::Entry { .. } | Mutation::Lane { .. } | Mutation::Fact { .. } => None,
+        })
     }
 
     pub fn find_entries(&self, query: &EntryQuery) -> Result<Vec<Entry>, SessionError> {
@@ -387,7 +384,7 @@ impl SessionState {
                 indices
                     .iter()
                     .rev()
-                    .filter_map(|index| record_in(&self.log, &self.records, *index).cloned())
+                    .filter_map(|index| record_at(&self.log, *index).cloned())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -577,8 +574,8 @@ fn entry_at(log: &[Mutation], index: usize) -> Option<&Entry> {
     }
 }
 
-fn record_in<'a>(log: &'a [Mutation], records: &[usize], ordinal: usize) -> Option<&'a LaneRecord> {
-    match log.get(*records.get(ordinal)?)? {
+fn record_at(log: &[Mutation], index: usize) -> Option<&LaneRecord> {
+    match log.get(index)? {
         Mutation::Record { record } => Some(record),
         Mutation::Entry { .. } | Mutation::Lane { .. } | Mutation::Fact { .. } => None,
     }
