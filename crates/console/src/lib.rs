@@ -525,10 +525,8 @@ fn place_chat_orbs(
             continue;
         };
         owners.entry(*id).or_insert_with(|| session.clone());
-        if shown.contains(id) && Some(*id) == focused {
-            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
-        } else if shown.contains(id) {
-            yi_tui::orb::place(&mut chat.app, out, &mut chat.orb);
+        if shown.contains(id) {
+            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
         } else {
             chat.orb.hide(out);
         }
