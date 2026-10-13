@@ -38,15 +38,16 @@ impl Queued {
         self.news.as_ref().is_none_or(|news| news())
     }
 
-    /// What an answered turn still lets through: what could have started a turn on its own.
+    /// What an answered turn still lets through: current news that could start a turn alone.
     fn survives_answer(&self) -> bool {
-        self.wakes
+        let starts = self.wakes
             || self.news.is_some()
             || crate::mail::envelope_id(&self.message).is_some()
             || matches!(
                 self.message.attribution(),
                 Attribution::User | Attribution::Task
-            )
+            );
+        starts && self.current()
     }
 }
 
@@ -108,7 +109,7 @@ fn after_answer(shared: &Shared, taken: Vec<Queued>) -> Vec<Queued> {
     match &*state {
         Answering::Answered => {
             let kept: Vec<Queued> = (taken.into_iter())
-                .filter(|queued| queued.survives_answer() && queued.current())
+                .filter(Queued::survives_answer)
                 .collect();
             if !kept.is_empty() {
                 *state = Answering::Open;
@@ -134,12 +135,11 @@ fn purge_after_answer(shared: &Shared) {
     ) {
         return;
     }
-    let kept = |queued: &Queued| queued.survives_answer() && queued.current();
     if let Ok(mut queue) = shared.steer.lock() {
-        queue.retain(kept);
+        queue.retain(Queued::survives_answer);
     }
     if let Ok(mut queue) = shared.follow_up.lock() {
-        queue.retain(kept);
+        queue.retain(Queued::survives_answer);
     }
 }
 

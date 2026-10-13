@@ -32,12 +32,8 @@ impl AnswerTool {
         let written = (self.write.as_ref()?).execute(input.as_object()?.clone(), context);
         let header = yi_types::message::join_text(&written.result.content, "\n");
         let header = header.lines().next().filter(|_| !written.is_error)?;
-        let rows = (draft.split('\n').enumerate())
-            .map(|(at, line)| format!("\n{}:{line}", at.saturating_add(1)));
-        Some((
-            path,
-            std::iter::once(header.to_owned()).chain(rows).collect(),
-        ))
+        let rows = yi_tools::hashline::format::format_numbered_lines(draft, 1);
+        Some((path, format!("{header}\n{rows}")))
     }
 }
 
