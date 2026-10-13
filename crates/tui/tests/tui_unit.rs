@@ -472,6 +472,10 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
     let text = flat(&yi_tui::status::render(&input, 80, &theme()));
     assert!(text.contains(" yi "), "{text}");
     assert!(
+        !text.contains("⎇ lane"),
+        "the lane slot suffix is gone: {text}"
+    );
+    assert!(
         !text.contains("897d6e9162485667"),
         "the hash stays off the row: {text}"
     );
