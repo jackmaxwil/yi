@@ -1,0 +1,6 @@
+---
+issue: Refs #1385
+growth: +114 the Growth scene and the cache it needs: a simulation module of about 110 lines and the cover's cache argument; weighed re-running the coral from nothing each frame, which costs 1500 steps a frame, and kept a cache that advances to the second asked for
+raise: comments +7, crate console +3, crate tui +111, tests +46
+---
+A sixth title scene, `growth`, and the first that remembers: Gray–Scott reaction–diffusion seeded on the `Yi` strokes, the coral the owner ranked fourth of his favourites. It takes 500 simulation steps a second on an 80 by 32 grid, so by the time the name lands the coral has had 1500 and has spread from the strokes over the screen, and the strokes rise through it from 1.2 s as in the fold. The cover now takes a `Cache`, which the console keeps in its state: a stateful scene advances its simulation to the second it is asked for and keeps it between frames, and a second that runs backwards or a new screen size starts it again, so a frozen clock still replays any frame (a fresh cache and a kept one agree, which a test pins). The simulation lives in `title/sim.rs`, which later stateful scenes join. It joins the default draw at weight 2 and `console.titleWeights` can name it as `growth`.

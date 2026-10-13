@@ -743,7 +743,8 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         let elapsed = app.clock.since(app.state.title_start);
         let screen = frame.area();
         let buffer = frame.buffer_mut();
-        yi_tui::title::cover(buffer, screen, (scene, elapsed), landing, theme);
+        let cache = &mut app.state.title_cache;
+        yi_tui::title::cover(buffer, screen, (scene, elapsed), landing, theme, cache);
     }
 }
 
