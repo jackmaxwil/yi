@@ -8,6 +8,10 @@ use serde_json::{Value, json};
 mod scratch;
 use scratch::Scratch;
 
+#[path = "support/prompt_slots.rs"]
+mod prompt_slots_support;
+use prompt_slots_support::prompt_slots;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Workspace(Scratch);
@@ -2280,5 +2284,37 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
         json!(pinned.join("ripwire").display().to_string()),
         "{rows}"
     );
+    Ok(())
+}
+
+fn told_it_is_alone(workspace: &Workspace) -> Result<bool, Box<dyn Error>> {
+    let slots = prompt_slots(&workspace.0.join("home/sessions"))?;
+    Ok(slots
+        .iter()
+        .any(|names| names.iter().any(|name| name == "unattended")))
+}
+
+/// Dies with an unattended run told nothing about its graders: `yi ask` with no terminal on
+/// stdin records the unattended slot (an rpc client's session does not: rpc_protocol).
+#[test]
+fn a_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
+    let alone = Workspace::new("unattended-ask")?;
+    ask(&alone, "build the report", &[])?;
+    assert!(told_it_is_alone(&alone)?);
+    Ok(())
+}
+
+/// Dies with the bare-words spelling (`yi build the report`), which runs the same ask path
+/// with `command` set to its first word, told nothing.
+#[test]
+fn a_bare_words_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
+    let alone = Workspace::new("unattended-bare")?;
+    let out = alone.yi(&["--model", "faux/faux-1", "build", "the", "report"])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(told_it_is_alone(&alone)?);
     Ok(())
 }

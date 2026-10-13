@@ -275,7 +275,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
 - `PromptState::assemble` joins three blocks with `SYSTEM_BLOCK_SEPARATOR`: ranks ≤ `Doctrine`,
   ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, the permission-mode
   fragment, user system text and schema instruction (text compiled in from
-  `crates/runtime/src/prompts/`), then registers `project-resources` (skills catalog), `pack`
+  `crates/runtime/src/prompts/`); a headless ask (`yi ask` or bare prompt words) with no terminal on stdin also attaches
+  `unattended` (Mode rank): nobody answers, hidden checks grade the task text, a check per
+  requirement, one verifier cell before stopping. Then it registers `project-resources` (skills catalog), `pack`
   (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `plugins` (the card of each plugin found,
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
@@ -418,7 +420,9 @@ user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` 
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 A plugin's skills (`yi plugin add`, §17.1) are read the same way but never listed: one Yi skill
 points at them (`skills/yi/ripwire`), and its `requires: ripwire` lists it only while that
-plugin's skills are installed. `read("yi://skills/<name>/<file>")` serves a file beside a skill's
+plugin's skills are installed. A skill written for one repository says `within: <path>` and is
+listed, triggered, classified and read only where the repository holds that path (`gate`,
+`land`, `pr-review` name Yi's own scripts). `read("yi://skills/<name>/<file>")` serves a file beside a skill's
 `SKILL.md`; a path that would leave the skill's directory is refused.
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
@@ -579,7 +583,7 @@ A persistent IPython process per session that reaches the host only through host
 | `local` / `user` | `<path>` / `<n>` | a workspace or spill file / the n-th user-attributed message |
 | `kernel` | `<agent>/<var>` | a member's variable: repr ≤ 8192 chars, or dilled into the family dir |
 | `plan` / `agent` | `<id>[/<slug>]` / `<name>` | a plan via its journal (§13) / a live child's transcript, else its reap pin |
-| `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session id of any lane of this repository resolves too |
+| `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session's id (its file is `<created>_<id>.jsonl` exactly) resolves in any repository; only once no id along the path opens one, a name (its name fact, else its first prompt's title, case aside and spaces read as dashes) resolves in this repository first and then any other, and `<root>/<child>[/…]` a child per level by the name or id its parent's `custom{child}` trail records; a name several sessions carry is refused listing up to 8 `history://<id>` addresses with their repositories; the wall judges the session's id and name as well as the address as written, a history wall turns names and `root/child` off with a `Denied` that says so, and a reader's desk says it opens only itself and its parent |
 | `checkpoint` / `mcp` | `<tree>/<path>` / `<server>/<uri>` | a checkpoint-tree file (§7.7) / an MCP resource (§7.6) |
 | `family` / `tree` | `<name>` / `<agent>/<path>` | a blackboard sidecar / a member's checkout file, under `deny_read` |
 | `yi` | `tools/<name>` / `skills/<name>` / `skills/<name>/<file>` | a deferred tool guide (§7.1) / a skill's `SKILL.md` / a file beside it (§7.8), under `deny_read` |

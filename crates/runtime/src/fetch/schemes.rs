@@ -282,19 +282,11 @@ impl Resolver {
     }
 
     pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
-        if let Some((session, entry)) = self.history_root(url.path()) {
-            return render_history(url, &session, entry, page);
-        }
-        let path = url.path();
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
         }
-        Err(FetchError::NotFound {
-            url: url.to_string(),
-            what: format!(
-                "agent {path}: not the attached session, not a live child, and no session on disk carries that id"
-            ),
-        })
+        let (session, entry) = self.locate(url)?;
+        render_history(url, &session, entry.as_deref(), page)
     }
 
     /// One address space: this session (by its name or as `self`), a live child, the corpus.
