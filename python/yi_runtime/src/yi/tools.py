@@ -71,6 +71,10 @@ class Value:
         object.__setattr__(self, "_data", data)
 
     def __getattr__(self, name: str) -> Any:
+        # Incident: pickle and copy probe `__setstate__` before `_data` is set; reading it here
+        # recursed, so a cell variable holding a value failed the kernel snapshot's restore.
+        if name.startswith("_"):
+            raise AttributeError(name)
         try:
             return _wrap(self._data[name])
         except KeyError:
