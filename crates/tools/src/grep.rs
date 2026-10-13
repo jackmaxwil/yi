@@ -1128,10 +1128,12 @@ impl Tool for GrepTool {
 fn program_value(collected: &Collected, notices: &[String]) -> Value {
     let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
     let mut matches: Vec<yi_types::tool_value::GrepMatch> = Vec::new();
+    let mut skipped = false;
     'files: for file in &collected.files {
         let lines: Vec<&str> = file.normalized.split('\n').collect();
         for &index in &file.hits {
             if matches.len() >= fuse {
+                skipped = true;
                 break 'files;
             }
             matches.push(yi_types::tool_value::GrepMatch {
@@ -1142,10 +1144,12 @@ fn program_value(collected: &Collected, notices: &[String]) -> Value {
         }
     }
     let mut cut = notices.to_vec();
-    if matches.len() >= fuse {
-        cut.push(format!(
-            "[kept the first {fuse} of {} matches: the program fuse is {fuse} items; narrow the pattern or page the text view with offset]",
-            collected.total
+    if skipped {
+        cut.push(yi_types::tool_value::fuse_cut(
+            matches.len(),
+            u64::try_from(collected.total).unwrap_or(u64::MAX),
+            &format!("{fuse} items"),
+            "narrow the pattern or the path",
         ));
     }
     let value = yi_types::tool_value::GrepValue {

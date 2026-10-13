@@ -13,6 +13,7 @@ pub(super) fn program_lines(
 ) -> (Vec<yi_types::tool_value::Line>, Option<String>) {
     let start = windows.first().map_or(1, |window| window.0);
     let open = [(start, lines.len())];
+    let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
     let (mut kept, mut bytes) = (Vec::new(), 0_usize);
     for &(start, end) in if to_end { &open[..] } else { windows } {
         for index in start.saturating_sub(1)..end {
@@ -23,10 +24,11 @@ pub(super) fn program_lines(
             let n = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
             if kept.len() >= yi_types::tool_value::PROGRAM_FUSE_ITEMS {
                 let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
-                let cut = format!(
-                    "[kept lines {start}-{} of {}: the program fuse is {fuse} items; read with offset={n} for the rest]",
-                    n.saturating_sub(1),
-                    lines.len()
+                let cut = yi_types::tool_value::fuse_cut(
+                    kept.len(),
+                    total,
+                    &format!("{fuse} items"),
+                    &format!("read with offset={n} for the rest"),
                 );
                 return (kept, Some(cut));
             }
@@ -37,10 +39,11 @@ pub(super) fn program_lines(
                         "[line {n} alone is {} bytes, past the {fuse} MiB program fuse; bash `sed -n {n}p` with `cut -c` reads it in parts]",
                         text.len()
                     ),
-                    false => format!(
-                        "[kept lines {start}-{} of {}: the program fuse is {fuse} MiB; read with offset={n} for the rest]",
-                        n.saturating_sub(1),
-                        lines.len()
+                    false => yi_types::tool_value::fuse_cut(
+                        kept.len(),
+                        total,
+                        &format!("{fuse} MiB"),
+                        &format!("read with offset={n} for the rest"),
                     ),
                 };
                 return (kept, Some(cut));

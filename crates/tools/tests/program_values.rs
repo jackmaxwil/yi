@@ -120,6 +120,35 @@ fn every_program_fuse_names_its_cut() -> TestResult {
         cut.contains("of 67584: the program fuse is 64 MiB") && cut.contains(&rest),
         "{cut}"
     );
+    std::fs::write(dir.join("many.txt"), "hit\n".repeat(100_001))?;
+    let grep = call(
+        tool(&tools, "grep")?,
+        json!({"pattern": "hit"}),
+        &program(&dir),
+    );
+    let value = grep.value.ok_or("no grep value")?;
+    let cut = value["cut"].as_str().unwrap_or_default();
+    let kept = value["matches"].as_array().map_or(0, Vec::len);
+    assert_eq!(kept, 100_000);
+    assert!(
+        cut.contains("of 100001: the program fuse is 100000 items")
+            && cut.contains("narrow the pattern or the path"),
+        "{cut}"
+    );
+    let read = call(
+        tool(&tools, "read")?,
+        json!({"path": "many.txt"}),
+        &program(&dir),
+    );
+    let value = read.value.ok_or("no read value")?;
+    let cut = value["cut"].as_str().unwrap_or_default();
+    let kept = value["lines"].as_array().map_or(0, Vec::len);
+    assert_eq!(kept, 100_000);
+    let rest = format!("offset={}", kept + 1);
+    assert!(
+        cut.contains("of 100001: the program fuse is 100000 items") && cut.contains(&rest),
+        "{cut}"
+    );
     std::fs::write(dir.join("one.txt"), "z".repeat(65 * 1024 * 1024))?;
     let read = call(
         tool(&tools, "read")?,

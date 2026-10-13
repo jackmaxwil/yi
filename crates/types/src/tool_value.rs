@@ -8,6 +8,11 @@ pub const PROGRAM_FUSE_BYTES: usize = 64 * 1024 * 1024;
 /// The item count beside the byte fuse: a value of many tiny items passes the byte fuse while
 /// it allocates per item.
 pub const PROGRAM_FUSE_ITEMS: usize = 100_000;
+/// The `[…]` row a program value's fuse emits at its cut: what was kept of what existed, the
+/// cap, and the call that gets the rest.
+pub fn fuse_cut(kept: usize, total: u64, cap: &str, remedy: &str) -> String {
+    format!("[kept the first {kept} of {total}: the program fuse is {cap}; {remedy}]")
+}
 
 /// One numbered line of a file, 1-based, as the file holds it with line endings removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
