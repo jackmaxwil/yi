@@ -9,9 +9,10 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
   # The sweep: a draft whose push job died, or one opened before this job ran, had no round and
-  # nothing read it again; a draft already clean never left draft.
+  # nothing read it again; a draft already clean never left draft. Every three hours, because a
+  # sweep may run the whole two-hour job limit and a newer one in the group cancels it mid-round.
   schedule:
-    - cron: "7,37 * * * *"
+    - cron: "7 */3 * * *"
   workflow_dispatch:
 
 # A newer head supersedes the rounds on the old one. The group is this event's own: a branch that
@@ -20,19 +21,20 @@ concurrency:
   group: review-target-${{ github.event.pull_request.number || 'sweep' }}
   cancel-in-progress: true
 
-env:
-  CARGO_BUILD_JOBS: "5"
-
 jobs:
   review:
     # Every same-repo PR, draft or not: a PR opened without `just pr open` skipped review entirely.
     # A fork's head never runs with the bot's key.
     if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # Incident: a round waits an hour or two on the model at a few percent of one CPU, and with every
+    # review on `ubuntu-latest` the gates queued behind them for up to four hours (2026-10-12).
+    runs-on: llm
     # The one place the review job's limit is set; pr_review.py budgets its sweep from it, and the
     # runner's own cap (the infra repository CI_RUNNER_JOB_TIMEOUT, 120m) bounds it.
     timeout-minutes: 120
     steps:
+      # pr_review.py budgets the round from the job's start, not its own: the build runs first.
+      - run: echo "REVIEW_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       # Main's tree, never the PR's: this job holds yi-bot's token, whose comments count as rounds,
       # so a PR's own justfile, scripts or probes would judge themselves. The PR is read as data.
       - uses: actions/checkout@v4
@@ -46,13 +48,17 @@ jobs:
           shared-key: test
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build -p yi-cli
+      # No build step: scripts/pr_review.py builds yi at its first model call, so a job that finds
+      # nothing to read (91 of 217 on 2026-10-12) spends no build on it.
       - name: install fgj
         run: |
           set -euo pipefail
           curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
           echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
           chmod +x /usr/local/bin/fgj
+      # Incident: unpinned, OpenRouter served glm-5.3-flash from hosts measured at 51 to 235 tok/s and
+      # rounds ran 36 to 113 minutes; CoreWeave took a 40k-token prompt in 1.6 to 2.9 s (2026-10-12).
+      - run: mkdir -p ~/.yi && echo '{"routing":{"order":["coreweave/nvfp4"],"allow_fallbacks":false}}' > ~/.yi/config.json
       - name: review the head as yi-bot
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}

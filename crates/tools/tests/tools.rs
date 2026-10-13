@@ -1598,7 +1598,7 @@ impl yi_tools::KernelBridge for DeadKernel {
 struct OneWrite(std::sync::Mutex<Vec<&'static str>>);
 
 impl yi_tools::CellCalls for OneWrite {
-    fn open(&self) {
+    fn open(&self, _request: &str) {
         self.0
             .lock()
             .map(|mut seen| seen.push("open"))
@@ -1643,7 +1643,7 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
         json!(["made.txt"])
     );
     assert_eq!(output.result.details["callsDropped"], json!(3));
-    assert_eq!(*calls.0.lock().map_err(|_| "poisoned")?, ["open", "close"]);
+    assert_eq!(*calls.0.lock().map_err(|_| "poisoned")?, ["close"]);
     Ok(())
 }
 
@@ -2058,6 +2058,20 @@ fn a_read_only_command_is_a_read_kind_call() {
         ),
         // ripwire 0.6.5's own schema line: safe-delete is "a READ never a verdict"; the tree is untouched.
         ("ripwire . --safe-delete=alpha", ToolKind::Read),
+        ("ripwire . --hotspots --legend=compact", ToolKind::Read),
+        (
+            "ripwire . --grep=parse_config --grep-in=any --legend=compact",
+            ToolKind::Read,
+        ),
+        ("ripwire . --quality-delta --legend=compact", ToolKind::Exec),
+        ("ripwire . --html=map.html", ToolKind::Exec),
+        (
+            "ripwire . --for='fix the bold split' --json",
+            ToolKind::Read,
+        ),
+        ("ripwire wrap claude", ToolKind::Exec),
+        ("ripwire . --top-k 20", ToolKind::Exec),
+        ("PATH=bin ripwire . --hotspots", ToolKind::Exec),
         ("ripwire . --note-add='X: slow'", ToolKind::Exec),
         ("ripwire . --run-trace='cargo test'", ToolKind::Exec),
         (
@@ -3915,6 +3929,34 @@ fn the_middle_signal_cap_names_itself_only_when_it_cuts() -> TestResult {
         "{}",
         cut.text
     );
+    Ok(())
+}
+
+/// A HOME under `.yi-homes/keep-failed` made an EPERM line naming a path in it an error kept
+/// from the middle; a directory on a path says nothing, its last component and `failed/total` do.
+#[test]
+fn a_directory_named_for_failure_is_no_signal() -> TestResult {
+    let dir = temp_dir("reduce-signal-dir")?;
+    let mut lines: Vec<String> = (1..=300)
+        .map(|n| format!("test 1-300 case {n} passed in 0.01s, nothing to report here"))
+        .collect();
+    let refused =
+        "bash: line 1: /Users/x/.yi-homes/keep-failed/yidog_long-7.log: Operation not permitted";
+    let broke = "/Users/x/src/fail_fast/run.rs:12: error: probe broke";
+    let summary = "failed/total: 12/300";
+    let compiling = "Compiling probe v0.1.0 (/Users/x/.yi-homes/keep-failed/probe)";
+    let named = "/Users/x/runs/test_errors.py: not found";
+    lines.insert(150, refused.to_owned());
+    lines.insert(190, summary.to_owned());
+    lines.insert(220, broke.to_owned());
+    lines.insert(120, compiling.to_owned());
+    lines.insert(250, named.to_owned());
+    let reduced = yi_tools::reduce("sh run", "", &lines.join("\n"), 1, None, Some(&dir), None);
+    assert!(!reduced.text.contains(refused), "{}", reduced.text);
+    assert!(reduced.text.contains(summary), "{}", reduced.text);
+    assert!(reduced.text.contains(broke), "{}", reduced.text);
+    assert!(!reduced.text.contains(compiling), "{}", reduced.text);
+    assert!(reduced.text.contains(named), "{}", reduced.text);
     Ok(())
 }
 

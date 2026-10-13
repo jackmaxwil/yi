@@ -111,6 +111,7 @@ pub struct KernelOptions {
 
 pub type StreamFn = dyn FnMut(&str, &str) + Send;
 pub type LateAgentMessageFn = dyn Fn(KernelSentAgentMessage) + Send + Sync;
+pub type RequestFn = dyn FnOnce(&str) + Send;
 
 #[derive(Default)]
 pub struct ExecuteOptions {
@@ -119,6 +120,7 @@ pub struct ExecuteOptions {
     pub on_late_sent_agent_message: Option<Box<LateAgentMessageFn>>,
     pub max_output_chars: Option<usize>,
     pub internal: bool,
+    pub on_request: Option<Box<RequestFn>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -947,7 +949,6 @@ impl KernelManager {
             .build("execute_request", content)
             .map_err(ExecuteError::Failed)?;
         let request_id = message.header.msg_id.clone();
-
         let (result_tx, result_rx) = oneshot::channel();
         {
             let mut active = inner.active.lock().map_err(|_| ExecuteError::ShutDown)?;
@@ -970,6 +971,9 @@ impl KernelManager {
                 settled: false,
                 result_tx: Some(result_tx),
             });
+        }
+        if let Some(on_request) = options.on_request {
+            on_request(&request_id);
         }
         if !options.internal
             && let Ok(mut last) = inner.last_cell_code.lock()

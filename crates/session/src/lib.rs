@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod cassette;
 mod error;
 mod id;
 mod jsonl;
@@ -10,12 +11,14 @@ mod repo;
 mod state;
 mod store;
 
+pub use cassette::cassette;
 pub use error::SessionError;
 pub use id::{IdGenerator, age_label, nonce, now_ms, session_title, validate_session_id};
 pub use jsonl::{
     JsonlRepo, create_flat_session, load_session, lock_file, replace_file, session_directory_name,
     try_lock_file,
 };
+pub use listing::peek as list_dir;
 pub use query::{
     BranchBounds, CreateOptions, EntryOrder, EntryQuery, ForkPosition, ForkScope, HistoryHit,
     LanePointer, LogOptions, RecordQuery, SessionMetadata, SessionStats,

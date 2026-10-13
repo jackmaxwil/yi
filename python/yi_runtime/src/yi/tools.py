@@ -16,6 +16,7 @@ headers a read printed:
 """
 from __future__ import annotations
 
+import contextvars
 import inspect
 import keyword
 from typing import Any
@@ -31,6 +32,9 @@ SEARCH_LIMIT = 10
 _TYPES = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list,
           "object": dict}
 _catalog: dict[str, Any] | None = None
+# The execute request a call's cell came from; a task inherits it, so the host can refuse a
+# task that outlived its cell even while a later cell runs.
+_CELL = contextvars.ContextVar("yi_tools_cell", default=None)
 
 
 class ToolError(RuntimeError):
@@ -67,6 +71,10 @@ class Value:
         object.__setattr__(self, "_data", data)
 
     def __getattr__(self, name: str) -> Any:
+        # Incident: pickle and copy probe `__setstate__` before `_data` is set; reading it here
+        # recursed, so a cell variable holding a value failed the kernel snapshot's restore.
+        if name.startswith("_"):
+            raise AttributeError(name)
         try:
             return _wrap(self._data[name])
         except KeyError:
@@ -119,10 +127,10 @@ class Result:
         return self.text
 
 
-async def call(name: str, **args: Any) -> Result:
+async def call(name: str, /, **args: Any) -> Result:
     """Call tool ``name`` with ``args``; an argument passed as ``None`` is not sent."""
     sent = {key: value for key, value in args.items() if value is not None}
-    reply = await rlm.host_request("tool.call", {"name": name, "args": sent})
+    reply = await rlm.host_request("tool.call", {"name": name, "args": sent, "cell": _CELL.get()})
     result = Result(name, reply.get("text", ""), reply.get("details") or {}, reply.get("value"))
     if reply.get("ok"):
         return result
@@ -135,6 +143,17 @@ async def call(name: str, **args: Any) -> Result:
     if kind == "refused":
         raise Refused(message, {"code": "refused", "kind": "refused", "tool": name})
     raise ToolFailure(message, kind, result=result)
+
+
+def _on_cell(_info: Any) -> None:
+    shell = rlm.get_ipython()
+    _CELL.set((getattr(shell, "parent_header", None) or {}).get("msg_id"))
+
+
+def _install() -> None:
+    shell = rlm.get_ipython() if rlm.get_ipython is not None else None
+    if shell is not None:
+        shell.events.register("pre_run_cell", _on_cell)
 
 
 def _load() -> dict[str, Any]:
@@ -220,3 +239,6 @@ def __getattr__(name: str):
 
 def __dir__() -> list[str]:
     return sorted(set(__all__) | set(_tools()))
+
+
+_install()

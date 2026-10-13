@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 /// What one program call may collect; a value it cuts says so in its `cut` row.
 pub const PROGRAM_FUSE_BYTES: usize = 64 * 1024 * 1024;
 
+/// The item count beside the byte fuse: a value of many tiny items passes the byte fuse while
+/// it allocates per item.
+pub const PROGRAM_FUSE_ITEMS: usize = 100_000;
+
 /// One numbered line of a file, 1-based, as the file holds it with line endings removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Line {

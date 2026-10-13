@@ -422,7 +422,11 @@ impl HashlineReadTool {
             if glob.matches(path) {
                 matches.push(path.to_path_buf());
             }
-            (context.program || matches.len() < GLOB_FILES_CAP) && !(context.cancelled)()
+            let room = match context.program {
+                true => matches.len() <= yi_types::tool_value::PROGRAM_FUSE_ITEMS,
+                false => matches.len() < GLOB_FILES_CAP,
+            };
+            room && !(context.cancelled)()
         });
         matches.sort();
         if matches.is_empty() {
