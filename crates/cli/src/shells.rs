@@ -309,11 +309,14 @@ pub fn run_console_command(args: &Args) -> i32 {
     // A headless drive keeps the title off unless the config asks, so its frames hold still.
     let title = if console.title_intro.unwrap_or(!args.headless) {
         let seed = yi_console::model::now_ms();
-        let weights = console.title_weights.map(|map| map.into_iter().collect());
+        let weights = console
+            .title_weights
+            .filter(|map| !map.is_empty())
+            .map(|map| map.into_iter().collect());
         match yi_console::TitleOptions::new(weights, seed) {
             Ok(title) => Some(title),
-            Err(message) => {
-                eprintln!("error: {message}");
+            Err(unknown) => {
+                eprintln!("error: {unknown}");
                 return 2;
             }
         }

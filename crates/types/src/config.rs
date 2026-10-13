@@ -247,8 +247,8 @@ pub struct CatalogConfig {
     pub refresh_hours: Option<u64>,
 }
 
-/// `console.titleIntro`: draw the title field at console start and in an empty session (on);
-/// `console.titleWeights`: scene name to weight, the draw's odds; absent, Kali four in five.
+/// `console.titleIntro`: draw the title field at console start (on);
+/// `console.titleWeights`: scene name to weight, the draw's odds; absent or empty, Kali four in five.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConsoleConfig {
