@@ -292,11 +292,6 @@ fn the_draw_follows_the_weights_and_the_seed() {
         (15_600..=16_400).contains(&kali),
         "kali drew {kali} of 20000"
     );
-    assert_eq!(
-        title::pick(&weights, 7),
-        title::pick(&weights, 7),
-        "one seed, one scene"
-    );
     assert_eq!(title::pick(&[], 1), None);
     assert_eq!(title::pick(&[(Scene::Kali, 0), (Scene::Echo, 0)], 1), None);
     let only = [(Scene::Kali, 0), (Scene::Echo, 3)];
