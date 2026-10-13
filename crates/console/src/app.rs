@@ -1096,12 +1096,12 @@ impl App {
             },
             Zone::Panes if self.on_editor() => self.editor_key(key),
             Zone::Panes if self.on_notebook() => {
-                if let (KeyCode::Char('v'), Some(PaneContent::Notebook { full, drawn, .. })) = (
-                    key.code,
-                    self.state.focused_pane_mut().map(|pane| &mut pane.content),
-                ) {
+                if let (KeyCode::Char('v'), Some(pane)) = (key.code, self.state.focused_pane_mut())
+                    && let PaneContent::Notebook { full, drawn, .. } = &mut pane.content
+                {
                     *full = !*full;
                     *drawn = None;
+                    pane.scroll_from_bottom = 0;
                     self.dirty = true;
                 }
             }
