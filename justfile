@@ -175,7 +175,7 @@ yi-term:
     set -euo pipefail
     arch=$(uname -m | sed 's/arm64/aarch64/')
     var=$(echo "$arch" | tr 'a-z' 'A-Z')
-    docker build -t yi-term:dev scripts/yi-term
+    docker build -t yi-term:dev -t "yi-term:$(shasum -a 256 scripts/yi-term/Dockerfile | cut -c1-12)" scripts/yi-term
     export "CARGO_TARGET_${var}_UNKNOWN_LINUX_MUSL_LINKER=$PWD/scripts/zigcc.sh"
     export "CC_${arch}_unknown_linux_musl=$PWD/scripts/zigcc.sh" "AR_${arch}_unknown_linux_musl=$PWD/scripts/zigar.sh"
     export ZIG_TARGET="$arch-linux-musl" RUSTFLAGS="${RUSTFLAGS:-} -C link-self-contained=no"
