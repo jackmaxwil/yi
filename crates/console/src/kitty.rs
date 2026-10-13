@@ -10,6 +10,10 @@ use ratatui::layout::Rect;
 const IMAGE_ID: u32 = 7701;
 const CHUNK: usize = 4096;
 
+pub fn image_id() -> u32 {
+    IMAGE_ID
+}
+
 pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
     term.is_some_and(|term| term.contains("kitty") || term.contains("ghostty"))
         || term_program.is_some_and(|program| program == "ghostty")

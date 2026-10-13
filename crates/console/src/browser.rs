@@ -138,13 +138,6 @@ pub struct BrowserPane {
     clicks: Clicks,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Placed {
-    rect: Rect,
-    seq: u64,
-    id: u32,
-}
-
 impl BrowserPane {
     /// With no URL the bar opens for typing one.
     pub fn new(url: Option<String>) -> Self {
@@ -234,29 +227,33 @@ impl BrowserPane {
                 }
                 let updates = browser.poll();
                 let dirty = !updates.is_empty();
-                for update in updates {
-                    match update {
-                        Update::Frame(png) => {
-                            if !yi_types::image::is_strict_base64(&png) {
-                                continue;
-                            }
-                            let seq = self
-                                .frame
-                                .as_ref()
-                                .map_or(0, |(seq, _)| seq.wrapping_add(1));
-                            self.frame = Some((seq, png));
-                        }
-                        Update::Url(url) => {
-                            self.url = url;
-                            self.notice = None;
-                        }
-                        Update::NavigateFailed(why) => {
-                            self.notice = Some(format!("[couldn't open the page: {why}]"));
-                        }
-                        Update::Failed(why) => self.engine = Engine::Failed(why),
-                    }
-                }
+                self.absorb(updates);
                 dirty
+            }
+        }
+    }
+
+    fn absorb(&mut self, updates: Vec<Update>) {
+        for update in updates {
+            match update {
+                Update::Frame(png) => {
+                    if !yi_types::image::is_strict_base64(&png) {
+                        continue;
+                    }
+                    let seq = self
+                        .frame
+                        .as_ref()
+                        .map_or(0, |(seq, _)| seq.wrapping_add(1));
+                    self.frame = Some((seq, png));
+                }
+                Update::Url(url) => {
+                    self.url = url;
+                    self.notice = None;
+                }
+                Update::NavigateFailed(why) => {
+                    self.notice = Some(format!("[couldn't open the page: {why}]"));
+                }
+                Update::Failed(why) => self.engine = Engine::Failed(why),
             }
         }
     }
@@ -549,35 +546,27 @@ pub fn place(app: &mut App, out: &mut impl Write) {
             }
         }
     }
-    let placed = &mut app.state.browser_placed;
-    placed.retain(|pane, at| {
-        let keep = want.contains_key(pane);
-        if !keep {
-            let _ = yi_tui::orb::kitty::delete_id(out, at.id);
-        }
-        keep
-    });
-    for (pane, (rect, seq, png)) in want {
-        let old = placed.get(&pane).copied();
-        if old.is_some_and(|old| old.rect == rect && old.seq == seq) {
-            continue;
-        }
-        let [even, odd] = frame_ids(pane);
-        let id = if old.is_some_and(|old| old.id == even) {
-            odd
-        } else {
-            even
-        };
-        let sent = crate::kitty::transmit_base64(out, id, png).is_ok()
-            && yi_tui::orb::kitty::place(out, id, rect.x, rect.y, rect.width, rect.height).is_ok();
-        if !sent {
-            continue;
-        }
-        if let Some(old) = old {
-            let _ = yi_tui::orb::kitty::delete_id(out, old.id);
-        }
-        placed.insert(pane, Placed { rect, seq, id });
-    }
+    crate::placed::reconcile(
+        out,
+        &want,
+        &mut app.state.browser_placed,
+        |pane, old| {
+            let [even, odd] = frame_ids(pane);
+            if old.is_some_and(|old| old.id == even) {
+                odd
+            } else {
+                even
+            }
+        },
+        |out, id, rect, png| {
+            crate::kitty::transmit_base64(out, id, png).is_ok()
+                && yi_tui::orb::kitty::place(out, id, rect.x, rect.y, rect.width, rect.height)
+                    .is_ok()
+        },
+        |out, id| {
+            let _ = yi_tui::orb::kitty::delete_id(out, id);
+        },
+    );
 }
 
 #[cfg(test)]
@@ -633,6 +622,30 @@ mod tests {
             String::from_utf8_lossy(&out),
             format!("\u{1b}_Ga=d,d=I,i={odd},q=2\u{1b}\\")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_navigation_failure_is_a_notice_over_a_live_engine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut pane = BrowserPane::new(Some("http://localhost:1/".to_owned()));
+        pane.engine = Engine::Idle;
+        pane.absorb(vec![Update::NavigateFailed("DNS: not found".to_owned())]);
+        assert!(
+            !matches!(pane.engine, Engine::Failed(_)),
+            "a navigation failure never fails the engine"
+        );
+        let (_, lines) = pane.view(Rect::new(0, 0, 60, 6), true, &theme);
+        let drawn: String = lines.iter().map(|line| line.to_string()).collect();
+        assert!(
+            drawn.contains("[couldn't open the page: DNS: not found]"),
+            "{drawn:?}"
+        );
+        pane.absorb(vec![Update::Url("http://ok/".to_owned())]);
+        let (_, lines) = pane.view(Rect::new(0, 0, 60, 6), true, &theme);
+        let drawn: String = lines.iter().map(|line| line.to_string()).collect();
+        assert!(!drawn.contains("couldn't open the page"), "{drawn:?}");
         Ok(())
     }
 
