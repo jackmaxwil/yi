@@ -104,10 +104,9 @@ fn typed(kind: &SettingKind, text: &str) -> Result<Value, String> {
             .map(Value::Number)
             .map_err(|_| format!("{text:?} is not a number")),
         SettingKind::List => Ok(Value::Array(
-            text.split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(|item| Value::String(item.to_owned()))
+            yi_types::settings::comma_list(text)
+                .into_iter()
+                .map(Value::String)
                 .collect(),
         )),
         _ => Ok(Value::String(text.to_owned())),
@@ -184,9 +183,12 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
             match settings
                 .tab_rows()
                 .get(settings.cursor)
-                .map(|row| (&row.kind, row.id.clone()))
+                .map(|row| (&row.kind, &row.value, row.id.clone()))
             {
-                Some((SettingKind::Json, id)) => {
+                Some((SettingKind::Json, _, id)) => {
+                    Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
+                }
+                Some((SettingKind::List, value, id)) if !value.is_array() && !value.is_null() => {
                     Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
                 }
                 _ => commit(settings, options, Value::Null),
@@ -254,17 +256,27 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
             });
             Intent::None
         }
-        SettingKind::Number { .. } | SettingKind::Text | SettingKind::Model | SettingKind::List => {
+        SettingKind::Number { .. } | SettingKind::Text | SettingKind::Model => {
             let text = match &row.value {
                 Value::String(text) => text.clone(),
                 Value::Null => String::new(),
-                Value::Array(_) => shown_value(&row.value),
                 other => other.to_string(),
             };
             settings.edit = Some(Edit::Type(text));
             Intent::None
         }
-        SettingKind::Json => Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id)),
+        SettingKind::List if row.value.is_null() => {
+            settings.edit = Some(Edit::Type(String::new()));
+            Intent::None
+        }
+        SettingKind::List if row.value.is_array() => {
+            let text = shown_value(&row.value);
+            settings.edit = Some(Edit::Type(text));
+            Intent::None
+        }
+        SettingKind::List | SettingKind::Json => {
+            Intent::Note(format!("{} is edited in ~/.yi/config.json", row.id))
+        }
     }
 }
 
@@ -308,7 +320,10 @@ fn commit_typed(settings: &Settings, options: &[AcpConfigOption], text: &str) ->
 }
 
 fn shown(row: &SettingRow) -> String {
-    let entries = matches!(row.kind, SettingKind::Json);
+    let entries = matches!(
+        (&row.kind, &row.value),
+        (SettingKind::Json, _) | (SettingKind::List, Value::Number(_))
+    );
     match (&row.value, &row.default) {
         (Value::Number(count), _) if entries => format!("{count} entries"),
         (Value::Null, Value::Bool(true)) => "on (default)".to_owned(),
@@ -604,5 +619,37 @@ mod tests {
             Intent::SaveDefault { ref id, ref value }
                 if id == "routing.order" && *value == serde_json::json!(["Together", "DeepInfra"])
         ));
+    }
+
+    /// A list row the daemon redacted to its entry count (`skills.global`, `lanes.land`) must
+    /// not open the comma editor on that count: Enter and `u` both point at config.json.
+    #[test]
+    fn a_redacted_list_row_points_at_config_json() -> Result<(), Box<dyn std::error::Error>> {
+        use ratatui::crossterm::event::KeyModifiers;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut rows = yi_types::settings::rows();
+        let at = rows
+            .iter()
+            .position(|row| row.id == "skills.global")
+            .ok_or("no skills row")?;
+        rows[at].value = serde_json::json!(2);
+        let tab = TABS
+            .iter()
+            .position(|tab| *tab == rows[at].tab)
+            .ok_or("no tab")?
+            + 1;
+        let mut settings = Settings::new(None, tab);
+        settings.rows = Some(rows);
+        settings.cursor = settings
+            .tab_rows()
+            .iter()
+            .position(|row| row.id == "skills.global")
+            .ok_or("no skills row")?;
+        let opened = key(&mut settings, press(KeyCode::Enter), &[]);
+        assert!(matches!(opened, Intent::Note(_)));
+        assert!(settings.edit.is_none());
+        let unset = key(&mut settings, press(KeyCode::Char('u')), &[]);
+        assert!(matches!(unset, Intent::Note(_)));
+        Ok(())
     }
 }

@@ -27,19 +27,23 @@ pub fn current(home: &Path) -> Result<Vec<SettingRow>, String> {
     Ok(rows()
         .into_iter()
         .map(|mut row| {
-            row.value = shown(&row.kind, lookup(&config, &row.id));
+            row.value = shown(&row, lookup(&config, &row.id));
             row
         })
         .collect())
 }
 
 /// Incident: the owner once kept an API key under `keys`; a JSON value leaves this process as
-/// its entry count, which is all the page shows of it. A list holds names and paths and shows whole.
-fn shown(kind: &SettingKind, value: &Value) -> Value {
-    match (kind, value) {
-        (SettingKind::Json, Value::Array(items)) => Value::from(items.len()),
-        (SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
-        (SettingKind::Json, _) => Value::from(1),
+/// its entry count, and a list keeps it too unless the pane edits it (the routing rows).
+fn shown(row: &SettingRow, value: &Value) -> Value {
+    match (&row.kind, value) {
+        (SettingKind::List, _) if matches!(row.id.as_str(), "routing.order" | "routing.only") => {
+            value.clone()
+        }
+        (SettingKind::List | SettingKind::Json, Value::Array(items)) => Value::from(items.len()),
+        (SettingKind::List | SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
+        (SettingKind::List | SettingKind::Json, Value::Null) => Value::Null,
+        (SettingKind::List | SettingKind::Json, _) => Value::from(1),
         _ => value.clone(),
     }
 }
@@ -270,7 +274,7 @@ mod tests {
     }
 
     /// Incident: the owner once stored an API key under `keys`; the page only ever learns how
-    /// many entries a JSON row holds; a list of names shows whole so it can be edited.
+    /// many entries a list or JSON row holds.
     #[test]
     fn a_secret_in_a_json_row_never_leaves_as_text() -> Result<(), Box<dyn std::error::Error>> {
         let home = Scratch::new("yi-settings-redacts")?;
@@ -291,7 +295,21 @@ mod tests {
             .iter()
             .find(|row| row.id == "skills.global")
             .ok_or("no skills row")?;
-        assert_eq!(skills.value, json!(["a", "b"]));
+        assert_eq!(skills.value, json!(2));
+        Ok(())
+    }
+
+    /// An unset JSON row must stay unset on the wire: with no `keys` in config.json the page
+    /// says "unset", never a fabricated entry count.
+    #[test]
+    fn an_unset_json_row_shows_unset_not_a_count() -> Result<(), Box<dyn std::error::Error>> {
+        let home = Scratch::new("yi-settings-unset")?;
+        let rows = current(&home)?;
+        let keys = rows
+            .iter()
+            .find(|row| row.id == "keys")
+            .ok_or("no keys row")?;
+        assert_eq!(keys.value, Value::Null);
         Ok(())
     }
 

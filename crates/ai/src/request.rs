@@ -60,11 +60,9 @@ impl ProxyConfig {
             .map_err(|error| format!("invalid proxy {}: {error}", redacted(url)))?;
         Ok(Some(Self {
             proxy,
-            no_proxy: no_proxy
-                .unwrap_or_default()
-                .split(',')
-                .map(|entry| entry.trim().trim_start_matches('.').to_lowercase())
-                .filter(|entry| !entry.is_empty())
+            no_proxy: yi_types::settings::comma_list(no_proxy.unwrap_or_default())
+                .iter()
+                .map(|entry| entry.trim_start_matches('.').to_lowercase())
                 .collect(),
         }))
     }
