@@ -34,6 +34,11 @@ impl App {
         self.handle_mouse(outbound, kind, mouse.column, mouse.row);
     }
 
+    pub fn hovered(&self) -> Option<ratatui::layout::Rect> {
+        let (x, y) = self.pointer?;
+        self.hits.as_ref()?.hover_at(x, y)
+    }
+
     /// A drag copies without the user reaching for a key.
     pub(super) fn copy_out(&mut self, text: &str) {
         self.osc_out.push(crate::select::osc52(text));
@@ -122,6 +127,18 @@ impl App {
         {
             let index = *index;
             self.state.select_tab(index);
+            self.dirty = true;
+            return;
+        }
+        let strip = hits.settings_tabs.iter();
+        if let Some((_, pane, tab)) = strip.copied().find(|(r, ..)| r.contains((x, y).into())) {
+            if let Some(layout) = self.state.tab_mut() {
+                layout.layout.focus_pane(pane);
+            }
+            self.state.zone = Zone::Panes;
+            if let Some(settings) = self.settings_pane(pane) {
+                (settings.tab, settings.cursor) = (tab, 0);
+            }
             self.dirty = true;
             return;
         }
@@ -245,16 +262,9 @@ impl App {
             MouseKind::Down => self.press(outbound, x, y),
             MouseKind::RightDown => self.right_click(x, y),
             MouseKind::Moved => {
-                let over = |at: Option<(u16, u16)>| {
-                    let hits = self.hits.as_ref()?;
-                    let at = Position::from(at?);
-                    hits.hint_buttons
-                        .iter()
-                        .position(|(rect, _)| rect.contains(at))
-                };
-                let before = over(self.pointer);
+                let before = self.hovered();
                 self.pointer = Some((x, y));
-                self.dirty |= before != over(self.pointer);
+                self.dirty |= before != self.hovered();
             }
             MouseKind::Drag => {
                 self.pending_close = None;

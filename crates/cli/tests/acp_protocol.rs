@@ -1101,11 +1101,13 @@ fn attach_names_the_lane_path_not_the_launch_root() -> Result<(), Box<dyn Error>
         cwd.contains(".yi/lanes/"),
         "the workdir update names the lane, not the launch root: {cwd}"
     );
-    assert!(
-        workdir["lane"]
-            .as_str()
-            .is_some_and(|lane| lane.contains("⎇ lane")),
-        "the update carries the row label: {workdir}"
+    let repo = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    assert_eq!(
+        workdir["lane"].as_str().map(str::to_owned),
+        repo,
+        "the row label is the repo's name, no slot number: {workdir}"
     );
     client.finish()?;
     Ok(())

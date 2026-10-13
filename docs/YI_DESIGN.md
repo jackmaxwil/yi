@@ -812,7 +812,7 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
 - The warmer runs offline under Seatbelt, only for a lockfile hash a session already synced.
-- `LaneHandle::row` alone builds the status-row text `<repo> ⎇ lane <n>`.
+- `LaneHandle::row` alone builds the status-row text: the repo's name, no slot number.
 - Owner: [`crates/runtime/src/lane/mod.rs`](../crates/runtime/src/lane/mod.rs).
 
 State: `ClaimBase`, `TreeState`, `SlotView { Idle, Held, Orphan }`, `Forge`. Shapes:
