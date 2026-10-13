@@ -302,12 +302,18 @@ fn reveal_pace(args: &Args) -> u16 {
         .unwrap_or(100)
 }
 
+/// The title plays by default on an interactive console; a headless drive keeps it off unless
+/// the config asks, so its frames hold still.
+#[cfg(feature = "tui")]
+fn title_wanted(configured: Option<bool>, headless: bool) -> bool {
+    configured.unwrap_or(!headless)
+}
+
 /// `yi console` — the workspace shell, an ACP client over the serve daemon.
 #[cfg(feature = "tui")]
 pub fn run_console_command(args: &Args) -> i32 {
     let console = config().console.clone().unwrap_or_default();
-    // A headless drive keeps the title off unless the config asks, so its frames hold still.
-    let title = if console.title_intro.unwrap_or(!args.headless) {
+    let title = if title_wanted(console.title_intro, args.headless) {
         let seed = yi_console::model::now_ms();
         let weights = console
             .title_weights
@@ -414,4 +420,19 @@ pub(crate) fn session_extensions(
             .and_then(|skills| skills.global.clone())
             .unwrap_or_default(),
     })
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::title_wanted;
+
+    /// Incident: only the headless-with-config combination was ever driven, so inverting the
+    /// default would have left every test green and no real console playing the title.
+    #[test]
+    fn the_title_plays_by_default_when_interactive_and_only_when_asked_when_headless() {
+        assert!(title_wanted(None, false), "an interactive console plays it");
+        assert!(!title_wanted(None, true), "a headless drive holds still");
+        assert!(title_wanted(Some(true), true), "unless the config asks");
+        assert!(!title_wanted(Some(false), false), "and false turns it off");
+    }
 }
