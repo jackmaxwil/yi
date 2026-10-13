@@ -203,6 +203,7 @@ impl Resolver {
                             url: url.to_string(),
                             what: format!("agent {asked}: no live, kept or on-disk session"),
                         })?;
+                self.spellings_walled(url, &session, window)?;
                 let window = window.unwrap_or_default();
                 let agent = asked.strip_suffix(window).unwrap_or(asked);
                 let agent = agent.strip_suffix('/').unwrap_or(agent);
