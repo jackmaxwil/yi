@@ -16,6 +16,7 @@ members = [
   "crates/acp",
   "crates/tui",
   "crates/console",
+  "crates/browser",
   "crates/cli",
 ]
 # Patched upstream crates live under vendor/ and are not workspace members.
@@ -43,6 +44,7 @@ yi-runtime = { path = "crates/runtime" }
 yi-acp = { path = "crates/acp" }
 yi-tui = { path = "crates/tui" }
 yi-console = { path = "crates/console" }
+yi-browser = { path = "crates/browser" }
 yi-cli = { path = "crates/cli" }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1", default-features = false, features = ["std", "preserve_order"] }
@@ -69,7 +71,7 @@ pulldown-cmark = { version = "0.12", default-features = false }
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 unicode-width = { version = "0.2", default-features = false }
-rustix = { version = "0.38", default-features = false, features = ["fs", "std"] }
+rustix = { version = "0.38", default-features = false, features = ["fs", "std", "stdio"] }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 vt100 = { version = "0.15", default-features = false }
 insta = { version = "1", default-features = false }

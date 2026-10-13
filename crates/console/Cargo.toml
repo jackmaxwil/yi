@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 yi-types = { workspace = true }
 yi-tui = { workspace = true }
+yi-browser = { workspace = true }
 ratatui = { workspace = true }
 unicode-width = { workspace = true }
 tui-textarea = { workspace = true }

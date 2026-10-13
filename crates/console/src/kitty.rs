@@ -1,4 +1,4 @@
-//! Kitty graphics for the notebook pane: base64 PNG payloads go out as `f=100` transmits and
+//! Kitty graphics for the notebook and browser panes: base64 PNG payloads go out as `f=100` transmits and
 //! a cell-rect placement, inside the synchronized frame so image and text land together.
 
 use std::io::Write;
@@ -19,27 +19,8 @@ pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
 /// already base64, the wire form the kernel attachment carries, so nothing decodes here.
 pub fn place_png(out: &mut impl Write, base64_png: &str, rect: Rect) -> std::io::Result<()> {
     write!(out, "\u{1b}_Ga=d,d=i,i={IMAGE_ID},q=2\u{1b}\\")?;
-    // Invariant (#817): a byte outside base64 could end this escape and start another; the
-    // kernel refuses such data, but a session saved before it did still replays here.
-    if !yi_types::image::is_strict_base64(base64_png) {
+    if !transmit_png(out, IMAGE_ID, base64_png)? {
         return Ok(());
-    }
-    let bytes = base64_png.as_bytes();
-    let mut offset = 0;
-    let mut first = true;
-    while offset < bytes.len() {
-        let end = offset.saturating_add(CHUNK).min(bytes.len());
-        let chunk = bytes.get(offset..end).unwrap_or_default();
-        let more = u8::from(end < bytes.len());
-        if first {
-            write!(out, "\u{1b}_Gf=100,a=t,i={IMAGE_ID},q=2,m={more};")?;
-            first = false;
-        } else {
-            write!(out, "\u{1b}_Gm={more};")?;
-        }
-        out.write_all(chunk)?;
-        write!(out, "\u{1b}\\")?;
-        offset = end;
     }
     let row = rect.y.saturating_add(1);
     let col = rect.x.saturating_add(1);
@@ -49,6 +30,33 @@ pub fn place_png(out: &mut impl Write, base64_png: &str, rect: Rect) -> std::io:
         out,
         "\u{1b}7\u{1b}[{row};{col}H\u{1b}_Ga=p,i={IMAGE_ID},r={rows},c={cols},q=2\u{1b}\\\u{1b}8"
     )
+}
+
+/// Transmits base64 PNG under `id` with no placement; false when it was refused unsent.
+pub fn transmit_png(out: &mut impl Write, id: u32, base64_png: &str) -> std::io::Result<bool> {
+    // Invariant (#817): a byte outside base64 could end this escape and start another; the
+    // kernel refuses such data, but a session saved before it did still replays here.
+    if !yi_types::image::is_strict_base64(base64_png) {
+        return Ok(false);
+    }
+    let bytes = base64_png.as_bytes();
+    let mut offset = 0;
+    let mut first = true;
+    while offset < bytes.len() {
+        let end = offset.saturating_add(CHUNK).min(bytes.len());
+        let chunk = bytes.get(offset..end).unwrap_or_default();
+        let more = u8::from(end < bytes.len());
+        if first {
+            write!(out, "\u{1b}_Gf=100,a=t,i={id},q=2,m={more};")?;
+            first = false;
+        } else {
+            write!(out, "\u{1b}_Gm={more};")?;
+        }
+        out.write_all(chunk)?;
+        write!(out, "\u{1b}\\")?;
+        offset = end;
+    }
+    Ok(true)
 }
 
 pub fn delete(out: &mut impl Write) -> std::io::Result<()> {

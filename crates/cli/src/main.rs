@@ -952,6 +952,11 @@ fn mcp_fast_path() {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "__fds") {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+        eprintln!("error: __fds: {}", yi_browser::exec_on_pipe_fds(&args));
+        std::process::exit(1);
+    }
     doctor::early();
     update::early();
     plugin::early();

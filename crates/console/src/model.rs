@@ -219,6 +219,7 @@ pub enum PaneContent {
     },
     Editor(Editor),
     Settings(Box<crate::settings::Settings>),
+    Browser(Box<crate::browser::BrowserPane>),
 }
 
 pub struct Editor {
@@ -378,7 +379,8 @@ impl Pane {
             | PaneContent::SessionDiff { .. }
             | PaneContent::Tape { .. }
             | PaneContent::Editor(_)
-            | PaneContent::Settings(_) => None,
+            | PaneContent::Settings(_)
+            | PaneContent::Browser(_) => None,
         }
     }
 }
@@ -423,6 +425,8 @@ pub struct ConsoleState {
     pub root_filter: Option<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
     pub parked: BTreeMap<SessionId, Box<Chat>>,
+    pub browser_path: Option<std::path::PathBuf>,
+    pub browser_placed: BTreeMap<PaneId, crate::browser::Placed>,
 }
 
 impl ConsoleState {
@@ -461,6 +465,8 @@ impl ConsoleState {
             root_filter: None,
             children: BTreeMap::new(),
             parked: BTreeMap::new(),
+            browser_path: None,
+            browser_placed: BTreeMap::new(),
             quit: false,
         }
     }
