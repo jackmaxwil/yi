@@ -24,7 +24,7 @@ impl App {
         })
     }
 
-    fn settings_pane(&mut self, pane: PaneId) -> Option<&mut Settings> {
+    pub(super) fn settings_pane(&mut self, pane: PaneId) -> Option<&mut Settings> {
         match &mut self.state.panes.get_mut(&pane)?.content {
             PaneContent::Settings(settings) => Some(settings),
             _ => None,

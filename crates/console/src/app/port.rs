@@ -481,7 +481,7 @@ mod ask_tests {
                     "cwd".to_owned(),
                     serde_json::json!("/home/user/.yi/lanes/abc/1"),
                 ),
-                ("lane".to_owned(), serde_json::json!("project ⎇ lane 1")),
+                ("lane".to_owned(), serde_json::json!("project")),
             ]
             .into_iter()
             .collect(),
@@ -491,7 +491,7 @@ mod ask_tests {
             decoded,
             Ok(Decoded::Workdir { ref cwd, ref lane })
                 if cwd == "/home/user/.yi/lanes/abc/1"
-                    && lane.as_deref() == Some("project ⎇ lane 1")
+                    && lane.as_deref() == Some("project")
         );
         assert!(named, "the update carries the lane path and its row label");
     }

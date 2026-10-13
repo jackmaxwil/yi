@@ -381,10 +381,7 @@ impl LaneHandle {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Some((
-            lane.path().to_path_buf(),
-            format!("{repo} ⎇ lane {}", lane.slot()),
-        ))
+        Some((lane.path().to_path_buf(), repo))
     }
 
     pub fn slot(&self) -> Option<super::SlotIndex> {

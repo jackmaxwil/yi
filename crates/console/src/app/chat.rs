@@ -1054,6 +1054,44 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with the mark gone from every chat pane but the focused one.
+    #[test]
+    fn every_drawn_chat_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.kitty = true;
+        let left = app.state.focused_pane_id().ok_or("a pane")?;
+        let right = app
+            .state
+            .split_focused(ratatui::layout::Direction::Horizontal)
+            .ok_or("no split")?;
+        for (pane, id) in [(left, "s-a"), (right, "s-b")] {
+            let session = SessionId(id.to_owned());
+            let chat = app.make_chat(pane, &session);
+            if let Some(slot) = app.state.panes.get_mut(&pane) {
+                slot.content = PaneContent::Session {
+                    session: Some(session),
+                    chat: Some(chat),
+                };
+            }
+        }
+        if let Some(tab) = app.state.tab_mut() {
+            tab.layout.focus_pane(left);
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
+        let mut out = Vec::new();
+        let mut owners = std::collections::HashMap::new();
+        crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
+        let written = String::from_utf8_lossy(&out);
+        for pane in [left, right] {
+            let placed = orb_ids(pane)
+                .iter()
+                .any(|id| written.contains(&format!("a=p,i={id},")));
+            assert!(placed, "pane {} has no mark: {written:?}", pane.raw());
+        }
+        Ok(())
+    }
+
     /// Dies with the chat's orb frozen mid-morph: a loop step that drew no text ran no image
     /// tick, so the orb moved only on steps that happened to repaint.
     #[test]

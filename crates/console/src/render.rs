@@ -42,6 +42,8 @@ pub struct Hits {
     pub splits: Vec<SplitBorder>,
     pub tabs: Vec<(Rect, usize)>,
     pub closers: Vec<(PaneId, Rect)>,
+    pub titles: Vec<(PaneId, Rect)>,
+    pub settings_tabs: Vec<(Rect, PaneId, usize)>,
     /// Popups over the panes, outermost first: they take every click and hide kitty images.
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
@@ -54,6 +56,47 @@ impl Hits {
         let at = ratatui::layout::Position::new(x, y);
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
+    }
+
+    /// The control under the pointer; a move redraws only when this changes. A session's
+    /// rows lift together, as one click target.
+    pub fn hover_at(&self, x: u16, y: u16) -> Option<Rect> {
+        let at = ratatui::layout::Position::new(x, y);
+        let session = self.sidebar_rows.iter().find(|(row, _)| *row == y);
+        let row = session
+            .filter(|_| x < self.sidebar_width)
+            .map(|(_, index)| {
+                let rows = self.sidebar_rows.iter().filter(|(_, i)| i == index);
+                let (top, bottom) =
+                    rows.fold((y, y), |(t, b), (row, _)| (t.min(*row), b.max(*row)));
+                Rect::new(
+                    0,
+                    top,
+                    self.sidebar_width,
+                    bottom.saturating_sub(top).saturating_add(1),
+                )
+            });
+        let hints = self.hint_buttons.iter().map(|(rect, _)| *rect);
+        hints
+            .chain(self.closers.iter().map(|(_, rect)| *rect))
+            .chain(self.titles.iter().map(|(_, rect)| *rect))
+            .chain(self.settings_tabs.iter().map(|(rect, ..)| *rect))
+            .chain(self.gear)
+            .find(|rect| rect.contains(at))
+            .or(row)
+    }
+}
+
+/// A hovered control a shade lighter; a chip drawn reversed lightens its face instead.
+fn lift(buffer: &mut Buffer, rect: Rect, theme: &Theme) {
+    for at in rect.intersection(buffer.area).positions() {
+        if let Some(cell) = buffer.cell_mut(at) {
+            if cell.modifier.contains(Modifier::REVERSED) {
+                cell.fg = crate::chrome::lighten(cell.fg);
+            } else {
+                cell.bg = theme.selection_bg();
+            }
+        }
     }
 }
 
@@ -232,11 +275,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
-        closers: Vec::new(),
-        overlays: Vec::new(),
-        dismiss: None,
+        settings_tabs: settings_hits(app, &panes, framed),
         gear: (gear.height > 0).then_some(gear),
-        hint_buttons: Vec::new(),
+        ..Hits::default()
     });
 
     ViewState {
@@ -261,6 +302,23 @@ fn frames_panes(app: &App) -> bool {
             || !lone
             || !chat.is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }))
     })
+}
+
+fn settings_hits(app: &App, panes: &[PaneView], framed: bool) -> Vec<(Rect, PaneId, usize)> {
+    let mut hits = Vec::new();
+    for view in panes {
+        let Some(PaneContent::Settings(settings)) =
+            app.state.panes.get(&view.id).map(|p| &p.content)
+        else {
+            continue;
+        };
+        let inner = view.rect.inner(pane_margin(framed));
+        for (x, width, tab) in crate::settings::tab_targets(settings, usize::from(inner.width)) {
+            let rect = Rect::new(inner.x.saturating_add(x), inner.y, width, 1);
+            hits.push((rect.intersection(inner), view.id, tab));
+        }
+    }
+    hits
 }
 
 /// Invariant: hit widths come from the label builder the bar draws with.
@@ -391,7 +449,7 @@ fn pane_view_content(
             let options = options.map_or(&[][..], Vec::as_slice);
             let width = usize::from(inner.width);
             let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
-            (format!("{GEAR} Settings"), lines, None)
+            ("Settings".to_owned(), lines, None)
         }
         PaneContent::Tape { tape, cursor, .. } => {
             let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
@@ -711,6 +769,13 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     if let Some(area) = view.banner {
         render_banner(app, frame, area, theme);
     }
+    let hints = app.hits.as_ref().map(|hits| hits.hint_buttons.as_slice());
+    let keycap = |rect: &Rect| hints.is_some_and(|hints| hints.iter().any(|(r, _)| r == rect));
+    if let Some(rect) = app.hovered().filter(|rect| !keycap(rect))
+        && matches!(app.state.mode, Mode::Normal | Mode::Prefix)
+    {
+        lift(frame.buffer_mut(), rect, theme);
+    }
     let popup = match &app.state.mode {
         Mode::Navigator { .. } => crate::palette::render_navigator(app, frame, view, theme),
         Mode::Menu(menu) => {
@@ -729,7 +794,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     }
 }
 
-/// Solo's chat into the pane's rectangle; the focused pane alone carries the orb.
+/// Solo's chat into the pane's rectangle, its orb row reserved whether or not it has focus.
 fn paint_chat_pane(
     app: &mut App,
     view: &mut PaneView,
@@ -770,7 +835,7 @@ fn paint_chat_pane(
     else {
         return;
     };
-    chat.app.set_kitty(kitty && view.focused);
+    chat.app.set_kitty(kitty);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
@@ -953,7 +1018,7 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             .get(&pane.id)
             .and_then(|p| p.session())
             .and_then(|s| app.state.sessions.get(s))
-            .map_or(SessionStatus::Unknown, |row| row.status);
+            .map(|row| row.status);
         let seed = app
             .state
             .panes
@@ -967,7 +1032,10 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                     app.accent_of(&row.id.0, row.seed()),
                 )
             });
-        let text = format!(" {} {} ", status.glyph(), pane.title);
+        let text = match status {
+            Some(status) => format!(" {} {} ", status.glyph(), pane.title),
+            None => format!(" {} ", pane.title),
+        };
         let mut right = r.right().saturating_sub(1);
         if closable {
             let width = 3;
@@ -1009,7 +1077,11 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             theme.dim_style()
         };
         let span = Span::styled(text, style);
-        buffer.set_span(x, r.y, &span, max);
+        let (end, _) = buffer.set_span(x, r.y, &span, max);
+        if let Some(hits) = app.hits.as_mut() {
+            hits.titles
+                .push((pane.id, Rect::new(x, r.y, end.saturating_sub(x), 1)));
+        }
     }
 }
 

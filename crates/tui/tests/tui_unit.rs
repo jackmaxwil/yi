@@ -457,20 +457,20 @@ fn a_model_with_emoji_presentation_is_clipped_by_drawn_width() {
     }
 }
 
-/// A lane session's row names the checkout and the slot, not the pool's hash path.
+/// A lane session's row names the checkout's repo, not the pool's hash path.
 #[test]
 fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
     let input = StatusInput {
         model: "faux-1".to_owned(),
         cwd: "/Users/someone/.yi/lanes/897d6e9162485667/1".to_owned(),
-        lane: Some("yi ⎇ lane 1".to_owned()),
+        lane: Some("yi".to_owned()),
         branch: Some("yi/01a06f8d-1234".to_owned()),
         session_name: "01a06f8d".to_owned(),
         context_window: 128_000,
         ..StatusInput::default()
     };
     let text = flat(&yi_tui::status::render(&input, 80, &theme()));
-    assert!(text.contains("yi ⎇ lane 1"), "{text}");
+    assert!(text.contains(" yi "), "{text}");
     assert!(
         !text.contains("897d6e9162485667"),
         "the hash stays off the row: {text}"
