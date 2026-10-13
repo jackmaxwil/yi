@@ -411,6 +411,7 @@ fn run_console(
             sidebar,
             pace: 0,
             browser: None,
+            chrome_pin: None,
         },
         DriveOptions {
             script: steps,
@@ -451,6 +452,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             sidebar: SidebarMode::Rail,
             pace: 0,
             browser: None,
+            chrome_pin: None,
         },
         DriveOptions {
             script: steps,

@@ -2255,7 +2255,7 @@ fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
 }
 
 /// `yi plugin list --json` is what the eval adapter reads (`evals/adapters/yi_usage.py`
-/// `installed_plugins`): one row per plugin with `name`, `version`, `state` and `path`.
+/// `installed_plugins`): one row per plugin with `name`, `version`, `state`, `path` and `shape`.
 #[test]
 fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
     let workspace = Workspace::new("plugin-json")?;
@@ -2274,6 +2274,14 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
         ripwire["path"],
         json!(pinned.join("ripwire").display().to_string()),
         "{rows}"
+    );
+    let chrome = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "chrome")
+        .ok_or("no chrome row")?;
+    assert_eq!(
+        (&ripwire["shape"], &chrome["shape"]),
+        (&json!("program"), &json!("tree")),
+        "the adapter carries programs and never the console's Chrome: {rows}"
     );
     Ok(())
 }

@@ -963,11 +963,14 @@ def check_mutate():
 
 def check_plugins():
     """#1041: the plugins `yi plugin add` installed ride into the container by EVAL_PLUGINS, the
-    fingerprint names each with its version, and an arm with none says `+plugins{}`."""
+    fingerprint names each with its version, and an arm with none says `+plugins{}`. A tree
+    (the console's Chrome) is no program the model runs, so it never rides (#1379)."""
     report = json.dumps([
         {"name": "ripwire", "version": "0.6.5", "state": "installed",
          "path": "/home/yi/.yi/plugins/ripwire/0.6.5/ripwire"},
         {"name": "other", "version": "0.6.5", "state": "missing", "path": None},
+        {"name": "chrome", "version": "155.0.8059.39", "state": "installed", "shape": "tree",
+         "path": "/home/yi/.yi/plugins/chrome/155.0.8059.39/chrome-headless-shell-linux64/x"},
     ])
     carried = yi_usage.local_plugins({}, report)
     assert [(n, v) for n, v, _ in carried] == [("ripwire", "0.6.5")], carried

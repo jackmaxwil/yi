@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use yi_tools::plugin::PLUGINS;
+use yi_tools::plugin::{PLUGINS, Shape};
 
 use super::{Effect, Event, EventMask, Extension, Rank, Slot};
 
@@ -23,7 +23,7 @@ impl Extension for Plugins {
         }
         for plugin in PLUGINS
             .iter()
-            .filter(|plugin| plugin.found(&self.home).is_some())
+            .filter(|plugin| plugin.shape == Shape::Program && plugin.found(&self.home).is_some())
         {
             out.push(Effect::AttachFragment {
                 slot: Slot::new(Rank::Tool, plugin.name),

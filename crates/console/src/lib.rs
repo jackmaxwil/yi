@@ -54,6 +54,7 @@ pub struct ConsoleOptions {
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
     pub browser: Option<PathBuf>,
+    pub chrome_pin: Option<crate::browser::Pinned>,
 }
 
 pub struct DriveOptions {
@@ -774,7 +775,8 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
-    app.state.browser_path.clone_from(&options.browser);
+    app.state.chrome =
+        crate::browser::Chrome::new(options.browser.clone(), options.chrome_pin.clone());
 }
 
 /// What the console wrote outside the grid (clipboard, title), kept beside the frames; the

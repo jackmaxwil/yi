@@ -87,7 +87,8 @@ def levers_label(environ):
 def installed_plugins(report):
     """(name, version, path) from `yi plugin list --json`: yi is the one reader of the layout
     `yi plugin add` writes. A report that is not that array of rows is refused, never read as
-    zero plugins (the shape is pinned by cli_surfaces' plugin list test)."""
+    zero plugins (the shape is pinned by cli_surfaces' plugin list test). A `tree` row is a
+    program Yi starts itself, never one a task's model runs, so it is not carried."""
     try:
         rows = json.loads(str(report))
     except ValueError:
@@ -96,7 +97,8 @@ def installed_plugins(report):
         isinstance(row, dict) and {"name", "version", "state", "path"} <= row.keys() for row in rows
     ):
         raise ValueError(f"`yi plugin list --json` printed no plugin rows: {str(report)[:200]!r}")
-    return {row["name"]: (row["version"], Path(row["path"])) for row in rows if row["state"] == "installed"}
+    return {row["name"]: (row["version"], Path(row["path"])) for row in rows
+            if row["state"] == "installed" and row.get("shape", "program") == "program"}
 
 
 def local_plugins(environ, report):
