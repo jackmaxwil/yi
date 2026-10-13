@@ -200,6 +200,7 @@ fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
         Scene::Clouds,
         Scene::Growth,
         Scene::Spirals,
+        Scene::Attractor,
     ] {
         let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
         let held = at(2.1);
@@ -312,6 +313,7 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("clouds"), Some(Scene::Clouds));
     assert_eq!(Scene::named("growth"), Some(Scene::Growth));
     assert_eq!(Scene::named("spirals"), Some(Scene::Spirals));
+    assert_eq!(Scene::named("attractor"), Some(Scene::Attractor));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
@@ -483,4 +485,38 @@ fn the_spirals_turn_and_the_cache_keeps_its_place() {
         "a kept run equals a fresh one"
     );
     assert_eq!(draw(&mut cache, 0.4), early, "back in time starts over");
+}
+
+/// The Clifford orbit with `c = 1`, `d = 0.7` cannot leave |x| < 2, |y| < 1.7, and the screen maps
+/// that box to its middle 95%: the outer 2.5% (row 0, row 39, columns 0 to 2) never holds a point
+/// at any time, however `a` and `b` have drifted, and the shape itself moves.
+#[test]
+fn the_attractor_stays_inside_its_box_and_drifts() {
+    let (width, height) = (120_u16, 40_u16);
+    let frame = |secs: f64| screen(Scene::Attractor, (width, height), secs, None);
+    for secs in [0.1, 0.9, 1.1] {
+        let glyphs = frame(secs);
+        assert!(
+            count(&glyphs, |g| g != ' ') > 300,
+            "t {secs}: nothing drawn"
+        );
+        let edge = |x: usize, y: usize| {
+            y == 0 || y == usize::from(height) - 1 || x < 3 || x >= usize::from(width) - 3
+        };
+        let strays = glyphs
+            .iter()
+            .enumerate()
+            .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
+            .filter(|(x, y, g)| *g != ' ' && edge(*x, *y))
+            .count();
+        assert_eq!(strays, 0, "t {secs}: the orbit left its box");
+    }
+    let (first, later) = (frame(0.1), frame(1.1));
+    let moved = first
+        .iter()
+        .flatten()
+        .zip(later.iter().flatten())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(moved > 200, "a second of drift moved only {moved} cells");
 }
