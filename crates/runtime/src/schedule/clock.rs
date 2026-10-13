@@ -183,7 +183,12 @@ pub(super) fn overlap_room(job: &Job, open: usize) -> Result<usize, String> {
 
 /// `<label or instruction> @ <tick>`, the head cut to fit the label cap.
 pub(super) fn label(job: &Job, tick: u64) -> Result<TodoLabel, String> {
-    let suffix = format!(" @ {}", crate::plan::program::iso(tick));
+    label_with(job, tick, "")
+}
+
+/// [`label`] with `tail` after the tick, for two todos one second can make.
+pub(super) fn label_with(job: &Job, tick: u64, tail: &str) -> Result<TodoLabel, String> {
+    let suffix = format!(" @ {}{tail}", crate::plan::program::iso(tick));
     let base = job.label.as_deref().unwrap_or(&job.prompt);
     let head: String = base
         .split_whitespace()
