@@ -6,6 +6,7 @@ description: >
   `/pulls` channel wakes you ("N message(s) from forgejo://…/pulls"), or when asked to
   review, re-review or sweep PRs. Do NOT merge anything, and do NOT edit the probe files
   under this skill to make a round pass.
+within: scripts/forge_pr.py
 ---
 
 # Reviewing drafts in rounds

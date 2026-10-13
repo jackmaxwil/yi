@@ -570,6 +570,41 @@ fn a_typed_dollar_name_points_at_the_skill_before_the_first_reply() -> TestResul
     Ok(())
 }
 
+/// A repository-bound skill (`within:`) must not fire its trigger where the path is absent.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_trigger_word_in_a_repository_without_the_skills_path_points_nowhere() -> TestResult {
+    let journey = Journey::new("skill-within")?;
+    write_skill(
+        &journey,
+        "land",
+        "trigger: git commit\nwithin: scripts/forge_pr.py",
+    )?;
+    succeeded(
+        &journey.yi(&["ask", "git commit the change"])?,
+        "the ask in a repository lacking the path",
+    )?;
+    assert_eq!(
+        trace(&journey)?,
+        ["user", "assistant"],
+        "no pointer at a recipe for a forge this repository lacks"
+    );
+    std::fs::create_dir_all(journey.project().join("scripts"))?;
+    std::fs::write(journey.project().join("scripts/forge_pr.py"), "")?;
+    succeeded(
+        &journey.yi(&["ask", "--continue", "git commit the change"])?,
+        "the ask once the path exists",
+    )?;
+    let rows = trace(&journey)?;
+    assert!(
+        rows.iter()
+            .any(|row| row == "reminder: Relevant: yi://skills/land (matched \"git commit\")"),
+        "the control: the same words fire the skill where the path exists: {rows:?}"
+    );
+    journey.reclaim();
+    Ok(())
+}
+
 /// #587: a probe session was pointed at skills by its own "verified" and `cargo nextest`.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
