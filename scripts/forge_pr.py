@@ -34,6 +34,7 @@ def job_secs(workflow):
     return int(found.group(1)) * 60
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
@@ -270,7 +271,7 @@ def binary_ratchet(topic):
         print(text.strip())
         return 1
     path = BASELINES / "binary_size_budget.json"
-    path.write_text(f'{{"max_bytes": {grown.group(1)}}}\n')
+    path.write_text(merge_baseline.layout({"max_bytes": int(grown.group(1))}))
     subject = ratchet_subject([f"dist binary {grown.group(2)} -> {grown.group(1)}"], topic)
     git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
     print(f"ratchet: {subject}")
@@ -662,9 +663,11 @@ def selfcheck():
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
     # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
-    import contextlib, io
+    import contextlib, io, check_binary_size
 
-    capped = "FAIL binary_size\n  dist binary 9000000 > hard cap 8388608 bytes (8 MiB, D249)\n"
+    over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
+    assert over == "dist binary 9500000 > hard cap 9437184 bytes (9 MiB)", over
+    capped = f"FAIL binary_size\n  {over}\n"
     real_run = subprocess.run
     subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, int("check_binary" in cmd[-1]), capped, "")
     try:
