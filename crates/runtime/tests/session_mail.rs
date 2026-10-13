@@ -355,3 +355,61 @@ async fn a_letter_waits_for_a_session_no_process_holds_and_outlives_a_heartbeat_
     assert_eq!(next_letter(&bee, 1).await?["body"], "after the clear");
     Ok(())
 }
+
+/// Dies with a session reading another's letters through a subscription to its mailbox, in
+/// either case, since a case-insensitive disk opens both spellings as one file.
+#[tokio::test]
+async fn a_session_cannot_subscribe_to_another_sessions_mailbox() -> TestResult {
+    let scratch = Scratch::new("yi-session-spy")?;
+    let (ant, bee) = (
+        root(&scratch, "here", "ant")?,
+        root(&scratch, "there", "bee")?,
+    );
+    let mut registry = yi_runtime::HostRegistry::default();
+    (bee.session.heartbeat_service().ok_or("no schedule")?).register(&mut registry);
+    let upper = format!("channel://MAIL-{}", ant.id.to_ascii_uppercase());
+    for address in [format!("channel://mail-{}", ant.id), upper] {
+        let payload = json!({"address": address, "prompt": "watch"});
+        let payload = payload.as_object().cloned().unwrap_or_default();
+        let call =
+            yi_kernel::client::HostHandlers::dispatch(&registry, "rlm_heartbeat.create", payload);
+        let made = call.ok_or("rlm_heartbeat.create is not registered")?.await;
+        let error = made
+            .err()
+            .ok_or("a session subscribed to another's mailbox")?;
+        assert!(error.contains("another session's mailbox"), "{error}");
+    }
+    Ok(())
+}
+
+/// Dies with a mailbox no process reads growing without bound, or dropping a letter it held
+/// without the sender hearing: the 256th letter is kept and the 257th is refused by name.
+#[tokio::test]
+async fn a_full_mailbox_refuses_the_next_letter_and_names_its_cap() -> TestResult {
+    let scratch = Scratch::new("yi-session-full")?;
+    let ant = root(&scratch, "here", "ant")?;
+    let dark = ledger(&scratch, "there", "bee")?;
+    let target = format!(
+        "history://{}",
+        yi_session::lock_session(&dark).metadata().id
+    );
+    for n in 1..=256 {
+        let sent = ant
+            .host
+            .send("parent", &letter(&target, &format!("letter {n}"), &[]))?;
+        assert_eq!(
+            sent["receipts"][0]["state"], "stored",
+            "letter {n}: {sent:?}"
+        );
+    }
+    let error = (ant.host.send("parent", &letter(&target, "one more", &[])))
+        .err()
+        .ok_or("a letter past the mailbox cap was sent")?;
+    assert!(
+        error.contains("256 unread letters") && error.contains("KEPT = 256"),
+        "{error}"
+    );
+    let bee = bind(&scratch, "there", "bee", dark)?;
+    assert_eq!(next_letter(&bee, 0).await?["body"], "letter 1");
+    Ok(())
+}

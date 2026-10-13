@@ -40,14 +40,14 @@ fn a_receipt_spells_its_state_in_lower_case() -> TestResult {
 /// the way through a mail channel, or with family mail growing keys an old inbox never had.
 #[test]
 fn a_letter_between_sessions_round_trips_its_addresses_and_hops() -> TestResult {
-    let wire = r#"{"id":"01a1-7f3e","from":"history://01a1","to":"history://01b2","kind":"request","conversation":"01a1-7f3e","seq":1791774661505,"sentAt":1791774661505,"body":"which runner image?","fromSession":"history://01a1","toSession":"history://01b2","origin":"history://01a1/e9","intent":["history://01a1/e4"],"hops":3}"#;
+    let wire = r#"{"id":"01a1-7f3e","from":"history://01a1","to":"history://01b2","kind":"request","conversation":"01a1-7f3e","seq":1791774661505,"sentAt":1791774661505,"body":"which runner image?","origin":"history://01a1/e9","intent":["history://01a1/e4"],"hops":3}"#;
     let parsed: Envelope = serde_json::from_str(wire)?;
     assert_eq!(parsed.hops, yi_types::mail::Hops(3));
     assert_eq!(parsed.intent.len(), 1);
     assert_eq!(serde_json::to_string(&parsed)?, wire);
     let family = r#"{"id":"main-1","from":"main","to":"tests","kind":"inform","conversation":"main-1","seq":1,"sentAt":1,"body":"hi"}"#;
     let parsed: Envelope = serde_json::from_str(family)?;
-    assert_eq!((parsed.hops.0, parsed.from_session.is_none()), (0, true));
+    assert_eq!((parsed.hops.0, parsed.origin.is_none()), (0, true));
     assert_eq!(serde_json::to_string(&parsed)?, family);
     assert_eq!(serde_json::to_string(&Delivery::Stored)?, r#""stored""#);
     Ok(())

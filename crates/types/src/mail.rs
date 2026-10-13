@@ -66,11 +66,6 @@ pub struct Envelope {
     /// the host took off the end of a turn that left the request open; absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_by: Option<String>,
-    /// A letter between sessions: the sender's and the addressee's `history://<transcript id>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_session: Option<Url>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to_session: Option<Url>,
     /// The sender's entry the letter went out from, as `history://<sender>/<entry id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Url>,

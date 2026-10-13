@@ -554,12 +554,15 @@ impl HeartbeatService {
             .ok_or("channels need a home, and this runtime was wired without one")?;
         let channel = Channel::named(home, &spec.address)?;
         match spec.address.strip_prefix(CHANNEL_SCHEME) {
-            Some(name) => drop(channel.meta().map_err(|_| {
-                format!(
-                    "no channel {name} in {}: a channel is made by subscribing to its adapter URI",
-                    home.display()
-                )
-            })?),
+            Some(name) => {
+                crate::post::foreign_mailbox(session, name)?;
+                drop(channel.meta().map_err(|_| {
+                    format!(
+                        "no channel {name} in {}: a channel is made by subscribing to its adapter URI",
+                        home.display()
+                    )
+                })?);
+            }
             None => {
                 super::adapter::check(&spec.address)?;
                 channel.open(&spec.address, spec.retention.clone())?;

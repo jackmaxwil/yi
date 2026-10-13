@@ -174,8 +174,6 @@ impl Desk {
             body: draft.text.clone(),
             reference: draft.reference.clone(),
             answered_by: draft.answered_by.map(str::to_owned),
-            from_session: None,
-            to_session: None,
             origin: None,
             intent: Vec::new(),
             hops: yi_types::mail::Hops::default(),

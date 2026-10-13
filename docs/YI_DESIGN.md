@@ -675,12 +675,15 @@ A family message: an envelope in the receiver's inbox before delivery, then its 
   no heartbeat source, so `/heartbeat clear` leaves it: one todo per letter, any number open,
   `FollowUp`; an `inform` waits for the next turn. A sender in the same process makes it due at
   once; another process's waits up to a minute. The wake shows the envelope as fenced data.
+  A subscription to another session's mailbox is refused, in any letter case. A mailbox holding
+  256 unread letters refuses the next one by name, so mail for a session nobody runs is bounded.
 - Only a root sends outside; a child is refused and asks its root. `request` refuses another
   session, whose reply comes back as a letter. The envelope must fit the 16 KiB channel cap.
 - `hops`: walking back to what started the run, a mail wake gives its highest letter's hop and
   intent, the user's words or the task give 0, and family mail and notices are passed over, so a
-  child's report keeps the chain. A letter carries that plus one; past `mail.hopLimit` (20) the
-  send is refused with `yi.HopLimit`.
+  child's report keeps the chain. Another wake, a clock's, gives 0 only when the letter before it
+  is over an hour old, so a clock between a letter and its reply cannot reset a live chain. A
+  letter carries that plus one; past `mail.hopLimit` (20) the send is refused with `yi.HopLimit`.
 - State: `Kind { Inform, Request, Reply, Progress, Failure, Cancel }`,
   `Delivery { Queued, Woken, Inboxed, Answered, Stored }`.
 - Owner: [`runtime/src/mail.rs`](../crates/runtime/src/mail.rs),

@@ -81,10 +81,10 @@ fn remove_board(session_dir: &Path, id: &str) -> Result<(), String> {
     [board_dir(session_dir, id), kernel, clock]
         .into_iter()
         .try_for_each(|dir| gone(std::fs::remove_dir_all(dir)))?;
-    let mail = session_dir.join("channels").join(format!("mail-{id}"));
+    let mail = |ext| session_dir.join(format!("channels/mail-{id}.{ext}"));
     ["jsonl", "json", "lock"]
         .into_iter()
-        .try_for_each(|ext| gone(std::fs::remove_file(mail.with_extension(ext))))
+        .try_for_each(|ext| gone(std::fs::remove_file(mail(ext))))
 }
 
 fn split_subcommand(subcommand: &str) -> (&str, Option<&str>) {
