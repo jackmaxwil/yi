@@ -42,7 +42,7 @@ pub struct SettingRow {
     pub kind: SettingKind,
     pub applies: Applies,
     /// The file's value; `null` is unset, and the help names what unset means. The daemon sends
-    /// a list or JSON row's entry count instead, so a key stored in the wrong place stays put.
+    /// a list or JSON row's entry count, except the list rows the pane edits (the routing rows).
     #[serde(default)]
     pub value: Value,
     /// What an unset toggle means, so the page flips the value in effect, not the stored one.
@@ -63,6 +63,15 @@ pub const TABS: [&str; 6] = [
 /// one line of `settings.json`, and a table that fails to parse is no rows, which a test refuses.
 pub fn rows() -> Vec<SettingRow> {
     serde_json::from_str(include_str!("settings.json")).unwrap_or_default()
+}
+
+/// The comma-separated text a config field or flag carries, as its items: trimmed, empties gone.
+pub fn comma_list(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Why `value` cannot be saved under `row`; `null` (unset) always can.
