@@ -109,3 +109,27 @@ fn a_navigation_error_is_not_a_failure() -> Result<(), Box<dyn std::error::Error
     );
     Ok(())
 }
+
+#[test]
+fn an_error_object_answering_a_navigation_is_a_page_outcome()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut router = Router::new("about:blank", (10, 10));
+    router.navigate("http://my server");
+    let commands = router.take();
+    let Some(id) = commands.last().map(|command| command.id) else {
+        return Err("no navigate command was queued".into());
+    };
+    let refused: CdpMessage = serde_json::from_str(
+        r#"{"id": ID, "error": {"code": -32602, "message": "Cannot navigate to invalid URL"}}"#
+            .replace("ID", &id.to_string())
+            .as_str(),
+    )?;
+    assert_ne!(
+        router.feed(refused),
+        Some(Update::Failed(
+            "Page.navigate: Cannot navigate to invalid URL".to_owned()
+        )),
+        "an error object answering a navigate must be a page outcome, never a dead engine"
+    );
+    Ok(())
+}

@@ -376,3 +376,57 @@ mod tests {
         Ok(())
     }
 }
+
+/// The host and port of an `http://` URL's authority when the host is a loopback address
+/// (`localhost`, `127.0.0.1`, `::1`); userinfo cannot move the host off this machine.
+pub fn http_loopback_host_and_port(url: &str) -> Option<(&str, Option<&str>)> {
+    let authority = url
+        .strip_prefix("http://")?
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => {
+            let (host, rest) = v6.split_once(']')?;
+            (host, rest.split_once(':').map(|(_, port)| port))
+        }
+        None => match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1").then_some((host, port))
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::http_loopback_host_and_port;
+
+    #[test]
+    fn a_loopback_host_with_any_port_is_local_and_userinfo_stays_local() {
+        assert_eq!(
+            http_loopback_host_and_port("http://localhost:3000/"),
+            Some(("localhost", Some("3000")))
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://127.0.0.1"),
+            Some(("127.0.0.1", None))
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://[::1]:8080/x"),
+            Some(("::1", Some("8080")))
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://user:pw@localhost:1/a?b#c"),
+            Some(("localhost", Some("1")))
+        );
+        assert_eq!(http_loopback_host_and_port("http://localhostx"), None);
+        assert_eq!(
+            http_loopback_host_and_port("http://localhost:3000@evil.com/"),
+            None
+        );
+        assert_eq!(http_loopback_host_and_port("https://localhost:1/"), None);
+        assert_eq!(http_loopback_host_and_port("http://evil.com/"), None);
+    }
+}

@@ -72,6 +72,10 @@ impl Router {
         if let Some(id) = message.id {
             let (waiting, method) = self.waiting.remove(&id)?;
             if let Some(error) = message.error {
+                // Invariant: a navigation Chrome refused is a page outcome, never a dead engine.
+                if waiting == Waiting::Navigate {
+                    return Some(Update::NavigateFailed(error.message));
+                }
                 return Some(Update::Failed(format!("{method}: {}", error.message)));
             }
             return self.answered(waiting, &message.result);

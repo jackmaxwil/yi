@@ -86,16 +86,7 @@ pub fn https_or_local(url: &str) -> Result<(), String> {
     if url.starts_with("https://") {
         return Ok(());
     }
-    let authority = url
-        .strip_prefix("http://")
-        .and_then(|rest| rest.split(['/', '?', '#']).next())
-        .and_then(|authority| authority.rsplit('@').next())
-        .unwrap_or("");
-    let host = authority
-        .strip_prefix('[')
-        .and_then(|v6| v6.split(']').next())
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""));
-    if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+    if yi_types::url::http_loopback_host_and_port(url).is_some() {
         Ok(())
     } else {
         Err(format!("insecure endpoint refused: {url}"))

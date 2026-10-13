@@ -38,6 +38,14 @@ impl App {
 
     /// Only the panes the screen shows: a hidden pane's frames wait in Chrome's unacked queue.
     pub(super) fn pump_browsers(&mut self) {
+        if !self
+            .state
+            .panes
+            .values()
+            .any(|pane| matches!(pane.content, PaneContent::Browser(_)))
+        {
+            return;
+        }
         let (kitty, cell) = (self.kitty, crate::chrome::cell_pixels());
         let shown: Vec<_> = (self.hits.iter())
             .flat_map(|hits| hits.panes.iter().map(|(id, _)| *id))
