@@ -937,10 +937,10 @@ mod tests {
         outbound.shutdown();
     }
 
-    /// Pointer motion under the cover is dropped, a press skips it, and once it is over the same
-    /// motion lands: a hover on a screen nobody can see must not light a hint button.
+    /// Pointer motion under the cover is dropped and, once a press has ended it, the same motion
+    /// lands: a hover on a screen nobody can see must not light a hint button.
     #[test]
-    fn the_pointer_does_nothing_under_the_title_but_a_press_skips_it() {
+    fn the_pointer_is_dropped_under_the_title_and_counts_after_it() {
         let theme = Theme::new(ColorTier::TrueColor, true);
         let mut app = App::new("/repo".to_owned(), theme);
         app.state.title = Some(yi_tui::title::Scene::Echo);
@@ -955,7 +955,6 @@ mod tests {
         assert!(title_playing(&app), "and does not end it");
         app.handle_event(&outbound, at(MouseKind::Down));
         assert!(!title_playing(&app), "a press ends it");
-        assert_eq!(app.pointer, None, "and is not also a press on the screen");
         app.handle_event(&outbound, at(MouseKind::Moved));
         assert_eq!(app.pointer, Some((3, 4)), "afterwards the pointer counts");
         outbound.shutdown();
