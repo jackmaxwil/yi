@@ -142,9 +142,7 @@ impl App {
             self.dirty = true;
             return;
         }
-        let hint = hits
-            .hint_buttons
-            .iter()
+        let hint = (hits.hint_buttons.iter().chain(&hits.header_buttons))
             .find(|(rect, _)| rect.contains(Position::new(x, y)));
         if let Some((_, action)) = hint {
             return self.apply_action(outbound, *action);

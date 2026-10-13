@@ -2030,14 +2030,14 @@ fn cmd_u_undoes_the_chat_draft() -> TestResult {
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
     // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, one padding
-    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=1.
+    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=2 under the header row.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 24 1\nmouse up 24 1\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 22 1\nmouse drag 24 1\nmouse up 24 1\n\
+            "wait-frame 3000 abcdef\nmouse down 24 2\nmouse up 24 2\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 22 2\nmouse drag 24 2\nmouse up 24 2\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -3087,7 +3087,9 @@ fn the_tape_refuses_a_rewind_while_a_turn_runs() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 3000 [esc] interrupt\n\
-         cmd-y\n\
+         cmd-p\n\
+         type tape\n\
+         key enter\n\
          wait-frame 3000 +0s · hello agent\n\
          key alt-right\n\
          key enter\n\
@@ -3143,7 +3145,9 @@ fn a_tape_refresh_keeps_the_chosen_mark() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         cmd-y\n\
+         cmd-p\n\
+         type tape\n\
+         key enter\n\
          wait-frame 3000 +1m · second turn\n\
          key alt-right\n\
          key left\n\
@@ -3539,9 +3543,9 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         mouse down 32 2\n\
-         mouse drag 60 5\n\
-         mouse up 60 5\n\
+         mouse down 32 3\n\
+         mouse drag 60 6\n\
+         mouse up 60 6\n\
          wait-frame 3000 copied 3 lines\n\
          quit\n",
     )
@@ -3719,8 +3723,8 @@ fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
          wait-frame 5000 !grep-bot\n\
          quit\n",
     )?;
-    let top = frame.lines().next().ok_or("no frame")?;
-    let at = top.find("s-alpha").ok_or(format!("no title: {top}"))?;
+    let top = frame.lines().nth(1).ok_or("no frame")?;
+    let at = top.rfind("s-alpha").ok_or(format!("no title: {top}"))?;
     let column = top.get(..at).unwrap_or_default().chars().count();
     assert!(
         column >= 30,
@@ -3837,7 +3841,7 @@ fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
         "close-mark",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-v\nwait-frame 3000 ✕\nmouse down 97 0\nmouse up 97 0\n\
+         key alt-v\nwait-frame 3000 ✕\nmouse down 97 1\nmouse up 97 1\n\
          wait-frame 3000 !✕\nquit\n",
     )?;
     assert!(
