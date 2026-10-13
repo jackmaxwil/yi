@@ -344,6 +344,10 @@ fn sessions_rm_removes_the_session() -> TestResult {
     let clock = workspace.0.join("home/sessions/schedules").join(&id);
     std::fs::create_dir_all(&clock)?;
     std::fs::write(clock.join("scheduled-jobs.json"), "{}")?;
+    let mailbox = workspace
+        .0
+        .join(format!("home/sessions/channels/mail-{id}.json"));
+    assert!(mailbox.exists(), "a root kept no mailbox to remove");
     workspace.yi(&["sessions", "rm", &id])?;
     let after: Value =
         serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
@@ -357,6 +361,10 @@ fn sessions_rm_removes_the_session() -> TestResult {
         "rm reached another session's board"
     );
     assert!(!clock.exists(), "a removed session's clocks stayed on disk");
+    assert!(
+        !mailbox.exists(),
+        "a removed session's mailbox stayed on disk"
+    );
     Ok(())
 }
 
@@ -1173,8 +1181,12 @@ fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     ask(&workspace, "prove it", &[])?;
     let mut lines = String::new();
     for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
-        for entry in std::fs::read_dir(project?.path())? {
-            lines.push_str(&std::fs::read_to_string(entry?.path())?);
+        // A root's mailbox job is kept under `schedules/<id>/`, a directory beside the files.
+        for path in std::fs::read_dir(project?.path())? {
+            let path = path?.path();
+            if path.is_file() {
+                lines.push_str(&std::fs::read_to_string(path)?);
+            }
         }
     }
     assert!(lines.contains("prove it"), "{lines}");

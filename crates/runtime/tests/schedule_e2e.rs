@@ -1692,8 +1692,11 @@ async fn a_clock_set_before_a_restart_owes_one_todo_on_resume() -> TestResult {
         .join("scheduled-jobs.json");
     let hour = 3_600_000;
     let mut state: ScheduleState = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-    let [job] = state.jobs.as_mut_slice() else {
-        return Err(format!("one clock job on disk: {:?}", state.jobs).into());
+    // A root's mailbox subscription sits beside its clock.
+    let summary = format!("{:?}", state.jobs);
+    let mut clocks = state.jobs.iter_mut().filter(|job| job.channel.is_none());
+    let (Some(job), None) = (clocks.next(), clocks.next()) else {
+        return Err(format!("one clock job on disk: {summary}").into());
     };
     assert_eq!(
         job.status,
