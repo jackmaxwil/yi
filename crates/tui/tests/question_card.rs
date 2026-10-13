@@ -92,7 +92,7 @@ fn a_question_opens_as_a_card_with_the_recommendation_first() -> TestResult {
     let rows = common::live_rows(&mut app)?;
     let first = row_with(&rows, "Tree with a progress bar").ok_or(format!("{rows:#?}"))?;
     assert!(
-        first.contains("(recommended)") && first.trim_end().ends_with('1'),
+        first.contains("(Recommended)") && first.trim_end().ends_with('1'),
         "{first:?}"
     );
     assert!(row_with(&rows, "Keeps nested todos").is_some(), "{rows:#?}");
@@ -317,5 +317,51 @@ fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResul
     );
     assert!(row_with(&rows, "The turn ends here").is_none(), "{rows:#?}");
     assert!(row_with(&rows, "more line").is_none(), "{rows:#?}");
+    Ok(())
+}
+
+/// Dies with the card drawn as text alone on a kitty terminal, its image left on screen after
+/// it closes, or a repaint every frame: one image under the text, repainted only on a change.
+#[test]
+fn a_kitty_terminal_gets_the_card_as_one_image_under_its_text() -> TestResult {
+    use yi_tui::question::{CardTick, tick_with};
+    let mut app = app();
+    app.set_kitty(true);
+    asked(&mut app, &[layout()]);
+    common::rows_at(&mut app, 34)?;
+    let (mut state, mut out) = (CardTick::default(), Vec::new());
+    tick_with(&app, &mut out, &mut state, (10, 20));
+    let sent = String::from_utf8_lossy(&out).into_owned();
+    assert!(
+        sent.contains("a=t,i=769"),
+        "no image sent: {} bytes",
+        sent.len()
+    );
+    assert_eq!(
+        sent.matches("z=-1").count(),
+        1,
+        "one placement, under the text"
+    );
+    out.clear();
+    tick_with(&app, &mut out, &mut state, (10, 20));
+    assert!(out.is_empty(), "an unchanged card sends nothing");
+    press(&mut app, &[KeyCode::Down]);
+    common::rows_at(&mut app, 34)?;
+    tick_with(&app, &mut out, &mut state, (10, 20));
+    let moved = String::from_utf8_lossy(&out).into_owned();
+    assert!(
+        moved.contains("a=t,i=769") && moved.contains("a=d"),
+        "{moved:.80}"
+    );
+    out.clear();
+    press(&mut app, &[KeyCode::Esc]);
+    common::rows_at(&mut app, 34)?;
+    tick_with(&app, &mut out, &mut state, (10, 20));
+    let gone = String::from_utf8_lossy(&out).into_owned();
+    assert_eq!(
+        gone.matches("a=d").count(),
+        2,
+        "both image ids deleted: {gone}"
+    );
     Ok(())
 }

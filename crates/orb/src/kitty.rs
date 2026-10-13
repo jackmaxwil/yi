@@ -209,6 +209,25 @@ pub fn place_nth(
     out.flush()
 }
 
+/// Place the id's one placement under the text of its cells: a negative `z` draws the image
+/// below the glyphs but above cell backgrounds, so the cells' text stays the terminal's own.
+pub fn place_under(
+    out: &mut impl Write,
+    id: u32,
+    col: u16,
+    row: u16,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
+    write!(out, "\x1b7\x1b[{};{}H", row + 1, col + 1)?;
+    write!(
+        out,
+        "\x1b_Ga=p,i={id},p=1,q=2,C=1,z=-1,c={cols},r={rows}\x1b\\"
+    )?;
+    write!(out, "\x1b8")?;
+    out.flush()
+}
+
 /// Delete one id's placements and data.
 pub fn delete_id(out: &mut impl Write, id: u32) -> std::io::Result<()> {
     write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
