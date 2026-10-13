@@ -1,8 +1,12 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+/// Incident: Chrome for Testing's linux64 headless shell is a 124 MB zip, past the 64 MiB this
+/// was while every pin was a CLI tarball.
+pub const MAX_ARCHIVE_BYTES: u64 = 192 * 1024 * 1024;
 const MAX_TAR_BYTES: usize = 256 * 1024 * 1024;
+const MAX_ZIP_ENTRIES: usize = 4096;
+const MAX_UNZIPPED_BYTES: usize = 1024 * 1024 * 1024;
 
 pub fn agent() -> ureq::AgentBuilder {
     ureq::AgentBuilder::new()
@@ -29,6 +33,131 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// The digest of a file read a buffer at a time: an installed browser is a 200 MB member.
+pub fn sha256_file(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        let read = file.read(&mut buffer)?;
+        let Some(chunk) = buffer.get(..read).filter(|chunk| !chunk.is_empty()) else {
+            break;
+        };
+        hasher.update(chunk);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+/// APPNOTE 6.3, read from the central directory; zip64, a link or a path leaving `into` refuses
+/// it. Callers authenticate the bytes first, so CRCs are not re-checked.
+pub fn unzip(zip: &[u8], into: &Path) -> Result<(), String> {
+    let end = (0..zip.len().saturating_sub(21))
+        .rev()
+        .find(|at| zip.get(*at..at.saturating_add(4)) == Some(b"PK\x05\x06".as_slice()))
+        .ok_or("is not a zip: no end record")?;
+    let short_end = || "is not a zip: a short end record".to_owned();
+    let count = le(zip, end.saturating_add(10), 2).ok_or_else(short_end)?;
+    let start = le(zip, end.saturating_add(16), 4).ok_or_else(short_end)?;
+    if count == 0xFFFF || start == 0xFFFF_FFFF {
+        return Err("is zip64, which yi does not read".to_owned());
+    }
+    if count > MAX_ZIP_ENTRIES {
+        return Err(format!(
+            "has {count} entries, past the {MAX_ZIP_ENTRIES}-entry cap"
+        ));
+    }
+    let (mut at, mut total) = (start, 0usize);
+    for _ in 0..count {
+        if zip.get(at..at.saturating_add(4)) != Some(b"PK\x01\x02".as_slice()) {
+            return Err(format!("has no central directory row at byte {at}"));
+        }
+        let short = || format!("has a short central directory row at byte {at}");
+        let field =
+            |offset: usize, len: usize| le(zip, at.saturating_add(offset), len).ok_or_else(short);
+        let (method, packed, size) = (field(10, 2)?, field(20, 4)?, field(24, 4)?);
+        let (name_len, extra, comment) = (field(28, 2)?, field(30, 2)?, field(32, 2)?);
+        let (mode, local) = (field(38, 4)? >> 16, field(42, 4)?);
+        let name_at = at.saturating_add(46);
+        let name = zip
+            .get(name_at..name_at.saturating_add(name_len))
+            .and_then(|name| std::str::from_utf8(name).ok())
+            .ok_or_else(short)?;
+        at = name_at
+            .saturating_add(name_len)
+            .saturating_add(extra)
+            .saturating_add(comment);
+        let path = name.strip_suffix('/').unwrap_or(name);
+        if !stays_inside(path) {
+            return Err(format!("entry {name} leaves it"));
+        }
+        if mode & 0o170_000 == 0o120_000 {
+            return Err(format!("entry {name} is a link"));
+        }
+        let target = into.join(path);
+        if name.ends_with('/') {
+            std::fs::create_dir_all(&target)
+                .map_err(|error| format!("{}: {error}", target.display()))?;
+            continue;
+        }
+        total = total.saturating_add(size);
+        if total > MAX_UNZIPPED_BYTES {
+            return Err(format!("unpacks past the {MAX_UNZIPPED_BYTES}-byte cap"));
+        }
+        let data = (le(zip, local.saturating_add(26), 2).zip(le(zip, local.saturating_add(28), 2)))
+            .map(|(name, extra)| {
+                local
+                    .saturating_add(30)
+                    .saturating_add(name)
+                    .saturating_add(extra)
+            })
+            .and_then(|from| zip.get(from..from.checked_add(packed)?))
+            .ok_or_else(|| format!("entry {name} is truncated"))?;
+        let bytes = match method {
+            0 => data.to_vec(),
+            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, size)
+                .map_err(|error| format!("entry {name} does not inflate: {:?}", error.status))?,
+            other => return Err(format!("entry {name} uses compression method {other}")),
+        };
+        if bytes.len() != size {
+            return Err(format!(
+                "entry {name} unpacks to {} bytes, not {size}",
+                bytes.len()
+            ));
+        }
+        write_file(&target, &bytes, mode & 0o111 != 0)?;
+    }
+    Ok(())
+}
+
+fn write_file(path: &Path, bytes: &[u8], executable: bool) -> Result<(), String> {
+    let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(failed)?;
+    }
+    std::fs::write(path, bytes).map_err(failed)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o755 } else { 0o644 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(failed)?;
+    }
+    Ok(())
+}
+
+fn le(bytes: &[u8], at: usize, len: usize) -> Option<usize> {
+    let raw = bytes.get(at..at.checked_add(len)?)?;
+    Some(
+        raw.iter()
+            .rev()
+            .fold(0, |n, byte| (n << 8) | usize::from(*byte)),
+    )
 }
 
 /// RFC 1952: a 10-byte header, optional fields named by the flag byte, raw deflate, an

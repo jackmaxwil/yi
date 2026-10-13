@@ -56,6 +56,12 @@ fn until(
     Err(format!("timed out after {shown:?}"))
 }
 
+/// A runner with no Chrome installed has the headless shell `yi plugin add --all` put there.
+fn pinned_chrome() -> Option<std::path::PathBuf> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    yi_runtime::plugin::Plugin::named("chrome")?.installed(&home)
+}
+
 fn frames(seen: &[Update]) -> usize {
     seen.iter()
         .filter(|u| matches!(u, Update::Frame(_)))
@@ -105,7 +111,7 @@ fn a_click_on_a_served_link_brings_its_page_and_a_new_frame() -> TestResult {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let chrome = yi_browser::find(None)
+    let chrome = yi_browser::find(None, pinned_chrome().as_deref())
         .map_err(|looked| format!("no Chrome: looked in {}", looked.join(", ")))?;
     let url = format!("http://127.0.0.1:{port}/");
     let mut browser = Browser::launch(

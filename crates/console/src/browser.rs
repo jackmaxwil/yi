@@ -3,7 +3,8 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -25,8 +26,105 @@ const BAR: &str = "‹ › ↻ ";
 
 pub enum Engine {
     Idle,
+    /// The `[…]` row shown while `yi plugin add chrome` runs.
+    Installing(String),
     Live(Box<Browser>),
     Failed(String),
+}
+
+/// Where `yi plugin add chrome` puts its headless shell, from the composition root: the plugin
+/// table is not the console's to read.
+#[derive(Debug, Clone)]
+pub struct Pinned {
+    pub program: PathBuf,
+    pub version: String,
+    pub dir: PathBuf,
+}
+
+/// The console's one source of Chrome: the configured path, the pin, and the one install of
+/// it every browser pane waits on.
+#[derive(Default)]
+pub struct Chrome {
+    configured: Option<PathBuf>,
+    pinned: Option<Pinned>,
+    installer: Option<PathBuf>,
+    install: Install,
+}
+
+#[derive(Default)]
+enum Install {
+    #[default]
+    Idle,
+    Running(Receiver<Result<(), String>>),
+    Done(Result<(), String>),
+}
+
+impl Chrome {
+    pub fn new(configured: Option<PathBuf>, pinned: Option<Pinned>) -> Self {
+        Self {
+            configured,
+            pinned,
+            installer: std::env::current_exe().ok(),
+            install: Install::Idle,
+        }
+    }
+
+    /// No Chrome found: a configured path or a target with no pin is a row naming the fix;
+    /// otherwise the pane waits on the install, started here unless one is running.
+    fn missing(&mut self, looked: &[String]) -> Engine {
+        let pinned = self.pinned.as_ref().filter(|_| self.configured.is_none());
+        let Some(pinned) = pinned else {
+            return Engine::Failed(format!(
+                "no Chrome or Chromium found · looked in {} · install one, or set browser.path \
+                 in ~/.yi/config.json",
+                looked.join(", ")
+            ));
+        };
+        if matches!(self.install, Install::Done(Ok(()))) {
+            return Engine::Failed(format!(
+                "`yi plugin add chrome` finished, yet {} is not there",
+                pinned.program.display()
+            ));
+        }
+        let row = format!(
+            "[installing chrome-headless-shell {} (~100 MB) with `yi plugin add chrome` · {}]",
+            pinned.version,
+            pinned.dir.display()
+        );
+        if !matches!(self.install, Install::Running(_)) {
+            self.install = Install::Running(spawn_install(self.installer.clone()));
+        }
+        Engine::Installing(row)
+    }
+
+    fn installed(&mut self) -> Option<Result<(), String>> {
+        if let Install::Running(outcome) = &self.install {
+            match outcome.try_recv() {
+                Ok(done) => self.install = Install::Done(done),
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => {
+                    self.install = Install::Done(Err("the install stopped without a word".into()));
+                }
+            }
+        }
+        match &self.install {
+            Install::Done(done) => Some(done.clone()),
+            Install::Idle | Install::Running(_) => Some(Ok(())),
+        }
+    }
+}
+
+/// Runs [`yi_browser::add_pinned`] off the frame loop.
+fn spawn_install(yi: Option<PathBuf>) -> Receiver<Result<(), String>> {
+    let (done, outcome) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = match yi {
+            Some(yi) => yi_browser::add_pinned(&yi),
+            None => Err("couldn't find the running yi to install Chrome with".into()),
+        };
+        let _ = done.send(result);
+    });
+    outcome
 }
 
 pub struct BrowserPane {
@@ -77,6 +175,7 @@ impl BrowserPane {
         };
         let status = match (&self.engine, kitty, &self.frame) {
             (Engine::Failed(why), ..) => Some(format!("[browser: {why}]")),
+            (Engine::Installing(row), ..) => Some(row.clone()),
             (_, false, _) => Some(
                 "[page not drawn: this terminal does not speak the kitty graphics protocol · \
                  open the console in Ghostty or kitty]"
@@ -102,13 +201,24 @@ impl BrowserPane {
 
     /// Starts Chrome once the page has a size, follows it, and drains its updates; true when
     /// the pane needs a redraw.
-    pub fn pump(&mut self, kitty: bool, cell: (usize, usize), chrome: Option<&Path>) -> bool {
+    pub fn pump(&mut self, kitty: bool, cell: (usize, usize), chrome: &mut Chrome) -> bool {
         if !kitty || self.page.width == 0 || self.page.height == 0 {
             return false;
         }
         let size = css_size(self.page, cell);
         match &mut self.engine {
             Engine::Failed(_) => false,
+            Engine::Installing(_) => match chrome.installed() {
+                None => false,
+                Some(Ok(())) => {
+                    self.engine = Engine::Idle;
+                    true
+                }
+                Some(Err(why)) => {
+                    self.engine = Engine::Failed(why);
+                    true
+                }
+            },
             Engine::Idle => {
                 self.size = size;
                 self.engine = launch(chrome, &self.url, size);
@@ -142,7 +252,7 @@ impl BrowserPane {
     fn live(&mut self) -> Option<&mut Browser> {
         match &mut self.engine {
             Engine::Live(browser) => Some(browser),
-            Engine::Idle | Engine::Failed(_) => None,
+            Engine::Idle | Engine::Installing(_) | Engine::Failed(_) => None,
         }
     }
 
@@ -236,16 +346,14 @@ impl BrowserPane {
     }
 }
 
-fn launch(chrome: Option<&Path>, url: &str, size: (u32, u32)) -> Engine {
-    let chrome = match yi_browser::find(chrome) {
-        Ok(chrome) => chrome,
-        Err(looked) => {
-            return Engine::Failed(format!(
-                "no Chrome or Chromium found · looked in {} · install one, or set browser.path \
-                 in ~/.yi/config.json",
-                looked.join(", ")
-            ));
-        }
+fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32)) -> Engine {
+    let pinned = chrome
+        .pinned
+        .as_ref()
+        .map(|pinned| pinned.program.as_path());
+    let chrome = match yi_browser::find(chrome.configured.as_deref(), pinned) {
+        Ok(found) => found,
+        Err(looked) => return chrome.missing(&looked),
     };
     let launched = std::env::current_exe()
         .and_then(|yi| Browser::launch(&yi, &chrome, &yi_browser::profile_dir(), url, size));
@@ -510,6 +618,83 @@ mod tests {
             String::from_utf8_lossy(&out),
             format!("\u{1b}_Ga=d,d=I,i={odd},q=2\u{1b}\\")
         );
+        Ok(())
+    }
+
+    /// No Chrome on a machine with a pin: every browser pane shows the install row while one
+    /// `yi plugin add chrome` runs, then the install's own error line.
+    #[test]
+    fn a_missing_chrome_runs_one_install_and_shows_its_row_then_its_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("yi-chrome-install-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let stub = dir.join("yi");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\necho \"$@\" >> \"$0.calls\"\nwhile [ ! -e \"$0.go\" ]; do sleep 0.01; done\n\
+             echo 'downloading chrome 155.0.8059.39' >&2\n\
+             echo 'error: couldn'\\''t download chrome 155.0.8059.39: refused' >&2\nexit 1\n",
+        )?;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
+        let mut chrome = Chrome {
+            configured: None,
+            pinned: Some(Pinned {
+                program: dir.join("absent/chrome-headless-shell"),
+                version: "155.0.8059.39".to_owned(),
+                dir: dir.join("plugins/chrome/155.0.8059.39"),
+            }),
+            installer: Some(stub.clone()),
+            install: Install::Idle,
+        };
+        let theme = Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let looked = ["/Applications/Google Chrome.app".to_owned()];
+        let mut panes = [BrowserPane::new(None), BrowserPane::new(None)];
+        for pane in &mut panes {
+            pane.engine = chrome.missing(&looked);
+        }
+        let row = format!(
+            "[installing chrome-headless-shell 155.0.8059.39 (~100 MB) with `yi plugin add \
+             chrome` · {}]",
+            dir.join("plugins/chrome/155.0.8059.39").display()
+        );
+        let shown = |pane: &mut BrowserPane| -> String {
+            let (_, lines) = pane.view(Rect::new(0, 0, 400, 6), true, &theme);
+            lines.get(1).map(ToString::to_string).unwrap_or_default()
+        };
+        for pane in &mut panes {
+            assert_eq!(shown(pane), row);
+            assert!(
+                !pane.pump(true, (8, 16), &mut chrome),
+                "nothing changes mid-install"
+            );
+        }
+        std::fs::write(dir.join("yi.go"), "")?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while panes
+            .iter()
+            .any(|pane| matches!(pane.engine, Engine::Installing(_)))
+        {
+            if Instant::now() > deadline {
+                return Err("the install never finished".into());
+            }
+            for pane in &mut panes {
+                pane.pump(true, (8, 16), &mut chrome);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for pane in &mut panes {
+            assert_eq!(
+                shown(pane),
+                "[browser: error: couldn't download chrome 155.0.8059.39: refused]"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yi.calls"))?,
+            "plugin add chrome\n",
+            "two panes, one install"
+        );
+        std::fs::remove_dir_all(&dir)?;
         Ok(())
     }
 }

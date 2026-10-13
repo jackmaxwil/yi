@@ -425,7 +425,7 @@ pub struct ConsoleState {
     pub root_filter: Option<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
     pub parked: BTreeMap<SessionId, Box<Chat>>,
-    pub browser_path: Option<std::path::PathBuf>,
+    pub chrome: crate::browser::Chrome,
     pub browser_placed: BTreeMap<PaneId, crate::browser::Placed>,
 }
 
@@ -465,7 +465,7 @@ impl ConsoleState {
             root_filter: None,
             children: BTreeMap::new(),
             parked: BTreeMap::new(),
-            browser_path: None,
+            chrome: crate::browser::Chrome::default(),
             browser_placed: BTreeMap::new(),
             quit: false,
         }

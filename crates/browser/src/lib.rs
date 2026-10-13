@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
-//! Headless Chrome for the console's browser pane: the installed Chrome or Chromium, driven by
-//! CDP over `--remote-debugging-pipe`, with screencast frames handed on as base64 PNG.
+//! Headless Chrome for the console's browser pane: the installed Chrome or Chromium, else the
+//! pinned headless shell, driven by CDP over `--remote-debugging-pipe`, frames as base64 PNG.
 
 mod router;
 
@@ -42,8 +42,9 @@ const FLAGS: [&str; 6] = [
 /// of base64.
 const MAX_FRAME: u64 = 32 << 20;
 
-/// The configured path, else the first installed Chrome or Chromium; `Err` lists where it looked.
-pub fn find(configured: Option<&Path>) -> Result<PathBuf, Vec<String>> {
+/// The configured path, else the first installed Chrome or Chromium, else `pinned`, where
+/// `yi plugin add chrome` puts its headless shell; `Err` lists where it looked.
+pub fn find(configured: Option<&Path>, pinned: Option<&Path>) -> Result<PathBuf, Vec<String>> {
     if let Some(path) = configured {
         if path.is_file() {
             return Ok(path.to_owned());
@@ -59,11 +60,39 @@ pub fn find(configured: Option<&Path>) -> Result<PathBuf, Vec<String>> {
         .iter()
         .map(PathBuf::from)
         .chain(on_path)
+        .chain(pinned.map(Path::to_owned))
         .find(|p| p.is_file());
     found.ok_or_else(|| {
         let mut looked: Vec<String> = APPS.iter().map(|app| (*app).to_owned()).collect();
         looked.push(format!("{} on PATH", NAMES.join(", ")));
+        looked.extend(pinned.map(|path| path.display().to_string()));
         looked
+    })
+}
+
+/// Runs `yi plugin add chrome`, the one verb that pins Chrome; its `error:` lines are the failure,
+/// verbatim.
+pub fn add_pinned(yi: &Path) -> Result<(), String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the console installs the pinned Chrome through the verb that pins it"
+    )]
+    let ran = std::process::Command::new(yi)
+        .args(["plugin", "add", "chrome"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output()
+        .map_err(|error| format!("{}: {error}", yi.display()))?;
+    if ran.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&ran.stderr);
+    let errors: Vec<&str> = (stderr.lines())
+        .filter(|line| line.starts_with("error:"))
+        .collect();
+    Err(match errors.is_empty() {
+        true => format!("`yi plugin add chrome` exited {}", ran.status),
+        false => errors.join(" · "),
     })
 }
 

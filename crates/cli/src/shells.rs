@@ -302,6 +302,18 @@ fn reveal_pace(args: &Args) -> u16 {
         .unwrap_or(100)
 }
 
+/// Where `yi plugin add chrome` puts the headless shell; None on a target it pins no build for.
+#[cfg(feature = "tui")]
+fn chrome_pin() -> Option<yi_console::browser::Pinned> {
+    let home = crate::update::absolute_home().ok()?;
+    let chrome = yi_runtime::plugin::Plugin::named("chrome")?;
+    Some(yi_console::browser::Pinned {
+        program: chrome.program(&home)?,
+        version: chrome.version.to_owned(),
+        dir: chrome.dir(&home),
+    })
+}
+
 /// `yi console` — the workspace shell, an ACP client over the serve daemon.
 #[cfg(feature = "tui")]
 pub fn run_console_command(args: &Args) -> i32 {
@@ -327,6 +339,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .as_ref()
             .and_then(|browser| browser.path.as_ref())
             .map(std::path::PathBuf::from),
+        chrome_pin: chrome_pin(),
     };
     let control = match control(args) {
         Ok(control) => control,

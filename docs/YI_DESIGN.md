@@ -74,7 +74,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
   `yi-permission`; `yi-console` does not depend on `yi-runtime`.
 - Only `yi-cli` depends on `yi-mcp-cli`.
 - `yi-browser` is the one crate outside `yi-tools` that starts a process: the user's Chrome, through
-  `yi __fds`, for the console's browser pane.
+  `yi __fds`, and `yi plugin add chrome` when there is none, for the console's browser pane.
 - Advisor, schedule, goal, subagent, mailbox, lane, plan, fetch, memory and prompt extensions are
   modules of `yi-runtime` (`crates/runtime/src/lib.rs`), not crates.
 - `python/yi_runtime` (distribution `yi-runtime`) has two import packages: `rlm`, the host
@@ -924,7 +924,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. Yi uses only the pinned version, else one on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed ones first on PATH |
+| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills`, each top-level directory the release ships (`yi/`) replaced whole so a skill it dropped goes (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
@@ -1060,9 +1060,11 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   chord, which replaced the keys overlay. An edit saves at once or names why it was refused.
 - ⌘⇧B or ⌥w opens a browser pane beside the focused one, at the last `http://localhost:*` or
   `http://127.0.0.1:*` URL the session's transcript holds, else with its URL bar open. `yi-browser`
-  finds the installed Chrome or Chromium (`browser.path` overrides), starts it headless with
-  `--remote-debugging-pipe` through `yi __fds`, which moves the pipe to fds 3 and 4 and execs it,
-  and speaks CDP as NUL-ended JSON. `Page.startScreencast` PNGs go to kitty as `f=100` undecoded,
+  finds the installed Chrome or Chromium (`browser.path` overrides), else the headless shell `yi
+  plugin add chrome` pins; with none and no `browser.path`, it runs that add once, off the frame
+  loop, every pane showing its `[installing …]` row, then its error line. It starts Chrome
+  headless with `--remote-debugging-pipe` through `yi __fds`, which moves the pipe to fds 3 and
+  4 and execs it, and speaks CDP as NUL-ended JSON. `Page.startScreencast` PNGs go to kitty as `f=100` undecoded,
   on two ids per pane far above the orb and avatar ids; the screencast restarts after each
   main-frame navigation. Clicks, drags, the wheel and keys map to `Input.dispatch*`, the cell
   centre in CSS pixels at the terminal's cell size; ⌘, ⌥, ctrl+b and ctrl+c stay the console's.
@@ -1116,7 +1118,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools | the `grep` tool; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
-| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive and the release tarball | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
+| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |

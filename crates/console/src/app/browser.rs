@@ -38,10 +38,10 @@ impl App {
 
     pub(super) fn pump_browsers(&mut self) {
         let (kitty, cell) = (self.kitty, crate::chrome::cell_pixels());
-        let chrome = self.state.browser_path.clone();
-        for pane in self.state.panes.values_mut() {
+        let state = &mut self.state;
+        for pane in state.panes.values_mut() {
             if let PaneContent::Browser(browser) = &mut pane.content {
-                self.dirty |= browser.pump(kitty, cell, chrome.as_deref());
+                self.dirty |= browser.pump(kitty, cell, &mut state.chrome);
             }
         }
     }
