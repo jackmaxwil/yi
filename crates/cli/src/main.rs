@@ -396,7 +396,7 @@ fn build_session(
         catalog::spawn_refresh(&model.provider, Some(&credential.secret), proxy.as_ref());
     }
     if faux {
-        provider.queue_faux(shells::faux_replies(args).map_err(|reason| Refused {
+        provider.queue_faux_timed(shells::faux_replies(args).map_err(|reason| Refused {
             code: 2,
             reason,
             class: yi_types::telemetry::ErrorClass::RefusalConfig,
