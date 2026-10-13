@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, Weak};
 
 use yi_types::subagent::{CHILD_ENTRY, ChildEnded, ChildExit, ChildId, ChildSpawned, ChildTrail};
 
@@ -118,4 +119,111 @@ fn journal(store: &yi_session::SharedSession, line: &ChildTrail) {
     };
     let _a_refused_line_never_blocks_a_child =
         yi_session::lock_session(store).append_custom("main", CHILD_ENTRY, Some(data));
+}
+
+/// Reaped children's transcripts held open; a hundred-child swarm pinned every store before.
+const KEPT_OPEN: usize = 4;
+
+/// Invariant: at most one live store per reaped child, so an inbox write and a history read
+/// never append through two instances of one file.
+#[derive(Default)]
+pub(crate) struct Kept(Vec<KeptChild>);
+
+struct KeptChild {
+    name: String,
+    file: Option<PathBuf>,
+    live: Weak<Mutex<yi_session::SessionStore>>,
+    held: Option<yi_session::SharedSession>,
+}
+
+impl Kept {
+    pub(crate) fn keep(&mut self, name: String, store: yi_session::SharedSession) {
+        let file = yi_session::lock_session(&store).file_path().cloned();
+        self.0.retain(|child| child.name != name);
+        let live = Arc::downgrade(&store);
+        self.0.push(KeptChild {
+            name,
+            file,
+            live,
+            held: Some(store),
+        });
+        self.trim();
+    }
+
+    /// Most recently used children sit last; a file-backed one past the cap lets its store go.
+    fn trim(&mut self) {
+        let mut open = 0;
+        for child in self.0.iter_mut().rev().filter(|child| child.file.is_some()) {
+            open += usize::from(child.held.is_some());
+            if open > KEPT_OPEN {
+                child.held = None;
+            }
+        }
+    }
+
+    pub(crate) fn get(&mut self, name: &str) -> Option<yi_session::SharedSession> {
+        let at = self.0.iter().position(|child| child.name == name)?;
+        let mut child = self.0.remove(at);
+        let store = child.live.upgrade().or_else(|| {
+            let file = child.file.as_ref()?;
+            Some(Arc::new(Mutex::new(yi_session::load_session(file).ok()?)))
+        });
+        if let Some(store) = &store {
+            child.live = Arc::downgrade(store);
+            child.held = Some(Arc::clone(store));
+        }
+        self.0.push(child);
+        self.trim();
+        store
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Outcome = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn kept_children_past_the_cap_reopen_once_from_their_file() -> Outcome {
+        let root = crate::scratch::Scratch::new("yi-kept-transcripts")?;
+        let mut repo = yi_session::JsonlRepo::new(root.to_path_buf(), "/work");
+        let mut kept = Kept::default();
+        let mut first = Weak::new();
+        for n in 0..=KEPT_OPEN {
+            let options = yi_session::CreateOptions {
+                id: None,
+                parent_session_id: None,
+                metadata: None,
+            };
+            let store = yi_session::SessionRepo::create(&mut repo, options)?;
+            if n == 0 {
+                first = Arc::downgrade(&store);
+            }
+            kept.keep(format!("child-{n}"), store);
+        }
+        assert!(
+            first.upgrade().is_none(),
+            "a child past the cap stayed resident"
+        );
+        let reopened = kept.get("child-0").ok_or("child-0 not reopened")?;
+        let again = kept.get("child-0").ok_or("child-0 lost")?;
+        assert!(
+            Arc::ptr_eq(&reopened, &again),
+            "two live stores for one file"
+        );
+        yi_session::lock_session(&reopened).append_custom("main", "inbox", None)?;
+        yi_session::lock_session(&again).append_custom("main", "inbox", None)?;
+        let file = yi_session::lock_session(&again)
+            .file_path()
+            .cloned()
+            .ok_or("no file")?;
+        let query = yi_session::EntryQuery {
+            custom_type: Some("inbox".to_owned()),
+            ..Default::default()
+        };
+        let reloaded = yi_session::load_session(&file)?;
+        assert_eq!(reloaded.find_entries(&query)?.len(), 2);
+        Ok(())
+    }
 }

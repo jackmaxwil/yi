@@ -391,7 +391,7 @@ impl SubagentHost {
         if let Some(store) = record.session.store()
             && let Ok(mut reaped) = self.reaped.lock()
         {
-            reaped.insert(record.session_name.clone(), store);
+            reaped.keep(record.session_name.clone(), store);
         }
         let reason = record
             .lease

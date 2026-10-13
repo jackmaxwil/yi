@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use serde_json::{Map, Value};
 use yi_types::entry::Entry;
@@ -292,7 +292,20 @@ fn snippet(text: &str, query: &str) -> String {
 #[derive(Default)]
 pub struct Corpus {
     dirs: Mutex<BTreeMap<PathBuf, Belongs>>,
-    files: Mutex<BTreeMap<PathBuf, (u64, Vec<Unit>)>>,
+    files: Mutex<BTreeMap<PathBuf, Cached>>,
+}
+
+/// Incident: every kernel kept its own copy of the repo's session text, and each query cloned
+/// all of it; one corpus per process, shared by reference, holds it once.
+static SHARED: LazyLock<Arc<Corpus>> = LazyLock::new(Arc::default);
+
+type Cached = ((u64, u64), Arc<Vec<Unit>>);
+
+/// Invariant: a torn-tail repair or fork replaces a session file by rename, which can keep its
+/// length and mtime; the inode is what moves.
+fn stamp_of(file: &Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(file).map_or((0, 0), |meta| (meta.len(), meta.ino()))
 }
 
 impl Corpus {
@@ -318,19 +331,19 @@ impl Corpus {
         found
     }
 
-    pub fn units(&self, files: &[PathBuf]) -> Vec<Unit> {
+    pub fn units(&self, files: &[PathBuf]) -> Vec<Arc<Vec<Unit>>> {
         let Ok(mut cached) = self.files.lock() else {
-            return files.iter().flat_map(|file| units_of(file)).collect();
+            return files.iter().map(|file| Arc::new(units_of(file))).collect();
         };
         let mut all = Vec::new();
         for file in files {
-            let len = fs::metadata(file).map_or(0, |meta| meta.len());
-            let fresh = cached.get(file).is_some_and(|(seen, _)| *seen == len);
+            let stamp = stamp_of(file);
+            let fresh = cached.get(file).is_some_and(|(seen, _)| *seen == stamp);
             if !fresh {
-                cached.insert(file.clone(), (len, units_of(file)));
+                cached.insert(file.clone(), (stamp, Arc::new(units_of(file))));
             }
             if let Some((_, units)) = cached.get(file) {
-                all.extend(units.iter().cloned());
+                all.push(Arc::clone(units));
             }
         }
         all
@@ -338,20 +351,21 @@ impl Corpus {
 }
 
 pub fn search_reply(
-    units: &[Unit],
+    units: &[Arc<Vec<Unit>>],
     query: &str,
     offset: usize,
     limit: usize,
     skipped: usize,
 ) -> Map<String, Value> {
     let limit = limit.clamp(1, PAGE_MAX);
+    let units: Vec<&Unit> = units.iter().flat_map(|file| file.iter()).collect();
     let ranked = Bm25::new(units.iter().map(|unit| unit.text.as_str())).rank(query);
     let total = ranked.len();
     let hits: Vec<Value> = ranked
         .iter()
         .skip(offset)
         .take(limit)
-        .filter_map(|(at, _)| units.get(*at))
+        .filter_map(|(at, _)| units.get(*at).copied())
         .map(|unit| {
             let mut item = Map::new();
             item.insert("session".to_owned(), Value::from(unit.session.as_str()));
@@ -392,7 +406,7 @@ pub fn search_reply(
 }
 
 pub fn register(registry: &mut crate::kernel::HostRegistry, sessions_dir: PathBuf, cwd: PathBuf) {
-    let corpus = Arc::new(Corpus::default());
+    let corpus = Arc::clone(&SHARED);
     registry.register("history.search", move |payload| {
         let (corpus, sessions_dir, cwd) = (Arc::clone(&corpus), sessions_dir.clone(), cwd.clone());
         Box::pin(async move {
@@ -537,5 +551,33 @@ mod tests {
             other.is_some(),
             "a read reaches another repository's session by id"
         );
+    }
+
+    #[test]
+    fn a_session_replaced_at_the_same_length_and_time_is_reread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-history-replace")?;
+        let (sessions, cwd) = (root.join("sessions"), root.join("cwd"));
+        fs::create_dir_all(&cwd)?;
+        session(&sessions, &cwd, "s-one", &[user("alpha bravo")]);
+        let file = find_session(&sessions, &cwd, "s-one").ok_or("no session file")?;
+        let corpus = Corpus::default();
+        assert_eq!(
+            search_reply(&corpus.units(std::slice::from_ref(&file)), "alpha", 0, 8, 0)["total"],
+            1
+        );
+        let when = fs::metadata(&file)?.modified()?;
+        let swapped = fs::read_to_string(&file)?.replace("alpha", "gamma");
+        let next = file.with_extension("tmp");
+        fs::write(&next, swapped)?;
+        fs::rename(&next, &file)?;
+        fs::File::options()
+            .write(true)
+            .open(&file)?
+            .set_modified(when)?;
+        let units = corpus.units(&[file]);
+        assert_eq!(search_reply(&units, "alpha", 0, 8, 0)["total"], 0);
+        assert_eq!(search_reply(&units, "gamma", 0, 8, 0)["total"], 1);
+        Ok(())
     }
 }
