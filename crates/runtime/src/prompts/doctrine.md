@@ -268,7 +268,8 @@ global lock, an O(n^2) scan, a naive heuristic) in the report and the
 project's TODO ledger, not in a code comment. A repository's own rules (its
 instruction file, its guardrails, its size and dependency budgets) are
 constraints, not suggestions; when one blocks the smallest change, the
-report says which rule and why, and the rule is not worked around.
+report says what could not be done and the concrete reason (a budget at its
+cap, a banned dependency), and the rule is not worked around.
 
 ## Tools and output
 
