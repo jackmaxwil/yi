@@ -24,10 +24,11 @@ pub enum Scene {
     Clouds,
     Growth,
     Spirals,
+    Attractor,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 7] = [
+    pub const ALL: [(&'static str, Scene); 8] = [
         ("kali", Scene::Kali),
         ("echo", Scene::Echo),
         ("solid", Scene::Solid),
@@ -35,6 +36,7 @@ impl Scene {
         ("clouds", Scene::Clouds),
         ("growth", Scene::Growth),
         ("spirals", Scene::Spirals),
+        ("attractor", Scene::Attractor),
     ];
 
     pub fn named(name: &str) -> Option<Scene> {
@@ -46,7 +48,7 @@ impl Scene {
 }
 
 /// Used when the config names no weights: the Kali fold eight parts in twelve.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 7] = [
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 8] = [
     (Scene::Kali, 8),
     (Scene::Echo, 2),
     (Scene::Solid, 2),
@@ -54,6 +56,7 @@ pub const DEFAULT_WEIGHTS: [(Scene, u32); 7] = [
     (Scene::Clouds, 2),
     (Scene::Growth, 2),
     (Scene::Spirals, 2),
+    (Scene::Attractor, 2),
 ];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
@@ -261,6 +264,35 @@ fn clouds(u: f64, v: f64, t: f64) -> f64 {
     (fbm(x + 3.2 * qx, y + 3.2 * qy) * 1.6 - 0.2).clamp(0.0, 1.0) * smooth(t / 0.3)
 }
 
+/// A Clifford orbit binned onto the cells, shaded by the log of visits. `c` and `d` fix its bounds
+/// at |x| < 2, |y| < 1.7, so `a` and `b` drift and the shape stays on screen; rerun each frame.
+fn attractor((width, height): (u16, u16), t: f64) -> Vec<f32> {
+    const POINTS: u32 = 30_000;
+    let (w, h) = (usize::from(width), usize::from(height));
+    let (a, b) = (
+        -1.4 + 0.12 * (0.7 * t).sin(),
+        1.6 + 0.1 * (0.5 * t + 1.0).cos(),
+    );
+    let mut bins = vec![0_u32; w * h];
+    let (mut x, mut y) = (0.1_f64, 0.0_f64);
+    for i in 0..POINTS + 20 {
+        (x, y) = (
+            (a * y).sin() + (a * x).cos(),
+            (b * x).sin() + 0.7 * (b * y).cos(),
+        );
+        let col = ((x / 2.0 * 0.95 + 1.0) / 2.0 * w as f64).floor();
+        let row = ((1.0 - y / 1.7 * 0.95) / 2.0 * h as f64).floor();
+        let inside = (0.0..w as f64).contains(&col) && (0.0..h as f64).contains(&row);
+        if i >= 20 && inside {
+            bins[row as usize * w + col as usize] += 1;
+        }
+    }
+    let top = f64::from(bins.iter().copied().max().unwrap_or(0).max(1)).ln_1p();
+    bins.iter()
+        .map(|n| (f64::from(*n).ln_1p() / top).powf(0.9) as f32)
+        .collect()
+}
+
 /// Where the plane is sampled for the name: a loxodromic Möbius flow with fixed points at `u = ±1`
 /// that unwinds to the identity by 2 s, so the name comes out of a vortex and settles.
 fn mobius(u: f64, v: f64, t: f64) -> (f64, f64) {
@@ -380,7 +412,7 @@ pub fn cover(
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
     let rise = match scene {
-        Scene::Kali | Scene::Clouds | Scene::Growth | Scene::Spirals => {
+        Scene::Kali | Scene::Clouds | Scene::Growth | Scene::Spirals | Scene::Attractor => {
             smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM))
         }
         Scene::Echo | Scene::Mobius => 1.0,
@@ -391,6 +423,10 @@ pub fn cover(
     let reveal = smooth((leave - 0.1) / 0.9);
     let (strokes, thick) = landed(area, landing, leave);
     let size = (area.width, area.height);
+    let density = match scene {
+        Scene::Attractor if fade > 0.0 => attractor(size, t),
+        _ => Vec::new(),
+    };
     let sim: Option<Box<dyn Fn(f64, f64) -> f64 + '_>> = match scene {
         _ if fade <= 0.0 => None,
         Scene::Growth => {
@@ -429,6 +465,10 @@ pub fn cover(
                 Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
                 Scene::Mobius => rings(d, t) * fade,
                 Scene::Clouds => clouds(u, v, t) * fade,
+                Scene::Attractor => {
+                    let at = usize::from(y) * usize::from(area.width) + usize::from(x);
+                    density.get(at).map_or(0.0, |d| f64::from(*d)) * fade
+                }
                 Scene::Growth | Scene::Spirals => sim.as_ref().map_or(0.0, |at| at(u, v)) * fade,
             };
             let value = match solid_hit {
