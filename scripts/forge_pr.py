@@ -662,9 +662,11 @@ def selfcheck():
     assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
     assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
     # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
-    import contextlib, io
+    import contextlib, io, check_binary_size
 
-    capped = "FAIL binary_size\n  dist binary 9000000 > hard cap 8388608 bytes (8 MiB, D249)\n"
+    over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
+    assert over == "dist binary 9500000 > hard cap 9437184 bytes (9 MiB)", over
+    capped = f"FAIL binary_size\n  {over}\n"
     real_run = subprocess.run
     subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, int("check_binary" in cmd[-1]), capped, "")
     try:
