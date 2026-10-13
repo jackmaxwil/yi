@@ -1476,3 +1476,45 @@ fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
     );
     Ok(())
 }
+
+/// A paste fed as keystrokes carries what no key produces; behind a slash command the popup took
+/// the ESC into its query line and the drive refused the frame ("a control character reached a
+/// cell"), so the run exited 1.
+#[test]
+fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult {
+    let dir = Scratch::new("yi-tui-paste-slash")?;
+    let home = dir.home()?;
+    let keys = dir.join("keys");
+    std::fs::write(&keys, "type /tree\ntype x\u{1b}[31mredy\nquit\n")?;
+    let frames = dir.join("frames");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
+    let row = last.lines().next().ok_or("an empty frame")?;
+    assert_eq!(row.trim_matches(['"', ',', ' ']), "/treex[31mredy\u{2588}");
+    Ok(())
+}

@@ -446,8 +446,8 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             root: "/tmp/demo-root".to_owned(),
             autostart: false,
             auto_side: true,
-            sidebar: SidebarMode::Rail,
             open_apps: Vec::new(),
+            sidebar: SidebarMode::Rail,
             pace: 0,
         },
         DriveOptions {
@@ -3791,7 +3791,7 @@ fn quote_puts_the_message_in_the_composer() -> TestResult {
     Ok(())
 }
 
-/// Two panes: each title carries the close mark and its key, and a click on it closes that
+/// Two panes: each title carries a close button and no key, and a click on it closes that
 /// pane. One pane is the last, and the last pane cannot close, so it carries none.
 #[test]
 fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
@@ -3799,8 +3799,8 @@ fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
         "close-mark",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-v\nwait-frame 3000 ✕ ⌥x\nmouse down 97 0\nmouse up 97 0\n\
-         wait-frame 3000 !✕ ⌥x\nquit\n",
+         key alt-v\nwait-frame 3000 ✕\nmouse down 97 0\nmouse up 97 0\n\
+         wait-frame 3000 !✕\nquit\n",
     )?;
     assert!(
         !frame.contains('✕'),
@@ -3829,7 +3829,7 @@ fn a_drag_from_the_lower_panes_mark_resizes_and_closes_nothing() -> TestResult {
         "close-mark-drag",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-s\nwait-frame 3000 ✕ ⌥x\nmouse down 95 14\nmouse drag 95 18\nmouse up 95 18\n\
+         key alt-s\nwait-frame 3000 ✕\nmouse down 97 14\nmouse drag 97 18\nmouse up 97 18\n\
          wait 100\nquit\n",
     )?;
     assert!(
@@ -3919,7 +3919,7 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
         SidebarMode::Full,
         160,
     )?;
-    let gear = frame.lines().last().unwrap_or_default();
+    let gear = frame.lines().rev().nth(1).unwrap_or_default();
     assert!(
         gear.contains("⚙  settings ⌥,"),
         "no gear in the corner: {gear:?}"
@@ -4345,4 +4345,74 @@ fn open_in_sends_the_reply_to_the_app_picked() -> TestResult {
         None,
         (100, 30),
     )
+}
+
+/// The text between box borders on the dump's row holding `needle`, padding off.
+fn row_holding(frame: &str, needle: &str) -> Result<String, String> {
+    frame
+        .lines()
+        .find(|row| row.contains(needle))
+        .and_then(|row| {
+            let cells = row
+                .split('│')
+                .map(|cell| cell.trim_matches(['"', ',', ' ']));
+            cells
+                .rev()
+                .find(|cell| cell.contains(needle))
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| format!("no row holds {needle:?}:\n{frame}"))
+}
+
+/// A paste fed as keystrokes carries what no key produces. The drive refuses a control
+/// character in a cell, so each of these exited 1 with the surface named in its test.
+#[test]
+fn a_pasted_control_character_is_dropped_behind_a_console_slash_command() -> TestResult {
+    let frame = run_frames(
+        "paste-slash",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         type /model\ntype x\u{7f}y\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "/model")?, "/modelxy█");
+    Ok(())
+}
+
+#[test]
+fn a_pasted_control_character_is_dropped_from_palette_and_find_queries() -> TestResult {
+    let frame = run_frames(
+        "paste-palette",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype x\u{7}y\nwait-frame 3000 › xy\nkey esc\n\
+         cmd-shift-l\ntype x\u{7}y\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "› /xy")?, "› /xy▌");
+    Ok(())
+}
+
+#[test]
+fn a_pasted_control_character_is_dropped_from_a_submitted_console_message() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/prompt", prompt_stream));
+    let frame = run_frames(
+        "paste-transcript",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         type x\u{7}y\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "┃   xy")?, "┃   xy");
+    Ok(())
+}
+
+#[test]
+fn a_pasted_control_character_is_dropped_from_the_notebook_pane_input() -> TestResult {
+    let frame = run_frames(
+        "paste-notebook",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         cmd-i\nwait-frame 3000 nb:s-alpha\ntype x\u{1b}[31mredy\nquit\n",
+    )?;
+    assert_eq!(row_holding(&frame, "[31mredy")?, "x[31mredy");
+    Ok(())
 }
