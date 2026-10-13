@@ -479,6 +479,10 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
         !text.contains("@yi/"),
         "the branch repeats the session id: {text}"
     );
+    assert!(
+        !text.contains("⎇ lane"),
+        "the lane slot suffix is gone: {text}"
+    );
     Ok(())
 }
 

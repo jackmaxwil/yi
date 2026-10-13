@@ -341,17 +341,23 @@ fn sidebar_hits(app: &mut App, theme: &Theme, sidebar: Rect, sidebar_width: u16)
         };
         let whole = Rect::new(sidebar.x, y, sidebar_width, 1);
         if let Control::Fold(root) = &control {
-            let plus = sidebar_width.saturating_sub(3);
+            let (head, plus) = crate::sidebar::plus_split(&row.line);
+            let head = head.min(usize::from(sidebar_width));
+            let plus = plus.min(usize::from(sidebar_width).saturating_sub(head));
+            let (head, plus) = (
+                u16::try_from(head).unwrap_or(0),
+                u16::try_from(plus).unwrap_or(0),
+            );
             controls.push((
                 Rect {
-                    width: plus,
+                    width: head,
                     ..whole
                 },
                 control.clone(),
             ));
-            let x = sidebar.x.saturating_add(plus);
+            let x = sidebar.x.saturating_add(head);
             let new = Control::New(Some(root.clone()));
-            controls.push((Rect::new(x, y, 3, 1), new));
+            controls.push((Rect::new(x, y, plus, 1), new));
         } else {
             controls.push((whole, control));
         }
