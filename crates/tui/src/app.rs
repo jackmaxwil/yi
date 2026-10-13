@@ -84,7 +84,7 @@ pub struct TuiOptions {
 
 // Starting tall anchors the composer mid-screen until the first commit pushes it down,
 // so the viewport opens at an empty live region's height and grows upward from the cursor.
-const MIN_VIEWPORT_ROWS: u16 = 6;
+const MIN_VIEWPORT_ROWS: u16 = 4;
 
 pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 10;
