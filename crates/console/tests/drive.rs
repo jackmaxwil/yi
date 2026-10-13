@@ -1236,12 +1236,12 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          key alt-/\n\
-         wait-frame 3000 ⌥n new\n\
+         wait-frame 3000 ⌥n  new\n\
          key esc\n\
          cmd-\\\n\
          wait-frame 3000 no session\n\
          cmd-p\n\
-         wait-frame 3000 ⌘⇧N new\n\
+         wait-frame 3000 ⌘⇧N  new\n\
          key esc\n\
          cmd-x\n\
          wait-frame 3000 !no session\n\
@@ -1875,7 +1875,7 @@ fn editor_script(path: &std::path::Path, split: &str, rest: &str) -> String {
 }
 
 /// At 100 columns beside the full sidebar the hint row drops whole keys by rank,
-/// notebook first, and still ends in `⌥? keys` rather than a key cut in half.
+/// notebook then sidebar, and still ends in `⌥? keys` rather than a key cut in half.
 #[test]
 fn the_hint_row_keeps_whole_keys() -> TestResult {
     let frame = run_frames(
@@ -1887,10 +1887,18 @@ fn the_hint_row_keeps_whole_keys() -> TestResult {
          quit\n",
     )?;
     let last = frame.lines().last().unwrap_or_default();
-    let last = last.trim_end_matches(['"', ',', ' ']);
-    assert!(
-        last.ends_with("   ⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥g diff   ⌥? keys"),
-        "the notebook drops whole and ⌥? keys stays: {last:?}"
+    let keys: Vec<String> = last
+        .trim_end_matches(['"', ',', ' '])
+        .rsplit("⌥,")
+        .next()
+        .unwrap_or_default()
+        .split('│')
+        .map(|key| key.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    assert_eq!(
+        keys,
+        ["⌥/ command palette", "⌥n new session", "⌥g diff", "⌥? keys"],
+        "whole keys drop and ⌥? keys stays: {last:?}"
     );
     Ok(())
 }
@@ -1944,7 +1952,7 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
     }
     let hints = frame.lines().last().unwrap_or_default();
     assert!(
-        hints.contains("⌘P command palette") && hints.contains("   ⌘⇧R diff   ⌘/ keys"),
+        hints.contains("⌘P  command palette") && hints.contains("⌘⇧R  diff │  ⌘/  keys"),
         "the hint row names only chords Ghostty delivers: {hints:?}"
     );
     Ok(())
@@ -2238,6 +2246,31 @@ fn ctrl_c_clears_the_draft_then_warns_then_stops_the_daemon() -> TestResult {
          key ctrl-c\n\
          wait-frame 3000 the console quit before this frame\n",
     )
+}
+
+/// Dies with the daemon's own exit painted as an error: the console waited out a fixed two
+/// seconds after `_yi/shutdown`, and the closed socket showed "disconnected" in that gap.
+#[test]
+fn stopping_the_daemon_quits_without_a_disconnect_banner() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/shutdown", seen_ok));
+    fixture.push(Step::Close);
+    let last = run_frames(
+        "ctrl-c-daemon-exit",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key ctrl-c\n\
+         wait-frame 3000 stops the daemon\n\
+         key ctrl-c\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )?;
+    assert!(
+        !last.contains("disconnected"),
+        "the daemon's requested exit was painted as an error:\n{last}"
+    );
+    Ok(())
 }
 
 /// Dies with ctrl+c on an open `/` popup arming the daemon-stop note while the popup stayed:
@@ -3393,7 +3426,10 @@ fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
         SidebarMode::Full,
         160,
     )?;
-    assert!(frame.contains("◂ Keys ▸"), "not on the Keys tab:\n{frame}");
+    assert!(
+        frame.contains("Interface  Keys "),
+        "not on the Keys tab:\n{frame}"
+    );
     Ok(())
 }
 
@@ -3919,11 +3955,63 @@ fn the_gear_opens_settings_and_a_default_saves_or_says_why_not() -> TestResult {
         SidebarMode::Full,
         160,
     )?;
-    let gear = frame.lines().rev().nth(1).unwrap_or_default();
+    let gear = frame.lines().last().unwrap_or_default();
     assert!(
         gear.contains("⚙  settings ⌥,"),
         "no gear in the corner: {gear:?}"
     );
+    Ok(())
+}
+
+/// A second press on the gear closes the settings it opened, and framed panes share the rail's
+/// line: two lines side by side read as a gap, and a line stopping above the gear as a cut.
+#[test]
+fn the_gear_toggles_settings_and_the_rail_keeps_one_line_to_the_bottom() -> TestResult {
+    let frame = run_frames_with(
+        "gear-toggle",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("_yi/settings", settings_rows),
+        ],
+        "wait-frame 5000 command palette\nkey alt-v\nwait-frame 3000 no session\n\
+         mouse down 1 29\nmouse up 1 29\nwait-frame 3000 Models\n\
+         mouse down 1 29\nmouse up 1 29\nwait-frame 3000 !Models\nquit\n",
+        SidebarMode::Rail,
+        100,
+    )?;
+    // Each frame row is a quoted string, so column x is char x + 1.
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    for (y, row) in rows.iter().enumerate() {
+        let (edge, inside) = (row.get(9).copied(), row.get(10).copied());
+        assert!(
+            edge.is_some_and(|c| "│┃╭╰├".contains(c)),
+            "row {y} has no rail line: {row:?}"
+        );
+        assert!(
+            !inside.is_some_and(|c| "│┃".contains(c)),
+            "row {y} draws two lines: {row:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Each hint is a button: a press on the `⌥? keys` keycap, columns 79-89 past the rail, runs it.
+#[test]
+fn a_press_on_a_hint_runs_its_key() -> TestResult {
+    run_frames_with(
+        "hint-button",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+        ],
+        "wait-frame 5000 command palette\nmouse down 84 29\nmouse up 84 29\n\
+         wait-frame 3000 stop the daemon and quit\nquit\n",
+        SidebarMode::Rail,
+        100,
+    )?;
     Ok(())
 }
 

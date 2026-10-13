@@ -317,6 +317,9 @@ def main() -> int:
                              "spaced; python escapes are decoded (\\x1b, \\r)")
     parser.add_argument("--raw", help="write the child's untouched output here, "
                                      "so escape sequences can be counted")
+    parser.add_argument("--stdin", action="store_true",
+                        help="pass this process's stdin to the child once it has drawn, so "
+                             "a caller types in step with what it observes")
     parser.add_argument("--send-quit", action="store_true",
                         help="send double ctrl-c after seconds/2")
     parser.add_argument("--resize", metavar="COLSxROWS", action="append",
@@ -390,8 +393,16 @@ def main() -> int:
         if done:
             exit_status = status
             break
-        ready, _, _ = select.select([fd], [], [], 0.1)
-        if ready:
+        # Keys sent before the child draws reach a tty still in cooked mode, which joins them.
+        typing = [0] if options.stdin and out else []
+        ready, _, _ = select.select([fd, *typing], [], [], 0.1)
+        if 0 in ready:
+            keys = os.read(0, 65536)
+            if keys:
+                os.write(fd, keys)
+            else:
+                options.stdin = False
+        if fd in ready:
             try:
                 chunk = os.read(fd, 65536)
             except OSError:
