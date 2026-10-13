@@ -1,0 +1,5 @@
+---
+issue: Refs #1398
+decision: the dist binary's hard cap is 9 MiB (9,437,184 bytes), raised from D249's 8 MiB: `check_binary_size.py`'s `HARD_CAP_BYTES`, the deps rule in `.ruler/060-deps.md` and YI_DESIGN.md §18.6 say 9 MiB; the measured ratchet under it is unchanged | main measured 7.98 MiB and the `answer` tool (#1398) moved `__TEXT` one 16 KiB page, 208 bytes past 8 MiB with the dist profile already at `opt-level = "z"`, fat LTO and stripped symbols; the owner chose a 9 MiB cap over deleting about 8 KB elsewhere | set `HARD_CAP_BYTES` back to 8_388_608 and the two docs to 8 MiB once the binary measures under it
+---
+The dist binary's hard cap is now 9 MiB, up from 8 MiB. Main measured 7.98 MiB, and the `answer` tool (#1398) pushed the text segment one 16 KiB page further, which put the binary 208 bytes over 8 MiB even though the dist profile already builds with `opt-level = "z"`, fat LTO and stripped symbols. The owner chose to raise the cap rather than delete about 8 KB elsewhere. The per-PR ratchet under the cap is unchanged: growth still lands as a measured `--update` in its own commit, and a baseline edited past 9 MiB still fails on its own.
