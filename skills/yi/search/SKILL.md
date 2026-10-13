@@ -43,15 +43,12 @@ design, not a fault: a walled reader works from its task alone, which keeps it i
 **Brief a reader.** A reader child (the default role) gets a short prompt, not this doctrine, so
 it does not know the family addresses. Put the fact in its question, name the address there
 (`read history://parent/since/0`), or inline it with `partition=["history://self/<entryId>"]`.
+Give addresses, not a retelling: `<entryId>` for one result, `tail/N` or `since/<seq>` for a
+stretch, `custom/<type>` for one kind of record.
 
 **Read before you ask.** Another session's transcript answers what it found or was told without
-waking it, and costs it nothing. Read it by the name you know it by; a name several sessions
-share is refused with their `history://<id>` addresses, so pick one and read again.
-
-**Pass a range, not a retelling.** A child that needs part of your session gets addresses, not
-your paraphrase of them: `history://self/<entryId>` for one result, `tail/N` or `since/<seq>` for a
-stretch, `custom/<type>` for one kind of record. Inline them with `partition=[...]` when the child
-must read them before anything else; name them in the brief when it may need them.
+waking it. Read it by the name you know it by; a name several sessions share is refused with
+their `history://<id>` addresses, so pick one and read again. A walled reader reads by id only.
 
 **Collect the children.** A parent that needs what a child found reads that child's transcript
 instead of asking it to say it again, and only the entries it needs.
