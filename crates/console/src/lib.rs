@@ -545,11 +545,14 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     let Some(pane) = app.state.panes.get(&pane_id) else {
         return clear(out, placed);
     };
-    let PaneContent::Notebook { cells, .. } = &pane.content else {
+    let PaneContent::Notebook { session, .. } = &pane.content else {
         return clear(out, placed);
     };
-    let image = cells
-        .iter()
+    let image = session
+        .as_ref()
+        .and_then(|session| app.state.notebooks.get(session))
+        .into_iter()
+        .flatten()
         .rev()
         .flat_map(|cell| cell.images.iter())
         .next();
@@ -799,16 +802,20 @@ mod tests {
         let theme = Theme::new(ColorTier::TrueColor, true);
         let mut app = App::new("/repo".to_owned(), theme);
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 input: Box::default(),
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec!["iVBORw0KGgo=".to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
         let placed = |app: &mut App| {
             let mut out = Vec::new();
@@ -836,16 +843,20 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.kitty = true;
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 input: Box::default(),
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec!["iVBORw0KGgo=".to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
         let mut out = Vec::new();
         present(

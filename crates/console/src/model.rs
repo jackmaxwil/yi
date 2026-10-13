@@ -204,7 +204,6 @@ pub enum PaneContent {
     },
     Notebook {
         session: Option<SessionId>,
-        cells: Vec<NbCell>,
         input: Box<tui_textarea::TextArea<'static>>,
     },
     SessionDiff {
@@ -415,6 +414,7 @@ pub struct ConsoleState {
     pub sidebar_cols: usize,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
+    pub notebooks: BTreeMap<SessionId, Vec<NbCell>>,
     pub side_opened: std::collections::BTreeSet<SessionId>,
     pub auto_side: bool,
     pub chat_pace: u16,
@@ -453,6 +453,7 @@ impl ConsoleState {
             sidebar_cols: 0,
             cursor_moved: false,
             diffs: BTreeMap::new(),
+            notebooks: BTreeMap::new(),
             side_opened: std::collections::BTreeSet::new(),
             auto_side: true,
             chat_pace: 0,

@@ -183,6 +183,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             Some(pane) => {
                 let view = PaneData {
                     diffs,
+                    notebooks: &app.state.notebooks,
                     sessions,
                     notes: &notes,
                     options: &app.state.session_options,
@@ -324,6 +325,7 @@ pub(crate) fn label_of(
 
 struct PaneData<'a> {
     diffs: &'a std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
+    notebooks: &'a std::collections::BTreeMap<SessionId, Vec<crate::model::NbCell>>,
     sessions: &'a std::collections::BTreeMap<SessionId, SessionRow>,
     notes: &'a std::collections::BTreeMap<SessionId, String>,
     options: &'a std::collections::BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
@@ -409,7 +411,11 @@ fn pane_view_content(
             let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
-        PaneContent::Notebook { session, cells, .. } => {
+        PaneContent::Notebook { session, .. } => {
+            let cells = session
+                .as_ref()
+                .and_then(|id| view.notebooks.get(id))
+                .map_or(&[][..], Vec::as_slice);
             let title = session.as_ref().map_or_else(
                 || "▤ notebook".to_owned(),
                 |id| format!("▤ nb:{}", label_of(sessions, id, 11)),
