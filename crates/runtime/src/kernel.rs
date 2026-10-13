@@ -293,6 +293,13 @@ impl KernelService {
         }
     }
 
+    /// A kernel in use or holding names its snapshot lacks; see [`KernelManager::unsaved`].
+    pub fn unsaved(&self) -> bool {
+        self.manager.try_lock().map_or(true, |slot| {
+            slot.as_ref().is_some_and(|kernel| kernel.unsaved())
+        })
+    }
+
     pub fn take_death(&self) -> bool {
         self.died.swap(false, std::sync::atomic::Ordering::SeqCst)
     }

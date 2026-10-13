@@ -338,6 +338,8 @@ pub fn parse_list_names(stdout: &str) -> Option<Vec<String>> {
 pub(crate) struct Checkpoints {
     cells: AtomicU64,
     saved: AtomicU64,
+    /// The last snapshot left a name out (over a cap, or unpicklable).
+    lossy: std::sync::atomic::AtomicBool,
 }
 
 impl Checkpoints {
@@ -347,6 +349,13 @@ impl Checkpoints {
 }
 
 impl KernelManager {
+    /// Invariant: a kernel whose namespace its snapshot does not hold whole loses names when
+    /// disposed, so a worker evicting idle sessions keeps it.
+    pub fn unsaved(&self) -> bool {
+        let checkpoints = &self.inner.checkpoints;
+        self.is_running() && (checkpoints.behind() || checkpoints.lossy.load(Ordering::SeqCst))
+    }
+
     /// A cell that ran at all may have bound names, failed or not; a clean one checkpoints.
     pub(crate) fn after_user_cell(&self, result: &Result<ExecuteResult, ExecuteError>) {
         let Ok(result) = result else { return };
@@ -413,11 +422,11 @@ impl KernelManager {
         match result {
             Ok(result) if result.status == ExecuteStatus::Ok => {
                 let parsed = parse_snapshot_result(&result.stdout, &config.path);
-                if parsed.is_some() {
-                    self.inner
-                        .checkpoints
-                        .saved
-                        .fetch_max(seen, Ordering::SeqCst);
+                if let Some(parsed) = &parsed {
+                    let checkpoints = &self.inner.checkpoints;
+                    checkpoints.saved.fetch_max(seen, Ordering::SeqCst);
+                    let lossy = !parsed.skipped.is_empty();
+                    checkpoints.lossy.store(lossy, Ordering::SeqCst);
                 }
                 parsed
             }

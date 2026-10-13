@@ -1823,3 +1823,118 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
     );
     Ok(())
 }
+
+fn attached(client: &mut AcpClient, id: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let listed = client.request(id, "session/list", json!({}))?;
+    let sessions = listed
+        .last()
+        .map(|frame| frame["result"]["sessions"].clone());
+    Ok((sessions
+        .as_ref()
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten())
+    .filter(|session| session["_meta"]["yi"]["attached"] == true)
+    .filter_map(|session| session["sessionId"].as_str().map(str::to_owned))
+    .collect())
+}
+
+/// Incident: a worker dropped a session only on `session/close`, which no client sends, so a
+/// daemon kept every session it ever opened; the ninth idle one now evicts the idlest.
+#[test]
+fn a_worker_keeps_eight_idle_sessions_and_reloads_the_one_it_evicted() -> TestResult {
+    let dir = temp_dir("resident")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..9 {
+        let new = client.request(
+            &format!("new-{n}"),
+            "session/new",
+            json!({"cwd": dir.display().to_string()}),
+        )?;
+        let id = (new
+            .last()
+            .and_then(|frame| frame["result"]["sessionId"].as_str()))
+        .ok_or("missing sessionId")?
+        .to_owned();
+        prompt_until_idle(&mut client, &format!("prompt-{n}"), &id, "hello")?;
+        ids.push(id);
+        let loaded = attached(&mut client, &format!("list-{n}"))?;
+        let first_kept = loaded.contains(&ids[0]);
+        assert_eq!(
+            (loaded.len(), first_kept),
+            (ids.len().min(8), n < 8),
+            "after {} sessions: {loaded:?}",
+            ids.len()
+        );
+    }
+    let frames = prompt_until_idle(&mut client, "again", &ids[0], "still there?")?;
+    assert!(
+        !updates_of(&frames, "agent_message_chunk").is_empty(),
+        "the evicted session answered nothing: {frames:?}"
+    );
+    let loaded = attached(&mut client, "list-again")?;
+    assert!(
+        loaded.contains(&ids[0]) && !loaded.contains(&ids[1]),
+        "{loaded:?}"
+    );
+    client.finish()
+}
+
+/// A letter to a session the worker unloaded while idle still reaches it: the mailbox's due job
+/// finds no lane, the worker loads the session again, and its subscription delivers.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_letter_to_an_evicted_session_loads_it_and_reads_the_letter() -> TestResult {
+    let dir = temp_dir("resident-mail")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..9 {
+        let new = client.request(
+            &format!("new-{n}"),
+            "session/new",
+            json!({"cwd": dir.display().to_string()}),
+        )?;
+        let id = (new
+            .last()
+            .and_then(|frame| frame["result"]["sessionId"].as_str()))
+        .ok_or("missing sessionId")?
+        .to_owned();
+        prompt_until_idle(&mut client, &format!("prompt-{n}"), &id, "hello")?;
+        ids.push(id);
+    }
+    let (asleep, sender) = (ids[0].clone(), ids[8].clone());
+    assert!(!attached(&mut client, "list")?.contains(&asleep));
+    let code = format!("await rlm.send(\"history://{asleep}\", \"ping\")");
+    client.request(
+        "send",
+        "_yi/kernel_execute",
+        json!({"sessionId": sender, "code": code}),
+    )?;
+    let meta = dir.join(format!("sessions/channels/mail-{asleep}.json"));
+    let acked = || -> Option<u64> {
+        let meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta).ok()?).ok()?;
+        meta["acks"]
+            .as_object()?
+            .values()
+            .filter_map(Value::as_u64)
+            .max()
+    };
+    let mut woke = false;
+    for poll in 0..150 {
+        if attached(&mut client, &format!("poll-{poll}"))?.contains(&asleep)
+            && acked().is_some_and(|offset| offset > 0)
+        {
+            woke = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(
+        woke,
+        "the evicted session was not loaded and its letter not read within 30 s"
+    );
+    client.finish()
+}

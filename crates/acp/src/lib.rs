@@ -6,6 +6,7 @@ pub mod cells;
 pub mod daemon;
 mod fork;
 mod forward;
+mod resident;
 pub mod review;
 pub mod update;
 
@@ -202,6 +203,7 @@ struct SessionHandle {
     host: Arc<SubagentHost>,
     forwarder: JoinHandle<()>,
     prompts: PendingPrompts,
+    last_active: std::cell::Cell<std::time::Instant>,
 }
 
 impl Drop for SessionHandle {
@@ -383,8 +385,10 @@ impl AcpState {
                 host,
                 forwarder,
                 prompts,
+                last_active: std::cell::Cell::new(std::time::Instant::now()),
             },
         );
+        self.evict_idle(&session_id);
         Ok(session_id)
     }
 
@@ -468,6 +472,7 @@ impl AcpState {
     fn prompt(&mut self, request: Value, params: &Value) -> Option<Result<Value, (i64, String)>> {
         if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
             let id = id.to_owned();
+            self.reload(&id);
             self.settle(&id);
         }
         self.prompt_serial = self.prompt_serial.saturating_add(1);
@@ -476,6 +481,7 @@ impl AcpState {
             Ok(found) => found,
             Err(refused) => return Some(Err(refused)),
         };
+        handle.last_active.set(std::time::Instant::now());
         let text = prompt_text(params);
         crate::update::queued(&handle.prompts).push(PendingPrompt {
             text: text.clone(),
@@ -578,6 +584,7 @@ impl AcpState {
             && let Some(id) = params.get("sessionId").and_then(Value::as_str)
         {
             let id = id.to_owned();
+            self.reload(&id);
             self.settle(&id);
         }
         match method {

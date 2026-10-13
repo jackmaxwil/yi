@@ -612,7 +612,36 @@ impl HeartbeatService {
     }
 }
 
+/// Whether the buffer holds an entry past the job's ack; read only for a session not loaded.
+pub(crate) fn unread(job: &Job, sub: &ChannelSub) -> bool {
+    let channel = Channel::at(&sub.path);
+    let acks = channel.meta().map(|meta| meta.acks).unwrap_or_default();
+    let acked = acks.get(&job.id).copied().unwrap_or(0);
+    channel.last().is_some_and(|entry| entry.offset > acked)
+}
+
 impl HeartbeatService {
+    /// Keeps this session's timer when it is unloaded while idle; its next due job loads it.
+    pub fn hold_unloaded(&self) {
+        if let Some(hub) = self.hub() {
+            hub.hold();
+        }
+    }
+
+    /// A session loaded again for a wake reads its subscriptions now, not a retry later.
+    pub fn rearm_channels(&self) {
+        let (session, now) = (self.session_id(), yi_session::now_ms());
+        self.store().mutate(|state| {
+            for job in (state.jobs.iter_mut()).filter(|job| {
+                job.session_id == session
+                    && job.channel.is_some()
+                    && job.status == JobStatus::Active
+            }) {
+                job.next_run_at = Some(job.next_run_at.map_or(now, |at| at.min(now)));
+            }
+        });
+    }
+
     /// A durable root reads its mail through one subscription, made at its first bind and kept:
     /// one letter per todo, any number open at once, each waiting for the turn it lands in.
     pub(super) fn ensure_mailbox(&self, session_id: &str) {

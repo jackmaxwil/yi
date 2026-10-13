@@ -11,6 +11,8 @@ pub(crate) type StopFn = dyn Fn(bool) -> bool + Send + Sync;
 pub(crate) struct DeliveryHub {
     lanes: Mutex<HashMap<String, Arc<DeliverFn>>>,
     stops: Mutex<HashMap<String, Arc<StopFn>>>,
+    /// A session unloaded while idle keeps its timer, so a due job can load it again.
+    held: std::sync::atomic::AtomicBool,
 }
 
 impl DeliveryHub {
@@ -18,7 +20,12 @@ impl DeliveryHub {
         Self {
             lanes: Mutex::new(HashMap::new()),
             stops: Mutex::new(HashMap::new()),
+            held: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn hold(&self) {
+        self.held.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub(crate) fn register(&self, session_id: String, deliver: Arc<DeliverFn>) {
@@ -60,11 +67,25 @@ impl DeliveryHub {
         firing: &super::Firing,
     ) -> Result<RunOutcome, String> {
         let lane = lock_lanes(&self.lanes).get(&job.session_id).map(Arc::clone);
+        let owed = || (job.channel.as_ref()).is_none_or(|sub| super::channel::unread(job, sub));
+        let absent = || owed() && ABSENT.get().is_some_and(|reload| reload(&job.session_id));
         match lane {
             Some(deliver) => deliver(job, firing),
+            None if absent() => Ok(RunOutcome::Deferred),
             None => Ok(RunOutcome::Skipped),
         }
     }
+}
+
+/// Answers whether the session `id`, unloaded while idle, is being loaded again for a wake.
+pub type AbsentFn = dyn Fn(&str) -> bool + Send + Sync;
+
+static ABSENT: OnceLock<Box<AbsentFn>> = OnceLock::new();
+
+/// Invariant: an evicted session's wake is owed, not skipped: the host reloads it and the
+/// deferred job delivers once its lane is back. The first hook a process sets stays.
+pub fn on_absent_lane(reload: Box<AbsentFn>) {
+    let _first_hook_stays = ABSENT.set(reload);
 }
 
 pub(crate) struct SharedSchedule {
@@ -178,7 +199,10 @@ pub(crate) fn release(store: &Arc<JobStore>) {
     intern_map()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|_, shared| !Arc::ptr_eq(&shared.store, store) || shared.hub.lane_count() > 0);
+        .retain(|_, shared| {
+            let held = shared.hub.held.load(std::sync::atomic::Ordering::SeqCst);
+            !Arc::ptr_eq(&shared.store, store) || shared.hub.lane_count() > 0 || held
+        });
 }
 
 #[cfg(test)]
