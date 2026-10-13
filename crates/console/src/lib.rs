@@ -44,34 +44,44 @@ use crate::client::{ClientEvent, Outbound};
 use crate::layout::PaneId;
 use crate::model::{Link, SessionId, SessionStatus};
 
-/// The scenes the title may draw, by name and weight, and the seed that picks one.
+/// The scenes the title may draw, by weight, and the seed that picks one.
 pub struct TitleOptions {
-    pub weights: Vec<(String, u32)>,
+    pub weights: Vec<(yi_tui::title::Scene, u32)>,
     pub seed: u64,
 }
 
+/// A configured weight named a scene that does not exist.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UnknownScene(pub String);
+
+impl std::fmt::Display for UnknownScene {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let known: Vec<&str> = yi_tui::title::Scene::ALL.iter().map(|(n, _)| *n).collect();
+        write!(
+            f,
+            "console.titleWeights.{}: no such scene (the scenes are {})",
+            self.0,
+            known.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownScene {}
+
 impl TitleOptions {
     /// `None` weights are the defaults; a name that is no scene is refused with the key named.
-    pub fn new(weights: Option<Vec<(String, u32)>>, seed: u64) -> Result<Self, String> {
-        let weights = weights.unwrap_or_else(|| {
-            let named = |scene| yi_tui::title::Scene::ALL.iter().find(|(_, s)| *s == scene);
-            yi_tui::title::DEFAULT_WEIGHTS
-                .iter()
-                .filter_map(|(scene, weight)| {
-                    named(*scene).map(|(n, _)| ((*n).to_owned(), *weight))
+    pub fn new(weights: Option<Vec<(String, u32)>>, seed: u64) -> Result<Self, UnknownScene> {
+        let weights = match weights {
+            None => yi_tui::title::DEFAULT_WEIGHTS.to_vec(),
+            Some(named) => named
+                .into_iter()
+                .map(|(name, weight)| {
+                    yi_tui::title::Scene::named(&name)
+                        .map(|scene| (scene, weight))
+                        .ok_or(UnknownScene(name))
                 })
-                .collect()
-        });
-        if let Some((name, _)) = weights
-            .iter()
-            .find(|(name, _)| yi_tui::title::Scene::named(name).is_none())
-        {
-            let known: Vec<&str> = yi_tui::title::Scene::ALL.iter().map(|(n, _)| *n).collect();
-            return Err(format!(
-                "console.titleWeights.{name}: no such scene (the scenes are {})",
-                known.join(", ")
-            ));
-        }
+                .collect::<Result<_, _>>()?,
+        };
         Ok(Self { weights, seed })
     }
 }
@@ -240,7 +250,7 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
 }
 
 /// The title plays from console start for `OVER`, unless the session in front has been used.
-fn title_playing(app: &App) -> bool {
+pub(crate) fn title_playing(app: &App) -> bool {
     use crate::model::PaneContent;
     let idle = app
         .state
@@ -843,16 +853,10 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
     app.state.title_start = app.clock.now();
-    app.state.title = options.title.as_ref().and_then(|title| {
-        let scenes: Vec<_> = title
-            .weights
-            .iter()
-            .filter_map(|(name, weight)| {
-                yi_tui::title::Scene::named(name).map(|scene| (scene, *weight))
-            })
-            .collect();
-        yi_tui::title::pick(&scenes, title.seed)
-    });
+    app.state.title = options
+        .title
+        .as_ref()
+        .and_then(|title| yi_tui::title::pick(&title.weights, title.seed));
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
@@ -900,6 +904,56 @@ mod tests {
         app.clock.advance(yi_tui::title::OVER);
         assert!(asks(&mut app), "one last frame wipes it when it ends");
         assert!(!asks(&mut app), "and then nothing is asked for");
+    }
+
+    /// The key that skips the title only skips it: a ctrl+b under the cover would arm the prefix on
+    /// a screen nobody could see. Once it is over, the same key arms it at once.
+    #[test]
+    fn the_key_that_skips_the_title_is_not_also_pressed() {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.state.title = Some(yi_tui::title::Scene::Echo);
+        app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+        app.state.title_start = app.clock.now();
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-title-skip-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        let prefix = ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('b'),
+            ratatui::crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(title_playing(&app));
+        app.handle_event(&outbound, CtEvent::Key(prefix));
+        assert!(!title_playing(&app), "the key ended the title");
+        assert!(
+            matches!(app.state.mode, crate::model::Mode::Normal),
+            "and did nothing else"
+        );
+        app.handle_event(&outbound, CtEvent::Key(prefix));
+        assert!(
+            matches!(app.state.mode, crate::model::Mode::Prefix),
+            "the next one is an ordinary key"
+        );
+        outbound.shutdown();
+    }
+
+    #[test]
+    fn a_scene_that_does_not_exist_is_refused_with_the_key_named() {
+        let refused = TitleOptions::new(
+            Some(vec![("kali".to_owned(), 1), ("nope".to_owned(), 2)]),
+            0,
+        );
+        let said = refused.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            said.starts_with("console.titleWeights.nope: no such scene"),
+            "{said}"
+        );
+        assert!(said.contains("kali"), "it lists the scenes: {said}");
+        let kept = TitleOptions::new(Some(vec![("echo".to_owned(), 3)]), 9);
+        assert_eq!(
+            kept.map(|t| t.weights),
+            Ok(vec![(yi_tui::title::Scene::Echo, 3)])
+        );
     }
 
     /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
