@@ -1,8 +1,8 @@
 ---
 issue: Closes #1355
-growth: +364 about 270 lines are the reducer's tests, kept beside it so the reducer stays private (review round 1 refused a public test-only API); deleting the v toggle and the row cache was weighed and refused, because every cap's notice names v as its remedy and the cache is what keeps a full view from rewrapping every frame; the notebook's char-chunk wrapper, the typing box and its two request kinds were deleted
-raise: comments +5, crate console +362, crate tui +2
+growth: +438 about 270 lines are the reducer's tests, kept beside it so the reducer stays private (review round 1 refused a public test-only API); deleting the v toggle and the row cache was weighed and refused, because every cap's notice names v as its remedy and the cache is what keeps a full view from rewrapping every frame; the notebook's char-chunk wrapper, the typing box and its two request kinds were deleted
 decision: The console notebook pane drops its typing box, so its cells come only from the agent's kernel calls | the 3-row box hid the newest three rows of output, and the owner never types Python there | restore the notebook input and its shift-enter route; `_yi/kernel_execute` stays served for the Python client
+raise: crate console +436, crate tui +2, comments +5
 ---
 The console notebook now shows every kernel cell honestly (Closes #1355).
 

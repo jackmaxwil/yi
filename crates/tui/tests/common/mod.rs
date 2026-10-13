@@ -11,6 +11,10 @@ use ratatui::prelude::CrosstermBackend;
 /// handle): wraps a CrosstermBackend over a vt100::Parser to mock a real
 /// terminal without ever touching stdout — size and cursor position come
 /// from the parser.
+mod session {
+    include!("session.rs");
+}
+
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -370,30 +374,11 @@ pub fn replay_stream(
     use yi_types::message::{AgentMessage, Attribution, Content};
 
     let text = std::fs::read_to_string(path)?;
-    let mut entries: Vec<(u64, AgentMessage)> = Vec::new();
-    for line in text.lines() {
-        let row: Value = serde_json::from_str(line)?;
-        let field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
-        if (field("kind"), field("type"), field("lane"))
-            != (
-                Some("entry".to_owned()),
-                Some("message".to_owned()),
-                Some("main".to_owned()),
-            )
-        {
-            continue;
-        }
-        let Some(message) = row.get("message") else {
-            continue;
-        };
-        let seq = row.get("seq").and_then(Value::as_u64).unwrap_or(0);
-        entries.push((seq, serde_json::from_value(message.clone())?));
-    }
-    entries.sort_by_key(|(seq, _)| *seq);
+    let entries = session::session_entries(&text)?;
 
     let mut calls: VecDeque<(String, Value)> = VecDeque::new();
     let mut turn_open = false;
-    for (_, message) in entries {
+    for message in entries {
         match &message {
             AgentMessage::User { .. } => {
                 if message.attribution() == Attribution::User {
