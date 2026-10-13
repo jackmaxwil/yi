@@ -126,8 +126,10 @@ fn a_recorded_console_reveals_a_reply_over_frames_and_a_headless_one_paints_it_w
     for (name, record) in [("plain", false), ("recorded", true)] {
         let dir = Scratch::new(&format!("yi-console-pace-{name}"))?;
         // At 10% pace each character outlasts a 50 ms step even in drain mode, so a frame shows part.
-        let config = r#"{"kernel":{"prewarm":false},"tui":{"pace":10}}"#;
-        std::fs::write(dir.home()?.join(".yi/config.json"), config)?;
+        let config = dir.home()?.join(".yi/config.json");
+        let mut value: serde_json::Value = std::fs::read_to_string(&config)?.parse()?;
+        value["tui"] = serde_json::json!({"pace": 10});
+        std::fs::write(&config, value.to_string())?;
         let root = dir.join("repo");
         std::fs::create_dir_all(&root)?;
         let (mut daemon, socket) = spawn_daemon(&dir)?;
