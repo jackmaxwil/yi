@@ -14,6 +14,7 @@ mod oauth_files;
 mod plan_doc;
 mod scratch_drop;
 mod session_output;
+mod settings;
 mod stream_apply;
 mod text_newtypes;
 mod todo_record;

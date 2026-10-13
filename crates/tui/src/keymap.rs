@@ -37,8 +37,17 @@ pub enum KeyInput {
     Sequence(Vec<SingleKey>),
 }
 
+/// Invariant: a terminal reports Esc, Tab, DEL and ctrl+letter as named keys or modified letters,
+/// so a bare control character as a key is a paste fed as keystrokes, and it never lands anywhere.
+pub fn is_pasted_control(event: &KeyEvent) -> bool {
+    matches!(event.code, KeyCode::Char(c) if c.is_control())
+}
+
 impl SingleKey {
     pub fn from_event(event: &KeyEvent) -> Option<Self> {
+        if is_pasted_control(event) {
+            return None;
+        }
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         let alt = event.modifiers.contains(KeyModifiers::ALT);
         let shift = event.modifiers.contains(KeyModifiers::SHIFT);

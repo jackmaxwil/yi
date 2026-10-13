@@ -147,6 +147,14 @@ def kernel_problems(doctor_json):
     return problems
 
 
+def kernel_broken(problems):
+    """A toolchain that is there and a kernel that still did not boot: the image could host the
+    kernel, so a trial run on it measures a broken install (row 0072), not the agent. An image
+    with no toolchain at all (a Bun image) still runs bash-only (#329)."""
+    toolchain = any(problem.startswith("kernel-toolchain:") for problem in problems)
+    return bool(problems) and not toolchain
+
+
 def run_command(model_name, instruction, resume=False, deadline_sec=None, levers=False):
     """Build the single shell command a trial runs.
 

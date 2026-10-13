@@ -13,8 +13,7 @@ use yi_types::model::{Effort, Model};
 use yi_types::plan::doc::Plan;
 
 use crate::app::App;
-use crate::cell::Cell;
-use crate::cell::{ToolCell, ToolStatus};
+use crate::cell::{Cell, ToolCell, ToolStatus};
 use crate::hud::GoalView;
 use crate::plantree::PlanTreeView;
 use crate::transcript::{arg_summary, text_of, user_text};
@@ -295,6 +294,28 @@ pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
 }
 
 impl App {
+    pub fn said(&self, index: usize) -> Option<(crate::transcript::Said, &str)> {
+        self.history.said(index)
+    }
+
+    /// The entry that drew transcript cell `index`, from `drawn` in drawing order: the n-th entry
+    /// saying what the n-th identical cell says, so a repeated "yes" still finds its own turn.
+    pub fn locate<'e>(&self, index: usize, drawn: &[&'e Entry]) -> Option<&'e Entry> {
+        let (said, source) = self.said(index)?;
+        let nth = (0..index)
+            .filter(|earlier| self.said(*earlier) == Some((said, source)))
+            .count();
+        drawn
+            .iter()
+            .copied()
+            .filter(|entry| {
+                crate::transcript::said_in(entry)
+                    .iter()
+                    .any(|(kind, text)| *kind == said && text == source)
+            })
+            .nth(nth)
+    }
+
     /// Invariant: a replayed turn reads as it did live; both settle calls through `settle_tool`.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
         let _span = yi_types::trace::span("tui.replay_entries").arg("entries", entries.len());
@@ -508,7 +529,7 @@ pub fn tick(
     events: &std::sync::mpsc::Receiver<crate::app::UiEvent>,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::app::Command>,
 ) {
-    app.pacing.held.extend(events.try_iter());
+    app.pacing.receive(events);
     while let Some(ui_event) = app.pacing.held.pop_front() {
         // The end waits behind the reveal, and everything after it waits too, so a tool row
         // never commits above prose the reader has not seen yet.

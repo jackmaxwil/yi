@@ -15,13 +15,17 @@ use crate::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use crate::markdown::StableScan;
 use crate::motion::elapsed_ms;
 use crate::reveal::{FRAME, Reveal};
-use crate::transcript::{preview_lines, text_of, todo_finished};
+use crate::transcript::{result_preview, text_of, todo_finished};
 
 /// Both reveal cursors, their speed, the events waiting behind them, and their cut scans.
 pub(crate) struct Pacing {
     pub(crate) prose: Reveal,
     pub(crate) thought: Reveal,
     pace: u16,
+    pub(crate) arrived: u64,
+    pub(crate) turns: u64,
+    pub(crate) announced: u64,
+    pending: u64,
     pub(crate) held: VecDeque<UiEvent>,
     prose_scan: StableScan,
     thought_scan: StableScan,
@@ -33,9 +37,43 @@ impl Pacing {
             prose: Reveal::default(),
             thought: Reveal::default(),
             pace,
+            arrived: 0,
+            turns: 0,
+            announced: 0,
+            pending: 0,
             held: VecDeque::new(),
             prose_scan: StableScan::default(),
             thought_scan: StableScan::default(),
+        }
+    }
+
+    /// Queues what the runtime sent, counting the stream events a drive matches to the provider's.
+    pub(crate) fn receive(&mut self, events: &std::sync::mpsc::Receiver<UiEvent>) {
+        for event in events.try_iter() {
+            if matches!(
+                &event,
+                UiEvent::Agent(
+                    AgentEvent::MessageUpdate { .. }
+                        | AgentEvent::MessageEnd {
+                            message: AgentMessage::Assistant { .. }
+                        }
+                )
+            ) {
+                self.arrived = self.arrived.saturating_add(1);
+            }
+            if matches!(&event, UiEvent::Agent(AgentEvent::AgentStart)) {
+                self.pending = self.pending.saturating_add(1);
+            }
+            if matches!(&event, UiEvent::Agent(AgentEvent::TurnStart)) {
+                self.turns = self.turns.saturating_add(1);
+                self.announced = self.announced.saturating_add(1);
+                self.pending = self.pending.saturating_sub(1);
+            }
+            if matches!(&event, UiEvent::Agent(AgentEvent::AgentEnd { .. })) {
+                self.turns = self.turns.saturating_add(self.pending);
+                self.pending = 0;
+            }
+            self.held.push_back(event);
         }
     }
 
@@ -596,7 +634,7 @@ impl App {
             || self.pacing.thought.behind(self.live_thought.len())
     }
 
-    pub(crate) fn reveal_wake(&self) -> Duration {
+    pub fn reveal_wake(&self) -> Duration {
         let moving = |reveal: &Reveal, len: usize| reveal.behind(len) && !reveal.waiting();
         if moving(&self.pacing.prose, self.live_markdown.len())
             || moving(&self.pacing.thought, self.live_thought.len())
@@ -744,7 +782,7 @@ impl App {
             ToolStatus::Done
         };
         cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
-        cell.preview = preview_lines(text, 12, 6);
+        cell.preview = result_preview(text, &details);
         cell.details = details;
         // The HUD carries the list; a card per step was six cards a turn.
         if cell.name == "todo" && !is_error {
@@ -754,5 +792,51 @@ impl App {
         } else {
             self.commit_cell(&Cell::Tool(cell));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_turn_that_never_announces_counts_as_served_once_it_ends() -> Result<(), String> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(UiEvent::Agent(AgentEvent::AgentStart))
+            .map_err(|error| error.to_string())?;
+        sender
+            .send(UiEvent::Agent(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            }))
+            .map_err(|error| error.to_string())?;
+        let mut pacing = Pacing::new(0);
+        pacing.receive(&receiver);
+        assert_eq!(pacing.turns, 1);
+        assert_eq!(pacing.announced, 0);
+        assert_eq!(pacing.pending, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_turn_start_marks_the_turn_announced_and_closes_the_agent_start() -> Result<(), String> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(UiEvent::Agent(AgentEvent::AgentStart))
+            .map_err(|error| error.to_string())?;
+        sender
+            .send(UiEvent::Agent(AgentEvent::TurnStart))
+            .map_err(|error| error.to_string())?;
+        sender
+            .send(UiEvent::Agent(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            }))
+            .map_err(|error| error.to_string())?;
+        let mut pacing = Pacing::new(0);
+        pacing.receive(&receiver);
+        assert_eq!(pacing.turns, 1);
+        assert_eq!(pacing.announced, 1);
+        assert_eq!(pacing.pending, 0);
+        Ok(())
     }
 }

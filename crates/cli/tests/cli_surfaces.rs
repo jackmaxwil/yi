@@ -8,6 +8,10 @@ use serde_json::{Value, json};
 mod scratch;
 use scratch::Scratch;
 
+#[path = "support/prompt_slots.rs"]
+mod prompt_slots_support;
+use prompt_slots_support::prompt_slots;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Workspace(Scratch);
@@ -48,6 +52,21 @@ impl Workspace {
 }
 
 impl Workspace {
+    /// `yi plugin` takes no session flags, and PATH holds no ripwire the test did not place.
+    fn plugin(&self, args: &[&str]) -> std::io::Result<Output> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        command
+            .arg("plugin")
+            .args(args)
+            .env("HOME", self.0.join("home"))
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+    }
+
     /// One `yi acp` process fed every frame at once; the contract is the response stream.
     fn acp(&self, args: &[&str], frames: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
         use std::io::Write;
@@ -2218,20 +2237,7 @@ fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
     let stale = home.join(".yi/plugins/ripwire/0.0.1");
     std::fs::create_dir_all(&stale)?;
     std::fs::write(stale.join("ripwire"), "#!/bin/sh\n")?;
-    let plugin = |args: &[&str]| {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
-        )]
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
-        command
-            .arg("plugin")
-            .args(args)
-            .env("HOME", &home)
-            .env("PATH", "/usr/bin:/bin")
-            .output()
-    };
-    let list = plugin(&["list"])?;
+    let list = workspace.plugin(&["list"])?;
     let first = stdout(&list).lines().next().unwrap_or_default().to_owned();
     assert!(
         first.starts_with("ripwire ")
@@ -2248,7 +2254,7 @@ fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
         row.starts_with("FAIL") && row.ends_with("yi plugin sync"),
         "{row}"
     );
-    let unknown = plugin(&["add", "grid"])?;
+    let unknown = workspace.plugin(&["add", "grid"])?;
     assert_eq!(unknown.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&unknown.stderr).contains("no plugin named grid"),
@@ -2266,15 +2272,7 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
     let pinned = home.join(".yi/plugins/ripwire/0.6.5");
     std::fs::create_dir_all(&pinned)?;
     std::fs::write(pinned.join("ripwire"), "#!/bin/sh\n")?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
-    )]
-    let listed = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args(["plugin", "list", "--json"])
-        .env("HOME", &home)
-        .env("PATH", "/usr/bin:/bin")
-        .output()?;
+    let listed = workspace.plugin(&["list", "--json"])?;
     let rows: Value = serde_json::from_str(&stdout(&listed))?;
     let ripwire = (rows.as_array().ok_or("not an array")?.iter())
         .find(|row| row["name"] == "ripwire")
@@ -2286,5 +2284,37 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
         json!(pinned.join("ripwire").display().to_string()),
         "{rows}"
     );
+    Ok(())
+}
+
+fn told_it_is_alone(workspace: &Workspace) -> Result<bool, Box<dyn Error>> {
+    let slots = prompt_slots(&workspace.0.join("home/sessions"))?;
+    Ok(slots
+        .iter()
+        .any(|names| names.iter().any(|name| name == "unattended")))
+}
+
+/// Dies with an unattended run told nothing about its graders: `yi ask` with no terminal on
+/// stdin records the unattended slot (an rpc client's session does not: rpc_protocol).
+#[test]
+fn a_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
+    let alone = Workspace::new("unattended-ask")?;
+    ask(&alone, "build the report", &[])?;
+    assert!(told_it_is_alone(&alone)?);
+    Ok(())
+}
+
+/// Dies with the bare-words spelling (`yi build the report`), which runs the same ask path
+/// with `command` set to its first word, told nothing.
+#[test]
+fn a_bare_words_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
+    let alone = Workspace::new("unattended-bare")?;
+    let out = alone.yi(&["--model", "faux/faux-1", "build", "the", "report"])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(told_it_is_alone(&alone)?);
     Ok(())
 }
