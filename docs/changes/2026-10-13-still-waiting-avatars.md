@@ -1,0 +1,6 @@
+---
+issue: Closes #1406
+raise: crate console +41, crate orb +1, comments +3
+decision: a blocked session's rail avatar shows one still frame of its Listening loop instead of playing it, and leaves the console's wake schedule; a working session's avatar still plays its state loop at 15 fps (amends D276) | the owner, 2026-10-12: "Invisible + freeze waiting"; every avatar waiting on the person woke the console fifteen times a second to repaint a row whose words already say "needs your answer" | drop `Motion::still`, which restores the loop
+---
+A blocked session's avatar in the console rail now paints one frame of its Listening loop and stops (Closes #1406). `Avatars::animate` skips a motion whose state is `Listening` once it has painted, `Avatars::wake` leaves it out of the next wake time, and a state change repaints it; Listening is the orb state only of a session waiting on the person, a blocked rail row or an open approval. Every other avatar and the chat orb animate as before. Orb and avatar frames now deflate at zlib level 2 instead of 6: at the 384 px cap a frame's deflate took 3.03 ms and now takes 1.03 ms for 6% more bytes, and at 200 px 324 µs against 166 µs for 25% more (release build, 60 frames of the Thinking loop); level 1 was faster still but grew a 200 px frame 71%. The image is unchanged, since deflate is lossless.

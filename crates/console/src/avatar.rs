@@ -260,6 +260,15 @@ struct Motion {
     orb: yi_tui::orb::Orb,
     state: yi_tui::orb::OrbState,
     last: Instant,
+    painted: bool,
+}
+
+impl Motion {
+    /// A session waiting on the person draws one still frame: animating it woke the console
+    /// fifteen times a second for a row whose words already say it waits.
+    fn still(&self) -> bool {
+        self.painted && self.state == yi_tui::orb::OrbState::Listening
+    }
 }
 
 const MOTION_FRAME: Duration = Duration::from_millis(66);
@@ -324,12 +333,16 @@ impl Avatars {
                 }
             };
             match (place.state, self.motion.get_mut(&place.key)) {
-                (Some(state), Some(motion)) => motion.state = state,
+                (Some(state), Some(motion)) => {
+                    motion.painted &= motion.state == state;
+                    motion.state = state;
+                }
                 (Some(state), None) => {
                     let motion = Motion {
                         orb: yi_tui::orb::Orb::default(),
                         state,
                         last: Instant::now(),
+                        painted: false,
                     };
                     self.motion.insert(place.key.clone(), motion);
                 }
@@ -355,10 +368,11 @@ impl Avatars {
             let (Some(image), elapsed) = (self.ids.get(key), motion.last.elapsed()) else {
                 continue;
             };
-            if elapsed < MOTION_FRAME {
+            if elapsed < MOTION_FRAME || motion.still() {
                 continue;
             }
             motion.last = Instant::now();
+            motion.painted = true;
             let frame = motion.orb.frame(elapsed, Some(motion.state));
             let pixels = kitty::paint_rgba(&frame, 64.0, PX, PX);
             retransmit(out, *image, &pixels, self.placed.get(key));
@@ -368,6 +382,7 @@ impl Avatars {
     pub fn wake(&self) -> Option<Duration> {
         self.motion
             .values()
+            .filter(|motion| !motion.still())
             .map(|motion| MOTION_FRAME.saturating_sub(motion.last.elapsed()))
             .min()
     }
@@ -525,6 +540,32 @@ mod tests {
             after.contains(&format!("a=d,d=I,i={FIRST_ID},")),
             "the image placed before the forget is deleted: {after:?}"
         );
+    }
+
+    /// Sweeps the clock past a frame and returns what one animate pass wrote.
+    fn pass(avatars: &mut Avatars) -> Vec<u8> {
+        for motion in avatars.motion.values_mut() {
+            motion.last = Instant::now()
+                .checked_sub(MOTION_FRAME * 2)
+                .unwrap_or_else(Instant::now);
+        }
+        let mut out = Vec::new();
+        avatars.animate(&mut out);
+        out
+    }
+
+    #[test]
+    fn a_session_waiting_on_the_person_paints_one_still_frame() {
+        let mut avatars = Avatars::default();
+        let waiting = alpha(Some(yi_tui::orb::OrbState::Listening));
+        avatars.sync(&mut Vec::new(), std::slice::from_ref(&waiting));
+        assert!(!pass(&mut avatars).is_empty(), "the first frame is painted");
+        assert!(pass(&mut avatars).is_empty(), "a waiting avatar animated");
+        assert_eq!(avatars.wake(), None, "a still avatar keeps the loop waking");
+        let working = alpha(Some(yi_tui::orb::OrbState::Working));
+        avatars.sync(&mut Vec::new(), std::slice::from_ref(&working));
+        assert!(!pass(&mut avatars).is_empty());
+        assert!(!pass(&mut avatars).is_empty(), "a working avatar stopped");
     }
 
     #[test]
