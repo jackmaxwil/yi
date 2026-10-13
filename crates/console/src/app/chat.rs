@@ -1055,7 +1055,7 @@ mod tests {
     }
 
     /// Dies with the mark gone from every chat pane but the focused one, or with an unfocused
-    /// pane retransmitting its orb every frame: only the focused pane animates, the rest hold one.
+    /// pane retransmitting its orb or waking the loop every frame: only the focused pane animates.
     #[test]
     fn every_drawn_chat_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
@@ -1113,6 +1113,12 @@ mod tests {
                 "the unfocused pane re-placed its mark: {written:?}"
             );
         }
+        assert!(
+            crate::chat_wake(&app) > yi_tui::orb::FRAME,
+            "an unfocused running pane wakes the loop in {:?}, inside one {:?} frame",
+            crate::chat_wake(&app),
+            yi_tui::orb::FRAME
+        );
         Ok(())
     }
 
