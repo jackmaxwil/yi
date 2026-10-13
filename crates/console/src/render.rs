@@ -7,7 +7,7 @@ use crate::model::{SessionId, SessionRow, SidebarMode};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
@@ -26,6 +26,7 @@ pub struct PaneView {
     pub id: PaneId,
     pub rect: Rect,
     pub focused: bool,
+    pub hue: Color,
     pub title: String,
     pub lines: Vec<Line<'static>>,
     pub chat: bool,
@@ -117,8 +118,22 @@ pub struct ViewState {
 /// space after it (`⚙⌥,`); a second space is what it eats. U+FE0E shifted the whole row.
 pub(crate) const GEAR: &str = "⚙ ";
 
+/// A framed pane keeps one blank column between its border and its text.
 pub(crate) fn pane_margin(framed: bool) -> ratatui::layout::Margin {
-    ratatui::layout::Margin::new(1, u16::from(framed))
+    ratatui::layout::Margin::new(if framed { 2 } else { 1 }, u16::from(framed))
+}
+
+/// The pane's session hue, the one its avatar wears; a pane with no session is `muted`.
+fn pane_hue(app: &App, id: PaneId, theme: &Theme) -> Color {
+    let row = app
+        .state
+        .panes
+        .get(&id)
+        .and_then(|pane| pane.session())
+        .and_then(|session| app.state.sessions.get(session));
+    row.map_or(theme.muted, |row| {
+        yi_tui::colors::accent(app.accent_of(&row.id.0, row.seed()))
+    })
 }
 
 fn split_off_bottom(area: Rect, height: u16) -> (Rect, Rect) {
@@ -171,7 +186,6 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         ..area
     };
     let (transcript_area, banner) = split_off_bottom(main, 1);
-    let banner = Some(banner);
     let (tab_bar, mut panes_area) = if app.state.tabs.len() > 1 {
         let (bar, rest) = split_off_top(transcript_area, 1);
         (Some(bar), rest)
@@ -251,6 +265,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             id: pane_rect.id,
             rect: pane_rect.rect,
             focused: pane_rect.focused && panes_zone,
+            hue: theme.muted,
             title,
             lines,
             chat,
@@ -258,6 +273,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     }
 
     let (sidebar_rows, avatars) = sidebar_hits(app, theme, sidebar, sidebar_width);
+    for pane in &mut panes {
+        pane.hue = pane_hue(app, pane.id, theme);
+    }
     let root_rows = (0..root_count)
         .filter_map(|index| {
             let y = roots_area
@@ -288,7 +306,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         panes_area,
         panes,
         split_borders,
-        banner,
+        banner: Some(banner),
         framed,
         rail_edge,
     }
@@ -554,10 +572,10 @@ fn notebook_lines(
         if let Some(result) = &cell.result {
             for result_line in wrap(result, body).into_iter().take(20) {
                 out.push(Line::from(vec![
-                    Span::styled("  ↳ ", theme.accent_style()),
+                    Span::styled("  ↳ ", Style::default().fg(theme.teal)),
                     Span::styled(
                         result_line,
-                        theme.accent_style().add_modifier(Modifier::BOLD),
+                        Style::default().fg(theme.teal).add_modifier(Modifier::BOLD),
                     ),
                 ]));
             }
@@ -574,7 +592,7 @@ fn notebook_lines(
             let kb = image.len().saturating_mul(3) / 4 / 1024;
             out.push(Line::styled(
                 format!("  ▲ image · {kb} KB png"),
-                theme.accent_style(),
+                Style::default().fg(theme.teal),
             ));
         }
         out.push(Line::default());
@@ -841,7 +859,10 @@ fn paint_chat_pane(
         let line = Line::from(vec![
             tile,
             Span::styled(format!(" {} ", status.glyph()), status_style(theme, status)),
-            Span::styled(label, theme.accent_style().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                label,
+                Style::default().fg(view.hue).add_modifier(Modifier::BOLD),
+            ),
         ]);
         Widget::render(Paragraph::new(line), Rect { height: 1, ..inner }, buffer);
         inner = Rect {
@@ -899,7 +920,7 @@ fn render_banner(app: &mut App, frame: &mut Frame<'_>, area: Rect, theme: &Theme
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("{flash} "),
-                theme.accent_style(),
+                Style::default().fg(theme.success),
             )))
             .alignment(ratatui::layout::Alignment::Right),
             area,
@@ -914,7 +935,7 @@ fn render_banner(app: &mut App, frame: &mut Frame<'_>, area: Rect, theme: &Theme
         spans.push(Span::styled(
             keys::hint(armed, app.cmd_hints, usize::from(area.width)),
             if armed {
-                theme.accent_style()
+                Style::default().fg(theme.warning)
             } else {
                 theme.dim_style()
             },
@@ -953,7 +974,7 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         down: bool,
         left: bool,
         right: bool,
-        focused: bool,
+        hue: Option<Color>,
     }
     let mut raster: HashMap<(u16, u16), EdgeCell> = HashMap::new();
     if let Some(x) = view.rail_edge {
@@ -977,7 +998,7 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 let cell = raster.entry((x, y)).or_default();
                 cell.left |= left_arm;
                 cell.right |= right_arm;
-                cell.focused |= pane.focused;
+                cell.hue = cell.hue.or(pane.focused.then_some(pane.hue));
             }
         }
         for y in r.y..=bottom {
@@ -987,7 +1008,7 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 let cell = raster.entry((x, y)).or_default();
                 cell.up |= up_arm;
                 cell.down |= down_arm;
-                cell.focused |= pane.focused;
+                cell.hue = cell.hue.or(pane.focused.then_some(pane.hue));
             }
         }
     }
@@ -996,11 +1017,10 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         let symbol = glyph(cell.up, cell.down, cell.left, cell.right);
         if let Some(target) = buffer.cell_mut((*x, *y)) {
             target.set_symbol(symbol);
-            target.set_style(if cell.focused {
-                theme.accent_style()
-            } else {
-                theme.dim_style()
-            });
+            target.set_style(
+                cell.hue
+                    .map_or_else(|| theme.dim_style(), |hue| Style::default().fg(hue)),
+            );
         }
     }
     let closable = app
@@ -1019,19 +1039,6 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             .and_then(|p| p.session())
             .and_then(|s| app.state.sessions.get(s))
             .map(|row| row.status);
-        let seed = app
-            .state
-            .panes
-            .get(&pane.id)
-            .and_then(|p| p.session())
-            .and_then(|s| app.state.sessions.get(s))
-            .map(|row| {
-                (
-                    row.id.0.clone(),
-                    row.seed().to_owned(),
-                    app.accent_of(&row.id.0, row.seed()),
-                )
-            });
         let text = match status {
             Some(status) => format!(" {} {} ", status.glyph(), pane.title),
             None => format!(" {} ", pane.title),
@@ -1040,15 +1047,10 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
         if closable {
             let width = 3;
             right = right.saturating_sub(width);
-            let style = if pane.focused {
-                theme.accent_style()
-            } else {
-                theme.dim_style()
-            };
             let button = if app.kitty {
                 Span::raw("   ")
             } else {
-                Span::styled(" ✕ ", style.add_modifier(Modifier::REVERSED))
+                Span::styled(" ✕ ", closer_style(pane, theme))
             };
             buffer.set_span(right, r.y, &button, width);
             if let Some(hits) = app.hits.as_mut() {
@@ -1059,22 +1061,14 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
                 }
             }
         }
-        let mut x = r.x.saturating_add(2);
-        let mut max = right.saturating_sub(x).saturating_sub(1);
-        if let Some((id, seed, hue)) = &seed {
-            let tile = title_tile(app, id, seed, *hue, x.saturating_add(1), r.y);
-            buffer.set_span(x, r.y, &Span::raw(" "), max);
-            buffer.set_span(x.saturating_add(1), r.y, &tile, max.saturating_sub(1));
-            x = x.saturating_add(3);
-            max = max.saturating_sub(3);
-        }
+        let x = r.x.saturating_add(2);
+        let max = right.saturating_sub(x).saturating_sub(1);
         let text: String = text.chars().take(usize::from(max)).collect();
+        let chip = Style::default().fg(pane.hue);
         let style = if pane.focused {
-            theme
-                .accent_style()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            chip.add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
-            theme.dim_style()
+            chip
         };
         let span = Span::styled(text, style);
         let (end, _) = buffer.set_span(x, r.y, &span, max);
@@ -1082,6 +1076,14 @@ fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme:
             hits.titles
                 .push((pane.id, Rect::new(x, r.y, end.saturating_sub(x), 1)));
         }
+    }
+}
+
+fn closer_style(pane: &PaneView, theme: &Theme) -> Style {
+    if pane.focused {
+        theme.muted_style()
+    } else {
+        theme.dim_style()
     }
 }
 
@@ -1107,7 +1109,7 @@ fn render_thumbs(frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
             .unwrap_or(0)
             .min(travel);
         let style = if pane.focused {
-            theme.accent_style()
+            Style::default().fg(pane.hue)
         } else {
             theme.dim_style()
         };
@@ -1160,7 +1162,10 @@ fn render_tab_bar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     for (index, tab) in app.state.tabs.iter().enumerate() {
         let label = tab_label(index, tab.zoomed);
         let style = if index == app.state.active_tab {
-            theme.accent_style().add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.selection_bg())
+                .add_modifier(Modifier::BOLD)
         } else {
             theme.dim_style()
         };

@@ -1618,7 +1618,7 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
-         wait-frame 3000 │l again to /land s-alpha · any other\n\
+         wait-frame 3000 │ l again to /land s-alpha · any other\n\
          key x\n\
          wait-frame 3000 !l again to /land\n\
          key l\n\
@@ -2029,15 +2029,15 @@ fn cmd_u_undoes_the_chat_draft() -> TestResult {
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
-    // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, inner
-    // x=19, gutter "1 " puts text at x=21; row 0 at y=1.
+    // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, one padding
+    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=1.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 23 1\nmouse up 23 1\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 21 1\nmouse drag 23 1\nmouse up 23 1\n\
+            "wait-frame 3000 abcdef\nmouse down 24 1\nmouse up 24 1\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 22 1\nmouse drag 24 1\nmouse up 24 1\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;

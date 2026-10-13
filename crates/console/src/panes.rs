@@ -89,7 +89,7 @@ pub fn tape_view(
     ];
     if let Some(mark) = tape.marks.get(cursor) {
         let pointer = format!("{}▲", " ".repeat(col_of(mark.at).saturating_add(7)));
-        lines.push(Line::styled(pointer, theme.accent_style()));
+        lines.push(Line::styled(pointer, Style::default().fg(theme.warning)));
         let then = span_of(mark.at.saturating_sub(tape.start));
         lines.push(Line::styled(
             format!("+{then} · {}", mark.label),
@@ -253,7 +253,7 @@ pub fn review_view(
     if let Some(title) = diff.and_then(|diff| diff.land_armed.as_deref()) {
         lines.push(Line::styled(
             format!("l again to /land {title} · any other key cancels"),
-            theme.accent_style(),
+            Style::default().fg(theme.warning),
         ));
     }
     let selected = diff.map_or(0, |diff| diff.selected.min(files.len().saturating_sub(1)));
