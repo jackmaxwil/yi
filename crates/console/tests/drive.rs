@@ -329,6 +329,16 @@ fn run_frames_with(
     sidebar: SidebarMode,
     width: u16,
 ) -> Result<String, Box<dyn Error>> {
+    run_frames_sized(name, fixture, script, sidebar, (width, 30))
+}
+
+fn run_frames_sized(
+    name: &str,
+    fixture: Vec<Step>,
+    script: &str,
+    sidebar: SidebarMode,
+    size: (u16, u16),
+) -> Result<String, Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
     run_opts(
         name,
@@ -337,7 +347,7 @@ fn run_frames_with(
         false,
         sidebar,
         Some(dir.to_path_buf()),
-        (width, 30),
+        size,
     )?;
     last_frame(&dir)
 }
@@ -2036,8 +2046,8 @@ fn editor_click_places_cursor_and_drag_selects() -> TestResult {
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 24 2\nmouse up 24 2\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 22 2\nmouse drag 24 2\nmouse up 24 2\n\
+            "wait-frame 3000 abcdef\nmouse down 24 3\nmouse up 24 3\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 22 3\nmouse drag 24 3\nmouse up 24 3\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -3417,7 +3427,7 @@ fn the_command_palette_runs_an_action_by_name() -> TestResult {
 /// ⌥? shows every chord with its keys; the next key closes it.
 #[test]
 fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
-    let frame = run_frames_with(
+    let frame = run_frames_sized(
         "keys",
         vec![
             Step::Expect("initialize", init_reply),
@@ -3430,7 +3440,7 @@ fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
          wait-frame 3000 ctrl+b q\n\
          quit\n",
         SidebarMode::Full,
-        160,
+        (160, 34),
     )?;
     assert!(
         frame.contains("Interface  Keys "),
@@ -3841,7 +3851,7 @@ fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
         "close-mark",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-v\nwait-frame 3000 ✕\nmouse down 97 1\nmouse up 97 1\n\
+         key alt-v\nwait-frame 3000 ✕\nmouse down 97 2\nmouse up 97 2\n\
          wait-frame 3000 !✕\nquit\n",
     )?;
     assert!(
@@ -4006,17 +4016,17 @@ fn the_gear_toggles_settings_and_the_rail_keeps_one_line_to_the_bottom() -> Test
 /// Each hint is a button: a press on the `⌥? keys` keycap, columns 79-89 past the rail, runs it.
 #[test]
 fn a_press_on_a_hint_runs_its_key() -> TestResult {
-    run_frames_with(
+    run_frames_sized(
         "hint-button",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
         ],
-        "wait-frame 5000 command palette\nmouse down 84 29\nmouse up 84 29\n\
+        "wait-frame 5000 command palette\nmouse down 84 33\nmouse up 84 33\n\
          wait-frame 3000 stop the daemon and quit\nquit\n",
         SidebarMode::Rail,
-        100,
+        (100, 34),
     )?;
     Ok(())
 }
