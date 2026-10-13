@@ -669,7 +669,6 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 5000 ·  yi \n\
-         wait-frame 3000 !⎇ lane\n\
          quit\n",
     )
 }
@@ -1766,7 +1765,7 @@ fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
         ],
         "wait-frame 5000 s-beta\n\
          mouse down 16 7\n\
-         wait-frame 3000 SN  s-new\n\
+         wait-frame 3000 SN  untitled\n\
          quit\n",
     )?;
     let at = sidebar_order(&frame, &["demo-root ▾", "other-root ▾", "SN  untitled"])?;

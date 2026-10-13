@@ -168,6 +168,7 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
             None,
         ),
         ("buildhost-idle", "/w/buildhost", SessionStatus::Idle, 400, None),
+        ("solo-pin", "/w/solo", SessionStatus::Idle, 20, Some(3_000)),
     ];
     for (id, root, status, last_ms, pinned) in rows {
         app.state.upsert_row(SessionRow {
@@ -215,6 +216,7 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
         "PINNED",
         "pin-early",
         "pin-late",
+        "solo-pin",
         "yi ▾ +",
         "asks",
         "new-idle",
@@ -223,9 +225,24 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
         "legios-asks",
         "buildhost ▾ +",
         "buildhost-idle",
+        "solo ▾ +",
     ];
     assert_eq!(drawn(&app), want);
+    let asks = app
+        .state
+        .order
+        .iter()
+        .position(|id| id.0 == "legios-asks")
+        .ok_or("legios-asks has a row")?;
+    app.state.selected = asks;
     app.state.toggle_fold("/w/legios");
+    let landed = app.state.selected;
+    let name = |index: usize| app.state.order.get(index).map(|id| id.0.as_str());
+    assert!(
+        app.state.visible_rows().contains(&landed) && name(landed) != Some("legios-asks"),
+        "the fold moved the cursor off the hidden row: {:?}",
+        name(landed)
+    );
     let folded: Vec<String> = want
         .iter()
         .filter(|row| **row != "legios-asks")
