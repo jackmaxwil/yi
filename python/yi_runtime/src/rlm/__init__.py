@@ -53,6 +53,20 @@ _QUIET = contextvars.ContextVar("rlm_quiet", default=False)
 _NO_SUCH_CHILD = "No RLM child matches"
 
 
+# The host's refusal of a letter past mail.hopLimit, raised as HopLimit.
+_HOP_LIMIT = "hop limit:"
+
+
+class HopLimit(RuntimeError):
+    """A letter to another session would pass ``mail.hopLimit``; the message names the chain.
+
+        try:
+            await rlm.send("history://ops-root", "is the gate green?", kind="request")
+        except rlm.HopLimit as stopped:
+            print(stopped)
+    """
+
+
 class NoSuchChild(RuntimeError, KeyError):
     """No child answers to that name; ``except KeyError`` and ``except RuntimeError`` both catch it."""
 
@@ -446,7 +460,9 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
             message = reply.get("error") or f"host request {request_type} failed"
             def _resolve_error() -> None:
                 if not future.done():
-                    refused = NoSuchChild if str(message).startswith(_NO_SUCH_CHILD) else RuntimeError
+                    text = str(message)
+                    refused = (NoSuchChild if text.startswith(_NO_SUCH_CHILD)
+                               else HopLimit if text.startswith(_HOP_LIMIT) else RuntimeError)
                     future.set_exception(refused(str(message)))
                     comm.close()
 
@@ -781,6 +797,11 @@ async def send(
     ``kind`` is ``inform`` (the default), ``progress``, ``failure`` or ``cancel``.
     A body over 16 KiB is refused, never trimmed: ``put`` it and pass
     ``ref="family://<name>"``.
+
+    A root also mails another session by its address, ``"history://<id or name>"``, in any
+    repository: the receipt is ``stored``, the letter becomes a todo there, and its reply comes
+    back to you the same way. A letter's ``ref`` is a file path or a ``history://`` address,
+    since ``family://`` names the reader's own board; a long chain raises ``HopLimit``.
     """
     options = {"reply_to": reply_to, "kind": kind, "ref": ref}
     options.update(conversation=conversation, deadline_ms=deadline_ms)
@@ -1443,6 +1464,7 @@ __all__ = [
     "McpIntegration",
     "McpToolError",
     "NoSuchChild",
+    "HopLimit",
     "NotEnabled",
     "RLMModel",
     "RLMSpawnHandle",

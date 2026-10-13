@@ -549,6 +549,34 @@ class FindModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([model.selector for model in models], ["openrouter/a/b", "faux/faux-1"])
 
 
+class HopLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_letter_past_the_hop_limit_raises_hop_limit_with_the_hosts_words(self) -> None:
+        """Dies with the host's hop-limit refusal raised as a bare RuntimeError, which no
+        ``except yi.HopLimit`` in a mail loop catches, so the loop retries the letter."""
+        import yi
+
+        refusal = ("hop limit: this letter would be hop 21 of a chain, past mail.hopLimit = 20; "
+                   "the turn sending it was woken by letter 01a1-7f3e at hop 20, so the chain stops here")
+
+        class HostSaysHopLimit:
+            def __init__(self, **_: object) -> None:
+                self.reply = None
+
+            def on_msg(self, callback) -> None:
+                self.reply = callback
+
+            def open(self, data) -> None:
+                self.reply({"content": {"data": {"status": "error", "error": refusal}}})
+
+            def close(self) -> None:
+                pass
+
+        with mock.patch.multiple(rlm, Comm=HostSaysHopLimit, host_request=REAL_HOST_REQUEST):
+            with self.assertRaises(yi.HopLimit) as stopped:
+                await yi.mail.send("history://ops-root", "again?", kind="request")
+        self.assertEqual(str(stopped.exception), refusal)
+
+
 class NoSuchChildTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_unknown_child_raises_one_error_both_excepts_catch(self) -> None:
         """Dies with one miss raised two ways: ``status`` raised KeyError while ``result`` and

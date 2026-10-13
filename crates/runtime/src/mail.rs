@@ -28,10 +28,10 @@ pub(crate) struct Draft {
     pub(crate) text: String,
     pub(crate) followup: bool,
     pub(crate) kind: Kind,
-    conversation: Option<MailId>,
-    reply_to: Option<MailId>,
-    deadline_ms: Option<u64>,
-    reference: Option<yi_types::url::Url>,
+    pub(crate) conversation: Option<MailId>,
+    pub(crate) reply_to: Option<MailId>,
+    pub(crate) deadline_ms: Option<u64>,
+    pub(crate) reference: Option<yi_types::url::Url>,
     /// Minted by [`SubagentHost::request`] so its waiter stands before the envelope exists.
     id: Option<MailId>,
     pub(crate) answered_by: Option<&'static str>,
@@ -174,6 +174,9 @@ impl Desk {
             body: draft.text.clone(),
             reference: draft.reference.clone(),
             answered_by: draft.answered_by.map(str::to_owned),
+            origin: None,
+            intent: Vec::new(),
+            hops: yi_types::mail::Hops::default(),
         }
     }
 
@@ -469,6 +472,9 @@ impl SubagentHost {
     ) -> Result<Map<String, Value>, String> {
         if target == "all" {
             return Err("a request has one respondent; send to \"all\" instead".to_owned());
+        }
+        if target.starts_with("history://") {
+            return Err("a request to another session is answered by mail, not by this call: the root sends it with rlm.send(address, text, kind=\"request\"), and the reply arrives as a todo".to_owned());
         }
         let timeout_ms = timeout_ms.min(crate::mailbox::WAIT_MAX_MS);
         let respondent = self.member_name(target);

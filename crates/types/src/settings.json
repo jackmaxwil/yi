@@ -29,6 +29,7 @@
 {"id": "plan.staleReminderTurns", "label": "Stale plan reminder", "tab": "Tools", "help": "turns before an untouched plan is mentioned", "kind": {"type": "number", "integer": true, "min": 1, "max": 1000}, "applies": "nextSession"},
 {"id": "plans.dir", "label": "Plans directory", "tab": "Tools", "help": "relative to the workspace; unset is .yi/plans", "kind": {"type": "text"}, "applies": "nextSession"},
 {"id": "rlm.maxDepth", "label": "Family depth", "tab": "Agents", "help": "how deep subagents may nest; unset is 1", "kind": {"type": "number", "integer": true, "min": 1, "max": 3}, "applies": "nextSession"},
+{"id": "mail.hopLimit", "label": "Mail hop limit", "tab": "Agents", "help": "letters a chain between sessions may run before a send is refused; unset is 20", "kind": {"type": "number", "integer": true, "min": 1, "max": 1000}, "applies": "daemonRestart"},
 {"id": "node.slots", "label": "Kernel slots", "tab": "Agents", "help": "live kernels this machine holds at once", "kind": {"type": "number", "integer": true, "min": 1, "max": 255}, "applies": "daemonRestart"},
 {"id": "node.isolation", "label": "Isolation", "tab": "Agents", "help": "placements a spawn may ask for; edit in config.json", "kind": {"type": "list"}, "applies": "daemonRestart"},
 {"id": "lanes.enabled", "label": "Worktree lanes", "tab": "Agents", "help": "start each root session in its own worktree", "kind": {"type": "toggle"}, "applies": "nextSession", "default": true},

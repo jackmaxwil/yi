@@ -33,6 +33,7 @@ pub mod node;
 pub mod permission;
 pub mod plan;
 pub mod plugin;
+pub mod post;
 pub mod provider;
 mod reclaim;
 pub mod retention;
