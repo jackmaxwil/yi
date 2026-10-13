@@ -1,3 +1,5 @@
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -6,7 +8,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use yi_runtime::{AgentSession, SubagentHost};
 
-use crate::app::{App, TuiOptions};
+use crate::app::{App, Command, TuiOptions, UiEvent};
 use crate::approval::AskRequest;
 use crate::capture::{RecordingBackend, write_still};
 use crate::colors::Theme;
@@ -259,7 +261,7 @@ pub fn typed_events(text: &str) -> Vec<CtEvent> {
 pub enum WaitPoll {
     Done,
     Retry,
-    TimedOut,
+    Failed(String),
 }
 
 pub fn poll_condition(satisfied: bool, started: Instant, ms: u64, what: &str) -> WaitPoll {
@@ -267,11 +269,171 @@ pub fn poll_condition(satisfied: bool, started: Instant, ms: u64, what: &str) ->
         return WaitPoll::Done;
     }
     if started.elapsed() > Duration::from_millis(ms) {
-        eprintln!("error: {what} timed out after {ms} ms");
-        return WaitPoll::TimedOut;
+        return WaitPoll::Failed(format!("{what} timed out after {ms} ms"));
     }
     std::thread::sleep(Duration::from_millis(2));
     WaitPoll::Retry
+}
+
+const HOLD_WAIT_MS: u64 = 5_000;
+
+pub fn timing_step(
+    app: &mut App,
+    port: &mut Arc<AgentSession>,
+    ui_rx: &Receiver<UiEvent>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+    step: &Step,
+    started: Instant,
+) -> Option<WaitPoll> {
+    let hold = Arc::clone(&port.provider().faux_hold);
+    Some(match step {
+        // Invariant: a frozen frame never depends on how much of a held stream arrived in real
+        // time, so a tick waits for an armed hold to be reached first.
+        Step::Tick(_) if hold.armed() && !hold.reached() => poll_condition(
+            false,
+            started,
+            HOLD_WAIT_MS,
+            "tick, the stream short of its hold,",
+        ),
+        Step::Tick(ms) => {
+            if app.clock == crate::motion::Clock::Real {
+                app.set_clock(crate::motion::Clock::Fixed(Instant::now()));
+            }
+            let mut left = *ms;
+            while left > 0 {
+                let frame = left.min(TICK_STEP_MS);
+                app.advance_clock(Duration::from_millis(frame));
+                crate::port::tick(app, port, ui_rx, cmd_tx);
+                left -= frame;
+            }
+            WaitPoll::Done
+        }
+        Step::Hold(kind, nth) => {
+            hold.arm(kind, *nth);
+            WaitPoll::Done
+        }
+        Step::Release if !hold.release() => {
+            WaitPoll::Failed("release: the faux stream never reached its hold".to_owned())
+        }
+        Step::Release => {
+            // The rest of the message lands before the next step, or a frozen reveal would
+            // depend on how much arrived in real time.
+            let settled = Instant::now();
+            loop {
+                crate::port::tick(app, port, ui_rx, cmd_tx);
+                match poll_condition(app.stream_settled(), settled, HOLD_WAIT_MS, "release") {
+                    WaitPoll::Retry => {}
+                    done => break done,
+                }
+            }
+        }
+        Step::WaitIdle(ms) => match poll_condition(app.turn_idle(), started, *ms, "wait-idle") {
+            WaitPoll::Failed(error) if app.clock != crate::motion::Clock::Real => WaitPoll::Failed(
+                format!("{error}\n  the clock is frozen: `tick <ms>` lets a reveal finish"),
+            ),
+            poll => poll,
+        },
+        _ => return None,
+    })
+}
+
+pub const CONTROL_POLL: Duration = Duration::from_millis(10);
+
+/// `--control <socket>`: a harness typing keys into the real terminal sends the timing steps
+/// here, one per line, each answered `ok` or `error: <why>` once done.
+pub struct Control {
+    stream: UnixStream,
+    unread: Vec<u8>,
+    step: Option<(Step, Instant)>,
+}
+
+impl Control {
+    pub fn connect(path: &Path) -> std::io::Result<Self> {
+        let stream = UnixStream::connect(path)?;
+        stream.set_nonblocking(true)?;
+        Ok(Self {
+            stream,
+            unread: Vec::new(),
+            step: None,
+        })
+    }
+
+    fn serve(
+        &mut self,
+        run: impl FnOnce(&Step, Instant) -> Option<WaitPoll>,
+    ) -> std::io::Result<bool> {
+        if self.step.is_none() {
+            let mut chunk = [0_u8; 1024];
+            match self.stream.read(&mut chunk) {
+                Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => self.unread.extend(chunk.iter().take(n)),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
+            let Some(end) = self.unread.iter().position(|byte| *byte == b'\n') else {
+                return Ok(false);
+            };
+            let line: Vec<u8> = self.unread.drain(..=end).collect();
+            match parse_script(&String::from_utf8_lossy(&line)).map(Vec::into_iter) {
+                Ok(mut steps) => match (steps.next(), steps.next()) {
+                    (Some(step), None) => self.step = Some((step, Instant::now())),
+                    _ => return self.answer(Err("one step per line".to_owned())),
+                },
+                Err(error) => return self.answer(Err(error)),
+            }
+        }
+        let Some((step, started)) = self.step.take() else {
+            return Ok(false);
+        };
+        match run(&step, started) {
+            Some(WaitPoll::Retry) => {
+                self.step = Some((step, started));
+                Ok(false)
+            }
+            Some(WaitPoll::Done) => self.answer(Ok(())),
+            Some(WaitPoll::Failed(error)) => self.answer(Err(error)),
+            None => self.answer(Err(format!(
+                "only the keyboard or the screen plays {step:?}"
+            ))),
+        }
+    }
+
+    fn answer(&mut self, result: Result<(), String>) -> std::io::Result<bool> {
+        // Invariant: one line per answer, or an error's second line reads as the next answer.
+        let line = result.map_or_else(
+            |error| format!("error: {}\n", error.replace('\n', " ")),
+            |()| "ok\n".to_owned(),
+        );
+        self.stream.write_all(line.as_bytes())?;
+        Ok(true)
+    }
+}
+
+pub fn serve(
+    control: &mut Option<Control>,
+    run: impl FnOnce(&Step, Instant) -> Option<WaitPoll>,
+) -> bool {
+    let Some(channel) = control.as_mut() else {
+        return false;
+    };
+    channel.serve(run).unwrap_or_else(|_| {
+        *control = None;
+        false
+    })
+}
+
+pub fn serve_solo(
+    control: &mut Option<Control>,
+    app: &mut App,
+    port: &mut Arc<AgentSession>,
+    ui_rx: &Receiver<UiEvent>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+) {
+    if serve(control, |step, at| {
+        timing_step(app, port, ui_rx, cmd_tx, step, at)
+    }) {
+        app.scheduler.request();
+    }
 }
 
 pub struct DriveOptions {
@@ -416,55 +578,21 @@ pub fn run_headless(
             }
             (Step::TypeMs(ms), _) => type_ms = ms,
             (Step::Snap(name), _) => pending_snap = Some(name),
-            (Step::Tick(ms), _) => {
-                let mut left = ms;
-                while left > 0 {
-                    let step = left.min(TICK_STEP_MS);
-                    app.advance_clock(Duration::from_millis(step));
-                    crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
-                    left -= step;
-                }
-            }
-            (Step::Hold(kind, nth), _) => session.provider().faux_hold.arm(&kind, nth),
-            (Step::Release, _) => {
-                if !session.provider().faux_hold.release() {
-                    eprintln!("error: release: the faux stream never reached its hold");
-                    exit_code = 1;
-                    break;
-                }
-                // The rest of the message lands before the next step, or a frozen reveal would
-                // depend on how much arrived in real time.
-                let settled = Instant::now();
-                crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
-                while !app.stream_settled() {
-                    if settled.elapsed() > Duration::from_secs(5) {
-                        eprintln!("error: release: the released message did not end within 5 s");
+            (step @ (Step::Tick(_) | Step::Hold(..) | Step::Release | Step::WaitIdle(_)), at) => {
+                match timing_step(&mut app, &mut port, &ui_rx, &cmd_tx, &step, at) {
+                    Some(WaitPoll::Retry) => current = Some((step, at)),
+                    Some(WaitPoll::Failed(error)) => {
+                        eprintln!("error: {error}");
                         exit_code = 1;
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(2));
-                    crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
-                }
-                if exit_code != 0 {
-                    break;
+                    Some(WaitPoll::Done) | None => {}
                 }
             }
             (Step::Wait(ms), started) => {
                 if started.elapsed() < Duration::from_millis(ms) {
                     current = Some((Step::Wait(ms), started));
                     std::thread::sleep(Duration::from_millis(2));
-                }
-            }
-            (Step::WaitIdle(ms), started) => {
-                let idle = !(app.is_running() || app.awaiting_turn() || !app.has_run());
-                match poll_condition(idle, started, ms, "wait-idle") {
-                    WaitPoll::Done => {}
-                    WaitPoll::Retry => current = Some((Step::WaitIdle(ms), started)),
-                    WaitPoll::TimedOut if frozen => {
-                        eprintln!("  the clock is frozen: `tick <ms>` lets a reveal finish");
-                        exit_code = 1;
-                    }
-                    WaitPoll::TimedOut => exit_code = 1,
                 }
             }
             (Step::WaitFrame(ms, present, text), started) => {
@@ -474,8 +602,8 @@ pub fn run_headless(
                     WaitPoll::Retry => {
                         current = Some((Step::WaitFrame(ms, present, text), started))
                     }
-                    WaitPoll::TimedOut => {
-                        eprintln!("  waiting for {text:?}");
+                    WaitPoll::Failed(error) => {
+                        eprintln!("error: {error}\n  waiting for {text:?}");
                         exit_code = 1;
                     }
                 }
