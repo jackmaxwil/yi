@@ -8,6 +8,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
+use yi_orb::smooth;
+
 use crate::app::App;
 use crate::colors::Theme;
 
@@ -79,11 +81,6 @@ const KALI_SAMPLES: u8 = 3;
 const KALI_LO: f64 = 0.56;
 const KALI_HI: f64 = 4.5;
 pub const FRAME: Duration = Duration::from_millis(50);
-
-fn smooth(x: f64) -> f64 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
-}
 
 fn strokes() -> [([f64; 2], [f64; 2]); 5] {
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
@@ -175,11 +172,14 @@ fn fold(mut x: f64, mut y: f64, cx: f64, cy: f64) -> f64 {
 
 /// The Kali fold at `(u, v)`, each cell averaged over `du` by `dv` of samples: the plane turns
 /// once a loop while `c` circles and the scale breathes; the first seconds zoom out of the fold.
-fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
-    let a = TAU * t / KALI_SECS;
-    let (sin, cos) = a.sin_cos();
-    let (cx, cy) = (0.80 + 0.03 * sin, 0.55 + 0.03 * cos);
-    let scale = 0.5 * (1.0 + 0.18 * sin) * (0.3 + 0.7 * smooth(t / OPEN_SECS));
+fn kali(u: f64, v: f64, (du, dv): (f64, f64), frame: &KaliFrame) -> f64 {
+    let KaliFrame {
+        sin,
+        cos,
+        c: (cx, cy),
+        scale,
+        fade,
+    } = *frame;
     let n = f64::from(KALI_SAMPLES);
     let mut sum = 0.0;
     for j in 0..KALI_SAMPLES {
@@ -198,7 +198,30 @@ fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
     ((raw - KALI_LO) / (KALI_HI - KALI_LO))
         .clamp(0.0, 1.0)
         .powf(1.1)
-        * smooth(t / 0.3)
+        * fade
+}
+
+/// What the fold shares across every cell of one frame.
+#[derive(Clone, Copy)]
+struct KaliFrame {
+    sin: f64,
+    cos: f64,
+    c: (f64, f64),
+    scale: f64,
+    fade: f64,
+}
+
+impl KaliFrame {
+    fn at(t: f64) -> Self {
+        let (sin, cos) = (TAU * t / KALI_SECS).sin_cos();
+        Self {
+            sin,
+            cos,
+            c: (0.80 + 0.03 * sin, 0.55 + 0.03 * cos),
+            scale: 0.5 * (1.0 + 0.18 * sin) * (0.3 + 0.7 * smooth(t / OPEN_SECS)),
+            fade: smooth(t / 0.3),
+        }
+    }
 }
 
 /// Dim the field near the strokes and fill them: `rise` 0 leaves the field, 1 is the name.
@@ -249,6 +272,7 @@ pub fn cover(
     let t = elapsed.as_secs_f64();
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
+    let turn = KaliFrame::at(t);
     let rise = match scene {
         Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
         Scene::Echo => 1.0,
@@ -266,7 +290,7 @@ pub fn cover(
             }
             let field = match scene {
                 _ if fade <= 0.0 => 0.0,
-                Scene::Kali => kali(u, v, cell, t) * fade,
+                Scene::Kali => kali(u, v, cell, &turn) * fade,
                 Scene::Echo => echo(d, t) * fade,
             };
             let value = name(field, d, rise).clamp(0.0, 1.0);

@@ -167,7 +167,7 @@ fn rot_y(v: V, a: f64) -> V {
     [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
 }
 
-pub(crate) fn smooth(x: f64) -> f64 {
+pub fn smooth(x: f64) -> f64 {
     let x = x.clamp(0.0, 1.0);
     x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
 }
