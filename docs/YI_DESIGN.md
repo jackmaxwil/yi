@@ -30,8 +30,9 @@ converters compiled into the binary · Windows · dynamically loaded plugins (ex
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
 §17.1) · a GUI · browser automation, computer use, email, or any capability that
 is not a coding agent · an `ask_user` tool on a root session with no reviewer (a root asks in
-its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
-the console · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
+its reply; demoted when `annotate` entered) · server-side terminal-frame streaming or blit
+encoding in the console (a terminal pane's PTY is the console's own, §17.4) · the console's
+Tape pane, a session's ledger over wall time (left when the terminal pane entered) · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
@@ -953,7 +954,7 @@ an unknown method −32601, bad JSON −32700.
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
 | `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3), and one still queued at close gets −32800; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
-| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/tape`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; the session's ledger over time; a hunk's blame chain; a session slash verb |
+| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again in `_meta.yi.prefill`) or `at` it, attached beside the source, which keeps its own branch; any other position is refused by name (`AcpForkParams`) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
@@ -1044,17 +1045,20 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   it changed, reads that changed nothing are counted, the header carries the claims and the
   landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
   worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal.
-- ⌘Y opens the Tape beside a session: its ledger over wall time (`_yi/tape`, folded by the
-  worker), as model and tool tracks with each one's share, the user's turns, checkpoints,
-  failures and compactions. ←/→ walks the marks; Enter on a turn the user typed rewinds the
-  conversation to it, a fork that leaves the old branch in the ledger. `u` twice also restores
-  files to before that turn by /undo's rule (D248, `undo_to`): what the agent moved goes back, a
-  path the user changed after the last turn is kept and named; a steer has no checkpoint.
+- ⌘Y (⌥y) opens a terminal pane beside the focused one, running `$SHELL` in the focused
+  session's working directory (its lane worktree once `_yi/workdir` names one), else the
+  console's root. The PTY is the console's own: no daemon state, nothing on the socket. The
+  child is `yi __pty <shell>`, which calls `setsid` and `TIOCSCTTY` through safe `rustix` calls
+  and then execs the shell, so no `pre_exec` and no unsafe code. `vt100` parses the master; the
+  pane paints its cells with their colours and attributes, the wheel reads its scrollback, and
+  a resize is `tcsetwinsize`. A focused terminal takes every key but ⌘ chords, ⌥ arrows and the
+  ctrl+b table; a paste is bracketed when the child asked. Closing the pane sends SIGHUP to the
+  shell's process group; a shell that exits leaves its pane titled `[exited N]` until closed.
 - ⌥, or the gear in the sidebar's bottom row opens Settings beside the focused pane: a Session
   tab over the session's live options (`d` keeps one as the default), a tab per group of every
   config default, each row saying when a saved change applies, and a Keys tab listing every
   chord, which replaced the keys overlay. An edit saves at once or names why it was refused.
-- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor, Settings}`,
+- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Terminal, Editor, Settings}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Menu}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
@@ -1109,7 +1113,8 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
 | `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
-| `rustix` | `fs`, `std` | permission | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide) |
+| `rustix` | `fs`, `std`; `pty`, `termios`, `process` in console | permission, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
+| `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
 Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
 `macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
@@ -1127,8 +1132,8 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 ### 18.6 Budgets
 | Budget | Limit | Measured as | Gate and baseline |
 |---|---|---|---|
-| direct deps | 22 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
-| transitive deps | 171 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
+| direct deps | 23 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
+| transitive deps | 176 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
 | dist binary | 8,372,272 bytes, a measured ratchet under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 

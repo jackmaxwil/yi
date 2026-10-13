@@ -84,7 +84,6 @@ mod skills_e2e;
 mod snapshot_e2e;
 mod subagent;
 mod subagent_fuzz;
-mod tape;
 mod telemetry;
 mod title;
 mod todo_coupling;

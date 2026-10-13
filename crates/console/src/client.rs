@@ -25,6 +25,7 @@ pub enum ClientEvent {
     Disconnected { reason: String },
     Input(ratatui::crossterm::event::Event),
     InputClosed(String),
+    Wake,
 }
 
 pub struct Outbound {

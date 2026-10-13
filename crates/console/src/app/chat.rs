@@ -760,6 +760,11 @@ impl App {
 
     pub(super) fn chat_event(&mut self, event: CtEvent) {
         self.dirty = true;
+        if let CtEvent::Paste(text) = &event
+            && self.terminal_paste(text)
+        {
+            return;
+        }
         if let Some(chat) = self.focused_chat() {
             let enter = matches!(event, CtEvent::Key(key) if key.code == KeyCode::Enter);
             let drafted = enter && !chat.app.composer_text().is_empty();
@@ -788,53 +793,6 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn a_file_restore_from_the_tape_waits_for_a_second_press() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use yi_types::tape::{Mark, MarkKind, Tape};
-        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
-        let mut app = App::new("/r".to_owned(), theme);
-        let session = SessionId("s-a".to_owned());
-        let pane = app.state.focused_pane_id().expect("a pane");
-        let chat = app.make_chat(pane, &session);
-        app.state.parked.insert(session.clone(), chat);
-        if let Some(focused) = app.state.focused_pane_mut() {
-            focused.content = PaneContent::Tape {
-                session: session.clone(),
-                tape: Some(Tape {
-                    start: 0,
-                    end: 10,
-                    marks: vec![Mark {
-                        at: 0,
-                        kind: MarkKind::User,
-                        entry: "u1".to_owned(),
-                        label: "first".to_owned(),
-                    }],
-                    ..Tape::default()
-                }),
-                cursor: 0,
-                armed: false,
-            };
-        }
-        let press = |app: &mut App| {
-            app.tape_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
-        };
-        let queued = |app: &mut App| {
-            app.state
-                .chats_mut(&session)
-                .into_iter()
-                .map(|chat| chat.port.queue.len())
-                .sum::<usize>()
-        };
-        press(&mut app);
-        assert_eq!(queued(&mut app), 0, "the first press only arms");
-        press(&mut app);
-        assert!(matches!(
-            app.state.chats_mut(&session).into_iter().next().and_then(|chat| chat.port.queue.first()),
-            Some(super::super::port::PortRequest::RewindFiles(entry)) if entry == "u1"
-        ));
-    }
 
     /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened
     /// the list, while the `▸` still sat on a file; then with every blame error read as uncommitted.
