@@ -378,19 +378,6 @@ impl App {
         self.quit
     }
 
-    pub fn is_running(&self) -> bool {
-        self.running
-    }
-
-    pub fn has_run(&self) -> bool {
-        self.seen_turn
-    }
-
-    /// A prompt has been submitted whose turn has not started yet.
-    pub fn awaiting_turn(&self) -> bool {
-        self.submitted_turns > self.started_turns
-    }
-
     pub(crate) fn note_submission(&mut self) {
         self.submitted_turns = self.submitted_turns.saturating_add(1);
     }
@@ -1062,6 +1049,7 @@ pub fn run_tui(
     host: Arc<SubagentHost>,
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
+    mut control: Option<crate::drive::Control>,
 ) -> i32 {
     crate::highlight::prewarm();
     let (ui_rx, cmd_tx, runtime_thread) =
@@ -1131,7 +1119,12 @@ pub fn run_tui(
             .scheduler
             .poll_timeout(Instant::now())
             .min(app.reveal_wake())
-            .min(app.todo_clock.wake(Instant::now()));
+            .min(app.todo_clock.wake(Instant::now()))
+            .min(
+                control
+                    .as_ref()
+                    .map_or(Duration::MAX, |_| crate::drive::CONTROL_POLL),
+            );
         let animating = app.running
             || app
                 .tasks
@@ -1165,6 +1158,7 @@ pub fn run_tui(
             }
         }
         crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
+        crate::drive::serve_solo(&mut control, &mut app, &mut port, &ui_rx, &cmd_tx);
         // A blanket request drew every turn at the 16 ms ceiling: five frames per spinner
         // step, four identical. Tokens dirty their own frame; only animation needs a timer.
         let phase = app.spinner_phase();
