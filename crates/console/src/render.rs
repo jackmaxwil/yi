@@ -55,6 +55,10 @@ impl Hits {
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
     }
+
+    pub fn covered(&self, rect: ratatui::layout::Rect) -> bool {
+        self.overlays.iter().any(|cover| cover.intersects(rect))
+    }
 }
 
 pub struct ViewState {

@@ -100,4 +100,8 @@ fn the_last_local_url_in_the_transcript_opens() {
         Some("http://127.0.0.1:8000/docs".to_owned())
     );
     assert_eq!(last_local_url(["http://localhostx"].into_iter()), None);
+    assert_eq!(
+        last_local_url(["http://localhost:3000@evil.com/"].into_iter()),
+        None
+    );
 }

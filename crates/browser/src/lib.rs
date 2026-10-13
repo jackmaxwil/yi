@@ -52,7 +52,9 @@ pub fn find(configured: Option<&Path>, pinned: Option<&Path>) -> Result<PathBuf,
         return Err(vec![path.display().to_string()]);
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .collect();
     let on_path = NAMES
         .iter()
         .flat_map(|name| dirs.iter().map(move |dir| dir.join(name)));

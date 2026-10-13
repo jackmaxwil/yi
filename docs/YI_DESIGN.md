@@ -30,7 +30,7 @@ converters compiled into the binary · Windows · dynamically loaded plugins (ex
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
 §17.1) · a GUI · browser automation as an agent tool, computer use, email, or any capability that
 is not a coding agent (the console's browser pane shows the user a page and gives the model nothing;
-the Tape pane left to pay for it) · an `ask_user` tool on a root session with no reviewer (a root asks in
+the Tape pane's removal in #1383 pays for it, pending that merge) · an `ask_user` tool on a root session with no reviewer (a root asks in
 its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`

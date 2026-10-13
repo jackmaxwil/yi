@@ -132,6 +132,7 @@ pub struct BrowserPane {
     editing: Option<String>,
     engine: Engine,
     frame: Option<(u64, String)>,
+    notice: Option<String>,
     page: Rect,
     size: (u32, u32),
     clicks: Clicks,
@@ -152,6 +153,7 @@ impl BrowserPane {
             url: url.unwrap_or_else(|| "about:blank".to_owned()),
             engine: Engine::Idle,
             frame: None,
+            notice: None,
             page: Rect::default(),
             size: (0, 0),
             clicks: Clicks::default(),
@@ -181,6 +183,7 @@ impl BrowserPane {
                  open the console in Ghostty or kitty]"
                     .to_owned(),
             ),
+            (_, true, _) if self.notice.is_some() => self.notice.clone(),
             (_, true, None) => Some("loading…".to_owned()),
             (_, true, Some(_)) => None,
         };
@@ -234,13 +237,22 @@ impl BrowserPane {
                 for update in updates {
                     match update {
                         Update::Frame(png) => {
+                            if !yi_types::image::is_strict_base64(&png) {
+                                continue;
+                            }
                             let seq = self
                                 .frame
                                 .as_ref()
                                 .map_or(0, |(seq, _)| seq.wrapping_add(1));
                             self.frame = Some((seq, png));
                         }
-                        Update::Url(url) => self.url = url,
+                        Update::Url(url) => {
+                            self.url = url;
+                            self.notice = None;
+                        }
+                        Update::NavigateFailed(why) => {
+                            self.notice = Some(format!("[couldn't open the page: {why}]"));
+                        }
                         Update::Failed(why) => self.engine = Engine::Failed(why),
                     }
                 }
@@ -373,16 +385,24 @@ fn typed_url(text: &str) -> String {
     }
 }
 
-/// The last `http://localhost:*` or `http://127.0.0.1:*` URL in a transcript, as printed.
+/// The last `http://localhost:*` or `http://127.0.0.1:*` URL in a transcript, as printed; the
+/// host is read from the authority, so userinfo cannot move the page off this machine.
 pub fn last_local_url<'a>(sources: impl Iterator<Item = &'a str>) -> Option<String> {
     let mut last = None;
     for source in sources {
         for word in source.split(|c: char| c.is_whitespace() || "<>()[]`'\"".contains(c)) {
-            if ["http://localhost:", "http://127.0.0.1:"]
-                .iter()
-                .any(|prefix| word.starts_with(prefix))
-            {
-                last = Some(word.trim_end_matches(['.', ',', ';']).to_owned());
+            let word = word.trim_end_matches(['.', ',', ';']);
+            let Some(rest) = word.strip_prefix("http://") else {
+                continue;
+            };
+            let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
+            let local = authority.split_once(':').is_some_and(|(host, port)| {
+                ["localhost", "127.0.0.1"].contains(&host)
+                    && !port.is_empty()
+                    && port.bytes().all(|b| b.is_ascii_digit())
+            });
+            if local {
+                last = Some(word.to_owned());
             }
         }
     }
@@ -525,10 +545,7 @@ pub fn place(app: &mut App, out: &mut impl Write) {
             else {
                 continue;
             };
-            let covered = hits
-                .overlays
-                .iter()
-                .any(|cover| cover.intersects(pane.page));
+            let covered = hits.covered(pane.page);
             if let (Some((seq, png)), false) = (&pane.frame, covered || pane.page.is_empty()) {
                 want.insert(*id, (pane.page, *seq, png.as_str()));
             }
@@ -553,7 +570,7 @@ pub fn place(app: &mut App, out: &mut impl Write) {
         } else {
             even
         };
-        let sent = crate::kitty::transmit_png(out, id, png).unwrap_or(false)
+        let sent = crate::kitty::transmit_base64(out, id, png).is_ok()
             && yi_tui::orb::kitty::place(out, id, rect.x, rect.y, rect.width, rect.height).is_ok();
         if !sent {
             continue;

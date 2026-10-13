@@ -36,11 +36,17 @@ impl App {
         self.state.zone = Zone::Panes;
     }
 
+    /// Only the panes the screen shows: a hidden pane's frames wait in Chrome's unacked queue.
     pub(super) fn pump_browsers(&mut self) {
         let (kitty, cell) = (self.kitty, crate::chrome::cell_pixels());
+        let shown: Vec<_> = (self.hits.iter())
+            .flat_map(|hits| hits.panes.iter().map(|(id, _)| *id))
+            .collect();
         let state = &mut self.state;
-        for pane in state.panes.values_mut() {
-            if let PaneContent::Browser(browser) = &mut pane.content {
+        for id in shown {
+            if let Some(PaneContent::Browser(browser)) =
+                state.panes.get_mut(&id).map(|pane| &mut pane.content)
+            {
                 self.dirty |= browser.pump(kitty, cell, &mut state.chrome);
             }
         }
