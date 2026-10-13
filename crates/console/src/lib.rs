@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod avatar;
+mod chrome;
 pub mod client;
 pub mod keys;
 pub mod kitty;
@@ -859,6 +860,108 @@ mod tests {
         let place = out.find("a=p,").ok_or("the image was not placed")?;
         let close = out.rfind("\u{1b}[?2026l").ok_or("no update closed")?;
         assert!(open < place && place < close, "{out:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_gear_is_placed_as_an_image_and_a_popup_hides_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.kitty = true;
+        app.state.link = crate::model::Link::Connected;
+        app.state
+            .split_focused(ratatui::layout::Direction::Horizontal);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let mut out = Vec::new();
+        present(
+            &mut app,
+            &mut terminal,
+            &theme,
+            &mut std::collections::HashMap::new(),
+            &mut out,
+        )?;
+        let out = String::from_utf8_lossy(&out);
+        assert_eq!(
+            out.matches("c=3,r=1").count(),
+            2,
+            "a close image per pane: {out:?}"
+        );
+        let hints = app.hits.as_ref().map_or(0, |hits| hits.hint_buttons.len());
+        assert!(hints >= 5, "the keys that fit are buttons: {hints}");
+        let caps = 2 + 2 * hints;
+        assert_eq!(
+            out.matches("a=t,").count(),
+            3 + caps,
+            "gear, closers, dock and key caps"
+        );
+        assert!(out.contains("s=32,v=48,a=t,i=8000"), "{out:?}");
+        assert!(out.contains("a=p,i=8000,p=1,q=2,C=1,c=4,r=3"), "{out:?}");
+        let gear = app
+            .hits
+            .as_ref()
+            .and_then(|hits| hits.gear)
+            .ok_or("no gear")?;
+        assert_eq!(gear.height, 3);
+        if let Some(hits) = app.hits.as_mut() {
+            hits.overlays = vec![gear];
+        }
+        let mut covered = Vec::new();
+        place_avatars(&mut app, &mut covered);
+        let covered = String::from_utf8_lossy(&covered);
+        assert!(covered.contains("a=d,d=I,i=8000"), "{covered:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_hovered_keycap_lightens_and_the_rest_keep_their_colour()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.state.link = crate::model::Link::Connected;
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
+        let key_bg = |terminal: &Terminal<ratatui::backend::TestBackend>,
+                      at: ratatui::layout::Rect| {
+            let cell = terminal
+                .backend()
+                .buffer()
+                .cell((at.x.saturating_add(2), at.y));
+            cell.map(|cell| cell.bg)
+        };
+        draw(&mut app, &mut terminal, &theme)?;
+        let buttons = app
+            .hits
+            .as_ref()
+            .map(|hits| hits.hint_buttons.clone())
+            .unwrap_or_default();
+        let (first, second) = (
+            buttons.first().ok_or("no hint")?.0,
+            buttons.get(1).ok_or("one hint")?.0,
+        );
+        let rest = (key_bg(&terminal, first), key_bg(&terminal, second));
+        assert_ne!(rest.0, rest.1, "each keycap wears its own colour");
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-hover-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        let moved = |column, row| {
+            CtEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+                kind: ratatui::crossterm::event::MouseEventKind::Moved,
+                column,
+                row,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            })
+        };
+        app.handle_event(&outbound, moved(second.x.saturating_add(4), second.y));
+        outbound.shutdown();
+        assert!(app.dirty, "entering a keycap redraws");
+        draw(&mut app, &mut terminal, &theme)?;
+        assert_eq!(
+            key_bg(&terminal, first),
+            rest.0,
+            "a keycap the pointer is not on keeps its colour"
+        );
+        let lit = key_bg(&terminal, second).ok_or("no cell")?;
+        assert_ne!(Some(lit), rest.1, "the hovered keycap lightens");
         Ok(())
     }
 
