@@ -20,12 +20,12 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// A drive may not move time while the provider owes the screen something: a model request
-    /// the loop announced, or a stream event it has sent that the runtime has not delivered.
+    /// A drive may not move time while the provider owes the screen: a turn it announced but
+    /// has not served, or a stream event it has sent that the runtime has not delivered.
     pub fn stream_owed(&self, requests: u64, updates: u64) -> bool {
-        self.pacing.turns < self.started_turns
-            || self.pacing.turns > requests
-            || self.pacing.arrived < updates
+        self.pacing.arrived < updates
+            || (requests > 0
+                && (self.pacing.turns < self.started_turns || self.pacing.announced > requests))
     }
 
     /// The streaming message's end has arrived: reduced, or held behind a reveal a frozen clock

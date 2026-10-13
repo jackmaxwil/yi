@@ -415,8 +415,9 @@ impl ProviderStream {
             return receiver;
         }
         for (_, event) in steps {
-            self.faux_time.count(&event);
-            let _ = sender.try_send(event);
+            if sender.try_send(event.clone()).is_ok() {
+                self.faux_time.count(&event);
+            }
         }
         receiver
     }
@@ -613,8 +614,9 @@ async fn paced(
             tokio::time::sleep(delay).await;
         }
         hold.pass(&event).await;
-        time.count(&event);
-        if sender.send(event).await.is_err() {
+        if sender.send(event.clone()).await.is_ok() {
+            time.count(&event);
+        } else {
             return;
         }
     }
@@ -705,8 +707,9 @@ impl FauxTime {
                 let Some((_, event)) = queue.pop_front() else {
                     break;
                 };
-                self.count(&event);
-                if sender.try_send(event).is_err() {
+                if sender.try_send(event.clone()).is_ok() {
+                    self.count(&event);
+                } else {
                     return false;
                 }
             }
@@ -1036,6 +1039,22 @@ mod tests {
         // delta, delta, text_end, done.
         assert_eq!(arrived(&mut stream), 4);
         assert_eq!(provider.faux_time.updates(), 6);
+    }
+
+    /// A stream whose screen has stopped reading counts nothing into the drive's barrier, or
+    /// every later `tick` in the scene waits out its five seconds for an event nobody folds.
+    #[test]
+    fn a_stream_with_no_reader_leaves_the_barrier_count_alone() {
+        let (provider, _) = answer_in(900);
+        provider.faux_time.freeze();
+        let mut stream = provider.faux_stream();
+        assert_eq!(arrived(&mut stream), 2);
+        let before = provider.faux_time.updates();
+        drop(stream);
+        provider
+            .faux_time
+            .advance(std::time::Duration::from_millis(300));
+        assert_eq!(provider.faux_time.updates(), before);
     }
 
     /// The wall path sleeps the recorded lag in total: a reply recorded at 7.7 s that streamed
