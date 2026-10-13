@@ -8,6 +8,7 @@ pub mod app;
 pub mod avatar;
 mod chrome;
 pub mod client;
+mod header;
 pub mod keys;
 pub mod kitty;
 pub mod layout;

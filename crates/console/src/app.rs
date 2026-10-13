@@ -963,6 +963,8 @@ impl App {
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::ToggleTape => self.toggle_side(outbound, diffs::SideKind::Tape),
             Action::OpenEditor => self.open_navigator("e "),
+            Action::OpenTerminal => self.note("terminal pane lands with #1378"),
+            Action::OpenBrowser => self.note("browser pane lands with #1379"),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
                 if !self.editor_action(action) {

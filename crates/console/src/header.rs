@@ -1,0 +1,86 @@
+//! The header row: workspace tabs at the left, the four pane buttons at the right.
+
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use yi_tui::colors::Theme;
+
+use crate::app::App;
+use crate::keys;
+
+/// Invariant: hit widths come from the label builder the bar draws with.
+pub(crate) fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
+    let mut x = bar.x;
+    let mut hits = Vec::new();
+    for (index, tab) in app.state.tabs.iter().enumerate() {
+        let width = u16::try_from(tab_label(index, tab.zoomed).chars().count()).unwrap_or(3);
+        hits.push((Rect::new(x, bar.y, width, 1), index));
+        x = x.saturating_add(width);
+    }
+    hits
+}
+
+fn tab_label(index: usize, zoomed: bool) -> String {
+    let zoom = if zoomed { "Z" } else { "" };
+    format!(" {}{zoom} ", index.saturating_add(1))
+}
+
+const HEADER_BUTTONS: [(&str, keys::Action); 4] = [
+    (">_", keys::Action::OpenTerminal),
+    ("±", keys::Action::ToggleDiff),
+    ("◉", keys::Action::OpenBrowser),
+    ("▤", keys::Action::OpenEditor),
+];
+const HEADER_BUTTON_WIDTH: u16 = 4;
+
+/// The buttons that fit right of the tabs, flush right with a one-cell gap between them.
+pub(crate) fn header_buttons(header: Rect, taken: u16) -> Vec<(Rect, keys::Action)> {
+    let mut right = header.right().saturating_sub(1);
+    let mut out = Vec::new();
+    for (_, action) in HEADER_BUTTONS.iter().rev() {
+        let Some(left) = right.checked_sub(HEADER_BUTTON_WIDTH) else {
+            break;
+        };
+        if left < header.x.saturating_add(taken) {
+            break;
+        }
+        out.push((Rect::new(left, header.y, HEADER_BUTTON_WIDTH, 1), *action));
+        right = left.saturating_sub(1);
+    }
+    out.reverse();
+    out
+}
+
+pub(crate) fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let buttons = app.hits.iter().flat_map(|hits| &hits.header_buttons);
+    for (rect, action) in buttons {
+        let glyph = HEADER_BUTTONS.iter().find(|(_, a)| a == action);
+        let label = format!(" {:^2} ", glyph.map_or("", |(glyph, _)| glyph));
+        frame.render_widget(
+            Paragraph::new(Span::styled(label, theme.muted_style())),
+            *rect,
+        );
+    }
+    if app.state.tabs.len() > 1 {
+        render_tabs(app, frame, area, theme);
+    }
+}
+
+fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let mut spans = Vec::new();
+    for (index, tab) in app.state.tabs.iter().enumerate() {
+        let label = tab_label(index, tab.zoomed);
+        let style = if index == app.state.active_tab {
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme.dim_style()
+        };
+        spans.push(Span::styled(label, style));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}

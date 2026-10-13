@@ -109,7 +109,7 @@ fn a_pane_with_no_session_titles_itself_without_a_status_dot() -> TestResult {
     let (mut app, _) = console()?;
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
-    let top = row_text(&terminal, 0);
+    let top = row_text(&terminal, 1);
     assert!(top.contains("─ Settings ─"), "{top}");
     assert!(top.contains("─ ❯ no session ─"), "{top}");
     Ok(())
@@ -386,5 +386,72 @@ fn the_palette_and_the_settings_tabs_use_no_accent_blue() -> TestResult {
         theme().selection_bg(),
         "the selected row has no band"
     );
+    Ok(())
+}
+
+#[test]
+fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> TestResult {
+    use yi_console::keys::Action;
+    use yi_console::model::Mode;
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let (mut app, _, _) = pair()?;
+    draw(&mut app, &mut terminal)?;
+    let buttons = hits(&app)?.header_buttons.clone();
+    let actions: Vec<Action> = buttons.iter().map(|(_, action)| *action).collect();
+    assert_eq!(
+        actions,
+        [
+            Action::OpenTerminal,
+            Action::ToggleDiff,
+            Action::OpenBrowser,
+            Action::OpenEditor
+        ]
+    );
+    let top = row_text(&terminal, 0);
+    for glyph in [">_", "±", "◉", "▤"] {
+        assert!(top.contains(glyph), "no {glyph} in the header: {top}");
+    }
+    assert!(
+        hits(&app)?.titles.iter().all(|(_, rect)| rect.y > 0),
+        "a pane title sits in the header row"
+    );
+    let at = |action: Action| {
+        buttons
+            .iter()
+            .find(|(_, a)| *a == action)
+            .map(|(rect, _)| *rect)
+            .ok_or("no such button")
+    };
+    let diff = at(Action::ToggleDiff)?;
+    let rest = cell_at(&terminal, diff.x, diff.y)?.bg;
+    mouse(&mut app, MouseKind::Moved, diff.x, diff.y);
+    assert!(app.dirty, "entering the diff button asks for no frame");
+    draw(&mut app, &mut terminal)?;
+    let lit = cell_at(&terminal, diff.x, diff.y)?.bg;
+    assert_ne!(lit, rest, "the hovered diff button looks the same");
+    for (action, note) in [
+        (Action::OpenTerminal, "terminal pane lands with #1378"),
+        (Action::OpenBrowser, "browser pane lands with #1379"),
+    ] {
+        let rect = at(action)?;
+        mouse(&mut app, MouseKind::Down, rect.x, rect.y);
+        assert_eq!(app.state.banner.as_deref(), Some(note), "{action:?}");
+        app.state.banner = None;
+    }
+    let files = at(Action::OpenEditor)?;
+    mouse(&mut app, MouseKind::Down, files.x, files.y);
+    assert!(
+        matches!(&app.state.mode, Mode::Navigator { query, .. } if query == "e "),
+        "files did not open the picker"
+    );
+    app.state.mode = Mode::Normal;
+    mouse(&mut app, MouseKind::Down, diff.x, diff.y);
+    let diffs = app
+        .state
+        .panes
+        .values()
+        .filter(|pane| matches!(pane.content, PaneContent::SessionDiff { .. }))
+        .count();
+    assert_eq!(diffs, 1, "the diff button opened no review pane");
     Ok(())
 }

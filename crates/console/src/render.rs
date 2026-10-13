@@ -15,6 +15,7 @@ use yi_tui::colors::{Theme, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
+use crate::header::{header_buttons, render_header, tab_hits};
 use crate::keys;
 use crate::layout::{PaneId, SplitBorder};
 use crate::model::{Link, Mode, PaneContent, SessionStatus, Zone};
@@ -50,6 +51,7 @@ pub struct Hits {
     pub dismiss: Option<Rect>,
     pub gear: Option<Rect>,
     pub hint_buttons: Vec<(Rect, keys::Action)>,
+    pub header_buttons: Vec<(Rect, keys::Action)>,
 }
 
 impl Hits {
@@ -80,6 +82,8 @@ impl Hits {
         let hints = self.hint_buttons.iter().map(|(rect, _)| *rect);
         hints
             .chain(self.closers.iter().map(|(_, rect)| *rect))
+            .chain(self.header_buttons.iter().map(|(rect, _)| *rect))
+            .chain(self.tabs.iter().map(|(rect, _)| *rect))
             .chain(self.titles.iter().map(|(_, rect)| *rect))
             .chain(self.settings_tabs.iter().map(|(rect, ..)| *rect))
             .chain(self.gear)
@@ -105,7 +109,7 @@ pub struct ViewState {
     pub sidebar: Rect,
     pub roots: Rect,
     pub editor_cursor: Option<(u16, u16)>,
-    pub tab_bar: Option<Rect>,
+    pub header: Rect,
     pub panes_area: Rect,
     pub panes: Vec<PaneView>,
     pub split_borders: Vec<SplitBorder>,
@@ -186,12 +190,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         ..area
     };
     let (transcript_area, banner) = split_off_bottom(main, 1);
-    let (tab_bar, mut panes_area) = if app.state.tabs.len() > 1 {
-        let (bar, rest) = split_off_top(transcript_area, 1);
-        (Some(bar), rest)
-    } else {
-        (None, transcript_area)
-    };
+    let (header, mut panes_area) = split_off_top(transcript_area, 1);
     let framed = frames_panes(app);
     // Invariant: framed panes stand on the rail's own line, so one line parts rail and pane.
     let rail_edge = (framed && sidebar_width > 0 && app.state.sidebar == SidebarMode::Rail)
@@ -219,19 +218,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     let close_hint = keys::chord_for(keys::Action::ToggleNotebook, app.cmd_hints);
     let mut panes = Vec::new();
     let mut editor_cursor = None;
-    let notes: std::collections::BTreeMap<SessionId, String> = app
-        .state
-        .panes
-        .values()
-        .filter_map(|pane| match &pane.content {
-            PaneContent::SessionDiff { session, .. } => Some(session.clone()),
-            _ => None,
-        })
-        .map(|session| {
-            let note = review_note(&app.state, &session);
-            (session, note)
-        })
-        .collect();
+    let notes = session_notes(app);
     for pane_rect in pane_rects {
         let inner = pane_rect.rect.inner(pane_margin(framed));
         let diffs = &app.state.diffs;
@@ -284,7 +271,14 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             (y < roots_area.y.saturating_add(roots_area.height)).then_some((y, index))
         })
         .collect();
-    let tab_hits = tab_bar.map_or_else(Vec::new, |bar| tab_hits(app, bar));
+    let tab_hits = if app.state.tabs.len() > 1 {
+        tab_hits(app, header)
+    } else {
+        Vec::new()
+    };
+    let taken = tab_hits
+        .last()
+        .map_or(0, |(rect, _)| rect.right().saturating_sub(header.x));
     app.hits = Some(Hits {
         sidebar_width,
         sidebar_rows,
@@ -295,6 +289,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         tabs: tab_hits,
         settings_tabs: settings_hits(app, &panes, framed),
         gear: (gear.height > 0).then_some(gear),
+        header_buttons: header_buttons(header, taken),
         ..Hits::default()
     });
 
@@ -302,7 +297,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         sidebar,
         roots: roots_area,
         editor_cursor,
-        tab_bar,
+        header,
         panes_area,
         panes,
         split_borders,
@@ -310,6 +305,21 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         framed,
         rail_edge,
     }
+}
+
+fn session_notes(app: &App) -> std::collections::BTreeMap<SessionId, String> {
+    app.state
+        .panes
+        .values()
+        .filter_map(|pane| match &pane.content {
+            PaneContent::SessionDiff { session, .. } => Some(session.clone()),
+            _ => None,
+        })
+        .map(|session| {
+            let note = review_note(&app.state, &session);
+            (session, note)
+        })
+        .collect()
 }
 
 fn frames_panes(app: &App) -> bool {
@@ -335,18 +345,6 @@ fn settings_hits(app: &App, panes: &[PaneView], framed: bool) -> Vec<(Rect, Pane
             let rect = Rect::new(inner.x.saturating_add(x), inner.y, width, 1);
             hits.push((rect.intersection(inner), view.id, tab));
         }
-    }
-    hits
-}
-
-/// Invariant: hit widths come from the label builder the bar draws with.
-fn tab_hits(app: &App, bar: Rect) -> Vec<(Rect, usize)> {
-    let mut x = bar.x;
-    let mut hits = Vec::new();
-    for (index, tab) in app.state.tabs.iter().enumerate() {
-        let width = u16::try_from(tab_label(index, tab.zoomed).chars().count()).unwrap_or(3);
-        hits.push((Rect::new(x, bar.y, width, 1), index));
-        x = x.saturating_add(width);
     }
     hits
 }
@@ -747,9 +745,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
             }
         }
     }
-    if let Some(bar) = view.tab_bar {
-        render_tab_bar(app, frame, bar, theme);
-    }
+    render_header(app, frame, view.header, theme);
     let crowd = view.panes.len() > 1;
     let framed = view.framed;
     for pane in &mut view.panes {
@@ -1150,26 +1146,4 @@ fn glyph(up: bool, down: bool, left: bool, right: bool) -> &'static str {
         (false, true, false, true) => "╭",
         (false, false, false, false) => " ",
     }
-}
-
-fn tab_label(index: usize, zoomed: bool) -> String {
-    let zoom = if zoomed { "Z" } else { "" };
-    format!(" {}{zoom} ", index.saturating_add(1))
-}
-
-fn render_tab_bar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let mut spans = Vec::new();
-    for (index, tab) in app.state.tabs.iter().enumerate() {
-        let label = tab_label(index, tab.zoomed);
-        let style = if index == app.state.active_tab {
-            Style::default()
-                .fg(theme.text)
-                .bg(theme.selection_bg())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            theme.dim_style()
-        };
-        spans.push(Span::styled(label, style));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
