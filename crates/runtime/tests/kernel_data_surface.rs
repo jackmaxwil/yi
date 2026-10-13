@@ -119,7 +119,7 @@ fn the_fetch_and_bash_contract_holds_against_a_stubbed_host() -> TestResult {
 )]
 #[test]
 fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
-    let tool = yi_runtime::kernel::ipython_tool(service());
+    let tool = yi_runtime::kernel_tools::ipython_tool(service(), None);
     let text = [
         tool.description(),
         yi_runtime::identity_fragment(),
@@ -178,7 +178,7 @@ async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
         ),
     ];
     for (code, whole) in cells {
-        let tool = yi_runtime::kernel::ipython_tool(Arc::clone(&service));
+        let tool = yi_runtime::kernel_tools::ipython_tool(Arc::clone(&service), None);
         let mut context = yi_tools::ToolContext::new(root.to_path_buf());
         context.recovery_dir = Some(root.join("tool-output"));
         let input = serde_json::json!({ "code": code });

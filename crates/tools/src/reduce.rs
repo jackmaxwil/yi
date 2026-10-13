@@ -230,8 +230,7 @@ fn generic(rows: &[Row], budget: usize, numbering: Numbering) -> String {
 
 /// A line naming an error or a failure: kept from the middle a head and tail would drop.
 fn is_signal(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    [
+    const SIGNALS: [&str; 7] = [
         "error",
         "fail",
         "panicked",
@@ -239,14 +238,20 @@ fn is_signal(line: &str) -> bool {
         "exception",
         "fatal",
         "assert",
-    ]
-    .iter()
-    .any(|word| lower.contains(word))
+    ];
+    // Incident: a HOME under `.yi-homes/keep-failed` made every line naming a path in it a signal.
+    // A word with two slashes is a path, wherever it starts, and only its last component speaks.
+    (line.to_ascii_lowercase().split_whitespace())
+        .map(|word| match word.matches('/').count() {
+            0 | 1 => word,
+            _ => word.rsplit('/').next().unwrap_or(word),
+        })
+        .any(|word| SIGNALS.iter().any(|signal| word.contains(signal)))
 }
 
 /// A test runner's line for one passing test: cargo, pytest, jest. A `PASSED` that shares its
 /// line with a failure is not one; a test named for errors that ends `... ok` is.
-fn is_pass(line: &str) -> bool {
+pub fn is_pass(line: &str) -> bool {
     let line = line.trim();
     (line.starts_with("test ") && line.ends_with(" ... ok"))
         || ((line.contains(" PASSED") || line.starts_with("PASSED ")) && !is_signal(line))

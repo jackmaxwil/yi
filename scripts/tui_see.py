@@ -9,23 +9,32 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
   tui_see.py diff RUN_A RUN_B          # two run dirs; writes RUN_B/diff-vs-<A>/summary.md
   tui_see.py gallery [ROOT] [PAGE]     # every scene and label under ROOT on one HTML page
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
+  tui_see.py harvest SESSION [--name N] [--view end|tool|long] [--size WxH]
+                                       # a recorded session as harvest-N-<view> scenes under SCENES
   tui_see.py --selfcheck
+  tui_see.py monkey [--runs N] [--seed S] [--surface solo|console]   # random key runs, failures only
 
 `--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
 so the pictures carry kitty images and true colour; it needs `just yi-term` built first.
-`--video` on that host also keeps the whole run as run.webp, cropped to the Ghostty window.
+`--video` keeps the whole run as motion: run.webp cropped to the Ghostty window on that host,
+run.gif rendered by agg on the headless one.
+A scene header `--stub <reply file> <tokens/s>` (file beside the scene) swaps the faux model for
+scripts/proof/stub_provider.py streaming that reply; such a scene needs `--host term`, and its
+`snap-now <name>` step grabs the screen at once, where `snap` waits for output to pause.
 
 What an agent reads, in order: the cell diff as text (exact), then 1:1 crops of each changed
 region before and after, then the whole frame. Pictures never gate anything.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -35,11 +44,19 @@ import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "scripts" / "proof" / "tui_see"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+SCENES = ROOT / "scripts" / "proof" / "tui_see"
+sys.path.insert(0, str(ROOT / "evals"))
+import record  # noqa: E402  the record-time scrub (§10) harvest must apply before a seed lands
 # Loud caps: a cut names what it kept, the cap and the call that gets the rest (045-loud-caps).
 MAX_REGIONS = 6
 MAX_CROP_PX = 1200
 MARGIN_ROWS, MARGIN_COLS = 2, 8
+
+
+def cap_notice(kept: int, total: int, unit: str, holder: str) -> str:
+    """The loud-cap row (045-loud-caps): what was kept of what total, the cap, and where the rest lives."""
+    return f"[… kept {kept} of {total} {unit} (cap {kept}); {holder}]"
 
 
 def header(scene: Path) -> tuple[str, list[str]]:
@@ -51,6 +68,16 @@ def header(scene: Path) -> tuple[str, list[str]]:
     return surface, words
 
 
+def take(args: list[str], flag: str, count: int) -> list[str]:
+    """Removes `flag` and the `count` words after it from `args`, returning those words."""
+    if flag not in args:
+        return []
+    at = args.index(flag)
+    taken = args[at + 1:at + 1 + count]
+    del args[at:at + 1 + count]
+    return taken
+
+
 def encoded(cwd: Path) -> str:
     return "--" + str(cwd).strip("/").replace("/", "-").replace(":", "-") + "--"
 
@@ -59,21 +86,42 @@ NAME = re.compile(r"^[a-z0-9_-]+$")
 FIXED_ID = "01a00000-0000-7000-8000-000000000000"
 
 
-def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
-        video: bool = False) -> Path:
-    surface, extra = header(scene)
-    if not NAME.fullmatch(label):
-        sys.exit(f"label {label!r} is not [a-z0-9_-]+")
-    run_dir = (out / scene.stem / label).resolve()
+def stage_seed(run_dir: Path, seed: Path) -> str:
+    """Copies the seed where the store finds it and keeps a pristine copy; returns its id."""
+    meta = json.loads(seed.read_text().splitlines()[0])
+    if not re.match(r"^[0-9a-f-]+$", str(meta.get("id", ""))):
+        sys.exit(f"--seed {seed}: its header id {meta.get('id')!r} cannot be resumed (scrubbed?)")
+    # The store finds a session by the `_<id>.jsonl` suffix of its file name.
+    name = f"{meta['createdAt']}_{meta['id']}.jsonl"
+    target = run_dir / "sessions" / encoded(Path.cwd().resolve()) / name
+    target.parent.mkdir(parents=True)
+    shutil.copy(seed, target)
+    (run_dir / "seed").mkdir()
+    shutil.copy(seed, run_dir / "seed" / name)
+    return meta["id"]
+
+
+def pristine_seed(run_dir: Path, session: str) -> Path:
+    """Incident: the Ghostty replay seeded from the session the headless drive had appended to,
+    so its pictures showed that run's exchange above the replayed one."""
+    return next((run_dir / "seed").glob(f"*_{session}.jsonl"))
+
+
+def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Path, *,
+         record: bool = True, timeout: int = 600,
+         stderr=None, stub: bool = False) -> tuple[int, list[str]]:
+    """Plays a scene headless in a fresh run dir; returns the exit code and the flags left over."""
     shutil.rmtree(run_dir, ignore_errors=True)
     for sub in ("frames", "sessions", "home/.yi"):
         (run_dir / sub).mkdir(parents=True)
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
     (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
-    env = {**os.environ, "HOME": str(run_dir / "home")}
+    # ctrl-g hands the draft to $EDITOR; a scene that replays must never open a real vi.
+    env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1",
+           "EDITOR": "true", "VISUAL": "true"}
     drive = ["--keys", str(scene.resolve()), "--frames", str(run_dir / "frames"),
-             "--record", str(run_dir / "run.cast")]
+             *(["--record", str(run_dir / "run.cast")] if record else [])]
     if "--seed" in extra and surface == "console":
         sys.exit("--seed is solo only: the console attaches to the daemon's sessions, not a resumed one")
     if surface == "solo" and "--seed" not in extra:
@@ -87,19 +135,13 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
         at = extra.index("--seed")
         seed = Path(extra[at + 1])
         del extra[at:at + 2]
-        meta = json.loads(seed.read_text().splitlines()[0])
-        if not re.match(r"^[0-9a-f-]+$", str(meta.get("id", ""))):
-            sys.exit(f"--seed {seed}: its header id {meta.get('id')!r} cannot be resumed (scrubbed?)")
-        # The store finds a session by the `_<id>.jsonl` suffix of its file name.
-        target = (run_dir / "sessions" / encoded(Path.cwd().resolve())
-                  / f"{meta['createdAt']}_{meta['id']}.jsonl")
-        target.parent.mkdir(parents=True)
-        shutil.copy(seed, target)
-        extra += ["--session", meta["id"]]
-    if surface == "solo":
+        extra += ["--session", stage_seed(run_dir, seed)]
+    if stub:
+        code = 0
+    elif surface == "solo":
         argv = [str(binary), "tui", "--headless", "--here", "--model", "faux/faux-1",
                 "--session-dir", str(run_dir / "sessions"), *drive, *extra]
-        code = subprocess.run(argv, env=env, timeout=600).returncode
+        code = subprocess.run(argv, env=env, timeout=timeout, stderr=stderr).returncode
     else:
         # A unix socket path is capped near 100 bytes, so it lives under the system temp dir.
         sock = Path(tempfile.mkdtemp(prefix="yi-see.")) / "d.sock"
@@ -114,7 +156,7 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                     break
                 time.sleep(0.05)
             argv = [str(binary), "console", "--headless", "--socket", str(sock), *drive, *extra]
-            code = subprocess.run(argv, env=env, timeout=600).returncode
+            code = subprocess.run(argv, env=env, timeout=timeout, stderr=stderr).returncode
         finally:
             serve.send_signal(signal.SIGTERM)
             try:
@@ -123,12 +165,37 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                 serve.kill()
             log.close()
             shutil.rmtree(sock.parent, ignore_errors=True)
+    return code, extra
+
+
+def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
+        video: bool = False) -> Path:
+    surface, extra = header(scene)
+    stub = take(extra, "--stub", 2)
+    if stub and host not in ("term", "here"):
+        sys.exit("--stub scenes stream from a live provider and are played in Ghostty: add --host term")
+    if not NAME.fullmatch(label):
+        sys.exit(f"label {label!r} is not [a-z0-9_-]+")
+    run_dir = (out / scene.stem / label).resolve()
+    code, extra = play(scene, surface, extra, run_dir, binary, stub=bool(stub))
     rendered = render(run_dir)
-    if video and host != "term":
-        print("[… --video records Ghostty's window, so it needs --host term; no run.webp kept]")
+    extra += ["--stub", *stub] if stub else []
+    if video and host == "mem":
+        gif = run_dir / "run.gif"
+        if shutil.which("agg") and agg(run_dir / "run.cast", gif, "--idle-time-limit", "1"):
+            print(f"video: {gif} (agg: no kitty images; --host term keeps them)")
+        else:
+            print("[… --video on the headless host renders with agg, which is not on PATH or "
+                  "wrote nothing; no run.gif kept]")
     if host == "term" and not code:
         code = term(scene, run_dir, surface, extra + (["--video"] if video else []))
-    snaps = sorted(p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.txt"))
+    if host == "here" and not code:
+        code = subprocess.run(["python3", str(ROOT / "scripts/tui_see.py"), "term-inner",
+                               str(scene.resolve()), surface, str(run_dir / "term"), str(binary),
+                               *extra, *(["--video"] if video else [])], timeout=900).returncode
+        collect(run_dir)
+    snaps = sorted({p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.*")
+                    if p.suffix in (".txt", ".png")})
     print(f"run: {run_dir} (exit {code})")
     print(f"snaps: {', '.join(snaps) or 'none: add `snap <name>` steps'}")
     if not rendered:
@@ -163,6 +230,48 @@ def newest_mtime(paths) -> float:
     return max(stamps, default=0.0)
 
 
+def words(rows: list[str]) -> list[str]:
+    """The words above the solo composer box: the orb's cells, the spinner, wrapping and the
+    status row's cwd differ between Ghostty and the headless screen, what was said does not. The
+    console has no such row and its key hints follow the terminal, so it yields none."""
+    top = next((i for i, row in enumerate(rows) if row.lstrip().startswith("╭")), 0)
+    return re.findall(r"\w+", " ".join(rows[:top]))
+
+
+def drift(run_dir: Path) -> list[str]:
+    """Each Ghostty snap's screen, as the proxy's emulator read it, against the headless frame of
+    the same name, which played the same scene: where their transcripts part."""
+    notes = []
+    for screen in sorted((run_dir / "term").glob("snap-*.screen")):
+        frame = run_dir / "frames" / f"{screen.stem}.txt"
+        if not frame.exists():
+            continue
+        want, got = words(screen_rows(frame)), words(screen.read_text().split("\n"))
+        shown = min(len(want), len(got))
+        # The orb's rows push more of Ghostty's transcript into scrollback: the tails must agree.
+        if want[len(want) - shown:] != got[len(got) - shown:]:
+            notes.append(f"[… snap {screen.stem.removeprefix('snap-')}: Ghostty's transcript ends "
+                         f"{' '.join(got[-6:])!r}, the headless one {' '.join(want[-6:])!r}; "
+                         f"compare {screen} with {frame}]")
+    return notes
+
+
+def collect(run_dir: Path) -> list[Path]:
+    """Ghostty's grabs replace agg's pictures in frames/; its notes, text drift and video are
+    surfaced."""
+    for note in sorted((run_dir / "term").glob("*.note")):
+        print(f"[… {note.stem}: {note.read_text()}; the grab may catch a frame mid-draw]")
+    for note in drift(run_dir):
+        print(note)
+    if (run_dir / "term" / "run.webp").exists():
+        shutil.copy(run_dir / "term" / "run.webp", run_dir / "run.webp")
+        print(f"video: {run_dir / 'run.webp'}")
+    pictures = sorted((run_dir / "term").glob("snap-*.png"))
+    for png in pictures:
+        shutil.copy(png, run_dir / "frames" / png.name)
+    return pictures
+
+
 def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
     """Plays the scene in Ghostty in the yi-term container; its grabs replace the agg pictures."""
     linux = ROOT / LINUX_YI
@@ -179,20 +288,13 @@ def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
     argv = ["docker", "run", "--rm", "--name", name, "--platform", platform,
             "-v", f"{ROOT}:/repo:ro", "-v", f"{run_dir}:/out", "-w", "/repo", IMAGE,
             "python3", "/repo/scripts/tui_see.py", "term-inner",
-            str(scene.resolve().relative_to(ROOT)), surface, *extra]
+            str(scene.resolve().relative_to(ROOT)), surface, "/out/term", f"/repo/{LINUX_YI}", *extra]
     try:
         code = subprocess.run(argv, timeout=900).returncode
     except subprocess.TimeoutExpired:
         subprocess.run(["docker", "kill", name], capture_output=True)
         code = 124
-    for note in sorted((run_dir / "term").glob("*.note")):
-        print(f"[… {note.stem}: {note.read_text()}; the grab may catch a frame mid-draw]")
-    if (run_dir / "term" / "run.webp").exists():
-        shutil.copy(run_dir / "term" / "run.webp", run_dir / "run.webp")
-        print(f"video: {run_dir / 'run.webp'}")
-    pictures = sorted((run_dir / "term").glob("snap-*.png"))
-    for png in pictures:
-        shutil.copy(png, run_dir / "frames" / png.name)
+    pictures = collect(run_dir)
     if code:
         print(f"[… term host failed (exit {code}); kept {len(pictures)} Ghostty grabs, the rest "
               f"of the pictures are agg's: {run_dir / 'term'}]")
@@ -241,9 +343,42 @@ def key_bytes(spec: str, cmd: bool = False) -> bytes:
     return (("\x1b" if "alt" in mods else "") + key).encode()
 
 
-def term_inner(scene: str, surface: str, extra: list[str]) -> None:
-    """Inside the container: Xvfb, then Ghostty running the real binary behind `proxy`."""
-    out = Path("/out/term")
+STUB_MODEL = "openrouter/local-slow"
+PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+
+
+def start_stub(reply: Path, rate: str, home: Path, env: dict[str, str]) -> subprocess.Popen:
+    """Streams `reply` at `rate` tokens a second from a local OpenAI-style endpoint, registered in
+    `home`'s catalog as STUB_MODEL, and points `env` at it with no proxy in the way."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    stub = subprocess.Popen([sys.executable, str(Path(__file__).with_name("proof") / "stub_provider.py"),
+                             str(port), str(reply), rate], stderr=open(home.parent / "stub.log", "w"))
+    model = {"id": "local-slow", "name": "Local Slow", "api": "openai-completions",
+             "provider": "openrouter", "baseUrl": f"http://127.0.0.1:{port}/v1", "reasoning": False,
+             "input": ["text"], "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+             "contextWindow": 128000, "maxTokens": 8000}
+    (home / ".yi/catalog").mkdir(parents=True)
+    (home / ".yi/catalog/openrouter.json").write_text(
+        json.dumps({"openai-completions": {"local-slow": model}}))
+    env.update(OPENROUTER_API_KEY="stub", NO_PROXY="*", no_proxy="*")
+    for var in PROXY_VARS:
+        env.pop(var, None)
+
+    def listening() -> bool:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            return True
+        except OSError:
+            return False
+    if not wait_for(listening, 10):
+        sys.exit("term: the stub provider did not listen")
+    return stub
+
+
+def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -> None:
+    """Inside the yi-term image: Xvfb, then Ghostty running the real binary behind `proxy`."""
     shutil.rmtree(out, ignore_errors=True)
     (out / "home/.yi").mkdir(parents=True)
     (out / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
@@ -254,53 +389,73 @@ def term_inner(scene: str, surface: str, extra: list[str]) -> None:
         at = extra.index("--size")
         cols, rows = extra[at + 1].split("x")
         del extra[at:at + 2]
+    stub = take(extra, "--stub", 2)
+    # Incident: a turn's checkpoint snapshots the cwd, and in the mounted repo (gigabytes of
+    # target/) a faux turn took 20 s to minutes to go idle, so an exact `wait-idle` timed out.
+    work = Path("/tmp/yi-scene")
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir()
+    scene = str(Path(scene).resolve())
+    if "--faux" in extra:
+        at = extra.index("--faux") + 1
+        extra[at] = str(Path(extra[at]).resolve())
     if "--session" in extra:
-        seed = next(Path("/out/sessions").glob(f"*/*_{extra[extra.index('--session') + 1]}.jsonl"))
-        (out / "sessions" / encoded(Path("/repo"))).mkdir(parents=True)
-        shutil.copy(seed, out / "sessions" / encoded(Path("/repo")) / seed.name)
-    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": ":99"}
-    display = subprocess.Popen(["Xvfb", ":99", "-screen", "0", f"{SCREEN}x24"],
+        seed = pristine_seed(out.parent, extra[extra.index("--session") + 1])
+        (out / "sessions" / encoded(work)).mkdir(parents=True)
+        shutil.copy(seed, out / "sessions" / encoded(work) / seed.name)
+    # One job plays many scenes: a server that exited leaves its lock, so each run takes a free one.
+    number = next(n for n in range(99, 400) if not Path(f"/tmp/.X{n}-lock").exists())
+    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}", "YI_FIXED_IDS": "1"}
+    display = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", f"{SCREEN}x24"],
                                stderr=subprocess.DEVNULL)
-    if not wait_for(lambda: Path("/tmp/.X11-unix/X99").exists(), 10):
-        sys.exit("term: Xvfb did not start")
-    yi = f"/repo/{LINUX_YI}"
-    serve = None
-    if surface == "solo":
-        argv = [yi, "tui", "--here", "--model", "faux/faux-1", "--session-dir",
-                str(out / "sessions"), *extra]
-    else:
-        sock = "/tmp/yi-term.sock"
-        serve = subprocess.Popen([yi, "serve", "--socket", sock, "--model", "faux/faux-1",
-                                  "--session-dir", str(out / "sessions")], env=env,
-                                 stderr=open(out / "serve.log", "w"))
-        if not wait_for(lambda: Path(sock).exists() or serve.poll() is not None, 10) \
-                or serve.poll() is not None:
-            sys.exit(f"term: yi serve did not listen; see {out / 'serve.log'}")
-        argv = [yi, "console", "--socket", sock, *extra]
-    recorder = None
-    if video:
-        recorder = subprocess.Popen(
-            ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "0",
-             "-framerate", "10", "-video_size", SCREEN, "-i", ":99", "-c:v", "libx264",
-             "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out / "screen.mp4")],
-            stdin=subprocess.PIPE)
-    ghostty = subprocess.Popen(
-        ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
-         "--font-family=JetBrains Mono", f"--window-width={cols}", f"--window-height={rows}",
-         "--background-opacity=1", "--confirm-close-surface=false", "-e", "python3",
-         str(ROOT / "scripts/tui_see.py"), "proxy", scene, str(out), "--", *argv],
-        env=env, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
-    wait_for(lambda: (out / "done").exists() or ghostty.poll() is not None, 600)
-    if recorder is not None:
-        try:
-            recorder.communicate(b"q", timeout=30)
-            encode_video(out)
-        except (subprocess.SubprocessError, OSError) as error:
-            recorder.kill()
-            (out / "video.note").write_text(f"the run was not kept as video: {error}")
-    for proc in (ghostty, serve, display):
-        if proc is not None:
+    procs = [display]
+    model = STUB_MODEL if stub else "faux/faux-1"
+    try:
+        if not wait_for(lambda: Path(f"/tmp/.X11-unix/X{number}").exists(), 10):
+            sys.exit("term: Xvfb did not start")
+        if stub:
+            procs.append(start_stub(Path(scene).parent / stub[0], stub[1], out / "home", env))
+        if surface == "solo":
+            argv = [yi, "tui", "--here", "--model", model, "--session-dir",
+                    str(out / "sessions"), *extra]
+        else:
+            # Incident: the `here` host plays base and head in one container, and the killed base
+            # serve left a shared socket the head console reached before the new serve listened.
+            sock = str(Path(tempfile.mkdtemp(prefix="yi-term.")) / "d.sock")
+            serve = subprocess.Popen([yi, "serve", "--socket", sock, "--model", model,
+                                      "--session-dir", str(out / "sessions")], env=env, cwd=work,
+                                     stderr=open(out / "serve.log", "w"))
+            procs.append(serve)
+            if not wait_for(lambda: Path(sock).exists() or serve.poll() is not None, 10) \
+                    or serve.poll() is not None:
+                sys.exit(f"term: yi serve did not listen; see {out / 'serve.log'}")
+            argv = [yi, "console", "--socket", sock, *extra]
+        recorder = None
+        if video:
+            recorder = subprocess.Popen(
+                ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "0",
+                 "-framerate", "10", "-video_size", SCREEN, "-i", env["DISPLAY"], "-c:v", "libx264",
+                 "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out / "screen.mp4")],
+                stdin=subprocess.PIPE)
+            procs.append(recorder)
+        ghostty = subprocess.Popen(
+            ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
+             "--font-family=Noto Mono", f"--window-width={cols}", f"--window-height={rows}",
+             "--background-opacity=1", "--confirm-close-surface=false", "-e", "python3",
+             str(ROOT / "scripts/tui_see.py"), "proxy", scene, str(out), "--", *argv],
+            env=env, cwd=work, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
+        procs.append(ghostty)
+        wait_for(lambda: (out / "done").exists() or ghostty.poll() is not None, 600)
+        if recorder is not None:
+            try:
+                recorder.communicate(b"q", timeout=30)
+                encode_video(out)
+            except (subprocess.SubprocessError, OSError) as error:
+                (out / "video.note").write_text(f"the run was not kept as video: {error}")
+    finally:
+        for proc in reversed(procs):
             proc.kill()
+            proc.wait()
     done = (out / "done").read_text() if (out / "done").exists() else "no done marker"
     print(f"term: {done}")
     sys.exit(0 if done == "ok" else 1)
@@ -331,14 +486,14 @@ def wait_for(ready, seconds: float) -> bool:
 def grab(path: Path, box: list[str]) -> None:
     """One keyframe of the Ghostty window: the screen cropped to the box found on the first grab."""
     base = ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "0",
-            "-video_size", SCREEN, "-i", ":99"]
+            "-video_size", SCREEN, "-i", os.environ.get("DISPLAY", ":99")]
     deadline = time.monotonic() + 60
     probe = None
     while not box and time.monotonic() < deadline:
         # cropdetect skips 2 frames by default, and its limit is absolute above 1: the root
         # window is black, Ghostty's background is not.
         probe = subprocess.run(["ffmpeg", "-f", "x11grab", "-draw_mouse", "0", "-video_size",
-                                SCREEN, "-i", ":99", "-frames:v", "3", "-vf",
+                                SCREEN, "-i", os.environ.get("DISPLAY", ":99"), "-frames:v", "3", "-vf",
                                 "cropdetect=limit=8:round=2:reset=0:skip=0", "-f", "null", "-"],
                                capture_output=True, text=True)
         box += re.findall(r"crop=(\d+:\d+:\d+:\d+)", probe.stderr)[-1:]
@@ -369,18 +524,55 @@ class ApcFilter:
         return data
 
 
+TIMING = ("tick", "hold", "release", "wait-idle")
+
+
+def steps(scene: Path) -> list[str]:
+    """The scene's step lines as the proxy plays them: `snap-strip` spelled out as the drive
+    parses it, and a frozen scene opened with `tick 0`, as any tick freezes a headless run."""
+    lines = [line.strip() for line in scene.read_text().splitlines()]
+    lines = [line for line in lines if line and not line.startswith("#")]
+    played = ["tick 0"] if any(line.split(" ", 1)[0] in ("tick", "snap-strip") for line in lines) else []
+    for line in lines:
+        word, _, rest = line.partition(" ")
+        if word != "snap-strip":
+            played.append(line)
+            continue
+        name, count, ms = rest.split()
+        for frame in range(int(count)):
+            if frame:
+                played.append(f"tick {ms}")
+            played.append(f"snap {name}-{frame:02}")
+    return played
+
+
 def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     """Runs inside Ghostty: the binary in a pty, Ghostty's bytes passed both ways, the scene's
-    steps sent as key bytes, `wait-frame` read off a pyte screen fed the same bytes, and a grab
+    keys sent as key bytes and its timing steps over the binary's `--control` socket, which
+    answers each once played, `wait-frame` read off a pyte screen fed the same bytes, and a grab
     at each `snap` once the output has been quiet."""
     import fcntl
     import pty
     import select
+    import socket
     import termios
     import tty
 
     import pyte
 
+    # A unix socket path is capped near 100 bytes, so it lives under the system temp dir.
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(Path(tempfile.mkdtemp(prefix="yi-ctl.")) / "c.sock"))
+    listener.listen(1)
+    listener.settimeout(30)
+    argv = [*argv, "--control", listener.getsockname()]
+    extra = header(scene)[1]
+    asked = extra[extra.index("--size") + 1] if "--size" in extra else "80x24"
+    # Incident: Ghostty starts this process at a smaller grid and then grows to the one asked for;
+    # a child sized before that drew an 80x18 scene at 79x17.
+    if not wait_for(lambda: "{1}x{0}".format(*struct.unpack(
+            "HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))[:2]) == asked, 10):
+        (out / "size.note").write_text(f"Ghostty never reached the scene's {asked} grid")
     pid, fd = pty.fork()
     if pid == 0:
         os.execvp(argv[0], argv)
@@ -388,19 +580,43 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     saved = termios.tcgetattr(0)
     tty.setraw(0)
     rows, cols = struct.unpack("HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))[:2]
-    screen = pyte.Screen(cols, rows)
-    stream = pyte.ByteStream(screen)
+    class Screen(pyte.Screen):
+        """Incident: pyte has no SU or SD (CSI S, CSI T), which the inline viewport scrolls its
+        region with, so after the first commit the rows a wait read were not Ghostty's."""
+
+        def scroll(self, count, down):
+            top, bottom = self.margins or pyte.screens.Margins(0, self.lines - 1)
+            rows = list(range(top, bottom + 1))
+            for _ in range(count or 1):
+                old = [self.buffer[y] for y in rows]
+                moved = zip(rows[1:], old[:-1]) if down else zip(rows[:-1], old[1:])
+                for y, line in moved:
+                    self.buffer[y] = line
+                self.buffer.pop(top if down else bottom, None)
+            self.dirty.update(range(self.lines))
+
+        def scroll_up(self, count=1, *_, **__):
+            self.scroll(count, False)
+
+        def scroll_down(self, count=1, *_, **__):
+            self.scroll(count, True)
+
+    class Stream(pyte.ByteStream):
+        csi = {**pyte.ByteStream.csi, "S": "scroll_up", "T": "scroll_down"}
+
+    screen = Screen(cols, rows)
+    stream = Stream(screen)
     apc = ApcFilter()
     cast = open(out / "run.cast", "w")
     cast.write(json.dumps({"version": 2, "width": cols, "height": rows}) + "\n")
-    began = last = calm = time.monotonic()
-    shape = ""
-    moved: list[list[int]] = []
+    began = last = time.monotonic()
     box: list[str] = []
     alive = True
+    control = None
+    answer = b""
 
     def pump(seconds: float, until=lambda: False) -> bool:
-        nonlocal last, calm, shape, alive
+        nonlocal last, alive
         stop = time.monotonic() + seconds
         while alive and time.monotonic() < stop:
             if until():
@@ -416,12 +632,6 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
                     break
                 os.write(1, data)
                 stream.feed(apc.feed(data))
-                # Ages and counters tick every second while idle; a change to anything else is work.
-                now_shape = re.sub(r"\d", "0", "\n".join(screen.display))
-                if now_shape != shape:
-                    moved.append([row for row, (was, now) in enumerate(
-                        zip(shape.split("\n"), now_shape.split("\n"))) if was != now])
-                    shape, calm = now_shape, time.monotonic()
                 cast.write(json.dumps([round(time.monotonic() - began, 6), "o",
                                        data.decode("utf-8", "replace")]) + "\n")
                 last = time.monotonic()
@@ -432,18 +642,36 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     def shown(needle: str) -> bool:
         return any(needle in row for row in screen.display)
 
+    def answered() -> bool:
+        nonlocal answer
+        try:
+            answer += control.recv(4096)
+        except BlockingIOError:
+            pass
+        return answer.endswith(b"\n")
+
     status = "ok"
     type_ms = 0
     # The binary must be drawing before keys arrive, or the tty's cooked mode eats them.
     if not pump(30, lambda: last > began):
         status = "the binary drew nothing within 30 s"
-    for line in scene.read_text().splitlines() if status == "ok" else []:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+    else:
+        # The binary connects before it takes the screen, so the connection is already queued.
+        control = listener.accept()[0]
+        control.setblocking(False)
+    for line in steps(scene) if status == "ok" else []:
         word, _, rest = line.partition(" ")
-        sent = last
-        if word == "key":
+        if word in TIMING:
+            answer = b""
+            control.sendall(line.encode() + b"\n")
+            # The binary times a wait out itself; this bound is for a binary that stopped answering.
+            limit = (int(rest) if word == "wait-idle" else 0) / 1000 + 30
+            if not pump(limit, answered):
+                status = f"{line}: no answer from the binary within {limit:.0f} s"
+            elif answer != b"ok\n":
+                status = f"{line}: {answer.decode(errors='replace').strip()}"
+                (out / "screen.txt").write_text("\n".join(screen.display))
+        elif word == "key":
             os.write(fd, key_bytes(rest))
             pump(0.05)
         elif word.startswith("cmd-"):
@@ -457,12 +685,6 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
             type_ms = int(rest)
         elif word == "wait":
             pump(int(rest) / 1000)
-        elif word == "wait-idle":
-            # The real binary's turn state is not visible here: a screen that changed after the step
-            # and then held still for a second, digits aside, stands in for it.
-            if not pump(int(rest) / 1000, lambda: calm > sent and time.monotonic() - calm >= 1.0):
-                status = f"wait-idle {rest} ms timed out; rows still changing: {moved[-5:]}"
-                (out / "screen.txt").write_text("\n".join(screen.display))
         elif word == "wait-frame":
             ms, _, needle = rest.partition(" ")
             gone = needle.startswith("!")
@@ -470,10 +692,13 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
             if not pump(int(ms) / 1000, lambda: shown(needle) != gone):
                 status = f"wait-frame {rest!r} timed out; the screen it saw: {out / 'screen.txt'}"
                 (out / "screen.txt").write_text("\n".join(screen.display))
+        elif word == "snap-now":
+            grab(out / f"snap-{rest}.png", box)
         elif word == "snap":
             if not pump(5, lambda: time.monotonic() - last >= 0.3):
                 (out / f"snap-{rest}.note").write_text("output never paused for 0.3 s within 5 s")
             grab(out / f"snap-{rest}.png", box)
+            (out / f"snap-{rest}.screen").write_text("\n".join(screen.display))
         elif word == "quit":
             break
         else:
@@ -488,13 +713,21 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     (out / "done").write_text(status)
 
 
+def agg(cast: Path, gif: Path, *flags: str) -> bool:
+    """One pinned renderer for stills and motion, so every proof looks alike across machines.
+    Incident: agg can exit 0 and write an empty file, so a render checks its bytes."""
+    done = subprocess.run(["agg", "--theme", "monokai", "--font-size", "16", *flags, str(cast),
+                           str(gif)], capture_output=True)
+    return done.returncode == 0 and gif.exists() and gif.stat().st_size > 0
+
+
 def render(run_dir: Path) -> bool:
     if not (shutil.which("agg") and shutil.which("ffmpeg")):
         return False
     for cast in (run_dir / "frames").glob("snap-*.cast"):
         gif = cast.with_suffix(".gif")
-        subprocess.run(["agg", "--theme", "monokai", "--font-size", "16", str(cast), str(gif)],
-                       check=True, capture_output=True)
+        if not agg(cast, gif):
+            raise subprocess.CalledProcessError(1, ["agg", str(cast)])
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(gif), "-frames:v", "1",
                         str(cast.with_suffix(".png"))], check=True)
         gif.unlink()
@@ -664,8 +897,7 @@ def diff(a: Path, b: Path) -> Path:
         boxes = regions(changed)
         out.append(f"{len(boxes)} changed region(s)")
         if len(boxes) > MAX_REGIONS:
-            out.append(f"[… kept {MAX_REGIONS} of {len(boxes)} changed regions (cap {MAX_REGIONS}) "
-                       f"— the full frames below hold the rest]")
+            out.append(cap_notice(MAX_REGIONS, len(boxes), "changed regions", "the full frames below hold the rest"))
         png_a, png_b = a / "frames" / f"{stem}.png", b / "frames" / f"{stem}.png"
         if png_a.exists() and png_b.exists():
             rows, cols = len(after), len(after[0])
@@ -695,7 +927,7 @@ PAGE_CAP = 15_000_000
 
 def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
     """Every scene under `root`, each snap with its labels side by side and the cell diff a head
-    run keeps against its base: one self-contained page (pictures inlined) to publish."""
+    run keeps against its base: one self-contained page (pictures inlined)."""
     import base64
     import html
 
@@ -754,8 +986,8 @@ def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
     if skipped:
         print(f"[… {len(skipped)} scene(s) have no snaps and are not on the page: {', '.join(skipped)}]")
     if len(body) > PAGE_CAP:
-        print(f"[… the page is {len(body) / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB an artifact "
-              "takes; gallery a narrower root to publish it]")
+        print(f"[… the page is {len(body) / 1e6:.1f} MB, past the {PAGE_CAP / 1e6:.0f} MB page cap "
+              "(PAGE_CAP); gallery a narrower root for a smaller one]")
     print(f"gallery: {page} ({len(body) / 1e6:.1f} MB)")
     return page
 
@@ -831,9 +1063,134 @@ def watch(scene: Path, host: str) -> None:
             gallery(out, out / "gallery.html")
 
 
+MASK = "[MASKED]"
+VIEWS = ("end", "tool", "long")
+
+
+def resumable(rows: list[dict]) -> list[dict]:
+    """The scrub (evals/record.py) masks the header id and most entry ids, which `--seed` refuses:
+    duplicate ids, then a parent that is not the lane leaf. Masked ids become the row's seq in
+    hex and masked parents the previous entry; the header id is derived from the content."""
+    digest = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+    if rows[0].get("id") == MASK:
+        rows[0]["id"] = f"01a0{digest[:4]}-{digest[4:8]}-7{digest[8:11]}-8{digest[11:14]}-{digest[14:26]}"
+    leaf = None
+    for row in rows[1:]:
+        if row.get("id") == MASK:
+            row["id"] = f"{row['seq']:08x}"
+        if row.get("parentId") == MASK:
+            row["parentId"] = leaf
+        if row.get("kind") == "entry":
+            leaf = row["id"]
+    return rows
+
+
+def text_of(message: dict) -> str:
+    content = message["content"]
+    if isinstance(content, str):
+        return content
+    return "".join(block.get("text", "") for block in content if block.get("type") == "text")
+
+
+def cut(rows: list[dict], view: str) -> int | None:
+    """How many rows a view keeps: all of them, through the largest tool result, or through the
+    longest reply; the last two run on past their pick to the next turn so no call is left open.
+    None when the session has no row of the view's kind."""
+    picks = [(i, row["message"]) for i, row in enumerate(rows) if row.get("type") == "message"]
+    if view == "end":
+        return len(rows)
+    if view == "tool":
+        candidates = [i for i, m in picks if m["role"] == "toolResult"]
+    else:
+        candidates = [i for i, m in picks if m["role"] == "assistant"]
+    if not candidates:
+        return None
+    key = (lambda i: len(json.dumps(rows[i]))) if view == "tool" \
+        else (lambda i: len(text_of(rows[i]["message"])))
+    pick = max(candidates, key=key)
+    end = pick + 1
+    while end < len(rows) and (rows[end].get("message") or {}).get("role") not in ("user", "assistant"):
+        end += 1
+    return end
+
+
+def continuation(rows: list[dict]) -> tuple[str, dict, str] | None:
+    """The last typed prompt and the last reply that has text, as the faux cassette line that
+    answers it; None when the session has either missing. Skipped prompts: ones the scrub left
+    fully "[MASKED]", and Yi's own subagent notifications (the "[subagent …]" shape the runtime
+    inserts as user rows); a real prompt that starts with '[' is kept. Line breaks flatten to
+    spaces, which the drive's one-step-per-line grammar cannot carry, and the note says when."""
+    messages = [row["message"] for row in rows if row.get("type") == "message"]
+    def typed(text: str) -> bool:
+        return bool(text.replace(MASK, "").strip()) and not text.startswith("[subagent ")
+    prompts = [text_of(m) for m in messages if m["role"] == "user" and typed(text_of(m))]
+    replies = [m for m in messages if m["role"] == "assistant" and text_of(m)]
+    if not prompts or not replies:
+        return None
+    reply = {key: replies[-1][key] for key in ("role", "api", "provider", "model", "usage",
+                                              "stopReason", "timestamp") if key in replies[-1]}
+    reply["content"] = [{"type": "text", "text": text_of(replies[-1])}]
+    prompt = prompts[-1]
+    note = ""
+    if re.search(r"\r\n?|\n", prompt):
+        prompt = re.sub(r"\r\n?|\n", " ", prompt)
+        note = ("the recorded prompt had line breaks, flattened to spaces: the drive grammar"
+                " carries one step per line")
+    return prompt, reply, note
+
+
+def harvest(session: Path, name: str, views: tuple[str, ...], size: str,
+            out: Path = SCENES) -> list[Path]:
+    """Writes a session as scenes: per view a seed cut at that view's end and a drive that snaps
+    it; the `end` view then types the last prompt and plays the recorded reply as a cassette.
+    Seed content goes through record.py's scrub, the redaction a recorded session already carries,
+    so a seed from an unscrubbed input still lands masked."""
+    if not NAME.fullmatch(name):
+        sys.exit(f"name {name!r} is not [a-z0-9_-]+")
+    raw = [record.scrub_values(json.loads(line)) for line in session.read_text().splitlines()]
+    if raw[0].get("id") != MASK:
+        print(f"[… {session.name} was not record.py-scrubbed: seed content is redacted]")
+    rows = resumable(raw)
+    where = out.relative_to(ROOT) if out.is_relative_to(ROOT) else out
+    written, cuts = [], {}
+    for view in views:
+        kept = cut(rows, view)
+        if kept is None:
+            print(f"[… view {view} has no {'toolResult' if view == 'tool' else 'reply'} row:"
+                  " no scene written]")
+            continue
+        if kept in cuts:
+            print(f"[… view {view} cuts where {cuts[kept]} does: no scene written]")
+            continue
+        stem = f"harvest-{name}-{view}"
+        flags = f"--size {size} --seed {where}/{stem}.jsonl"
+        steps = ["wait-frame 5000 faux-1", f"snap {view}"]
+        flat = ""
+        again = continuation(rows) if view == "end" else None
+        if again:
+            prompt, reply, flat = again
+            (out / f"{stem}.reply.jsonl").write_text(json.dumps(reply) + "\n")
+            flags += f" --faux {where}/{stem}.reply.jsonl"
+            # Incident: a turn's elapsed seconds read the wall clock and flipped between two runs;
+            # a `tick` freezes it, and the reveal then moves only on ticks, so the scene waits on
+            # the spinner coming and going rather than on a duration.
+            steps += [f"type {prompt}", "key enter", "wait-frame 10000 Composing", "tick 30000",
+                      "wait-idle 30000", "wait-frame 10000 !Composing", "snap continued"]
+        (out / f"{stem}.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows[:kept]))
+        (out / f"{stem}.drive").write_text(
+            f"#! solo {flags}\n# Harvested from {session.name} by `tui_see.py harvest`: view {view}.\n"
+            + (f"# {flat}\n" if flat else "")
+            + "\n".join(steps + ["quit"]) + "\n")
+        written.append(out / f"{stem}.drive")
+        if kept < len(rows):
+            print(cap_notice(kept, len(rows), "rows", f"{session.name} holds the whole session"))
+    print("scenes: " + ", ".join(str(where / p.name) for p in written))
+    return written
+
+
 def selfcheck() -> None:
     """Fixtures are real snaps from `yi tui --headless`; their `.txt` comes from the Rust side."""
-    runs = [FIXTURES / "empty", FIXTURES / "typed"]
+    runs = [SCENES / "empty", SCENES / "typed"]
     for run_dir in runs:
         for cast in (run_dir / "frames").glob("snap-*.cast"):
             want = screen_rows(cast.with_suffix(".txt"))
@@ -869,6 +1226,9 @@ def selfcheck() -> None:
                             ("f2", False, b"\x1bOQ"), ("pageup", False, b"\x1b[5~"),
                             ("b", True, b"\x1b[98;9u"), ("shift-p", True, b"\x1b[112;10u")]:
         assert key_bytes(spec, cmd) == want, f"{spec}: {key_bytes(spec, cmd)!r}"
+    words = ["--size", "80x24", "--stub", "a.txt", "90", "--seed", "s"]
+    assert take(words, "--stub", 2) == ["a.txt", "90"] and words == ["--size", "80x24", "--seed", "s"]
+    assert take(words, "--stub", 2) == [] and len(words) == 4, "an absent flag took nothing"
     for refused in ("ctrl-1", "hyper-x", "f13"):
         try:
             key_bytes(refused)
@@ -888,17 +1248,132 @@ def selfcheck() -> None:
     apc = ApcFilter()
     fed = apc.feed(b"left \x1b_Ga=p,i=8003;AAAA") + apc.feed(b"BBBB\x1b") + apc.feed(b"\\ right\x1b")
     assert fed + apc.feed(b"[0m") == b"left  right\x1b[0m", fed
+    # Recorded on the term host: the orb's rows scrolled more of Ghostty's transcript away and its
+    # status row names another cwd, yet the words agree; a screen from another moment is named.
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(SCENES / "reveal-ghostty", tmp, dirs_exist_ok=True)
+        assert drift(Path(tmp)) == [], drift(Path(tmp))
+        shutil.copy(Path(tmp) / "term/snap-held.screen", Path(tmp) / "term/snap-done.screen")
+        notes = drift(Path(tmp))
+        assert len(notes) == 1 and notes[0].startswith("[… snap done: "), notes
+    # The proxy opens a frozen scene with a frozen clock and spells a strip as the drive parses it.
+    played = steps(SCENES / "reveal.drive")
+    assert played.count("tick 0") == 1 and played[0] == "tick 0", played
+    strip = played.index("snap reveal-00")
+    assert played[strip:strip + 5] == ["snap reveal-00", "tick 160", "snap reveal-01", "tick 160",
+                                       "snap reveal-02"], played
+    assert "tick 0" not in steps(SCENES / "typed.drive")
+    # The Ghostty replay starts from the seed as staged, whatever the headless drive appended.
+    with tempfile.TemporaryDirectory() as tmp:
+        seed = Path(tmp) / "s.jsonl"
+        seed.write_text(json.dumps({"kind": "header", "version": 4, "id": FIXED_ID,
+                                    "createdAt": 1790000000000, "cwd": tmp}) + "\n")
+        session = stage_seed(Path(tmp) / "run", seed)
+        grown = next((Path(tmp) / "run" / "sessions").glob(f"*/*_{session}.jsonl"))
+        grown.write_text(grown.read_text() + '{"kind":"message"}\n')
+        assert pristine_seed(Path(tmp) / "run", session).read_text() == seed.read_text()
+    # A scrubbed session harvests into seeds the store accepts: unique ids, each entry's parent
+    # the entry before it (its records carry no parent), and each view cut where it says.
+    fixture = ROOT / "crates/tui/tests/fixtures/sessions/01a0648f.jsonl"
+    with tempfile.TemporaryDirectory() as tmp:
+        scenes = harvest(fixture, "x", VIEWS, "80x24", Path(tmp))
+        assert [p.name for p in scenes] == [f"harvest-x-{v}.drive" for v in VIEWS], scenes
+        seeds = {v: [json.loads(line) for line in (Path(tmp) / f"harvest-x-{v}.jsonl").read_text().splitlines()]
+                 for v in VIEWS}
+        for view, rows in seeds.items():
+            assert re.fullmatch(r"[0-9a-f-]+", rows[0]["id"]), f"{view}: header id {rows[0]['id']}"
+            ids = [row["id"] for row in rows[1:]]
+            assert len(set(ids)) == len(ids) and MASK not in ids, f"{view}: duplicate or masked ids"
+            leaf = None
+            for row in rows[1:]:
+                if row["kind"] == "entry":
+                    assert row["parentId"] == leaf, f"{view} seq {row['seq']}: parent {row['parentId']}"
+                    leaf = row["id"]
+        original = [json.loads(line) for line in fixture.read_text().splitlines()]
+        assert original[0]["id"] == MASK and len(seeds["end"]) == len(original), "end keeps every row"
+        results = [r for r in original if r.get("message", {}).get("role") == "toolResult"]
+        shown = [r for r in seeds["tool"] if r.get("message", {}).get("role") == "toolResult"][-1]
+        assert shown["message"] == max(results, key=lambda r: len(json.dumps(r)))["message"], "tool view"
+        replies = [r["message"] for r in original if r.get("message", {}).get("role") == "assistant"]
+        last = [r["message"] for r in seeds["long"] if r.get("message", {}).get("role") == "assistant"][-1]
+        assert len(text_of(last)) == max(len(text_of(m)) for m in replies), "long view ends on the longest reply"
+        surface, flags = header(scenes[0])
+        cassette = Path(flags[flags.index("--faux") + 1])
+        reply = json.loads(cassette.read_text())
+        assert surface == "solo" and Path(flags[flags.index("--seed") + 1]).exists(), flags
+        assert reply["content"][0]["text"].startswith("Tooling works. Results:"), reply
+        assert all("--faux" not in header(p)[1] for p in scenes[1:]), "only the end view continues"
+    import contextlib, io
+
+    def recorded(tmp: Path, name: str, messages: list[dict]) -> Path:
+        path = Path(tmp) / name
+        rows = [{"kind": "header", "version": 4, "id": MASK, "createdAt": 1790000000000, "cwd": "."}]
+        rows += [{"kind": "entry", "type": "message", "id": MASK, "parentId": MASK, "seq": n,
+                  "message": m} for n, m in enumerate(messages, 1)]
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return path
+    with tempfile.TemporaryDirectory() as tmp:
+        chat = recorded(tmp, "chat.jsonl", [{"role": "user", "content": "hi"},
+                                            {"role": "assistant", "content": "hello"}])
+        with contextlib.redirect_stdout(io.StringIO()) as seen:
+            assert harvest(chat, "y", ("tool",), "80x24", Path(tmp)) == [], "chat-only: no tool scene"
+        assert "no scene written" in seen.getvalue(), seen.getvalue()
+        spoken = recorded(tmp, "spoken.jsonl", [{"role": "user", "content": "hi"}])
+        with contextlib.redirect_stdout(io.StringIO()) as seen:
+            assert harvest(spoken, "y", ("long",), "80x24", Path(tmp)) == [], "no reply: no long scene"
+        assert "no scene written" in seen.getvalue(), seen.getvalue()
+        bracket = recorded(tmp, "bracket.jsonl", [
+            {"role": "user", "content": "[review notes]\nkeep  the  spacing"},
+            {"role": "assistant", "content": "on it"},
+        ])
+        harvest(bracket, "b", ("end",), "80x24", Path(tmp))
+        drive = (Path(tmp) / "harvest-b-end.drive").read_text()
+        assert "type [review notes] keep  the  spacing\n" in drive, drive
+        assert "line breaks" in drive, drive
+        secret = recorded(tmp, "secret.jsonl", [
+            {"role": "user", "content": "run the tool"},
+            {"role": "toolResult", "toolCallId": "call_x", "toolName": "bash",
+             "content": "api_key = hunter2supersecret\n"},
+            {"role": "assistant", "content": "done"},
+        ])
+        harvest(secret, "z", ("end",), "80x24", Path(tmp))
+        seed = (Path(tmp) / "harvest-z-end.jsonl").read_text()
+        assert "hunter2supersecret" not in seed and MASK in seed, seed
+    keep_harvest = globals()["harvest"]
+    try:
+        globals()["harvest"] = lambda *args, **kw: (_ for _ in ()).throw(RuntimeError("harvest ran"))
+        try:
+            main(["harvest", str(fixture)])
+        except SystemExit as exit_code:
+            assert "--view is required" in str(exit_code), exit_code
+        else:
+            raise AssertionError("harvest without --view ran all views")
+    finally:
+        globals()["harvest"] = keep_harvest
     print("tui_see selfcheck: ok")
 
 
 def main(argv: list[str]) -> None:
     if argv[:1] == ["--selfcheck"]:
         return selfcheck()
+    if argv[:1] == ["monkey"]:
+        import tui_monkey
+        return tui_monkey.monkey(argv[1:])
     if argv[:1] == ["diff"] and len(argv) == 3:
         diff(Path(argv[1]).resolve(), Path(argv[2]).resolve())
         return None
     if argv[:1] == ["term-inner"]:
-        return term_inner(argv[1], argv[2], argv[3:])
+        return term_inner(argv[1], argv[2], Path(argv[3]), argv[4], argv[5:])
+    if argv[:1] == ["harvest"] and len(argv) >= 2:
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        unknown = set(opts) - {"--name", "--view", "--size"}
+        if unknown or len(argv[2:]) % 2 or "--view" not in opts or opts["--view"] not in VIEWS:
+            sys.exit(f"harvest: unknown or valueless flags {sorted(unknown) or argv[-1:]}, --view"
+                     f" is required and one of {', '.join(VIEWS)}")
+        session = Path(argv[1]).resolve()
+        harvest(session, opts.get("--name", session.stem.lower()), (opts["--view"],),
+                opts.get("--size", "100x40"))
+        return None
     if argv[:1] == ["proxy"]:
         out = Path(argv[2])
         try:

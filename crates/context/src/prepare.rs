@@ -111,14 +111,18 @@ pub fn compose_summary(
     view: &CompiledView,
 ) -> (String, CompactionDetails) {
     let (read_files, modified_files) = compute_file_lists(file_ops);
-    let files = format_file_operations(&read_files, &modified_files);
+    let files = format_file_operations(&read_files, &modified_files, file_ops.reads_dropped);
     let view_text = view.render();
     let text = if view_text.is_empty() {
         format!("{summary}{files}")
     } else {
         format!("{view_text}\n\n{summary}{files}")
     };
-    let extra = view_extra(view).into_iter().collect();
+    let mut extra: serde_json::Map<_, _> = view_extra(view).into_iter().collect();
+    if file_ops.reads_dropped > 0 {
+        let dropped = serde_json::json!(file_ops.reads_dropped);
+        extra.insert(yi_types::kernel::NESTED_READS_DROPPED.to_owned(), dropped);
+    }
     (
         text,
         CompactionDetails {

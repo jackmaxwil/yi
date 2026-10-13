@@ -37,8 +37,17 @@ pub enum KeyInput {
     Sequence(Vec<SingleKey>),
 }
 
+/// Invariant: a terminal reports Esc, Tab, DEL and ctrl+letter as named keys or modified letters,
+/// so a bare control character as a key is a paste fed as keystrokes, and it never lands anywhere.
+pub fn is_pasted_control(event: &KeyEvent) -> bool {
+    matches!(event.code, KeyCode::Char(c) if c.is_control())
+}
+
 impl SingleKey {
     pub fn from_event(event: &KeyEvent) -> Option<Self> {
+        if is_pasted_control(event) {
+            return None;
+        }
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         let alt = event.modifiers.contains(KeyModifiers::ALT);
         let shift = event.modifiers.contains(KeyModifiers::SHIFT);
@@ -375,9 +384,13 @@ pub fn default_keymap() -> Keymap {
     );
     map.bind(single(KeyCodeValue::Down, false, true), Action::FocusChild);
     map.bind(single(KeyCodeValue::Up, false, true), Action::FocusParent);
-    map.bind(
+    // Option+arrows move by word over a draft; they walk the agent tree only from an empty box.
+    map.map.insert(
         single(KeyCodeValue::Right, false, true),
-        Action::FocusNextSibling,
+        vec![Rule {
+            when: Some(Condition::InputEmpty),
+            action: Action::FocusNextSibling,
+        }],
     );
     map.map.insert(
         KeyInput::Single(SingleKey {
@@ -412,9 +425,12 @@ pub fn default_keymap() -> Keymap {
         single(KeyCodeValue::Char('m'), false, true),
         Action::OpenModelPicker,
     );
-    map.bind(
+    map.map.insert(
         single(KeyCodeValue::Left, false, true),
-        Action::FocusPrevSibling,
+        vec![Rule {
+            when: Some(Condition::InputEmpty),
+            action: Action::FocusPrevSibling,
+        }],
     );
     map.bind(
         single(KeyCodeValue::Char('r'), true, false),

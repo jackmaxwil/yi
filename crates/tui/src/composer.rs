@@ -1,7 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tui_textarea::TextArea;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::widgets::Widget;
+use tui_textarea::{CursorMove, TextArea};
+use unicode_width::UnicodeWidthChar;
 
 struct HistorySearch {
     original: String,
@@ -17,6 +22,8 @@ pub struct Composer {
     history_index: Option<usize>,
     draft: Option<String>,
     search: Option<HistorySearch>,
+    wrap_width: usize,
+    top: usize,
 }
 
 impl Default for Composer {
@@ -31,6 +38,8 @@ impl Default for Composer {
             history_index: None,
             draft: None,
             search: None,
+            wrap_width: 80,
+            top: 0,
         }
     }
 }
@@ -246,7 +255,66 @@ impl Composer {
 
     pub fn input(&mut self, event: KeyEvent) {
         self.history_index = None;
-        self.textarea.input(event);
+        let up = match event.code {
+            KeyCode::Up => true,
+            KeyCode::Down => false,
+            _ => {
+                edit_key(&mut self.textarea, event);
+                return;
+            }
+        };
+        if event.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+            if !event.modifiers.contains(KeyModifiers::SHIFT) {
+                self.textarea.cancel_selection();
+            } else if !self.textarea.is_selecting() {
+                self.textarea.start_selection();
+            }
+            self.move_visual(up);
+        } else {
+            edit_key(&mut self.textarea, event);
+        }
+    }
+
+    /// Up and Down walk wrapped rows at the same display column, not logical lines.
+    fn move_visual(&mut self, up: bool) {
+        let rows = wrap(self.textarea.lines(), self.wrap_width);
+        let (line, col) = self.textarea.cursor();
+        let at = cursor_row(&rows, line, col);
+        let target = if up {
+            at.checked_sub(1)
+        } else {
+            at.checked_add(1)
+        };
+        let (Some(&(from_line, from, _)), Some(&(to_line, start, end))) =
+            (rows.get(at), target.and_then(|t| rows.get(t)))
+        else {
+            return;
+        };
+        let lines = self.textarea.lines();
+        let x = width_of(lines.get(from_line), from, col);
+        let text = lines.get(to_line).map(String::as_str).unwrap_or_default();
+        let last = rows
+            .get(target.unwrap_or_default().saturating_add(1))
+            .is_none_or(|next| next.0 != to_line);
+        // Invariant: only a line's last row owns the column at its end; on any other row
+        // that column is the next row's first, so the walk stops one short.
+        let limit = if last {
+            end
+        } else {
+            end.saturating_sub(1).max(start)
+        };
+        let mut used = 0;
+        let mut to = start;
+        for ch in text.chars().skip(start).take(limit.saturating_sub(start)) {
+            used += ch.width().unwrap_or(0);
+            if used > x {
+                break;
+            }
+            to += 1;
+        }
+        if let (Ok(row), Ok(col)) = (u16::try_from(to_line), u16::try_from(to)) {
+            self.textarea.move_cursor(CursorMove::Jump(row, col));
+        }
     }
 
     pub fn insert_newline(&mut self) {
@@ -374,8 +442,196 @@ impl Composer {
         }
     }
 
-    pub fn desired_height(&self) -> u16 {
-        let lines = self.textarea.lines().len().clamp(1, 8);
-        u16::try_from(lines).unwrap_or(1).saturating_add(2)
+    /// Box height for a composer `width` cells wide in a pane `rows` tall, borders included.
+    pub fn layout(&mut self, width: u16, rows: u16) -> u16 {
+        // One cell of margin a side, a border a side, and one column kept for the cursor.
+        self.wrap_width = usize::from(width.saturating_sub(5)).max(1);
+        let wrapped = wrap(self.textarea.lines(), self.wrap_width);
+        let rows = usize::from(rows);
+        // Invariant: the box never takes more than 38.2% of the pane, the golden split.
+        let cap = (rows.saturating_mul(382) / 1000).saturating_sub(2).max(1);
+        let want = wrapped.len().max(1);
+        let step = GROWTH
+            .iter()
+            .copied()
+            .find(|step| *step >= want)
+            .unwrap_or(want);
+        let height = step.min(cap);
+        let (line, col) = self.textarea.cursor();
+        let cursor = cursor_row(&wrapped, line, col);
+        self.top = self
+            .top
+            .min(cursor)
+            .max(cursor.saturating_add(1).saturating_sub(height));
+        u16::try_from(height).unwrap_or(1).saturating_add(2)
+    }
+
+    /// Paints the wrapped text with its cursor and selection; [`Composer::layout`] runs first.
+    pub fn render(&self, area: Rect, buffer: &mut Buffer) {
+        let inner = match self.textarea.block() {
+            Some(block) => {
+                let inner = block.inner(area);
+                block.render(area, buffer);
+                inner
+            }
+            None => area,
+        };
+        let lines = self.textarea.lines();
+        let wrapped = wrap(lines, self.wrap_width);
+        let (cursor_line, cursor_col) = self.textarea.cursor();
+        let cursor = cursor_row(&wrapped, cursor_line, cursor_col);
+        let selection = self.textarea.selection_range();
+        let style = self.textarea.style();
+        let cursor_style = self.textarea.cursor_style();
+        let rows = wrapped.iter().enumerate().skip(self.top);
+        for (y, (index, &(line, start, end))) in (inner.top()..inner.bottom()).zip(rows) {
+            let text = lines.get(line).map(String::as_str).unwrap_or_default();
+            let mut x = inner.left();
+            let mut col = start;
+            for ch in text.chars().skip(start).take(end.saturating_sub(start)) {
+                let mut cell_style = style;
+                if selection.is_some_and(|(from, to)| from <= (line, col) && (line, col) < to) {
+                    cell_style = cell_style.add_modifier(Modifier::REVERSED);
+                }
+                if index == cursor && col == cursor_col {
+                    cell_style = cell_style.patch(cursor_style);
+                }
+                let (next, _) = buffer.set_stringn(
+                    x,
+                    y,
+                    ch.encode_utf8(&mut [0; 4]),
+                    usize::from(inner.right().saturating_sub(x)),
+                    cell_style,
+                );
+                x = next;
+                col += 1;
+            }
+            if index == cursor
+                && cursor_col == end
+                && let Some(cell) = buffer.cell_mut((x, y))
+            {
+                cell.set_symbol(" ").set_style(style.patch(cursor_style));
+            }
+        }
+    }
+}
+
+/// Invariant: each step is about the golden ratio past the last, so a long paste moves the
+/// layout a handful of times rather than once per row.
+const GROWTH: [usize; 10] = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
+
+/// Incident: the textarea counted logical lines, so a long paragraph sat on one row and
+/// scrolled sideways. Rows here are `(line, start char, end char)`, word-wrapped by display width.
+fn wrap(lines: &[String], width: usize) -> Vec<(usize, usize, usize)> {
+    let mut rows = Vec::new();
+    for (line, text) in lines.iter().enumerate() {
+        let (mut start, mut used, mut space) = (0, 0, None);
+        for (at, ch) in text.chars().enumerate() {
+            let cells = ch.width().unwrap_or(0);
+            if used + cells > width && at > start {
+                let cut = space.filter(|&cut| cut > start).unwrap_or(at);
+                rows.push((line, start, cut));
+                used = text
+                    .chars()
+                    .skip(cut)
+                    .take(at - cut)
+                    .filter_map(|c| c.width())
+                    .sum();
+                start = cut;
+                space = None;
+            }
+            used += cells;
+            if ch == ' ' {
+                space = Some(at + 1);
+            }
+        }
+        rows.push((line, start, text.chars().count()));
+    }
+    rows
+}
+
+fn cursor_row(rows: &[(usize, usize, usize)], line: usize, col: usize) -> usize {
+    rows.iter()
+        .rposition(|&(l, start, _)| l == line && start <= col)
+        .unwrap_or(0)
+}
+
+fn width_of(text: Option<&String>, from: usize, to: usize) -> usize {
+    text.map_or(0, |text| {
+        text.chars()
+            .skip(from)
+            .take(to.saturating_sub(from))
+            .filter_map(|c| c.width())
+            .sum()
+    })
+}
+
+/// Incident: Ghostty sends Cmd+Delete as ctrl+u, which the textarea took for undo. Shell and
+/// macOS editing keys are bound here before the textarea's own emacs table; true when handled.
+pub fn edit_key(textarea: &mut TextArea<'_>, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let cmd = key.modifiers.contains(KeyModifiers::SUPER);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let jump = |textarea: &mut TextArea<'_>, to| {
+        textarea.move_cursor(to);
+        true
+    };
+    match key.code {
+        KeyCode::Char('u') if ctrl => clear_line(textarea),
+        KeyCode::Backspace if cmd => clear_line(textarea),
+        KeyCode::Backspace if ctrl => textarea.delete_word(),
+        KeyCode::Delete if ctrl => textarea.delete_next_word(),
+        KeyCode::Char('z' | 'Z') if ctrl && (shift || key.code == KeyCode::Char('Z')) => {
+            textarea.redo()
+        }
+        KeyCode::Char('u' | 'U') if cmd && (shift || key.code == KeyCode::Char('U')) => {
+            textarea.redo()
+        }
+        KeyCode::Char('z') if ctrl => textarea.undo(),
+        KeyCode::Char('u') if cmd => textarea.undo(),
+        KeyCode::Char('j') if ctrl => {
+            textarea.insert_newline();
+            true
+        }
+        KeyCode::Enter if alt => {
+            textarea.insert_newline();
+            true
+        }
+        KeyCode::Left if alt => jump(textarea, CursorMove::WordBack),
+        KeyCode::Right if alt => jump(textarea, CursorMove::WordForward),
+        KeyCode::Left if cmd => jump(textarea, CursorMove::Head),
+        KeyCode::Right if cmd => jump(textarea, CursorMove::End),
+        KeyCode::Up if cmd => jump(textarea, CursorMove::Top),
+        KeyCode::Down if cmd => jump(textarea, CursorMove::Bottom),
+        // The textarea pages on these emacs keys, a jump nobody expects from a prompt.
+        KeyCode::Char('v') if ctrl || alt => false,
+        _ => textarea.input(key),
+    }
+}
+
+/// Clears the cursor's line, as zsh's ctrl+u does; an empty line is left, never joined.
+fn clear_line(textarea: &mut TextArea<'_>) -> bool {
+    textarea.cancel_selection();
+    textarea.move_cursor(CursorMove::Head);
+    let (line, _) = textarea.cursor();
+    textarea
+        .lines()
+        .get(line)
+        .is_some_and(|text| !text.is_empty())
+        && textarea.delete_line_by_end()
+}
+
+impl crate::app::App {
+    /// Invariant: a quote lands whole on its own lines; a long one never folds into a paste marker.
+    pub fn quote(&mut self, text: &str) {
+        let quoted: String = sanitize_paste(text)
+            .lines()
+            .map(|line| format!("> {line}\n"))
+            .collect();
+        if self.composer.textarea.cursor().1 != 0 {
+            self.composer.textarea.insert_newline();
+        }
+        self.composer.textarea.insert_str(quoted);
     }
 }

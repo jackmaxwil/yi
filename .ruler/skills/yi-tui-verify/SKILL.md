@@ -30,23 +30,18 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
 5. Animation and orb changes: the engine is pinned by the golden-vector
    parity test; a rendering change is verified by frame dumps or the PTY
    harness, never by re-deriving geometry.
-6. A UI change that a person has to look at gets a proof artifact:
-   `just tui-proof <script>` runs the same drive loop with `--record`
-   (asciicast v2 of the whole run) and `--snap` (the last frame as a cast
-   of its own), then renders `run.gif` and `still.gif` with agg. Attach one
-   to the PR — frame dumps prove the contract held, they do not show
-   whether it looks right. Both artifacts go through agg because agg is a
-   terminal emulator: it renders the cell grid the TUI actually painted.
-   `freeze` was tried and dropped — it re-renders text in its own font and
-   chrome, so the still was not 1:1 (the composer border ran off the edge)
-   and `-c full` wrote a 0-byte file while exiting 0. Pace the typing with
-   `type-ms <n>` (0 by default, so assertion scripts stay instant) and
-   raise `--deadline <secs>` when the beats outlast the 60 s default.
-   The headless screen is 80x24; `--size COLSxROWS` renders another, and
-   `just console-proof <script> <out> 254x40` passes it through, for a
-   layout that only shows on a wide screen.
-   `scripts/proof/demo.drive` is the worked example. A test replays both
-   casts and asserts they land on the frame the assertions ran against.
+6. A UI change that a person has to look at gets a proof artifact from
+   `just tui-see run <scene>` (step 7): each `snap` is a still, and `--video` keeps the
+   whole run as motion (`run.gif` from agg headless, `run.webp` from Ghostty on
+   `--host term`). Attach them to the PR, or let the forge's `tui` job post them —
+   frame dumps prove the contract held, they do not show whether it looks right. Render
+   with a terminal emulator, which draws the cell grid the TUI actually painted.
+   `freeze` was tried and dropped — it re-renders text in its own font and chrome, so
+   the still was not 1:1 (the composer border ran off the edge) and `-c full` wrote a
+   0-byte file while exiting 0. Pace the typing with `type-ms <n>` (0 by default, so
+   assertion scripts stay instant), and put `--deadline <secs>` in the scene's `#!` line
+   when the beats outlast the 60 s default. A wide layout is `#! console --size 254x40`.
+   `scripts/proof/demo.drive` is the worked example.
 7. To see what a change did, diff snaps rather than eyeballing whole frames:
    `just tui-see run <scene> --label base`, edit, `just tui-see run <scene>`, then
    `just tui-see diff target/see/<scene>/base target/see/<scene>/head`. The summary lists every
@@ -63,13 +58,30 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
 8. Motion and in-flight states: put `--faux <cassette.jsonl>` in the `#!` line, `hold
    text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
    80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
-   past the reveal before waiting. Hold is solo only; the console's model lives in the daemon,
-   and the term host refuses `tick` and `hold`.
+   past the reveal before waiting, and a `tick` waits (5 s at most) for an armed hold to be
+   reached. Hold is solo only; the console's model lives in the daemon. On the term host the
+   proxy sends these steps and `wait-idle` over the real binary's `--control <socket>`, which
+   plays them on the drive's engine and answers `ok` or `error: …`, so a frozen scene's Ghostty
+   grabs land on its headless frames; a snap whose words part from the headless one is named.
 9. Iterating: `just tui-see watch <scene> [--host term]` keeps a `base` run and, on every save
    under crates/tui, crates/console or crates/orb, rebuilds, reruns as `head`, diffs and rewrites
    `target/see/gallery.html`. `just tui-see gallery [root] [page]` builds that page on its own:
    each scene, each snap by label side by side, the head's cell diff beside it, pictures inlined,
    so it can be published as one page for the owner to comment on. `--video` with `--host term`
    keeps the whole run as `run.webp` (cropped to the window, under the 512 KB blob cap for a
-   README); it needs at least one `snap` to find the window. On that host `wait-idle` waits for
-   the screen to hold still a second with digits ignored, so ticking ages do not count as work.
+   README); it needs at least one `snap` to find the window. On that host `wait-idle` is the
+   binary's own answer, so a turn still finishing its checkpoint is waited out, not read as idle;
+   the binary runs in a small cwd there, because a checkpoint of the mounted repo took minutes.
+   Harvest a scene from a recorded session instead of writing one:
+   `just tui-see harvest crates/tui/tests/fixtures/sessions/<id>.jsonl --name N [--view
+   end|tool|long]` writes `harvest-N-<view>` into scripts/proof/tui_see. A solo screen has no
+   scroll, so each view is its own seed cut where it matters: `end` the whole session, `tool`
+   through the largest tool result, `long` through the longest reply (the cut is named on the
+   way out). The scrub masks ids the store refuses, so the seed gets unique ids and a chain. The
+   `end` scene also retypes the last prompt and plays the last recorded reply as its cassette;
+   that turn freezes the clock, because its elapsed seconds read the wall clock.
+   `tui_see.py` sets `YI_FIXED_IDS=1` for the serve it starts, so console sessions count ids up
+   from 1 and two runs draw the same avatar colours.
+10. Fuzzing: `just tui-see monkey --runs 20 --seed 7 [--surface solo|console]` plays seeded random key
+   runs through the headless loops and reports only a crash, a hang or a control character in a
+   cell; the seed's script is `target/see/monkey/<seed>/<surface>.drive`, replayed by `tui_see.py run`.

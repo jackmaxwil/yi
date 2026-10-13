@@ -7,10 +7,6 @@ use yi_permission::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
-
 /// Append-only. Every entry must come back as anything except Allow: the point
 /// is that an obfuscation buys nothing, not that Yi recognizes the trick.
 const BYPASS_CORPUS: [&str; 18] = [
@@ -493,42 +489,34 @@ fn each_segment_says_why_it_leaves() {
         [None, Some("installs")]
     );
 }
-/// Review of #1205: `ripewire wrap` is setup and an unknown positional is not the tree root,
-/// so both stay contained, while the root itself and space-form flag values read as reads.
+
+/// ripwire 0.6.5 refuses `--top-k 20` (flag values are `--flag=value`), so a second bare word
+/// is never a value; the one bare word it takes is the root, and `wrap`, `src` or a URL is not one.
 #[test]
-fn a_ripwire_read_takes_the_root_and_flag_values_but_not_setup_verbs() -> TestResult {
-    assert_eq!(classify(&argv("ripwire wrap")[0]), Class::Unknown, "wrap");
-    assert_ne!(verdict("ripewire wrap"), Verdict::Allow, "wrap");
-    assert_eq!(
-        classify(&argv("ripwire not-a-real-root-xyz")[0]),
-        Class::Unknown,
-        "a positional that names no path"
-    );
-    let root = Scratch::new("yi-permission-ripwire-root")?;
-    let scratch = root.to_string_lossy().into_owned();
-    assert_eq!(
-        classify(&argv(&format!("ripwire {scratch} --hotspots"))[0]),
-        Class::Safe,
-        "the root positional"
-    );
-    assert_eq!(
-        classify(&argv(&format!("ripwire {scratch} --top-k 20 --legend=compact"))[0]),
-        Class::Safe,
-        "a space-form flag value"
-    );
-    assert_eq!(
-        classify(
-            &argv(&format!(
-                "ripwire {scratch} --for 'fix the bold split' --json"
-            ))[0]
-        ),
-        Class::Safe,
-        "a quoted flag value"
-    );
-    assert_eq!(
-        classify(&argv(&format!("ripwire wrap {scratch}"))[0]),
-        Class::Unknown,
-        "a setup verb ahead of a real root"
-    );
-    Ok(())
+fn a_ripwire_read_is_query_flags_over_at_most_one_local_root() {
+    let class = |command: &str| classify(&argv(command)[0]);
+    for read in [
+        "ripwire . --hotspots --legend=compact",
+        "ripwire --hotspots",
+        "ripwire ./crates/tools --callers=parse_config",
+        "ripwire /work/repo --for='fix the bold split' --json",
+    ] {
+        assert_eq!(class(read), Class::Safe, "{read}");
+    }
+    for contained in [
+        "ripwire . --quality-delta",
+        "ripwire . -h",
+        "ripwire . --top-k 20",
+        "ripwire wrap claude",
+        "ripwire . wrap",
+        "ripwire src --hotspots",
+        "ripwire https://host/repo.git --hotspots",
+        "ripwire git@host:o/r.git --hotspots",
+        "ripwire ./a ./b --hotspots",
+        "./ripwire . --hotspots",
+        "/tmp/planted/ripwire . --hotspots",
+        "PATH=bin ripwire . --hotspots",
+    ] {
+        assert_ne!(verdict(contained), Verdict::Allow, "{contained}");
+    }
 }

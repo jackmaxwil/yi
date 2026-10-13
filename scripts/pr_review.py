@@ -27,8 +27,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -517,15 +518,28 @@ def survives(answers):
     return held * 2 > len(answers)
 
 
+_BUILT = threading.Lock()
+
+
 def yi_bin():
-    return os.environ.get("YI_BIN") or next(
-        (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()), "yi")
+    """The yi a model call runs; with none built and none on PATH, the first call builds it.
+    Incident: 91 of 217 review jobs on 2026-10-12 built yi for 3 minutes, then had nothing to read."""
+    with _BUILT:
+        found = os.environ.get("YI_BIN") or next(
+            (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()),
+            None)
+        if found or shutil.which("yi"):
+            return found or "yi"
+        subprocess.run(["cargo", "build", "-q", "-p", "yi-cli"], cwd=ROOT, check=True)
+        return str(ROOT / "target/debug/yi")
 
 
 # Incident: rounds on #1138 and #1145 hit the job's limit and posted nothing; a round's retries had
-# no shared window, so a slow host outlasted the job. Its calls now share the job's time.
+# no shared window. Its calls share the job's time, from the first step (review.yml stamps it).
 POST_SECS = 5 * 60
-JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS
+REFUTERS = 16
+JOB_SPENT = max(0.0, time.time() - float(os.environ.get("REVIEW_JOB_STARTED") or time.time()))
+JOB_ENDS = time.monotonic() + forge_pr.job_secs("review") - POST_SECS - JOB_SPENT
 
 
 class Unanswered(Exception):
@@ -604,8 +618,8 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=
 
 def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=None, carry=(), fix_note=""):
     body = pr.get("body") or ""
-    """Every probe that applies, then the host's quote and scope checks, then the refuters, each
-    stage's calls at once; `carry` (see `carried`) meets refuters beside the new findings. `own` is
+    """Every probe that applies at once, each lens's findings through the host's quote and scope
+    checks and on to their refuters as it answers; `carry` (see `carried`) meets refuters from the start. `own` is
     the PR's own patch (fork to head) by added line, the read diff when absent. Returns (kept,
     dropped, outside, unanswered, cleared). A lens or refuter that stays silent is named in
     `unanswered` and the round goes on; only every lens silent raises, no round."""
@@ -622,21 +636,34 @@ def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True, own=No
             last[0] = err
 
     last = [None]
-    with ThreadPoolExecutor(max_workers=max(1, len(chosen))) as pool:
-        said = list(pool.map(lambda probe: tried(f"{probe['id']} lens", lens_prompt(probe, pr, diff, base, sha, full_read), LENS_SCHEMA, tree), chosen))
+
+    def refute(f):
+        return [seats_pool.submit(tried, f"refuter on {f['lens']} finding at {f['path']}:{f['line']}",
+                                  refute_prompt(f, fix_note, body), REFUTE_SCHEMA, tree) for _ in range(seats(f, probes))]
+
+    # Incident: refuters shared the lens pool and waited for the slowest lens, so a round ran in waves
+    # of one worker per lens (113 minutes on #1279); each finding's refuters now start when its lens answers.
+    with ThreadPoolExecutor(max_workers=max(1, len(chosen))) as pool, ThreadPoolExecutor(max_workers=REFUTERS) as seats_pool:
+        held = [(f, refute(f)) for f in carry]
+        asked = {pool.submit(tried, f"{probe['id']} lens", lens_prompt(probe, pr, diff, base, sha, full_read), LENS_SCHEMA, tree): i
+                 for i, probe in enumerate(chosen)}
+        said, per_lens = [None] * len(chosen), [([], [], [])] * len(chosen)
+        for done in as_completed(asked):
+            i = asked[done]
+            said[i] = done.result()
+            found = [{**f, "lens": chosen[i]["id"]} for f in (said[i] or {}).get("findings", []) if f.get("severity") in REPORTED]
+            quoted_ = [f for f in found if quoted(f, tree)]
+            per_lens[i] = (found, quoted_, [(f, refute(f)) for f in quoted_ if in_scope(f, own)])
         # Incident: the first dry run on #733 had every lens exit 4 (no key) and read clean.
         if chosen and all(a is None for a in said):
+            seats_pool.shutdown(cancel_futures=True)
             raise last[0]
-        candidates = [{**f, "lens": probe["id"]} for probe, answer_ in zip(chosen, said) if answer_
-                      for f in answer_.get("findings", []) if f.get("severity") in REPORTED]
-        quoted_ = [f for f in candidates if quoted(f, tree)]
-        fresh = [f for f in quoted_ if in_scope(f, own)]
-        checked = fresh + list(carry)
-        seats_ = [(i, f) for i, f in enumerate(checked) for _ in range(seats(f, probes))]
-        votes = list(pool.map(lambda seat: tried(f"refuter on {seat[1]['lens']} finding at {seat[1]['path']}:{seat[1]['line']}",
-                                                 refute_prompt(seat[1], fix_note, body), REFUTE_SCHEMA, tree), seats_))
+        candidates = [f for found, _, _ in per_lens for f in found]
+        quoted_ = [f for _, q, _ in per_lens for f in q]
+        fresh = [pair for _, _, refuted in per_lens for pair in refuted]
+        checked = [f for f, _ in fresh + held]
+        heard = [[v for v in (seat.result() for seat in seated) if v] for _, seated in fresh + held]
     # A silent refuter casts no vote. With none cast the finding is kept and says so: silence is not a refutation.
-    heard = [[v for (j, _), v in zip(seats_, votes) if j == i and v] for i in range(len(checked))]
     unverified = "(unverified: no refuter answered) "
     kept = [f if h or f["claim"].startswith(unverified) else {**f, "claim": unverified + f["claim"]}
             for f, h in zip(checked, heard) if survives(h) or not h]
@@ -924,6 +951,10 @@ def cmd_sweep(args):
 
 
 def selfcheck():
+    # Incident: a fixer commit dropped `import fcntl` and every review round died on its lock;
+    # nothing else here takes it, so this row does (`held` is also a local name below).
+    with globals()["held"](0) as got:
+        assert got, "a free round lock is taken"
     me = {"jack", "yi-bot"}
     finding = {"lens": "correctness", "severity": "high", "claim": "drops the anchor", "path": "a.rs", "line": 2, "quote": "let x = 1;", "fix": "keep it"}
     body = render(2, 588, "4f1c2e9a", "3503ed74", [finding], 3, None, "shadow")
@@ -1034,6 +1065,25 @@ def selfcheck():
     assert answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 2, 733)
     assert not answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 3, 733)
 
+    # A job with no yi builds it once, on the first model call, however many lenses ask at once.
+    builds, keep = [], (subprocess.run, shutil.which, globals()["ROOT"], os.environ.pop("YI_BIN", None))
+    root = pathlib.Path(tempfile.mkdtemp(prefix="yi-bin-check-"))
+
+    def build(argv, cwd, check):
+        builds.append(argv)
+        (root / "target/debug").mkdir(parents=True, exist_ok=True)
+        (root / "target/debug/yi").write_text("")
+
+    subprocess.run, shutil.which, globals()["ROOT"] = build, (lambda name: None), root
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            got = set(pool.map(lambda _: yi_bin(), range(8)))
+        assert builds == [["cargo", "build", "-q", "-p", "yi-cli"]] and got == {str(root / "target/debug/yi")}, (builds, got)
+    finally:
+        subprocess.run, shutil.which, globals()["ROOT"] = keep[:3]
+        if keep[3] is not None:
+            os.environ["YI_BIN"] = keep[3]
+        shutil.rmtree(root)
     tree = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-check-"))
     try:
         (tree / "a.rs").write_text("fn main() {\n    let x = 1;\n}\n")
@@ -1052,9 +1102,21 @@ def selfcheck():
             return {"refuted": False, "reason": "holds"}
 
         change = "+++ b/a.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    let x = 1;\n }\n"
-        kept, dropped, outside, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, answer, probes)
+        prompts = []
+        kept, dropped, outside, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,
+                                                  lambda p, s_, c: prompts.append(p) or answer(p, s_, c), probes)
         assert kept == [finding] and dropped == 1 and outside == 0, (kept, dropped, outside)
         assert seen.count(REFUTE_SCHEMA) == 3, "a high finding meets three refuters; a dropped or low one none"
+        # Incident: refuters waited for the slowest lens; a finding's refuters now run while another lens reads.
+        votes, slow_id = threading.Semaphore(0), next(q["id"] for q in probes.values() if q["id"] != "correctness" and applies(q, added_at(change), True))
+
+        def late(prompt, schema, cwd):
+            if schema is REFUTE_SCHEMA:
+                votes.release()
+            elif f" as its {slow_id} lens" in prompt:
+                assert all(votes.acquire(timeout=5) for _ in range(3)), "the slow lens returned before any refuter ran"
+            return answer(prompt, schema, cwd)
+        assert read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree, late, probes)[0] == [finding]
         # Incident: rounds after a merge from main posted findings on the code main brought in.
         seen.clear()
         kept, dropped, outside, _, _ = read_round({"number": 1, "title": "t", "body": ""}, change, "a" * 8, "b" * 8, tree,

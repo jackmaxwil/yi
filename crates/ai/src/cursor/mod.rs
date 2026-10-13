@@ -348,6 +348,8 @@ impl Blocks {
                 });
             }
             AssistantMessageEvent::ToolCallEnd { tool_call, .. } => {
+                // A call settles the blocks before it, so prose after it opens a block of its own.
+                out.extend(self.closing());
                 out.push(AssistantMessageEvent::ToolCallEnd {
                     content_index: self.open(tool_call.clone()),
                     tool_call: tool_call.clone(),
@@ -428,6 +430,34 @@ mod tests {
     };
 
     #[test]
+    fn prose_after_a_tool_call_is_a_block_of_its_own() {
+        let text = |delta: &str| AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: delta.to_owned(),
+        };
+        let mut blocks = Blocks::default();
+        for event in [
+            text("Listing."),
+            tool_event("a", "bash", Map::new()),
+            text("Two files."),
+        ] {
+            drop(blocks.stage(&event));
+        }
+        drop(blocks.closing());
+        let AgentMessage::Assistant { content, .. } = finish(&model_for("m"), blocks) else {
+            return;
+        };
+        let shape: Vec<String> = (content.iter())
+            .map(|block| match block {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                yi_types::message::Content::ToolCall { name, .. } => format!("<{name}>"),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(shape, ["Listing.", "<bash>", "Two files."]);
+    }
+
+    #[test]
     fn a_stream_that_fails_after_a_tool_ran_still_carries_the_call()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut blocks = Blocks::default();
@@ -488,7 +518,7 @@ mod tests {
         else {
             return Err("assistant messages".into());
         };
-        assert_eq!(want.len(), 4);
+        assert_eq!(want.len(), 6);
         assert_eq!(built, want);
         Ok(())
     }
