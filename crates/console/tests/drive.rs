@@ -410,6 +410,7 @@ fn run_console(
             open_apps,
             sidebar,
             pace: 0,
+            browser: None,
         },
         DriveOptions {
             script: steps,
@@ -449,6 +450,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             open_apps: Vec::new(),
             sidebar: SidebarMode::Rail,
             pace: 0,
+            browser: None,
         },
         DriveOptions {
             script: steps,

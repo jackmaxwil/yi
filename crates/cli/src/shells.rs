@@ -322,6 +322,11 @@ pub fn run_console_command(args: &Args) -> i32 {
             .collect(),
         sidebar: yi_console::model::SidebarMode::Rail,
         pace: reveal_pace(args),
+        browser: config()
+            .browser
+            .as_ref()
+            .and_then(|browser| browser.path.as_ref())
+            .map(std::path::PathBuf::from),
     };
     let control = match control(args) {
         Ok(control) => control,

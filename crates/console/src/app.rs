@@ -285,6 +285,7 @@ impl App {
         self.tick_notes(now);
         self.check_editors(now);
         self.pump_chats(outbound);
+        self.pump_browsers();
         if self
             .shutdown_at
             .is_some_and(|at| now.saturating_duration_since(at) > Duration::from_secs(2))
@@ -963,6 +964,7 @@ impl App {
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::ToggleTape => self.toggle_side(outbound, diffs::SideKind::Tape),
             Action::OpenEditor => self.open_navigator("e "),
+            Action::OpenBrowser => self.open_browser(),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
                 if !self.editor_action(action) {
@@ -1088,6 +1090,9 @@ impl App {
             self.dirty = true;
             return;
         }
+        if self.state.zone == Zone::Panes && self.browser_key(&key) {
+            return;
+        }
         let on_chat = self.state.zone == Zone::Panes && self.on_chat();
         let multi = self
             .state
@@ -1176,6 +1181,7 @@ impl App {
     }
 }
 
+mod browser;
 mod chat;
 mod diffs;
 mod editor;

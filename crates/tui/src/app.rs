@@ -600,6 +600,11 @@ impl App {
         self.history.source(index)
     }
 
+    /// The transcript's prompts, answers and thoughts, oldest first; tool cells have no source.
+    pub fn sources(&self) -> impl Iterator<Item = &str> {
+        (0..self.history.len()).filter_map(|index| self.history.source(index))
+    }
+
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
         self.history
             .lines(self.content_width(), &self.theme, self.mode, rows)

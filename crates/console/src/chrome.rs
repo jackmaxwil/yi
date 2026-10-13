@@ -223,7 +223,7 @@ fn rgb(color: Color) -> (u8, u8, u8) {
 }
 
 /// 8×16 when the terminal does not report its pixel size.
-fn cell_pixels() -> (usize, usize) {
+pub(crate) fn cell_pixels() -> (usize, usize) {
     match ratatui::crossterm::terminal::window_size() {
         Ok(size) if size.columns > 0 && size.rows > 0 && size.width > 0 && size.height > 0 => (
             usize::from(size.width / size.columns),

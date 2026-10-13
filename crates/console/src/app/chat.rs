@@ -760,6 +760,11 @@ impl App {
 
     pub(super) fn chat_event(&mut self, event: CtEvent) {
         self.dirty = true;
+        if let CtEvent::Paste(text) = &event
+            && self.browser_paste(text)
+        {
+            return;
+        }
         if let Some(chat) = self.focused_chat() {
             let enter = matches!(event, CtEvent::Key(key) if key.code == KeyCode::Enter);
             let drafted = enter && !chat.app.composer_text().is_empty();

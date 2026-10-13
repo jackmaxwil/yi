@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod avatar;
+pub mod browser;
 mod chrome;
 pub mod client;
 pub mod keys;
@@ -52,6 +53,7 @@ pub struct ConsoleOptions {
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
+    pub browser: Option<PathBuf>,
 }
 
 pub struct DriveOptions {
@@ -217,6 +219,7 @@ fn draw<B: Backend>(
     if std::mem::take(&mut app.pending_clear) {
         terminal.clear()?;
         app.notebook_image = None;
+        app.state.browser_placed.clear();
     }
     let _span = yi_types::trace::span("console.draw");
     terminal.draw(|frame| {
@@ -426,6 +429,7 @@ fn present<B: Backend>(
     if app.kitty {
         place_avatars(app, out);
         place_notebook_image(app, out);
+        crate::browser::place(app, out);
         place_chat_orbs(app, orb_owners, out);
         app.avatars.animate(out);
     }
@@ -770,6 +774,7 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
+    app.state.browser_path.clone_from(&options.browser);
 }
 
 /// What the console wrote outside the grid (clipboard, title), kept beside the frames; the

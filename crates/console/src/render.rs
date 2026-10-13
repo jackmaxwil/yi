@@ -187,6 +187,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
                     notes: &notes,
                     options: &app.state.session_options,
                     cmd: app.cmd_hints,
+                    kitty: app.kitty,
                 };
                 pane_view_content(pane, &view, inner, theme, close_hint)
             }
@@ -328,6 +329,7 @@ struct PaneData<'a> {
     notes: &'a std::collections::BTreeMap<SessionId, String>,
     options: &'a std::collections::BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     cmd: bool,
+    kitty: bool,
 }
 
 fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> String {
@@ -383,6 +385,10 @@ fn pane_view_content(
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
+        PaneContent::Browser(browser) => {
+            let (title, lines) = browser.view(inner, view.kitty, theme);
+            (title, lines, None)
+        }
         PaneContent::Settings(settings) => {
             let options = settings
                 .session
@@ -421,7 +427,7 @@ fn pane_view_content(
     }
 }
 
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for line in text.lines() {

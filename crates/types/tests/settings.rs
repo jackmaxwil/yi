@@ -1,8 +1,9 @@
 use serde_json::{Value, json};
 use yi_types::config::{
-    BashConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig, EditConfig,
-    KernelConfig, MailConfig, McpConfig, ModelRoles, NodeConfig, PermissionsConfig, PlanConfig,
-    PlansConfig, RlmConfig, SkillsConfig, SpendConfig, TelemetryConfig, TuiConfig, UserConfig,
+    BashConfig, BrowserConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig,
+    EditConfig, KernelConfig, MailConfig, McpConfig, ModelRoles, NodeConfig, PermissionsConfig,
+    PlanConfig, PlansConfig, RlmConfig, SkillsConfig, SpendConfig, TelemetryConfig, TuiConfig,
+    UserConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -55,6 +56,7 @@ fn leaves() -> Vec<String> {
         permissions,
         mail,
         open,
+        browser,
     });
     let nested = [
         (
@@ -86,6 +88,7 @@ fn leaves() -> Vec<String> {
         ("kernel", fields!(KernelConfig { prewarm })),
         ("edit", fields!(EditConfig { freeform_grammar })),
         ("console", fields!(ConsoleConfig { auto_side })),
+        ("browser", fields!(BrowserConfig { path })),
         ("tui", fields!(TuiConfig { pace })),
         (
             "lanes",

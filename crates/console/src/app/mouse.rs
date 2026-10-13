@@ -237,6 +237,9 @@ impl App {
             Mode::Navigator { .. } => return self.overlay_press(kind, x, y),
             Mode::Normal | Mode::Prefix => {}
         }
+        if self.browser_mouse(kind, x, y) {
+            return;
+        }
         match kind {
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
                 let delta: isize = if kind == MouseKind::ScrollUp { 3 } else { -3 };

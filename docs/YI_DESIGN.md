@@ -9,7 +9,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 ### 1.1 What Yi is
 | Topic | Decision | Settled by |
 |---|---|---|
-| Language | Rust workspace of 16 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
+| Language | Rust workspace of 17 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
 | Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog (§5) | |
@@ -28,8 +28,9 @@ refinement or self-extension · embeddings and semantic search · resident LSP o
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
-§17.1) · a GUI · browser automation, computer use, email, or any capability that
-is not a coding agent · an `ask_user` tool on a root session with no reviewer (a root asks in
+§17.1) · a GUI · browser automation as an agent tool, computer use, email, or any capability that
+is not a coding agent (the console's browser pane shows the user a page and gives the model nothing;
+the Tape pane left to pay for it) · an `ask_user` tool on a root session with no reviewer (a root asks in
 its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
@@ -58,8 +59,9 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-runtime` | `AgentSession` and everything that composes the crates above | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon | yi-types, yi-runtime |
 | `yi-tui` | The ratatui shell | yi-types, yi-runtime, yi-orb |
-| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui |
-| `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli |
+| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui, yi-browser |
+| `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router | yi-types |
+| `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser |
 
 `yi-tui` and `yi-console` are optional in `yi-cli`, behind its default feature `tui`. Rules:
 - `yi-types` depends on `serde`, `serde_json`, `sha2` and `thiserror` only: no async, filesystem
@@ -71,6 +73,8 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 - Surfaces (`yi-acp`, `yi-tui`, `yi-console`, `yi-cli`) never depend on `yi-tools`, `yi-ai` or
   `yi-permission`; `yi-console` does not depend on `yi-runtime`.
 - Only `yi-cli` depends on `yi-mcp-cli`.
+- `yi-browser` is the one crate outside `yi-tools` that starts a process: the user's Chrome, through
+  `yi __fds`, for the console's browser pane.
 - Advisor, schedule, goal, subagent, mailbox, lane, plan, fetch, memory and prompt extensions are
   modules of `yi-runtime` (`crates/runtime/src/lib.rs`), not crates.
 - `python/yi_runtime` (distribution `yi-runtime`) has two import packages: `rlm`, the host
@@ -1054,7 +1058,16 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   tab over the session's live options (`d` keeps one as the default), a tab per group of every
   config default, each row saying when a saved change applies, and a Keys tab listing every
   chord, which replaced the keys overlay. An edit saves at once or names why it was refused.
-- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor, Settings}`,
+- ⌘⇧B or ⌥w opens a browser pane beside the focused one, at the last `http://localhost:*` or
+  `http://127.0.0.1:*` URL the session's transcript holds, else with its URL bar open. `yi-browser`
+  finds the installed Chrome or Chromium (`browser.path` overrides), starts it headless with
+  `--remote-debugging-pipe` through `yi __fds`, which moves the pipe to fds 3 and 4 and execs it,
+  and speaks CDP as NUL-ended JSON. `Page.startScreencast` PNGs go to kitty as `f=100` undecoded,
+  on two ids per pane far above the orb and avatar ids; the screencast restarts after each
+  main-frame navigation. Clicks, drags, the wheel and keys map to `Input.dispatch*`, the cell
+  centre in CSS pixels at the terminal's cell size; ⌘, ⌥, ctrl+b and ctrl+c stay the console's.
+  No Chrome, or a terminal without kitty graphics, is a `[…]` row in the pane naming the fix.
+- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor, Settings, Browser}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Menu}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
@@ -1109,7 +1122,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
 | `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
-| `rustix` | `fs`, `std` | permission | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide) |
+| `rustix` | `fs`, `std`, `stdio` | permission, browser | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide) |
 
 Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
 `macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.

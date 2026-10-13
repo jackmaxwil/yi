@@ -18,6 +18,7 @@ pub const PROVIDER_KEY_VARS: [(&str, &str); 5] = [
 pub mod acp;
 pub mod advisor;
 pub mod backoff;
+pub mod cdp;
 pub mod channel;
 pub mod checkpoint;
 pub mod classifier;

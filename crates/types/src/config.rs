@@ -62,6 +62,7 @@ pub struct UserConfig {
     /// `open`: the apps a console message's Open in submenu lists, each a name and a command
     /// whose `{path}` argument is the message saved as markdown; absent, the submenu is too.
     pub open: Option<Vec<OpenApp>>,
+    pub browser: Option<BrowserConfig>,
 }
 
 /// `mail.hopLimit`: the longest chain of letters between sessions, each sent by a turn another
@@ -70,6 +71,14 @@ pub struct UserConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MailConfig {
     pub hop_limit: Option<u32>,
+}
+
+/// `browser.path`: the Chrome or Chromium the console's browser pane runs; unset, the installed
+/// one is found.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserConfig {
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

@@ -60,7 +60,7 @@ the stored baselines as `--update` in its own commit.
 
 # Architecture rules
 
-Sixteen crates under crates/, all in the default build (yi-tui and yi-console behind yi-cli's default `tui` feature); yi-mcp-cli is runtime-gated by `mcp.enabled` config (D36), the kernel is compiled unconditionally and boots lazily on first `ipython` call (D38) — neither is a cargo feature.
+Seventeen crates under crates/, all in the default build (yi-tui and yi-console behind yi-cli's default `tui` feature); yi-mcp-cli is runtime-gated by `mcp.enabled` config (D36), the kernel is compiled unconditionally and boots lazily on first `ipython` call (D38) — neither is a cargo feature.
 Naming law: folder `x/` is crate `yi-x` — enforced by scripts/guardrails/check_manifests.py.
 
 Dependency direction is an allowlist in scripts/guardrails/boundaries.toml: unknown crate =
