@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::cell::Cell;
 use yi_tui::colors::{ColorTier, Theme};
-use yi_tui::title;
+use yi_tui::title::{self, Scene};
 
 use crate::common;
 
@@ -34,11 +34,15 @@ fn rows(buffer: &Buffer, area: Rect) -> Vec<Vec<char>> {
         .collect()
 }
 
-fn field(width: u16, height: u16, elapsed: Duration) -> Vec<Vec<char>> {
+fn scene(which: Scene, width: u16, height: u16, elapsed: Duration) -> Vec<Vec<char>> {
     let area = Rect::new(0, 0, width, height);
     let mut buffer = Buffer::empty(area);
-    title::paint(&mut buffer, area, elapsed, &theme());
+    title::paint(&mut buffer, area, which, elapsed, &theme());
     rows(&buffer, area)
+}
+
+fn field(width: u16, height: u16, elapsed: Duration) -> Vec<Vec<char>> {
+    scene(Scene::Echo, width, height, elapsed)
 }
 
 /// The mark's strokes in `MARK_STROKES` span x from -0.62 to 0.46 and y from -0.62 to 0.62, so
@@ -143,7 +147,13 @@ fn an_area_with_no_room_draws_nothing_and_does_not_panic() {
     for (width, height) in [(0, 0), (0, 10), (10, 0), (1, 1), (1, 40), (300, 1)] {
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
-        title::paint(&mut buffer, area, Duration::from_secs(3), &theme());
+        title::paint(
+            &mut buffer,
+            area,
+            Scene::Echo,
+            Duration::from_secs(3),
+            &theme(),
+        );
     }
 }
 
@@ -194,7 +204,7 @@ fn an_empty_idle_pane_shows_the_field_under_the_chat_only_when_enabled() -> Test
     );
 
     let mut on = app();
-    on.set_title(true);
+    on.set_title(Some((Scene::Echo, Duration::ZERO)));
     assert!(on.title_visible());
     let shown = pane(&mut on);
     assert!(drawn_below(&shown, 4) > 50, "the field fills the free rows");
@@ -209,7 +219,7 @@ fn an_empty_idle_pane_shows_the_field_under_the_chat_only_when_enabled() -> Test
 #[test]
 fn the_first_message_ends_the_field() {
     let mut app = app();
-    app.set_title(true);
+    app.set_title(Some((Scene::Echo, Duration::ZERO)));
     app.commit_cell(&Cell::User {
         text: "hello".to_owned(),
     });
@@ -221,10 +231,73 @@ fn the_first_message_ends_the_field() {
 fn the_wake_is_asked_for_only_while_the_field_shows() {
     let mut app = app();
     assert_eq!(app.title_wake(), None);
-    app.set_title(true);
+    app.set_title(Some((Scene::Echo, Duration::ZERO)));
     let wake = app.title_wake();
     assert!(
         wake.is_some_and(|wake| wake > Duration::ZERO && wake <= title::FRAME),
         "{wake:?}"
     );
+}
+
+fn lit(glyphs: &[Vec<char>]) -> usize {
+    glyphs
+        .iter()
+        .flatten()
+        .filter(|glyph| **glyph != ' ')
+        .count()
+}
+
+/// At the first instant the fold is faded out and the name has not risen: an empty screen.
+/// Past the opening the name is solid on the Y stem and the fold fills the rest of the rows.
+#[test]
+fn the_fold_opens_from_nothing_and_the_name_settles_in() {
+    let at = |secs: f64| scene(Scene::Kali, 80, 24, Duration::from_secs_f64(secs));
+    assert_eq!(lit(&at(0.0)), 0, "nothing at the first instant");
+    let settled = at(4.0);
+    assert_eq!(settled[14][35], '@', "the Y stem is solid");
+    assert!(
+        lit(&settled) > 600,
+        "the fold fills the rows: {}",
+        lit(&settled)
+    );
+}
+
+#[test]
+fn the_fold_loops_exactly_once_open() {
+    let at = |secs: f64| scene(Scene::Kali, 80, 24, Duration::from_secs_f64(secs));
+    assert_eq!(at(5.25), at(5.25 + title::KALI_SECS));
+    assert_ne!(
+        at(5.25),
+        at(5.25 + title::KALI_SECS / 4.0),
+        "a quarter loop is another frame"
+    );
+}
+
+#[test]
+fn the_draw_follows_the_weights_and_the_seed() {
+    let weights = [(Scene::Kali, 8), (Scene::Echo, 2)];
+    let kali = (0..20_000)
+        .filter(|seed| title::pick(&weights, *seed) == Some(Scene::Kali))
+        .count();
+    assert!(
+        (15_600..=16_400).contains(&kali),
+        "kali drew {kali} of 20000"
+    );
+    assert_eq!(
+        title::pick(&weights, 7),
+        title::pick(&weights, 7),
+        "one seed, one scene"
+    );
+    assert_eq!(title::pick(&[], 1), None);
+    assert_eq!(title::pick(&[(Scene::Kali, 0), (Scene::Echo, 0)], 1), None);
+    let only = [(Scene::Kali, 0), (Scene::Echo, 3)];
+    assert!((0..200).all(|seed| title::pick(&only, seed) == Some(Scene::Echo)));
+}
+
+#[test]
+fn a_scene_is_found_by_its_name_and_by_no_other() {
+    assert_eq!(Scene::named("kali"), Some(Scene::Kali));
+    assert_eq!(Scene::named("echo"), Some(Scene::Echo));
+    assert_eq!(Scene::named("Kali"), None);
+    assert_eq!(Scene::named(""), None);
 }

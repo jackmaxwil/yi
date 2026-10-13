@@ -44,12 +44,44 @@ use crate::client::{ClientEvent, Outbound};
 use crate::layout::PaneId;
 use crate::model::{Link, SessionId, SessionStatus};
 
+/// The scenes the title may draw, by name and weight, and the seed that picks one.
+pub struct TitleOptions {
+    pub weights: Vec<(String, u32)>,
+    pub seed: u64,
+}
+
+impl TitleOptions {
+    /// `None` weights are the defaults; a name that is no scene is refused with the key named.
+    pub fn new(weights: Option<Vec<(String, u32)>>, seed: u64) -> Result<Self, String> {
+        let weights = weights.unwrap_or_else(|| {
+            let named = |scene| yi_tui::title::Scene::ALL.iter().find(|(_, s)| *s == scene);
+            yi_tui::title::DEFAULT_WEIGHTS
+                .iter()
+                .filter_map(|(scene, weight)| {
+                    named(*scene).map(|(n, _)| ((*n).to_owned(), *weight))
+                })
+                .collect()
+        });
+        if let Some((name, _)) = weights
+            .iter()
+            .find(|(name, _)| yi_tui::title::Scene::named(name).is_none())
+        {
+            let known: Vec<&str> = yi_tui::title::Scene::ALL.iter().map(|(n, _)| *n).collect();
+            return Err(format!(
+                "console.titleWeights.{name}: no such scene (the scenes are {})",
+                known.join(", ")
+            ));
+        }
+        Ok(Self { weights, seed })
+    }
+}
+
 pub struct ConsoleOptions {
     pub socket: PathBuf,
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
-    pub title: bool,
+    pub title: Option<TitleOptions>,
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
@@ -211,8 +243,13 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
 /// its own frame.
 fn title_tick(app: &mut App) {
     use crate::model::PaneContent;
-    app.dirty |= app.state.panes.values().any(|pane| {
-        matches!(&pane.content, PaneContent::Session { chat: Some(chat), .. } if chat.app.title_visible())
+    let on = app.state.title.is_some();
+    app.dirty |= app.state.panes.values().any(|pane| match &pane.content {
+        PaneContent::Session { chat: None, .. } => on,
+        PaneContent::Session {
+            chat: Some(chat), ..
+        } => chat.app.title_visible(),
+        _ => false,
     });
 }
 
@@ -474,6 +511,9 @@ fn chat_wake(app: &App) -> Duration {
         .panes
         .values()
         .filter_map(|pane| match &pane.content {
+            PaneContent::Session { chat: None, .. } if app.state.title.is_some() => {
+                Some(yi_tui::title::FRAME)
+            }
             PaneContent::Session {
                 chat: Some(chat), ..
             } => {
@@ -784,7 +824,17 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
 fn configure(app: &mut App, options: &ConsoleOptions) {
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
-    app.state.title = options.title;
+    app.state.title_start = app.clock.now();
+    app.state.title = options.title.as_ref().and_then(|title| {
+        let scenes: Vec<_> = title
+            .weights
+            .iter()
+            .filter_map(|(name, weight)| {
+                yi_tui::title::Scene::named(name).map(|scene| (scene, *weight))
+            })
+            .collect();
+        yi_tui::title::pick(&scenes, title.seed)
+    });
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;

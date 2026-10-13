@@ -1,10 +1,13 @@
-#! console --size 120x34 --config '{"console":{"titleIntro":true}}'
-# An empty console session with the title field on: rings spread from the Yi strokes under the
-# composer, and the first message ends it.
+#! console --size 120x34 --config '{"console":{"titleIntro":true,"titleWeights":{"kali":1}}}'
+# A cold console start with the Kali fold pinned: the fold opens from a deep zoom, then the
+# name rises through it. The clock is frozen, so each snap is the frame at that second.
 wait-frame 15000 command palette
-key alt-n
-wait-frame 10000 untitled
-snap title
-tick 450
-snap title-later
+tick 100
+snap start
+tick 900
+snap opening
+tick 1500
+snap name-rising
+tick 2500
+snap settled
 quit

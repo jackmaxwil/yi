@@ -89,7 +89,8 @@ fn leaves() -> Vec<String> {
             "console",
             fields!(ConsoleConfig {
                 auto_side,
-                title_intro
+                title_intro,
+                title_weights
             }),
         ),
         ("tui", fields!(TuiConfig { pace })),
