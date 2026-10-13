@@ -2029,6 +2029,20 @@ fn a_read_only_command_is_a_read_kind_call() {
         ),
         // ripwire 0.6.5's own schema line: safe-delete is "a READ never a verdict"; the tree is untouched.
         ("ripwire . --safe-delete=alpha", ToolKind::Read),
+        ("ripwire . --hotspots --legend=compact", ToolKind::Read),
+        (
+            "ripwire . --grep=parse_config --grep-in=any --legend=compact",
+            ToolKind::Read,
+        ),
+        ("ripwire . --quality-delta --legend=compact", ToolKind::Exec),
+        ("ripwire . --html=map.html", ToolKind::Exec),
+        (
+            "ripwire . --for='fix the bold split' --json",
+            ToolKind::Read,
+        ),
+        ("ripwire wrap claude", ToolKind::Exec),
+        ("ripwire . --top-k 20", ToolKind::Exec),
+        ("PATH=bin ripwire . --hotspots", ToolKind::Exec),
         ("ripwire . --note-add='X: slow'", ToolKind::Exec),
         ("ripwire . --run-trace='cargo test'", ToolKind::Exec),
         (

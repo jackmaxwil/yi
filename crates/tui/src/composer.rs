@@ -450,8 +450,7 @@ impl Composer {
         let rows = usize::from(rows);
         // Invariant: the box never takes more than 38.2% of the pane, the golden split.
         let cap = (rows.saturating_mul(382) / 1000).saturating_sub(2).max(1);
-        let rest = if rows >= 24 { 3 } else { 1 };
-        let want = wrapped.len().max(rest);
+        let want = wrapped.len().max(1);
         let step = GROWTH
             .iter()
             .copied()

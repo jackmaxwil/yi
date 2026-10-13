@@ -12,7 +12,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// A working day of commands, with the verdict each one earns in auto. Rows are
 /// what a dry run of `yi gate` prints, so a change in policy shows up here as a
 /// diff a person can read rather than as a number.
-const BATTERY: [(&str, &str); 123] = [
+const BATTERY: [(&str, &str); 125] = [
     // Reads and searches.
     ("ls -la", "allow"),
     ("cat Cargo.toml", "allow"),
@@ -34,6 +34,9 @@ const BATTERY: [(&str, &str); 123] = [
     ("rg 'fn $x' crates", "allow"),
     ("grep -n 'TODO' src/lib.rs", "allow"),
     ("sed -i '' 's/a/b/' file.txt", "contain"),
+    // The shape every ripwire skill spells; quality-delta can delete a stale sidecar.
+    ("ripwire . --hotspots --legend=compact", "allow"),
+    ("ripwire . --quality-delta --legend=compact", "contain"),
     // git, the reporting half.
     ("git status", "allow"),
     ("git diff --stat", "allow"),
