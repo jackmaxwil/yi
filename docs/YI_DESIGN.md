@@ -275,7 +275,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
 - `PromptState::assemble` joins three blocks with `SYSTEM_BLOCK_SEPARATOR`: ranks ≤ `Doctrine`,
   ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, the permission-mode
   fragment, user system text and schema instruction (text compiled in from
-  `crates/runtime/src/prompts/`); `yi ask` with no terminal on stdin and no asker also attaches
+  `crates/runtime/src/prompts/`); a headless ask (`yi ask` or bare prompt words) with no terminal on stdin also attaches
   `unattended` (Mode rank): nobody answers, hidden checks grade the task text, a check per
   requirement, one verifier cell before stopping. Then it registers `project-resources` (skills catalog), `pack`
   (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `plugins` (the card of each plugin found,
@@ -421,8 +421,8 @@ user typed points at it as `Relevant: yi://skills/<name>`. Bundled: `skills/yi` 
 A plugin's skills (`yi plugin add`, §17.1) are read the same way but never listed: one Yi skill
 points at them (`skills/yi/ripwire`), and its `requires: ripwire` lists it only while that
 plugin's skills are installed. A skill written for one repository says `within: <path>` and is
-listed only where the repository holds that path (`gate`, `land`, `pr-review` name Yi's own
-scripts). `read("yi://skills/<name>/<file>")` serves a file beside a skill's
+listed, triggered, classified and read only where the repository holds that path (`gate`,
+`land`, `pr-review` name Yi's own scripts). `read("yi://skills/<name>/<file>")` serves a file beside a skill's
 `SKILL.md`; a path that would leave the skill's directory is refused.
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
