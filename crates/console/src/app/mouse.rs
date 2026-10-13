@@ -5,6 +5,7 @@ use crate::client::Outbound;
 use crate::keys::Action;
 use crate::layout::PaneId;
 use crate::model::{Editor, Mode, PaneContent, SessionStatus, Zone};
+use crate::sidebar::Control;
 
 use super::App;
 
@@ -163,13 +164,12 @@ impl App {
             return self.apply_action(outbound, Action::ClosePane);
         }
         if x < hits.sidebar_width {
-            if let Some((_, index)) = hits.root_rows.iter().find(|(row_y, _)| *row_y == y) {
-                let root = self.state.roots().get(*index).cloned();
-                let next = root.filter(|r| self.state.root_filter.as_ref() != Some(r));
-                self.state.set_root_filter(next);
-                self.state.zone = Zone::Sidebar;
-                self.dirty = true;
-                return;
+            let control = hits
+                .controls
+                .iter()
+                .find(|(rect, _)| rect.contains((x, y).into()));
+            if let Some((_, control)) = control.cloned() {
+                return self.sidebar_control(outbound, control);
             }
             if let Some((_, index)) = hits.sidebar_rows.iter().find(|(row_y, _)| *row_y == y) {
                 self.state.selected = *index;
@@ -229,6 +229,20 @@ impl App {
             }
             self.dirty = true;
         }
+    }
+
+    fn sidebar_control(&mut self, outbound: &Outbound, control: Control) {
+        match control {
+            Control::New(root) => {
+                let root = root.unwrap_or_else(|| self.state.root.clone());
+                if let Some(pane) = self.state.focused_pane_id() {
+                    self.new_session_into(outbound, pane, root);
+                }
+            }
+            Control::Search => self.apply_action(outbound, Action::Navigator),
+            Control::Fold(root) => self.state.toggle_fold(&root),
+        }
+        self.dirty = true;
     }
 
     /// Incident: a click with the palette open reached the pane under it. A popup takes every

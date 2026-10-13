@@ -52,14 +52,6 @@ impl SessionStatus {
         }
     }
 
-    pub fn section(self) -> &'static str {
-        match self {
-            Self::Blocked | Self::DoneUnseen => "needs you",
-            Self::Working => "working",
-            Self::Idle | Self::Unknown => "idle",
-        }
-    }
-
     pub fn from_state(state: &AcpState, seen: bool) -> Self {
         match state {
             AcpState::Running => Self::Working,
@@ -99,6 +91,7 @@ pub struct SessionRow {
     pub name: Option<String>,
     pub created_ms: u64,
     pub last_ms: u64,
+    pub pinned: Option<u64>,
 }
 
 impl SessionRow {
@@ -114,6 +107,12 @@ impl SessionRow {
     pub fn recency(&self) -> u64 {
         self.last_ms.max(self.created_ms)
     }
+}
+
+pub struct Group {
+    pub root: Option<String>,
+    pub rows: Vec<usize>,
+    pub folded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -420,7 +419,7 @@ pub struct ConsoleState {
     pub chat_pace: u16,
     pub open_apps: Vec<String>,
     pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
-    pub root_filter: Option<String>,
+    pub folded: std::collections::BTreeSet<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
     pub parked: BTreeMap<SessionId, Box<Chat>>,
 }
@@ -458,7 +457,7 @@ impl ConsoleState {
             chat_pace: 0,
             open_apps: Vec::new(),
             session_options: BTreeMap::new(),
-            root_filter: None,
+            folded: std::collections::BTreeSet::new(),
             children: BTreeMap::new(),
             parked: BTreeMap::new(),
             quit: false,
@@ -587,49 +586,53 @@ impl ConsoleState {
         }
     }
 
-    pub fn visible_rows(&self) -> Vec<usize> {
-        let mut rows: Vec<usize> = self
-            .order
-            .iter()
-            .enumerate()
-            .filter(|(_, id)| {
-                self.root_filter
-                    .as_deref()
-                    .is_none_or(|root| self.sessions.get(*id).is_some_and(|row| row.root == root))
-            })
-            .map(|(index, _)| index)
+    /// Invariant: a pinned row leaves its workspace's group; the rail folds nothing.
+    pub fn groups(&self) -> Vec<Group> {
+        let row = |index: &usize| self.order.get(*index).and_then(|id| self.sessions.get(id));
+        let mut pinned: Vec<usize> = (0..self.order.len())
+            .filter(|index| row(index).is_some_and(|row| row.pinned.is_some()))
             .collect();
-        rows.sort_by_key(|index| {
-            let row = self.order.get(*index).and_then(|id| self.sessions.get(id));
-            (
-                row.map_or(usize::MAX, |row| self.need_of(row)),
-                std::cmp::Reverse(row.map_or(0, SessionRow::recency)),
-            )
-        });
-        rows
-    }
-
-    pub fn set_root_filter(&mut self, root: Option<String>) {
-        self.root_filter = root;
-        if let Some(first) = self.visible_rows().first() {
-            self.selected = *first;
+        pinned.sort_by_key(|index| row(index).and_then(|row| row.pinned));
+        let mut groups = vec![Group {
+            root: None,
+            rows: pinned,
+            folded: false,
+        }];
+        for root in self.roots() {
+            let mut rows: Vec<usize> = (0..self.order.len())
+                .filter(|index| {
+                    row(index).is_some_and(|row| row.root == root && row.pinned.is_none())
+                })
+                .collect();
+            rows.sort_by_key(|index| {
+                let row = row(index);
+                (
+                    row.map_or(usize::MAX, |row| self.need_of(row)),
+                    std::cmp::Reverse(row.map_or(0, SessionRow::recency)),
+                )
+            });
+            let folded = self.sidebar == SidebarMode::Full && self.folded.contains(&root);
+            groups.push(Group {
+                root: Some(root),
+                rows,
+                folded,
+            });
         }
+        groups
     }
 
-    pub fn cycle_root_filter(&mut self, forward: bool) {
-        let roots = self.roots();
-        let at = self
-            .root_filter
-            .as_ref()
-            .and_then(|root| roots.iter().position(|r| r == root));
-        let next = match (at, forward) {
-            (None, true) => roots.first().cloned(),
-            (None, false) => roots.last().cloned(),
-            (Some(i), true) => roots.get(i.saturating_add(1)).cloned(),
-            (Some(0), false) => None,
-            (Some(i), false) => roots.get(i.saturating_sub(1)).cloned(),
-        };
-        self.set_root_filter(next);
+    pub fn visible_rows(&self) -> Vec<usize> {
+        self.groups()
+            .into_iter()
+            .filter(|group| !group.folded)
+            .flat_map(|group| group.rows)
+            .collect()
+    }
+
+    pub fn toggle_fold(&mut self, root: &str) {
+        if !self.folded.remove(root) {
+            self.folded.insert(root.to_owned());
+        }
     }
 
     pub fn roots(&self) -> Vec<String> {

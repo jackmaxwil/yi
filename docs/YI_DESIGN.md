@@ -957,6 +957,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again in `_meta.yi.prefill`) or `at` it, attached beside the source, which keeps its own branch; any other position is refused by name (`AcpForkParams`) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
+| `_yi/pin{sessionId, pinned, cwd?}` | daemon | Pin a session to the top of the console's sidebar or unpin it, answered `{pinnedMs}`; the ledger keeps the pin's time, which orders the pinned list, and `session/list` carries it as `_meta.yi.pinnedMs`; `cwd` makes the ledger row of a session only the worker listed |
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
@@ -1025,17 +1026,23 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   JSON, Quote, Inspect; on a prompt Re-ask from here and Rewind to here, the conversation or it and
   its files; on an answer Fork here, a side session beside the chat; Open in ▸ each app `open` in config.json
   names, run by the daemon on the message saved as markdown),
-  a pane (close, zoom, split) or a sidebar session (open, open beside); ⌥c opens it for the
+  a pane (close, zoom, split) or a sidebar session (open, open beside, pin or unpin); ⌥c opens it for the
   focused pane or session. A verb that never applies is absent, one blocked now is greyed with
   its reason, and a row with a key names it. With more than one pane in a tab, the focused pane's
   title carries `✕` and its close key where the title leaves room, and a sibling's a bare `✕`;
   a mark closes its pane on a release that did not drag. The palette and the menu take every
   press while open and lift the kitty images of the panes they cover.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
-- The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
-  those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
-  session stays under "needs you" until focused; a poll never clears it. A working or blocked
-  session's avatar plays its state loop at 15 fps in place of its identicon.
+- The full sidebar opens with New session and Search (the palette), then PINNED, the pinned
+  sessions in pin order (⌥p, ⌘⇧K or the menu; the daemon's ledger keeps a pin), then one group
+  per workspace, the console's own root first: a header with the root's name, a fold mark and a
+  `+` that starts a session in that root, over its unpinned sessions ranked blocked, done and
+  unseen, a red gate (heard by an open or parked chat), working, idle, then by recency, two lines
+  a row (name; what it needs or is doing, its list, its age). A click on a header folds the group
+  for this console only; a folded header still shows a session that needs you. A done session
+  stays loud until focused; a poll never clears it. The rail keeps the same order, pinned first,
+  a blank row between workspaces and no headers. A working or blocked session's avatar plays its
+  state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
 - ⌘⇧R opens Review beside a session: its scope is the lane's branch against its merge base with

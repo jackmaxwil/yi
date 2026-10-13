@@ -988,6 +988,7 @@ mod tests {
             name: Some("Fix bug\u{7}\u{1b}]52;c;ZWNobyBwd25lZA==\u{7} now".to_owned()),
             created_ms: 0,
             last_ms: 0,
+            pinned: None,
         });
         let home = app.state.focused_pane_id().ok_or("a pane")?;
         if let Some(pane) = app.state.panes.get_mut(&home) {

@@ -646,6 +646,7 @@ fn the_ledger_names_a_holder() -> TestResult {
             last_state: Some("idle".to_owned()),
             last_event_ms: 0,
             name: Some("fix the auth\x1b[31m bug".to_owned()),
+            pinned_ms: None,
             extra: Default::default(),
         },
     );
