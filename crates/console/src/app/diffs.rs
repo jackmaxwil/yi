@@ -165,8 +165,12 @@ impl App {
             .collect();
         for id in due {
             let session = match self.state.panes.get(&id).map(|pane| &pane.content) {
-                Some(PaneContent::Notebook { session, cells, .. }) => {
-                    if cells.iter().any(|cell| cell.running) {
+                Some(PaneContent::Notebook { session, .. }) => {
+                    let running = session
+                        .as_ref()
+                        .and_then(|session| self.state.notebooks.get(session))
+                        .is_some_and(|cells| cells.iter().any(|cell| cell.running));
+                    if running {
                         continue;
                     }
                     session.clone()
@@ -225,7 +229,6 @@ impl App {
                 },
                 (_, session) => PaneContent::Notebook {
                     session,
-                    cells: Vec::new(),
                     input: crate::model::notebook_input(),
                 },
             };
@@ -298,35 +301,73 @@ mod tests {
         let home = app.state.focused_pane_id().expect("home");
         app.maybe_open_side(&session, SideKind::Notebook);
         assert_eq!(app.state.panes.len(), 2, "opened beside the chat");
-        let opened = *app.auto_notebooks.keys().next().expect("tracked");
         let later = Instant::now() + NOTEBOOK_IDLE;
-        if let Some(PaneContent::Notebook { cells, .. }) = app
-            .state
-            .panes
-            .get_mut(&opened)
-            .map(|pane| &mut pane.content)
-        {
-            cells.push(NbCell {
+        app.state.notebooks.insert(
+            session.clone(),
+            vec![NbCell {
                 running: true,
                 ..NbCell::default()
-            });
-        }
+            }],
+        );
         app.close_idle_notebooks(later);
         assert_eq!(app.state.panes.len(), 2, "a running cell holds it open");
-        if let Some(PaneContent::Notebook { cells, .. }) = app
-            .state
-            .panes
-            .get_mut(&opened)
-            .map(|pane| &mut pane.content)
-        {
-            cells.clear();
-        }
+        app.state.notebooks.clear();
         app.close_idle_notebooks(later);
         assert_eq!(app.state.panes.len(), 1, "closed once idle");
         assert_eq!(app.state.focused_pane_id(), Some(home), "focus back home");
         assert!(app.auto_notebooks.is_empty());
         app.maybe_open_side(&session, SideKind::Notebook);
         assert_eq!(app.state.panes.len(), 2, "the next cell opens it again");
+    }
+
+    /// Incident: closing the notebook and reopening it showed "no kernel cells yet" while the
+    /// kernel still held every variable; a cell that ran while it was closed was also lost.
+    #[test]
+    fn cells_survive_the_notebook_closing_and_reopening() {
+        use yi_types::acp::{AcpToolCallStatus, AcpUpdateParams};
+        let (mut app, session) = app_with_session();
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-notebook-persist-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        let send = |app: &mut App, update: AcpToolCallUpdate| {
+            let update = AcpUpdateParams {
+                session_id: session.0.clone(),
+                update: AcpSessionUpdate::ToolCallUpdate(update),
+            };
+            app.reduce_update(&outbound, update);
+        };
+        let start = |id: &str, code: &str| AcpToolCallUpdate {
+            tool_call_id: id.to_owned(),
+            title: Some("ipython".to_owned()),
+            raw_input: Some(json!({"code": code})),
+            ..AcpToolCallUpdate::default()
+        };
+        let end = |id: &str, stdout: &str| AcpToolCallUpdate {
+            tool_call_id: id.to_owned(),
+            status: Some(AcpToolCallStatus::Completed),
+            raw_output: Some(json!({"stdout": stdout})),
+            ..AcpToolCallUpdate::default()
+        };
+        send(&mut app, start("c1", "x = 1 + 2"));
+        send(&mut app, end("c1", "3\n"));
+        let opened = *app.auto_notebooks.keys().next().expect("auto-opened");
+        if let Some(tab) = app.state.tab_mut() {
+            tab.layout.focus_pane(opened);
+        }
+        app.state.close_focused_pane();
+        assert_eq!(app.state.panes.len(), 1, "closed");
+        send(&mut app, start("c2", "x * 2"));
+        send(&mut app, end("c2", "6\n"));
+        outbound.shutdown();
+        app.state.side_opened.clear();
+        app.maybe_open_side(&session, SideKind::Notebook);
+        assert_eq!(app.state.panes.len(), 2, "reopened");
+        let cells = &app.state.notebooks[&session];
+        let seen: Vec<_> = cells
+            .iter()
+            .map(|c| (c.code.as_str(), c.stdout.as_str()))
+            .collect();
+        assert_eq!(seen, [("x = 1 + 2", "3\n"), ("x * 2", "6\n")]);
     }
 
     #[test]

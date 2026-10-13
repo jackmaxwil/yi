@@ -734,16 +734,17 @@ impl App {
         }
         self.absorb_edit(outbound, &id, &update);
         self.absorb_kernel(&id, &update);
-        for (pane_id, pane) in &mut self.state.panes {
-            if pane.session() != Some(&id) {
-                continue;
-            }
-            if let PaneContent::Notebook { cells, .. } = &mut pane.content
-                && apply_notebook(cells, &update)
-            {
-                pane.scroll_from_bottom = 0;
-                if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
-                    *seen = Instant::now();
+        if matches!(update, AcpSessionUpdate::ToolCallUpdate(_))
+            && apply_notebook(self.state.notebooks.entry(id.clone()).or_default(), &update)
+        {
+            for (pane_id, pane) in &mut self.state.panes {
+                if pane.session() == Some(&id)
+                    && matches!(pane.content, PaneContent::Notebook { .. })
+                {
+                    pane.scroll_from_bottom = 0;
+                    if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
+                        *seen = Instant::now();
+                    }
                 }
             }
         }
@@ -808,7 +809,6 @@ impl App {
     fn cancel_notebook_cell(&mut self, outbound: &Outbound) {
         let Some(PaneContent::Notebook {
             session: Some(session),
-            cells,
             ..
         }) = self
             .state
@@ -818,8 +818,12 @@ impl App {
         else {
             return;
         };
-        let running = cells
-            .iter()
+        let running = self
+            .state
+            .notebooks
+            .get(session)
+            .into_iter()
+            .flatten()
             .rev()
             .find(|cell| cell.running && cell.call_id.starts_with("user-"))
             .map(|cell| cell.call_id.clone());
