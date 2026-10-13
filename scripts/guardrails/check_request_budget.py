@@ -96,8 +96,8 @@ def main(argv):
 
     if "--update" in argv:
         (BASE / "request_budget.json").write_text(
-            json.dumps({"system": system, "tools": tools, "total": total}) + "\n")
-        LOCK.write_text(json.dumps(surface, indent=1, sort_keys=True) + "\n")
+            json.dumps({"system": system, "tools": tools, "total": total}, indent=2) + "\n")
+        LOCK.write_text(json.dumps(surface, indent=2, sort_keys=True) + "\n")
         print(f"ok   request_budget updated to {total} bytes, {len(surface)} surface keys")
         return 0
 
