@@ -17,14 +17,16 @@ pub enum Scene {
     Echo,
     Solid,
     Mobius,
+    Clouds,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 4] = [
+    pub const ALL: [(&'static str, Scene); 5] = [
         ("kali", Scene::Kali),
         ("echo", Scene::Echo),
         ("solid", Scene::Solid),
         ("mobius", Scene::Mobius),
+        ("clouds", Scene::Clouds),
     ];
 
     pub fn named(name: &str) -> Option<Scene> {
@@ -36,11 +38,12 @@ impl Scene {
 }
 
 /// Used when the config names no weights: the Kali fold eight parts in twelve.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 4] = [
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 5] = [
     (Scene::Kali, 8),
     (Scene::Echo, 2),
     (Scene::Solid, 2),
     (Scene::Mobius, 2),
+    (Scene::Clouds, 2),
 ];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
@@ -213,6 +216,41 @@ fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
         * smooth(t / 0.3)
 }
 
+fn lattice(x: i32, y: i32) -> f64 {
+    let n = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
+    let n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
+    f64::from((n ^ (n >> 16)) & 0xFFFF) / 65_535.0
+}
+
+/// Value noise, smoothly interpolated between lattice points.
+fn noise(x: f64, y: f64) -> f64 {
+    let (ix, iy) = (x.floor(), y.floor());
+    let (fx, fy) = (x - ix, y - iy);
+    let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (ix, iy) = (ix as i32, iy as i32);
+    let top = lattice(ix, iy) + (lattice(ix + 1, iy) - lattice(ix, iy)) * sx;
+    let bottom = lattice(ix, iy + 1) + (lattice(ix + 1, iy + 1) - lattice(ix, iy + 1)) * sx;
+    top + (bottom - top) * sy
+}
+
+fn fbm(mut x: f64, mut y: f64) -> f64 {
+    let (mut sum, mut amp) = (0.0, 0.5);
+    for _ in 0..3 {
+        sum += amp * noise(x, y);
+        (x, y, amp) = (x * 2.02 + 3.1, y * 2.02 + 1.7, amp * 0.5);
+    }
+    sum
+}
+
+/// Domain-warped noise: weather that drifts a lap every six seconds, in `0.0..=1.0`.
+fn clouds(u: f64, v: f64, t: f64) -> f64 {
+    let (sin, cos) = (TAU * t / 6.0).sin_cos();
+    let (x, y) = (u * 1.7, v * 1.7);
+    let qx = fbm(x + 0.4 * cos, y + 0.4 * sin);
+    let qy = fbm(x + 5.2, y + 1.3 + 0.4 * sin);
+    (fbm(x + 3.2 * qx, y + 3.2 * qy) * 1.6 - 0.2).clamp(0.0, 1.0) * smooth(t / 0.3)
+}
+
 /// Where the plane is sampled for the name: a loxodromic Möbius flow with fixed points at `u = ±1`
 /// that unwinds to the identity by 2 s, so the name comes out of a vortex and settles.
 fn mobius(u: f64, v: f64, t: f64) -> (f64, f64) {
@@ -331,7 +369,7 @@ pub fn cover(
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
     let rise = match scene {
-        Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
+        Scene::Kali | Scene::Clouds => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
         Scene::Echo | Scene::Mobius => 1.0,
         Scene::Solid => 0.0,
     };
@@ -364,6 +402,7 @@ pub fn cover(
                 Scene::Echo => echo(d, t) * fade,
                 Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
                 Scene::Mobius => rings(d, t) * fade,
+                Scene::Clouds => clouds(u, v, t) * fade,
             };
             let value = match solid_hit {
                 Some(lit) => lit,
