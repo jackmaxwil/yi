@@ -40,6 +40,7 @@ pub enum Action {
     Redo,
     Menu,
     Settings,
+    Pin,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -91,6 +92,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('?') => Some(Action::Keys),
         KeyCode::Char('c') => Some(Action::Menu),
         KeyCode::Char(',') => Some(Action::Settings),
+        KeyCode::Char('p') => Some(Action::Pin),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
@@ -111,6 +113,7 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         ('m', true) => Action::Zoom,
         ('o', true) => Action::NewTab,
         ('n', true) => Action::NewSession,
+        ('k', true) => Action::Pin,
         ('r', true) => Action::ToggleDiff,
         ('l', true) => Action::Find,
         ('u', true) => Action::Redo,
@@ -191,7 +194,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 24] = [
+pub const CHORDS: [Chord; 25] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌥1..9", "", None),
@@ -265,6 +268,13 @@ pub const CHORDS: [Chord; 24] = [
         Some(Action::StopDaemon),
     ),
     chord("settings", "⌥,", "⌥,", ",", Some(Action::Settings)),
+    chord(
+        "pin or unpin the session",
+        "⌥p",
+        "⌘⇧K",
+        "",
+        Some(Action::Pin),
+    ),
     chord("all keys, in settings", "⌥?", "⌘/", "", Some(Action::Keys)),
     chord(
         "chat: cycle normal · thinking · verbose",

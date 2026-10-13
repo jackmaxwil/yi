@@ -33,6 +33,7 @@ fn console() -> Result<(App, PaneId), Box<dyn Error>> {
         name: Some("alpha".to_owned()),
         created_ms: 0,
         last_ms: 0,
+        pinned: None,
     });
     let pane = app
         .state
@@ -118,19 +119,27 @@ fn a_pane_with_no_session_titles_itself_without_a_status_dot() -> TestResult {
 #[test]
 fn hovering_a_control_lifts_it_and_only_a_new_target_redraws() -> TestResult {
     let (mut app, pane) = console()?;
+    app.state.sidebar = SidebarMode::Full;
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
     let found = hits(&app)?;
     let session = found.sidebar_rows.first().ok_or("no sidebar row")?.0;
     let title = found.titles.iter().find(|(at, _)| *at == pane);
     let tab = found.settings_tabs.iter().find(|(_, _, tab)| *tab > 0);
-    let targets: Vec<(&str, Rect)> = vec![
-        ("sidebar row", Rect::new(1, session, 1, 1)),
-        ("gear", found.gear.ok_or("no gear")?),
-        ("pane title", title.ok_or("no title target")?.1),
-        ("closer", found.closers.first().ok_or("no closer")?.1),
-        ("settings tab", tab.ok_or("no tab target")?.0),
-    ];
+    let controls = found
+        .controls
+        .iter()
+        .map(|(rect, _)| ("sidebar control", *rect));
+    assert_eq!(controls.len(), 4, "new, search, a header and its +");
+    let targets: Vec<(&str, Rect)> = controls
+        .chain([
+            ("sidebar row", Rect::new(1, session, 1, 1)),
+            ("gear", found.gear.ok_or("no gear")?),
+            ("pane title", title.ok_or("no title target")?.1),
+            ("closer", found.closers.first().ok_or("no closer")?.1),
+            ("settings tab", tab.ok_or("no tab target")?.0),
+        ])
+        .collect();
     let look = |terminal: &Terminal<TestBackend>, x: u16, y: u16| {
         terminal
             .backend()

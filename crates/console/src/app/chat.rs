@@ -708,7 +708,10 @@ impl App {
         }
         let id = session.0.as_str();
         match request {
-            PortRequest::New => self.new_session_into(outbound, pane_id),
+            PortRequest::New => {
+                let root = self.state.root.clone();
+                self.new_session_into(outbound, pane_id, root);
+            }
             PortRequest::Rewind(entry_id) => self.send_request(
                 outbound,
                 RequestKind::Rewind(session.clone()),
@@ -934,6 +937,7 @@ mod tests {
                 name: Some(id.to_owned()),
                 created_ms: 0,
                 last_ms,
+                pinned: None,
             });
         }
         let red = SessionId("s-red".to_owned());

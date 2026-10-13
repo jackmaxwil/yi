@@ -751,6 +751,51 @@ fn the_ledger_survives_a_daemon_restart() -> TestResult {
     outcome
 }
 
+/// A pin answers its time, is listed, survives a daemon restart, and an unpin clears it.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_pin_survives_a_daemon_restart() -> TestResult {
+    let dir = Scratch::new("yi-serve-pin")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let mut first = DaemonClient::connect(&socket)?;
+        first.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut first, "2", &dir)?;
+        let pin = |client: &mut DaemonClient, pinned: bool| {
+            let params = json!({"sessionId": session_id, "pinned": pinned});
+            client.request("p", "_yi/pin", params)
+        };
+        let pinned = pin(&mut first, true)?;
+        let at = pinned["result"]["pinnedMs"].clone();
+        assert!(at.is_u64(), "the pin answers its time: {pinned}");
+        let listed = listed_row(&mut first, &session_id)?.ok_or("the session is listed")?;
+        assert_eq!(listed["_meta"]["yi"]["pinnedMs"], at, "{listed}");
+        first.request("s", "_yi/shutdown", json!({}))?;
+        wait_until(Instant::now() + Duration::from_secs(5), || {
+            Ok(!socket.exists())
+        })?;
+        let _ = daemon.wait();
+
+        let (restarted, socket) = spawn_daemon(&dir)?;
+        daemon = restarted;
+        let mut second = DaemonClient::connect(&socket)?;
+        second.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let row = listed_row(&mut second, &session_id)?
+            .ok_or("the restarted daemon must list the session")?;
+        assert_eq!(
+            row["_meta"]["yi"]["pinnedMs"], at,
+            "the pin survives: {row}"
+        );
+        pin(&mut second, false)?;
+        let row = listed_row(&mut second, &session_id)?.ok_or("still listed")?;
+        assert!(row["_meta"]["yi"]["pinnedMs"].is_null(), "unpinned: {row}");
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// `_yi/shutdown` answers, then the daemon exits, its socket goes, and its worker dies
 /// with it — the console's double ctrl+c must leave no orphan behind.
 #[test]

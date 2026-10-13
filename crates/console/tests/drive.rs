@@ -893,7 +893,7 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
         // Click the first sidebar row to open it, split, click the right
         // pane, then prove focus moved there by submitting into it.
         "wait-frame 5000 s-alpha\n\
-         mouse down 2 1\n\
+         mouse down 2 3\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
          wait-frame 3000 no session\n\
@@ -1709,31 +1709,104 @@ fn subagent_push() -> Vec<Value> {
     )]
 }
 
-/// The workspaces block lists every root; ←/→ in the sidebar narrows the session list
-/// to one root and back.
+fn sidebar_order(frame: &str, needles: &[&str]) -> Result<Vec<usize>, String> {
+    let rows: Vec<&str> = frame.lines().collect();
+    needles
+        .iter()
+        .map(|needle| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .ok_or_else(|| format!("no row holds {needle:?}:\n{frame}"))
+        })
+        .collect()
+}
+
+/// A click on a workspace's header folds its sessions away and a second click brings them back.
 #[test]
-fn workspace_rows_filter_sessions_by_root() -> TestResult {
+fn a_click_on_a_workspace_header_folds_it() -> TestResult {
     run(
-        "roots",
+        "fold",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", other_root_ledger),
         ],
         "wait-frame 5000 s-gamma\n\
-         wait-frame 3000 workspaces\n\
-         wait-frame 3000 other-root 1\n\
-         key right\n\
-         wait-frame 3000 !s-gamma\n\
-         wait-frame 3000 s-alpha\n\
-         key right\n\
-         wait-frame 3000 s-gamma\n\
+         wait-frame 3000 demo-root ▾\n\
+         mouse down 3 2\n\
+         wait-frame 3000 demo-root ▸\n\
          wait-frame 3000 !s-alpha\n\
-         key left\n\
-         key left\n\
+         wait-frame 3000 s-gamma\n\
+         mouse down 3 2\n\
          wait-frame 3000 s-alpha\n\
+         wait-frame 3000 demo-root ▾\n\
          quit\n",
     )
+}
+
+fn new_in_other_root(frame: &Value) -> Vec<Value> {
+    if frame.pointer("/params/cwd") == Some(&json!("/tmp/other-root")) {
+        return vec![session_result(frame, "s-new", None, json!({}))];
+    }
+    vec![json!({"jsonrpc": "2.0", "id": id_of(frame),
+                "error": {"code": -32602, "message": "started in the wrong root"}})]
+}
+
+/// The `+` at a workspace header's end starts a session in that workspace, not the console's.
+#[test]
+fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
+    let frame = run_frames(
+        "plus",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+            Step::Expect("session/new", new_in_other_root),
+        ],
+        "wait-frame 5000 s-gamma\n\
+         mouse down 16 7\n\
+         wait-frame 3000 SN  untitled\n\
+         quit\n",
+    )?;
+    let at = sidebar_order(&frame, &["demo-root ▾", "other-root ▾", "SN  untitled"])?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    Ok(())
+}
+
+fn pinned_at(frame: &Value) -> Vec<Value> {
+    vec![ok(frame, json!({"pinnedMs": 5}))]
+}
+
+/// Pin on a session's menu lifts it into PINNED, and its menu then offers Unpin.
+#[test]
+fn pin_from_the_menu_moves_a_session_under_pinned() -> TestResult {
+    let frame = run_frames(
+        "pin",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("_yi/pin", pinned_at),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse right 3 5\n\
+         wait-frame 3000 Pin\n\
+         key down\nkey down\nkey enter\n\
+         wait-frame 3000 PINNED\n\
+         mouse right 3 3\n\
+         wait-frame 3000 Unpin\n\
+         key esc\n\
+         wait-frame 3000 !Unpin\n\
+         quit\n",
+    )?;
+    let at = sidebar_order(&frame, &["PINNED", "s-beta", "demo-root ▾", "s-alpha"])?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    assert_eq!(
+        frame.matches("s-beta").count(),
+        1,
+        "a pinned session is not repeated in its group:\n{frame}"
+    );
+    Ok(())
 }
 
 /// A child reported over `_yi/subagent_update` shows under its parent in the sidebar.
@@ -2402,24 +2475,30 @@ fn two_root_ledger(frame: &Value) -> Vec<Value> {
     )]
 }
 
-/// Dies with rows grouped by workspace: the inbox ranks every root's sessions by what they
-/// need, so the idle session of the other root outranks two the ledger never placed. A row
-/// opens with a quote in the frame, so the section needle cannot match an `idle · 5m` line.
+/// Rows group under their workspace, the console's own first, ranked by need, then recency.
 #[test]
-fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
-    run(
+fn rows_group_by_workspace_and_rank_by_need_inside_it() -> TestResult {
+    let frame = run_frames(
         "root-groups",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", named_list),
             Step::Expect("session/list", two_root_ledger),
         ],
-        "wait-frame 5000 1 SG  s-gamma\n\
-         wait-frame 3000 2 RE  release notes\n\
-         wait-frame 3000 3 FI  fix login bug\n\
-         wait-frame 3000 \"  idle\n\
+        "wait-frame 5000 1 RE  release notes\n\
+         wait-frame 3000 3 SG  s-gamma\n\
          quit\n",
-    )
+    )?;
+    let needles = [
+        "demo-root ▾",
+        "1 RE  release notes",
+        "2 FI  fix login bug",
+        "other-root ▾",
+        "3 SG  s-gamma",
+    ];
+    let at = sidebar_order(&frame, &needles)?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    Ok(())
 }
 
 /// The resumed session's worker reports a turn starting, the way a prompt does.
@@ -2478,6 +2557,7 @@ fn the_rail_stops_at_its_numbered_slots() -> TestResult {
             name: None,
             created_ms: 1000 + n,
             last_ms: 0,
+            pinned: None,
         });
     }
     let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 60);
@@ -2573,6 +2653,7 @@ fn session_with_children(
         name: Some(name.to_owned()),
         created_ms: 1000,
         last_ms: 0,
+        pinned: None,
     });
     let children = children
         .iter()
@@ -2855,10 +2936,10 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 2 SA\n\
          wait-frame 3000 !s-alpha\n\
-         wait-frame 3000 !workspaces\n\
+         wait-frame 3000 !demo-root\n\
          cmd-b\n\
          wait-frame 3000 2 SA  s-alpha\n\
-         wait-frame 3000 workspaces\n\
+         wait-frame 3000 demo-root ▾\n\
          cmd-b\n\
          wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\
@@ -3300,6 +3381,7 @@ fn the_focused_session_row_wears_the_active_background() -> TestResult {
             name: Some(id.to_owned()),
             created_ms: 1,
             last_ms: 1,
+            pinned: None,
         });
     }
     if let Some(pane) = app.state.focused_pane_mut() {
@@ -3371,6 +3453,7 @@ fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
             name: None,
             created_ms: 1,
             last_ms: 1,
+            pinned: None,
         });
     }
     let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 10);
@@ -3679,9 +3762,8 @@ fn a_fitted_sidebar_still_tells_sibling_workspaces_apart() -> TestResult {
             Step::Expect("session/list", empty_list),
             Step::Expect("session/list", sibling_roots_ledger),
         ],
-        "wait-frame 5000 workspaces\n\
-         wait-frame 3000 yi-feature-auth-fix 1\n\
-         wait-frame 3000 yi-feature-auth-ui 1\n\
+        "wait-frame 5000 yi-feature-auth-fix ▾\n\
+         wait-frame 3000 yi-feature-auth-ui ▾\n\
          quit\n",
     )
 }
@@ -4464,7 +4546,8 @@ fn a_pasted_control_character_is_dropped_behind_a_console_slash_command() -> Tes
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
          type /model\ntype x\u{7f}y\nquit\n",
     )?;
-    assert_eq!(row_holding(&frame, "/model")?, "/modelxy█");
+    let row = row_holding(&frame, "/model")?;
+    assert_eq!(row.rsplit("  ").next(), Some("/modelxy█"), "{row}");
     Ok(())
 }
 

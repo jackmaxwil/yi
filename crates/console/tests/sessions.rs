@@ -11,6 +11,7 @@ fn row(status: SessionStatus) -> SessionRow {
         name: None,
         created_ms: 0,
         last_ms: 0,
+        pinned: None,
     }
 }
 
@@ -127,5 +128,114 @@ fn a_titled_session_name_reaches_a_pane() -> Result<(), String> {
         Decoded::Name(name) => assert_eq!(name, "Fix the context gauge"),
         _ => return Err("name decoded as something else".to_owned()),
     }
+    Ok(())
+}
+
+/// Pins head the sidebar in pin order, out of their groups; a group ranks need, then recency,
+/// and folded keeps its header, marked when a session in it needs you.
+#[test]
+fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String> {
+    use yi_console::app::App;
+    use yi_console::model::SidebarMode;
+    use yi_console::sidebar::{Control, sidebar_lines};
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Full;
+    let rows = [
+        ("old-idle", "/w/yi", SessionStatus::Idle, 100, None),
+        ("new-idle", "/w/yi", SessionStatus::Idle, 900, None),
+        ("asks", "/w/yi", SessionStatus::Blocked, 50, None),
+        (
+            "pin-late",
+            "/w/legios",
+            SessionStatus::Idle,
+            10,
+            Some(2_000),
+        ),
+        (
+            "pin-early",
+            "/w/buildhost",
+            SessionStatus::Working,
+            10,
+            Some(1_000),
+        ),
+        (
+            "legios-asks",
+            "/w/legios",
+            SessionStatus::Blocked,
+            300,
+            None,
+        ),
+        ("buildhost-idle", "/w/buildhost", SessionStatus::Idle, 400, None),
+    ];
+    for (id, root, status, last_ms, pinned) in rows {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: root.to_owned(),
+            status,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms,
+            pinned,
+        });
+    }
+    let drawn = |app: &App| -> Vec<String> {
+        let mut last = None;
+        sidebar_lines(app, &theme, 60)
+            .into_iter()
+            .filter_map(|row| match (row.control, row.index) {
+                (Some(Control::Fold(_)), _) => {
+                    let words: Vec<String> = row
+                        .line
+                        .to_string()
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect();
+                    Some(words.join(" "))
+                }
+                (Some(Control::New(_)), _) => Some("new".to_owned()),
+                (Some(Control::Search), _) => Some("search".to_owned()),
+                (None, Some(index)) if last != Some(index) => {
+                    last = Some(index);
+                    let id = app.state.order.get(index)?;
+                    app.state.sessions.get(id)?.name.clone()
+                }
+                (None, None) if row.line.to_string().trim() == "PINNED" => {
+                    Some("PINNED".to_owned())
+                }
+                (None, _) => None,
+            })
+            .collect()
+    };
+    let want = [
+        "new",
+        "search",
+        "PINNED",
+        "pin-early",
+        "pin-late",
+        "yi ▾ +",
+        "asks",
+        "new-idle",
+        "old-idle",
+        "legios ▾ +",
+        "legios-asks",
+        "buildhost ▾ +",
+        "buildhost-idle",
+    ];
+    assert_eq!(drawn(&app), want);
+    app.state.toggle_fold("/w/legios");
+    let folded: Vec<String> = want
+        .iter()
+        .filter(|row| **row != "legios-asks")
+        .map(|row| {
+            row.replace(
+                "legios ▾ +",
+                &format!("legios ▸ {} +", SessionStatus::Blocked.glyph()),
+            )
+        })
+        .collect();
+    assert_eq!(drawn(&app), folded);
     Ok(())
 }

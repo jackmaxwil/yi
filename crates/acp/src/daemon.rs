@@ -61,6 +61,7 @@ struct SessionEntry {
     last_state: Option<String>,
     last_event_ms: u64,
     name: Option<String>,
+    pinned_ms: Option<u64>,
     /// Invariant: true only for a row the pre-attach path invented so a resume's replay
     /// could route. The worker's result confirms it; an unconfirmed row dies with its client.
     provisional: bool,
@@ -82,6 +83,7 @@ impl SessionEntry {
             last_state: None,
             last_event_ms: 0,
             name: None,
+            pinned_ms: None,
             provisional: false,
         }
     }
@@ -94,6 +96,7 @@ impl SessionEntry {
             unseen: stored.unseen,
             last_event_ms: stored.last_event_ms,
             name: stored.name,
+            pinned_ms: stored.pinned_ms,
             ..Self::new(stored.cwd, None)
         }
     }
@@ -105,6 +108,7 @@ impl SessionEntry {
             last_state: self.last_state.clone(),
             last_event_ms: self.last_event_ms,
             name: self.name.clone(),
+            pinned_ms: self.pinned_ms,
             extra: BTreeMap::new(),
         }
     }
@@ -247,6 +251,26 @@ impl Supervisor {
             }
             None => self.send_client(client, error_frame(id, -32602, "unknown sessionId")),
         }
+    }
+
+    /// A session only the worker listed has no entry yet, so a pin's `cwd` makes one.
+    fn pin(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
+        let Some(id) = id else { return };
+        let param = |key: &str| frame.pointer(&format!("/params/{key}"));
+        let session_id = param("sessionId").and_then(Value::as_str).unwrap_or("");
+        let pinned = param("pinned").and_then(Value::as_bool).unwrap_or(false);
+        if pinned && let Some(cwd) = param("cwd").and_then(Value::as_str) {
+            self.sessions
+                .entry(session_id.to_owned())
+                .or_insert_with(|| SessionEntry::new(cwd.to_owned(), None));
+        }
+        let Some(entry) = self.sessions.get_mut(session_id) else {
+            return self.send_client(client, error_frame(id, -32602, "unknown sessionId"));
+        };
+        entry.pinned_ms = pinned.then(|| entry.pinned_ms.unwrap_or_else(now_ms));
+        let reply = json!({"pinnedMs": entry.pinned_ms});
+        self.persist();
+        self.send_client(client, result_frame(id, reply));
     }
 
     async fn worker_for(&mut self, root: &str) -> Result<(), String> {
@@ -437,6 +461,7 @@ impl Supervisor {
                                 "unseen": entry.unseen,
                                 "lastState": entry.last_state,
                                 "lastEventMs": entry.last_event_ms,
+                                "pinnedMs": entry.pinned_ms,
                             }},
                         })
                     })
@@ -450,6 +475,7 @@ impl Supervisor {
                 let _ = self.input.send(Input::Shutdown);
             }
             "_yi/seen" => self.mark_seen(client, id, &frame),
+            "_yi/pin" => self.pin(client, id, &frame),
             "_yi/settings" | "_yi/set_default" => self.settings(client, id, &method, &frame),
             "_yi/open" => self.open(client, id, &frame),
             _ => {
@@ -922,6 +948,7 @@ mod tests {
                 last_state: None,
                 last_event_ms: 0,
                 name: None,
+                pinned_ms: None,
                 extra: BTreeMap::new(),
             };
             let sessions = std::iter::once(("s1".to_owned(), entry)).collect();
