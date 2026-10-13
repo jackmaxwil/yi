@@ -30,6 +30,7 @@ pub mod plantree;
 pub mod popup;
 pub mod port;
 pub mod pycell;
+pub(crate) mod question;
 pub mod reflow;
 pub mod render;
 pub mod reveal;

@@ -56,6 +56,7 @@ pub enum Command {
 
 pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
+    Question(crate::question::QuestionView),
     Command(ListPopup),
     File(ListPopup),
     Agents(crate::agents::AgentsPopup),
@@ -107,6 +108,7 @@ pub struct App {
     pub(crate) scheduler: FrameScheduler,
     pub(crate) composer: Composer,
     pub(crate) bottom: Option<Bottom>,
+    pub(crate) asked: Vec<crate::question::Question>,
     pub(crate) tree: Option<TreeView>,
     pub(crate) plan_tree: Option<crate::plantree::PlanTreeView>,
     pub(crate) plan_progress: Option<crate::hud::PlanProgress>,
@@ -299,6 +301,7 @@ impl App {
             ctrl_c_at: None,
             focused: None,
             reply_bound: None,
+            asked: Vec::new(),
             hud_hidden: false,
             seen_turn: false,
             submitted_turns: 0,
@@ -640,7 +643,10 @@ impl App {
     }
 
     pub fn orb_state(&self) -> Option<OrbState> {
-        if matches!(self.bottom, Some(Bottom::Approval(..))) {
+        if matches!(
+            self.bottom,
+            Some(Bottom::Approval(..) | Bottom::Question(..))
+        ) {
             return Some(OrbState::Listening);
         }
         if !self.running {
@@ -730,6 +736,7 @@ impl App {
                 self.flush_explored();
                 self.commit_finished_tasks();
                 self.commit_turn_footer();
+                self.open_questions();
                 self.scheduler.request();
             }
             AgentEvent::MessageStart { message } => {
@@ -809,6 +816,7 @@ impl App {
                 args,
             } => {
                 self.intent = intent_of(&args);
+                self.note_question(&tool_name, &args);
                 self.tool_started
                     .insert(tool_call_id.clone(), self.clock.now());
                 self.live_tools.push(ToolCell {
