@@ -271,3 +271,51 @@ fn wide_glyphs_keep_the_key_on_the_row_at_forty_columns() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the answered question left as a five-row tool cell cut by `… 1 more lines`, whose
+/// only hidden row was the sentence addressed to the model: one row says what was asked.
+#[test]
+fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResult {
+    use yi_types::event::ToolResult;
+    use yi_types::message::Content;
+    let mut app = app();
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "ask-0".to_owned(),
+        tool_name: "ask_user".to_owned(),
+        args: layout(),
+    });
+    let text = "Question for the user: Which layout?\n  1. Tree: Keeps nested todos.\n  2. Stages: Numbers each todo.\n  3. Focus card\nThe turn ends here; the user's next message is the answer.";
+    app.reduce_agent(AgentEvent::ToolExecutionEnd {
+        tool_call_id: "ask-0".to_owned(),
+        tool_name: "ask_user".to_owned(),
+        result: ToolResult {
+            content: vec![Content::Text {
+                text: text.to_owned(),
+                text_signature: None,
+            }],
+            details: Value::Null,
+            usage: None,
+            added_tool_names: None,
+            terminate: Some(true),
+        },
+        is_error: false,
+    });
+    let rows: Vec<String> = app
+        .take_commits()
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let asked = row_with(&rows, "Which layout").ok_or(format!("{rows:#?}"))?;
+    assert!(
+        asked.contains("Which layout?  [Tree · Stages · Focus card]"),
+        "{asked:?}"
+    );
+    assert!(row_with(&rows, "The turn ends here").is_none(), "{rows:#?}");
+    assert!(row_with(&rows, "more line").is_none(), "{rows:#?}");
+    Ok(())
+}

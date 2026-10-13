@@ -1,0 +1,16 @@
+#! solo --size 100x34 --faux scripts/proof/tui_see/question.jsonl
+# A root asks a design question; the person picks option 2 by key and the model goes on.
+wait-frame 5000 faux-1
+tick 1
+type lay out the plan pane
+key enter
+wait-frame 30000 Which layout for the plan pane?
+snap card
+key down
+snap preview
+key 2
+wait-frame 30000 Composing
+tick 8000
+wait-idle 30000
+snap answered
+quit
