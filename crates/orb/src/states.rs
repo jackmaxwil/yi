@@ -235,10 +235,10 @@ fn on_band(u: V, v: V, a: f64, off: f64) -> V {
     norm(add(add(scale(u, a.cos()), v, a.sin()), cross(u, v), off))
 }
 
-/// The `Yi` mark as five segments `((x1, y1), (x2, y2))`: the arms and stem of the Y, the stem
-/// of the i and its dot. The title field measures its distance to these same segments.
 pub(crate) const MARK_SPAN: f64 = 0.40 / 0.39;
 
+/// The `Yi` mark as five segments `((x1, y1), (x2, y2))`: the arms and stem of the Y, the stem
+/// of the i and its dot. The title field measures its distance to these same segments.
 pub const MARK_STROKES: [((f64, f64), (f64, f64)); 5] = [
     ((-0.62, 0.62), (-0.28, 0.06)),
     ((0.06, 0.62), (-0.28, 0.06)),
