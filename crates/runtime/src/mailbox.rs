@@ -890,7 +890,7 @@ impl SubagentHost {
         if let Some(store) = record.session.store()
             && let Ok(mut reaped) = self.reaped.lock()
         {
-            reaped.insert(name.clone(), store);
+            reaped.keep(name.clone(), store);
         }
         let block = format!("<reaped_child from=\"{name}\">\n{body}\n</reaped_child>");
         let harvested = self.harvests.lock().is_ok_and(|mut held| {

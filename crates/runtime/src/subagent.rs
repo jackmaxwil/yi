@@ -223,7 +223,7 @@ pub struct SubagentHost {
     pub(crate) children: Mutex<Children>,
     /// Invariant: a reap pin names `history://<child>`, and a child's file lives
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
-    pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
+    pub(crate) reaped: Mutex<trail::Kept>,
     pub(crate) mail: Mutex<crate::mail::Desk>,
     /// Lock order: `mail`, then `children`, then `grant`, then a session store.
     pub(crate) grant: Mutex<crate::lease::Grant>,
@@ -465,7 +465,7 @@ impl SubagentHost {
             options,
             deadline: Mutex::new(None),
             children: Mutex::new(Children::default()),
-            reaped: Mutex::new(HashMap::new()),
+            reaped: Mutex::default(),
             mail: Mutex::default(),
             grant: Mutex::default(),
             finished: Mutex::new(None),
@@ -994,7 +994,7 @@ impl SubagentHost {
     }
 
     pub fn kept_transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
-        self.reaped.lock().ok()?.get(target).cloned()
+        self.reaped.lock().ok()?.get(target)
     }
 
     /// Invariant: a reap asks that a child no longer run, so a host holding no such child has
