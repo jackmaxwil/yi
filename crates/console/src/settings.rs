@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use yi_tui::colors::Theme;
 use yi_types::acp::AcpConfigOption;
-use yi_types::settings::{Applies, SettingKind, SettingRow, TABS};
+use yi_types::settings::{Applies, SettingKind, SettingRow, TABS, pane_edits_list};
 
 use crate::model::SessionId;
 
@@ -183,12 +183,12 @@ pub fn key(settings: &mut Settings, key: KeyEvent, options: &[AcpConfigOption]) 
             match settings
                 .tab_rows()
                 .get(settings.cursor)
-                .map(|row| (&row.kind, &row.value, row.id.clone()))
+                .map(|row| (&row.kind, row.id.clone()))
             {
-                Some((SettingKind::Json, _, id)) => {
+                Some((SettingKind::Json, id)) => {
                     Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
                 }
-                Some((SettingKind::List, value, id)) if !value.is_array() && !value.is_null() => {
+                Some((SettingKind::List, id)) if !pane_edits_list(&id) => {
                     Intent::Note(format!("{id} is edited in ~/.yi/config.json"))
                 }
                 _ => commit(settings, options, Value::Null),
@@ -265,13 +265,12 @@ fn begin(settings: &mut Settings, options: &[AcpConfigOption]) -> Intent {
             settings.edit = Some(Edit::Type(text));
             Intent::None
         }
-        SettingKind::List if row.value.is_null() => {
+        SettingKind::List if pane_edits_list(&row.id) && row.value.is_null() => {
             settings.edit = Some(Edit::Type(String::new()));
             Intent::None
         }
-        SettingKind::List if row.value.is_array() => {
-            let text = shown_value(&row.value);
-            settings.edit = Some(Edit::Type(text));
+        SettingKind::List if pane_edits_list(&row.id) && row.value.is_array() => {
+            settings.edit = Some(Edit::Type(shown_value(&row.value)));
             Intent::None
         }
         SettingKind::List | SettingKind::Json => {
@@ -320,10 +319,11 @@ fn commit_typed(settings: &Settings, options: &[AcpConfigOption], text: &str) ->
 }
 
 fn shown(row: &SettingRow) -> String {
-    let entries = matches!(
-        (&row.kind, &row.value),
-        (SettingKind::Json, _) | (SettingKind::List, Value::Number(_))
-    );
+    let entries = match &row.kind {
+        SettingKind::Json => true,
+        SettingKind::List => !pane_edits_list(&row.id),
+        _ => false,
+    };
     match (&row.value, &row.default) {
         (Value::Number(count), _) if entries => format!("{count} entries"),
         (Value::Null, Value::Bool(true)) => "on (default)".to_owned(),
@@ -626,30 +626,31 @@ mod tests {
     #[test]
     fn a_redacted_list_row_points_at_config_json() -> Result<(), Box<dyn std::error::Error>> {
         use ratatui::crossterm::event::KeyModifiers;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        let mut rows = yi_types::settings::rows();
-        let at = rows
-            .iter()
-            .position(|row| row.id == "skills.global")
-            .ok_or("no skills row")?;
-        rows[at].value = serde_json::json!(2);
-        let tab = TABS
-            .iter()
-            .position(|tab| *tab == rows[at].tab)
-            .ok_or("no tab")?
-            + 1;
-        let mut settings = Settings::new(None, tab);
-        settings.rows = Some(rows);
-        settings.cursor = settings
-            .tab_rows()
-            .iter()
-            .position(|row| row.id == "skills.global")
-            .ok_or("no skills row")?;
-        let opened = key(&mut settings, press(KeyCode::Enter), &[]);
-        assert!(matches!(opened, Intent::Note(_)));
-        assert!(settings.edit.is_none());
-        let unset = key(&mut settings, press(KeyCode::Char('u')), &[]);
-        assert!(matches!(unset, Intent::Note(_)));
-        Ok(())
+        fn not_edited(id: &str, value: Value) -> Result<(), Box<dyn std::error::Error>> {
+            let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+            let mut rows = yi_types::settings::rows();
+            let at = rows.iter().position(|row| row.id == id).ok_or("no row")?;
+            rows[at].value = value;
+            let tab = TABS
+                .iter()
+                .position(|tab| *tab == rows[at].tab)
+                .ok_or("no tab")?
+                + 1;
+            let mut settings = Settings::new(None, tab);
+            settings.rows = Some(rows);
+            settings.cursor = settings
+                .tab_rows()
+                .iter()
+                .position(|row| row.id == id)
+                .ok_or("no row")?;
+            let opened = key(&mut settings, press(KeyCode::Enter), &[]);
+            let unset = key(&mut settings, press(KeyCode::Char('u')), &[]);
+            assert!(matches!(opened, Intent::Note(_)), "{id} opens an editor");
+            assert!(settings.edit.is_none(), "{id} opened an editor");
+            assert!(matches!(unset, Intent::Note(_)), "{id} unsets");
+            Ok(())
+        }
+        not_edited("skills.global", serde_json::json!(2))?;
+        not_edited("lanes.land", Value::Null)
     }
 }

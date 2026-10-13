@@ -74,6 +74,11 @@ pub fn comma_list(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The list rows the settings pane edits; every other list row points at config.json.
+pub fn pane_edits_list(id: &str) -> bool {
+    matches!(id, "routing.order" | "routing.only")
+}
+
 /// Why `value` cannot be saved under `row`; `null` (unset) always can.
 pub fn refusal(row: &SettingRow, value: &Value) -> Option<String> {
     let fits = match (&row.kind, value) {

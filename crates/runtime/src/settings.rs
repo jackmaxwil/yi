@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value};
-use yi_types::settings::{SettingKind, SettingRow, lookup, refusal, rows};
+use yi_types::settings::{SettingKind, SettingRow, lookup, pane_edits_list, refusal, rows};
 
 pub fn config_path(home: &Path) -> PathBuf {
     home.join(".yi/config.json")
@@ -37,9 +37,7 @@ pub fn current(home: &Path) -> Result<Vec<SettingRow>, String> {
 /// its entry count, and a list keeps it too unless the pane edits it (the routing rows).
 fn shown(row: &SettingRow, value: &Value) -> Value {
     match (&row.kind, value) {
-        (SettingKind::List, _) if matches!(row.id.as_str(), "routing.order" | "routing.only") => {
-            value.clone()
-        }
+        (SettingKind::List, _) if pane_edits_list(&row.id) => value.clone(),
         (SettingKind::List | SettingKind::Json, Value::Array(items)) => Value::from(items.len()),
         (SettingKind::List | SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
         (SettingKind::List | SettingKind::Json, Value::Null) => Value::Null,
