@@ -20,6 +20,14 @@ impl App {
             .unwrap_or(0)
     }
 
+    /// A drive may not move time while the provider owes the screen: a turn it announced but
+    /// has not served, or a stream event it has sent that the runtime has not delivered.
+    pub fn stream_owed(&self, requests: u64, updates: u64) -> bool {
+        self.pacing.arrived < updates
+            || (requests > 0
+                && (self.pacing.turns < self.started_turns || self.pacing.announced > requests))
+    }
+
     /// The streaming message's end has arrived: reduced, or held behind a reveal a frozen clock
     /// has not moved yet.
     pub fn stream_settled(&self) -> bool {
@@ -30,5 +38,22 @@ impl App {
                     yi_types::event::AgentEvent::MessageEnd { .. }
                 ))
             )
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    pub fn has_run(&self) -> bool {
+        self.seen_turn
+    }
+
+    /// A prompt has been submitted whose turn has not started yet.
+    pub fn awaiting_turn(&self) -> bool {
+        self.submitted_turns > self.started_turns
+    }
+
+    pub fn turn_idle(&self) -> bool {
+        self.seen_turn && !self.running && !self.awaiting_turn()
     }
 }

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde_json::{Map, Value};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
@@ -194,16 +196,25 @@ pub fn stream_with_deltas(message: &AgentMessage) -> Vec<AssistantMessageEvent> 
 
 #[derive(Debug, Default)]
 pub struct FauxProvider {
-    queue: Vec<AgentMessage>,
+    queue: Vec<(AgentMessage, Duration)>,
     pub call_count: u64,
 }
 
 impl FauxProvider {
     pub fn set_responses(&mut self, responses: Vec<AgentMessage>) {
-        self.queue = responses;
+        self.queue.clear();
+        self.append_responses(responses);
     }
 
     pub fn append_responses(&mut self, responses: Vec<AgentMessage>) {
+        self.queue.extend(
+            responses
+                .into_iter()
+                .map(|message| (message, Duration::ZERO)),
+        );
+    }
+
+    pub fn append_timed(&mut self, responses: Vec<(AgentMessage, Duration)>) {
         self.queue.extend(responses);
     }
 
@@ -212,15 +223,21 @@ impl FauxProvider {
     }
 
     pub fn stream(&mut self) -> Vec<AssistantMessageEvent> {
+        self.stream_timed().0
+    }
+
+    /// The next response's events and how long the recorded model took to produce them.
+    pub fn stream_timed(&mut self) -> (Vec<AssistantMessageEvent>, Duration) {
         self.call_count += 1;
         if self.queue.is_empty() {
             let error = error_message("No more faux responses queued");
-            return vec![AssistantMessageEvent::Error {
+            let events = vec![AssistantMessageEvent::Error {
                 reason: StopReason::Error,
                 error,
             }];
+            return (events, Duration::ZERO);
         }
-        let message = self.queue.remove(0);
-        stream_with_deltas(&message)
+        let (message, lag) = self.queue.remove(0);
+        (stream_with_deltas(&message), lag)
     }
 }
