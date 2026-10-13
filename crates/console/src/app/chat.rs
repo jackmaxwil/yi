@@ -1054,7 +1054,8 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the mark gone from every chat pane but the focused one.
+    /// Dies with the mark gone from every chat pane but the focused one, or with an unfocused
+    /// pane retransmitting its orb every frame: only the focused pane animates, the rest hold one.
     #[test]
     fn every_drawn_chat_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
@@ -1088,6 +1089,29 @@ mod tests {
                 .iter()
                 .any(|id| written.contains(&format!("a=p,i={id},")));
             assert!(placed, "pane {} has no mark: {written:?}", pane.raw());
+        }
+        let right_chat = app
+            .state
+            .chats_mut(&SessionId("s-b".to_owned()))
+            .into_iter()
+            .next()
+            .ok_or("no chat")?;
+        right_chat
+            .app
+            .reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        std::thread::sleep(yi_tui::orb::FRAME * 2);
+        out.clear();
+        crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
+        let written = String::from_utf8_lossy(&out);
+        for id in orb_ids(right) {
+            assert!(
+                !written.contains(&format!("a=t,i={id},")),
+                "the unfocused pane retransmitted its mark: {written:?}"
+            );
+            assert!(
+                !written.contains(&format!("a=p,i={id},")),
+                "the unfocused pane re-placed its mark: {written:?}"
+            );
         }
         Ok(())
     }

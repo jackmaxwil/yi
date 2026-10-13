@@ -1,8 +1,8 @@
 ---
 issue: Closes #1371
-growth: +188 the pointer chrome and hover plumbing consolidated into one hit-test resolver, and a no-anim `orb::place` so unfocused panes hold one placed frame instead of ticking; per-widget hit fns and a second settings-strip painter were weighed and rejected in favor of reusing `strip()` and `paint_rgba`
+growth: +177 the pointer chrome and hover plumbing consolidated into one hit-test resolver, and a focused guard on `orb::tick` so unfocused panes hold one placed frame instead of animating; per-widget hit fns and a second settings-strip painter were weighed and rejected in favor of reusing `strip()` and `paint_rgba`
 decision: a lane session's status row names the repo alone: `LaneHandle::row` stays the one builder and `_yi/workdir` still carries its text, but the `⎇ lane <slot>` suffix is gone (amends D208) | the owner asked for no "⎇ lane 0" on the console status row (#1371); the slot number is pool bookkeeping nobody acts on, and the row already says which tree by its repo | restore `format!("{repo} ⎇ lane {}", lane.slot())` in `LaneHandle::row`
-raise: crate console +152, crate tui +39, tests +203, comments +6
+raise: crate console +174, crate tui +6, tests +203, comments +5
 ---
 The console's chrome answers the pointer (Closes #1371). A click on a settings tab opens that
 tab; the strip records its targets from the same pieces it draws, so a click can never miss a
