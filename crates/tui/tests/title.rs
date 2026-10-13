@@ -185,7 +185,7 @@ fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
 #[test]
 fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
     let landing = Rect::new(2, 1, 10, 5);
-    for which in [Scene::Kali, Scene::Solid, Scene::Mobius] {
+    for which in [Scene::Kali, Scene::Solid, Scene::Mobius, Scene::Clouds] {
         let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
         let held = at(2.1);
         assert_eq!(
@@ -294,6 +294,7 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("echo"), Some(Scene::Echo));
     assert_eq!(Scene::named("solid"), Some(Scene::Solid));
     assert_eq!(Scene::named("mobius"), Some(Scene::Mobius));
+    assert_eq!(Scene::named("clouds"), Some(Scene::Clouds));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
@@ -378,4 +379,31 @@ fn the_mobius_name_comes_out_of_a_vortex_and_settles() {
         "the vortex moved only {moved} cells by the hold"
     );
     assert_eq!(held[14][35], '@', "the Y stem is where the others put it");
+}
+
+/// The weather fades up from nothing, drifts, and the name rises through it as in the fold.
+#[test]
+fn the_clouds_fade_up_drift_and_let_the_name_through() {
+    let at = |secs: f64| screen(Scene::Clouds, (80, 24), secs, None);
+    assert_eq!(
+        count(&at(0.0), |g| g != ' '),
+        0,
+        "nothing at the first instant"
+    );
+    let (a, b) = (at(1.0), at(1.5));
+    assert!(
+        count(&a, |g| g != ' ') > 500,
+        "the weather fills the screen"
+    );
+    let moved = a
+        .iter()
+        .flatten()
+        .zip(b.iter().flatten())
+        .filter(|(x, y)| x != y)
+        .count();
+    assert!(
+        moved > 200,
+        "the drift moved only {moved} cells in half a second"
+    );
+    assert_eq!(at(2.1)[14][35], '@', "and the Y stem is solid through it");
 }
