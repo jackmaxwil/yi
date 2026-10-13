@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod avatar;
+mod chrome;
 pub mod client;
 pub mod keys;
 pub mod kitty;
@@ -34,7 +35,7 @@ use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
 use yi_tui::drive::{
-    Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
+    Control, Deadline, Step, WaitPoll, keep_frame, key_event, poll_condition, typed_events,
 };
 use yi_tui::term::ControlPictures;
 
@@ -149,6 +150,30 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     Ok(steps)
 }
 
+fn timing_step(
+    app: &mut App,
+    outbound: &Outbound,
+    events: &std::sync::mpsc::Receiver<ClientEvent>,
+    step: &Step,
+    started: Instant,
+) -> Option<WaitPoll> {
+    Some(match step {
+        Step::Tick(ms) => {
+            if app.clock == yi_tui::motion::Clock::Real {
+                app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+            }
+            tick(app, outbound, events, *ms);
+            WaitPoll::Done
+        }
+        Step::WaitIdle(ms) => poll_condition(!drive_idle(app), started, *ms, "wait-idle"),
+        Step::Hold(..) | Step::Release => WaitPoll::Failed(
+            "hold and release need the solo drive: the console's model lives in the daemon"
+                .to_owned(),
+        ),
+        _ => return None,
+    })
+}
+
 /// Moves the console's frozen clock a frame at a time, its chat panes with it.
 fn tick(
     app: &mut App,
@@ -229,7 +254,7 @@ fn draw<B: Backend>(
     Ok(())
 }
 
-pub fn run_console(options: &ConsoleOptions) -> i32 {
+pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let theme = Theme::new(
         detect_tier(
             std::env::var("COLORTERM").ok().as_deref(),
@@ -288,7 +313,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let stop_input = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let input = client::spawn_input(event_tx, std::sync::Arc::clone(&stop_input));
     drop(setup);
-    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme);
+    let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme, control);
     stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = input.join();
     restore_terminal();
@@ -304,6 +329,7 @@ fn run_interactive(
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
     theme: &Theme,
+    mut control: Option<Control>,
 ) -> i32 {
     let mut orb_owners = std::collections::HashMap::new();
     let mut scheduler = yi_tui::frame::FrameScheduler::default();
@@ -316,7 +342,12 @@ fn run_interactive(
             .poll_timeout(Instant::now())
             .min(IDLE_POLL)
             .min(chat_wake(app))
-            .min(app.avatars.wake().unwrap_or(IDLE_POLL));
+            .min(app.avatars.wake().unwrap_or(IDLE_POLL))
+            .min(
+                control
+                    .as_ref()
+                    .map_or(IDLE_POLL, |_| yi_tui::drive::CONTROL_POLL),
+            );
         // Incident: a 50 ms input poll delayed every daemon frame; any event now wakes the loop.
         match events.recv_timeout(wake) {
             Ok(ClientEvent::InputClosed(error)) => {
@@ -328,6 +359,11 @@ fn run_interactive(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return 1,
         }
         drain(app, outbound, events);
+        if yi_tui::drive::serve(&mut control, |step, at| {
+            timing_step(app, outbound, events, step, at)
+        }) {
+            app.dirty = true;
+        }
         if app.dirty {
             scheduler.request();
         }
@@ -676,7 +712,10 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     WaitPoll::Retry => {
                         current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
                     }
-                    WaitPoll::TimedOut => exit_code = 1,
+                    WaitPoll::Failed(error) => {
+                        eprintln!("error: {error}");
+                        exit_code = 1;
+                    }
                     WaitPoll::Done => {}
                 }
             }
@@ -690,7 +729,10 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                             started,
                         ))
                     }
-                    WaitPoll::TimedOut => exit_code = 1,
+                    WaitPoll::Failed(error) => {
+                        eprintln!("error: {error}");
+                        exit_code = 1;
+                    }
                 }
             }
             (ConsoleStep::Tui(Step::Quit), _) => break,
@@ -818,6 +860,108 @@ mod tests {
         let place = out.find("a=p,").ok_or("the image was not placed")?;
         let close = out.rfind("\u{1b}[?2026l").ok_or("no update closed")?;
         assert!(open < place && place < close, "{out:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_gear_is_placed_as_an_image_and_a_popup_hides_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.kitty = true;
+        app.state.link = crate::model::Link::Connected;
+        app.state
+            .split_focused(ratatui::layout::Direction::Horizontal);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let mut out = Vec::new();
+        present(
+            &mut app,
+            &mut terminal,
+            &theme,
+            &mut std::collections::HashMap::new(),
+            &mut out,
+        )?;
+        let out = String::from_utf8_lossy(&out);
+        assert_eq!(
+            out.matches("c=3,r=1").count(),
+            2,
+            "a close image per pane: {out:?}"
+        );
+        let hints = app.hits.as_ref().map_or(0, |hits| hits.hint_buttons.len());
+        assert!(hints >= 5, "the keys that fit are buttons: {hints}");
+        let caps = 2 + 2 * hints;
+        assert_eq!(
+            out.matches("a=t,").count(),
+            3 + caps,
+            "gear, closers, dock and key caps"
+        );
+        assert!(out.contains("s=32,v=48,a=t,i=8000"), "{out:?}");
+        assert!(out.contains("a=p,i=8000,p=1,q=2,C=1,c=4,r=3"), "{out:?}");
+        let gear = app
+            .hits
+            .as_ref()
+            .and_then(|hits| hits.gear)
+            .ok_or("no gear")?;
+        assert_eq!(gear.height, 3);
+        if let Some(hits) = app.hits.as_mut() {
+            hits.overlays = vec![gear];
+        }
+        let mut covered = Vec::new();
+        place_avatars(&mut app, &mut covered);
+        let covered = String::from_utf8_lossy(&covered);
+        assert!(covered.contains("a=d,d=I,i=8000"), "{covered:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_hovered_keycap_lightens_and_the_rest_keep_their_colour()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.state.link = crate::model::Link::Connected;
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
+        let key_bg = |terminal: &Terminal<ratatui::backend::TestBackend>,
+                      at: ratatui::layout::Rect| {
+            let cell = terminal
+                .backend()
+                .buffer()
+                .cell((at.x.saturating_add(2), at.y));
+            cell.map(|cell| cell.bg)
+        };
+        draw(&mut app, &mut terminal, &theme)?;
+        let buttons = app
+            .hits
+            .as_ref()
+            .map(|hits| hits.hint_buttons.clone())
+            .unwrap_or_default();
+        let (first, second) = (
+            buttons.first().ok_or("no hint")?.0,
+            buttons.get(1).ok_or("one hint")?.0,
+        );
+        let rest = (key_bg(&terminal, first), key_bg(&terminal, second));
+        assert_ne!(rest.0, rest.1, "each keycap wears its own colour");
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-hover-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        let moved = |column, row| {
+            CtEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+                kind: ratatui::crossterm::event::MouseEventKind::Moved,
+                column,
+                row,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            })
+        };
+        app.handle_event(&outbound, moved(second.x.saturating_add(4), second.y));
+        outbound.shutdown();
+        assert!(app.dirty, "entering a keycap redraws");
+        draw(&mut app, &mut terminal, &theme)?;
+        assert_eq!(
+            key_bg(&terminal, first),
+            rest.0,
+            "a keycap the pointer is not on keeps its colour"
+        );
+        let lit = key_bg(&terminal, second).ok_or("no cell")?;
+        assert_ne!(Some(lit), rest.1, "the hovered keycap lightens");
         Ok(())
     }
 

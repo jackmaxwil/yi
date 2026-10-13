@@ -84,6 +84,10 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         initial_prompt,
         pace: reveal_pace(args),
     };
+    let control = match control(args) {
+        Ok(control) => control,
+        Err(code) => return code,
+    };
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_tui::parse_script) {
             Ok(script) => script,
@@ -119,10 +123,28 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         host,
         ask_rx,
         options,
+        control,
     );
     leave_lane(&session);
     print_resume_hint(&session, &session_name);
     code
+}
+
+#[cfg(feature = "tui")]
+fn control(args: &Args) -> Result<Option<yi_tui::drive::Control>, i32> {
+    let Some(path) = &args.control else {
+        return Ok(None);
+    };
+    if args.headless {
+        eprintln!("error: --control drives an interactive run; a headless one reads --keys");
+        return Err(2);
+    }
+    yi_tui::drive::Control::connect(std::path::Path::new(path))
+        .map(Some)
+        .map_err(|error| {
+            eprintln!("error: --control {path}: {error}");
+            2
+        })
 }
 
 /// The quit line says where the work is before the slot is handed back.
@@ -300,6 +322,10 @@ pub fn run_console_command(args: &Args) -> i32 {
         sidebar: yi_console::model::SidebarMode::Rail,
         pace: reveal_pace(args),
     };
+    let control = match control(args) {
+        Ok(control) => control,
+        Err(code) => return code,
+    };
     if !args.headless {
         ensure_daemon(args, &options.socket);
     }
@@ -319,7 +345,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         };
         return yi_console::run_headless(&options, drive);
     }
-    yi_console::run_console(&options)
+    yi_console::run_console(&options, control)
 }
 
 struct DriveCommon {
