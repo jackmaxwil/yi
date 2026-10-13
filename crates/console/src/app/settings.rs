@@ -15,6 +15,15 @@ impl App {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Settings(_)))
     }
 
+    pub(super) fn open_settings_pane(&self) -> Option<PaneId> {
+        self.state.tab()?.layout.pane_ids().into_iter().find(|id| {
+            self.state
+                .panes
+                .get(id)
+                .is_some_and(|pane| matches!(pane.content, PaneContent::Settings(_)))
+        })
+    }
+
     fn settings_pane(&mut self, pane: PaneId) -> Option<&mut Settings> {
         match &mut self.state.panes.get_mut(&pane)?.content {
             PaneContent::Settings(settings) => Some(settings),
@@ -25,15 +34,7 @@ impl App {
     /// Focuses the tab's settings pane, opening one beside the focused pane if there is none.
     pub(super) fn open_settings(&mut self, outbound: &Outbound, tab: usize) {
         let session = self.state.focused_session();
-        let open = self.state.tab().and_then(|layout| {
-            layout.layout.pane_ids().into_iter().find(|id| {
-                self.state
-                    .panes
-                    .get(id)
-                    .is_some_and(|pane| matches!(pane.content, PaneContent::Settings(_)))
-            })
-        });
-        let pane = match open {
+        let pane = match self.open_settings_pane() {
             Some(pane) => pane,
             None => {
                 let home = self.state.focused_pane_id();

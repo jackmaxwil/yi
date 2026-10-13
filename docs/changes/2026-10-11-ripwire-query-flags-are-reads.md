@@ -1,0 +1,7 @@
+---
+issue: Closes #1177
+raise: crate permission +50, tests +48, comments +2
+---
+A ripwire command made only of query flags now runs as a read in auto mode instead of in the sandbox. Every command in ripwire's skills spells `--legend=compact`, and neither the bash tool nor the permission check knew that flag, so about 150 of the skills' 174 commands ran contained and were labelled exec. The flag table moved into the permission crate and grew from 38 to 136 flags. Each new flag was checked against ripwire 0.6.5's own help text and run on a scratch repository, which it left byte for byte unchanged. `--quality-delta` stays exec because it deletes a stale sidecar from the working tree; the edit, baseline, note, export, `--html`, `--cache`, server and run-trace flags stay exec as before. `yi gate` needed no change: it and a real bash call both take the permission check's verdict, so both now say `allow` for `ripwire . --hotspots --legend=compact`.
+
+A read is the bare program name `ripwire` (not a path to one, so a planted `./ripwire` stays contained), query flags in `--flag=value` form (ripwire 0.6.5 rejects `--top-k 20`), and at most one bare word that looks like a local directory: `.`, `./x`, `../x` or `/x`. `ripwire wrap`, a git URL, `ripwire src` and a second bare word stay contained, so a setup verb ripwire adds later cannot read as a query. The bash tool's read label asks the same classifier, so a quoted value like `--for='fix the bold split'` is one word and the label cannot disagree with the verdict. No filesystem call is made while classifying.

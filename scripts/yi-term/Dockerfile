@@ -14,7 +14,7 @@ ARG WEZ_SHA256_arm64=3e64e618601f254795f7d18a41d8dda27092ddc4e7f91e017492156c48f
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl xvfb xauth mesa-utils libgl1-mesa-dri libegl1 \
-      ffmpeg python3 python3-pyte fonts-jetbrains-mono git kitty \
+      ffmpeg python3 python3-pyte fonts-jetbrains-mono fonts-noto-mono git kitty \
  && curl -fsSL -o /tmp/ghostty.deb \
       "https://github.com/mkasberg/ghostty-ubuntu/releases/download/${GHOSTTY%.ppa2}-ppa2/ghostty_${GHOSTTY}_${TARGETARCH}_24.04.deb" \
  && if [ "$TARGETARCH" = arm64 ]; then sum=$SHA256_arm64; else sum=$SHA256_amd64; fi \
