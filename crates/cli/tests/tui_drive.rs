@@ -785,7 +785,6 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
     assert!(refused.starts_with("error: "), "{refused}");
     pty.kill()?;
     pty.wait()?;
-
     Ok(())
 }
 

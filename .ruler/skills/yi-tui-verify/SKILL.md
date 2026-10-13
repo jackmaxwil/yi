@@ -59,10 +59,9 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    text_delta 2` before the prompt, snap while it is held, `release`, then `snap-strip reveal 6
    80`. Any `tick` freezes the clock for the whole scene: `wait-idle` does not move it, so `tick`
    past the reveal before waiting, and a `tick` waits (5 s at most) for an armed hold to be
-   reached. Hold is solo only; the console's model lives in the daemon.
-   A cassette cut from a recorded session file (lines with `kind: entry`) streams each reply over
-   the time its entry took; on a frozen clock `tick` moves it (`paced.drive`). On the term host
-   the proxy sends these steps and `wait-idle` over the
+   reached. Hold is solo only; the console's model lives in the daemon. A `--faux` cassette cut
+   from a recorded session file streams each reply over the time it took, and a `tick` moves that
+   clock (`paced.drive`). On the term host the proxy sends these steps and `wait-idle` over the
    real binary's `--control <socket>`, which plays them on the drive's engine and answers `ok` or
    `error: …`, so a frozen scene's Ghostty grabs land on its headless frames; a snap whose words
    part from the headless one is named.
