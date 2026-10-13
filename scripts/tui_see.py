@@ -6,9 +6,11 @@ the surface first, then flags, e.g. `#! solo --size 80x24 --faux replies.jsonl -
 or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking at.
 
   tui_see.py run SCENE [--label head] [--out target/see] [--bin target/debug/yi] [--host term]
+                [--terminal ghostty|kitty|wezterm]
   tui_see.py diff RUN_A RUN_B          # two run dirs; writes RUN_B/diff-vs-<A>/summary.md
   tui_see.py gallery [ROOT] [PAGE]     # every scene and label under ROOT on one HTML page
   tui_see.py watch SCENE [--host term] # base once, then a head run, diff and gallery per save
+  tui_see.py terminals SCENE [--out D] # the scene in Ghostty, kitty and WezTerm on one sheet
   tui_see.py harvest SESSION [--name N] [--view end|tool|long] [--size WxH]
                                        # a recorded session as harvest-N-<view> scenes under SCENES
   tui_see.py --selfcheck
@@ -16,6 +18,8 @@ or `#! console --size 120x34`. `snap <name>` steps mark the frames worth looking
 
 `--host term` also plays the scene in real Ghostty inside the yi-term image (scripts/yi-term),
 so the pictures carry kitty images and true colour; it needs `just yi-term` built first.
+`--terminal kitty|wezterm` plays it in that terminal instead, and each term run prints what the
+terminal advertised, the colour forms Yi wrote and the kitty image ids it placed.
 `--video` keeps the whole run as motion: run.webp cropped to the Ghostty window on that host,
 run.gif rendered by agg on the headless one.
 A scene header `--stub <reply file> <tokens/s>` (file beside the scene) swaps the faux model for
@@ -169,17 +173,20 @@ def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Pat
 
 
 def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
-        video: bool = False) -> Path:
+        video: bool = False, terminal: str = "ghostty") -> Path:
     surface, extra = header(scene)
     stub = take(extra, "--stub", 2)
     if stub and host not in ("term", "here"):
         sys.exit("--stub scenes stream from a live provider and are played in Ghostty: add --host term")
+    if terminal not in TERMINALS:
+        sys.exit(f"--terminal {terminal!r} is not one of {', '.join(TERMINALS)}")
     if not NAME.fullmatch(label):
         sys.exit(f"label {label!r} is not [a-z0-9_-]+")
     run_dir = (out / scene.stem / label).resolve()
     code, extra = play(scene, surface, extra, run_dir, binary, stub=bool(stub))
     rendered = render(run_dir)
     extra += ["--stub", *stub] if stub else []
+    extra += ["--terminal", terminal]
     if video and host == "mem":
         gif = run_dir / "run.gif"
         if shutil.which("agg") and agg(run_dir / "run.cast", gif, "--idle-time-limit", "1"):
@@ -194,6 +201,8 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
                                str(scene.resolve()), surface, str(run_dir / "term"), str(binary),
                                *extra, *(["--video"] if video else [])], timeout=900).returncode
         collect(run_dir)
+    if (run_dir / "term" / "run.cast").exists():
+        print(ledger_line(terminal, ledger(run_dir / "term" / "run.cast")))
     snaps = sorted({p.stem.removeprefix("snap-") for p in (run_dir / "frames").glob("snap-*.*")
                     if p.suffix in (".txt", ".png")})
     print(f"run: {run_dir} (exit {code})")
@@ -205,11 +214,93 @@ def run(scene: Path, label: str, out: Path, binary: Path, host: str = "mem",
     return run_dir
 
 
-IMAGE = "yi-term:dev"
+# Incident: sessions sharing one Docker daemon each rebuilt yi-term:dev from their own tree, so a
+# run got whichever Dockerfile built last; the tag is the content hash `just yi-term` also writes.
+IMAGE = "yi-term:" + hashlib.sha256((ROOT / "scripts/yi-term/Dockerfile").read_bytes()).hexdigest()[:12]
 # The image and the binary follow the host: Ghostty under amd64 emulation took 30 s to map a window.
 ARCH = "aarch64" if os.uname().machine in ("arm64", "aarch64") else "x86_64"
 LINUX_YI = f"target/{ARCH}-unknown-linux-musl/debug/yi"
 SCREEN = "1920x1200"
+TERMINALS = ("ghostty", "kitty", "wezterm")
+ITERM = Path("/Applications/iTerm.app")
+ADVERTISED = ("TERM", "COLORTERM", "TERM_PROGRAM", "KITTY_WINDOW_ID")
+FONT = "Noto Mono"
+
+
+def terminal_argv(name: str, cols: str, rows: str, cmd: list[str], font: str = FONT,
+                  cwd: str | None = None) -> list[str]:
+    """One window of `name` running `cmd`. kitty and WezTerm get Ghostty's default ground: the
+    grab finds the window by cropdetect against the black root, which their black default hides."""
+    launch = {
+        "ghostty": ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
+                    f"--font-family={font}", f"--window-width={cols}",
+                    f"--window-height={rows}", "--background-opacity=1",
+                    "--confirm-close-surface=false", "-e"],
+        "kitty": ["kitty", "--config=NONE", "-o", f"font_family={font}", "-o",
+                  f"initial_window_width={cols}c", "-o", f"initial_window_height={rows}c", "-o",
+                  "remember_window_size=no", "-o", "background=#282c34", "-o",
+                  "foreground=#ffffff", "-o", "confirm_os_window_close=0"],
+        "wezterm": ["wezterm", "-n", "--config", f"initial_cols={cols}", "--config",
+                    f"initial_rows={rows}", "--config", f'font=wezterm.font("{font}")',
+                    "--config", "enable_tab_bar=false", "--config", 'window_decorations="NONE"',
+                    "--config", 'colors={background="#282c34",foreground="#ffffff"}', "start",
+                    "--always-new-process", "--cwd", cwd or os.getcwd(), "--"],
+    }
+    if name not in launch:
+        raise ValueError(f"terminal {name!r} is not one of {', '.join(TERMINALS)}")
+    return launch[name] + cmd
+
+
+def ledger(cast: Path) -> dict:
+    """What the terminal advertised (env.json beside the cast) and what Yi wrote to it: the kitty
+    image ids it placed, its SGR colour forms, and each OSC number it sent."""
+    env = cast.with_name("env.json")
+    data = "".join(event[2] for line in cast.read_text().splitlines()[1:]
+                   for event in [json.loads(line)] if event[1] == "o")
+    placed = set()
+    for keys in re.findall(r"\x1b_G([^;\x1b]*)", data):
+        fields = dict(kv.split("=", 1) for kv in keys.split(",") if "=" in kv)
+        if fields.get("a") in ("p", "T") and fields.get("i", "").isdigit():
+            placed.add(int(fields["i"]))
+    forms = {"rgb": 0, "256": 0}
+    for params in re.findall(r"\x1b\[([0-9;:]*)m", data):
+        words, at = re.split("[;:]", params), 0
+        while at < len(words):
+            kind = words[at + 1] if words[at] in ("38", "48", "58") and at + 1 < len(words) else ""
+            forms["rgb"] += kind == "2"
+            # crossterm writes the 16-colour palette as indices 0-15 of the 256 form.
+            forms["256"] += kind == "5" and at + 2 < len(words) and words[at + 2].isdigit() \
+                and int(words[at + 2]) >= 16
+            at += {"2": 5, "5": 3}.get(kind, 1)
+    tier = "truecolor" if forms["rgb"] else "256" if forms["256"] else "16"
+    osc: dict[str, int] = {}
+    for number in re.findall(r"\x1b\](\d+);", data):
+        osc[number] = osc.get(number, 0) + 1
+    return {"env": json.loads(env.read_text()) if env.exists() else {}, "placed": sorted(placed),
+            "tier": tier, "forms": forms, "osc": osc}
+
+
+def families(ids: list[int]) -> str:
+    """Kitty image ids by family: solo's orb and logos 76xx, a notebook 77xx, the console's orbs 78xx
+    and the rail's avatars 80xx."""
+    counts: dict[str, int] = {}
+    for image in ids:
+        family = f"{image // 100}xx"
+        counts[family] = counts.get(family, 0) + 1
+    return ", ".join(f"{family} ×{n}" for family, n in counts.items()) or "none"
+
+
+def ledger_cells(seen: dict) -> list[str]:
+    """Colour tier, kitty placements and OSC numbers, as the run line and the sheet both show them."""
+    osc = sorted(seen["osc"].items(), key=lambda kv: int(kv[0]))
+    return [f"{seen['tier']} (rgb {seen['forms']['rgb']}, 256 {seen['forms']['256']})",
+            families(seen["placed"]), ", ".join(f"{n} ×{c}" for n, c in osc) or "none"]
+
+
+def ledger_line(terminal: str, seen: dict) -> str:
+    env = " ".join(f"{k}={v}" for k, v in seen["env"].items() if v is not None) or "env not recorded"
+    tier, placed, osc = ledger_cells(seen)
+    return f"{terminal}: {env} · colour tier {tier} · kitty placed {placed} · OSC {osc}"
 
 
 def binary_inputs() -> list[Path]:
@@ -283,6 +374,10 @@ def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
                  "run `just yi-term`")
     if not scene.resolve().is_relative_to(ROOT):
         sys.exit(f"--host term mounts the repo, so the scene must live in it: {scene}")
+    found = subprocess.run(["docker", "image", "inspect", IMAGE], capture_output=True, text=True)
+    if found.returncode:
+        sys.exit(f"--host term needs the image {IMAGE} built from this tree (`just yi-term`); "
+                 f"docker said: {found.stderr.strip()[-300:]}")
     name = f"yi-term-{os.getpid()}"
     platform = "linux/arm64" if ARCH == "aarch64" else "linux/amd64"
     argv = ["docker", "run", "--rm", "--name", name, "--platform", platform,
@@ -296,10 +391,10 @@ def term(scene: Path, run_dir: Path, surface: str, extra: list[str]) -> int:
         code = 124
     pictures = collect(run_dir)
     if code:
-        print(f"[… term host failed (exit {code}); kept {len(pictures)} Ghostty grabs, the rest "
+        print(f"[… term host failed (exit {code}); kept {len(pictures)} terminal grabs, the rest "
               f"of the pictures are agg's: {run_dir / 'term'}]")
     else:
-        print(f"pictures: Ghostty in {IMAGE} ({run_dir / 'term'})")
+        print(f"pictures: {(run_dir / 'term' / 'terminal').read_text()} in {IMAGE} ({run_dir / 'term'})")
     return code
 
 
@@ -378,9 +473,11 @@ def start_stub(reply: Path, rate: str, home: Path, env: dict[str, str]) -> subpr
 
 
 def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -> None:
-    """Inside the yi-term image: Xvfb, then Ghostty running the real binary behind `proxy`."""
+    """Inside the yi-term image: Xvfb, then the terminal running the real binary behind `proxy`."""
     shutil.rmtree(out, ignore_errors=True)
     (out / "home/.yi").mkdir(parents=True)
+    terminal = (take(extra, "--terminal", 1) or ["ghostty"])[0]
+    (out / "terminal").write_text(terminal)
     (out / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
     video = "--video" in extra
     extra = [arg for arg in extra if arg != "--video"]
@@ -405,7 +502,11 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
         shutil.copy(seed, out / "sessions" / encoded(work) / seed.name)
     # One job plays many scenes: a server that exited leaves its lock, so each run takes a free one.
     number = next(n for n in range(99, 400) if not Path(f"/tmp/.X{n}-lock").exists())
-    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}", "YI_FIXED_IDS": "1"}
+    # Incident: kitty's image cache made its temp files on the host-mounted /out and failed every
+    # defrag; a cache on the container's own disk keeps its images.
+    env = {**os.environ, "HOME": str(out / "home"), "DISPLAY": f":{number}", "YI_FIXED_IDS": "1",
+           "EDITOR": "true", "VISUAL": "true",
+           "XDG_CACHE_HOME": tempfile.mkdtemp(prefix="yi-term-cache.")}
     display = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", f"{SCREEN}x24"],
                                stderr=subprocess.DEVNULL)
     procs = [display]
@@ -438,14 +539,13 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
                  "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out / "screen.mp4")],
                 stdin=subprocess.PIPE)
             procs.append(recorder)
-        ghostty = subprocess.Popen(
-            ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
-             "--font-family=Noto Mono", f"--window-width={cols}", f"--window-height={rows}",
-             "--background-opacity=1", "--confirm-close-surface=false", "-e", "python3",
-             str(ROOT / "scripts/tui_see.py"), "proxy", scene, str(out), "--", *argv],
-            env=env, cwd=work, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
-        procs.append(ghostty)
-        wait_for(lambda: (out / "done").exists() or ghostty.poll() is not None, 600)
+        window = subprocess.Popen(
+            terminal_argv(terminal, cols, rows, ["python3", str(ROOT / "scripts/tui_see.py"),
+                                                 "proxy", scene, str(out), "--", *argv],
+                          cwd=str(work)),
+            env=env, cwd=work, stdout=open(out / f"{terminal}.log", "w"), stderr=subprocess.STDOUT)
+        procs.append(window)
+        wait_for(lambda: (out / "done").exists() or window.poll() is not None, 600)
         if recorder is not None:
             try:
                 recorder.communicate(b"q", timeout=30)
@@ -499,7 +599,7 @@ def grab(path: Path, box: list[str]) -> None:
         box += re.findall(r"crop=(\d+:\d+:\d+:\d+)", probe.stderr)[-1:]
         time.sleep(0.5)
     if not box:
-        raise RuntimeError("no Ghostty window on the virtual screen within 60 s:\n"
+        raise RuntimeError("no terminal window on the virtual screen within 60 s:\n"
                            + (probe.stderr[-600:] if probe else ""))
     (path.parent / "box").write_text(box[0])
     subprocess.run(base + ["-frames:v", "1", "-vf", f"crop={box[0]}", str(path)], check=True)
@@ -547,7 +647,7 @@ def steps(scene: Path) -> list[str]:
 
 
 def proxy(scene: Path, out: Path, argv: list[str]) -> None:
-    """Runs inside Ghostty: the binary in a pty, Ghostty's bytes passed both ways, the scene's
+    """Runs inside the terminal: the binary in a pty, its bytes passed both ways, the scene's
     keys sent as key bytes and its timing steps over the binary's `--control` socket, which
     answers each once played, `wait-frame` read off a pyte screen fed the same bytes, and a grab
     at each `snap` once the output has been quiet."""
@@ -560,6 +660,7 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
 
     import pyte
 
+    (out / "env.json").write_text(json.dumps({key: os.environ.get(key) for key in ADVERTISED}))
     # A unix socket path is capped near 100 bytes, so it lives under the system temp dir.
     listener = socket.socket(socket.AF_UNIX)
     listener.bind(str(Path(tempfile.mkdtemp(prefix="yi-ctl.")) / "c.sock"))
@@ -568,11 +669,11 @@ def proxy(scene: Path, out: Path, argv: list[str]) -> None:
     argv = [*argv, "--control", listener.getsockname()]
     extra = header(scene)[1]
     asked = extra[extra.index("--size") + 1] if "--size" in extra else "80x24"
-    # Incident: Ghostty starts this process at a smaller grid and then grows to the one asked for;
-    # a child sized before that drew an 80x18 scene at 79x17.
+    # Incident: the terminal starts this process at a smaller grid and then grows to the one
+    # asked for; a child sized before that drew an 80x18 scene at 79x17.
     if not wait_for(lambda: "{1}x{0}".format(*struct.unpack(
             "HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))[:2]) == asked, 10):
-        (out / "size.note").write_text(f"Ghostty never reached the scene's {asked} grid")
+        (out / "size.note").write_text(f"The terminal never reached the scene's {asked} grid")
     pid, fd = pty.fork()
     if pid == 0:
         os.execvp(argv[0], argv)
@@ -925,7 +1026,14 @@ def labels(scene: Path) -> list[Path]:
 PAGE_CAP = 15_000_000
 
 
-def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
+def host_name(run_dir: Path, stem: str) -> str:
+    named = run_dir / "term" / "terminal"
+    if not (run_dir / "term" / f"{stem}.png").exists():
+        return "agg"
+    return named.read_text() if named.exists() else "ghostty"
+
+
+def gallery(root: Path, page: Path, videos_kept: bool = True, preface: str = "") -> Path:
     """Every scene under `root`, each snap with its labels side by side and the cell diff a head
     run keeps against its base: one self-contained page (pictures inlined)."""
     import base64
@@ -941,7 +1049,7 @@ def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
 
     def caption(run_dir: Path, stem: str) -> str:
         head = json.loads((run_dir / "frames" / f"{stem}.cast").read_text().splitlines()[0])
-        host = "Ghostty" if (run_dir / "term" / f"{stem}.png").exists() else "agg"
+        host = host_name(run_dir, stem)
         return f"{html.escape(run_dir.name)} · {head['width']}×{head['height']} · {host}"
 
     sections, skipped = [], []
@@ -970,18 +1078,18 @@ def gallery(root: Path, page: Path, videos_kept: bool = True) -> Path:
             cards.append(f"<article><h3>{html.escape(name)}</h3>{notes}{changed}"
                          f"<div class=row>{figures}</div></article>")
         videos = "".join(
-            f"<figure><figcaption>{html.escape(r.name)} · whole run · Ghostty</figcaption><img "
+            f"<figure><figcaption>{html.escape(r.name)} · whole run</figcaption><img "
             f'alt="{html.escape(r.name)} run" src="data:image/webp;base64,'
             f'{base64.b64encode((r / "run.webp").read_bytes()).decode()}"></figure>'
             for r in runs if videos_kept and (r / "run.webp").exists())
         if videos:
             cards.insert(0, f"<article><h3>run</h3><div class=row>{videos}</div></article>")
         sections.append(f"<section><h2>{html.escape(scene.name)}</h2>{''.join(cards)}</section>")
-    body = GALLERY.replace("{sections}", "".join(sections) or "<p>No snaps yet.</p>")
+    body = GALLERY.replace("{sections}", preface + ("".join(sections) or "<p>No snaps yet.</p>"))
     if len(body) > PAGE_CAP and videos_kept:
         print(f"[… {len(body) / 1e6:.1f} MB is past the {PAGE_CAP / 1e6:.0f} MB page cap; "
               "dropping the run videos, each still at <scene>/<label>/run.webp]")
-        return gallery(root, page, videos_kept=False)
+        return gallery(root, page, videos_kept=False, preface=preface)
     page.write_text(body)
     if skipped:
         print(f"[… {len(skipped)} scene(s) have no snaps and are not on the page: {', '.join(skipped)}]")
@@ -1014,7 +1122,9 @@ figcaption{font:12px/1.3 var(--mono);color:var(--muted);font-variant-numeric:tab
 img{max-width:100%;height:auto;border-radius:4px;display:block}
 pre{margin:0;font:12px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg)}
 pre.diff{color:var(--muted);border-left:2px solid var(--rule);padding-left:10px}
-.note{color:var(--warn);font-size:13px;margin:0}code{font-family:var(--mono);font-size:.92em}
+.note{color:var(--warn);font-size:13px;margin:0}.wide{overflow-x:auto}
+table{border-collapse:collapse;font:12px/1.4 var(--mono)}th,td{text-align:left;vertical-align:top;
+padding:4px 10px;border-bottom:1px solid var(--rule)}code{font-family:var(--mono);font-size:.92em}
 </style>
 <h1>Yi TUI gallery</h1>
 <p class="lede">Snaps from <code>scripts/tui_see.py</code>: each scene's labels side by side, with the cell
@@ -1061,6 +1171,44 @@ def watch(scene: Path, host: str) -> None:
         if head is not None:
             diff(base, head)
             gallery(out, out / "gallery.html")
+
+
+def iterm_notice(installed: bool) -> str:
+    """iTerm2 is a terminal Yi claims that the Linux image cannot run, so the sheet says so."""
+    where = f"installed at {ITERM} but not driven" if installed else f"not installed at {ITERM}"
+    return (f"[… kept {len(TERMINALS)} of {len(TERMINALS) + 1} terminals (cap: the yi-term image "
+            f"runs Linux terminals only); iTerm2 is macOS-only and {where}, so play the scene in "
+            "it by hand]")
+
+
+def terminals(scene: Path, out: Path, binary: Path) -> Path:
+    """The scene in each terminal of the yi-term image, on one sheet: the grabs side by side
+    under a table of what each terminal advertised and what Yi placed and coloured there."""
+    import html
+    root = (out / scene.stem).resolve()
+    rows, failed = [], []
+    for name in TERMINALS:
+        try:
+            run(scene, name, root, binary, "term", terminal=name)
+            verdict = "ok"
+        except SystemExit as stop:
+            verdict = f"failed (exit {stop.code})"
+            failed.append(f"{name} {verdict}")
+        cast = root / scene.stem / name / "term" / "run.cast"
+        seen = ledger(cast) if cast.exists() else None
+        cells = [name, *(seen["env"].get(k) or "unset" for k in ADVERTISED), *ledger_cells(seen)] \
+            if seen else [name, *["—"] * (len(ADVERTISED) + 3)]
+        rows.append("<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in [*cells, verdict]) + "</tr>")
+    notice = iterm_notice(ITERM.exists())
+    print(notice)
+    head = "".join(f"<th>{h}</th>" for h in ("terminal", *ADVERTISED, "colour tier", "kitty placed",
+                                              "OSC", "run"))
+    preface = (f"<section><h2>terminals</h2><div class=wide><table><tr>{head}</tr>{''.join(rows)}"
+               f"</table></div><p class=note>{html.escape(notice)}</p></section>")
+    page = gallery(root, root / "terminals.html", preface=preface)
+    if failed:
+        sys.exit(f"terminals: {'; '.join(failed)}; the sheet still shows what each run kept")
+    return page
 
 
 MASK = "[MASKED]"
@@ -1272,6 +1420,39 @@ def selfcheck() -> None:
         grown = next((Path(tmp) / "run" / "sessions").glob(f"*/*_{session}.jsonl"))
         grown.write_text(grown.read_text() + '{"kind":"message"}\n')
         assert pristine_seed(Path(tmp) / "run", session).read_text() == seed.read_text()
+    # Each terminal opens one window of the scene's size around the proxy; one Yi does not claim
+    # is refused rather than played in whichever terminal happened to be the default.
+    for name, size in (("ghostty", "--window-width=60"), ("kitty", "initial_window_width=60c"),
+                       ("wezterm", "initial_cols=60")):
+        argv = terminal_argv(name, "60", "12", ["python3", "proxy"], font="Noto Sans Mono")
+        assert argv[0] == name and argv[-2:] == ["python3", "proxy"] and size in argv, argv
+        assert sum("Noto Sans Mono" in arg for arg in argv) == 1, f"{name} ignored the font: {argv}"
+    try:
+        terminal_argv("iterm2", "60", "12", ["python3"])
+        raise AssertionError("iterm2 was launched instead of refused")
+    except ValueError:
+        pass
+    assert iterm_notice(False).startswith(f"[… kept {len(TERMINALS)} of {len(TERMINALS) + 1} terminals")
+    # The ledger reads Yi's own escape spellings: a placement split across two reads counts once,
+    # a transmit or delete is no placement, and an rgb red of 38 is not a second colour.
+    with tempfile.TemporaryDirectory() as tmp:
+        cast = Path(tmp) / "run.cast"
+        events = ["\x1b[48;5;2;38;2;38;5;200mx\x1b[0m\x1b]2;yi\x07\x1b]133;A\x07",
+                  "\x1b_Gf=32,o=z,s=4,v=4,a=t,i=7602,q=2,m=0;AAAA\x1b\\\x1b_Ga=p,i=80",
+                  "00,p=1,q=2,C=1,c=2,r=1\x1b\\\x1b_Ga=p,i=7601,p=1,q=2\x1b\\\x1b[1;38;5;38m",
+                  "\x1b_Ga=d,d=I,i=7601,q=2\x1b\\\x1b_Ga=p,i=7601,p=1,q=2,C=1,c=4,r=2\x1b\\\x1b]133;A\x07"]
+        cast.write_text("\n".join([json.dumps({"version": 2}), *(json.dumps([0.1, "o", e]) for e in events)]))
+        (Path(tmp) / "env.json").write_text(json.dumps({"TERM": "xterm-kitty", "COLORTERM": None}))
+        seen = ledger(cast)
+        assert seen["placed"] == [7601, 8000] and families(seen["placed"]) == "76xx ×1, 80xx ×1", seen
+        assert seen["forms"] == {"rgb": 1, "256": 1} and seen["tier"] == "truecolor", seen
+        assert seen["osc"] == {"2": 1, "133": 2} and seen["env"]["TERM"] == "xterm-kitty", seen
+        line = ledger_line("kitty", seen)
+        assert "TERM=xterm-kitty · colour tier truecolor (rgb 1, 256 1) · kitty placed 76xx" in line, line
+        cast.write_text(json.dumps({"version": 2}) + "\n" + json.dumps([0.1, "o", "\x1b[38;5;38mx"]))
+        assert ledger(cast)["tier"] == "256", ledger(cast)
+    flat = ledger(runs[1] / "frames" / "snap-answered.cast")
+    assert flat["tier"] == "16" and flat["placed"] == [] and flat["env"] == {}, flat
     # A scrubbed session harvests into seeds the store accepts: unique ids, each entry's parent
     # the entry before it (its records carry no parent), and each view cut where it says.
     fixture = ROOT / "crates/tui/tests/fixtures/sessions/01a0648f.jsonl"
@@ -1387,6 +1568,13 @@ def main(argv: list[str]) -> None:
         root = Path(argv[1] if len(argv) > 1 else "target/see")
         gallery(root, Path(argv[2]) if len(argv) > 2 else root / "gallery.html")
         return None
+    if argv[:1] == ["terminals"] and len(argv) in (2, 4, 6):
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        if set(opts) - {"--out", "--bin"}:
+            sys.exit(f"terminals: unknown flags {sorted(set(opts) - {'--out', '--bin'})}")
+        terminals(Path(argv[1]), Path(opts.get("--out", "target/see-terminals")),
+                  Path(opts.get("--bin", "target/debug/yi")).resolve())
+        return None
     if argv[:1] == ["watch"] and len(argv) in (2, 4):
         watch(Path(argv[1]), argv[3] if argv[2:3] == ["--host"] else "mem")
         return None
@@ -1394,11 +1582,12 @@ def main(argv: list[str]) -> None:
     argv = [arg for arg in argv if arg != "--video"]
     if argv[:1] == ["run"] and len(argv) >= 2:
         opts = dict(zip(argv[2::2], argv[3::2]))
-        unknown = set(opts) - {"--label", "--out", "--bin", "--host"}
+        unknown = set(opts) - {"--label", "--out", "--bin", "--host", "--terminal"}
         if unknown or len(argv[2:]) % 2:
             sys.exit(f"run: unknown or valueless flags {sorted(unknown) or argv[-1:]}")
         run(Path(argv[1]), opts.get("--label", "head"), Path(opts.get("--out", "target/see")),
-            Path(opts.get("--bin", "target/debug/yi")).resolve(), opts.get("--host", "mem"), video)
+            Path(opts.get("--bin", "target/debug/yi")).resolve(), opts.get("--host", "mem"), video,
+            opts.get("--terminal", "ghostty"))
         return None
     print(__doc__)
     sys.exit(2)
