@@ -27,26 +27,49 @@ fn tab_label(index: usize, zoomed: bool) -> String {
     format!(" {}{zoom} ", index.saturating_add(1))
 }
 
-const HEADER_BUTTONS: [(&str, keys::Action); 4] = [
-    (">_", keys::Action::OpenTerminal),
-    ("±", keys::Action::ToggleDiff),
-    ("◉", keys::Action::OpenBrowser),
-    ("▤", keys::Action::OpenEditor),
+const HEADER_BUTTONS: [(&str, &str, keys::Action); 4] = [
+    (">_", "Terminal", keys::Action::OpenTerminal),
+    ("±", "Diff", keys::Action::ToggleDiff),
+    ("◉", "Browser", keys::Action::OpenBrowser),
+    ("▤", "Files", keys::Action::OpenEditor),
 ];
-const HEADER_BUTTON_WIDTH: u16 = 4;
 
-/// The buttons that fit right of the tabs, flush right with a one-cell gap between them.
+fn button_label(glyph: &str, word: &str, worded: bool) -> String {
+    if worded {
+        format!(" {glyph} {word} ")
+    } else {
+        format!(" {glyph:^2} ")
+    }
+}
+
+fn label_width(label: &str) -> u16 {
+    u16::try_from(label.chars().count()).unwrap_or(u16::MAX)
+}
+
+/// The buttons flush right with a one-cell gap, worded when they fit beside the tabs and
+/// glyph-only when they do not.
 pub(crate) fn header_buttons(header: Rect, taken: u16) -> Vec<(Rect, keys::Action)> {
+    let room = header.width.saturating_sub(taken);
+    let need = |worded: bool| -> u16 {
+        HEADER_BUTTONS
+            .iter()
+            .map(|(glyph, word, _)| {
+                label_width(&button_label(glyph, word, worded)).saturating_add(1)
+            })
+            .fold(0, u16::saturating_add)
+    };
+    let worded = need(true) <= room;
     let mut right = header.right().saturating_sub(1);
     let mut out = Vec::new();
-    for (_, action) in HEADER_BUTTONS.iter().rev() {
-        let Some(left) = right.checked_sub(HEADER_BUTTON_WIDTH) else {
+    for (glyph, word, action) in HEADER_BUTTONS.iter().rev() {
+        let width = label_width(&button_label(glyph, word, worded));
+        let Some(left) = right.checked_sub(width) else {
             break;
         };
         if left < header.x.saturating_add(taken) {
             break;
         }
-        out.push((Rect::new(left, header.y, HEADER_BUTTON_WIDTH, 1), *action));
+        out.push((Rect::new(left, header.y, width, 1), *action));
         right = left.saturating_sub(1);
     }
     out.reverse();
@@ -56,10 +79,15 @@ pub(crate) fn header_buttons(header: Rect, taken: u16) -> Vec<(Rect, keys::Actio
 pub(crate) fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let buttons = app.hits.iter().flat_map(|hits| &hits.header_buttons);
     for (rect, action) in buttons {
-        let glyph = HEADER_BUTTONS.iter().find(|(_, a)| a == action);
-        let label = format!(" {:^2} ", glyph.map_or("", |(glyph, _)| glyph));
+        let Some((glyph, word, _)) = HEADER_BUTTONS.iter().find(|(.., a)| a == action) else {
+            continue;
+        };
+        let worded = rect.width > 4;
+        let chip = Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::REVERSED | Modifier::BOLD);
         frame.render_widget(
-            Paragraph::new(Span::styled(label, theme.muted_style())),
+            Paragraph::new(Span::styled(button_label(glyph, word, worded), chip)),
             *rect,
         );
     }

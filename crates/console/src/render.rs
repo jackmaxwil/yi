@@ -190,8 +190,11 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         ..area
     };
     let (transcript_area, banner) = split_off_bottom(main, 1);
-    let (header, mut panes_area) = split_off_top(transcript_area, 1);
+    let (header, below) = split_off_top(transcript_area, 1);
     let framed = frames_panes(app);
+    // Incident: a framed pane's top-right ✕ sat directly under a header button and read as one
+    // control; a lone chat has no frame and no ✕, so it keeps the row.
+    let (_, mut panes_area) = split_off_top(below, u16::from(framed));
     // Invariant: framed panes stand on the rail's own line, so one line parts rail and pane.
     let rail_edge = (framed && sidebar_width > 0 && app.state.sidebar == SidebarMode::Rail)
         .then(|| main.x.saturating_sub(1));

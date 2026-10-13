@@ -109,7 +109,7 @@ fn a_pane_with_no_session_titles_itself_without_a_status_dot() -> TestResult {
     let (mut app, _) = console()?;
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
-    let top = row_text(&terminal, 1);
+    let top = row_text(&terminal, 2);
     assert!(top.contains("─ Settings ─"), "{top}");
     assert!(top.contains("─ ❯ no session ─"), "{top}");
     Ok(())
@@ -423,11 +423,14 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
             .ok_or("no such button")
     };
     let diff = at(Action::ToggleDiff)?;
-    let rest = cell_at(&terminal, diff.x, diff.y)?.bg;
+    let face = |terminal: &Terminal<TestBackend>| {
+        cell_at(terminal, diff.x, diff.y).map(|cell| (cell.fg, cell.bg))
+    };
+    let rest = face(&terminal)?;
     mouse(&mut app, MouseKind::Moved, diff.x, diff.y);
     assert!(app.dirty, "entering the diff button asks for no frame");
     draw(&mut app, &mut terminal)?;
-    let lit = cell_at(&terminal, diff.x, diff.y)?.bg;
+    let lit = face(&terminal)?;
     assert_ne!(lit, rest, "the hovered diff button looks the same");
     for (action, note) in [
         (Action::OpenTerminal, "terminal pane lands with #1378"),
@@ -453,5 +456,35 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
         .filter(|pane| matches!(pane.content, PaneContent::SessionDiff { .. }))
         .count();
     assert_eq!(diffs, 1, "the diff button opened no review pane");
+    Ok(())
+}
+
+#[test]
+fn header_buttons_are_worded_chips_with_a_blank_row_above_every_pane() -> TestResult {
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let (mut app, _, _) = pair()?;
+    draw(&mut app, &mut terminal)?;
+    let top = row_text(&terminal, 0);
+    for word in [">_ Terminal", "± Diff", "◉ Browser", "▤ Files"] {
+        assert!(top.contains(word), "no {word:?} in the header: {top}");
+    }
+    let gap = row_text(&terminal, 1);
+    assert!(
+        !gap.contains('─') && !gap.contains('✕'),
+        "the row under the header holds a frame: {gap}"
+    );
+    let closers = hits(&app)?.closers.clone();
+    assert!(!closers.is_empty(), "no pane closer to check");
+    assert!(
+        closers.iter().all(|(_, rect)| rect.y >= 2),
+        "a closer touches the header: {closers:?}"
+    );
+    let mut narrow = Terminal::new(TestBackend::new(40, 30))?;
+    draw(&mut app, &mut narrow)?;
+    let top = row_text(&narrow, 0);
+    assert!(
+        !top.contains("Terminal") && top.contains(">_"),
+        "a narrow header kept words: {top}"
+    );
     Ok(())
 }
