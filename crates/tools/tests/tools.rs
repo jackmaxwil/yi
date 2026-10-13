@@ -3015,11 +3015,7 @@ fn fake_path(tag: &str) -> Option<PathBuf> {
 }
 
 fn rerun_with_path(test: &str, dir: &std::path::Path, path: &std::ffi::OsStr) -> TestResult {
-    // Invariant: `--exact` matches the whole test path, which starts at this file's module.
-    let test = module_path!().split_once("::").map_or_else(
-        || test.to_owned(),
-        |(_, module)| format!("{module}::{test}"),
-    );
+    let test = crate::exact_path(module_path!(), test);
     let rerun = yi_tools::command(std::env::current_exe()?)
         .args(["--exact", &test])
         .env("PATH", path)
