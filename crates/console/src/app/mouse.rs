@@ -20,7 +20,19 @@ pub enum MouseKind {
 }
 
 impl App {
+    /// A key or click while the title covers the screen only ends it: the hit map and the key
+    /// handlers under the cover would otherwise act on a screen nobody can see.
+    pub(super) fn skip_title(&mut self) -> bool {
+        let playing = crate::title_playing(self);
+        self.state.title = None;
+        self.dirty |= playing;
+        playing
+    }
+
     pub(super) fn mouse_event(&mut self, outbound: &Outbound, mouse: MouseEvent) {
+        if matches!(mouse.kind, MouseEventKind::Down(_)) && self.skip_title() {
+            return;
+        }
         let kind = match mouse.kind {
             MouseEventKind::Down(MouseButton::Right) => MouseKind::RightDown,
             MouseEventKind::Down(_) => MouseKind::Down,
