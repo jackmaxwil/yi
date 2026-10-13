@@ -525,6 +525,18 @@ A persistent IPython process per session that reaches the host only through host
   call that finished after its cell closed is `outlived` on a later cell's result, even one already
   open. Compaction's file lists and the todo landed count read the rows, a cell that raised
   included; the landed count skips an outlived row, which an earlier turn started.
+- A nested call runs as a program's (`ToolContext::program`, `AgentTool::execute_program`): the
+  tool fills `ToolOutput::value`, a `yi_types::tool_value` shape the reply carries beside the
+  text and the transcript never holds; a value's `cut` names everything left out (a fuse, a walk
+  cap, a wall, binary skips). `grep` returns every hit from `offset` on, up to a 64 MiB fuse of
+  file text and 100,000 matches, minting no tags and touching no paging state; `read` the asked
+  window, an open one running to the end of the file, up to the same fuses in lines. A program
+  read's lines are a program's to edit, never the model's (`Snapshot::program_lines`). A glob is
+  its paths, no file opened, up to 100,000; a directory, `edit`,
+  `write`, `bash` (streams before the reducer, the job, the polled output), `get_context` (layers
+  unclamped), `todo` (the list), `annotate` (the record), an address (the page, and the 1-based
+  `nextOffset` the tool takes back), a child's `ask_user`, an exec tool (its JSON) and `plan` (the
+  plan document after the op, read back unjournaled) each have one. The line selector never runs.
 
 ### 9.3 Python surface
 - The preamble binds `rlm` (the module), `mcp`, `fetch`, `bash`. `@_public` builds `rlm.__all__`:
@@ -534,6 +546,9 @@ A persistent IPython process per session that reaches the host only through host
 - `yi.tools.<name>(**args)` (or `yi.tools.call(name, /, **args)`) calls `tool.call` and returns a `Result` (`text`, the model's view;
   `details`); it raises `UnknownTool`, `InvalidInput`, `Refused` (widened from plans) or
   `ToolFailure`. `yi.tools.search` pages with a `[…]` row, and names what `excluded()` leaves out.
+  `Result.value` reads by attribute or key (`hits.value.matches[0].line`), holding no method a
+  key could shadow; `Result.data` is the same JSON for `json.dumps`; both are `None` for a tool
+  with none.
 - A public coroutine a cell never awaits runs once in `post_run_cell` and prints its value; a
   mail call (`send`, `followup`, `interrupt`, `revoke`) is a task scheduled at the call.
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and

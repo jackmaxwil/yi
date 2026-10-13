@@ -78,11 +78,33 @@ impl Tool for GetContextTool {
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
         let task = input.get("task").and_then(Value::as_str);
         let symbol = input.get("symbol").and_then(Value::as_str);
-        text_output(packet(task, symbol, context))
+        let (text, layers) = packet(task, symbol, context);
+        let mut output = text_output(text);
+        output.value = context.program.then(|| {
+            let layer = |(name, body): (&str, LayerBody)| {
+                let (body, absent) =
+                    body.map_or_else(|why| (None, Some(why)), |text| (Some(text), None));
+                yi_types::tool_value::ContextLayer {
+                    name: name.to_owned(),
+                    body,
+                    absent,
+                }
+            };
+            let value = yi_types::tool_value::ContextValue {
+                layers: layers.into_iter().map(layer).collect(),
+            };
+            serde_json::to_value(value).unwrap_or(Value::Null)
+        });
+        output
     }
 }
 
-fn packet(task: Option<&str>, symbol: Option<&str>, context: &ToolContext) -> String {
+/// The packet as the model reads it, and every layer whole for a program.
+fn packet(
+    task: Option<&str>,
+    symbol: Option<&str>,
+    context: &ToolContext,
+) -> (String, [(&'static str, LayerBody); 6]) {
     let root = context.cwd.as_path();
     // The ripwire calls wait on another process, so they run beside the heat and the walk.
     let (map, near, heat, skeleton) = std::thread::scope(|scope| {
@@ -101,7 +123,7 @@ fn packet(task: Option<&str>, symbol: Option<&str>, context: &ToolContext) -> St
         let skeleton = skeletons(root, symbol, heat.as_ref().ok(), context);
         (joined(map), joined(near), heat, skeleton)
     });
-    let layers: [(&str, LayerBody); 6] = [
+    let layers: [(&'static str, LayerBody); 6] = [
         ("task map", map),
         ("symbol neighborhood", near),
         ("file skeletons", skeleton),
@@ -117,15 +139,15 @@ fn packet(task: Option<&str>, symbol: Option<&str>, context: &ToolContext) -> St
     } else {
         out.push_str(&format!("PARTIAL - {present} of {total} layers\n"));
     }
-    for (name, body) in layers {
+    for (name, body) in &layers {
         out.push_str(&format!("\n## {name}\n"));
         match body {
-            Ok(text) => out.push_str(&clamp(name, text)),
+            Ok(text) => out.push_str(&clamp(name, text.clone())),
             Err(reason) => out.push_str(&format!("absent: {reason}")),
         }
         out.push('\n');
     }
-    out
+    (out, layers)
 }
 
 fn joined(layer: std::thread::ScopedJoinHandle<'_, LayerBody>) -> LayerBody {

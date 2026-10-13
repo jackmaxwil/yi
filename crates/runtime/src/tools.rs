@@ -449,6 +449,28 @@ impl AgentTool for ToolAdapter {
         args: Map<String, Value>,
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
+        let ran = self.run(tool_call_id, args, false);
+        Box::pin(async move { ran.await.0 })
+    }
+
+    fn execute_program<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: Map<String, Value>,
+        _signal: &'a InterruptSignal,
+    ) -> yi_loop::ProgramFuture<'a> {
+        self.run(tool_call_id, args, true)
+    }
+}
+
+impl ToolAdapter {
+    /// One body for both callers, so a program's call meets every gate a model's call does.
+    fn run<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: Map<String, Value>,
+        program: bool,
+    ) -> yi_loop::ProgramFuture<'a> {
         let tool = Arc::clone(&self.tool);
         let args = unsent_empties(&tool.schema(), args);
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());
@@ -474,6 +496,7 @@ impl AgentTool for ToolAdapter {
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
             job_owner: self.job_owner,
+            program,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
@@ -482,6 +505,15 @@ impl AgentTool for ToolAdapter {
         let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
+            let refuse = |result: yi_types::event::ToolResult| {
+                (
+                    ToolOutcome {
+                        result,
+                        is_error: true,
+                    },
+                    None,
+                )
+            };
             if let Some(ext) = &ext {
                 ext(crate::ext::Event::ToolCall {
                     name: tool.name().to_owned(),
@@ -497,26 +529,20 @@ impl AgentTool for ToolAdapter {
             if let Some(rules) = &rules
                 && let Some(denial) = rules.check_tool(tool.name(), &args_json)
             {
-                return ToolOutcome {
-                    result: yi_loop::tool::error_tool_result_kind(
-                        &denial,
-                        yi_types::event::ToolErrorKind::Denied,
-                    ),
-                    is_error: true,
-                };
+                return refuse(yi_loop::tool::error_tool_result_kind(
+                    &denial,
+                    yi_types::event::ToolErrorKind::Denied,
+                ));
             }
             let kind = match tool.kind_for(&args) {
                 yi_tools::ToolKind::Write => yi_tools::ToolKind::Write,
                 _ => tool.kind(),
             };
             if let Some(denial) = wall.check(tool.name(), kind, &args, &context.cwd) {
-                return ToolOutcome {
-                    result: yi_loop::tool::error_tool_result_kind(
-                        &denial,
-                        yi_types::event::ToolErrorKind::Denied,
-                    ),
-                    is_error: true,
-                };
+                return refuse(yi_loop::tool::error_tool_result_kind(
+                    &denial,
+                    yi_types::event::ToolErrorKind::Denied,
+                ));
             }
             drop(gate_span);
             for command in tool.arms(&args) {
@@ -524,13 +550,10 @@ impl AgentTool for ToolAdapter {
                 let gates = (&rules, &wall, permission.as_ref());
                 let refused = gate_armed(&command, gates, walled, &context).await;
                 if let Some(denial) = refused {
-                    return ToolOutcome {
-                        result: yi_loop::tool::error_tool_result_kind(
-                            &denial,
-                            yi_types::event::ToolErrorKind::Denied,
-                        ),
-                        is_error: true,
-                    };
+                    return refuse(yi_loop::tool::error_tool_result_kind(
+                        &denial,
+                        yi_types::event::ToolErrorKind::Denied,
+                    ));
                 }
             }
             let (mut contained, mut outside): (Option<Arc<PermissionBroker>>, _) = (None, None);
@@ -569,21 +592,15 @@ impl AgentTool for ToolAdapter {
                         }
                     }
                     Ok(outcome) => {
-                        return ToolOutcome {
-                            result: yi_loop::tool::error_tool_result_kind(
-                                &format!("Permission denied: {}", outcome.reason),
-                                yi_types::event::ToolErrorKind::Denied,
-                            ),
-                            is_error: true,
-                        };
+                        return refuse(yi_loop::tool::error_tool_result_kind(
+                            &format!("Permission denied: {}", outcome.reason),
+                            yi_types::event::ToolErrorKind::Denied,
+                        ));
                     }
                     Err(join_error) => {
-                        return ToolOutcome {
-                            result: error_tool_result(&format!(
-                                "permission check failed: {join_error}"
-                            )),
-                            is_error: true,
-                        };
+                        return refuse(error_tool_result(&format!(
+                            "permission check failed: {join_error}"
+                        )));
                     }
                 }
             }
@@ -599,13 +616,10 @@ impl AgentTool for ToolAdapter {
                 .then(|| walled_root_refusal(&command, &walled_roots, &spared, &context.cwd))
                 .flatten()
             {
-                return ToolOutcome {
-                    result: yi_loop::tool::error_tool_result_kind(
-                        &denial,
-                        yi_types::event::ToolErrorKind::Denied,
-                    ),
-                    is_error: true,
-                };
+                return refuse(yi_loop::tool::error_tool_result_kind(
+                    &denial,
+                    yi_types::event::ToolErrorKind::Denied,
+                ));
             }
             let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
                 .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
@@ -618,6 +632,7 @@ impl AgentTool for ToolAdapter {
             match output {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
+                    let value = output.value.take();
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     // One at or naming a path under the own walls is never kept: Seatbelt judges
                     // each run, so a retry neither asks to leave nor claims the own transcript.
@@ -633,9 +648,10 @@ impl AgentTool for ToolAdapter {
                         broker.note_containment_failure(refusal);
                     }
                     verdict_is_a_result(&mut output);
-                    if let (Some(selector), Some(spills)) =
-                        (selector.as_deref().filter(|_| name == "bash"), &spills_dir)
-                    {
+                    if let (Some(selector), Some(spills)) = (
+                        selector.as_deref().filter(|_| name == "bash" && !program),
+                        &spills_dir,
+                    ) {
                         crate::select::widen(
                             selector,
                             ledger,
@@ -685,15 +701,21 @@ impl AgentTool for ToolAdapter {
                             name,
                         });
                     }
-                    ToolOutcome {
-                        result: output.result,
-                        is_error: output.is_error,
-                    }
+                    (
+                        ToolOutcome {
+                            result: output.result,
+                            is_error: output.is_error,
+                        },
+                        value,
+                    )
                 }
-                Err(join_error) => ToolOutcome {
-                    result: error_tool_result(&format!("tool execution failed: {join_error}")),
-                    is_error: true,
-                },
+                Err(join_error) => (
+                    ToolOutcome {
+                        result: error_tool_result(&format!("tool execution failed: {join_error}")),
+                        is_error: true,
+                    },
+                    None,
+                ),
             }
         })
     }

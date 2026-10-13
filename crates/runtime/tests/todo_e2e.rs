@@ -511,6 +511,30 @@ fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
     Ok(())
 }
 
+/// A program reads the list it changed as the list's own shape, not the checklist text.
+#[test]
+fn a_program_gets_the_todo_list_it_changed() -> TestResult {
+    let (_root, session) = session("tool-value")?;
+    let tool = TodoTool::new(store_for(&session));
+    let mut input: Map<String, Value> = Map::new();
+    input.insert("op".to_owned(), json!("init"));
+    input.insert("items".to_owned(), json!(["one", "two"]));
+    let mut context = ToolContext::new(std::env::temp_dir());
+    context.program = true;
+    let value = tool.execute(input, &context).value.ok_or("no value")?;
+    let list: yi_types::todo::TodoList = serde_json::from_value(value)?;
+    let labels: Vec<String> = (list.phases.iter())
+        .flat_map(|phase| {
+            phase
+                .items
+                .iter()
+                .map(|todo| todo.label.as_str().to_owned())
+        })
+        .collect();
+    assert_eq!(labels, ["one", "two"]);
+    Ok(())
+}
+
 #[test]
 fn the_tool_result_teaches_the_next_move_with_the_label_filled_in() -> TestResult {
     let (_root, session) = session("tool")?;

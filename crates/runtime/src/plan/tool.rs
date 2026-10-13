@@ -808,11 +808,17 @@ impl Tool for PlanTool {
             .collect()
     }
 
-    fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
-        match self.run(&input) {
+    fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
+        let mut output = match self.run(&input) {
             Ok(text) => text_output(text),
-            Err(error) => error_output_kind(error.to_string(), error.kind()),
-        }
+            Err(error) => return error_output_kind(error.to_string(), error.kind()),
+        };
+        let plan = (input.get("plan")).and_then(|plan| serde_json::from_value(plan.clone()).ok());
+        let seen = (context.program).then(|| self.engine.apply(view_request(&self.actor, plan)));
+        output.value = seen
+            .and_then(Result::ok)
+            .and_then(|seen| serde_json::to_value(seen.plan).ok());
+        output
     }
 }
 

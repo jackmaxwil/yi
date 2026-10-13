@@ -106,6 +106,7 @@ impl Tool for WriteTool {
             text.push_str(line);
         }
         let mut output = text_output(text);
+        output.value = (context.program).then(|| crate::values::write(given, tag, content.len()));
         if let Some(before) = &before {
             let patch = crate::diff::patch(before, content, &path);
             if !patch.is_empty() {
@@ -483,6 +484,35 @@ enum SkipReason {
     NotOneFile,
 }
 
+impl BashTool {
+    /// Tags a command's output as the file view it is, `cat f` alike, and says why when it is not.
+    fn bridge(
+        &self,
+        command: &str,
+        viewed: bool,
+        (reduced, truncated): (&crate::reduce::Reduced, bool),
+        context: &ToolContext,
+        text: &mut String,
+    ) -> &'static str {
+        let Some(state) = self.hashline.as_ref().filter(|_| viewed) else {
+            return SkipReason::NotAView.name();
+        };
+        match bridge_target(command, &context.cwd) {
+            Bridge::Tag { typed, path } => {
+                let view = shown(command, reduced, truncated);
+                match tagged_header(state, &typed, &path, &view, context) {
+                    Some(header) => {
+                        *text = format!("{header}\n{text}");
+                        "tag"
+                    }
+                    None => SkipReason::NotOneFile.name(),
+                }
+            }
+            Bridge::Skip(reason) => reason.name(),
+        }
+    }
+}
+
 enum Bridge {
     Tag { typed: String, path: PathBuf },
     Skip(SkipReason),
@@ -750,7 +780,7 @@ impl Tool for BashTool {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if command.trim().is_empty() {
-            return poll_job(&input, &context.cancelled);
+            return poll_job(&input, &context.cancelled, context.program);
         }
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
@@ -784,7 +814,14 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::Backgrounded(id)) => {
                 let after = background_after.unwrap_or_default();
                 let owned = context.job_owner.is_some();
-                return backgrounded_output(sections, id, after, timeout, owned);
+                let program = context.program;
+                return crate::jobs::backgrounded_output(
+                    sections,
+                    id,
+                    (after, timeout),
+                    owned,
+                    program,
+                );
             }
             Err(message) => return error_output(message),
         };
@@ -861,24 +898,14 @@ impl Tool for BashTool {
         } else {
             sections.join("\n")
         };
-        let bridge = match &self.hashline {
-            Some(state) if exit_code == 0 && !capture.cancelled => {
-                match bridge_target(command, &context.cwd) {
-                    Bridge::Tag { typed, path } => {
-                        let view = shown(command, &reduced, capture.truncated);
-                        match tagged_header(state, &typed, &path, &view, context) {
-                            Some(header) => {
-                                text = format!("{header}\n{text}");
-                                "tag"
-                            }
-                            None => SkipReason::NotOneFile.name(),
-                        }
-                    }
-                    Bridge::Skip(reason) => reason.name(),
-                }
-            }
-            Some(_) | None => SkipReason::NotAView.name(),
-        };
+        let viewed = exit_code == 0 && !capture.cancelled;
+        let bridge = self.bridge(
+            command,
+            viewed,
+            (&reduced, capture.truncated),
+            context,
+            &mut text,
+        );
         let details = json!({
             "exitCode": exit_code,
             "truncated": capture.truncated,
@@ -891,55 +918,12 @@ impl Tool for BashTool {
             "sandboxRefusal": refusal.as_ref().map(crate::sandbox::SandboxRefusal::to_json),
         });
         let unfinished = capture.cancelled || timed_out || refusal.is_some();
-        crate::tool::ran_output(text, details, unfinished)
+        let mut output = crate::tool::ran_output(text, details, unfinished);
+        output.value = context
+            .program
+            .then(|| crate::values::bash(capture, timed_out));
+        output
     }
-}
-
-/// A command still running at its wait: the turn gets the job and a bounded tail printed so far.
-fn backgrounded_output(
-    mut sections: Vec<String>,
-    id: crate::jobs::JobId,
-    after: std::time::Duration,
-    timeout: std::time::Duration,
-    owned: bool,
-) -> ToolOutput {
-    const TAIL_LINES: usize = 20;
-    const TAIL_BYTES: usize = 2_048;
-    let timeout = timeout.as_secs();
-    let arrival = if owned {
-        "when it exits, starting your next turn: end the turn rather than sleep or poll"
-    } else {
-        "only if it exits while this turn is still running"
-    };
-    sections.push(format!(
-        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own {arrival}; bash job={id} wait=<s> waits for it now.]"
-    ));
-    let chunk = crate::jobs::registry().output_since(id, 0);
-    let (so_far, printed) = chunk.map_or((String::new(), 0), |chunk| (chunk.text, chunk.next));
-    let lines: Vec<&str> = so_far.lines().collect();
-    let tail = lines.get(lines.len().saturating_sub(TAIL_LINES)..);
-    let tail = tail.unwrap_or_default().join("\n");
-    let from = (tail.len().saturating_sub(TAIL_BYTES)..tail.len())
-        .find(|at| tail.is_char_boundary(*at))
-        .unwrap_or(tail.len());
-    if lines.len() > TAIL_LINES || from > 0 {
-        sections.push(format!(
-            "[the last {} of {} bytes printed so far (the preview keeps {TAIL_LINES} lines, at most {TAIL_BYTES} bytes); bash job={id} wait=<s> returns its output once it exits]",
-            tail.len().saturating_sub(from),
-            printed
-        ));
-    }
-    sections.extend(
-        tail.get(from..)
-            .filter(|kept| !kept.is_empty())
-            .map(str::to_owned),
-    );
-    let mut output = text_output(sections.join("\n"));
-    output.result.details = json!({
-        "job": id.0, "backgrounded": true, "timeoutSecs": timeout,
-        "afterMs": u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
-    });
-    output
 }
 
 /// The timeout's remedy, unless the nudge names one, and why a `wait` did not make a job.
@@ -968,7 +952,11 @@ fn timed_out_notes(timeout: std::time::Duration, nudged: bool, asked: Option<u64
 }
 
 /// The same tool with no command; it holds the job's report so what it returns is not resent.
-fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOutput {
+fn poll_job(
+    input: &Map<String, Value>,
+    cancelled: &crate::CancelFlag,
+    program: bool,
+) -> ToolOutput {
     let jobs = crate::jobs::registry();
     let requested = input
         .get("job")
@@ -995,7 +983,11 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
             let killed =
                 report.state == crate::jobs::JobState::Settled(crate::jobs::Outcome::Killed);
             let details = json!({ "job": id.0, "exitCode": exit_code });
-            return crate::tool::ran_output(text, details, killed);
+            let value = program
+                .then(|| crate::values::polled(id, report.exit_code, &report.output, killed));
+            let mut output = crate::tool::ran_output(text, details, killed);
+            output.value = value;
+            return output;
         }
         match deadline {
             // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
@@ -1007,6 +999,7 @@ fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOu
                 jobs.set_reported(id, false);
                 let mut output = text_output(report.headline());
                 output.result.details = json!({ "job": id.0, "running": true });
+                output.value = program.then(|| crate::values::job(id));
                 return output;
             }
         }

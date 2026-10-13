@@ -203,7 +203,7 @@ async fn call(
     let id = format!("cell-{}-{minted}", calls.attached_ms);
     let started = std::time::Instant::now();
     let signal = yi_loop::interrupt::InterruptSignal::default();
-    let outcome = tool.execute(&id, args.clone(), &signal).await;
+    let (outcome, value) = tool.execute_program(&id, args.clone(), &signal).await;
     let text = yi_types::message::join_text(&outcome.result.content, "\n");
     let denied = (outcome
         .result
@@ -231,13 +231,13 @@ async fn call(
         read && !asked,
         cell,
     );
-    let reply = json!({
-        "ok": !outcome.is_error,
-        "kind": kind,
-        "text": text,
-        "details": outcome.result.details,
-    });
-    reply.as_object().cloned().unwrap_or_default()
+    let mut reply = Map::new();
+    reply.insert("ok".to_owned(), (!outcome.is_error).into());
+    reply.insert("kind".to_owned(), kind.into());
+    reply.insert("text".to_owned(), text.into());
+    reply.insert("details".to_owned(), outcome.result.details);
+    reply.insert("value".to_owned(), value.into());
+    reply
 }
 
 impl yi_tools::KernelBridge for KernelService {
