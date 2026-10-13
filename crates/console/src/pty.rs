@@ -19,10 +19,11 @@ use crate::client::ClientEvent;
 use crate::render::short_path;
 
 const SCROLLBACK_ROWS: usize = 5_000;
+const WRITE_QUEUE: usize = 64;
 
 pub struct Pty {
     master: File,
-    writes: mpsc::Sender<Vec<u8>>,
+    writes: mpsc::SyncSender<Vec<u8>>,
     faults: Arc<Mutex<Option<std::io::Error>>>,
     parser: Arc<Mutex<vt100::Parser>>,
     fresh: Arc<AtomicBool>,
@@ -72,7 +73,7 @@ impl Pty {
         let master = File::from(master);
         let mut reader = master.try_clone()?;
         let mut writer = master.try_clone()?;
-        let (writes, pending) = mpsc::channel::<Vec<u8>>();
+        let (writes, pending) = mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
         let faults = Arc::new(Mutex::new(None));
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_ROWS)));
         let fresh = Arc::new(AtomicBool::new(true));
@@ -121,15 +122,23 @@ impl Pty {
         self.exited.is_some()
     }
 
-    /// Invariant: the console loop never writes the master; a full PTY input queue holds
-    /// only the writer thread, so a stopped child cannot freeze the loop.
+    /// Invariant: the console loop never writes the master, and the write queue behind it is
+    /// capped; a child that stops reading fails the next send visibly instead of growing memory.
     pub fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         if let Some(error) = lock(&self.faults).take() {
             return Err(error);
         }
-        self.writes
-            .send(bytes.to_vec())
-            .map_err(|_| std::io::Error::new(ErrorKind::BrokenPipe, "terminal writer stopped"))
+        match self.writes.try_send(bytes.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => Err(std::io::Error::new(
+                ErrorKind::WouldBlock,
+                "input queue full; the child is not reading",
+            )),
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(std::io::Error::new(
+                ErrorKind::BrokenPipe,
+                "terminal writer stopped",
+            )),
+        }
     }
 
     pub fn paste(&mut self, text: &str) -> std::io::Result<()> {

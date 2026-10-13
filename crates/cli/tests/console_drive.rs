@@ -475,3 +475,28 @@ fn closing_a_terminal_pane_ends_its_shell() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with keystrokes into a stopped child queuing without bound: memory grows and the user
+/// sees nothing. A jammed PTY fills the capped write queue and the next key fails visibly.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_terminal_pane_says_when_the_child_stops_reading() -> TestResult {
+    terminal_run(
+        "yi-term-stall",
+        &format!(
+            "cmd-y\n\
+             wait-frame 8000 >_ sh\n\
+             type sleep 30\n\
+             key enter\n\
+             wait 500\n\
+             paste {}\n\
+             wait 500\n\
+             type {}\n\
+             wait-frame 8000 input queue full\n\
+             quit\n",
+            "a".repeat(9000),
+            "x".repeat(80),
+        ),
+    )?;
+    Ok(())
+}
