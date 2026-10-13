@@ -1,7 +1,7 @@
 //! The title animation: a scalar over a whole pane, sampled into glyph cells, a pure function of
 //! size, scene and seconds since the console started. The name lands on the orb's own mark.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -15,10 +15,15 @@ use crate::colors::Theme;
 pub enum Scene {
     Kali,
     Echo,
+    Solid,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 2] = [("kali", Scene::Kali), ("echo", Scene::Echo)];
+    pub const ALL: [(&'static str, Scene); 3] = [
+        ("kali", Scene::Kali),
+        ("echo", Scene::Echo),
+        ("solid", Scene::Solid),
+    ];
 
     pub fn named(name: &str) -> Option<Scene> {
         Self::ALL
@@ -28,8 +33,9 @@ impl Scene {
     }
 }
 
-/// Used when the config names no weights: the Kali fold four times in five.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 2] = [(Scene::Kali, 8), (Scene::Echo, 2)];
+/// Used when the config names no weights: the Kali fold eight parts in twelve.
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 3] =
+    [(Scene::Kali, 8), (Scene::Echo, 2), (Scene::Solid, 2)];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
 pub fn pick(weights: &[(Scene, u32)], seed: u64) -> Option<Scene> {
@@ -201,6 +207,51 @@ fn kali(u: f64, v: f64, (du, dv): (f64, f64), t: f64) -> f64 {
         * smooth(t / 0.3)
 }
 
+/// Cells farther than this from every stroke cannot see the extruded name.
+const SOLID_NEAR: f64 = 0.45;
+
+/// The name as a lit extrusion, sphere-traced from a camera that swings once while it holds;
+/// `None` where the ray misses. It shrinks onto the small mark with the same strokes.
+fn solid(strokes: &Strokes, thick: f64, (u, v): (f64, f64), t: f64, leave: f64) -> Option<f64> {
+    let half_z = 0.17 * smooth((t - 0.3) / 0.9) * (1.0 - 0.85 * leave);
+    if half_z < 0.01 {
+        return None;
+    }
+    let fat = 0.05 * (1.0 - leave);
+    let (sin, cos) = (0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave)).sin_cos();
+    let f =
+        |x: f64, y: f64, z: f64| (distance_to(strokes, thick, x, y) - fat).max(z.abs() - half_z);
+    let eye = [-3.0 * sin, 0.0, -3.0 * cos];
+    let aim = [u * cos + 3.0 * sin, v, -u * sin + 3.0 * cos];
+    let len = (aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]).sqrt();
+    let dir = aim.map(|c| c / len);
+    let mut at = 0.0;
+    for _ in 0..40 {
+        let p = [
+            eye[0] + dir[0] * at,
+            eye[1] + dir[1] * at,
+            eye[2] + dir[2] * at,
+        ];
+        let d = f(p[0], p[1], p[2]);
+        if d < 0.006 {
+            let e = 0.012;
+            let n = [
+                f(p[0] + e, p[1], p[2]) - f(p[0] - e, p[1], p[2]),
+                f(p[0], p[1] + e, p[2]) - f(p[0], p[1] - e, p[2]),
+                f(p[0], p[1], p[2] + e) - f(p[0], p[1], p[2] - e),
+            ];
+            let size = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
+            let lum = (n[0] * -0.45 + n[1] * 0.65 + n[2] * -0.6) / size;
+            return Some(0.30 + 0.70 * lum.max(0.0));
+        }
+        at += d * 0.9;
+        if at > 6.0 {
+            return None;
+        }
+    }
+    None
+}
+
 /// Dim the field near the strokes and fill them: `rise` 0 leaves the field, 1 is the name.
 fn name(field: f64, d: f64, rise: f64) -> f64 {
     if d < 0.0 {
@@ -252,6 +303,7 @@ pub fn cover(
     let rise = match scene {
         Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
         Scene::Echo => 1.0,
+        Scene::Solid => 0.0,
     };
     let leave = smooth((t - HOLD_SECS) / LAND_SECS);
     let fade = 1.0 - smooth(leave * 1.25);
@@ -261,15 +313,28 @@ pub fn cover(
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
             let d = distance_to(&strokes, thick, u, v);
-            if d >= 0.0 && dissolve(x, y) < reveal {
+            let solid_hit = match scene {
+                Scene::Solid if d < SOLID_NEAR => solid(&strokes, thick, (u, v), t, leave),
+                _ => None,
+            };
+            let in_name = match scene {
+                Scene::Solid => solid_hit.is_some(),
+                _ => d < 0.0,
+            };
+            if !in_name && dissolve(x, y) < reveal {
                 continue;
             }
             let field = match scene {
                 _ if fade <= 0.0 => 0.0,
                 Scene::Kali => kali(u, v, cell, t) * fade,
                 Scene::Echo => echo(d, t) * fade,
+                Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
             };
-            let value = name(field, d, rise).clamp(0.0, 1.0);
+            let value = match solid_hit {
+                Some(lit) => lit,
+                None => name(field, d, rise),
+            }
+            .clamp(0.0, 1.0);
             let step = usize::from((value * f64::from(TOP)).round() as u8);
             let place = (area.x.saturating_add(x), area.y.saturating_add(y));
             if let Some(target) = buffer.cell_mut(place) {
