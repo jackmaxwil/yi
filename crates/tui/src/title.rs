@@ -70,7 +70,7 @@ const KALI_SECS: f64 = 16.0;
 const OPEN_SECS: f64 = 1.6;
 const NAME_FROM: f64 = 1.2;
 const NAME_TO: f64 = 1.9;
-/// The name holds in full until here, then lands on the small mark over `LAND_SECS`.
+/// The name holds in full until here, then lands on the small mark over [`LAND_SECS`].
 const HOLD_SECS: f64 = 2.2;
 const LAND_SECS: f64 = 0.8;
 /// After this the animation is over and draws nothing.
@@ -257,7 +257,7 @@ fn dissolve(x: u16, y: u16) -> f64 {
     f64::from(h >> 8) / 16_777_216.0
 }
 
-/// Cover every cell of `area` with `scene` until [`OVER`]. From `HOLD_SECS` the name shrinks onto
+/// Cover every cell of `area` with `scene` until [`OVER`]. From [`HOLD_SECS`] the name shrinks onto
 /// `landing` and the cells around it give the screen back a few at a time.
 pub fn cover(
     buffer: &mut Buffer,
