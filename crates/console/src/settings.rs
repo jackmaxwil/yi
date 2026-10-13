@@ -349,31 +349,35 @@ fn clip(text: &str, width: usize) -> String {
 }
 
 fn tab_bar(settings: &Settings, width: usize, theme: &Theme) -> Line<'static> {
-    let names: Vec<&str> = (0..=KEYS).map(tab_name).collect();
-    let full: usize = names
-        .iter()
-        .map(|name| name.chars().count().saturating_add(2))
-        .sum();
-    if full > width {
-        return Line::from(Span::styled(
-            format!(" ◂ {} ▸", tab_name(settings.tab)),
-            theme.accent_style().add_modifier(Modifier::BOLD),
-        ));
+    let span = |first: usize, last: usize| -> usize {
+        let names: usize = (first..=last).map(|i| tab_name(i).chars().count()).sum();
+        names + (last - first) + 6
+    };
+    let (mut first, mut last) = (settings.tab, settings.tab);
+    loop {
+        let right = (last < KEYS && span(first, last + 1) <= width).then(|| last + 1);
+        last = right.unwrap_or(last);
+        let left = first.checked_sub(1).filter(|lo| span(*lo, last) <= width);
+        first = left.unwrap_or(first);
+        if right.is_none() && left.is_none() {
+            break;
+        }
     }
-    let spans: Vec<Span<'static>> = names
-        .iter()
-        .enumerate()
-        .map(|(tab, name)| {
-            let style = if tab == settings.tab {
-                theme
-                    .accent_style()
-                    .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-            } else {
-                theme.dim_style()
-            };
-            Span::styled(format!(" {name} "), style)
-        })
-        .collect();
+    let dim = theme.dim_style();
+    let mut spans = vec![Span::styled(if first > 0 { "‹ " } else { "  " }, dim)];
+    for index in first..=last {
+        if index > first {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(if index == settings.tab {
+            let chip = Modifier::BOLD | Modifier::REVERSED;
+            let name = format!(" {} ", tab_name(index));
+            Span::styled(name, theme.accent_style().add_modifier(chip))
+        } else {
+            Span::styled(tab_name(index), dim)
+        });
+    }
+    spans.push(Span::styled(if last < KEYS { " ›" } else { "" }, dim));
     Line::from(spans)
 }
 
@@ -524,4 +528,35 @@ pub fn view(
     };
     lines.push(Line::styled(hint, theme.dim_style()));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_tui::colors::ColorTier;
+
+    fn strip(tab: usize, width: usize) -> String {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let line = tab_bar(&Settings::new(None, tab), width, &theme);
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn a_wide_strip_shows_every_tab_and_a_narrow_one_keeps_the_current_in_view() {
+        let wide = strip(SESSION, 80);
+        for tab in 0..=KEYS {
+            assert!(wide.contains(tab_name(tab)), "{wide}");
+        }
+        assert!(!wide.contains('‹') && !wide.contains('›'), "{wide}");
+        let narrow = strip(5, 30);
+        assert!(narrow.contains(" Budget "), "{narrow}");
+        assert!(
+            narrow.starts_with("‹ ") && narrow.ends_with(" ›"),
+            "{narrow}"
+        );
+        assert!(narrow.chars().count() <= 30, "{narrow}");
+    }
 }

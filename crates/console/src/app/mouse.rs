@@ -125,11 +125,25 @@ impl App {
             self.dirty = true;
             return;
         }
+        let hint = hits
+            .hint_buttons
+            .iter()
+            .find(|(rect, _)| rect.contains(Position::new(x, y)));
+        if let Some((_, action)) = hint {
+            return self.apply_action(outbound, *action);
+        }
         if hits
             .gear
             .is_some_and(|gear| gear.contains(Position::new(x, y)))
         {
-            return self.apply_action(outbound, Action::Settings);
+            let Some(pane) = self.open_settings_pane() else {
+                return self.apply_action(outbound, Action::Settings);
+            };
+            if let Some(tab) = self.state.tab_mut() {
+                tab.layout.focus_pane(pane);
+            }
+            self.dirty = true;
+            return self.apply_action(outbound, Action::ClosePane);
         }
         if x < hits.sidebar_width {
             if let Some((_, index)) = hits.root_rows.iter().find(|(row_y, _)| *row_y == y) {
@@ -230,7 +244,18 @@ impl App {
             }
             MouseKind::Down => self.press(outbound, x, y),
             MouseKind::RightDown => self.right_click(x, y),
-            MouseKind::Moved => {}
+            MouseKind::Moved => {
+                let over = |at: Option<(u16, u16)>| {
+                    let hits = self.hits.as_ref()?;
+                    let at = Position::from(at?);
+                    hits.hint_buttons
+                        .iter()
+                        .position(|(rect, _)| rect.contains(at))
+                };
+                let before = over(self.pointer);
+                self.pointer = Some((x, y));
+                self.dirty |= before != over(self.pointer);
+            }
             MouseKind::Drag => {
                 self.pending_close = None;
                 if self.editor_drag {
@@ -328,6 +353,7 @@ mod tests {
             sidebar_width: 20,
             sidebar_rows: vec![(3, 1)],
             overlays: vec![Rect::new(30, 1, 40, 10)],
+            hint_buttons: Vec::new(),
             ..crate::render::Hits::default()
         });
         app.state.mode = Mode::Navigator {

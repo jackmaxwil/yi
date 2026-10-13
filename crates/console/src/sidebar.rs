@@ -48,6 +48,7 @@ fn avatar_at(
         seed: key.to_owned(),
         accent: accent_rgb(hue),
         state,
+        art: crate::avatar::Art::Identicon,
     })
 }
 
@@ -157,6 +158,14 @@ pub fn width(app: &mut App) -> u16 {
             app.state.sidebar_cols = name_cols(app);
             u16::try_from(app.state.sidebar_cols.saturating_add(9)).unwrap_or(u16::MAX)
         }
+    }
+}
+
+pub(crate) fn rail_style(app: &App, theme: &Theme) -> ratatui::style::Style {
+    if app.state.zone == Zone::Sidebar || matches!(app.state.mode, Mode::Prefix) {
+        theme.accent_style()
+    } else {
+        theme.dim_style()
     }
 }
 
@@ -512,12 +521,7 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
     }
     frame.render_widget(Paragraph::new(lines), area);
     if app.state.sidebar == SidebarMode::Rail {
-        let armed = app.state.zone == Zone::Sidebar || matches!(app.state.mode, Mode::Prefix);
-        let style = if armed {
-            theme.accent_style()
-        } else {
-            theme.dim_style()
-        };
+        let style = rail_style(app, theme);
         let focused = app
             .state
             .focused_session()
