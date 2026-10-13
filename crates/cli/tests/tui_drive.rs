@@ -4,6 +4,9 @@ use std::process::Command;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/session_files.rs"]
+mod session_files;
+use session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -190,16 +193,9 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
         "/new leaves the transcript empty: {last}"
     );
 
-    let mut files = 0;
-    for project in std::fs::read_dir(&sessions)?.filter_map(Result::ok) {
-        for entry in std::fs::read_dir(project.path())?.filter_map(Result::ok) {
-            if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
-                files += 1;
-            }
-        }
-    }
     assert_eq!(
-        files, 2,
+        session_files(&sessions)?.len(),
+        2,
         "/new writes a second session file beside the first"
     );
     Ok(())
@@ -269,15 +265,10 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     }
     // The age label counts wall-clock seconds, so a loaded run reads "1s ago" or more: the
     // /sessions row is matched by this session's id, read from its file, not by its age.
-    let mut ids = Vec::new();
-    for project in std::fs::read_dir(dir.join("sessions"))?.filter_map(Result::ok) {
-        for entry in std::fs::read_dir(project.path())?.filter_map(Result::ok) {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if let Some((_, id)) = name.strip_suffix(".jsonl").and_then(|n| n.split_once('_')) {
-                ids.push(id.to_owned());
-            }
-        }
-    }
+    let ids: Vec<String> = session_files(&dir.join("sessions"))?
+        .iter()
+        .filter_map(|path| Some(path.file_stem()?.to_str()?.split_once('_')?.1.to_owned()))
+        .collect();
     let [id] = ids.as_slice() else {
         return Err(format!("one session file expected: {ids:?}").into());
     };
@@ -755,16 +746,10 @@ fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult
         answer(control, 20_000)
     }
     let stored = || -> std::io::Result<String> {
-        let mut text = String::new();
-        for project in std::fs::read_dir(&sessions)? {
-            for file in std::fs::read_dir(project?.path())? {
-                let path = file?.path();
-                if path.extension().is_some_and(|ext| ext == "jsonl") {
-                    text += &std::fs::read_to_string(path)?;
-                }
-            }
-        }
-        Ok(text)
+        session_files(&sessions)?
+            .iter()
+            .map(std::fs::read_to_string)
+            .collect()
     };
     assert_eq!(ask(&mut control, "wait-idle 8000")?, "ok");
     assert!(

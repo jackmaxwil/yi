@@ -11,6 +11,9 @@ use scratch::Scratch;
 #[path = "support/prompt_slots.rs"]
 mod prompt_slots_support;
 use prompt_slots_support::prompt_slots;
+#[path = "support/session_files.rs"]
+mod session_files;
+use session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -599,14 +602,9 @@ fn undo_without_a_turn_end_restores_unscoped_and_says_so() -> TestResult {
     std::fs::write(project.join("b.txt"), "hand\n")?;
 
     let sessions = workspace.0.join("home/sessions");
-    // `family/` and `kernels/` (#580) sit beside the transcript's directory.
-    let file = std::fs::read_dir(&sessions)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
-        .flat_map(|files| files.filter_map(Result::ok))
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+    let file = session_files(&sessions)?
+        .into_iter()
+        .next()
         .ok_or("no session file")?;
     let log = std::fs::read_to_string(&file)?;
     let (kept, last) = log.trim_end().rsplit_once('\n').ok_or("one-line session")?;
@@ -1179,16 +1177,10 @@ fn plans_config_takes_dir_and_names_every_other_key() -> TestResult {
 fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     let workspace = Workspace::new("attribution")?;
     ask(&workspace, "prove it", &[])?;
-    let mut lines = String::new();
-    for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
-        // A root's mailbox job is kept under `schedules/<id>/`, a directory beside the files.
-        for path in std::fs::read_dir(project?.path())? {
-            let path = path?.path();
-            if path.is_file() {
-                lines.push_str(&std::fs::read_to_string(path)?);
-            }
-        }
-    }
+    let lines: String = session_files(&workspace.0.join("home/sessions"))?
+        .iter()
+        .map(std::fs::read_to_string)
+        .collect::<std::io::Result<_>>()?;
     assert!(lines.contains("prove it"), "{lines}");
     assert!(lines.contains(r#""attribution":"user""#), "{lines}");
     Ok(())

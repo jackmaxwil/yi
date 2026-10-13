@@ -1,5 +1,4 @@
 ---
 issue: Closes #1362
-raise: tests +3
 ---
-The control-socket drive test's stored-session helper now reads only session JSONL files and passes listing and read errors through (Closes #1362). Every root session writes `<sessions>/schedules/<session id>/scheduled-jobs.json` beside its JSONL, because its mailbox job is stored there at bind, and the helper had been reading that directory as a file. The earlier repair skipped whatever failed to read, so a real I/O error would have surfaced as an unrelated assertion.
+The cli integration tests find session files through one helper, `support/session_files.rs`, which keeps only `*.jsonl` entries under `sessions/<project>/` and passes listing and read errors through (Closes #1362). Each root session writes `<sessions>/schedules/<session id>/scheduled-jobs.json` beside its JSONL, because its mailbox job is stored there at bind. That directory broke the control-socket drive test, and the repair that followed hid every read error. Nine hand-written copies of the walk, in five test files and the prompt-slot helper, now call the one function, so the next entry added beside the sessions is filtered in one place.
