@@ -116,11 +116,16 @@ impl Options {
     }
 }
 
-fn build_matchers(
+/// The matcher a file grep builds from `pattern`, `literal` and `ignore_case`, for a decorator
+/// that greps another source by the same rules.
+pub fn line_matcher(input: &Map<String, Value>) -> Result<regex::Regex, Box<ToolOutput>> {
+    pattern_matcher(input, &Options::from(input))
+}
+
+fn pattern_matcher(
     input: &Map<String, Value>,
     options: &Options,
-    root: &Path,
-) -> Result<(regex::Regex, Option<RootedGlob>), Box<ToolOutput>> {
+) -> Result<regex::Regex, Box<ToolOutput>> {
     let alternatives: Vec<String> = patterns(input)?
         .into_iter()
         .map(|pattern| {
@@ -146,6 +151,15 @@ fn build_matchers(
             };
             invalid(format!("invalid regex pattern: {error}{unlinked}"))
         })?;
+    Ok(matcher)
+}
+
+fn build_matchers(
+    input: &Map<String, Value>,
+    options: &Options,
+    root: &Path,
+) -> Result<(regex::Regex, Option<RootedGlob>), Box<ToolOutput>> {
+    let matcher = pattern_matcher(input, options)?;
     let include_source = match (
         input.get("include").and_then(Value::as_str),
         input.get("type").and_then(Value::as_str),
@@ -927,7 +941,7 @@ impl Tool for GrepTool {
             "type": "object",
             "properties": {
                 "pattern": {"type": ["string", "array"], "items": {"type": "string"}, "description": "Regex (Rust syntax), or an array of them matched as alternatives"},
-                "path": {"type": "string", "description": "Directory or file to search (default: cwd)"},
+                "path": {"type": "string", "description": "Directory or file to search (default: cwd), or a transcript: history://self, parent, a child, or repo for past sessions"},
                 "literal": {"type": "boolean", "description": "Match the pattern as plain text"},
                 "ignore_case": {"type": "boolean", "description": "Case-insensitive"},
                 "include": {"type": "string", "description": "Glob on file paths: relative to path, or absolute"},
@@ -970,7 +984,6 @@ impl Tool for GrepTool {
             Err(output) => return *output,
         };
         let context_lines = context_asked.min(CONTEXT_CAP);
-
         let collected = collect(
             context,
             &root,
@@ -1105,27 +1118,53 @@ impl Tool for GrepTool {
             "files": collected.files.len(),
             "collectionCapped": collected.collection_capped,
         });
-        output.value = context.program.then(|| program_value(&collected, &notices));
+        let value = || program_value(&collected, &notices, &options, offset);
+        output.value = context.program.then(value);
         output
     }
 }
 
-/// Every hit collected, whole lines in walk order, with every row naming what the walk left out.
-fn program_value(collected: &Collected, notices: &[String]) -> Value {
-    let matches = (collected.files.iter()).flat_map(|file| {
+/// Every hit collected from `paged` on, whole lines in walk order, with every row naming what
+/// the walk or the item fuse left out.
+fn program_value(collected: &Collected, notices: &[String], options: &Options, at: usize) -> Value {
+    // In the count and files modes `offset` pages files, so the value starts at the first match.
+    let paged = (!options.count && !options.files_only).then_some(at);
+    let offset = paged.unwrap_or_default();
+    let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
+    let (mut matches, mut skipped, mut more) = (Vec::new(), 0_usize, false);
+    'files: for file in &collected.files {
+        let skip_here = file.hits.len().min(offset.saturating_sub(skipped));
+        skipped = skipped.saturating_add(skip_here);
+        if skip_here == file.hits.len() {
+            continue;
+        }
         let lines: Vec<&str> = file.normalized.split('\n').collect();
-        file.hits
-            .iter()
-            .map(move |&index| yi_types::tool_value::GrepMatch {
+        for &index in file.hits.iter().skip(skip_here) {
+            if matches.len() >= fuse {
+                more = true;
+                break 'files;
+            }
+            matches.push(yi_types::tool_value::GrepMatch {
                 path: file.display.clone(),
                 line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
                 text: lines.get(index).copied().unwrap_or_default().to_owned(),
-            })
-    });
+            });
+        }
+    }
+    let mut cut = notices.to_vec();
+    if more {
+        let next = offset.saturating_add(fuse);
+        let mode = paged.map_or(" and neither count nor files_with_matches", |_| "");
+        cut.push(format!(
+            "[kept matches {}-{next} of {}: the program fuse is {fuse} matches; grep with offset={next}{mode} for the rest]",
+            offset.saturating_add(1),
+            collected.total
+        ));
+    }
     let value = yi_types::tool_value::GrepValue {
-        matches: matches.collect(),
+        matches,
         files: u64::try_from(collected.files.len()).unwrap_or(u64::MAX),
-        cut: (!notices.is_empty()).then(|| notices.join("\n")),
+        cut: (!cut.is_empty()).then(|| cut.join("\n")),
     };
     serde_json::to_value(value).unwrap_or(Value::Null)
 }

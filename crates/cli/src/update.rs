@@ -23,10 +23,14 @@ fn run() -> i32 {
         eprintln!("usage: yi update");
         return 2;
     }
-    match installed() {
-        Ok(line) => {
+    report(installed())
+}
+
+fn report(installed: Result<(String, PathBuf), String>) -> i32 {
+    match installed {
+        Ok((line, binary)) => {
             println!("{line}");
-            0
+            sync(&binary)
         }
         Err(error) => {
             eprintln!("error: {error}");
@@ -35,11 +39,11 @@ fn run() -> i32 {
     }
 }
 
-fn installed() -> Result<String, String> {
+fn installed() -> Result<(String, PathBuf), String> {
     let home = absolute_home()?;
     let prefix = prefix_dir(&home)?;
     let exe = std::env::current_exe().map_err(|error| format!("current exe: {error}"))?;
-    apply(Apply {
+    let line = apply(Apply {
         home: &home,
         prefix: &prefix,
         exe: &exe,
@@ -47,7 +51,29 @@ fn installed() -> Result<String, String> {
         target: env!("RELEASE_TRIPLE"),
         signers: SIGNERS,
         get: &http_get,
-    })
+    })?;
+    let binary = installed_binary(&prefix, read_receipt(&home)?.as_ref());
+    Ok((line, binary))
+}
+
+/// The installed binary syncs, since its plugin table, not this one's, names the pins a
+/// release moved.
+fn sync(binary: &Path) -> i32 {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the new binary is a different program from this one"
+    )]
+    let status = std::process::Command::new(binary)
+        .args(["plugin", "sync"])
+        .status();
+    match status {
+        Ok(status) if status.success() => 0,
+        Ok(_) => 1,
+        Err(error) => {
+            eprintln!("error: {}: {error}", binary.display());
+            1
+        }
+    }
 }
 
 struct Apply<'a, F> {
@@ -629,6 +655,36 @@ mod tests {
         assert!(!on_forge("https://git.example.invalid"));
     }
 
+    /// A release that moved a plugin's pin is only half applied until the installed binary
+    /// syncs; its failure makes the update exit 1, and a failed update spawns nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_installed_binary_is_asked_to_sync_its_plugins() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = Tmp::new()?;
+        let argv = tmp.0.join("argv");
+        for (exit, code) in [(0, 0), (3, 1)] {
+            let binary = tmp.0.join(format!("yi-{exit}"));
+            let script = format!(
+                "#!/bin/sh\necho \"$@\" > '{}'\nexit {exit}\n",
+                argv.display()
+            );
+            std::fs::write(&binary, script)?;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))?;
+            assert_eq!(report(Ok(("installed".to_owned(), binary))), code);
+            assert_eq!(std::fs::read_to_string(&argv)?, "plugin sync\n");
+            std::fs::remove_file(&argv)?;
+        }
+        assert_eq!(report(Ok(("installed".to_owned(), tmp.0.join("gone")))), 1);
+        assert_eq!(
+            report(Err("the release digest does not match".to_owned())),
+            1
+        );
+        assert!(!argv.exists(), "a failed update asked nothing to sync");
+        Ok(())
+    }
+
     struct Tmp(PathBuf);
 
     impl Tmp {
@@ -906,6 +962,11 @@ mod tests {
             format!("installed 0.1.0 → 0.2.0 at {}", prefix.display())
         );
         assert_eq!(std::fs::read(&exe)?, b"new");
+        assert_eq!(
+            installed_binary(&prefix, read_receipt(&home)?.as_ref()),
+            exe,
+            "the binary asked to sync is the one just published"
+        );
         assert_eq!(
             std::fs::read(home.join(".yi/skills/yi/SKILL.md"))?,
             b"skill body"

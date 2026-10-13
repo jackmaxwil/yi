@@ -217,3 +217,66 @@ fn the_prompt_labels_roles_and_names_what_cursor_never_receives()
     );
     Ok(())
 }
+
+/// Recorded from a live `composer-2.5-fast` Run on 2026-10-12; blob payloads, blob ids and the
+/// home path are overwritten at equal length, so every frame keeps its real field layout.
+const RECORDED_RUN: &[u8] = include_bytes!("fixtures/cursor_run_2026-10-12.bin");
+
+#[test]
+fn a_recorded_run_decodes_to_one_shell_call_then_its_output() -> Result<(), String> {
+    let (frames, rest) = proto::split_ready(RECORDED_RUN);
+    assert!(
+        rest.is_empty(),
+        "{} bytes left after the last frame",
+        rest.len()
+    );
+    let mut kinds = Vec::new();
+    let mut reply = String::new();
+    let mut blobs = 0;
+    for frame in &frames {
+        let kind = match proto::decode(&frame.message, "")? {
+            proto::Inbound::Thinking(_) => "think",
+            proto::Inbound::Text(text) => {
+                reply.push_str(&text);
+                "text"
+            }
+            proto::Inbound::Tool {
+                name,
+                command,
+                route,
+                call_id,
+                exec_id,
+                ..
+            } => {
+                assert_eq!(
+                    (name.as_str(), command.as_str()),
+                    ("bash", "echo YI-CURSOR-TOOL-OK")
+                );
+                assert!(matches!(route, proto::Route::ShellStream));
+                assert!(call_id.starts_with("tool_") && !exec_id.is_empty());
+                "tool"
+            }
+            proto::Inbound::KvSet { blob_id, .. } | proto::Inbound::KvGet { blob_id, .. } => {
+                assert_eq!(blob_id.len(), 32, "a blob id is a SHA-256 digest");
+                blobs += 1;
+                "kv"
+            }
+            proto::Inbound::TurnEnded => "end",
+            _ => continue,
+        };
+        if kinds.last() != Some(&kind) {
+            kinds.push(kind);
+        }
+    }
+    assert_eq!(reply, "YI-CURSOR-TOOL-OK");
+    assert_eq!(blobs, 15);
+    assert_eq!(kinds.iter().filter(|kind| **kind == "tool").count(), 1);
+    let tool = kinds.iter().position(|kind| *kind == "tool");
+    let first_text = kinds.iter().position(|kind| *kind == "text");
+    assert!(
+        tool < first_text,
+        "the reply came before the call: {kinds:?}"
+    );
+    assert_eq!(kinds.last(), Some(&"end"));
+    Ok(())
+}

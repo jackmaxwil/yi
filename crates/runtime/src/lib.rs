@@ -46,6 +46,7 @@ pub mod schema;
 mod scratch;
 pub mod select;
 pub mod session;
+pub mod settings;
 pub mod skills;
 pub mod slash;
 pub mod spend;
@@ -68,9 +69,7 @@ pub use compaction::{CompactStatus, Compactor};
 /// extension host's reminders and late fragments ride it.
 pub type Deliver = std::sync::Arc<dyn Fn(yi_types::message::AgentMessage) + Send + Sync>;
 pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
-pub use kernel::{
-    HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
-};
+pub use kernel::{HostRegistry, KernelService, KernelServiceOptions, restore_notice_text};
 pub use kernel_doctor::{
     doctor_boot, doctor_toolchain, listeners_detail, reachable_listeners, sandbox_listeners,
 };
@@ -114,6 +113,11 @@ pub fn identity_fragment() -> &'static str {
 /// Stable text: it rides the cached prefix, so every byte is paid per turn.
 pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
+}
+
+/// Rides the system prompt only when no asker is wired, so no person can answer.
+pub fn unattended_fragment() -> &'static str {
+    include_str!("prompts/unattended.md")
 }
 pub use yi_ai::faux;
 pub use yi_context::{Bytes, SourceBudgets, Truncated, reply_tokens};

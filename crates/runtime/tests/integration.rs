@@ -30,6 +30,7 @@ mod environment;
 mod ext_e2e;
 mod family;
 mod family_cache;
+mod fetch_grep;
 mod fetch_session;
 mod gate;
 mod gate_battery;

@@ -405,6 +405,423 @@ fn a_plugin_skill_and_its_files_are_read_by_address() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+/// A session is read by its name as well as its id, in its own repository or another; a name two
+/// sessions carry lists both, and a history wall, which names sessions by id, resolves no name.
+#[test]
+fn a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_owners() -> TestResult
+{
+    use yi_session::SessionRepo;
+    let root = Scratch::new("yi-fetch-named")?;
+    let sessions = root.join("sessions");
+    // An underscore in a repository's directory once let a path spelling stand for an id.
+    let (here, there) = (root.join("here"), root.join("their_repo"));
+    std::fs::create_dir_all(&here)?;
+    std::fs::create_dir_all(&there)?;
+    let named = |cwd: &std::path::Path, name: &str, said: &str| -> Result<String, Box<dyn Error>> {
+        let mut repo = yi_session::JsonlRepo::new(sessions.clone(), cwd.to_string_lossy());
+        let store = repo.create(yi_session::CreateOptions::default())?;
+        let reply = yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_text(said)],
+            yi_types::message::StopReason::Stop,
+        );
+        yi_session::lock_session(&store).append_message("main", reply)?;
+        yi_session::lock_session(&store).set_name(Some(name.to_owned()))?;
+        Ok(yi_session::lock_session(&store).metadata().id.clone())
+    };
+    named(&here, "forge-root", "the gate pins runner image v3")?;
+    let ops = named(&there, "ops-root", "the vm runner lives on host 123")?;
+    named(&there, "twin", "one")?;
+    named(&there, "twin", "two")?;
+    named(&here, "shared", "this repository's own")?;
+    named(&there, "shared", "the other repository's")?;
+    named(&here, "Fix The Cache", "a name with spaces")?;
+    let mut repo = yi_session::JsonlRepo::new(sessions.clone(), there.to_string_lossy());
+    let ops_root = repo.open(&ops)?;
+    let ops_file = yi_session::lock_session(&ops_root)
+        .file_path()
+        .cloned()
+        .ok_or("no file")?;
+    let children = ops_file.with_extension("").join("children");
+    let child = yi_session::create_flat_session(
+        children.clone(),
+        there.to_string_lossy(),
+        Some(ops.clone()),
+    )?;
+    let reply = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text("the worker found the stale pin")],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&child).append_message("main", reply)?;
+    let child_file = yi_session::lock_session(&child)
+        .file_path()
+        .cloned()
+        .ok_or("no child file")?;
+    let spawned = yi_types::subagent::ChildTrail::Spawned(yi_types::subagent::ChildSpawned {
+        name: "worker-3".to_owned(),
+        id: yi_types::subagent::ChildId("c1".to_owned()),
+        session: yi_session::lock_session(&child).metadata().id.clone(),
+        path: child_file
+            .strip_prefix(ops_file.parent().ok_or("no dir")?)?
+            .to_string_lossy()
+            .into_owned(),
+        brief: String::new(),
+    });
+    let trail = serde_json::to_value(spawned)?;
+    yi_session::lock_session(&ops_root).append_custom(
+        "main",
+        yi_types::subagent::CHILD_ENTRY,
+        Some(trail),
+    )?;
+    let mut repo = yi_session::JsonlRepo::new(sessions.clone(), here.to_string_lossy());
+    let me = repo.create(yi_session::CreateOptions::default())?;
+    let host = crate::support::family(root.to_path_buf(), here.clone(), me.clone(), None).host;
+    let reader = |wall: Wall| {
+        let desk =
+            yi_runtime::fetch::SessionTranscripts::new(host.clone(), Some(sessions.clone()), &here);
+        Resolver::new(here.clone(), wall.clone())
+            .with_session("main", me.clone())
+            .with_transcripts(Arc::new(desk.walled_by(&wall)))
+    };
+    let read = |wall: Wall, address: &str| {
+        reader(wall).fetch(&address.parse().map_err(|_| FetchError::BadAddress {
+            url: address.to_owned(),
+            detail: String::new(),
+        })?)
+    };
+    let text = |fetched: Result<yi_runtime::fetch::Fetched, FetchError>| {
+        fetched
+            .map(|f| f.text)
+            .unwrap_or_else(|error| format!("{error:?}"))
+    };
+    assert!(text(read(Wall::default(), "history://forge-root")).contains("runner image v3"));
+    assert!(
+        text(read(Wall::default(), "history://ops-root")).contains("host 123"),
+        "another repository"
+    );
+    assert!(
+        text(read(Wall::default(), &format!("history://{ops}"))).contains("host 123"),
+        "by id"
+    );
+    let worker = text(read(Wall::default(), "history://ops-root/worker-3"));
+    assert!(
+        worker.contains("the stale pin"),
+        "a child by its root's name: {worker}"
+    );
+    let shared = text(read(Wall::default(), "history://shared"));
+    assert!(
+        shared.contains("this repository's own"),
+        "a name here is never shadowed: {shared}"
+    );
+    let page = text(read(Wall::default(), "history://forge-root/tail/1"));
+    assert!(
+        page.contains("runner image v3"),
+        "a name with a selector: {page}"
+    );
+    let spaced = text(read(Wall::default(), "history://fix-the-cache"));
+    assert!(
+        spaced.contains("a name with spaces"),
+        "spaces read as dashes: {spaced}"
+    );
+    for address in ["history://twin", "history://twin/tail/40"] {
+        let twins = read(Wall::default(), address);
+        assert!(
+            matches!(&twins, Err(FetchError::BadAddress { detail, .. })
+                if detail.starts_with("2 sessions are named \"twin\"") && detail.contains("\nhistory://")),
+            "{address}: {}",
+            text(twins)
+        );
+    }
+    let walled = Wall {
+        deny_url: vec![format!("history://{ops}")],
+        ..Wall::default()
+    };
+    let index = ops_file.parent().ok_or("no dir")?.join(".index.json");
+    assert!(
+        !index.exists(),
+        "a read wrote another repository's session index"
+    );
+    let stem = ops_file
+        .file_stem()
+        .ok_or("no stem")?
+        .to_string_lossy()
+        .into_owned();
+    for address in [
+        "history://ops-root".to_owned(),
+        "history://ops-root/worker-3".to_owned(),
+        "history://forge-root".to_owned(),
+        format!("history://repo--/{stem}"),
+    ] {
+        let refused = read(walled.clone(), &address);
+        assert!(
+            matches!(refused, Err(FetchError::Denied { .. })),
+            "{address} under a history wall: {}",
+            text(refused)
+        );
+    }
+    let spelled = read(Wall::default(), &format!("history://repo--/{stem}"));
+    assert!(
+        spelled.is_err(),
+        "a path spelling opened a session: {}",
+        text(spelled)
+    );
+    let named_wall = Wall {
+        deny_url: vec!["history://ops-root".to_owned()],
+        ..Wall::default()
+    };
+    let by_id = read(named_wall, &format!("history://{ops}"));
+    assert!(
+        matches!(by_id, Err(FetchError::Denied { .. })),
+        "an id around a name's wall: {}",
+        text(by_id)
+    );
+    let parent = Arc::downgrade(&host);
+    let reader_role = Resolver::new(here.clone(), Wall::default())
+        .with_session("worker", me.clone())
+        .with_transcripts(Arc::new(yi_runtime::fetch::ParentTranscript(parent)));
+    let reached = reader_role.fetch(&"history://ops-root".parse()?);
+    assert!(
+        matches!(&reached, Err(FetchError::NotFound { what, .. }) if what.contains("a reader opens")),
+        "{}",
+        text(reached)
+    );
+    Ok(())
+}
+
+/// A root session of `cwd` named `name` that said `said`, written by the session repo.
+fn named_session(
+    sessions: &std::path::Path,
+    cwd: &std::path::Path,
+    name: &str,
+    said: &str,
+) -> Result<String, Box<dyn Error>> {
+    use yi_session::SessionRepo;
+    let mut repo = yi_session::JsonlRepo::new(sessions.to_path_buf(), cwd.to_string_lossy());
+    let store = repo.create(yi_session::CreateOptions::default())?;
+    let reply = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(said)],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&store).append_message("main", reply)?;
+    yi_session::lock_session(&store).set_name(Some(name.to_owned()))?;
+    let id = yi_session::lock_session(&store).metadata().id.clone();
+    Ok(id)
+}
+
+/// A wall written with the lowercase address a name resolves as holds against that session's id,
+/// whether the name has capitals or runs its words together with two spaces, for a read and a grep.
+#[test]
+fn a_wall_naming_a_session_holds_against_its_id_by_read_and_grep() -> TestResult {
+    let root = Scratch::new("yi-fetch-name-wall")?;
+    let (sessions, here) = (root.join("sessions"), root.join("here"));
+    std::fs::create_dir_all(&here)?;
+    let me = memory_store();
+    let host = crate::support::family(root.to_path_buf(), here.clone(), me.clone(), None).host;
+    let walled = |deny: &str| {
+        let wall = Wall {
+            deny_url: vec![deny.to_owned()],
+            ..Wall::default()
+        };
+        let desk =
+            yi_runtime::fetch::SessionTranscripts::new(host.clone(), Some(sessions.clone()), &here);
+        Arc::new(
+            Resolver::new(here.clone(), wall.clone())
+                .with_session("main", me.clone())
+                .with_transcripts(Arc::new(desk.walled_by(&wall))),
+        )
+    };
+    for (name, deny) in [
+        ("Fix The Cache", "history://fix-the-cache"),
+        ("Two  Spaces", "history://two--spaces"),
+    ] {
+        let id = named_session(&sessions, &here, name, "the secret finding")?;
+        let reads = [
+            (
+                "read",
+                serde_json::json!({"path": format!("history://{id}")}),
+            ),
+            (
+                "grep",
+                serde_json::json!({"pattern": "secret", "path": format!("history://{id}")}),
+            ),
+        ];
+        for (tool, input) in reads {
+            let (open, _) =
+                crate::support::routed_tool(&walled("history://elsewhere"), tool, input.clone())?;
+            assert!(
+                open.contains("secret finding"),
+                "{tool} of {name} unwalled: {open}"
+            );
+            let (refused, is_error) = crate::support::routed_tool(&walled(deny), tool, input)?;
+            assert!(
+                is_error && !refused.contains("secret finding"),
+                "{tool} by the id of {name:?} around {deny}: {refused}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A root session's spawn record is another session's data: a child path that climbs out of the
+/// root's directory opens nothing, even when the file it reaches is a session.
+#[test]
+fn a_spawn_record_cannot_point_a_read_outside_its_roots_directory() -> TestResult {
+    use yi_session::SessionRepo;
+    let root = Scratch::new("yi-fetch-trail-escape")?;
+    let (sessions, here, there) = (root.join("sessions"), root.join("here"), root.join("there"));
+    std::fs::create_dir_all(&here)?;
+    let owner = named_session(&sessions, &there, "ops-root", "the root")?;
+    let outside = yi_session::create_flat_session(root.join("outside"), "/elsewhere", None)?;
+    let reply = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(
+            "a file the sessions directory never held",
+        )],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&outside).append_message("main", reply)?;
+    let reached = yi_session::lock_session(&outside)
+        .file_path()
+        .cloned()
+        .ok_or("no outside file")?;
+    let mut repo = yi_session::JsonlRepo::new(sessions.clone(), there.to_string_lossy());
+    let ops = repo.open(&owner)?;
+    let file = yi_session::lock_session(&ops)
+        .file_path()
+        .cloned()
+        .ok_or("no file")?;
+    for (name, path) in [
+        (
+            "climbs",
+            "../../outside/".to_owned() + &reached.file_name().ok_or("no name")?.to_string_lossy(),
+        ),
+        ("absolute", reached.to_string_lossy().into_owned()),
+    ] {
+        let spawned = yi_types::subagent::ChildTrail::Spawned(yi_types::subagent::ChildSpawned {
+            name: name.to_owned(),
+            id: yi_types::subagent::ChildId(format!("c-{name}")),
+            session: "elsewhere".to_owned(),
+            path,
+            brief: String::new(),
+        });
+        yi_session::lock_session(&ops).append_custom(
+            "main",
+            yi_types::subagent::CHILD_ENTRY,
+            Some(serde_json::to_value(spawned)?),
+        )?;
+    }
+    assert!(reached.is_file() && file.is_file());
+    let me = memory_store();
+    let host = crate::support::family(root.to_path_buf(), here.clone(), me.clone(), None).host;
+    let desk = yi_runtime::fetch::SessionTranscripts::new(host, Some(sessions), &here);
+    let resolver = Resolver::new(here, Wall::default())
+        .with_session("main", me)
+        .with_transcripts(Arc::new(desk));
+    for name in ["climbs", "absolute"] {
+        let read = resolver.fetch(&format!("history://ops-root/{name}").parse()?);
+        let text = read.map_or_else(|error| format!("{error:?}"), |fetched| fetched.text);
+        assert!(
+            !text.contains("never held"),
+            "{name} left the directory: {text}"
+        );
+    }
+    Ok(())
+}
+
+/// The resolver `attach_runtime` builds is walled by the session's wall: a name reads where no
+/// history wall stands and is refused, with the reason, where one does.
+#[tokio::test]
+async fn the_wired_resolver_reads_names_until_a_history_wall_turns_them_off() -> TestResult {
+    use yi_types::message::StopReason;
+    let root = Scratch::new("yi-fetch-wired-names")?;
+    let (sessions, here, there) = (root.join("sessions"), root.join("here"), root.join("there"));
+    std::fs::create_dir_all(&here)?;
+    std::fs::create_dir_all(&there)?;
+    named_session(
+        &sessions,
+        &there,
+        "forge-root",
+        "the gate pins runner image v3",
+    )?;
+    let mut answers = Vec::new();
+    for deny_url in [Vec::new(), vec!["history://elsewhere".to_owned()]] {
+        let provider = Arc::new(ProviderStream::new(None));
+        let mut call = serde_json::Map::new();
+        call.insert("path".to_owned(), "history://forge-root".into());
+        provider.queue_faux(vec![
+            yi_ai::faux::faux_assistant_message(
+                vec![yi_ai::faux::faux_tool_call("c1", "read", call)],
+                StopReason::ToolUse,
+            ),
+            yi_ai::faux::faux_assistant_message(
+                vec![yi_ai::faux::faux_text("done")],
+                StopReason::Stop,
+            ),
+        ]);
+        let mut session = AgentSession::new(
+            SessionConfig {
+                system_prompt: String::new(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            Arc::clone(&provider),
+        );
+        let _host = yi_runtime::attach_runtime(
+            &mut session,
+            yi_runtime::RuntimeWiring {
+                provider,
+                system_prompt: String::new(),
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+                cwd: here.clone(),
+                home: root.join("home"),
+                lane_slots: 1,
+                broker: None,
+                tools: Arc::new(yi_tools::builtin_tools),
+                depth: 0,
+                max_depth: 1,
+                rlm_dir: root.join("rlm"),
+                family_dir: None,
+                summarizer: None,
+                advisor: None,
+                auto_review: None,
+                plan_stale_turns: None,
+                plans_dir: Some(root.join("plans")),
+                parent_link: None,
+                wall: Wall {
+                    deny_url,
+                    ..Wall::default()
+                },
+                auto_background: None,
+                deadline: None,
+                kernel_prewarm: false,
+                mcp_read: None,
+                sessions_dir: Some(sessions.clone()),
+                kernels: yi_runtime::fetch::KernelServiceMap::new(),
+            },
+        );
+        let store = memory_store();
+        session.attach_store(Arc::clone(&store))?;
+        session.prompt("read the forge session")?;
+        session.wait_idle().await;
+        let entries =
+            yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery::default())?;
+        let result = (entries.iter()).find_map(|entry| match entry {
+            yi_types::entry::Entry::Message {
+                message: message @ yi_types::message::AgentMessage::ToolResult { .. },
+                ..
+            } => Some(format!("{message:?}")),
+            _ => None,
+        });
+        answers.push(result.ok_or("no tool result")?);
+    }
+    assert!(answers[0].contains("runner image v3"), "{}", answers[0]);
+    assert!(
+        answers[1].contains("opened no session by id") && !answers[1].contains("runner image v3"),
+        "{}",
+        answers[1]
+    );
+    Ok(())
+}
+
 /// A child is told its task, never its parent's session id: `history://parent` reads the parent's
 /// transcript off disk as written by the session repo, and a root session has no parent to read.
 #[test]
@@ -479,33 +896,14 @@ fn read_tool_text(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<(String, bool), Box<dyn Error>> {
-    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
-        .into_iter()
-        .filter(|tool| tool.name() == "read")
-        .collect();
-    yi_runtime::fetch::route_urls(&mut tools, resolver);
-    let mut input = serde_json::Map::new();
-    input.insert("path".to_owned(), path.into());
+    let mut input = serde_json::json!({"path": path});
     if let Some(offset) = offset {
-        input.insert("offset".to_owned(), offset.into());
+        input["offset"] = offset.into();
     }
     if let Some(limit) = limit {
-        input.insert("limit".to_owned(), limit.into());
+        input["limit"] = limit.into();
     }
-    let output = tools
-        .first()
-        .ok_or("no read tool")?
-        .execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
-    let text = output
-        .result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    Ok((text, output.is_error))
+    crate::support::routed_tool(resolver, "read", input)
 }
 
 /// An unpaged listing is served whole at the 51,200-byte cap and cut one byte past it, with a
@@ -627,7 +1025,7 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
     assert_eq!(
         compact.lines().last(),
         Some(
-            "[… a line is cut at 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
+            "[… a line is cut to its first line and 120 chars (NOTE_CHARS), a user line at 2000 (USER_CHARS) · a cut line carries its whole entry as history://<agent>/<entry-id>]"
         )
     );
     let cut_line = compact
@@ -641,6 +1039,43 @@ fn a_cut_compact_history_line_names_the_whole_entry_read() -> TestResult {
     let entry = read_tool_text(&Arc::new(resolver()), whole, None, None)?.0;
     assert!(entry.contains("état des lieux "), "{entry}");
     assert!(!entry.contains("history://parent/since/0"), "{entry}");
+    Ok(())
+}
+
+/// The incident's shape: a 301-line bash result whose fact sits on line 219. Its compact line
+/// counts the lines it dropped and names the read that returns them.
+#[test]
+fn a_multi_line_result_in_the_compact_view_counts_what_it_dropped() -> TestResult {
+    let store = memory_store();
+    let result = yi_types::message::AgentMessage::ToolResult {
+        tool_call_id: "t1".to_owned(),
+        tool_name: "bash".to_owned(),
+        content: vec![yi_types::message::Content::Text {
+            text: crate::support::report_output(),
+            text_signature: None,
+        }],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 0,
+    };
+    yi_session::lock_session(&store).append_message("main", result)?;
+    let resolver = Arc::new(
+        Resolver::new(std::env::temp_dir(), Wall::default()).with_session("main", store.clone()),
+    );
+    let compact = read_tool_text(&resolver, "history://main/since/0", None, None)?.0;
+    let line = compact
+        .lines()
+        .find(|line| line.contains("result bash: "))
+        .ok_or("no result line")?;
+    assert!(
+        line.contains("setting_000 = fb3f5c… (+300 lines) · whole: "),
+        "{line}"
+    );
+    let whole = line.rsplit(" · whole: ").next().ok_or("no pointer")?;
+    let entry = read_tool_text(&resolver, whole, None, None)?.0;
+    assert!(entry.contains("release_id = rel-09d88875"), "{entry}");
     Ok(())
 }
 

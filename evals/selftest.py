@@ -107,9 +107,41 @@ def check_command():
         raise AssertionError(f"model name {bad!r} must be rejected")
 
 
+def check_warm_kernel():
+    """#1315: warm_kernel itself stops a trial whose kernel failed to boot on a present toolchain
+    (row 0072) and lets a toolchain-less image through to run bash-only (#329)."""
+    import asyncio
+
+    agent = harbor_agent()
+
+    class Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    class Doctor(agent.Yi):
+        def __init__(self, stdout):
+            self.stdout = stdout
+        async def exec_as_agent(self, environment, command):
+            return Result(self.stdout)
+
+    booted_dead = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv"},
+                              {"name": "kernel-boot", "status": "fail", "detail": "kernel_info timed out"}])
+    no_toolchain = json.dumps([{"name": "kernel-toolchain", "status": "fail", "detail": "no uv and no python3"}])
+    green = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv"},
+                        {"name": "kernel-boot", "status": "fixed", "detail": "built"}])
+    try:
+        asyncio.run(Doctor(booted_dead).warm_kernel(None))
+    except RuntimeError as error:
+        assert "kernel-boot" in str(error), error
+    else:
+        raise AssertionError("row 0072: a dead boot on a present toolchain must stop the trial")
+    asyncio.run(Doctor(no_toolchain).warm_kernel(None))
+    asyncio.run(Doctor(green).warm_kernel(None))
+
+
 def check_install():
     """S2: the adapter builds the kernel venv at install and reports an image it cannot boot on;
-    #329: it runs the trial anyway, since a Bun image has no python and bash still scores."""
+    #329: with no toolchain it runs bash-only; #1315: a boot that failed on a toolchain stops it."""
     source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
     assert "doctor --fix --json" in source and "warm_kernel" in source, "install must warm the kernel"
     assert "cannot boot in this image" not in source, "a dead kernel is reported, not a refusal"
@@ -126,6 +158,12 @@ def check_install():
     problems = yi_usage.kernel_problems(red)
     assert problems == ["kernel-toolchain: no uv and no python3", "kernel-boot: row missing"], problems
     assert yi_usage.kernel_problems("not json")[0].startswith("doctor output is not JSON")
+    assert not yi_usage.kernel_broken(problems), "an image with no toolchain still runs bash-only"
+    booted_dead = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv"},
+                              {"name": "kernel-boot", "status": "fail", "detail": "kernel_info timed out"}])
+    assert yi_usage.kernel_broken(yi_usage.kernel_problems(booted_dead)), "row 0072: a dead boot must stop the trial"
+    assert not yi_usage.kernel_broken(yi_usage.kernel_problems(green))
+    assert "upload_skills(environment)" in source, "#1315: a trial carries the bundled skills a real install has"
 
 
 def check_adapter_imports():
@@ -951,10 +989,8 @@ def check_plugins():
             pass
 
 
-def check_plugin_upload():
-    """#1041: install uploads each carried plugin into the container and runs it there, and
-    URL mode carries none while its fingerprint still says `+plugins{}`."""
-    import asyncio
+def harbor_agent():
+    """The harbor adapter module over stub harbor classes, as far as the selftest needs."""
     import importlib
     import types as types_mod
 
@@ -997,7 +1033,15 @@ def check_plugin_upload():
             pass
         context.AgentContext = AgentContext
         agent_models.context = context
-    agent = importlib.import_module("yi_harbor.agent")
+    return importlib.import_module("yi_harbor.agent")
+
+
+def check_plugin_upload():
+    """#1041: install uploads each carried plugin into the container and runs it there, and
+    URL mode carries none while its fingerprint still says `+plugins{}`."""
+    import asyncio
+
+    agent = harbor_agent()
 
     class Result:
         stdout = None
@@ -1017,6 +1061,8 @@ def check_plugin_upload():
             pass
         async def warm_kernel(self, environment):
             pass
+        async def upload_skills(self, environment):
+            pass
 
     class Env:
         def __init__(self):
@@ -1024,7 +1070,7 @@ def check_plugin_upload():
         async def upload_file(self, src, dst):
             self.uploads.append((str(src), str(dst)))
 
-    saved = {key: os.environ.get(key) for key in ("HOME", "EVAL_BINARY", "EVAL_BINARY_URL")}
+    saved = {key: os.environ.get(key) for key in ("HOME", "EVAL_BINARY", "EVAL_BINARY_URL", "EVAL_SKILLS")}
     try:
         with tempfile.TemporaryDirectory() as home:
             fake = Path(home, "yi")
@@ -1053,6 +1099,18 @@ def check_plugin_upload():
             assert agent.carried_plugins() == []
             assert yi_usage.plugins_label(agent.carried_plugins()) == "+plugins{}"
             assert agent.mode_label().endswith("+plugins{}"), agent.mode_label()
+            # #1315: each arm carries its own skill tree, and two trees never share a label.
+            assert agent.bundled_skills() is not None, "this checkout's skills/yi must be found"
+            for arm in ("a", "b"):
+                Path(home, arm, "kernel").mkdir(parents=True)
+                Path(home, arm, "kernel", "SKILL.md").write_text(f"arm {arm}\n")
+            labels = []
+            for arm in ("a", "b"):
+                os.environ["EVAL_SKILLS"] = str(Path(home, arm))
+                labels.append(agent.skills_label())
+            assert labels[0] != labels[1] and labels[0].startswith("+skills{"), labels
+            os.environ["EVAL_SKILLS"] = str(Path(home, "missing"))
+            assert agent.bundled_skills() is None and agent.skills_label() == "+skills{}"
     finally:
         for key, value in saved.items():
             if value is None:
@@ -1107,6 +1165,7 @@ CHECKS = (
     check_rule_fires,
     check_command,
     check_install,
+    check_warm_kernel,
     check_adapter_imports,
     check_usage,
     check_budget_sentence,
