@@ -21,6 +21,7 @@ pub mod kernel;
 mod kernel_bootstrap;
 mod kernel_doctor;
 mod kernel_state;
+pub mod kernel_tools;
 mod kernel_variables;
 pub mod lane;
 pub mod lease;
@@ -45,6 +46,7 @@ pub mod schema;
 mod scratch;
 pub mod select;
 pub mod session;
+pub mod settings;
 pub mod skills;
 pub mod slash;
 pub mod spend;
@@ -67,9 +69,7 @@ pub use compaction::{CompactStatus, Compactor};
 /// extension host's reminders and late fragments ride it.
 pub type Deliver = std::sync::Arc<dyn Fn(yi_types::message::AgentMessage) + Send + Sync>;
 pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
-pub use kernel::{
-    HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
-};
+pub use kernel::{HostRegistry, KernelService, KernelServiceOptions, restore_notice_text};
 pub use kernel_doctor::{
     doctor_boot, doctor_toolchain, listeners_detail, reachable_listeners, sandbox_listeners,
 };

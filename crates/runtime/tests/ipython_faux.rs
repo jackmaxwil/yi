@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
+use yi_runtime::kernel_tools::ipython_tool;
 use yi_runtime::{
     AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
-    ipython_tool,
 };
 use yi_types::event::AgentEvent;
 use yi_types::message::StopReason;
@@ -89,7 +89,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         cell_ceiling: None,
     }));
     let mut tools = yi_tools::builtin_tools();
-    tools.push(ipython_tool(Arc::clone(&service)));
+    tools.push(ipython_tool(Arc::clone(&service), None));
     session.use_tools(tools, std::env::temp_dir(), None);
 
     let mut events = session.subscribe();
@@ -172,7 +172,7 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
         cell_ceiling: None,
     }));
     let mut tools = yi_tools::builtin_tools();
-    tools.push(ipython_tool(Arc::clone(&service)));
+    tools.push(ipython_tool(Arc::clone(&service), None));
     session.use_tools(tools, std::env::temp_dir(), None);
 
     let mut events = session.subscribe();
@@ -251,7 +251,7 @@ async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box
     // The boot (and a cold venv build) stays off the clock under test.
     service.prewarm().await;
     let mut tools = yi_tools::builtin_tools();
-    tools.push(ipython_tool(Arc::clone(&service)));
+    tools.push(ipython_tool(Arc::clone(&service), None));
     session.use_tools(tools, std::env::temp_dir(), None);
 
     let mut events = session.subscribe();

@@ -44,7 +44,8 @@ class PlanError(RuntimeError):
 
 
 class Refused(PlanError):
-    """``done`` ran the contract and it did not pass; ``verdict`` has every item's line.
+    """A gate said no: ``done``'s contract did not pass (``verdict`` has every item's line), or a
+    rule, the wall or the permission check refused a ``yi.tools`` call (``refusal["tool"]``).
 
         try:
             await todo.done()

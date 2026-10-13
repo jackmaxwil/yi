@@ -1,0 +1,22 @@
+#! console --size 120x34
+# A right-click on a reply opens its menu; with two panes each title carries its close mark.
+wait-frame 15000 command palette
+key alt-n
+wait-frame 10000 untitled
+type hello menu
+key enter
+wait-frame 30000 faux:
+wait-idle 15000
+mouse right 14 5
+wait-frame 3000 Copy as
+snap menu
+key down
+key right
+wait-frame 3000 Plain text
+snap submenu
+key esc
+key esc
+key alt-v
+wait-frame 5000 ✕
+snap closer
+quit
