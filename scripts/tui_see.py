@@ -599,7 +599,7 @@ def grab(path: Path, box: list[str]) -> None:
         box += re.findall(r"crop=(\d+:\d+:\d+:\d+)", probe.stderr)[-1:]
         time.sleep(0.5)
     if not box:
-        raise RuntimeError("no Ghostty window on the virtual screen within 60 s:\n"
+        raise RuntimeError("no terminal window on the virtual screen within 60 s:\n"
                            + (probe.stderr[-600:] if probe else ""))
     (path.parent / "box").write_text(box[0])
     subprocess.run(base + ["-frames:v", "1", "-vf", f"crop={box[0]}", str(path)], check=True)
