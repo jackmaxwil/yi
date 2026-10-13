@@ -686,6 +686,109 @@ fn a_recorded_reply_streams_over_its_recorded_time_on_the_frozen_clock() -> Test
     Ok(())
 }
 
+/// Over `--control`, `wait-idle` answers once the typed turn has ended, a `tick` waits for an
+/// armed hold, and a step only the keyboard plays is refused rather than dropped.
+#[test]
+fn an_interactive_run_plays_timing_steps_from_its_control_socket() -> TestResult {
+    use std::io::{BufRead, Write};
+    let dir = Scratch::new("yi-tui-control")?;
+    let home = dir.home()?;
+    let cassette = dir.join("cassette.jsonl");
+    let held = "The rail is calmer now. ".repeat(6);
+    std::fs::write(
+        &cassette,
+        cassette_lines(&[], "First reply.") + &cassette_lines(&[], &held),
+    )?;
+    let socket = dir.join("c.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    let sessions = dir.join("sessions");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the control socket only exists on an interactive run, which needs a real pty"
+    )]
+    let mut pty = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/tui_pty.py"
+        ))
+        .args(["--seconds", "60", "--stdin"])
+        .args(["--binary", env!("CARGO_BIN_EXE_yi"), "--home"])
+        .arg(&home)
+        .args(["--", "tui", "--model", "faux/faux-1", "--faux"])
+        .arg(&cassette)
+        .arg("--session-dir")
+        .arg(&sessions)
+        .arg("--control")
+        .arg(&socket)
+        .current_dir(&*dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()?;
+    let mut keys = pty.stdin.take().ok_or("no stdin")?;
+    keys.write_all(b"first\r")?;
+    listener.set_nonblocking(true)?;
+    let started = std::time::Instant::now();
+    let stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(_) if started.elapsed() < std::time::Duration::from_secs(10) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => return Err(format!("the run never connected: {error}").into()),
+        }
+    };
+    stream.set_nonblocking(false)?;
+    let mut control = (std::io::BufReader::new(stream.try_clone()?), stream);
+    type Channel = (
+        std::io::BufReader<std::os::unix::net::UnixStream>,
+        std::os::unix::net::UnixStream,
+    );
+    fn answer(control: &mut Channel, wait_ms: u64) -> std::io::Result<String> {
+        let wait = std::time::Duration::from_millis(wait_ms);
+        control.1.set_read_timeout(Some(wait))?;
+        let mut line = String::new();
+        control.0.read_line(&mut line)?;
+        Ok(line.trim_end().to_owned())
+    }
+    fn ask(control: &mut Channel, step: &str) -> std::io::Result<String> {
+        writeln!(control.1, "{step}")?;
+        answer(control, 20_000)
+    }
+    let stored = || -> std::io::Result<String> {
+        let mut text = String::new();
+        for project in std::fs::read_dir(&sessions)? {
+            for file in std::fs::read_dir(project?.path())? {
+                text += &std::fs::read_to_string(file?.path())?;
+            }
+        }
+        Ok(text)
+    };
+    assert_eq!(ask(&mut control, "wait-idle 8000")?, "ok");
+    assert!(
+        stored()?.contains("First reply."),
+        "idle before the turn ended"
+    );
+    assert_eq!(ask(&mut control, "hold text_delta 2")?, "ok");
+    writeln!(control.1, "tick 400")?;
+    assert!(
+        answer(&mut control, 300).is_err(),
+        "a tick ran before its hold was reached"
+    );
+    keys.write_all(b"second\r")?;
+    assert_eq!(answer(&mut control, 20_000)?, "ok");
+    assert!(!stored()?.contains("The rail"), "the held reply was stored");
+    assert_eq!(ask(&mut control, "release")?, "ok");
+    assert_eq!(ask(&mut control, "tick 8000")?, "ok");
+    assert_eq!(ask(&mut control, "wait-idle 8000")?, "ok");
+    assert!(stored()?.contains(held.trim_end()), "{}", stored()?);
+    let refused = ask(&mut control, "type x")?;
+    assert!(refused.starts_with("error: "), "{refused}");
+    pty.kill()?;
+    pty.wait()?;
+
+    Ok(())
+}
+
 /// One path for `--record` and `--snap` left the still truncating the
 /// recording still open on it, and the run exited 0 having lost it.
 #[test]
@@ -1453,5 +1556,47 @@ fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
         status.is_some_and(|status| status.success()),
         "the drive was still running a 900 s cell 300 s in, after its quit: {status:?}"
     );
+    Ok(())
+}
+
+/// A paste fed as keystrokes carries what no key produces; behind a slash command the popup took
+/// the ESC into its query line and the drive refused the frame ("a control character reached a
+/// cell"), so the run exited 1.
+#[test]
+fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult {
+    let dir = Scratch::new("yi-tui-paste-slash")?;
+    let home = dir.home()?;
+    let keys = dir.join("keys");
+    std::fs::write(&keys, "type /tree\ntype x\u{1b}[31mredy\nquit\n")?;
+    let frames = dir.join("frames");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
+    let row = last.lines().next().ok_or("an empty frame")?;
+    assert_eq!(row.trim_matches(['"', ',', ' ']), "/treex[31mredy\u{2588}");
     Ok(())
 }

@@ -544,7 +544,7 @@ impl FauxHold {
         self.reached.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn armed(&self) -> bool {
+    pub fn armed(&self) -> bool {
         self.at.lock().is_ok_and(|at| at.is_some())
     }
 
