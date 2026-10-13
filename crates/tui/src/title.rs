@@ -227,18 +227,20 @@ fn style(step: usize, theme: &Theme) -> Style {
     }
 }
 
-/// Draw `scene` over all of `area`, nothing once it is over.
-pub fn paint(buffer: &mut Buffer, area: Rect, scene: Scene, elapsed: Duration, theme: &Theme) {
-    paint_with(buffer, area, (scene, elapsed), (None, None), theme);
+/// A cell's seed in `0.0..1.0`, fixed per place: which cells give the screen back first.
+fn dissolve(x: u16, y: u16) -> f64 {
+    let h = (u32::from(x).wrapping_mul(73_856_093) ^ u32::from(y).wrapping_mul(19_349_663))
+        .wrapping_mul(2_654_435_761);
+    f64::from(h >> 8) / 16_777_216.0
 }
 
-/// As [`paint`], with the name landing on `landing`, the small mark's cells, and `keep` left
-/// clear. A cell that already holds something is never drawn over.
-pub fn paint_with(
+/// Cover every cell of `area` with `scene` until [`OVER`]. From `HOLD_SECS` the name shrinks onto
+/// `landing` and the cells around it give the screen back a few at a time.
+pub fn cover(
     buffer: &mut Buffer,
     area: Rect,
     (scene, elapsed): (Scene, Duration),
-    (landing, keep): (Option<Rect>, Option<Rect>),
+    landing: Option<Rect>,
     theme: &Theme,
 ) {
     if elapsed >= OVER {
@@ -253,62 +255,52 @@ pub fn paint_with(
     };
     let leave = smooth((t - HOLD_SECS) / LAND_SECS);
     let fade = 1.0 - smooth(leave * 1.25);
-    let name_fade = if landing.is_some() { 1.0 } else { fade };
+    let reveal = smooth((leave - 0.1) / 0.9);
     let (strokes, thick) = landed(area, landing, leave);
     for y in 0..area.height {
         for x in 0..area.width {
-            let (col, row) = (area.x.saturating_add(x), area.y.saturating_add(y));
-            if keep.is_some_and(|keep| keep.contains((col, row).into())) {
-                continue;
-            }
-            let Some(target) = buffer.cell_mut((col, row)) else {
-                continue;
-            };
-            if target.symbol() != " " {
-                continue;
-            }
             let (u, v) = at(x, y, area.width, area.height);
             let d = distance_to(&strokes, thick, u, v);
+            if d >= 0.0 && dissolve(x, y) < reveal {
+                continue;
+            }
             let field = match scene {
                 _ if fade <= 0.0 => 0.0,
                 Scene::Kali => kali(u, v, cell, t) * fade,
                 Scene::Echo => echo(d, t) * fade,
             };
-            let value = (name(field, d, rise) * name_fade).clamp(0.0, 1.0);
+            let value = name(field, d, rise).clamp(0.0, 1.0);
             let step = usize::from((value * f64::from(TOP)).round() as u8);
-            if let (Some(glyph), true) = (RAMP.get(step), step > 0) {
-                target.set_char(*glyph).set_style(style(step, theme));
+            let place = (area.x.saturating_add(x), area.y.saturating_add(y));
+            if let Some(target) = buffer.cell_mut(place) {
+                target.reset();
+                if let (Some(glyph), true) = (RAMP.get(step), step > 0) {
+                    target.set_char(*glyph).set_style(style(step, theme));
+                }
             }
         }
     }
 }
 
-pub(crate) fn paint_over(
-    app: &App,
-    buffer: &mut Buffer,
-    area: Rect,
-    landing: Option<Rect>,
-    keep: Option<Rect>,
-) {
-    if let (true, Some(title)) = (app.title_visible(), app.title) {
-        paint_with(buffer, area, title, (landing, keep), &app.theme);
-    }
-}
-
 impl App {
-    /// The scene to draw and the seconds the console has been up; `None` draws nothing.
-    pub fn set_title(&mut self, title: Option<(Scene, Duration)>) {
-        self.title = title;
+    /// While the title covers the screen the orb's image stays unplaced: one logo at a time.
+    pub fn set_title_cover(&mut self, on: bool) {
+        self.title_cover = on;
     }
 
-    /// Plays at startup in an empty, idle session and ends on its own or at the first prompt.
-    pub fn title_visible(&self) -> bool {
-        self.title.is_some_and(|(_, elapsed)| elapsed < OVER)
-            && self.history.is_empty()
-            && !self.running
+    /// Nothing sent and nothing running: the session the title may sit over.
+    pub fn title_idle(&self) -> bool {
+        self.history.is_empty() && !self.running
     }
 
-    pub fn title_wake(&self) -> Option<Duration> {
-        self.title_visible().then_some(FRAME)
+    /// The small mark's cells as the last paint laid them out, whether or not it is placed.
+    pub fn orb_rect(&self) -> Option<Rect> {
+        let (col, row) = self.orb_slot?;
+        Some(Rect::new(
+            col,
+            row,
+            crate::app::ORB_COLS,
+            crate::app::ORB_ROWS,
+        ))
     }
 }

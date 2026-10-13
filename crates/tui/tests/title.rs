@@ -1,7 +1,6 @@
-//! The title field: a function of the free rows and one elapsed time, drawn under the chat of
-//! an empty, idle pane and nowhere else.
+//! The title animation: a function of a screen's size, a scene and the seconds since the console
+//! started, drawn over every cell of the screen and over in 5.4 s.
 
-use std::error::Error;
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -12,8 +11,6 @@ use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::title::{self, Scene};
 
 use crate::common;
-
-type TestResult = Result<(), Box<dyn Error>>;
 
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
@@ -34,15 +31,22 @@ fn rows(buffer: &Buffer, area: Rect) -> Vec<Vec<char>> {
         .collect()
 }
 
-fn scene(which: Scene, width: u16, height: u16, elapsed: Duration) -> Vec<Vec<char>> {
+/// A screen the TUI has already drawn, every cell an `X`, then the cover over it.
+fn screen(
+    which: Scene,
+    (width, height): (u16, u16),
+    secs: f64,
+    landing: Option<Rect>,
+) -> Vec<Vec<char>> {
     let area = Rect::new(0, 0, width, height);
-    let mut buffer = Buffer::empty(area);
-    title::paint(&mut buffer, area, which, elapsed, &theme());
+    let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
+    let elapsed = Duration::from_secs_f64(secs);
+    title::cover(&mut buffer, area, (which, elapsed), landing, &theme());
     rows(&buffer, area)
 }
 
-fn field(width: u16, height: u16, elapsed: Duration) -> Vec<Vec<char>> {
-    scene(Scene::Echo, width, height, elapsed)
+fn count(glyphs: &[Vec<char>], want: impl Fn(char) -> bool) -> usize {
+    glyphs.iter().flatten().filter(|g| want(**g)).count()
 }
 
 /// The mark's strokes in `MARK_STROKES` span x from -0.62 to 0.46 and y from -0.62 to 0.62, so
@@ -72,23 +76,39 @@ fn distance_is_signed_from_the_stroke_edge() {
     assert!(title::distance(5.0, 5.0) > 6.0, "far away is far");
 }
 
+/// Whatever the TUI drew under it, the cover replaces: not one `X` survives while it holds.
 /// Row 14 of 24 and column 35 of 80 hold the point (-0.1875, -0.208), 0.0025 from the Y stem's
 /// line; row 29 of 50 and column 90 of 200 hold (-0.19, -0.18), on it.
 #[test]
-fn the_stem_is_solid_at_both_sizes() {
-    for (width, height, col, row) in [(80, 24, 35, 14), (200, 50, 90, 29)] {
-        let glyphs = field(width, height, Duration::ZERO);
-        let at = glyphs.get(row).and_then(|line| line.get(col)).copied();
-        assert_eq!(at, Some('@'), "{width}x{height} row {row} col {col}");
+fn the_cover_replaces_every_cell_while_it_holds() {
+    for (size, stem) in [((80, 24), (35, 14)), ((200, 50), (90, 29))] {
+        let held = screen(Scene::Kali, size, 4.0, None);
+        assert_eq!(
+            count(&held, |g| g == 'X'),
+            0,
+            "{size:?}: the TUI shows through"
+        );
+        assert_eq!(held[stem.1][stem.0], '@', "{size:?}: the Y stem is solid");
     }
 }
 
-/// The field's value is `ring² · e^(-0.9 d)` with `d` the distance, at most 0.26 past `d = 1.5`,
-/// which rounds to step 2: a cell that far from the name never draws past `:`.
+#[test]
+fn the_echo_stem_is_solid_at_both_sizes() {
+    for (width, height, col, row) in [(80, 24, 35, 14), (200, 50, 90, 29)] {
+        let glyphs = screen(Scene::Echo, (width, height), 0.0, None);
+        assert_eq!(
+            glyphs[row][col], '@',
+            "{width}x{height} row {row} col {col}"
+        );
+    }
+}
+
+/// The echo's value is `ring² · e^(-0.9 d)`, at most 0.26 past `d = 1.5`, which rounds to step 2:
+/// a cell that far from the name never draws past `:`.
 #[test]
 fn far_cells_stay_faint_at_every_time() {
     for secs in [0.0, 0.4, 0.9, 1.4] {
-        let glyphs = field(120, 40, Duration::from_secs_f64(secs));
+        let glyphs = screen(Scene::Echo, (120, 40), secs, None);
         for (y, line) in glyphs.iter().enumerate() {
             for (x, glyph) in line.iter().enumerate() {
                 let h = 40.0_f64;
@@ -104,7 +124,7 @@ fn far_cells_stay_faint_at_every_time() {
 
 #[test]
 fn the_rings_move_and_the_loop_closes() {
-    let at = |secs: f64| field(80, 24, Duration::from_secs_f64(secs));
+    let at = |secs: f64| screen(Scene::Echo, (80, 24), secs, None);
     let start = 0.35;
     assert_eq!(
         at(start),
@@ -125,144 +145,85 @@ fn the_rings_move_and_the_loop_closes() {
         seam <= step + 3,
         "the wrap moved {seam} cells where a millisecond moves {step}"
     );
-    let moved = at(start)
-        .iter()
-        .flatten()
-        .zip(at(start + title::RING_SECS / 4.0).iter().flatten())
-        .filter(|(a, b)| a != b)
-        .count();
+    let moved = changed(&at(start), &at(start + ring / 4.0));
     assert!(moved > 100, "a quarter period moved only {moved} cells");
 }
 
+/// At the first instant the fold is faded out and the name has not risen: an empty cover.
 #[test]
-fn the_strokes_do_not_pulse() {
-    for secs in [0.0, 0.3, 0.7, 1.1, 1.6] {
-        let glyphs = field(80, 24, Duration::from_secs_f64(secs));
-        assert_eq!(glyphs[14][35], '@', "t {secs}");
-    }
+fn the_fold_opens_from_nothing_and_fills_the_screen() {
+    let first = screen(Scene::Kali, (80, 24), 0.0, None);
+    assert_eq!(
+        count(&first, |g| g != ' '),
+        0,
+        "nothing drawn, and nothing of the TUI left"
+    );
+    let open = screen(Scene::Kali, (80, 24), 3.0, None);
+    assert!(
+        count(&open, |g| g != ' ') > 600,
+        "the fold fills the screen"
+    );
 }
 
 #[test]
-fn an_area_with_no_room_draws_nothing_and_does_not_panic() {
+fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
     for (width, height) in [(0, 0), (0, 10), (10, 0), (1, 1), (1, 40), (300, 1)] {
-        let area = Rect::new(0, 0, width, height);
-        let mut buffer = Buffer::empty(area);
-        title::paint(
-            &mut buffer,
-            area,
-            Scene::Echo,
-            Duration::from_secs(3),
-            &theme(),
+        screen(Scene::Echo, (width, height), 3.0, None);
+        screen(
+            Scene::Kali,
+            (width, height),
+            5.0,
+            Some(Rect::new(0, 0, 10, 5)),
         );
     }
 }
 
-fn app() -> App {
-    App::new(
-        TuiOptions {
-            model: common::test_model("faux-1"),
-            session_name: "s".to_owned(),
-            cwd: "/tmp".to_owned(),
-            lane: None,
-            context_window: 128_000,
-            session_dir: String::new(),
-            keys: Vec::new(),
-            initial_prompt: None,
-            pace: 0,
-        },
-        theme(),
-        yi_tui::keymap::default_keymap(),
-        80,
-    )
-}
-
-const PANE: Rect = Rect::new(0, 0, 80, 30);
-
-fn pane(app: &mut App) -> Vec<Vec<char>> {
-    let mut buffer = Buffer::empty(PANE);
-    let mut scroll = 0;
-    yi_tui::render::paint_pane(app, None, &mut buffer, PANE, &mut scroll);
-    rows(&buffer, PANE)
-}
-
-fn drawn_below(grid: &[Vec<char>], from: usize) -> usize {
-    grid.iter()
-        .skip(from)
-        .flatten()
-        .filter(|glyph| **glyph != ' ')
-        .count()
-}
-
+/// The small mark's cells: 10 by 5 at column 2, row 1. In `MARK_STROKES` the Y's stem is the line
+/// x = -0.28, which the orb draws at (32 - 0.28 * 1.0256 * 24.96) / 64 = 0.388 of the image's
+/// width, so column 2 + 3.88 = 5.88 and cell 5; its foot y = -0.62 is at 0.748 of the height,
+/// row 1 + 3.74 = 4.74 and cell 4.
 #[test]
-fn an_empty_idle_pane_is_filled_by_the_field_only_when_enabled() -> TestResult {
-    let mut off = app();
-    let plain = pane(&mut off);
+fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
+    let landing = Rect::new(2, 1, 10, 5);
+    let at = |secs: f64| screen(Scene::Kali, (80, 24), secs, Some(landing));
+    let held = at(4.0);
     assert_eq!(
-        drawn_below(&plain, 4),
+        count(&held, |g| g == 'X'),
         0,
-        "off by default: the rows below the chat are blank"
+        "covered whole until the landing starts"
     );
+    assert_eq!(held[14][35], '@', "the name is in the middle");
 
-    let mut on = app();
-    on.set_title(Some((Scene::Kali, Duration::from_secs(4))));
-    assert!(on.title_visible());
-    let shown = pane(&mut on);
-    assert!(
-        drawn_below(&shown, 4) > 500,
-        "the field fills the rows below the chat"
-    );
+    let landed = at(5.39);
     assert_eq!(
-        plain.get(..4),
-        shown.get(..4),
-        "the composer, its inside and the status row stay as the chat drew them"
+        landed[4][5], '@',
+        "the stem's foot is on the small mark's stem"
     );
-    Ok(())
-}
-
-#[test]
-fn the_first_message_ends_the_field() {
-    let mut app = app();
-    app.set_title(Some((Scene::Echo, Duration::ZERO)));
-    app.commit_cell(&Cell::User {
-        text: "hello".to_owned(),
-    });
-    assert!(!app.title_visible());
-    assert_eq!(drawn_below(&pane(&mut app), 12), 0);
-}
-
-#[test]
-fn the_wake_is_asked_for_only_while_the_field_shows() {
-    let mut app = app();
-    assert_eq!(app.title_wake(), None);
-    app.set_title(Some((Scene::Echo, Duration::ZERO)));
-    let wake = app.title_wake();
-    assert!(
-        wake.is_some_and(|wake| wake > Duration::ZERO && wake <= title::FRAME),
-        "{wake:?}"
-    );
-}
-
-fn lit(glyphs: &[Vec<char>]) -> usize {
-    glyphs
+    let strays = landed
         .iter()
-        .flatten()
-        .filter(|glyph| **glyph != ' ')
-        .count()
+        .enumerate()
+        .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
+        .filter(|(x, y, glyph)| *glyph != 'X' && !((1..=12).contains(x) && (0..=6).contains(y)))
+        .count();
+    assert_eq!(
+        strays, 0,
+        "the TUI is back everywhere but the name, on the small mark"
+    );
+
+    let over = at(5.4);
+    assert_eq!(count(&over, |g| g != 'X'), 0, "and then it is over");
 }
 
-/// At the first instant the fold is faded out and the name has not risen: an empty screen.
-/// Past the opening the name is solid on the Y stem and the fold fills the rest of the rows.
 #[test]
-fn the_fold_opens_from_nothing_and_the_name_settles_in() {
-    let at = |secs: f64| scene(Scene::Kali, 80, 24, Duration::from_secs_f64(secs));
-    assert_eq!(lit(&at(0.0)), 0, "nothing at the first instant");
-    let settled = at(4.0);
-    assert_eq!(settled[14][35], '@', "the Y stem is solid");
-    assert!(
-        lit(&settled) > 600,
-        "the fold fills the rows: {}",
-        lit(&settled)
-    );
+fn the_screen_comes_back_a_few_cells_at_a_time() {
+    let area = 80.0 * 24.0;
+    let back = |secs: f64| {
+        let glyphs = screen(Scene::Kali, (80, 24), secs, Some(Rect::new(2, 1, 10, 5)));
+        count(&glyphs, |g| g == 'X') as f64 / area
+    };
+    let (early, mid, late) = (back(4.4), back(4.8), back(5.2));
+    assert!(early < mid && mid < late, "{early:.2} {mid:.2} {late:.2}");
+    assert!(early < 0.35 && late > 0.65, "{early:.2} {late:.2}");
 }
 
 #[test]
@@ -294,78 +255,60 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named(""), None);
 }
 
-/// The small mark's cells: 10 by 5 at column 2, row 1. In `MARK_STROKES` the Y's stem is the line
-/// x = -0.28, which the orb draws at (32 - 0.28 * 1.0256 * 24.96) / 64 = 0.388 of the image's
-/// width, so column 2 + 3.88 = 5.88 and cell 5; its foot y = -0.62 is at 0.748 of the height,
-/// row 1 + 3.74 = 4.74 and cell 4.
-#[test]
-fn the_name_lands_on_the_small_mark_and_the_field_is_gone() {
-    let area = Rect::new(0, 0, 80, 24);
-    let landing = Rect::new(2, 1, 10, 5);
-    let at = |secs: f64| {
-        let mut buffer = Buffer::empty(area);
-        title::paint_with(
-            &mut buffer,
-            area,
-            (Scene::Kali, Duration::from_secs_f64(secs)),
-            (Some(landing), None),
-            &theme(),
-        );
-        rows(&buffer, area)
-    };
-    let early = at(4.0);
-    assert_eq!(
-        early[14][35], '@',
-        "held in the middle until the landing starts"
-    );
-    let landed = at(5.39);
-    assert_eq!(
-        landed[4][5], '@',
-        "the stem's foot is on the small mark's stem"
-    );
-    let outside = landed
-        .iter()
-        .enumerate()
-        .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
-        .filter(|(x, y, glyph)| *glyph != ' ' && !(1..=12).contains(x) | !(0..=6).contains(y))
-        .count();
-    assert_eq!(
-        outside, 0,
-        "nothing is left but the name, on the small mark"
-    );
-    assert_eq!(lit(&at(5.4)), 0, "and then it is over");
+fn app() -> App {
+    App::new(
+        TuiOptions {
+            model: common::test_model("faux-1"),
+            session_name: "s".to_owned(),
+            cwd: "/tmp".to_owned(),
+            lane: None,
+            context_window: 128_000,
+            session_dir: String::new(),
+            keys: Vec::new(),
+            initial_prompt: None,
+            pace: 0,
+        },
+        theme(),
+        yi_tui::keymap::default_keymap(),
+        80,
+    )
 }
 
-/// Incident: the small mark showed beside the big one, two logos at once. The orb's image stays
-/// unplaced while the title plays and appears when it is over.
+/// Incident: the small mark showed beside the big one, two logos at once. While the title covers
+/// the screen the orb's image stays unplaced, and its cells are still known so the name can land.
 #[test]
 fn the_small_mark_waits_for_the_big_one_to_land() {
-    let placed = |elapsed: Duration| {
+    let placed = |cover: bool| {
         let mut app = app();
         app.set_kitty(true);
-        app.set_title(Some((Scene::Echo, elapsed)));
-        pane(&mut app);
+        app.set_title_cover(cover);
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buffer = Buffer::empty(area);
+        let mut scroll = 0;
+        yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut scroll);
         let mut out = Vec::new();
         yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
-        String::from_utf8_lossy(&out).contains("a=p")
+        (
+            String::from_utf8_lossy(&out).contains("a=p"),
+            app.orb_rect(),
+        )
     };
-    assert!(
-        !placed(Duration::from_secs(1)),
-        "no second logo while the name plays"
+    let (covered, slot) = placed(true);
+    assert!(!covered, "no second logo while the name plays");
+    assert_eq!(
+        slot,
+        Some(Rect::new(0, 0, 10, 5)),
+        "but the landing cells are known"
     );
-    assert!(placed(title::OVER), "the small mark is there once it ends");
+    assert!(placed(false).0, "the small mark is there once it ends");
 }
 
-/// With the small mark's rows above the composer, the field reaches them too: the pane is full.
 #[test]
-fn the_field_reaches_the_rows_the_small_mark_would_hold() {
+fn the_first_message_makes_the_session_not_idle() {
     let mut app = app();
-    app.set_kitty(true);
-    app.set_title(Some((Scene::Kali, Duration::from_secs(4))));
-    let grid = pane(&mut app);
-    let top: usize = grid.iter().take(5).flatten().filter(|g| **g != ' ').count();
-    assert!(
-        top > 100,
-        "only {top} cells drawn in the five rows above the composer"
-    );
+    assert!(app.title_idle());
+    app.commit_cell(&Cell::User {
+        text: "hello".to_owned(),
+    });
+    assert!(!app.title_idle());
 }

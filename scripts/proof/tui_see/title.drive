@@ -1,10 +1,9 @@
 #! console --size 120x34 --config '{"console":{"titleIntro":true,"titleWeights":{"kali":1}}}'
-# A console start with the Kali fold pinned: the fold opens from a deep zoom, the name rises
-# through it, holds, then shrinks onto the small mark while the fold fades, and it is over.
-# The clock is frozen, so each snap is the frame at that second.
-wait-frame 15000 command palette
-key alt-n
-wait-frame 10000 untitled
+# A console start with the Kali fold pinned: the animation covers the whole screen, the rail and
+# the hint row included; the name holds, then the screen comes back around it, and it is over.
+# The clock is frozen, so each snap is the frame at that second. A key would end it at once.
+# The cover hides the hint row, so there is no text to wait for: a pause lets the first frame draw.
+wait 400
 tick 1000
 snap opening
 tick 1500

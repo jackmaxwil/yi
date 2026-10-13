@@ -239,22 +239,27 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     title_tick(app);
 }
 
+/// The title plays from console start for `OVER`, unless the session in front has been used.
 fn title_playing(app: &App) -> bool {
-    app.state.title.is_some() && app.clock.since(app.state.title_start) < yi_tui::title::OVER
+    use crate::model::PaneContent;
+    let idle = app
+        .state
+        .focused_pane_id()
+        .and_then(|id| app.state.panes.get(&id))
+        .is_none_or(|pane| match &pane.content {
+            PaneContent::Session {
+                chat: Some(chat), ..
+            } => chat.app.title_idle(),
+            _ => true,
+        });
+    idle && app.state.title.is_some()
+        && app.clock.since(app.state.title_start) < yi_tui::title::OVER
 }
 
 /// No event announces a title's motion, so it asks for one frame per interval (every loop turn
 /// drew 58 a second) and one last frame when it ends, which wipes it.
 fn title_tick(app: &mut App) {
-    use crate::model::PaneContent;
-    let on = title_playing(app);
-    let showing = app.state.panes.values().any(|pane| match &pane.content {
-        PaneContent::Session { chat: None, .. } => on,
-        PaneContent::Session {
-            chat: Some(chat), ..
-        } => chat.app.title_visible(),
-        _ => false,
-    });
+    let showing = title_playing(app);
     let now = app.clock.now();
     let due = app
         .state
@@ -513,6 +518,7 @@ fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
+        .filter(|_| !title_playing(app))
         .map(|hits| crate::avatar::uncovered(hits.avatars.clone(), &hits.overlays))
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
@@ -526,25 +532,21 @@ fn chat_wake(app: &App) -> Duration {
         .panes
         .values()
         .filter_map(|pane| match &pane.content {
-            PaneContent::Session { chat: None, .. } if title_playing(app) => {
-                Some(yi_tui::title::FRAME)
-            }
             PaneContent::Session {
                 chat: Some(chat), ..
             } => {
                 let orb = chat.app.orb_animating().then(|| chat.orb.wake());
-                let title = chat.app.title_wake();
-                Some(
-                    chat.app
-                        .reveal_wake()
-                        .min(orb.unwrap_or(Duration::MAX))
-                        .min(title.unwrap_or(Duration::MAX)),
-                )
+                Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
             }
             _ => None,
         })
         .min()
         .unwrap_or(IDLE_POLL)
+        .min(if title_playing(app) {
+            yi_tui::title::FRAME
+        } else {
+            Duration::MAX
+        })
 }
 
 /// One orb per chat pane on its own image ids; only the focused pane animates. Incident: a
@@ -605,13 +607,14 @@ fn place_chat_orbs(
 /// the top half of the pane; text placeholders stay for every other terminal.
 fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
+    let playing = title_playing(app);
     let placed = &mut app.notebook_image;
     let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
         if placed.take().is_some() {
             let _ = crate::kitty::delete(out);
         }
     };
-    let Some(pane_id) = app.state.focused_pane_id() else {
+    let Some(pane_id) = app.state.focused_pane_id().filter(|_| !playing) else {
         return clear(out, placed);
     };
     let Some(pane) = app.state.panes.get(&pane_id) else {
