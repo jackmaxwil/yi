@@ -240,17 +240,26 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
 }
 
 /// A title field on screen moves with the clock and no event announces that, so it asks for
-/// its own frame.
+/// a frame once a frame's interval has passed; asking on every loop turn drew at 58 fps.
 fn title_tick(app: &mut App) {
     use crate::model::PaneContent;
     let on = app.state.title.is_some();
-    app.dirty |= app.state.panes.values().any(|pane| match &pane.content {
+    let showing = app.state.panes.values().any(|pane| match &pane.content {
         PaneContent::Session { chat: None, .. } => on,
         PaneContent::Session {
             chat: Some(chat), ..
         } => chat.app.title_visible(),
         _ => false,
     });
+    let now = app.clock.now();
+    let due = app
+        .state
+        .title_frame
+        .is_none_or(|at| now.saturating_duration_since(at) >= yi_tui::title::FRAME);
+    if showing && due {
+        app.dirty = true;
+        app.state.title_frame = Some(now);
+    }
 }
 
 fn draw<B: Backend>(
@@ -859,6 +868,27 @@ fn keep_osc(dir: Option<&std::path::Path>, osc: &mut Vec<String>) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Incident: asking for a frame on every loop turn drew the title at 58 fps; it now asks once
+    /// a frame interval has passed on the app's own clock.
+    #[test]
+    fn a_title_on_screen_asks_for_one_frame_per_interval() {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.state.title = Some(yi_tui::title::Scene::Echo);
+        app.clock = yi_tui::motion::Clock::Fixed(Instant::now());
+        let asks = |app: &mut App| {
+            app.dirty = false;
+            title_tick(app);
+            app.dirty
+        };
+        assert!(asks(&mut app), "the first frame is due at once");
+        assert!(!asks(&mut app), "the same instant asks for nothing");
+        app.clock.advance(yi_tui::title::FRAME / 2);
+        assert!(!asks(&mut app), "half an interval is not a frame");
+        app.clock.advance(yi_tui::title::FRAME / 2);
+        assert!(asks(&mut app), "a whole interval is");
+    }
 
     /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
     /// while the cache still said placed, so the notebook image never came back.
