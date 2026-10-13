@@ -17,4 +17,4 @@ pub use run::{
     STREAM_RETRY_AT, STREAM_RETRY_CUSTOM_TYPE, STREAM_RETRY_TEXT, run_loop,
     synthesized_error_message,
 };
-pub use tool::{AgentTool, ToolOutcome};
+pub use tool::{AgentTool, ProgramFuture, ToolOutcome};

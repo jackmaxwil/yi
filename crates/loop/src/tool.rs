@@ -15,6 +15,10 @@ pub struct ToolOutcome {
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
 
+/// A program's call: the outcome, and the data its text was rendered from, when the tool has one.
+pub type ProgramFuture<'a> =
+    Pin<Box<dyn Future<Output = (ToolOutcome, Option<Value>)> + Send + 'a>>;
+
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDef;
 
@@ -32,6 +36,16 @@ pub trait AgentTool: Send + Sync {
         args: Map<String, Value>,
         signal: &'a InterruptSignal,
     ) -> ToolFuture<'a>;
+
+    /// [`AgentTool::execute`] for a program, which reads the value and never the model's caps.
+    fn execute_program<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: Map<String, Value>,
+        signal: &'a InterruptSignal,
+    ) -> ProgramFuture<'a> {
+        Box::pin(async move { (self.execute(tool_call_id, args, signal).await, None) })
+    }
 }
 
 pub fn error_tool_result(message: &str) -> ToolResult {

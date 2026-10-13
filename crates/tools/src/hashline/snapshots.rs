@@ -9,6 +9,9 @@ pub struct Snapshot {
     pub hash: FileTag,
     pub recorded_at: u64,
     pub seen_lines: Option<HashSet<u64>>,
+    /// Invariant: lines a kernel program's `read` returned, which only a program's edit may
+    /// anchor to; the model's own edits still answer to `seen_lines` alone.
+    pub program_lines: HashSet<u64>,
 }
 
 fn merge_seen_lines(snapshot: &mut Snapshot, lines: Option<&[u64]>) {
@@ -123,6 +126,7 @@ impl SnapshotStore {
             hash,
             recorded_at,
             seen_lines: None,
+            program_lines: HashSet::new(),
         };
         merge_seen_lines(&mut snapshot, seen_lines);
         history.insert(0, snapshot);
@@ -140,6 +144,15 @@ impl SnapshotStore {
             && let Some(version) = history.iter_mut().find(|snapshot| snapshot.hash == hash)
         {
             merge_seen_lines(version, Some(lines));
+        }
+    }
+
+    pub fn record_program_lines(&mut self, path: &str, hash: FileTag, lines: &[u64]) {
+        let history = self.paths.iter_mut().find(|(name, _)| name == path);
+        if let Some((_, history)) = history
+            && let Some(version) = history.iter_mut().find(|snapshot| snapshot.hash == hash)
+        {
+            version.program_lines.extend(lines.iter().copied());
         }
     }
 

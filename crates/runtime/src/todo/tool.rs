@@ -512,9 +512,14 @@ impl Tool for TodoTool {
         }
     }
 
-    fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
+    fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
         match self.run(&input) {
-            Ok(text) => text_output(text),
+            Ok(text) => {
+                let mut output = text_output(text);
+                let list = || serde_json::to_value(self.store.list()).unwrap_or(Value::Null);
+                output.value = context.program.then(list);
+                output
+            }
             Err(error) => {
                 let kind = match &error {
                     TodoToolError::Arg(_) => yi_types::event::ToolErrorKind::InvalidArgs,

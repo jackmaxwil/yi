@@ -85,7 +85,11 @@ impl Tool for ExecTool {
             };
             return error_output(message);
         }
-        text_output(capture.stdout)
+        // An exec tool declares only its input; its value is whatever JSON it prints.
+        let value = (context.program).then(|| serde_json::from_str::<Value>(&capture.stdout).ok());
+        let mut output = text_output(capture.stdout);
+        output.value = value.flatten();
+        output
     }
 }
 
