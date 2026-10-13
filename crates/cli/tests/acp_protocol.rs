@@ -4,17 +4,9 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-#[path = "../../types/tests/support/usage_record.rs"]
-mod usage_record;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
-#[path = "support/acp_schema.rs"]
-mod acp_schema;
-#[path = "support/config_option.rs"]
-mod config_option;
-use acp_schema::Schema;
+use crate::acp_schema::Schema;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -312,7 +304,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
         .ok_or("missing sessionId")?
         .to_owned();
     assert_eq!(
-        config_option::current_value(new, "mode").as_deref(),
+        crate::config_option::current_value(new, "mode").as_deref(),
         Some("auto"),
         "the session must advertise its permission mode (C8)"
     );
@@ -324,7 +316,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     )?;
     let set = set.last().ok_or("no set_config_option response")?;
     assert_eq!(
-        config_option::current_value(set, "mode").as_deref(),
+        crate::config_option::current_value(set, "mode").as_deref(),
         Some("ask"),
         "the applied mode must echo back in the options: {set}"
     );
@@ -924,7 +916,7 @@ fn resume_replays_the_ledgers_spend_with_child_usage() -> TestResult {
         let mut repo = JsonlRepo::new(sessions, dir.display().to_string());
         let store = repo.open(&session_id)?;
         let mut session = lock_session(&store);
-        let record = usage_record::child_usage(session.next_id(), 100, 0.05)?;
+        let record = crate::usage_record::child_usage(session.next_id(), 100, 0.05)?;
         session.append_record(record)?;
     }
     let frames = client.request(

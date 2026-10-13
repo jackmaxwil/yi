@@ -7,9 +7,7 @@ use serde_json::{Map, Value, json};
 use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
 use yi_types::message::Content;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -3017,8 +3015,13 @@ fn fake_path(tag: &str) -> Option<PathBuf> {
 }
 
 fn rerun_with_path(test: &str, dir: &std::path::Path, path: &std::ffi::OsStr) -> TestResult {
+    // Invariant: `--exact` matches the whole test path, which starts at this file's module.
+    let test = module_path!().split_once("::").map_or_else(
+        || test.to_owned(),
+        |(_, module)| format!("{module}::{test}"),
+    );
     let rerun = yi_tools::command(std::env::current_exe()?)
-        .args(["--exact", test])
+        .args(["--exact", &test])
         .env("PATH", path)
         .env("HOME", dir)
         .output()?;

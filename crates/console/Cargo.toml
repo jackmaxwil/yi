@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# One test binary, not one per file: tests/integration.rs names the modules.
+autotests = false
 
 [lints]
 workspace = true
@@ -15,3 +17,7 @@ ratatui = { workspace = true }
 unicode-width = { workspace = true }
 tui-textarea = { workspace = true }
 serde_json = { workspace = true }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

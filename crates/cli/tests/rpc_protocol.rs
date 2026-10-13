@@ -4,13 +4,9 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
-#[path = "support/prompt_slots.rs"]
-mod prompt_slots_support;
-use prompt_slots_support::prompt_slots;
+use crate::prompt_slots_support::prompt_slots;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
