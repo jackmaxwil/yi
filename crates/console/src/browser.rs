@@ -392,15 +392,13 @@ pub fn last_local_url<'a>(sources: impl Iterator<Item = &'a str>) -> Option<Stri
     for source in sources {
         for word in source.split(|c: char| c.is_whitespace() || "<>()[]`'\"".contains(c)) {
             let word = word.trim_end_matches(['.', ',', ';']);
-            let Some(rest) = word.strip_prefix("http://") else {
-                continue;
-            };
-            let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
-            let local = authority.split_once(':').is_some_and(|(host, port)| {
-                ["localhost", "127.0.0.1"].contains(&host)
-                    && !port.is_empty()
-                    && port.bytes().all(|b| b.is_ascii_digit())
-            });
+            let probe = word.trim_end_matches('\\');
+            let local =
+                yi_types::url::http_loopback_host_and_port(probe).is_some_and(|(_, port)| {
+                    port.is_some_and(|port| {
+                        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                    })
+                });
             if local {
                 last = Some(word.to_owned());
             }
