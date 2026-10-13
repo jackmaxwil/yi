@@ -41,7 +41,15 @@ fn screen(
     let area = Rect::new(0, 0, width, height);
     let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
     let elapsed = Duration::from_secs_f64(secs);
-    title::cover(&mut buffer, area, (which, elapsed), landing, &theme());
+    let cache = &mut title::Cache::default();
+    title::cover(
+        &mut buffer,
+        area,
+        (which, elapsed),
+        landing,
+        &theme(),
+        cache,
+    );
     rows(&buffer, area)
 }
 
@@ -185,7 +193,13 @@ fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
 #[test]
 fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
     let landing = Rect::new(2, 1, 10, 5);
-    for which in [Scene::Kali, Scene::Solid, Scene::Mobius, Scene::Clouds] {
+    for which in [
+        Scene::Kali,
+        Scene::Solid,
+        Scene::Mobius,
+        Scene::Clouds,
+        Scene::Growth,
+    ] {
         let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
         let held = at(2.1);
         assert_eq!(
@@ -295,6 +309,7 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("solid"), Some(Scene::Solid));
     assert_eq!(Scene::named("mobius"), Some(Scene::Mobius));
     assert_eq!(Scene::named("clouds"), Some(Scene::Clouds));
+    assert_eq!(Scene::named("growth"), Some(Scene::Growth));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
@@ -406,4 +421,35 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
         "the drift moved only {moved} cells in half a second"
     );
     assert_eq!(at(2.1)[14][35], '@', "and the Y stem is solid through it");
+}
+
+/// The coral is a simulation the cache advances to the second asked for: it grows out of the
+/// strokes, a later frame continues the same run, and an earlier second starts it over.
+#[test]
+fn the_growth_spreads_from_the_strokes_and_the_cache_keeps_its_place() {
+    let area = Rect::new(0, 0, 80, 24);
+    let draw = |cache: &mut title::Cache, secs: f64| {
+        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
+        let at = (Scene::Growth, Duration::from_secs_f64(secs));
+        title::cover(&mut buffer, area, at, None, &theme(), cache);
+        rows(&buffer, area)
+    };
+    let mut cache = title::Cache::default();
+    let early = count(&draw(&mut cache, 0.4), |g| g != ' ');
+    let late = count(&draw(&mut cache, 1.6), |g| g != ' ');
+    assert!(
+        late > early + 200,
+        "the coral did not spread: {early} then {late}"
+    );
+    let again = draw(&mut cache, 1.6);
+    assert_eq!(
+        again,
+        draw(&mut title::Cache::default(), 1.6),
+        "a kept run equals a fresh one"
+    );
+    assert_eq!(
+        draw(&mut cache, 0.4),
+        draw(&mut title::Cache::default(), 0.4),
+        "back in time starts over"
+    );
 }
