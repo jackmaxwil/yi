@@ -123,7 +123,10 @@ pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<
         if word.is_empty() {
             return;
         }
-        if *current_width + *word_width > limit(out) && !current.is_empty() {
+        // Incident: indentation alone was left on a row before a word wider than any row.
+        let blank = current.iter().all(|cell| cell.ch == ' ');
+        let splits_anyway = blank && *word_width > limit(out);
+        if *current_width + *word_width > limit(out) && !current.is_empty() && !splits_anyway {
             out.push(std::mem::take(current));
             *current_width = 0;
         }
