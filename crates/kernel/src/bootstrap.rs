@@ -210,16 +210,17 @@ pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
 /// Directory holding `yi_runtime` and `skills`: `python/` in the tree above the exe, then
 /// `~/.yi/python` unpacked from the embed, then the compile-time path (the build machine's).
 fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
-    let mut dir = exe.and_then(Path::parent);
+    let mut dir: Option<PathBuf> = exe.and_then(Path::parent).map(Path::to_path_buf);
     // deps/ -> debug/ -> target/ -> root is three; the spare levels cost a
     // stat each and keep nested target dirs (worktrees, `--target`) working.
     for _ in 0..6 {
         let Some(candidate) = dir else { break };
-        let python = candidate.join("python");
+        let canonical = std::fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+        let python = canonical.join("python");
         if has_python_sources(&python) {
-            return python;
+            return candidate.join("python");
         }
-        dir = candidate.parent();
+        dir = canonical.parent().map(Path::to_path_buf);
     }
     let Some(home) = home else { return fallback };
     let root = home.join(".yi").join("python");
@@ -239,13 +240,19 @@ fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBu
 }
 
 pub fn python_root() -> PathBuf {
+    let build_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("python");
+    // Incident: a test binary in a target dir shared across worktrees walked
+    // up to another checkout's python tree and served its stale runtime.
+    if has_python_sources(&build_tree) {
+        return build_tree;
+    }
     resolve_python_root(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("python"),
+        build_tree,
     )
 }
 
