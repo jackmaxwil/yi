@@ -440,7 +440,7 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
             procs.append(recorder)
         ghostty = subprocess.Popen(
             ["ghostty", "--gtk-single-instance=false", "--window-decoration=false",
-             "--font-family=JetBrains Mono", f"--window-width={cols}", f"--window-height={rows}",
+             "--font-family=Noto Mono", f"--window-width={cols}", f"--window-height={rows}",
              "--background-opacity=1", "--confirm-close-surface=false", "-e", "python3",
              str(ROOT / "scripts/tui_see.py"), "proxy", scene, str(out), "--", *argv],
             env=env, cwd=work, stdout=open(out / "ghostty.log", "w"), stderr=subprocess.STDOUT)
