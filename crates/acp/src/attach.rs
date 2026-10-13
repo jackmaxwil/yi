@@ -64,8 +64,10 @@ impl AcpState {
         session_id
     }
 
+    /// A wake for a session evicted while idle starts its reload; the next wake adopts it.
     pub(crate) fn settle(&mut self, session_id: &str) {
         let Some(building) = self.building.remove(session_id) else {
+            self.reload(session_id);
             return;
         };
         let built = building

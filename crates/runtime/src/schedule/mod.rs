@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 pub use clock::Firing;
 pub use lanes::Scheduler;
+pub use shared::on_absent_lane;
 pub use zone::Zone;
 
 use yi_types::schedule::{
