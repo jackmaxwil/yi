@@ -28,6 +28,7 @@ mod resume;
 mod reveal;
 mod settled;
 mod streaming;
+mod title;
 mod toolcells;
 mod tui_e2e;
 mod tui_unit;

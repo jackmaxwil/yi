@@ -568,6 +568,7 @@ pub fn paint_pane(
         area.height.saturating_sub(rows),
     );
     let placed = paint_chat(app, &layout, buffer, chat_area);
+    crate::title::paint_below(app, buffer, chat_area, floor);
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
     thumb

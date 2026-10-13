@@ -86,6 +86,15 @@ def encoded(cwd: Path) -> str:
     return "--" + str(cwd).strip("/").replace("/", "-").replace(":", "-") + "--"
 
 
+def scene_config(extra: list[str]) -> str:
+    """The run's `config.json`: the two keys every scene needs, then a header's `--config <json>`
+    laid over them key by key (a scene that turns a console feature on names it there)."""
+    config = {"kernel": {"prewarm": False}, "lanes": {"enabled": False}}
+    for patch in take(extra, "--config", 1):
+        config.update(json.loads(patch))
+    return json.dumps(config, separators=(",", ":"))
+
+
 NAME = re.compile(r"^[a-z0-9_-]+$")
 FIXED_ID = "01a00000-0000-7000-8000-000000000000"
 
@@ -120,7 +129,7 @@ def play(scene: Path, surface: str, extra: list[str], run_dir: Path, binary: Pat
         (run_dir / sub).mkdir(parents=True)
     # Incident: a console scene's session claimed a lane, a `git worktree add` in the shared
     # .git that outlived the run dir and refused the next run as "missing but locked".
-    (run_dir / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
+    (run_dir / "home/.yi/config.json").write_text(scene_config(extra))
     # ctrl-g hands the draft to $EDITOR; a scene that replays must never open a real vi.
     env = {**os.environ, "HOME": str(run_dir / "home"), "YI_FIXED_IDS": "1",
            "EDITOR": "true", "VISUAL": "true"}
@@ -478,7 +487,7 @@ def term_inner(scene: str, surface: str, out: Path, yi: str, extra: list[str]) -
     (out / "home/.yi").mkdir(parents=True)
     terminal = (take(extra, "--terminal", 1) or ["ghostty"])[0]
     (out / "terminal").write_text(terminal)
-    (out / "home/.yi/config.json").write_text('{"kernel":{"prewarm":false},"lanes":{"enabled":false}}')
+    (out / "home/.yi/config.json").write_text(scene_config(extra))
     video = "--video" in extra
     extra = [arg for arg in extra if arg != "--video"]
     cols, rows = "80", "24"
