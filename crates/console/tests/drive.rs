@@ -2240,6 +2240,31 @@ fn ctrl_c_clears_the_draft_then_warns_then_stops_the_daemon() -> TestResult {
     )
 }
 
+/// Dies with the daemon's own exit painted as an error: the console waited out a fixed two
+/// seconds after `_yi/shutdown`, and the closed socket showed "disconnected" in that gap.
+#[test]
+fn stopping_the_daemon_quits_without_a_disconnect_banner() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/shutdown", seen_ok));
+    fixture.push(Step::Close);
+    let last = run_frames(
+        "ctrl-c-daemon-exit",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key ctrl-c\n\
+         wait-frame 3000 stops the daemon\n\
+         key ctrl-c\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )?;
+    assert!(
+        !last.contains("disconnected"),
+        "the daemon's requested exit was painted as an error:\n{last}"
+    );
+    Ok(())
+}
+
 /// Dies with ctrl+c on an open `/` popup arming the daemon-stop note while the popup stayed:
 /// the popup took the key and ignored it, and the console counted it as the first of two.
 #[test]
