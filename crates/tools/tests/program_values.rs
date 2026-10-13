@@ -160,3 +160,79 @@ fn a_backgrounded_command_hands_a_program_its_job_then_its_output() -> TestResul
     );
     Ok(())
 }
+
+/// The item fuse at its limit cuts nothing; one past it names the cut and the call that resumes.
+#[test]
+fn the_item_fuse_names_its_cut_and_its_resume_call_gets_the_rest() -> TestResult {
+    let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
+    let dir = Scratch::new("yi-values-items")?;
+    std::fs::write(dir.join("at.txt"), numbered(fuse))?;
+    std::fs::write(dir.join("past.txt"), numbered(fuse + 1))?;
+    std::fs::write(dir.join("ranged.txt"), numbered(fuse + 3))?;
+    let tools = tools();
+    let (read, grep) = (tool(&tools, "read")?, tool(&tools, "grep")?);
+    let value = |output: yi_tools::ToolOutput| output.value.ok_or("no value");
+    let count = |value: &Value, key: &str| value[key].as_array().map_or(0, Vec::len);
+    let at = value(call(read, json!({"path": "at.txt"}), &program(&dir)))?;
+    assert_eq!(
+        (count(&at, "lines"), at["cut"].clone()),
+        (fuse, Value::Null)
+    );
+    let past = value(call(read, json!({"path": "past.txt"}), &program(&dir)))?;
+    let cut = past["cut"].as_str().unwrap_or_default();
+    assert!(
+        cut.contains("fuse is 100000 lines; read with offset=100001 for"),
+        "{cut}"
+    );
+    let rest = json!({"path": "past.txt", "offset": fuse + 1});
+    let rest = value(call(read, rest, &program(&dir)))?;
+    assert_eq!(
+        (count(&rest, "lines"), rest["cut"].clone()),
+        (1, Value::Null)
+    );
+    let ranges = json!([[1, fuse - 1], [fuse + 1, fuse + 3]]);
+    let ranged = json!({"path": "ranged.txt", "ranges": ranges});
+    let ranged = value(call(read, ranged, &program(&dir)))?;
+    let cut = ranged["cut"].as_str().unwrap_or_default();
+    assert!(
+        cut.contains("read with ranges=[[100002, 100003]] for"),
+        "{cut}"
+    );
+
+    let grep_in = |path: &str, offset: usize| {
+        let input = json!({"pattern": "line", "path": path, "offset": offset});
+        value(call(grep, input, &program(&dir)))
+    };
+    let at = grep_in("at.txt", 0)?;
+    assert_eq!(
+        (count(&at, "matches"), at["cut"].clone()),
+        (fuse, Value::Null)
+    );
+    let past = grep_in("past.txt", 0)?;
+    let cut = past["cut"].as_str().unwrap_or_default();
+    assert!(
+        cut.contains("grep with offset=100000 for the rest"),
+        "{cut}"
+    );
+    let rest = grep_in("past.txt", fuse)?;
+    assert_eq!(
+        (rest["matches"][0]["line"].clone(), rest["cut"].clone()),
+        (json!(fuse + 1), Value::Null)
+    );
+
+    let files = Scratch::new("yi-values-glob")?;
+    for n in 0..=fuse {
+        std::fs::write(files.join(format!("{n}.g")), "")?;
+    }
+    let glob = value(call(read, json!({"path": "*.g"}), &program(&files)))?;
+    let cut = glob["cut"].as_str().unwrap_or_default();
+    assert_eq!(count(&glob, "paths"), fuse);
+    assert!(cut.contains("the program fuse of 100000 files"), "{cut}");
+    std::fs::remove_file(files.join("0.g"))?;
+    let glob = value(call(read, json!({"path": "*.g"}), &program(&files)))?;
+    assert_eq!(
+        (count(&glob, "paths"), glob["cut"].clone()),
+        (fuse, Value::Null)
+    );
+    Ok(())
+}

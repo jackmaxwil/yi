@@ -471,15 +471,6 @@ impl ToolAdapter {
         args: Map<String, Value>,
         program: bool,
     ) -> yi_loop::ProgramFuture<'a> {
-        self.outcome(tool_call_id, args, program)
-    }
-
-    fn outcome<'a>(
-        &'a self,
-        tool_call_id: &'a str,
-        args: Map<String, Value>,
-        program: bool,
-    ) -> yi_loop::ProgramFuture<'a> {
         let tool = Arc::clone(&self.tool);
         let args = unsent_empties(&tool.schema(), args);
         let walled_roots = walled_roots(&self.wall, self.permission.as_deref());

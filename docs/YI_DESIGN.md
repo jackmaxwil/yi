@@ -524,10 +524,11 @@ A persistent IPython process per session that reaches the host only through host
 - A nested call runs as a program's (`ToolContext::program`, `AgentTool::execute_program`): the
   tool fills `ToolOutput::value`, a `yi_types::tool_value` shape the reply carries beside the
   text and the transcript never holds; a value's `cut` names everything left out (a fuse, a walk
-  cap, a wall, binary skips). `grep` returns every hit up to a 64 MiB fuse of file text, minting
-  no tags and touching no paging state; `read` the asked window, an open one running to the end
-  of the file, up to the same fuse. A program read's lines are a program's to edit, never the
-  model's (`Snapshot::program_lines`). A glob is its paths, no file opened; a directory, `edit`,
+  cap, a wall, binary skips). `grep` returns every hit from `offset` on, up to a 64 MiB fuse of
+  file text and 100,000 matches, minting no tags and touching no paging state; `read` the asked
+  window, an open one running to the end of the file, up to the same fuses in lines. A program
+  read's lines are a program's to edit, never the model's (`Snapshot::program_lines`). A glob is
+  its paths, no file opened, up to 100,000; a directory, `edit`,
   `write`, `bash` (streams before the reducer, the job, the polled output), `get_context` (layers
   unclamped), `todo` (the list), `annotate` (the record), an address (the page, and the 1-based
   `nextOffset` the tool takes back), a child's `ask_user`, an exec tool (its JSON) and `plan` (the

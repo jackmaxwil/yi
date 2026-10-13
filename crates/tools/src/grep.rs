@@ -984,7 +984,6 @@ impl Tool for GrepTool {
             Err(output) => return *output,
         };
         let context_lines = context_asked.min(CONTEXT_CAP);
-
         let collected = collect(
             context,
             &root,
@@ -1119,19 +1118,30 @@ impl Tool for GrepTool {
             "files": collected.files.len(),
             "collectionCapped": collected.collection_capped,
         });
-        output.value = context.program.then(|| program_value(&collected, &notices));
+        let value = || program_value(&collected, &notices, &options, offset);
+        output.value = context.program.then(value);
         output
     }
 }
 
-/// Every hit collected, whole lines in walk order, with every row naming what the walk left out.
-fn program_value(collected: &Collected, notices: &[String]) -> Value {
+/// Every hit collected from `paged` on, whole lines in walk order, with every row naming what
+/// the walk or the item fuse left out.
+fn program_value(collected: &Collected, notices: &[String], options: &Options, at: usize) -> Value {
+    // In the count and files modes `offset` pages files, so the value starts at the first match.
+    let paged = (!options.count && !options.files_only).then_some(at);
+    let offset = paged.unwrap_or_default();
     let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
-    let mut matches: Vec<yi_types::tool_value::GrepMatch> = Vec::new();
+    let (mut matches, mut skipped, mut more) = (Vec::new(), 0_usize, false);
     'files: for file in &collected.files {
+        let skip_here = file.hits.len().min(offset.saturating_sub(skipped));
+        skipped = skipped.saturating_add(skip_here);
+        if skip_here == file.hits.len() {
+            continue;
+        }
         let lines: Vec<&str> = file.normalized.split('\n').collect();
-        for &index in &file.hits {
+        for &index in file.hits.iter().skip(skip_here) {
             if matches.len() >= fuse {
+                more = true;
                 break 'files;
             }
             matches.push(yi_types::tool_value::GrepMatch {
@@ -1142,9 +1152,12 @@ fn program_value(collected: &Collected, notices: &[String]) -> Value {
         }
     }
     let mut cut = notices.to_vec();
-    if matches.len() >= fuse {
+    if more {
+        let next = offset.saturating_add(fuse);
+        let mode = paged.map_or(" and neither count nor files_with_matches", |_| "");
         cut.push(format!(
-            "[kept the first {fuse} of {} matches: the program fuse is {fuse} items; narrow the pattern or page the text view with offset]",
+            "[kept matches {}-{next} of {}: the program fuse is {fuse} matches; grep with offset={next}{mode} for the rest]",
+            offset.saturating_add(1),
             collected.total
         ));
     }
