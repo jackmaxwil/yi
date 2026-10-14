@@ -38,6 +38,12 @@ const FLAGS: [&str; 6] = [
     "--hide-scrollbars",
     "--mute-audio",
 ];
+/// Incident: the postmerge runner is root, and Chrome refuses to start as root with its
+/// sandbox on. Only root drops it; a user's Chrome keeps its sandbox around untrusted pages.
+fn flags(root: bool) -> impl Iterator<Item = &'static str> {
+    FLAGS.into_iter().chain(root.then_some("--no-sandbox"))
+}
+
 /// A frame past this is drained to its NUL and refused; a 4K screencast PNG is about 12 MiB
 /// of base64.
 const MAX_FRAME: u64 = 32 << 20;
@@ -98,13 +104,29 @@ pub fn add_pinned(yi: &Path) -> Result<(), String> {
     })
 }
 
-/// A profile per browser, removed when it drops: two Chromes cannot share one.
+/// One `<pid>-<n>` directory per browser under here: two Chromes cannot share a profile.
+pub fn profile_root(home: &Path) -> PathBuf {
+    home.join(".yi/browser/profile")
+}
+
+/// A profile per browser, removed when it drops.
 pub fn profile_dir() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let home = std::env::var_os("HOME").map_or_else(std::env::temp_dir, PathBuf::from);
-    home.join(".yi/browser/profile")
-        .join(format!("{}-{n}", std::process::id()))
+    profile_root(&home).join(format!("{}-{n}", std::process::id()))
+}
+
+/// Incident: a crash or SIGHUP skips [`Browser`]'s drop and left its profile for good. True
+/// when the pid in the name is gone; a recycled pid keeps one until it ends too.
+pub fn profile_orphaned(dir: &Path) -> bool {
+    let pid = dir
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.split_once('-'))
+        .and_then(|(pid, _)| pid.parse::<i32>().ok())
+        .and_then(rustix::process::Pid::from_raw);
+    pid.is_some_and(|pid| rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH))
 }
 
 pub struct Browser {
@@ -133,7 +155,7 @@ impl Browser {
         let mut child = std::process::Command::new(shim)
             .arg("__fds")
             .arg(chrome)
-            .args(FLAGS)
+            .args(flags(rustix::process::geteuid().is_root()))
             .arg(profile_flag)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -271,4 +293,15 @@ fn pipe_fds() -> std::io::Result<[OwnedFd; 2]> {
     rustix::stdio::dup2_stdin(&quiet)?;
     rustix::stdio::dup2_stdout(&quiet)?;
     Ok([three, four])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_root_runs_chrome_without_its_sandbox() {
+        assert!(flags(true).any(|flag| flag == "--no-sandbox"));
+        assert!(flags(false).all(|flag| flag != "--no-sandbox"));
+    }
 }
