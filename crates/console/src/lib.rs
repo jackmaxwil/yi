@@ -21,6 +21,7 @@ pub mod render;
 pub mod select;
 pub mod settings;
 pub mod sidebar;
+mod title;
 
 use std::io::Stdout;
 use std::path::PathBuf;
@@ -45,11 +46,15 @@ use crate::client::{ClientEvent, Outbound};
 use crate::layout::PaneId;
 use crate::model::{Link, SessionId, SessionStatus};
 
+pub use title::{TitleOptions, UnknownScene};
+use title::{title_playing, title_tick};
+
 pub struct ConsoleOptions {
     pub socket: PathBuf,
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub title: Option<TitleOptions>,
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
@@ -209,6 +214,7 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     span.set("events", count);
     let _tick = yi_types::trace::span("console.tick");
     app.tick(outbound);
+    title_tick(app);
 }
 
 fn draw<B: Backend>(
@@ -457,6 +463,7 @@ fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
+        .filter(|_| !title_playing(app))
         .map(|hits| crate::avatar::uncovered(hits.avatars.clone(), &hits.overlays))
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
@@ -480,6 +487,11 @@ fn chat_wake(app: &App) -> Duration {
         })
         .min()
         .unwrap_or(IDLE_POLL)
+        .min(if title_playing(app) {
+            yi_tui::title::FRAME
+        } else {
+            Duration::MAX
+        })
 }
 
 /// One orb per chat pane on its own image ids; only the focused pane animates. Incident: a
@@ -540,13 +552,14 @@ fn place_chat_orbs(
 /// the top half of the pane; text placeholders stay for every other terminal.
 fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
+    let playing = title_playing(app);
     let placed = &mut app.notebook_image;
     let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
         if placed.take().is_some() {
             let _ = crate::kitty::delete(out);
         }
     };
-    let Some(pane_id) = app.state.focused_pane_id() else {
+    let Some(pane_id) = app.state.focused_pane_id().filter(|_| !playing) else {
         return clear(out, placed);
     };
     let Some(pane) = app.state.panes.get(&pane_id) else {
@@ -773,6 +786,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
 fn configure(app: &mut App, options: &ConsoleOptions) {
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
+    app.state.title_start = app.clock.now();
+    app.state.title = options
+        .title
+        .as_ref()
+        .and_then(|title| yi_tui::title::pick(&title.weights, title.seed));
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
