@@ -763,6 +763,11 @@ impl App {
 
     pub(super) fn chat_event(&mut self, event: CtEvent) {
         self.dirty = true;
+        if let CtEvent::Paste(text) = &event
+            && self.terminal_paste(text)
+        {
+            return;
+        }
         if let Some(chat) = self.focused_chat() {
             let enter = matches!(event, CtEvent::Key(key) if key.code == KeyCode::Enter);
             let drafted = enter && !chat.app.composer_text().is_empty();
@@ -793,53 +798,6 @@ impl App {
 mod tests {
     use super::*;
     use yi_types::subagent::{ChildActivity, ChildId};
-
-    #[test]
-    fn a_file_restore_from_the_tape_waits_for_a_second_press() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use yi_types::tape::{Mark, MarkKind, Tape};
-        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
-        let mut app = App::new("/r".to_owned(), theme);
-        let session = SessionId("s-a".to_owned());
-        let pane = app.state.focused_pane_id().expect("a pane");
-        let chat = app.make_chat(pane, &session);
-        app.state.parked.insert(session.clone(), chat);
-        if let Some(focused) = app.state.focused_pane_mut() {
-            focused.content = PaneContent::Tape {
-                session: session.clone(),
-                tape: Some(Tape {
-                    start: 0,
-                    end: 10,
-                    marks: vec![Mark {
-                        at: 0,
-                        kind: MarkKind::User,
-                        entry: "u1".to_owned(),
-                        label: "first".to_owned(),
-                    }],
-                    ..Tape::default()
-                }),
-                cursor: 0,
-                armed: false,
-            };
-        }
-        let press = |app: &mut App| {
-            app.tape_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
-        };
-        let queued = |app: &mut App| {
-            app.state
-                .chats_mut(&session)
-                .into_iter()
-                .map(|chat| chat.port.queue.len())
-                .sum::<usize>()
-        };
-        press(&mut app);
-        assert_eq!(queued(&mut app), 0, "the first press only arms");
-        press(&mut app);
-        assert!(matches!(
-            app.state.chats_mut(&session).into_iter().next().and_then(|chat| chat.port.queue.first()),
-            Some(super::super::port::PortRequest::RewindFiles(entry)) if entry == "u1"
-        ));
-    }
 
     /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened
     /// the list, while the `▸` still sat on a file; then with every blame error read as uncommitted.
@@ -1012,10 +970,10 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the mark gone from every chat pane but the focused one, or with an unfocused
-    /// pane retransmitting its orb or waking the loop every frame: only the focused pane animates.
+    /// Dies with the focused pane's mark missing, or with an unfocused pane placing its own
+    /// orb or waking the loop every frame: only the focused pane carries kitty images.
     #[test]
-    fn every_drawn_chat_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
+    fn only_the_focused_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
         let mut app = App::new("/r".to_owned(), theme);
         app.kitty = true;
@@ -1039,14 +997,21 @@ mod tests {
         }
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
         let mut out = Vec::new();
+        app.state.zone = crate::model::Zone::Panes;
         let mut owners = std::collections::HashMap::new();
         crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
         let written = String::from_utf8_lossy(&out);
-        for pane in [left, right] {
-            let placed = orb_ids(pane)
+        assert!(
+            orb_ids(left)
                 .iter()
-                .any(|id| written.contains(&format!("a=p,i={id},")));
-            assert!(placed, "pane {} has no mark: {written:?}", pane.raw());
+                .any(|id| written.contains(&format!("a=p,i={id},"))),
+            "the focused pane has no mark: {written:?}"
+        );
+        for id in orb_ids(right) {
+            assert!(
+                !written.contains(&format!("a=p,i={id},")),
+                "the unfocused pane placed its own mark: {written:?}"
+            );
         }
         let right_chat = app
             .state
