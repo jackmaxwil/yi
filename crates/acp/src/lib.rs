@@ -203,7 +203,7 @@ struct SessionHandle {
     host: Arc<SubagentHost>,
     forwarder: JoinHandle<()>,
     prompts: PendingPrompts,
-    last_active: std::cell::Cell<std::time::Instant>,
+    last_active: Arc<AtomicU64>,
 }
 
 impl Drop for SessionHandle {
@@ -355,6 +355,7 @@ impl AcpState {
         let events = session.subscribe();
         let context_window = session.model().context_window;
         let prompts = PendingPrompts::default();
+        let last_active = Arc::new(AtomicU64::new(daemon::now_ms()));
         let mut parent = Parent {
             forward: Forward {
                 session_id: session_id.clone(),
@@ -373,6 +374,7 @@ impl AcpState {
             last_plan: Value::Null,
             titled: lock_session(store).name().is_some(),
             launch_cwd: self.cwd.clone(),
+            last_active: Arc::clone(&last_active),
         };
         parent.watch_workdir();
         parent.watch_claims();
@@ -385,7 +387,7 @@ impl AcpState {
                 host,
                 forwarder,
                 prompts,
-                last_active: std::cell::Cell::new(std::time::Instant::now()),
+                last_active,
             },
         );
         self.evict_idle(&session_id);
@@ -481,7 +483,7 @@ impl AcpState {
             Ok(found) => found,
             Err(refused) => return Some(Err(refused)),
         };
-        handle.last_active.set(std::time::Instant::now());
+        (handle.last_active).store(daemon::now_ms(), std::sync::atomic::Ordering::Relaxed);
         let text = prompt_text(params);
         crate::update::queued(&handle.prompts).push(PendingPrompt {
             text: text.clone(),

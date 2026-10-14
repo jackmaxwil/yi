@@ -1,9 +1,11 @@
 //! Incident: a worker dropped a session only on `session/close`, which no client sends, so a
 //! daemon kept every session it ever opened, with its store, kernel and tools, for its life.
 
-use std::collections::BTreeSet;
-use std::sync::{Mutex, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use tokio::sync::mpsc::WeakUnboundedSender;
 use yi_runtime::session_store::SessionRepo;
 use yi_types::subagent::ChildStatus;
 
@@ -13,17 +15,36 @@ use crate::{AcpState, SessionHandle};
 /// Idle sessions a worker keeps loaded, the console's own count of parked chats.
 pub(crate) const RESIDENT_MAX: usize = 8;
 
-/// Sessions this worker unloaded while idle; a request or a due job loads one again.
-static EVICTED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-/// Evicted sessions loading again, whose deferred subscriptions are due once they are back.
-static RELOADING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-
-fn evicted() -> std::sync::MutexGuard<'static, BTreeSet<String>> {
-    EVICTED.lock().unwrap_or_else(PoisonError::into_inner)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Away {
+    Evicted,
+    Loading,
 }
 
-fn reloading() -> std::sync::MutexGuard<'static, BTreeSet<String>> {
-    RELOADING.lock().unwrap_or_else(PoisonError::into_inner)
+/// Sessions this worker unloaded while idle, absent once one is loaded again.
+static AWAY: Mutex<BTreeMap<String, Away>> = Mutex::new(BTreeMap::new());
+
+fn away() -> MutexGuard<'static, BTreeMap<String, Away>> {
+    AWAY.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Gives up on a load that failed, so a due job is skipped instead of deferred for good.
+pub(crate) fn forget(id: &str) {
+    away().remove(id);
+}
+
+/// A job came due for `id`: true while it is unloaded or loading again. The first sends the one
+/// wake that loads it, so a second due together defers instead of queueing a wake that blocks.
+fn owed(id: &str, wake: &WeakUnboundedSender<Incoming>) -> bool {
+    let was = away()
+        .get_mut(id)
+        .map(|state| std::mem::replace(state, Away::Loading));
+    if was == Some(Away::Evicted)
+        && let Some(wake) = wake.upgrade()
+    {
+        let _worker_gone = wake.send(Incoming::Built(id.to_owned()));
+    }
+    was.is_some()
 }
 
 /// What keeps a session loaded past [`RESIDENT_MAX`]: dropping it would stop or lose this.
@@ -47,7 +68,7 @@ pub(crate) fn pin(handle: &SessionHandle) -> Option<Pin> {
     };
     if session.status() == yi_runtime::Status::Running {
         Some(Pin::Turn)
-    } else if !crate::update::queued(&handle.prompts).is_empty() {
+    } else if !crate::update::queued(&handle.prompts).is_empty() || session.pending_count() > 0 {
         Some(Pin::Queued)
     } else if children() {
         Some(Pin::Children)
@@ -59,17 +80,14 @@ pub(crate) fn pin(handle: &SessionHandle) -> Option<Pin> {
 impl AcpState {
     /// Drops the longest-idle unpinned sessions past [`RESIDENT_MAX`], never `kept`.
     pub(crate) fn evict_idle(&mut self, kept: &str) {
-        let back = reloading()
-            .remove(kept)
-            .then(|| self.sessions.get(kept))
-            .flatten();
+        let back = away().remove(kept).and_then(|_| self.sessions.get(kept));
         if let Some(heartbeats) = back.and_then(|handle| handle.session.heartbeat_service()) {
             heartbeats.rearm_channels();
         }
         while self.sessions.len() > RESIDENT_MAX {
             let idlest = (self.sessions.iter())
                 .filter(|(id, handle)| id.as_str() != kept && pin(handle).is_none())
-                .min_by_key(|(_, handle)| handle.last_active.get())
+                .min_by_key(|(_, handle)| handle.last_active.load(Ordering::Relaxed))
                 .map(|(id, _)| id.clone());
             let Some(id) = idlest else {
                 eprintln!(
@@ -79,31 +97,58 @@ impl AcpState {
                 return;
             };
             let wake = self.wake.clone();
-            yi_runtime::schedule::on_absent_lane(Box::new(move |id| {
-                let owed = evicted().contains(id);
-                if let (true, Some(wake)) = (owed, wake.upgrade()) {
-                    let _worker_gone = wake.send(Incoming::Built(id.to_owned()));
-                }
-                owed
-            }));
+            yi_runtime::schedule::on_absent_lane(Box::new(move |id| owed(id, &wake)));
             let handle = self.sessions.get(&id);
             if let Some(heartbeats) = handle.and_then(|handle| handle.session.heartbeat_service()) {
                 heartbeats.hold_unloaded();
             }
             self.user_cells.close(&id);
             self.drop_session(&id);
-            evicted().insert(id);
+            away().insert(id, Away::Evicted);
         }
     }
 
     /// Starts loading `id` again if this worker evicted it; a no-op for any other session.
     pub(crate) fn reload(&mut self, id: &str) {
-        if !evicted().remove(id) || self.sessions.contains_key(id) {
+        if self.sessions.contains_key(id) || self.building.contains_key(id) {
             return;
         }
-        if let Ok(store) = self.repo.open(id) {
-            reloading().insert(id.to_owned());
-            self.attach_later(&store);
+        let mut away = away();
+        let Some(state) = away.get_mut(id) else {
+            return;
+        };
+        *state = Away::Loading;
+        drop(away);
+        match self.repo.open(id) {
+            Ok(store) => {
+                self.attach_later(&store);
+            }
+            Err(_) => forget(id),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_jobs_due_together_for_an_unloaded_session_send_one_wake()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (sender, mut wakes) = tokio::sync::mpsc::unbounded_channel();
+        let weak = sender.downgrade();
+        away().insert("two-due".to_owned(), Away::Evicted);
+
+        assert!(owed("two-due", &weak) && owed("two-due", &weak));
+
+        let first = wakes.try_recv();
+        assert!(matches!(first, Ok(Incoming::Built(ref id)) if id == "two-due"));
+        assert!(
+            wakes.try_recv().is_err(),
+            "the second due job queued a wake that blocks the request loop"
+        );
+        assert!(!owed("never-evicted", &weak));
+        forget("two-due");
+        Ok(())
     }
 }
