@@ -11,7 +11,8 @@ pub(crate) type StopFn = dyn Fn(bool) -> bool + Send + Sync;
 pub(crate) struct DeliveryHub {
     lanes: Mutex<HashMap<String, Arc<DeliverFn>>>,
     stops: Mutex<HashMap<String, Arc<StopFn>>>,
-    /// A session unloaded while idle keeps its timer, so a due job can load it again.
+    /// Invariant: set while a session is unloaded idle, cleared when a lane registers again, so
+    /// the timer outlives only the unloaded session and not its close.
     held: std::sync::atomic::AtomicBool,
 }
 
@@ -29,6 +30,7 @@ impl DeliveryHub {
     }
 
     pub(crate) fn register(&self, session_id: String, deliver: Arc<DeliverFn>) {
+        self.held.store(false, std::sync::atomic::Ordering::SeqCst);
         lock_lanes(&self.lanes).insert(session_id, deliver);
     }
 
@@ -380,6 +382,28 @@ mod tests {
         );
         drop(new);
         assert_eq!(hub.lane_count(), 0, "the reopened session's lane leaked");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_loaded_again_and_closed_leaves_no_held_timer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-held")?;
+        let path = dir.join("scheduled-jobs.json");
+        let shared = intern(path.clone(), DeliveryHub::hold);
+        let interned = || intern_map().lock().is_ok_and(|map| map.contains_key(&path));
+
+        release(&shared.store);
+        assert!(interned(), "an unloaded session's timer was dropped");
+
+        let lane: Arc<DeliverFn> = Arc::new(|_, _| Ok(RunOutcome::Ran));
+        shared.hub.register("a".to_owned(), Arc::clone(&lane));
+        assert!(shared.hub.unregister("a", &lane));
+        release(&shared.store);
+        assert!(
+            !interned(),
+            "a closed session's timer kept ticking and skipping its jobs"
+        );
         Ok(())
     }
 

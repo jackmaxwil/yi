@@ -80,6 +80,7 @@ impl AcpState {
                 let text = format!("the session could not start: {error}");
                 let update = extension("_yi/notice", [("text", Value::String(text))]);
                 (self.sink)(&update_notification(session_id, update));
+                crate::resident::forget(session_id);
                 self.failed.insert(session_id.to_owned(), error);
             }
         }

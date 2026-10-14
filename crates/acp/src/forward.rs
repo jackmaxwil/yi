@@ -77,6 +77,7 @@ pub(crate) struct Parent {
     pub(crate) last_plan: Value,
     pub(crate) titled: bool,
     pub(crate) launch_cwd: std::path::PathBuf,
+    pub(crate) last_active: Arc<AtomicU64>,
 }
 
 impl Parent {
@@ -237,6 +238,7 @@ impl Parent {
                     self.watch_claims();
                 }
                 if matches!(event, AgentEvent::AgentEnd { .. }) {
+                    (self.last_active).store(crate::daemon::now_ms(), Ordering::Relaxed);
                     self.title();
                 }
             }

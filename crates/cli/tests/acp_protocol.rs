@@ -1882,6 +1882,96 @@ fn a_worker_keeps_eight_idle_sessions_and_reloads_the_one_it_evicted() -> TestRe
     client.finish()
 }
 
+fn new_idle_session(
+    client: &mut AcpClient,
+    dir: &std::path::Path,
+    n: usize,
+) -> Result<String, Box<dyn Error>> {
+    let new = client.request(
+        &format!("new-{n}"),
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let id = (new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str()))
+    .ok_or("missing sessionId")?
+    .to_owned();
+    prompt_until_idle(client, &format!("prompt-{n}"), &id, "hello")?;
+    Ok(id)
+}
+
+/// Incident: the cap judged a session by its prompts alone, so one with a steer queued for its
+/// next turn was the idlest and its queued message went with it.
+#[test]
+fn a_session_with_a_steer_queued_is_not_the_one_unloaded() -> TestResult {
+    let dir = temp_dir("resident-steer")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let first = new_idle_session(&mut client, &dir, 0)?;
+    client.request(
+        "steer",
+        "_yi/steer",
+        json!({"sessionId": first, "text": "when you next run"}),
+    )?;
+    let mut second = String::new();
+    for n in 1..9 {
+        let id = new_idle_session(&mut client, &dir, n)?;
+        if n == 1 {
+            second = id;
+        }
+    }
+    let loaded = attached(&mut client, "list")?;
+    assert!(
+        loaded.contains(&first) && !loaded.contains(&second),
+        "the session holding a queued steer was unloaded instead of the idlest free one: {loaded:?}"
+    );
+    client.finish()
+}
+
+/// Incident: idle order was set by the last prompt alone, so a session whose own heartbeat turn
+/// had just ended still looked the idlest and was unloaded.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_session_whose_turn_just_ended_is_not_the_idlest() -> TestResult {
+    let dir = temp_dir("resident-turn-end")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..8 {
+        ids.push(new_idle_session(&mut client, &dir, n)?);
+    }
+    client.request(
+        "beat",
+        "_yi/heartbeat",
+        json!({"sessionId": ids[0], "command": "--every 10s say hi"}),
+    )?;
+    let mut ended = false;
+    for poll in 0..300 {
+        let frames = client.request(&format!("poll-{poll}"), "session/list", json!({}))?;
+        ended = updates_of(&frames, "state_update").iter().any(|frame| {
+            frame["params"]["sessionId"] == ids[0] && frame["params"]["update"]["state"] == "idle"
+        });
+        if ended {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(ended, "the heartbeat never ran a turn on {}", ids[0]);
+    client.request(
+        "clear",
+        "_yi/heartbeat",
+        json!({"sessionId": ids[0], "command": "clear"}),
+    )?;
+    new_idle_session(&mut client, &dir, 8)?;
+    let loaded = attached(&mut client, "list")?;
+    assert!(
+        loaded.contains(&ids[0]) && !loaded.contains(&ids[1]),
+        "{loaded:?}"
+    );
+    client.finish()
+}
+
 /// A letter to a session the worker unloaded while idle still reaches it: the mailbox's due job
 /// finds no lane, the worker loads the session again, and its subscription delivers.
 #[test]
