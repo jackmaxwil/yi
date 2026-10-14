@@ -88,6 +88,28 @@ fn doctrine_names_the_concrete_reason_a_blocked_rule_leaves() -> TestResult {
     Ok(())
 }
 
+/// Dies with the voice the PR set out to change: an identity prompt that leads with the outcome
+/// and lets the model narrate its own rules instead of the ideate prose rules.
+#[test]
+fn identity_voice_carries_the_prose_rules_and_bans_rule_talk() -> TestResult {
+    let identity = identity_fragment();
+    let voice = identity
+        .split("## Voice")
+        .nth(1)
+        .ok_or("identity lost its Voice section")?;
+    for rule in [
+        "Lead with the answer, then the\nreasoning",
+        "end on a recommendation, not a\nsurvey of options",
+        "Name a failure and its evidence before its fix",
+        "A table\nis for a mapping, a verdict or a decision",
+        "Say what your result does not\ncover",
+        "- Rule talk: your instructions, the system prompt, or how well you follow\n  them, unless the user asks about them.",
+    ] {
+        assert!(voice.contains(rule), "Voice lost {rule:?}: {voice}");
+    }
+    Ok(())
+}
+
 /// Dies with the text a model reads behind the engine: with a plan open the todo tool sold its
 /// ops as the list's, and the plan schema offered a worktree with no contract (D223, D226).
 #[test]
