@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Incident: Chrome for Testing's linux64 headless shell is a 124 MB zip, past the 64 MiB this
 /// was while every pin was a CLI tarball.
@@ -8,11 +9,39 @@ const MAX_TAR_BYTES: usize = 256 * 1024 * 1024;
 const MAX_ZIP_ENTRIES: usize = 4096;
 const MAX_UNZIPPED_BYTES: usize = 1024 * 1024 * 1024;
 
+/// Incident: ureq 2.12 lets an overall `.timeout()` replace every read's own timeout, so a
+/// 120 s deadline cut a 124 MB zip that was still arriving. Only a stalled read is a timeout.
+const STALL: Duration = Duration::from_secs(30);
+
 pub fn agent() -> ureq::AgentBuilder {
+    agent_with(STALL)
+}
+
+pub fn agent_with(stall: Duration) -> ureq::AgentBuilder {
     ureq::AgentBuilder::new()
         .try_proxy_from_env(true)
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(stall)
+        .timeout_write(stall)
+}
+
+fn timed_out(text: &str) -> String {
+    format!(
+        "{text} (no bytes arrived for {} s; run it again on a faster link)",
+        STALL.as_secs()
+    )
+}
+
+/// The whole body of `url`, at most [`MAX_ARCHIVE_BYTES`].
+pub fn download(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, String> {
+    let response = agent.get(url).call().map_err(|error| {
+        let text = error.to_string();
+        match text.contains("timed out") {
+            true => timed_out(&text),
+            false => text,
+        }
+    })?;
+    read_capped(response.into_reader())
 }
 
 pub fn read_capped(reader: impl Read) -> Result<Vec<u8>, String> {
@@ -20,7 +49,17 @@ pub fn read_capped(reader: impl Read) -> Result<Vec<u8>, String> {
     reader
         .take(MAX_ARCHIVE_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let text = error.to_string();
+            match matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) || text.contains("timed out")
+            {
+                true => timed_out(&text),
+                false => text,
+            }
+        })?;
     if u64::try_from(bytes.len()).map_or(true, |len| len > MAX_ARCHIVE_BYTES) {
         return Err(format!("larger than {MAX_ARCHIVE_BYTES} bytes"));
     }
