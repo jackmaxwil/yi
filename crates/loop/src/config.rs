@@ -26,6 +26,7 @@ type WaitingFn = dyn Fn() -> u64 + Send + Sync;
 type PrepareFn = dyn Fn(&TurnSnapshot) -> Option<NextTurn> + Send + Sync;
 type QueueFn = dyn Fn() -> Vec<AgentMessage> + Send + Sync;
 type InterceptFn = dyn Fn(&TurnSnapshot) -> Option<AgentMessage> + Send + Sync;
+type AnswerFn = dyn Fn(&TurnSnapshot) -> Option<Option<AgentMessage>> + Send + Sync;
 type CompactFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
 /// Called with the model and effort of the run's last request, whose prefix a compaction reads;
@@ -79,6 +80,9 @@ pub struct LoopConfig {
     pub waiting: Option<std::sync::Arc<WaitingFn>>,
     /// Asked once when a stop ends a turn on tool calls: Some runs one last turn, tool-less.
     pub last_word: Option<Box<InterceptFn>>,
+    /// Asked after every tool batch: Some ends the turn as a stop would, after appending the
+    /// answer it carries as the model's own message (none when the reply on screen stands).
+    pub answer: Option<Box<AnswerFn>>,
     /// Polled while a request streams: true aborts it, and the last word follows.
     pub last_word_due: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     /// Whether the word just said was the turn cap's: its refused tool calls earn the one
@@ -109,6 +113,7 @@ impl LoopConfig {
             intercept_stop: None,
             waiting: None,
             last_word: None,
+            answer: None,
             last_word_capped: None,
             last_word_due: None,
             side_work: None,
