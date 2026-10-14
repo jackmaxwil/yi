@@ -55,6 +55,7 @@ impl Pty {
     ) -> std::io::Result<Self> {
         use std::os::unix::ffi::OsStringExt;
         let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR)?;
+        rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC)?;
         rustix::pty::grantpt(&master)?;
         rustix::pty::unlockpt(&master)?;
         let name = OsString::from_vec(rustix::pty::ptsname(&master, Vec::new())?.into_bytes());
@@ -142,6 +143,7 @@ impl Pty {
     }
 
     pub fn paste(&mut self, text: &str) -> std::io::Result<()> {
+        let text = paste_text(text);
         if lock(&self.parser).screen().bracketed_paste() {
             self.send(format!("\x1b[200~{text}\x1b[201~").as_bytes())
         } else {
@@ -373,10 +375,21 @@ pub fn shim(mut args: impl Iterator<Item = OsString>) -> i32 {
     127
 }
 
+/// Incident: a clipboard holding `ESC[201~` closed the bracket early and the rest reached the
+/// shell as typed keystrokes; ESC never belongs in pasted text.
+fn paste_text(text: &str) -> String {
+    text.replace('\x1b', "")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::encode;
+    use super::{encode, paste_text};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn a_paste_cannot_close_its_own_bracket() {
+        assert_eq!(paste_text("a\x1b[201~; rm x\n"), "a[201~; rm x\n");
+    }
 
     /// Dies with a shell that cannot be driven: an arrow that moves nothing in readline, a
     /// ctrl+c that never interrupts, an alt chord that types a stray letter.
