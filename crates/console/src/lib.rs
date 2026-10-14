@@ -17,6 +17,7 @@ pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
+pub mod placed;
 pub mod pty;
 pub mod render;
 pub mod select;
@@ -231,7 +232,7 @@ fn draw<B: Backend>(
     app.dirty = false;
     if std::mem::take(&mut app.pending_clear) {
         terminal.clear()?;
-        app.notebook_image = None;
+        app.notebook_image.clear();
         app.state.browser_placed.clear();
     }
     let _span = yi_types::trace::span("console.draw");
@@ -558,55 +559,58 @@ fn place_chat_orbs(
 fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
     let playing = title_playing(app);
-    let placed = &mut app.notebook_image;
-    let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
-        if placed.take().is_some() {
-            let _ = crate::kitty::delete(out);
-        }
-    };
-    let Some(pane_id) = app.state.focused_pane_id().filter(|_| !playing) else {
-        return clear(out, placed);
-    };
-    let Some(pane) = app.state.panes.get(&pane_id) else {
-        return clear(out, placed);
-    };
-    let PaneContent::Notebook { cells, .. } = &pane.content else {
-        return clear(out, placed);
-    };
-    let image = cells
-        .iter()
-        .rev()
-        .flat_map(|cell| cell.images.iter())
-        .next();
-    let Some(image) = image else {
-        return clear(out, placed);
-    };
-    let rect = app
-        .hits
-        .as_ref()
-        .and_then(|hits| hits.panes.iter().find(|(id, _)| *id == pane_id))
-        .map(|(_, rect)| *rect);
-    let Some(rect) = rect else {
-        return clear(out, placed);
-    };
-    let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
-    let half = ratatui::layout::Rect {
-        height: inner.height / 2,
-        ..inner
-    };
-    let covered = app
-        .hits
-        .as_ref()
-        .is_some_and(|hits| hits.overlays.iter().any(|cover| cover.intersects(half)));
-    if half.height < 3 || half.width < 8 || covered {
-        return clear(out, placed);
-    }
-    if *placed == Some((image.len(), half)) {
-        return;
-    }
-    if crate::kitty::place_png(out, image, half).is_ok() {
-        *placed = Some((image.len(), half));
-    }
+    let focused = app.state.focused_pane_id().filter(|_| !playing);
+    let want = focused
+        .and_then(|pane_id| app.state.panes.get(&pane_id))
+        .and_then(|pane| {
+            let PaneContent::Notebook { cells, .. } = &pane.content else {
+                return None;
+            };
+            cells
+                .iter()
+                .rev()
+                .flat_map(|cell| cell.images.iter())
+                .next()
+        })
+        .and_then(|image| {
+            let rect = app
+                .hits
+                .as_ref()
+                .and_then(|hits| {
+                    hits.panes
+                        .iter()
+                        .find(|(id, _)| focused.is_some_and(|pane| id == &pane))
+                        .map(|(_, rect)| {
+                            let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+                            ratatui::layout::Rect {
+                                height: inner.height / 2,
+                                ..inner
+                            }
+                        })
+                })
+                .filter(|half| {
+                    half.height >= 3
+                        && half.width >= 8
+                        && !app.hits.as_ref().is_some_and(|hits| {
+                            hits.overlays.iter().any(|cover| cover.intersects(*half))
+                        })
+                })?;
+            Some(((), (rect, u64::try_from(image.len()).unwrap_or(0), image)))
+        });
+    let out = std::cell::RefCell::new(out);
+    crate::placed::reconcile(
+        want,
+        &mut app.notebook_image,
+        &mut |_: (), old: Option<u32>| old.map_or(0, |old| (old + 1) % 2),
+        &mut |_: (), rect: ratatui::layout::Rect, image: &&String, _: u32| {
+            let mut out = out.borrow_mut();
+            crate::kitty::place_png(&mut *out, image.as_str(), rect).is_ok()
+        },
+        &mut |_: (), _: u32| {
+            let mut out = out.borrow_mut();
+            let _ = crate::kitty::delete(&mut *out);
+        },
+    );
 }
 
 fn restore_terminal() {

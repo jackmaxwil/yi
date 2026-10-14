@@ -8,6 +8,10 @@ pub(crate) fn start(home: &Path) {
         return;
     };
     let Some((host, port)) = yi_types::url::http_loopback_host_and_port(&url)
+        .filter(|(host, _)| {
+            url.strip_prefix("http://")
+                .is_some_and(|rest| rest.starts_with(host))
+        })
         .and_then(|(host, port)| Some((host.to_owned(), port?.parse::<u16>().ok()?)))
     else {
         return note(
@@ -17,7 +21,8 @@ pub(crate) fn start(home: &Path) {
             ),
         );
     };
-    // Minted once here; the sidecar daemon reuses this same key.
+    // Invariant: the classifier check's old refusals hold: userinfo and an IPv6 loopback,
+    // both still loopback to the shared parser, never start the sidecar.
     let key = yi_runtime::auth::key_in(home, "laya");
     if let Err(error) = &key {
         note(

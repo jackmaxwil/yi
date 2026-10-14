@@ -377,15 +377,26 @@ mod tests {
     }
 }
 
+/// The authority of a URL under any scheme: Chrome's WHATWG parser ends it at '/', '?', '#'
+/// or '\', and userinfo before the last '@' is not part of it.
+pub fn url_authority(url: &str) -> Option<&str> {
+    Some(
+        url.split_once("://")?
+            .1
+            .split(['/', '?', '#', '\\'])
+            .next()
+            .unwrap_or("")
+            .rsplit('@')
+            .next()
+            .unwrap_or(""),
+    )
+}
+
 /// The host and port of an `http://` URL's authority when the host is a loopback address
 /// (`localhost`, `127.0.0.1`, `::1`); userinfo cannot move the host off this machine.
 pub fn http_loopback_host_and_port(url: &str) -> Option<(&str, Option<&str>)> {
-    let authority = url
-        .strip_prefix("http://")?
-        .split(['/', '?', '#', '\\'])
-        .next()
-        .unwrap_or("");
-    let authority = authority.rsplit('@').next().unwrap_or("");
+    url.strip_prefix("http://")?;
+    let authority = url_authority(url).unwrap_or("");
     let (host, port) = match authority.strip_prefix('[') {
         Some(v6) => {
             let (host, rest) = v6.split_once(']')?;
@@ -401,7 +412,22 @@ pub fn http_loopback_host_and_port(url: &str) -> Option<(&str, Option<&str>)> {
 
 #[cfg(test)]
 mod loopback_tests {
-    use super::http_loopback_host_and_port;
+    use super::{http_loopback_host_and_port, url_authority};
+
+    /// The authority Chrome connects to ends at a backslash, so a remote host cannot pose
+    /// as userinfo in front of a loopback one.
+    #[test]
+    fn a_backslash_ends_the_authority_and_a_posing_host_is_the_host() {
+        assert_eq!(
+            url_authority("http://evil.com\\@localhost:8080/"),
+            Some("evil.com")
+        );
+        assert_eq!(
+            url_authority("https://a.example@b.example:8443/x"),
+            Some("b.example:8443")
+        );
+        assert_eq!(url_authority("about:blank"), None);
+    }
 
     #[test]
     fn a_loopback_host_with_any_port_is_local_and_userinfo_stays_local() {

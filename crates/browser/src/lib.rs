@@ -38,12 +38,14 @@ const FLAGS: [&str; 6] = [
     "--hide-scrollbars",
     "--mute-audio",
 ];
-/// Incident: the postmerge runner is root, and Chrome refuses to start as root with its
-/// sandbox on. Only root drops it; a user's Chrome keeps its sandbox around untrusted pages.
-fn flags(root: bool) -> impl Iterator<Item = &'static str> {
-    FLAGS.into_iter().chain(root.then_some("--no-sandbox"))
+/// Incident: the postmerge runner is root and runs the pinned headless shell, which Chrome
+/// refuses to start as root with its sandbox on. Root drops it for that shell alone; a user's
+/// installed Chrome keeps its sandbox around untrusted pages even under root.
+fn flags(no_sandbox: bool) -> impl Iterator<Item = &'static str> {
+    FLAGS
+        .into_iter()
+        .chain(no_sandbox.then_some("--no-sandbox"))
 }
-
 /// A frame past this is drained to its NUL and refused; a 4K screencast PNG is about 12 MiB
 /// of base64.
 const MAX_FRAME: u64 = 32 << 20;
@@ -142,6 +144,7 @@ impl Browser {
     pub fn launch(
         shim: &Path,
         chrome: &Path,
+        pinned: Option<&Path>,
         profile: &Path,
         url: &str,
         size: (u32, u32),
@@ -155,7 +158,9 @@ impl Browser {
         let mut child = std::process::Command::new(shim)
             .arg("__fds")
             .arg(chrome)
-            .args(flags(rustix::process::geteuid().is_root()))
+            .args(flags(
+                rustix::process::geteuid().is_root() && Some(chrome) == pinned,
+            ))
             .arg(profile_flag)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -300,7 +305,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_root_runs_chrome_without_its_sandbox() {
+    fn only_the_pinned_headless_shell_drops_its_sandbox() {
         assert!(flags(true).any(|flag| flag == "--no-sandbox"));
         assert!(flags(false).all(|flag| flag != "--no-sandbox"));
     }

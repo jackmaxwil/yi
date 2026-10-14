@@ -248,8 +248,14 @@ impl App {
     /// mouse can never disagree with what was on screen.
     pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
         match self.state.mode {
-            Mode::Menu(_) => return self.menu_mouse(outbound, kind, x, y),
-            Mode::Navigator { .. } => return self.overlay_press(kind, x, y),
+            Mode::Menu(_) => {
+                self.release_browser_presses();
+                return self.menu_mouse(outbound, kind, x, y);
+            }
+            Mode::Navigator { .. } => {
+                self.release_browser_presses();
+                return self.overlay_press(kind, x, y);
+            }
             Mode::Normal | Mode::Prefix => {}
         }
         if self.browser_mouse(kind, x, y) {

@@ -117,6 +117,7 @@ fn a_click_on_a_served_link_brings_its_page_and_a_new_frame() -> TestResult {
     let mut browser = Browser::launch(
         Path::new(env!("CARGO_BIN_EXE_yi")),
         &chrome,
+        pinned_chrome().as_deref(),
         &dir.join("profile"),
         &url,
         (320, 200),

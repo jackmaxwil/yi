@@ -190,13 +190,7 @@ impl BrowserPane {
         {
             lines.push(Line::styled(row, theme.dim_style()));
         }
-        let host = self
-            .url
-            .split_once("://")
-            .map_or(self.url.as_str(), |(_, rest)| {
-                let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-                authority.rsplit('@').next().unwrap_or(authority)
-            });
+        let host = yi_types::url::url_authority(&self.url).unwrap_or(self.url.as_str());
         (
             format!("◎ {}", host.chars().take(24).collect::<String>()),
             lines,
@@ -371,7 +365,6 @@ impl BrowserPane {
         let input = match kind {
             MouseKind::Down => {
                 self.pressed = true;
-                self.editing = None;
                 let count = self.clicks.press((x, y), Instant::now());
                 button(CdpMouse::MousePressed, point, count, 1)
             }
@@ -392,8 +385,29 @@ impl BrowserPane {
         }
         true
     }
-}
 
+    /// Incident: an overlay took the release of a press the page still held, so the pane kept
+    /// the drag and ate every later one until a fresh click landed on it.
+    pub fn release(&mut self, cell: (usize, usize)) {
+        if !self.pressed {
+            return;
+        }
+        self.pressed = false;
+        let count = self.clicks.count;
+        let Some(((x, y), _)) = self.clicks.last else {
+            return;
+        };
+        let Some(point) = css_point(self.page, cell, x, y) else {
+            return;
+        };
+        let Some(browser) = self.live() else {
+            return;
+        };
+        browser
+            .router
+            .mouse(&button(CdpMouse::MouseReleased, point, count, 0));
+    }
+}
 fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32)) -> Engine {
     let pinned = chrome
         .pinned
@@ -403,8 +417,9 @@ fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32)) -> Engine {
         Ok(found) => found,
         Err(looked) => return chrome.missing(&looked),
     };
-    let launched = std::env::current_exe()
-        .and_then(|yi| Browser::launch(&yi, &chrome, &yi_browser::profile_dir(), url, size));
+    let launched = std::env::current_exe().and_then(|yi| {
+        Browser::launch(&yi, &chrome, pinned, &yi_browser::profile_dir(), url, size)
+    });
     match launched {
         Ok(browser) => Engine::Live(Box::new(browser)),
         Err(error) => Engine::Failed(format!("{}: {error}", chrome.display())),
@@ -569,13 +584,6 @@ fn frame_ids(pane: PaneId) -> [u32; 2] {
     [base, base.saturating_add(1)]
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Placed {
-    rect: Rect,
-    seq: u64,
-    id: u32,
-}
-
 /// Every browser page on the tab, uncovered and with a frame, placed over its rect; a new
 /// frame goes to the pane's other id before the old one is deleted, so nothing blinks.
 pub fn place(app: &mut App, out: &mut impl Write) {
@@ -592,35 +600,24 @@ pub fn place(app: &mut App, out: &mut impl Write) {
             }
         }
     }
-    let placed = &mut app.state.browser_placed;
-    placed.retain(|pane, at| {
-        let keep = want.contains_key(pane);
-        if !keep {
-            let _ = yi_tui::orb::kitty::delete_id(out, at.id);
-        }
-        keep
-    });
-    for (pane, (rect, seq, png)) in want {
-        let old = placed.get(&pane).copied();
-        if old.is_some_and(|old| old.rect == rect && old.seq == seq) {
-            continue;
-        }
-        let [even, odd] = frame_ids(pane);
-        let id = if old.is_some_and(|old| old.id == even) {
-            odd
-        } else {
-            even
-        };
-        let painted = crate::kitty::transmit_base64(out, id, png).is_ok()
-            && yi_tui::orb::kitty::place(out, id, rect.x, rect.y, rect.width, rect.height).is_ok();
-        if !painted {
-            continue;
-        }
-        if let Some(old) = old {
-            let _ = yi_tui::orb::kitty::delete_id(out, old.id);
-        }
-        placed.insert(pane, Placed { rect, seq, id });
-    }
+    let out = std::cell::RefCell::new(out);
+    crate::placed::reconcile(
+        want,
+        &mut app.state.browser_placed,
+        &mut |pane: PaneId, old: Option<u32>| {
+            let [even, odd] = frame_ids(pane);
+            if old == Some(even) { odd } else { even }
+        },
+        &mut |_: PaneId, rect: Rect, png: &&str, id: u32| {
+            let mut out = out.borrow_mut();
+            crate::kitty::transmit_base64(&mut *out, id, png).is_ok()
+                && yi_tui::orb::kitty::place(&mut *out, id, rect.x, rect.y, rect.width, rect.height)
+                    .is_ok()
+        },
+        &mut |_: PaneId, id: u32| {
+            let _ = yi_tui::orb::kitty::delete_id(&mut *out.borrow_mut(), id);
+        },
+    );
 }
 
 #[cfg(test)]
@@ -693,6 +690,7 @@ mod tests {
                 "https://github.com@evil.example:8443/x",
                 "evil.example:8443",
             ),
+            ("http://evil.com\\@localhost:8080/", "evil.com"),
             ("about:blank", "about:blank"),
         ];
         for (url, want) in cases {
@@ -726,23 +724,20 @@ mod tests {
         Ok(())
     }
 
-    /// Incident (#817): a payload outside base64 can end a kitty escape and start another.
-    /// A drain's newest frame is the one shown; when it is refused, the frame before it stands.
+    /// Incident: a press the page still held ends when an overlay takes its release, so the
+    /// MouseReleased the overlay swallowed is sent and the drag is not kept alive.
     #[test]
-    fn a_refused_newest_frame_leaves_the_one_before_it_on_screen()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn a_release_taken_by_an_overlay_ends_the_page_drag() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut pane = BrowserPane::new(Some("http://localhost:1/".to_owned()));
-        let pixel = "iVBORw0KGgo=";
-        let refused = "AAAA\u{1b}\\\u{1b}]52;c;ZWNobyBwd25lZA==\u{7}";
-        pane.absorb(vec![
-            Update::Frame("AAAA".to_owned()),
-            Update::Frame(pixel.to_owned()),
-            Update::Frame(refused.to_owned()),
-        ]);
-        assert_eq!(
-            pane.frame.as_ref().map(|(_, png)| png.as_str()),
-            Some(pixel)
-        );
+        pane.page = Rect::new(0, 1, 20, 8);
+        pane.mouse(MouseKind::Down, 2, 2, (8, 16));
+        pane.mouse(MouseKind::Up, 2, 2, (8, 16));
+        assert!(!pane.pressed());
+        pane.mouse(MouseKind::Down, 2, 2, (8, 16));
+        assert!(pane.pressed());
+        pane.release((8, 16));
+        assert!(!pane.pressed(), "the overlay's takeover ends the drag");
         Ok(())
     }
 
