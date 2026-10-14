@@ -136,6 +136,7 @@ pub struct BrowserPane {
     page: Rect,
     size: (u32, u32),
     clicks: Clicks,
+    pressed: bool,
 }
 
 impl BrowserPane {
@@ -150,6 +151,7 @@ impl BrowserPane {
             page: Rect::default(),
             size: (0, 0),
             clicks: Clicks::default(),
+            pressed: false,
         }
     }
 
@@ -188,7 +190,13 @@ impl BrowserPane {
         {
             lines.push(Line::styled(row, theme.dim_style()));
         }
-        let host = self.url.split("://").last().unwrap_or_default();
+        let host = self
+            .url
+            .split_once("://")
+            .map_or(self.url.as_str(), |(_, rest)| {
+                let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+                authority.rsplit('@').next().unwrap_or(authority)
+            });
         (
             format!("◎ {}", host.chars().take(24).collect::<String>()),
             lines,
@@ -321,6 +329,11 @@ impl BrowserPane {
         }
     }
 
+    /// A press landed on the page and its release has not: the page owns the drag until then.
+    pub fn pressed(&self) -> bool {
+        self.pressed
+    }
+
     /// A mouse event at a cell of this pane: the bar's three marks and its text, or the page.
     pub fn mouse(&mut self, kind: MouseKind, x: u16, y: u16, cell: (usize, usize)) -> bool {
         let on_bar =
@@ -335,16 +348,37 @@ impl BrowserPane {
             }
             return true;
         }
+        let held = matches!(kind, MouseKind::Drag | MouseKind::Up);
+        if held && !self.pressed {
+            return false;
+        }
+        let (x, y) = match held {
+            true => (
+                x.clamp(
+                    self.page.x,
+                    self.page.right().saturating_sub(1).max(self.page.x),
+                ),
+                y.clamp(
+                    self.page.y,
+                    self.page.bottom().saturating_sub(1).max(self.page.y),
+                ),
+            ),
+            false => (x, y),
+        };
         let Some(point) = css_point(self.page, cell, x, y) else {
             return false;
         };
         let input = match kind {
             MouseKind::Down => {
+                self.pressed = true;
                 self.editing = None;
                 let count = self.clicks.press((x, y), Instant::now());
                 button(CdpMouse::MousePressed, point, count, 1)
             }
-            MouseKind::Up => button(CdpMouse::MouseReleased, point, self.clicks.count, 0),
+            MouseKind::Up => {
+                self.pressed = false;
+                button(CdpMouse::MouseReleased, point, self.clicks.count, 0)
+            }
             MouseKind::Drag => button(CdpMouse::MouseMoved, point, 0, 1),
             MouseKind::Moved => MouseInput {
                 button: MouseButton::None,
@@ -643,6 +677,29 @@ mod tests {
             format!("\u{1b}_Ga=d,d=I,i={odd},q=2\u{1b}\\")
         );
         Ok(())
+    }
+
+    /// Incident: a title read the text after the last `://`, so a page's own path could pose as
+    /// its host in the tab.
+    #[test]
+    fn the_title_names_the_host_the_url_connects_to() {
+        let theme = Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let cases = [
+            (
+                "https://evil.example/go?next=https://github.com",
+                "evil.example",
+            ),
+            (
+                "https://github.com@evil.example:8443/x",
+                "evil.example:8443",
+            ),
+            ("about:blank", "about:blank"),
+        ];
+        for (url, want) in cases {
+            let mut pane = BrowserPane::new(Some(url.to_owned()));
+            let (title, _) = pane.view(Rect::new(0, 0, 60, 6), true, &theme);
+            assert_eq!(title, format!("◎ {want}"), "{url}");
+        }
     }
 
     #[test]
