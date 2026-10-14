@@ -24,6 +24,11 @@ pub fn snapshot_path_in(artifact_dir: &Path) -> PathBuf {
 pub fn manifest_path_in(artifact_dir: &Path) -> PathBuf {
     artifact_dir.join(format!("{KERNEL_STATE_BASENAME}.json"))
 }
+/// The blob directory beside a snapshot index; write and restore must derive
+/// it from the same path or restore misses every blob.
+pub fn blobs_dir_for(snapshot_path: &Path) -> PathBuf {
+    snapshot_path.with_extension("blobs")
+}
 
 // JSON string escaping is a valid subset of Python string-literal escaping.
 fn py_str(value: &str) -> String {
@@ -47,6 +52,7 @@ pub fn build_snapshot_code(
     let prune = if prune_oversized { "True" } else { "False" };
     // All builtins are sourced via the locally-imported _b alias so the helper
     // keeps working even when the user namespace shadows names like list/open.
+    let blobs = py_path(&blobs_dir_for(out_path));
     format!(
         r#"def _yi_snapshot_state():
     import builtins as _b, hashlib, io, json, os, sys, datetime
@@ -146,7 +152,7 @@ pub fn build_snapshot_code(
         return os.fdopen(os.open(path, flags, 0o600), mode)
 
     os.makedirs(os.path.dirname({out}), exist_ok=True)
-    blobs = os.path.splitext({out})[0] + ".blobs"
+    blobs = {blobs}
     os.makedirs(blobs, exist_ok=True)
 
     def durable(path, data):
@@ -209,16 +215,10 @@ pub fn build_snapshot_code(
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }}
-    manifest_tmp = {manifest} + ".tmp-" + _b.str(os.getpid())
     try:
-        with fresh(manifest_tmp, "w") as fh:
-            json.dump(manifest, fh)
-        os.replace(manifest_tmp, {manifest})
+        durable({manifest}, json.dumps(manifest).encode())
     except _b.Exception:
-        try:
-            os.remove(manifest_tmp)
-        except _b.Exception:
-            pass
+        pass
     pruned_ids = {{_b.id(ns[name]) for name in pruned}}
     while True:
         try:
@@ -253,6 +253,7 @@ pub fn build_restore_code(in_path: &Path) -> String {
     let marker = py_str(RESULT_MARKER);
     // Builtins via the local _b alias so a shadowed name in the user namespace
     // (list/open/print/…) can't break the restore path.
+    let blobs = py_path(&blobs_dir_for(in_path));
     format!(
         r#"def _yi_restore_state():
     import builtins as _b, json, os
@@ -284,7 +285,7 @@ pub fn build_restore_code(in_path: &Path) -> String {
 
     restored = []
     failed = []
-    blobs = os.path.splitext({source})[0] + ".blobs"
+    blobs = {blobs}
     for name, blob in payload.items():
         try:
             # A digest names a blob beside the index; bytes are the pre-blob single-file form.
@@ -632,9 +633,19 @@ mod tests {
             code.contains("16777216"),
             "per-variable cap must be inlined"
         );
-        assert!(code.contains("\"/tmp/out.dill\""));
+        assert!(
+            code.contains("\"/tmp/out.blobs\""),
+            "snapshot must name the blobs dir the shared Rust derivation yields"
+        );
         assert!(code.contains("os.replace"), "the write must be atomic");
+        assert!(
+            !code.contains("manifest_tmp"),
+            "the manifest write must go through durable() with the other writes"
+        );
         let restore = build_restore_code(Path::new("/tmp/out.dill"));
-        assert!(restore.contains("\"/tmp/out.dill\""));
+        assert!(
+            restore.contains("\"/tmp/out.blobs\""),
+            "restore must read the blobs dir the writer derives"
+        );
     }
 }
