@@ -1,10 +1,10 @@
 ---
 issue: Closes #1381
 decision: A root session always has ask_user and a question is drawn as a card | the owner asked Yi to ask many more multiple-choice questions in design talk, recommended option first, and to show what each option looks like; a root with no reviewer had no question tool, so a question was prose or a muted todo row, and the card needs a producer on every root | restore the `wire_role` guard on `parent`, the §1.2 cut-list entry, and drop `crates/tui/src/question.rs`
-growth: +1137 the card is its view, keys and layout (`question.rs`) and, after the owner rejected a text-only card for not matching the reference design, a kitty image painted under its text: rounded-rectangle chrome in `chrome.rs` (no dependency) and the card's paint and image lifecycle, which repaints only the pieces a key changed over a cached panel (a full repaint measured 15.6 ms a key at 200 columns of 10x20 cells, 4.9 ms now); the runtime adds one reader of `ask_user` options shared with the card and the unattended answer. Weighed for deletion: the console's copies of the rounded-box distance, `rgb` and `cell_pixels` moved into `yi_tui::chrome` and went, and the image's placement writer folded into `place_nth`; the HUD's option rows for a blocked todo stay, since that path has no card yet; a font rasterizer was rejected so text stays the terminal's glyphs
-raise: tests +615
-raise: comments +45
-raise: crate tui +1081
+growth: +1161 the card is its view, keys and layout (`question.rs`) and, after the owner rejected a text-only card for not matching the reference design, a kitty image painted under its text: rounded-rectangle chrome in `chrome.rs` (no dependency) and the card's paint and image lifecycle, which is capped at a million pixels and repaints only the pieces a key changed over a cached panel (a full repaint measured 15.6 ms a key at 200 columns of 10x20 cells, 4.9 ms now); the runtime adds one reader of `ask_user` options shared with the card and the unattended answer. Weighed for deletion: the console's copies of the rounded-box distance, `rgb` and `cell_pixels` moved into `yi_tui::chrome` and went, and the image's placement writer folded into `place_nth`; the HUD's option rows for a blocked todo stay, since that path has no card yet; a font rasterizer was rejected so text stays the terminal's glyphs
+raise: tests +676
+raise: comments +48
+raise: crate tui +1105
 raise: crate runtime +55
 raise: crate cli +1
 raise: crate console +1

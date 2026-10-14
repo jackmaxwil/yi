@@ -530,3 +530,64 @@ fn a_partly_repainted_card_is_the_card_painted_whole() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a kitty card on a terminal that reports no pixel size: the image is withheld, so
+/// the `▸` cursor must be in the text or the highlighted option is marked by nothing.
+#[test]
+fn a_card_whose_image_is_withheld_keeps_its_cursor_in_text() -> TestResult {
+    use yi_tui::question::{CardTick, tick};
+    let mut app = app();
+    app.set_kitty(true);
+    asked(&mut app, &[layout()]);
+    let rows = common::rows_at(&mut app, 34)?;
+    let (mut state, mut out) = (CardTick::default(), Vec::new());
+    tick(&app, &mut out, &mut state);
+    let drew = String::from_utf8_lossy(&out).contains("a=t,");
+    assert!(
+        drew || rows.iter().any(|row| row.contains('▸')),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// Dies with a card painted at the terminal's full pixel size on a large window: each cursor
+/// move then sent megabytes, so the image is capped and the terminal scales it back.
+#[test]
+fn a_card_on_a_huge_cell_grid_is_painted_within_its_pixel_cap() -> TestResult {
+    use yi_tui::question::{CardTick, tick_with};
+    let mut app = app();
+    app.set_kitty(true);
+    asked(&mut app, &[layout()]);
+    common::rows_at(&mut app, 34)?;
+    let (mut state, mut out) = (CardTick::default(), Vec::new());
+    tick_with(&app, &mut out, &mut state, (64, 128));
+    let sent = String::from_utf8_lossy(&out).into_owned();
+    let dim = |key: &str| -> Option<usize> {
+        let at = sent.find(key)?.checked_add(key.len())?;
+        sent.get(at..)?.split(',').next()?.parse().ok()
+    };
+    let (width, height) = (dim("s=").ok_or("no width")?, dim("v=").ok_or("no height")?);
+    assert!(width * height <= 1_000_000, "{width}x{height} pixels");
+    assert!(width > 0 && height > 0, "{width}x{height}");
+    Ok(())
+}
+
+/// Dies with one line past the five-line limit drawn whole: six lines keep five and name the cut.
+#[test]
+fn a_six_line_preview_keeps_five_and_names_the_cut() -> TestResult {
+    let mut app = app();
+    let six = (1..=6)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    asked(
+        &mut app,
+        &[json!({"question": "Which?", "options": [{"label": "A", "preview": six}]})],
+    );
+    let rows = common::live_rows(&mut app)?;
+    assert!(row_with(&rows, "line 5").is_some(), "{rows:#?}");
+    assert!(row_with(&rows, "line 6").is_none(), "{rows:#?}");
+    let cut = row_with(&rows, "showing 5 of 6").ok_or(format!("{rows:#?}"))?;
+    assert!(cut.contains("at most 5"), "{cut:?}");
+    Ok(())
+}
