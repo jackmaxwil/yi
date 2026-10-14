@@ -39,7 +39,8 @@ is one a round bought. Mechanics (scene grammar, `diff`, `watch`, `gallery`) liv
 - **Images draw above text.** Cover the screen and every kitty image (avatars, orb, notebook)
   still shows through unless it is unplaced for the duration, then placed again.
 - **One logo at a time, and the ending is a design element.** Land the big mark on the small one:
-  take its cells from the engine's own geometry (`yi_orb::mark_at`), not from a screenshot, and
+  take its cells from the orb engine's own mark geometry (the `STROKES` point cloud in
+  `crates/orb/src/states.rs`), not from a screenshot, and
   give the screen back by a seeded dissolve around it. A pop is the failure.
 - **Short.** 5.4 s read as long; 3 s did not. Keep the phases in one list of seconds and scale
   them together. Any key ends it, and ending is one state flag plus one last redraw: a surface
