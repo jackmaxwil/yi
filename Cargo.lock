@@ -1229,6 +1229,7 @@ checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
 dependencies = [
  "bitflags",
  "errno",
+ "itoa",
  "libc",
  "linux-raw-sys 0.4.15",
  "windows-sys 0.52.0",
@@ -2281,9 +2282,11 @@ name = "yi-console"
 version = "0.2.0"
 dependencies = [
  "ratatui",
+ "rustix 0.38.44",
  "serde_json",
  "tui-textarea",
  "unicode-width 0.2.0",
+ "vt100",
  "yi-tui",
  "yi-types",
 ]
