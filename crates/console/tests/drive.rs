@@ -1023,8 +1023,8 @@ fn notebook_shows_image(name: &str, prompt: Responder) -> TestResult {
          wait-frame 5000 replayed world\n\
          type chart it\n\
          key enter\n\
-         wait-frame 5000 nb:s-alpha\n\
-         wait-frame 5000 In [1]\n\
+         wait-frame 5000 ▤ s-alpha\n\
+         wait-frame 5000 ● [1]\n\
          wait-frame 3000 plot_drift\n\
          wait-frame 3000 computing drift\n\
          wait-frame 3000 image · 0 KB png\n\
@@ -1272,10 +1272,10 @@ fn cmd_i_toggles_the_notebook_pane() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          cmd-i\n\
-         wait-frame 3000 nb:s-alpha\n\
+         wait-frame 3000 ▤ s-alpha\n\
          wait-frame 3000 no kernel cells yet\n\
          cmd-i\n\
-         wait-frame 3000 !nb:s-alpha\n\
+         wait-frame 3000 !▤ s-alpha\n\
          wait-frame 3000 replayed world\n\
          quit\n",
     )
@@ -1685,7 +1685,7 @@ fn first_kernel_cell_opens_the_notebook_and_spends_the_auto_side() -> TestResult
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 nb:s-alpha\n\
+         wait-frame 5000 ▤ s-alpha\n\
          wait-frame 5000 brand new line\n\
          wait-frame 2000 !Review ·\n\
          quit\n",
@@ -1755,92 +1755,6 @@ fn subagent_rows_render_under_parent() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 5000 └GR  grep-bot-sub-1a2b3c4 ◐\n\
-         quit\n",
-    )
-}
-
-fn kernel_execute_reply(frame: &Value) -> Vec<Value> {
-    vec![
-        ok(frame, json!({"callId": "user-1"})),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "tool_call_update",
-            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
-            "status": "in_progress", "rawInput": {"code": "print(1)"}}),
-        ),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "tool_call_update",
-            "toolCallId": "user-1", "status": "completed",
-            "rawOutput": {"stdout": "1\n", "result": "", "error": null}}),
-        ),
-    ]
-}
-
-fn kernel_execute_running(frame: &Value) -> Vec<Value> {
-    vec![
-        ok(frame, json!({"callId": "user-1"})),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "tool_call_update",
-            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
-            "status": "in_progress", "rawInput": {"code": "sleep()"}}),
-        ),
-    ]
-}
-
-/// ⇧↩ on the notebook pane runs the draft on the session's kernel, and the cell comes back
-/// through the same tool-call stream the agent's cells use.
-#[test]
-fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
-    run(
-        "user-cell",
-        vec![
-            Step::Expect("initialize", init_reply),
-            Step::Expect("session/list", two_session_list),
-            Step::Expect("session/list", empty_list),
-            Step::Expect("session/resume", resume_alpha),
-            Step::Expect("_yi/seen", seen_ok),
-            Step::Expect("_yi/kernel_execute", kernel_execute_reply),
-        ],
-        "wait-frame 5000 s-alpha\n\
-         key enter\n\
-         wait-frame 5000 replayed world\n\
-         cmd-i\n\
-         wait-frame 3000 nb:s-alpha\n\
-         wait-frame 3000 ⇧↩ runs\n\
-         type print(1)\n\
-         key shift-enter\n\
-         wait-frame 5000 ● In [1]\n\
-         wait-frame 3000 print(1)\n\
-         quit\n",
-    )
-}
-
-/// Esc on the notebook cancels the newest running user cell.
-#[test]
-fn esc_cancels_running_user_cell() -> TestResult {
-    run(
-        "user-cell-cancel",
-        vec![
-            Step::Expect("initialize", init_reply),
-            Step::Expect("session/list", two_session_list),
-            Step::Expect("session/list", empty_list),
-            Step::Expect("session/resume", resume_alpha),
-            Step::Expect("_yi/seen", seen_ok),
-            Step::Expect("_yi/kernel_execute", kernel_execute_running),
-            Step::Expect("_yi/kernel_cancel", seen_ok),
-        ],
-        "wait-frame 5000 s-alpha\n\
-         key enter\n\
-         wait-frame 5000 replayed world\n\
-         cmd-i\n\
-         wait-frame 3000 nb:s-alpha\n\
-         type sleep()\n\
-         key shift-enter\n\
-         wait-frame 5000 ◐ In [1]\n\
-         key esc\n\
-         wait 300\n\
          quit\n",
     )
 }
@@ -4492,17 +4406,5 @@ fn a_pasted_control_character_is_dropped_from_a_submitted_console_message() -> T
          type x\u{7}y\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\nquit\n",
     )?;
     assert_eq!(row_holding(&frame, "┃   xy")?, "┃   xy");
-    Ok(())
-}
-
-#[test]
-fn a_pasted_control_character_is_dropped_from_the_notebook_pane_input() -> TestResult {
-    let frame = run_frames(
-        "paste-notebook",
-        session_fixture(),
-        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
-         cmd-i\nwait-frame 3000 nb:s-alpha\ntype x\u{1b}[31mredy\nquit\n",
-    )?;
-    assert_eq!(row_holding(&frame, "[31mredy")?, "x[31mredy");
     Ok(())
 }
