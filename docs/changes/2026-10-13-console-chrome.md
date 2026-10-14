@@ -12,4 +12,7 @@ screen keeps its Yi mark when focus moves to another pane or to the sidebar; onl
 it, and the model logos, whose image ids are fixed, stay with the focused pane. The sidebar
 drops one blank column between the avatar and the text, in the rail (8 columns wide now, 9
 before) and in the full list. The lane label on the status row reads the repo name, `yi`,
-instead of `yi ⎇ lane 0`.
+instead of `yi ⎇ lane 0`. An unfocused pane also stops waking the console loop for its orb, so
+a pane with a running agent no longer spins the loop at about 1000 wakeups a second. The
+console work grew the dist binary from 8,372,272 to 8,388,784 bytes, 176 bytes past the old
+8 MiB cap, which the 9 MiB cap in #1380 absorbs.
