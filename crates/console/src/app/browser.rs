@@ -107,4 +107,15 @@ impl App {
         }
         true
     }
+
+    /// An overlay takes every mouse event, so a press the page still holds can never see its
+    /// release; ending it in Chrome returns drags to the console when the overlay closes.
+    pub(super) fn release_browser_presses(&mut self) {
+        let cell = crate::chrome::cell_pixels();
+        for pane in self.state.panes.values_mut() {
+            if let PaneContent::Browser(browser) = &mut pane.content {
+                browser.release(cell);
+            }
+        }
+    }
 }
