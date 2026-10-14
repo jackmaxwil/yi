@@ -2,7 +2,7 @@
 issue: Closes #1381
 decision: A root session always has ask_user and a question is drawn as a card | the owner asked Yi to ask many more multiple-choice questions in design talk, recommended option first, and to show what each option looks like; a root with no reviewer had no question tool, so a question was prose or a muted todo row, and the card needs a producer on every root | restore the `wire_role` guard on `parent`, the §1.2 cut-list entry, and drop `crates/tui/src/question.rs`
 growth: +1140 the card is its view, keys and layout (`question.rs`) and, after the owner rejected a text-only card for not matching the reference design, a kitty image painted under its text: rounded-rectangle chrome in `chrome.rs` (about 130 lines, no dependency), the card's paint and image lifecycle, a pixel cap on its repaint and one id pair per console pane; the runtime nets -5 since the ask_user schema became one const string. Weighed for deletion: the HUD's option rows for a blocked todo stay, since that path has no card yet; a font rasterizer was rejected so text stays the terminal's glyphs
-raise: tests +480
+raise: tests +481
 raise: comments +37
 raise: crate tui +1051
 raise: crate orb +19
