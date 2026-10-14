@@ -517,6 +517,13 @@ fn notebook_lines(
                 ]));
             }
         }
+        for dropped in &cell.images_dropped {
+            let kb = dropped.saturating_mul(3) / 4 / 1024;
+            out.push(Line::styled(
+                format!("  ▲ image · {kb} KB png over the 64 KiB cap, dropped"),
+                theme.dim_style(),
+            ));
+        }
         for image in &cell.images {
             let kb = image.len().saturating_mul(3) / 4 / 1024;
             out.push(Line::styled(
@@ -1100,4 +1107,34 @@ fn render_tab_bar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         spans.push(Span::styled(label, style));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+#[cfg(test)]
+mod notebook_tests {
+    use super::notebook_lines;
+    use crate::model::NbCell;
+    use yi_tui::colors::{ColorTier, Theme};
+
+    fn text_of(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn a_dropped_image_renders_a_notice_row() {
+        let theme = Theme::new(ColorTier::Ansi16, false);
+        let cell = NbCell {
+            call_id: "c1".to_owned(),
+            code: "plot()".to_owned(),
+            images_dropped: vec![65537],
+            ..Default::default()
+        };
+        let lines = notebook_lines(&[cell], 80, &theme, "ctrl-w");
+        let texts: Vec<String> = lines.iter().map(text_of).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("▲ image · 48 KB png over the 64 KiB cap, dropped")),
+            "a dropped image names the cut: {texts:?}"
+        );
+    }
 }
