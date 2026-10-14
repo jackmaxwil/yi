@@ -241,15 +241,16 @@ fn row_of(id: &str, name: &str) -> SessionRow {
 
 /// Two sessions side by side, `s-alpha` on the left and `s-beta` on the right, focus on the right.
 fn pair() -> Result<(App, PaneId, PaneId), Box<dyn Error>> {
+    pair_in(Direction::Horizontal)
+}
+
+fn pair_in(direction: Direction) -> Result<(App, PaneId, PaneId), Box<dyn Error>> {
     let mut app = App::new("/repo".to_owned(), theme());
     app.state.link = Link::Connected;
     app.state.upsert_row(row_of("s-alpha", "alpha"));
     app.state.upsert_row(row_of("s-beta", "beta"));
     let left = app.state.focused_pane_id().ok_or("no home pane")?;
-    let right = app
-        .state
-        .split_focused(Direction::Horizontal)
-        .ok_or("no split")?;
+    let right = app.state.split_focused(direction).ok_or("no split")?;
     for (pane, id) in [(left, "s-alpha"), (right, "s-beta")] {
         let slot = app.state.panes.get_mut(&pane).ok_or("no pane")?;
         slot.content = PaneContent::Session {
@@ -514,6 +515,92 @@ fn header_buttons_are_worded_chips_with_a_blank_row_above_every_pane() -> TestRe
     assert!(
         !top.contains("Terminal") && top.contains(">_"),
         "a narrow header kept words: {top}"
+    );
+    Ok(())
+}
+
+fn focus(app: &mut App, pane: PaneId) {
+    if let Some(tab) = app.state.tab_mut() {
+        tab.layout.focus_pane(pane);
+    }
+}
+
+/// Dies with a title click leaving the finished session marked unseen: the pane body click clears it.
+#[test]
+fn a_click_on_a_pane_title_marks_its_finished_session_seen() -> TestResult {
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let (mut app, left, right) = pair()?;
+    let beta = SessionId("s-beta".to_owned());
+    if let Some(row) = app.state.sessions.get_mut(&beta) {
+        row.status = SessionStatus::DoneUnseen;
+    }
+    focus(&mut app, left);
+    draw(&mut app, &mut terminal)?;
+    let title = hits(&app)?
+        .titles
+        .iter()
+        .find(|(pane, _)| *pane == right)
+        .map(|(_, rect)| *rect)
+        .ok_or("no title for the right pane")?;
+    mouse(
+        &mut app,
+        MouseKind::Down,
+        title.x.saturating_add(1),
+        title.y,
+    );
+    assert_eq!(
+        app.state.focused_pane_id(),
+        Some(right),
+        "focus did not move"
+    );
+    let status = app.state.sessions.get(&beta).map(|row| row.status);
+    assert_eq!(
+        status,
+        Some(SessionStatus::Idle),
+        "the title click left it unseen"
+    );
+    Ok(())
+}
+
+/// Dies with a press on the lower pane's title, on the split row, focusing it instead of resizing.
+#[test]
+fn a_press_on_the_lower_title_at_the_split_row_drags_the_split() -> TestResult {
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let (mut app, top, bottom) = pair_in(Direction::Vertical)?;
+    focus(&mut app, top);
+    draw(&mut app, &mut terminal)?;
+    let found = hits(&app)?;
+    let split = found.splits.first().ok_or("no split border")?.pos;
+    let title = found
+        .titles
+        .iter()
+        .find(|(pane, _)| *pane == bottom)
+        .map(|(_, rect)| *rect)
+        .ok_or("no title for the lower pane")?;
+    assert_eq!(title.y, split, "the title no longer sits on the split row");
+    let height = |app: &App| {
+        hits(app).map(|found| {
+            found
+                .panes
+                .iter()
+                .find(|(pane, _)| *pane == top)
+                .map_or(0, |(_, rect)| rect.height)
+        })
+    };
+    let before = height(&app)?;
+    let x = title.x.saturating_add(1);
+    mouse(&mut app, MouseKind::Down, x, title.y);
+    mouse(&mut app, MouseKind::Drag, x, title.y.saturating_add(4));
+    mouse(&mut app, MouseKind::Up, x, title.y.saturating_add(4));
+    draw(&mut app, &mut terminal)?;
+    assert_eq!(
+        app.state.focused_pane_id(),
+        Some(top),
+        "the press focused the lower pane"
+    );
+    assert!(
+        height(&app)? > before,
+        "the split did not move from {before}"
     );
     Ok(())
 }
