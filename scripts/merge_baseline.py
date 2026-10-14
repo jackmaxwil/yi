@@ -30,13 +30,18 @@ def merge(ours, theirs, base=None):
     return ours if ours is not None else theirs
 
 
+def layout(value):
+    """The one byte layout of a baseline, which every `--update` writer emits too.
+    Incident: the writers used indent 1 and one line, so each merge or re-measure rewrote 700 lines."""
+    return json.dumps(value, indent=2, sort_keys=isinstance(value, dict) and "max_bytes" not in value) + "\n"
+
+
 def drive(base, ours, theirs):
     a = json.loads(pathlib.Path(ours).read_text())
     b = json.loads(pathlib.Path(theirs).read_text())
     o = pathlib.Path(base).read_text().strip()
     merged = merge(a, b, json.loads(o) if o else None)
-    text = json.dumps(merged, indent=2, sort_keys=isinstance(merged, dict) and "max_bytes" not in merged)
-    pathlib.Path(ours).write_text(text + "\n")
+    pathlib.Path(ours).write_text(layout(merged))
     return 0
 
 
@@ -50,6 +55,10 @@ def selfcheck():
                     {"tool:bash": "old", "tool:plan": "old"})
     assert surface == {"tool:bash": "main", "tool:plan": "ours"}, "a value only theirs moved is theirs"
     assert merge({"version": "0.142.0", "loc": 73264}, {"version": "0.142.0", "loc": 73264}) == {"version": "0.142.0", "loc": 73264}
+    baselines = pathlib.Path(__file__).resolve().parent / "guardrails/baselines"
+    drift = [p.name for p in sorted(baselines.glob("*.json")) + [baselines / "schemas.lock"]
+             if p.read_text() != layout(json.loads(p.read_text()))]
+    assert not drift, f"baselines not in the merge driver's layout, so the next merge rewrites them whole: {drift}"
     print("ok   merge_baseline selfcheck")
 
 
