@@ -2192,7 +2192,7 @@ fn an_orb_that_cannot_fit_its_rows_is_not_placed() -> TestResult {
         app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
         let _ = pane_rows(&mut app, height);
         let mut out = Vec::new();
-        yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+        yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default(), true);
         let out = String::from_utf8_lossy(&out);
         let sizes: Vec<&str> = out
             .split("\x1b_Ga=p,")
@@ -2231,7 +2231,7 @@ fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResu
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let mut out = Vec::new();
-    yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+    yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default(), true);
     let out = String::from_utf8_lossy(&out);
     let row = placement_row(&out).ok_or("no placement")?;
     let (_, after) = out.split_once("\x1b_Ga=p,").ok_or("no placement")?;

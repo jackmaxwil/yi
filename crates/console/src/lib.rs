@@ -460,14 +460,16 @@ fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
 /// or the idle poll woke the loop and drew at 28 fps in 2-row lurches.
 fn chat_wake(app: &App) -> Duration {
     use crate::model::PaneContent;
+    let focused = app.state.focused_pane_id();
     app.state
         .panes
-        .values()
-        .filter_map(|pane| match &pane.content {
+        .iter()
+        .filter_map(|(id, pane)| match &pane.content {
             PaneContent::Session {
                 chat: Some(chat), ..
             } => {
-                let orb = chat.app.orb_animating().then(|| chat.orb.wake());
+                let orb =
+                    (Some(*id) == focused && chat.app.orb_animating()).then(|| chat.orb.wake());
                 Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
             }
             _ => None,
@@ -476,8 +478,8 @@ fn chat_wake(app: &App) -> Duration {
         .unwrap_or(IDLE_POLL)
 }
 
-/// One orb per drawn chat pane on its own image ids; the model logos' ids are fixed, so only the
-/// focused pane holds them. Incident: a closed or switched pane kept its orb.
+/// One orb per drawn chat pane on its own image ids; only the focused pane animates, the rest
+/// hold one placed frame. Incident: a closed or switched pane kept its orb.
 fn place_chat_orbs(
     app: &mut App,
     owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
@@ -527,7 +529,7 @@ fn place_chat_orbs(
         };
         owners.entry(*id).or_insert_with(|| session.clone());
         if shown.contains(id) {
-            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
+            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
         } else {
             chat.orb.hide(out);
         }
