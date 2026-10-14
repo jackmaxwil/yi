@@ -94,6 +94,8 @@ pub struct ProviderStream {
     /// the script (#943).
     force_faux: bool,
     cursor: CursorStream,
+    /// Where a cut turn's usage is booked once its record lands; each session wires its own.
+    settle: Mutex<Option<yi_ai::settle::Settle>>,
 }
 
 type CursorStream =
@@ -125,6 +127,7 @@ impl ProviderStream {
             telemetry: None,
             force_faux: false,
             cursor: cursor_stream,
+            settle: Mutex::new(None),
         }
     }
 
@@ -160,6 +163,13 @@ impl ProviderStream {
             telemetry: self.telemetry.clone(),
             force_faux: self.force_faux,
             cursor: self.cursor,
+            settle: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn settle_into(&self, hook: yi_ai::settle::Settle) {
+        if let Ok(mut slot) = self.settle.lock() {
+            *slot = Some(hook);
         }
     }
 
@@ -367,6 +377,7 @@ impl ProviderStream {
             stop: Some(signal.cut_flag()),
             extra_headers: openai_extra(model, &credential),
             oauth,
+            settle: self.settle.lock().ok().and_then(|hook| hook.clone()),
             ..OpenAiOptions::default()
         };
         match api {

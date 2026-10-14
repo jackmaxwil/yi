@@ -982,7 +982,9 @@ fn dispatch(args: Args) {
                 );
                 std::process::exit(2);
             }
-            std::process::exit(ask::run(&args));
+            let code = ask::run(&args);
+            yi_runtime::spend::drain_settled();
+            std::process::exit(code);
         }
         "rpc" => {
             let runtime = match tokio::runtime::Builder::new_current_thread()

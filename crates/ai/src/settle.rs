@@ -6,6 +6,51 @@ use serde_json::Value;
 use yi_types::message::Usage;
 use yi_types::model::Model;
 
+/// Where a settled usage and its upstream go once the turn they belong to has already ended.
+#[derive(Clone)]
+pub struct Settle(pub std::sync::Arc<dyn Fn(Usage, Option<String>) + Send + Sync>);
+
+impl std::fmt::Debug for Settle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Settle")
+    }
+}
+
+static PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The schedule's 28 s of waiting plus the fetches' own time.
+pub const DRAIN_CAP: std::time::Duration = std::time::Duration::from_secs(32);
+
+struct Pending;
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        PENDING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Invariant: the record lands seconds after the turn, so its wait runs on a thread of its own
+/// that nothing joins; a one-shot process calls [`drain`] before it exits.
+pub fn detach(job: impl FnOnce() + Send + 'static) {
+    PENDING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let guard = Pending;
+    let _detached = std::thread::Builder::new()
+        .name("yi-settle".to_owned())
+        .spawn(move || {
+            let _guard = guard;
+            job();
+        });
+}
+
+/// Waits up to `cap` for the detached settlements of this process; what is still running then
+/// is lost with the process, which costs only that turn's settled usage.
+pub fn drain(cap: std::time::Duration) {
+    let began = std::time::Instant::now();
+    while PENDING.load(std::sync::atomic::Ordering::Acquire) > 0 && began.elapsed() < cap {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 /// Settlement only exists where the record does; every other provider keeps the estimate.
 pub fn settles(model: &Model) -> bool {
     model.base_url.contains("openrouter.ai")
