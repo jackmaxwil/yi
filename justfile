@@ -12,7 +12,10 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # nextest when it is on PATH, cargo when it is not, so a fresh clone still
-# runs the suite. `cargo test` runs the 101 test binaries one after another
+# runs the suite. Many tests set HOME or poke the process's own registries and say
+# "nextest runs each test in its own process"; plain `cargo test` threads them into
+# one, and 15 of them failed by racing, so the fallback runs one test at a time.
+# `cargo test` runs the 101 test binaries one after another
 # and five of them are 96 % of the wall clock; nextest pools every test from
 # every binary, and .config/nextest.toml's slow-timeout kills a hang in 60s
 # instead of letting it hold a runner. nextest cannot run doctests, so those
@@ -27,7 +30,7 @@ test:
       cargo nextest run --workspace
       cargo test --workspace --doc
     else
-      cargo test --workspace
+      cargo test --workspace -- --test-threads=1
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
@@ -189,7 +192,17 @@ postmerge: journeys
 # The suite against the profile that ships, unwind forced, which nothing else
 # covers because the shipping profile aborts. Nightly in CI (`dist-suite.yml`).
 dist-suite:
-    CARGO_PROFILE_DIST_PANIC=unwind cargo test --workspace --profile dist
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_PROFILE_DIST_PANIC=unwind
+    # Incident: plain threaded `cargo test` failed this lane every night with the same 8-15
+    # tests, each racing another through HOME; the suite's runner is one process per test.
+    if command -v cargo-nextest >/dev/null; then
+      cargo nextest run --workspace --cargo-profile dist
+      cargo test --workspace --doc --profile dist
+    else
+      cargo test --workspace --profile dist -- --test-threads=1
+    fi
 
 # Tier 4 sibling: the task-eval runner over its fixtures, faux only. Offline and
 # keyless, but it wants a built binary, so it stays out of `just check`.

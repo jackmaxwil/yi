@@ -9,7 +9,7 @@ use yi_types::channel::{
     CHANNEL_KEY, ChannelEntry, ChannelMeta, ChannelStamp, ChannelSub, MESSAGE_MAX_BYTES, Retention,
 };
 use yi_types::plan::doc::{Note, Todo, TodoLabel};
-use yi_types::schedule::{CronSchedule, Job, JobSource, ScheduleKind};
+use yi_types::schedule::{CronSchedule, Job, JobSource, JobStatus, ScheduleKind};
 
 use super::clock::{self, Fired};
 use super::{HeartbeatService, JobSpec, new_job};
@@ -221,6 +221,16 @@ impl Channel {
             newest
         };
         meta.acks.insert(sub.to_owned(), start);
+        self.write_meta(&meta)
+    }
+
+    pub fn subscribe_from_start(&self, sub: &str) -> Result<(), String> {
+        let _held = self.lock()?;
+        let mut meta = self.meta()?;
+        if meta.acks.contains_key(sub) {
+            return Ok(());
+        }
+        meta.acks.insert(sub.to_owned(), 0);
         self.write_meta(&meta)
     }
 
@@ -436,44 +446,65 @@ fn create(
         .filter(|entry| !delivered.contains(&entry.id))
         .cloned()
         .collect();
-    let Some(last) = fresh.last() else {
+    if fresh.is_empty() {
         return Ok(Some(Fired::Held(
             "every message was delivered before".to_owned(),
         )));
-    };
+    }
     let open = mine.iter().filter(|(done, _)| !done).count();
     if clock::overlap_room(job, open).is_err() {
         return Ok(None);
     }
-    let first = fresh.first().map_or(last.offset, |entry| entry.offset);
-    let mut todo = Todo::pending(clock::label(job, last.at)?);
-    todo.note = Some(
-        Note::new(format!(
-            "{}\n{} message(s) from {}, offsets {first}–{}: the data is in the channel wake beside this todo",
-            job.prompt,
-            fresh.len(),
-            sub.address,
-            last.offset
-        ))
-        .map_err(|error| error.to_string())?,
-    );
-    todo.cites.intent = job.intent.clone();
-    let stamp = ChannelStamp {
-        job: job.id.clone(),
-        ids: fresh.iter().map(|entry| entry.id.clone()).collect(),
-        extra: serde_json::Map::new(),
+    // A mailbox makes one todo per letter, each stamped with its own; any other channel one per
+    // delivery.
+    let groups: Vec<&[ChannelEntry]> = match crate::post::is_mailbox(&sub.address) {
+        true => fresh.chunks(1).collect(),
+        false => vec![fresh.as_slice()],
     };
-    todo.extra.insert(
-        CHANNEL_KEY.to_owned(),
-        serde_json::to_value(stamp).map_err(|error| error.to_string())?,
-    );
-    let label = todo.label.clone();
+    let mut items: Vec<Todo> = Vec::new();
+    for group in groups {
+        let (Some(head), Some(last)) = (group.first(), group.last()) else {
+            continue;
+        };
+        // Incident: two letters in one second made one label, and labels are unique.
+        let mut label = clock::label(job, last.at)?;
+        let taken = |label: &TodoLabel| {
+            list.items().any(|item| &item.label == label) || items.iter().any(|t| &t.label == label)
+        };
+        if taken(&label) {
+            label = clock::label_with(job, last.at, &format!(" #{}", last.offset))?;
+        }
+        let mut todo = Todo::pending(label);
+        todo.note = Some(
+            Note::new(format!(
+                "{}\n{} message(s) from {}, offsets {}–{}: the data is in the channel wake beside this todo",
+                job.prompt,
+                group.len(),
+                sub.address,
+                head.offset,
+                last.offset
+            ))
+            .map_err(|error| error.to_string())?,
+        );
+        todo.cites.intent = job.intent.clone();
+        let stamp = ChannelStamp {
+            job: job.id.clone(),
+            ids: group.iter().map(|entry| entry.id.clone()).collect(),
+            extra: serde_json::Map::new(),
+        };
+        todo.extra.insert(
+            CHANNEL_KEY.to_owned(),
+            serde_json::to_value(stamp).map_err(|error| error.to_string())?,
+        );
+        items.push(todo);
+    }
+    let labels: Vec<TodoLabel> = items.iter().map(|todo| todo.label.clone()).collect();
     let applied = todos
         .apply_as(
             Op::Append {
                 phase: None,
                 under: None,
-                items: vec![todo],
+                items,
             },
             None,
             CHANNEL_ACTOR,
@@ -482,7 +513,7 @@ fn create(
     let ids = applied
         .list
         .items()
-        .filter(|item| item.label == label)
+        .filter(|item| labels.contains(&item.label))
         .map(|item| {
             item.id
                 .as_ref()
@@ -504,6 +535,8 @@ pub struct Subscribe {
     pub retention: Option<Retention>,
     pub label: Option<String>,
     pub prompt: String,
+    /// Read every message the channel still holds, not only those after the subscription.
+    pub from_start: bool,
 }
 
 impl HeartbeatService {
@@ -521,12 +554,15 @@ impl HeartbeatService {
             .ok_or("channels need a home, and this runtime was wired without one")?;
         let channel = Channel::named(home, &spec.address)?;
         match spec.address.strip_prefix(CHANNEL_SCHEME) {
-            Some(name) => drop(channel.meta().map_err(|_| {
-                format!(
-                    "no channel {name} in {}: a channel is made by subscribing to its adapter URI",
-                    home.display()
-                )
-            })?),
+            Some(name) => {
+                crate::post::foreign_mailbox(session, name)?;
+                drop(channel.meta().map_err(|_| {
+                    format!(
+                        "no channel {name} in {}: a channel is made by subscribing to its adapter URI",
+                        home.display()
+                    )
+                })?);
+            }
             None => {
                 super::adapter::check(&spec.address)?;
                 channel.open(&spec.address, spec.retention.clone())?;
@@ -568,7 +604,46 @@ impl HeartbeatService {
             batch: spec.batch,
             extra: serde_json::Map::new(),
         });
-        channel.subscribe(&job.id, unblocks.is_some())?;
+        match spec.from_start {
+            true => channel.subscribe_from_start(&job.id)?,
+            false => channel.subscribe(&job.id, unblocks.is_some())?,
+        }
         Ok(job)
+    }
+}
+
+impl HeartbeatService {
+    /// A durable root reads its mail through one subscription, made at its first bind and kept:
+    /// one letter per todo, any number open at once, each waiting for the turn it lands in.
+    pub(super) fn ensure_mailbox(&self, session_id: &str) {
+        let Some(home) = self.channels.as_ref() else {
+            return;
+        };
+        let address = crate::post::mailbox(session_id);
+        let held = self.store().snapshot().jobs.iter().any(|job| {
+            let ended = matches!(job.status, JobStatus::Completed | JobStatus::Cancelled);
+            let reads = job
+                .channel
+                .as_ref()
+                .is_some_and(|sub| sub.address == address);
+            job.session_id == session_id && reads && !ended
+        });
+        if held || crate::post::open(home, session_id).is_err() {
+            return;
+        }
+        let spec = crate::post::subscription(session_id);
+        let Ok(mut job) = self.channel_job(session_id, spec, None, yi_session::now_ms()) else {
+            return;
+        };
+        // Invariant: no heartbeat source, so `/heartbeat clear` and its listing leave mail alone.
+        job.source = None;
+        job.overlap = Some(yi_types::schedule::Overlap::Allow);
+        job.delivery_mode = Some(yi_types::schedule::DeliveryMode::FollowUp);
+        let unread = Channel::named(home, &address).is_ok_and(|channel| channel.last().is_some());
+        if !unread {
+            job.next_run_at =
+                (job.schedule.interval_ms).map(|ms| job.created_at.saturating_add(ms));
+        }
+        self.store().mutate(|state| state.jobs.push(job));
     }
 }
