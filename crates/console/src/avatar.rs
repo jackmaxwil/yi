@@ -583,6 +583,19 @@ mod tests {
             None,
             "a frozen avatar keeps the loop waking"
         );
+        let default_pose = format!(
+            "{:?}",
+            yi_tui::orb::Orb::default().frame(Duration::ZERO, None)
+        );
+        let frozen_pose = avatars.motion.values_mut().next().map(|motion| {
+            let want = Some(yi_tui::orb::OrbState::Listening);
+            format!("{:?}", motion.orb.frame(Duration::ZERO, want))
+        });
+        assert_ne!(
+            frozen_pose.as_deref(),
+            Some(default_pose.as_str()),
+            "the avatar froze on the logo mark, not on its Listening pose"
+        );
         let working = alpha(Some(yi_tui::orb::OrbState::Working));
         avatars.sync(&mut Vec::new(), std::slice::from_ref(&working));
         assert!(!pass(&mut avatars).is_empty());
