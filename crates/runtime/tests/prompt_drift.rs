@@ -68,6 +68,25 @@ fn doctrine_names_only_ops_the_todo_tool_accepts() -> TestResult {
     }
     Ok(())
 }
+/// Dies with the fallback wording a blocked change reports: naming the rule instead of what
+/// could not be done and the concrete reason is the drift the voice change closed.
+#[test]
+fn doctrine_names_the_concrete_reason_a_blocked_rule_leaves() -> TestResult {
+    let section = doctrine_fragment()
+        .split("## Never simplify away")
+        .nth(1)
+        .ok_or("doctrine lost the Never simplify away section")?;
+    assert!(
+        section.contains("report says what could not be done and the concrete reason"),
+        "{section}"
+    );
+    assert!(section.contains("cap, a banned dependency"), "{section}");
+    assert!(
+        !section.contains("which rule and why"),
+        "the doctrine fell back to naming the rule: {section}"
+    );
+    Ok(())
+}
 
 /// Dies with the text a model reads behind the engine: with a plan open the todo tool sold its
 /// ops as the list's, and the plan schema offered a worktree with no contract (D223, D226).
