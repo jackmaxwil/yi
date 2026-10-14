@@ -69,6 +69,10 @@ impl Orb {
         self.now.is_none() && want.is_none() && self.next.is_none() && self.morph.is_none()
     }
 
+    pub fn holding(&self, state: Option<OrbState>) -> bool {
+        self.now == state && self.next.is_none() && self.morph.is_none()
+    }
+
     pub fn frame(&mut self, dt: Duration, want: Option<OrbState>) -> OrbFrame {
         let dt = dt.as_secs_f64().min(MAX_STEP);
         if let Some(morph) = &mut self.morph {
