@@ -22,6 +22,8 @@ use crate::layout::PaneId;
 use crate::model::{Chat, PaneContent, PendingAsk, SessionId, SessionRow};
 
 const ORB_ID_BASE: u32 = 7800;
+/// Past every pane's orb pair, so no pane's card shares an id with an orb.
+const CARD_ID_BASE: u32 = 0x0010_0000;
 
 const CHILD_ROW_CAP: usize = 32;
 
@@ -49,13 +51,18 @@ pub(crate) fn orb_ids(pane: PaneId) -> [u32; 2] {
     [base, base.saturating_add(1)]
 }
 
+pub(crate) fn card_ids(pane: PaneId) -> [u32; 2] {
+    let base = CARD_ID_BASE.saturating_add(pane.raw().saturating_mul(2));
+    [base, base.saturating_add(1)]
+}
+
 impl App {
     pub(super) fn chat_for(&mut self, pane_id: PaneId, session: &SessionId) -> Box<Chat> {
         match self.state.parked.remove(session) {
             Some(mut chat) => {
                 chat.orb = yi_tui::orb::Tick::with_ids(orb_ids(pane_id));
                 chat.logos = yi_tui::logos::Tick::default();
-                chat.card = yi_tui::question::CardTick::default();
+                chat.card = yi_tui::question::CardTick::with_ids(card_ids(pane_id));
                 chat
             }
             None => self.make_chat(pane_id, session),
@@ -87,7 +94,7 @@ impl App {
             orb: yi_tui::orb::Tick::with_ids(orb_ids(pane_id)),
             phase: 0,
             logos: yi_tui::logos::Tick::default(),
-            card: yi_tui::question::CardTick::default(),
+            card: yi_tui::question::CardTick::with_ids(card_ids(pane_id)),
             ask: None,
             events: std::sync::mpsc::channel(),
             commands: command_channel(),
@@ -1116,6 +1123,66 @@ mod tests {
             written.contains(",a=t,") && written.contains("\x1b_Ga=p,"),
             "the next orb frame is sent and placed: {written:?}"
         );
+        Ok(())
+    }
+
+    /// Dies with one pair of card image ids for every pane: an unfocused chat's hide deleted
+    /// the focused chat's card image.
+    #[test]
+    fn a_panes_hidden_card_deletes_only_its_own_image() -> Result<(), Box<dyn std::error::Error>> {
+        use yi_types::event::AgentEvent;
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.state
+            .split_focused(ratatui::layout::Direction::Horizontal);
+        let panes: Vec<PaneId> = app.state.panes.keys().copied().collect();
+        let mut out = Vec::new();
+        for (at, pane) in panes.iter().enumerate() {
+            let session = SessionId(format!("s-{at}"));
+            let mut chat = app.make_chat(*pane, &session);
+            chat.app.set_kitty(true);
+            chat.app.reduce_agent(AgentEvent::AgentStart);
+            chat.app.reduce_agent(AgentEvent::ToolExecutionStart {
+                tool_call_id: "ask".to_owned(),
+                tool_name: "ask_user".to_owned(),
+                args: json!({"question": "Which?", "options": ["Yes", "No"]}),
+            });
+            chat.app.reduce_agent(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            });
+            let area = ratatui::layout::Rect::new(0, 0, 80, 34);
+            let mut buffer = ratatui::buffer::Buffer::empty(area);
+            yi_tui::render::paint_pane(&mut chat.app, None, &mut buffer, area, &mut 0);
+            yi_tui::question::tick_with(&chat.app, &mut out, &mut chat.card, (10, 20));
+            if let Some(slot) = app.state.panes.get_mut(pane) {
+                slot.content = PaneContent::Session {
+                    session: Some(session),
+                    chat: Some(chat),
+                };
+            }
+        }
+        let [first, second] = panes[..] else {
+            return Err("two panes".into());
+        };
+        let Some(PaneContent::Session {
+            chat: Some(chat), ..
+        }) = app
+            .state
+            .panes
+            .get_mut(&second)
+            .map(|pane| &mut pane.content)
+        else {
+            return Err("no chat on the second pane".into());
+        };
+        out.clear();
+        yi_tui::question::hide(&mut out, &mut chat.card);
+        let gone = String::from_utf8_lossy(&out).into_owned();
+        for id in card_ids(second) {
+            assert!(gone.contains(&format!("i={id},")), "{gone}");
+        }
+        for id in card_ids(first) {
+            assert!(!gone.contains(&format!("i={id},")), "{gone}");
+        }
         Ok(())
     }
 }

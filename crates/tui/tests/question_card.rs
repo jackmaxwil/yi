@@ -182,9 +182,9 @@ fn the_highlighted_option_shows_its_preview_and_names_a_cut() -> TestResult {
     assert!(row_with(&rows, "line 1").is_none(), "{rows:#?}");
     press(&mut app, &[KeyCode::Down]);
     let rows = common::live_rows(&mut app)?;
-    assert!(row_with(&rows, "line 5").is_some(), "{rows:#?}");
-    assert!(row_with(&rows, "line 6").is_none(), "{rows:#?}");
-    let cut = row_with(&rows, "showing 5 of 9").ok_or(format!("{rows:#?}"))?;
+    assert!(row_with(&rows, "line 4").is_some(), "{rows:#?}");
+    assert!(row_with(&rows, "line 5").is_none(), "{rows:#?}");
+    let cut = row_with(&rows, "showing 4 of 9").ok_or(format!("{rows:#?}"))?;
     assert!(cut.contains("at most 5"), "{cut:?}");
     Ok(())
 }
@@ -363,5 +363,93 @@ fn a_kitty_terminal_gets_the_card_as_one_image_under_its_text() -> TestResult {
         2,
         "both image ids deleted: {gone}"
     );
+    Ok(())
+}
+
+/// Dies with a six-line preview drawn whole under a card that says it shows at most five: the
+/// limit is five rows, so one line past it names its cut.
+#[test]
+fn a_six_line_preview_keeps_the_card_to_five_rows_and_says_so() -> TestResult {
+    let mut app = app();
+    let six = (1..=6)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    asked(
+        &mut app,
+        &[json!({"question": "Which?", "options": [{"label": "A", "preview": six}]})],
+    );
+    let rows = common::live_rows(&mut app)?;
+    let shown = rows.iter().filter(|row| row.contains("│ line ")).count();
+    assert_eq!(shown, 4, "{rows:#?}");
+    let cut = row_with(&rows, "showing 4 of 6").ok_or(format!("{rows:#?}"))?;
+    assert!(cut.contains("at most 5"), "{cut:?}");
+    Ok(())
+}
+
+/// Dies with a kitty card on a terminal that reports no pixel size: the image is withheld, so
+/// the `▸` cursor must be in the text or the highlighted option is marked by nothing.
+#[test]
+fn a_card_whose_image_is_withheld_keeps_its_cursor_in_text() -> TestResult {
+    use yi_tui::question::{CardTick, tick};
+    let mut app = app();
+    app.set_kitty(true);
+    asked(&mut app, &[layout()]);
+    let rows = common::rows_at(&mut app, 34)?;
+    let (mut state, mut out) = (CardTick::default(), Vec::new());
+    tick(&app, &mut out, &mut state);
+    let drew = String::from_utf8_lossy(&out).contains("a=t,");
+    assert!(
+        drew || rows.iter().any(|row| row.contains('▸')),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// Dies with every pane's card on one pair of ids: hiding the card of a pane that lost focus
+/// deleted the focused pane's image, and the card went bare until its next repaint.
+#[test]
+fn a_card_hidden_on_its_own_ids_leaves_another_cards_image() -> TestResult {
+    use yi_tui::question::{CardTick, hide, tick_with};
+    let (mut first, mut second) = (
+        CardTick::with_ids([100, 101]),
+        CardTick::with_ids([200, 201]),
+    );
+    let mut out = Vec::new();
+    for (state, id) in [(&mut first, "i=100"), (&mut second, "i=200")] {
+        let mut app = app();
+        app.set_kitty(true);
+        asked(&mut app, &[layout()]);
+        common::rows_at(&mut app, 34)?;
+        tick_with(&app, &mut out, state, (10, 20));
+        assert!(String::from_utf8_lossy(&out).contains("a=t,"), "{id}");
+    }
+    out.clear();
+    hide(&mut out, &mut second);
+    let gone = String::from_utf8_lossy(&out).into_owned();
+    assert!(gone.contains("i=200") && gone.contains("i=201"), "{gone}");
+    assert!(!gone.contains("i=100") && !gone.contains("i=101"), "{gone}");
+    Ok(())
+}
+
+/// Dies with a card painted at the terminal's full pixel size on a large window: a repaint per
+/// cursor move then sent megabytes, so the image is capped and scaled back by the terminal.
+#[test]
+fn a_card_on_a_huge_cell_grid_is_painted_within_its_pixel_cap() -> TestResult {
+    use yi_tui::question::{CardTick, tick_with};
+    let mut app = app();
+    app.set_kitty(true);
+    asked(&mut app, &[layout()]);
+    common::rows_at(&mut app, 34)?;
+    let (mut state, mut out) = (CardTick::default(), Vec::new());
+    tick_with(&app, &mut out, &mut state, (64, 128));
+    let sent = String::from_utf8_lossy(&out).into_owned();
+    let dim = |key: &str| -> Option<usize> {
+        let at = sent.find(key)?.checked_add(key.len())?;
+        sent.get(at..)?.split(',').next()?.parse().ok()
+    };
+    let (width, height) = (dim("s=").ok_or("no width")?, dim("v=").ok_or("no height")?);
+    assert!(width * height <= 1_000_000, "{width}x{height} pixels");
+    assert!(width > 0 && height > 0, "{width}x{height}");
     Ok(())
 }
