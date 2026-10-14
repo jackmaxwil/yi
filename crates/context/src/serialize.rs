@@ -5,10 +5,20 @@ use yi_types::message::{AgentMessage, Attribution, Content, UserContent};
 const TOOL_RESULT_MAX_CHARS: usize = 2000;
 
 fn truncate_for_summary(text: &str, max_chars: usize) -> String {
-    let head = yi_types::text::truncate_utf8(text, max_chars);
-    let truncated_chars = text.len().saturating_sub(head.len());
-    format!("{head}\n\n[... {truncated_chars} more characters truncated]")
+    if text.len() <= max_chars {
+        return text.to_owned();
+    }
+    let mut end = max_chars;
+    while end > 0 && !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let truncated_chars = text.len().saturating_sub(end);
+    format!(
+        "{}\n\n[... {truncated_chars} more characters truncated]",
+        &text[..end]
+    )
 }
+
 /// A tool's output is data: every line after its label is indented, so none reads as a role
 /// line such as `[User]:` (#950 F3).
 fn tool_output(text: &str) -> String {

@@ -9,13 +9,18 @@ pub fn truncate_chars(text: &str, max_chars: Option<usize>) -> String {
     if text.len() <= max {
         return text.to_owned();
     }
-    let head = yi_types::text::truncate_utf8(text, max);
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
     format!(
-        "{head}\n[... truncated, {} of {} chars shown; use --json for full output ...]",
-        head.len(),
+        "{}\n[... truncated, {} of {} chars shown; use --json for full output ...]",
+        &text[..end],
+        end,
         text.len()
     )
 }
+
 pub fn emit(value: &Value, json: bool, max_chars: Option<usize>) {
     if json {
         println!("{}", serde_json::to_string(value).unwrap_or_default());

@@ -190,7 +190,9 @@ pub fn detail_text(text: &str) -> Value {
     if text.len() <= DETAIL_CAP {
         return Value::String(text.to_owned());
     }
-    let head = yi_types::text::truncate_utf8(text, DETAIL_CAP);
+    let head = text
+        .get(..text.floor_char_boundary(DETAIL_CAP))
+        .unwrap_or_default();
     Value::String(format!("{head}\n… truncated at {DETAIL_CAP} bytes"))
 }
 

@@ -7,7 +7,9 @@ const IMAGE_CAP: usize = 64 * 1024;
 const IMAGE_MAX: usize = 4;
 
 fn clamp_bytes(text: &str, cap: usize) -> String {
-    yi_types::text::truncate_utf8(text, cap).to_owned()
+    text.get(..text.floor_char_boundary(cap))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Kernel cells out of the tool-call stream: the start carries the code,
@@ -99,8 +101,7 @@ pub(super) fn apply_notebook(
                     .map(str::to_owned)
                     .collect();
                 let skip = images.len().saturating_sub(IMAGE_MAX);
-                cell.images_dropped
-                    .extend(images[..skip].iter().map(|data| data.len()));
+                cell.images_past_limit = skip;
                 cell.images = images.into_iter().skip(skip).collect();
             }
             if status.is_some() || raw_output.is_some() {
@@ -181,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cells_dropped_images_are_recorded() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_cells_dropped_images_are_recorded_by_reason() -> Result<(), Box<dyn std::error::Error>> {
         let mut cells = Vec::new();
         assert!(apply_notebook(&mut cells, &start("c1")));
         let big = "a".repeat(65537);
@@ -193,7 +194,8 @@ mod tests {
             &mut cells,
             &end("c1", serde_json::json!({"attachmentMedia": media}))
         ));
-        assert_eq!(cells[0].images_dropped, vec![65537, 6, 6]);
+        assert_eq!(cells[0].images_dropped, vec![65537]);
+        assert_eq!(cells[0].images_past_limit, 2);
         Ok(())
     }
 }

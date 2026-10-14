@@ -185,6 +185,7 @@ pub struct NbCell {
     pub error: Option<String>,
     pub images: Vec<String>,
     pub images_dropped: Vec<usize>,
+    pub images_past_limit: usize,
     pub running: bool,
 }
 
