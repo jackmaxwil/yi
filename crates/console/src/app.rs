@@ -52,7 +52,6 @@ pub enum RequestKind {
     Seen,
     Tracked(SessionId, Vec<String>),
     BranchDiff(SessionId),
-    Tape(SessionId),
     Why(SessionId),
     Slash(SessionId),
     Rewind(SessionId),
@@ -122,6 +121,7 @@ pub struct App {
     /// Auto-opened notebook panes by their last kernel activity; an idle one closes itself.
     pub(crate) auto_notebooks: HashMap<PaneId, Instant>,
     pub window_title: String,
+    pub wake: Option<std::sync::mpsc::SyncSender<ClientEvent>>,
 }
 
 fn trace_answered(pending: &Pending) {
@@ -178,6 +178,7 @@ impl App {
             shutdown_at: None,
             auto_notebooks: HashMap::new(),
             window_title: String::new(),
+            wake: None,
         }
     }
 
@@ -283,6 +284,7 @@ impl App {
         self.close_idle_notebooks(now);
         self.tick_notes(now);
         self.check_editors(now);
+        self.poll_terminals();
         self.pump_chats(outbound);
         if self
             .shutdown_at
@@ -389,6 +391,7 @@ impl App {
                 self.handle_event(outbound, event);
             }
             ClientEvent::InputClosed(_) => self.state.quit = true,
+            ClientEvent::Wake => {}
         }
     }
 
@@ -512,7 +515,6 @@ impl App {
             }
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
             RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
-            RequestKind::Tape(session) => self.absorb_tape(&session, &result),
             RequestKind::Why(session) => self.absorb_why(&session, &result),
             RequestKind::SetConfig(_)
             | RequestKind::Settings(..)
@@ -920,7 +922,7 @@ impl App {
             Action::Pin => self.pin_focus(outbound),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
-            Action::ToggleTape => self.toggle_side(outbound, diffs::SideKind::Tape),
+            Action::OpenTerminal => self.open_terminal(),
             Action::OpenEditor => self.open_navigator("e "),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
@@ -992,6 +994,9 @@ impl App {
         match event {
             CtEvent::Key(key) if yi_tui::keymap::is_pasted_control(&key) => {}
             CtEvent::Key(key) => {
+                if self.skip_title() {
+                    return;
+                }
                 if self.selection.take().is_some() {
                     self.dirty = true;
                 }
@@ -1045,6 +1050,9 @@ impl App {
         if keys::is_prefix(&key) {
             self.state.mode = Mode::Prefix;
             self.dirty = true;
+            return;
+        }
+        if self.state.zone == Zone::Panes && self.terminal_key(&key) {
             return;
         }
         let on_chat = self.state.zone == Zone::Panes && self.on_chat();
@@ -1113,7 +1121,6 @@ impl App {
                 }
             }
             Zone::Panes if self.on_review().is_some() => self.review_key(key),
-            Zone::Panes if self.on_tape() => self.tape_key(key),
             Zone::Panes if self.on_settings() => self.settings_key(outbound, key),
             Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
@@ -1132,6 +1139,7 @@ mod review;
 #[cfg(test)]
 mod rows;
 mod settings;
+mod terminal;
 
 pub(crate) use chat::orb_ids;
 pub use mouse::MouseKind;
