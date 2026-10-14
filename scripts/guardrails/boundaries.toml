@@ -9,7 +9,7 @@
 "yi-tools" = ["yi-types", "yi-permission"]
 "yi-mcp-cli" = ["yi-oauth", "yi-types"]
 "yi-kernel" = ["yi-types"]
-"yi-runtime" = ["yi-types", "yi-loop", "yi-ai", "yi-session", "yi-context", "yi-permission", "yi-tools", "yi-kernel"]
+"yi-runtime" = ["yi-types", "yi-loop", "yi-ai", "yi-session", "yi-context", "yi-permission", "yi-tools", "yi-kernel", "yi-browser"]
 "yi-acp" = ["yi-types", "yi-runtime"]
 "yi-tui" = ["yi-types", "yi-runtime", "yi-orb"]
 "yi-console" = ["yi-types", "yi-tui", "yi-browser"]
