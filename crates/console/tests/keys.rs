@@ -54,12 +54,12 @@ fn no_hint_names_a_key_the_terminal_takes() {
 }
 
 #[test]
-fn the_header_buttons_and_tape_keep_chords_the_terminal_leaves_alone() {
+fn the_header_buttons_and_terminal_keep_chords_the_terminal_leaves_alone() {
     use yi_console::keys::Action;
     let shifted = KeyModifiers::SUPER | KeyModifiers::SHIFT;
     let cases = [
-        (KeyModifiers::ALT, 'y', Action::ToggleTape),
-        (KeyModifiers::SUPER, 'y', Action::ToggleTape),
+        (KeyModifiers::ALT, 'y', Action::OpenTerminal),
+        (KeyModifiers::SUPER, 'y', Action::OpenTerminal),
         (shifted, 'B', Action::OpenBrowser),
         (KeyModifiers::ALT, 'w', Action::OpenBrowser),
         (KeyModifiers::SUPER, 'o', Action::OpenEditor),

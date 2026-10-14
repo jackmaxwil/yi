@@ -462,15 +462,13 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
     draw(&mut app, &mut terminal)?;
     let lit = face(&terminal)?;
     assert_ne!(lit, rest, "the hovered diff button looks the same");
-    for (action, note) in [
-        (Action::OpenTerminal, "terminal pane lands with #1378"),
-        (Action::OpenBrowser, "browser pane lands with #1379"),
-    ] {
-        let rect = at(action)?;
-        mouse(&mut app, MouseKind::Down, rect.x, rect.y);
-        assert_eq!(app.state.banner.as_deref(), Some(note), "{action:?}");
-        app.state.banner = None;
-    }
+    let browser = at(Action::OpenBrowser)?;
+    mouse(&mut app, MouseKind::Down, browser.x, browser.y);
+    assert_eq!(
+        app.state.banner.as_deref(),
+        Some("browser pane lands with #1379")
+    );
+    app.state.banner = None;
     let files = at(Action::OpenEditor)?;
     mouse(&mut app, MouseKind::Down, files.x, files.y);
     assert!(
