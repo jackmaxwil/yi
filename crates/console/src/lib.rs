@@ -17,7 +17,6 @@ pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
-mod placed;
 pub mod render;
 pub mod select;
 pub mod settings;
@@ -220,7 +219,7 @@ fn draw<B: Backend>(
     app.dirty = false;
     if std::mem::take(&mut app.pending_clear) {
         terminal.clear()?;
-        app.notebook_image.clear();
+        app.notebook_image = None;
         app.state.browser_placed.clear();
     }
     let _span = yi_types::trace::span("console.draw");
@@ -539,61 +538,55 @@ fn place_chat_orbs(
 /// the top half of the pane; text placeholders stay for every other terminal.
 fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
-    let mut want = std::collections::BTreeMap::new();
-    if let Some(pane_id) = app.state.focused_pane_id() {
-        let cells = app
-            .state
-            .panes
-            .get(&pane_id)
-            .and_then(|pane| match &pane.content {
-                PaneContent::Notebook { cells, .. } => Some(cells),
-                _ => None,
-            });
-        let image = cells.and_then(|cells| {
-            cells
-                .iter()
-                .rev()
-                .flat_map(|cell| cell.images.iter())
-                .next()
-        });
-        let half = app
-            .hits
-            .as_ref()
-            .and_then(|hits| hits.panes.iter().find(|(id, _)| *id == pane_id))
-            .map(|(_, rect)| *rect)
-            .map(|rect| {
-                let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
-                ratatui::layout::Rect {
-                    height: inner.height / 2,
-                    ..inner
-                }
-            })
-            .filter(|half| {
-                half.height >= 3
-                    && half.width >= 8
-                    && !app.hits.as_ref().is_some_and(|hits| hits.covered(*half))
-            });
-        if let (Some(image), Some(half)) = (image, half) {
-            want.insert(
-                (),
-                (
-                    half,
-                    u64::try_from(image.len()).unwrap_or(u64::MAX),
-                    image.as_str(),
-                ),
-            );
-        }
-    }
-    placed::reconcile(
-        out,
-        &want,
-        &mut app.notebook_image,
-        |_, _| crate::kitty::image_id(),
-        |out, _id, half, png| crate::kitty::place_png(out, png, half).is_ok(),
-        |out, _id| {
+    let placed = &mut app.notebook_image;
+    let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
+        if placed.take().is_some() {
             let _ = crate::kitty::delete(out);
-        },
-    );
+        }
+    };
+    let Some(pane_id) = app.state.focused_pane_id() else {
+        return clear(out, placed);
+    };
+    let Some(pane) = app.state.panes.get(&pane_id) else {
+        return clear(out, placed);
+    };
+    let PaneContent::Notebook { cells, .. } = &pane.content else {
+        return clear(out, placed);
+    };
+    let image = cells
+        .iter()
+        .rev()
+        .flat_map(|cell| cell.images.iter())
+        .next();
+    let Some(image) = image else {
+        return clear(out, placed);
+    };
+    let rect = app
+        .hits
+        .as_ref()
+        .and_then(|hits| hits.panes.iter().find(|(id, _)| *id == pane_id))
+        .map(|(_, rect)| *rect);
+    let Some(rect) = rect else {
+        return clear(out, placed);
+    };
+    let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+    let half = ratatui::layout::Rect {
+        height: inner.height / 2,
+        ..inner
+    };
+    let covered = app
+        .hits
+        .as_ref()
+        .is_some_and(|hits| hits.overlays.iter().any(|cover| cover.intersects(half)));
+    if half.height < 3 || half.width < 8 || covered {
+        return clear(out, placed);
+    }
+    if *placed == Some((image.len(), half)) {
+        return;
+    }
+    if crate::kitty::place_png(out, image, half).is_ok() {
+        *placed = Some((image.len(), half));
+    }
 }
 
 fn restore_terminal() {

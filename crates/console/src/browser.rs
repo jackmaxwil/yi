@@ -234,18 +234,10 @@ impl BrowserPane {
     }
 
     fn absorb(&mut self, updates: Vec<Update>) {
+        let mut frames = Vec::new();
         for update in updates {
             match update {
-                Update::Frame(png) => {
-                    if !yi_types::image::is_strict_base64(&png) {
-                        continue;
-                    }
-                    let seq = self
-                        .frame
-                        .as_ref()
-                        .map_or(0, |(seq, _)| seq.wrapping_add(1));
-                    self.frame = Some((seq, png));
-                }
+                Update::Frame(png) => frames.push(png),
                 Update::Url(url) => {
                     self.url = url;
                     self.notice = None;
@@ -255,6 +247,19 @@ impl BrowserPane {
                 }
                 Update::Failed(why) => self.engine = Engine::Failed(why),
             }
+        }
+        // Only the newest frame is shown, so only it is scanned; an older one stands in only
+        // when the newest is refused.
+        if let Some(png) = frames
+            .into_iter()
+            .rev()
+            .find(|png| yi_types::image::is_strict_base64(png))
+        {
+            let seq = self
+                .frame
+                .as_ref()
+                .map_or(0, |(seq, _)| seq.wrapping_add(1));
+            self.frame = Some((seq, png));
         }
     }
 
@@ -530,6 +535,13 @@ fn frame_ids(pane: PaneId) -> [u32; 2] {
     [base, base.saturating_add(1)]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    rect: Rect,
+    seq: u64,
+    id: u32,
+}
+
 /// Every browser page on the tab, uncovered and with a frame, placed over its rect; a new
 /// frame goes to the pane's other id before the old one is deleted, so nothing blinks.
 pub fn place(app: &mut App, out: &mut impl Write) {
@@ -546,27 +558,35 @@ pub fn place(app: &mut App, out: &mut impl Write) {
             }
         }
     }
-    crate::placed::reconcile(
-        out,
-        &want,
-        &mut app.state.browser_placed,
-        |pane, old| {
-            let [even, odd] = frame_ids(pane);
-            if old.is_some_and(|old| old.id == even) {
-                odd
-            } else {
-                even
-            }
-        },
-        |out, id, rect, png| {
-            crate::kitty::transmit_base64(out, id, png).is_ok()
-                && yi_tui::orb::kitty::place(out, id, rect.x, rect.y, rect.width, rect.height)
-                    .is_ok()
-        },
-        |out, id| {
-            let _ = yi_tui::orb::kitty::delete_id(out, id);
-        },
-    );
+    let placed = &mut app.state.browser_placed;
+    placed.retain(|pane, at| {
+        let keep = want.contains_key(pane);
+        if !keep {
+            let _ = yi_tui::orb::kitty::delete_id(out, at.id);
+        }
+        keep
+    });
+    for (pane, (rect, seq, png)) in want {
+        let old = placed.get(&pane).copied();
+        if old.is_some_and(|old| old.rect == rect && old.seq == seq) {
+            continue;
+        }
+        let [even, odd] = frame_ids(pane);
+        let id = if old.is_some_and(|old| old.id == even) {
+            odd
+        } else {
+            even
+        };
+        let painted = crate::kitty::transmit_base64(out, id, png).is_ok()
+            && yi_tui::orb::kitty::place(out, id, rect.x, rect.y, rect.width, rect.height).is_ok();
+        if !painted {
+            continue;
+        }
+        if let Some(old) = old {
+            let _ = yi_tui::orb::kitty::delete_id(out, old.id);
+        }
+        placed.insert(pane, Placed { rect, seq, id });
+    }
 }
 
 #[cfg(test)]
@@ -646,6 +666,26 @@ mod tests {
         let (_, lines) = pane.view(Rect::new(0, 0, 60, 6), true, &theme);
         let drawn: String = lines.iter().map(|line| line.to_string()).collect();
         assert!(!drawn.contains("couldn't open the page"), "{drawn:?}");
+        Ok(())
+    }
+
+    /// Incident (#817): a payload outside base64 can end a kitty escape and start another.
+    /// A drain's newest frame is the one shown; when it is refused, the frame before it stands.
+    #[test]
+    fn a_refused_newest_frame_leaves_the_one_before_it_on_screen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = BrowserPane::new(Some("http://localhost:1/".to_owned()));
+        let pixel = "iVBORw0KGgo=";
+        let refused = "AAAA\u{1b}\\\u{1b}]52;c;ZWNobyBwd25lZA==\u{7}";
+        pane.absorb(vec![
+            Update::Frame("AAAA".to_owned()),
+            Update::Frame(pixel.to_owned()),
+            Update::Frame(refused.to_owned()),
+        ]);
+        assert_eq!(
+            pane.frame.as_ref().map(|(_, png)| png.as_str()),
+            Some(pixel)
+        );
         Ok(())
     }
 
