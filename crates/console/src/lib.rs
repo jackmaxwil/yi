@@ -806,7 +806,8 @@ mod tests {
                     images: vec!["iVBORw0KGgo=".to_owned()],
                     ..crate::model::NbCell::default()
                 }],
-                input: Box::default(),
+                full: false,
+                drawn: None,
             };
         }
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
@@ -828,6 +829,49 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn v_on_the_notebook_shows_the_code_rows_its_cap_cut() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.state.zone = crate::model::Zone::Panes;
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Notebook {
+                session: None,
+                cells: vec![crate::model::NbCell {
+                    number: 1,
+                    code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
+                    ..crate::model::NbCell::default()
+                }],
+                full: false,
+                drawn: None,
+            };
+        }
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40))?;
+        let screen = |terminal: &Terminal<ratatui::backend::TestBackend>| -> String {
+            let cells = terminal.backend().buffer().content();
+            cells.iter().map(ratatui::buffer::Cell::symbol).collect()
+        };
+        draw(&mut app, &mut terminal, &theme)?;
+        let before = screen(&terminal);
+        assert!(before.contains("[…] code first 24 of 30 lines"), "{before}");
+        assert!(!before.contains("x30 = 30"), "{before}");
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-notebook-full-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        let v = ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Char('v'),
+        );
+        app.handle_event(&outbound, CtEvent::Key(v));
+        outbound.shutdown();
+        draw(&mut app, &mut terminal, &theme)?;
+        let after = screen(&terminal);
+        assert!(after.contains("x30 = 30"), "{after}");
+        assert!(!after.contains("[…]"), "{after}");
+        Ok(())
+    }
+
     /// Dies with an image written after the frame's update closed: a presented frame then
     /// showed it on its old rows over text that had moved, 19 times in one measured reply.
     #[test]
@@ -843,7 +887,8 @@ mod tests {
                     images: vec!["iVBORw0KGgo=".to_owned()],
                     ..crate::model::NbCell::default()
                 }],
-                input: Box::default(),
+                full: false,
+                drawn: None,
             };
         }
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;

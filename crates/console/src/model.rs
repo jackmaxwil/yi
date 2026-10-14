@@ -176,14 +176,20 @@ pub struct PendingAsk {
     pub options: Vec<AcpPermissionOption>,
 }
 
+pub const KEPT_CELLS: usize = 50;
+
 #[derive(Debug, Clone, Default)]
 pub struct NbCell {
     pub call_id: String,
+    /// Invariant: never renumbered, so the first kept cell's number is one past the drops.
+    pub number: usize,
     pub code: String,
     pub stdout: String,
+    pub stderr: String,
     pub result: Option<String>,
     pub error: Option<String>,
     pub images: Vec<String>,
+    pub duration_ms: Option<u64>,
     pub running: bool,
 }
 
@@ -205,7 +211,9 @@ pub enum PaneContent {
     Notebook {
         session: Option<SessionId>,
         cells: Vec<NbCell>,
-        input: Box<tui_textarea::TextArea<'static>>,
+        full: bool,
+        /// Invariant: the rows drawn at a width, cleared by every cell update and by `v`.
+        drawn: Option<(usize, Vec<ratatui::text::Line<'static>>)>,
     },
     SessionDiff {
         session: SessionId,
@@ -344,12 +352,6 @@ impl SessionDiff {
             (a.saturating_add(file.added), r.saturating_add(file.removed))
         })
     }
-}
-
-pub fn notebook_input() -> Box<tui_textarea::TextArea<'static>> {
-    let mut input = tui_textarea::TextArea::default();
-    input.set_placeholder_text("python · ⇧↩ runs on this session's kernel · esc cancels");
-    Box::new(input)
 }
 
 pub struct Pane {
