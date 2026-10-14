@@ -957,6 +957,10 @@ fn main() {
         eprintln!("error: __fds: {}", yi_browser::exec_on_pipe_fds(&args));
         std::process::exit(1);
     }
+    #[cfg(feature = "tui")]
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "__pty") {
+        std::process::exit(yi_console::pty::shim(std::env::args_os().skip(2)));
+    }
     doctor::early();
     update::early();
     plugin::early();
