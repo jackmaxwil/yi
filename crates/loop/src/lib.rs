@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod answer;
 pub mod config;
 pub mod interrupt;
 pub mod reasoning;
