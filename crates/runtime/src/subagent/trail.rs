@@ -159,7 +159,7 @@ impl Kept {
     pub(crate) fn get(&self, name: &str) -> Option<yi_session::SharedSession> {
         let mut children = self.0.lock().ok()?;
         let at = children.iter().position(|child| child.name == name)?;
-        let mut child = children.remove(at);
+        let child = children.get_mut(at)?;
         let store = if let Some(store) = child.held.clone() {
             store
         } else if let Some(store) = child.live.upgrade() {
@@ -171,6 +171,7 @@ impl Kept {
             store
         };
         child.held = Some(Arc::clone(&store));
+        let child = children.remove(at);
         children.push(child);
         trim(&mut children);
         Some(store)
@@ -275,6 +276,34 @@ mod tests {
         assert!(
             newest.upgrade().is_some(),
             "the most recent child was released"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_reopen_keeps_the_child_for_the_next_read() -> Outcome {
+        let root = crate::scratch::Scratch::new("yi-kept-reopen")?;
+        let mut repo = yi_session::JsonlRepo::new(root.to_path_buf(), "/work");
+        let kept = Kept::default();
+        let options = yi_session::CreateOptions {
+            id: None,
+            parent_session_id: None,
+            metadata: None,
+        };
+        let store = yi_session::SessionRepo::create(&mut repo, options)?;
+        yi_session::lock_session(&store).append_custom("main", "inbox", None)?;
+        let file = yi_session::lock_session(&store)
+            .file_path()
+            .cloned()
+            .ok_or("no file")?;
+        kept.keep("child".to_owned(), store);
+        let aside = file.with_extension("aside");
+        std::fs::rename(&file, &aside)?;
+        assert!(kept.get("child").is_none(), "a missing file reopened");
+        std::fs::rename(&aside, &file)?;
+        assert!(
+            kept.get("child").is_some(),
+            "a failed reopen dropped the child"
         );
         Ok(())
     }
