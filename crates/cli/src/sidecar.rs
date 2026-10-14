@@ -7,7 +7,9 @@ pub(crate) fn start(home: &Path) {
     else {
         return;
     };
-    let Some((host, port)) = loopback(&url) else {
+    let Some((host, port)) = yi_types::url::http_loopback_host_and_port(&url)
+        .and_then(|(host, port)| Some((host.to_owned(), port?.parse::<u16>().ok()?)))
+    else {
         return note(
             home,
             &format!(
@@ -25,7 +27,7 @@ pub(crate) fn start(home: &Path) {
     }
     let home = home.to_path_buf();
     std::thread::spawn(
-        move || match own(&home, &checkpoint, host, port, key.ok()) {
+        move || match own(&home, &checkpoint, &host, port, key.ok()) {
             Ok(Some(_child)) => loop {
                 std::thread::park();
             },
@@ -103,16 +105,4 @@ fn own(
         command.env("LAYA_API_KEY", key.expose());
     }
     command.spawn().map(Some)
-}
-
-fn loopback(url: &str) -> Option<(&'static str, u16)> {
-    let rest = url.strip_prefix("http://")?;
-    ["127.0.0.1", "localhost"].into_iter().find_map(|host| {
-        let port = rest
-            .strip_prefix(host)?
-            .strip_prefix(':')?
-            .split('/')
-            .next()?;
-        Some((host, port.parse().ok()?))
-    })
 }

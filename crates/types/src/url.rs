@@ -382,7 +382,7 @@ mod tests {
 pub fn http_loopback_host_and_port(url: &str) -> Option<(&str, Option<&str>)> {
     let authority = url
         .strip_prefix("http://")?
-        .split(['/', '?', '#'])
+        .split(['/', '?', '#', '\\'])
         .next()
         .unwrap_or("");
     let authority = authority.rsplit('@').next().unwrap_or("");
@@ -428,5 +428,13 @@ mod loopback_tests {
         );
         assert_eq!(http_loopback_host_and_port("https://localhost:1/"), None);
         assert_eq!(http_loopback_host_and_port("http://evil.com/"), None);
+        assert_eq!(
+            http_loopback_host_and_port("http://evil.com\\@localhost:8080/"),
+            None
+        );
+        assert_eq!(
+            http_loopback_host_and_port("http://127.0.0.1:8080\\help"),
+            Some(("127.0.0.1", Some("8080")))
+        );
     }
 }
