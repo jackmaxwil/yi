@@ -95,6 +95,9 @@ fn excluded(name: &str, root: bool) -> Option<&'static str> {
         "ipython" => {
             Some("a cell holds the kernel for its whole run, so a nested cell waits on itself")
         }
+        "answer" => {
+            Some("an answer ends the model's turn, and a cell's result is the model's to state")
+        }
         "ask_user" if root => Some(
             "a root's question ends the turn and its answer is the user's next message, which a cell cannot wait for",
         ),
