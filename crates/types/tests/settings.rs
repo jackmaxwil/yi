@@ -138,6 +138,7 @@ fn leaves() -> Vec<String> {
         ),
         ("permissions", fields!(PermissionsConfig { mode })),
         ("mail", fields!(MailConfig { hop_limit })),
+        ("routing", vec!["order", "only"]),
     ];
     top.into_iter()
         .flat_map(
