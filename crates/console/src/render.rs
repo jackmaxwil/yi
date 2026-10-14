@@ -524,6 +524,15 @@ fn notebook_lines(
                 theme.dim_style(),
             ));
         }
+        if cell.images_past_limit > 0 {
+            out.push(Line::styled(
+                format!(
+                    "  ▲ {} earlier image(s) dropped past the 4-image limit",
+                    cell.images_past_limit
+                ),
+                theme.dim_style(),
+            ));
+        }
         for image in &cell.images {
             let kb = image.len().saturating_mul(3) / 4 / 1024;
             out.push(Line::styled(
@@ -1117,6 +1126,29 @@ mod notebook_tests {
 
     fn text_of(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn a_count_dropped_image_is_not_blamed_on_the_size_cap() {
+        let theme = Theme::new(ColorTier::Ansi16, false);
+        let cell = NbCell {
+            call_id: "c1".to_owned(),
+            code: "plot()".to_owned(),
+            images_past_limit: 2,
+            ..Default::default()
+        };
+        let lines = notebook_lines(&[cell], 80, &theme, "ctrl-w");
+        let texts: Vec<String> = lines.iter().map(text_of).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("2 earlier image(s) dropped past the 4-image limit")),
+            "count drops name the count cap: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("64 KiB")),
+            "no size-cap claim: {texts:?}"
+        );
     }
 
     #[test]
