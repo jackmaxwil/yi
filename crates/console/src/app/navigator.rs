@@ -114,7 +114,8 @@ impl App {
                 let session = pane.session().cloned();
                 pane.content = PaneContent::Notebook {
                     session,
-                    input: crate::model::notebook_input(),
+                    full: false,
+                    drawn: None,
                 };
                 pane.scroll_from_bottom = 0;
             }

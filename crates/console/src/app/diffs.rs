@@ -230,7 +230,8 @@ impl App {
                 },
                 (_, session) => PaneContent::Notebook {
                     session,
-                    input: crate::model::notebook_input(),
+                    full: false,
+                    drawn: None,
                 },
             };
             pane.scroll_from_bottom = 0;
