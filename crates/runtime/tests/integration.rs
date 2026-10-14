@@ -14,6 +14,7 @@ mod usage_record;
 mod advisor_compaction;
 mod advisor_e2e;
 mod affordance;
+mod answer_turn;
 mod auto_review;
 mod branch_diff;
 mod breakpoints;
