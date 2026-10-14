@@ -49,22 +49,6 @@ pub(crate) fn result_preview(text: &str, details: &Value) -> Vec<String> {
     rows.into_iter().map(show_controls).collect()
 }
 
-/// What an `ask_user` result shows once answered: the question and the option labels on one
-/// row, without the sentence addressed to the model.
-pub(crate) fn asked_row(text: &str) -> Option<String> {
-    let mut lines = text.lines();
-    let question = lines.next()?.strip_prefix("Question for the user: ")?;
-    let labels: Vec<&str> = lines
-        .filter_map(|line| line.trim_start().split_once(". "))
-        .filter(|(number, _)| number.parse::<usize>().is_ok())
-        .map(|(_, rest)| rest.split_once(": ").map_or(rest, |(label, _)| label))
-        .collect();
-    match labels.is_empty() {
-        true => Some(question.to_owned()),
-        false => Some(format!("{question}  [{}]", labels.join(" · "))),
-    }
-}
-
 /// The head says what ran and the tail how it ended, and a command's error is
 /// in the tail — keeping ten head lines dropped the half worth reading.
 pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
@@ -136,6 +120,11 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
 }
 
 pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
+    if tool == "ask_user"
+        && let Some(question) = crate::question::Question::from_args(args)
+    {
+        return question.row();
+    }
     if tool == "edit" {
         let targets = args
             .get("patch")

@@ -99,7 +99,7 @@ pub fn tick(app: &App, out: &mut impl std::io::Write, state: &mut Tick) {
             let _ = kitty::transmit(out, id, &rgba(mask, kitty::INK_RGB), (PX, PX));
         }
         let placement = u32::try_from(placement.saturating_add(1)).unwrap_or(u32::MAX);
-        if kitty::place_nth(out, id, placement, col, row, COLS, 1).is_ok() {
+        if kitty::place_nth(out, id, (placement, 0), (col, row), (COLS, 1)).is_ok() {
             state.placed.push((id, col, row));
         }
     }
