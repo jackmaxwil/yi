@@ -5,9 +5,8 @@ use std::io::Write;
 
 use ratatui::layout::Rect;
 
-// Invariant: one placement is live at a time — the focused notebook's newest image, deleted
-// on any change. A second concurrent image needs an id per placement, not this constant.
-const IMAGE_ID: u32 = 7701;
+// Invariant (#817-era): ids come from the caller's reconcile, alternating so a repaint
+// deletes the id it replaced, never the one it just placed.
 const CHUNK: usize = 4096;
 
 pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
@@ -15,23 +14,27 @@ pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
         || term_program.is_some_and(|program| program == "ghostty")
 }
 
-/// Delete the previous placement, transmit the PNG, place it over `rect`. The payload is
-/// already base64, the wire form the kernel attachment carries, so nothing decodes here.
-pub fn place_png(out: &mut impl Write, base64_png: &str, rect: Rect) -> std::io::Result<()> {
-    write!(out, "\u{1b}_Ga=d,d=i,i={IMAGE_ID},q=2\u{1b}\\")?;
+/// Transmit the PNG and place `id` over `rect`. The payload is already base64, the wire
+/// form the kernel attachment carries, so nothing decodes here.
+pub fn place_png(
+    out: &mut impl Write,
+    id: u32,
+    base64_png: &str,
+    rect: Rect,
+) -> std::io::Result<()> {
     // Invariant (#817): a byte outside base64 could end this escape and start another; the
     // kernel refuses such data, but a session saved before it did still replays here.
     if !yi_types::image::is_strict_base64(base64_png) {
         return Ok(());
     }
-    transmit_base64(out, IMAGE_ID, base64_png)?;
+    transmit_base64(out, id, base64_png)?;
     let row = rect.y.saturating_add(1);
     let col = rect.x.saturating_add(1);
     let rows = rect.height.max(1);
     let cols = rect.width.max(1);
     write!(
         out,
-        "\u{1b}7\u{1b}[{row};{col}H\u{1b}_Ga=p,i={IMAGE_ID},r={rows},c={cols},q=2\u{1b}\\\u{1b}8"
+        "\u{1b}7\u{1b}[{row};{col}H\u{1b}_Ga=p,i={id},r={rows},c={cols},q=2\u{1b}\\\u{1b}8"
     )
 }
 
@@ -57,10 +60,6 @@ pub fn transmit_base64(out: &mut impl Write, id: u32, base64_png: &str) -> std::
     Ok(())
 }
 
-pub fn delete(out: &mut impl Write) -> std::io::Result<()> {
-    write!(out, "\u{1b}_Ga=d,d=i,i={IMAGE_ID},q=2\u{1b}\\")
-}
-
 #[cfg(test)]
 mod tests {
     /// Incident (#817): a notebook image carrying `ESC \ ESC]52;…BEL` ended the transmit
@@ -70,12 +69,8 @@ mod tests {
         let rect = ratatui::layout::Rect::new(0, 0, 10, 5);
         let mut out = Vec::new();
         let payload = "AAAA\u{1b}\\\u{1b}]52;c;ZWNobyBwd25lZA==\u{7}";
-        super::place_png(&mut out, payload, rect)?;
-        assert_eq!(
-            String::from_utf8_lossy(&out),
-            "\u{1b}_Ga=d,d=i,i=7701,q=2\u{1b}\\",
-            "only the delete of the image before it"
-        );
+        super::place_png(&mut out, 7701, payload, rect)?;
+        assert!(out.is_empty(), "no transmit or placement escape: {out:?}");
         Ok(())
     }
 
@@ -85,7 +80,7 @@ mod tests {
         let rect = ratatui::layout::Rect::new(0, 0, 10, 5);
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
         let mut out = Vec::new();
-        super::place_png(&mut out, png, rect)?;
+        super::place_png(&mut out, 7701, png, rect)?;
         let written = String::from_utf8_lossy(&out);
         assert!(
             written.contains(&format!("m=0;{png}\u{1b}\\")),
