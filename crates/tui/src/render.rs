@@ -578,7 +578,8 @@ pub fn paint_pane(
         area.height.saturating_sub(rows),
     );
     let placed = paint_chat(app, &layout, buffer, chat_area);
-    app.orb_placement = placed.orb;
+    app.orb_slot = placed.orb;
+    app.orb_placement = placed.orb.filter(|_| !app.title_cover);
     app.logo_rows = logo_rows(placed.bottom);
     app.card_at = placed
         .bottom
