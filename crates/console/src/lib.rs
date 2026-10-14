@@ -16,6 +16,7 @@ pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
+pub mod pty;
 pub mod render;
 pub mod select;
 pub mod settings;
@@ -70,6 +71,7 @@ pub enum ConsoleStep {
     Tui(Step),
     Mouse(MouseKind, u16, u16),
     Cmd(yi_tui::keymap::SingleKey),
+    Paste(String),
 }
 
 /// The drive harness speaks crossterm, so a script runs the same button mapping a terminal does.
@@ -131,6 +133,10 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             steps.push(ConsoleStep::Cmd(key));
             continue;
         }
+        if let Some(rest) = line.strip_prefix("paste ") {
+            steps.push(ConsoleStep::Paste(rest.to_owned()));
+            continue;
+        }
         let parsed = yi_tui::drive::parse_script(line).map_err(error)?;
         if parsed
             .iter()
@@ -145,7 +151,7 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     }
     yi_tui::drive::refuse_repeated_snaps(steps.iter().filter_map(|step| match step {
         ConsoleStep::Tui(step) => Some(step),
-        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) => None,
+        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) | ConsoleStep::Paste(_) => None,
     }))?;
     Ok(steps)
 }
@@ -267,6 +273,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx.clone());
     app.kitty = crate::kitty::supported(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -617,8 +624,9 @@ fn drive_idle(app: &App) -> bool {
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
     let (event_tx, events) = client::events();
-    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx);
+    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx);
     if drive
         .script
         .iter()
@@ -650,14 +658,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         return 1;
     }
 
-    let mut frame_index = 0_u32;
-    let mut last_frame = String::new();
+    let (mut frame_index, mut last_frame) = (0_u32, String::new());
     let mut steps = drive.script.into_iter();
     let mut current: Option<(ConsoleStep, Instant)> = None;
     let deadline = Deadline::new(drive.deadline_secs);
-    let mut exit_code = 0;
-    let mut type_ms = 0;
-    let mut pending_snap = None;
+    let (mut exit_code, mut type_ms, mut pending_snap) = (0, 0, None);
 
     while !app.state.quit {
         if deadline.passed() {
@@ -686,6 +691,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 event.modifiers |= ratatui::crossterm::event::KeyModifiers::SUPER;
                 app.handle_event(&outbound, CtEvent::Key(event));
             }
+            (ConsoleStep::Paste(text), _) => {
+                app.handle_event(&outbound, CtEvent::Paste(text.clone()));
+            }
             (ConsoleStep::Tui(Step::TypeMs(ms)), _) => type_ms = ms,
             (ConsoleStep::Tui(Step::Snap(name)), _) => pending_snap = Some(name),
             (ConsoleStep::Tui(Step::Tick(ms)), _) => tick(&mut app, &outbound, &events, ms),
@@ -707,11 +715,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     std::thread::sleep(Duration::from_millis(2));
                 }
             }
-            (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
+            step @ (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
                 match poll_condition(!drive_idle(&app), started, ms, "wait-idle") {
-                    WaitPoll::Retry => {
-                        current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
-                    }
+                    WaitPoll::Retry => current = Some(step),
                     WaitPoll::Failed(error) => {
                         eprintln!("error: {error}");
                         exit_code = 1;
