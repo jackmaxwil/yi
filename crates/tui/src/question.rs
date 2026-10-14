@@ -2,14 +2,15 @@
 //! in terminal cells and, on a kitty terminal, its panel, tiles and buttons in one image below.
 
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Bottom};
-use crate::chrome::{Canvas, Rgba, Rounded};
+use crate::chrome::{Canvas, Rgba, Rounded, cell_pixels, rgb};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey};
 use crate::orb::kitty;
@@ -23,38 +24,14 @@ const CARD_IDS: [u32; 2] = [7690, 7691];
 /// A side preview column needs room for tiles and a readable mock beside them.
 const WIDE: usize = 110;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Choice {
     label: String,
     description: Option<String>,
     preview: Option<String>,
 }
 
-impl Choice {
-    fn from_value(value: &Value) -> Option<Self> {
-        let text = |key: &str| {
-            let text = value.get(key)?.as_str()?.trim();
-            (!text.is_empty()).then(|| text.to_owned())
-        };
-        let label = match value {
-            Value::String(label) => Some(label.trim().to_owned()),
-            _ => text("label"),
-        }
-        .filter(|label| !label.is_empty())?;
-        let preview = value
-            .get("preview")
-            .and_then(Value::as_str)
-            .filter(|preview| !preview.trim().is_empty())
-            .map(|preview| preview.trim_end().to_owned());
-        Some(Self {
-            label,
-            description: text("description"),
-            preview,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Question {
     prompt: String,
     choices: Vec<Choice>,
@@ -64,14 +41,24 @@ impl Question {
     /// With no option it is an open question: the card is the answer field alone, already typing.
     pub(crate) fn from_args(args: &Value) -> Option<Self> {
         let prompt = args.get("question")?.as_str()?.trim().to_owned();
-        let choices: Vec<Choice> = args
-            .get("options")
-            .and_then(Value::as_array)
+        let choices = yi_runtime::auto_review::ask_options(args.get("options"))
             .into_iter()
-            .flatten()
-            .filter_map(Choice::from_value)
+            .map(|option| Choice {
+                label: option.label.to_owned(),
+                description: option.description.map(str::to_owned),
+                preview: option.preview.map(str::to_owned),
+            })
             .collect();
         (!prompt.is_empty()).then_some(Self { prompt, choices })
+    }
+
+    /// The one row an answered question leaves: what was asked and what it offered.
+    pub(crate) fn row(&self) -> String {
+        let labels: Vec<&str> = self.choices.iter().map(|c| c.label.as_str()).collect();
+        match labels.is_empty() {
+            true => self.prompt.clone(),
+            false => format!("{}  [{}]", self.prompt, labels.join(" · ")),
+        }
     }
 }
 
@@ -109,31 +96,16 @@ impl Row {
         if col < self.at || col >= limit {
             return;
         }
-        let shown = cut(text, limit.saturating_sub(col));
+        let over = text.width().saturating_sub(limit.saturating_sub(col));
+        let shown = match over {
+            0 => text.to_owned(),
+            over => crate::status::clip_cells(text, over),
+        };
         self.spans
             .push(Span::raw(" ".repeat(col.saturating_sub(self.at))));
         self.at = col.saturating_add(shown.width());
         self.spans.push(Span::styled(shown, style));
     }
-}
-
-/// `text` within `room` columns, ending in `…` where it was cut.
-fn cut(text: &str, room: usize) -> String {
-    if text.width() <= room {
-        return text.to_owned();
-    }
-    let mut kept = String::new();
-    let mut used = 0usize;
-    for c in text.chars() {
-        let wide = c.width().unwrap_or(0);
-        if used.saturating_add(wide) >= room {
-            break;
-        }
-        used = used.saturating_add(wide);
-        kept.push(c);
-    }
-    kept.push('…');
-    kept
 }
 
 fn piece(part: Part, col: usize, row: usize, cols: usize, rows: usize) -> Piece {
@@ -146,6 +118,7 @@ fn piece(part: Part, col: usize, row: usize, cols: usize, rows: usize) -> Piece 
     }
 }
 
+#[derive(Hash)]
 pub(crate) struct QuestionView {
     questions: Vec<Question>,
     page: usize,
@@ -247,19 +220,30 @@ impl QuestionView {
             "⌄  ✕"
         };
         let controls_at = right.saturating_sub(controls.width());
-        head.put(
-            col,
-            &question.prompt,
-            text.add_modifier(bold),
-            controls_at.saturating_sub(2),
-        );
-        head.put(
-            controls_at,
-            controls,
-            theme.muted_style(),
-            right.saturating_add(1),
-        );
-        rows.push(head);
+        let room = controls_at.saturating_sub(2);
+        let prompt = Line::raw(question.prompt.clone());
+        let wrapped = crate::wrap::wrap_line(&prompt, room.saturating_sub(col).max(1), "");
+        for (at, line) in wrapped.iter().enumerate() {
+            let words: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            let mut row = match at {
+                0 => std::mem::take(&mut head),
+                _ => Row::default(),
+            };
+            row.put(col, &words, text.add_modifier(bold), room);
+            if at == 0 {
+                row.put(
+                    controls_at,
+                    controls,
+                    theme.muted_style(),
+                    right.saturating_add(1),
+                );
+            }
+            rows.push(row);
+        }
 
         if !self.collapsed {
             rows.push(Row::default());
@@ -393,7 +377,8 @@ impl QuestionView {
         rows.push(Row::default());
         if wide {
             let pane = tile_at.saturating_add(tile_cols).saturating_add(1);
-            let span = rows.len().saturating_sub(first).saturating_sub(1);
+            let end = rows.len().saturating_sub(1);
+            let span = end.saturating_sub(first);
             pieces.push(piece(
                 Part::Preview,
                 pane,
@@ -404,7 +389,7 @@ impl QuestionView {
             let chosen = question.choices.get(self.cursor);
             side_preview(
                 chosen,
-                rows.get_mut(first..).unwrap_or_default(),
+                rows.get_mut(first..end).unwrap_or_default(),
                 pane.saturating_add(2),
                 right,
                 theme,
@@ -472,8 +457,10 @@ fn preview_rows(choice: &Choice, room: usize) -> (Vec<&str>, usize) {
     (all.into_iter().take(kept).collect(), total)
 }
 
+/// The cut row goes under the [`PREVIEW_LINES`] kept, so the card's cap is what it says.
 fn inline_preview(choice: &Choice, left: usize, end: usize, theme: &Theme) -> Vec<Row> {
-    let (kept, total) = preview_rows(choice, PREVIEW_LINES.saturating_add(1));
+    let (mut kept, total) = preview_rows(choice, usize::MAX);
+    kept.truncate(PREVIEW_LINES);
     let mut rows: Vec<Row> = kept
         .iter()
         .map(|line| {
@@ -608,32 +595,20 @@ impl App {
     }
 
     /// Opens at the turn's end: `ask_user` ends the turn, so the card never races a stream.
+    /// Another view up keeps the questions until it closes.
     pub(crate) fn open_questions(&mut self) {
-        let asked = std::mem::take(&mut self.asked);
-        if self.bottom.is_none() && !asked.is_empty() {
+        if self.bottom.is_none() && !self.asked.is_empty() {
+            let asked = std::mem::take(&mut self.asked);
             self.bottom = Some(Bottom::Question(QuestionView::new(asked, self.kitty)));
             self.scheduler.request();
         }
     }
 }
 
-fn rgb(color: ratatui::style::Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
-    match color {
-        ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
-        _ => fallback,
-    }
-}
-
 /// The chrome in pixels for cells of `cell` size: light ink over a dark ground and the reverse,
 /// alpha only, so the terminal's own background shows through every surface.
-pub(crate) fn paint(
-    pieces: &[Piece],
-    (cols, rows): (usize, usize),
-    cell: (usize, usize),
-    theme: &Theme,
-) -> Canvas {
-    let (cw, ch) = (cell.0 as f32, cell.1 as f32);
-    let mut canvas = Canvas::new(cols.saturating_mul(cell.0), rows.saturating_mul(cell.1));
+fn paint(canvas: &mut Canvas, pieces: &[Piece], cell: (usize, usize), theme: &Theme) {
+    let (cw, ch) = (cell.0 as f64, cell.1 as f64);
     let ink = |alpha: u8| match theme.dark {
         true => Rgba(255, 255, 255, alpha),
         false => Rgba(0, 0, 0, alpha),
@@ -647,10 +622,10 @@ pub(crate) fn paint(
     let accent = |alpha: u8| Rgba(ar, ag, ab, alpha);
     for piece in pieces {
         let cells = Rounded {
-            x: piece.col as f32 * cw,
-            y: piece.row as f32 * ch,
-            width: piece.cols as f32 * cw,
-            height: piece.rows as f32 * ch,
+            x: piece.col as f64 * cw,
+            y: piece.row as f64 * ch,
+            width: piece.cols as f64 * cw,
+            height: piece.rows as f64 * ch,
             radius: 0.0,
         };
         let line = (ch / 18.0).max(1.0);
@@ -735,37 +710,76 @@ pub(crate) fn paint(
             }
         }
     }
-    canvas
+}
+
+/// The pixels the pieces in one list and not the other cover, a cell of margin around each
+/// for a tile's overhang and its stroke; `None` when the lists hold the same pieces.
+fn dirty(old: &[Piece], new: &[Piece], (cw, ch): (usize, usize)) -> Option<[Range<usize>; 2]> {
+    let gone = old.iter().filter(|piece| !new.contains(piece));
+    let changed = gone.chain(new.iter().filter(|piece| !old.contains(piece)));
+    changed.fold(None, |rect: Option<[Range<usize>; 2]>, piece| {
+        let span = |at: usize, len: usize, size: usize| {
+            at.saturating_sub(1).saturating_mul(size)
+                ..at.saturating_add(len)
+                    .saturating_add(1)
+                    .saturating_mul(size)
+        };
+        let [x, y] = [
+            span(piece.col, piece.cols, cw),
+            span(piece.row, piece.rows, ch),
+        ];
+        Some(match rect {
+            None => [x, y],
+            Some([rx, ry]) => [
+                rx.start.min(x.start)..rx.end.max(x.end),
+                ry.start.min(y.start)..ry.end.max(y.end),
+            ],
+        })
+    })
 }
 
 /// Where the card's image was last placed and what it showed, so an unchanged card re-places
 /// nothing and a moved one re-places without repainting.
-#[derive(Default)]
 pub struct CardTick {
+    ids: [u32; 2],
     front: usize,
     shown: bool,
     painted: Option<u64>,
     at: Option<(u16, u16)>,
+    size: (u16, u16),
+    /// The panel alone and the last image, so a key repaints only the pieces it changed.
+    base: Option<(u64, Canvas)>,
+    last: Option<(Vec<Piece>, Canvas)>,
 }
 
-fn cell_pixels() -> Option<(usize, usize)> {
-    let size = ratatui::crossterm::terminal::window_size().ok()?;
-    if size.columns == 0 || size.rows == 0 || size.width == 0 || size.height == 0 {
-        return None;
+impl Default for CardTick {
+    fn default() -> Self {
+        Self::with_ids(CARD_IDS)
     }
-    Some((
-        usize::from(size.width) / usize::from(size.columns),
-        usize::from(size.height) / usize::from(size.rows),
-    ))
+}
+
+impl CardTick {
+    pub fn with_ids(ids: [u32; 2]) -> Self {
+        Self {
+            ids,
+            front: 0,
+            shown: false,
+            painted: None,
+            at: None,
+            size: (0, 0),
+            base: None,
+            last: None,
+        }
+    }
 }
 
 pub fn hide(out: &mut impl std::io::Write, state: &mut CardTick) {
     if state.shown {
-        for id in CARD_IDS {
+        for id in state.ids {
             let _ = kitty::delete_id(out, id);
         }
     }
-    *state = CardTick::default();
+    *state = CardTick::with_ids(state.ids);
 }
 
 pub fn tick(app: &App, out: &mut impl std::io::Write, state: &mut CardTick) {
@@ -787,36 +801,58 @@ pub fn tick_with(
     else {
         return hide(out, state);
     };
-    let (lines, pieces) = view.card(app.width, &app.theme);
-    let (cols, rows) = (app.width, lines.len());
+    // Incident: the loop ticks on every idle wake, so the layout runs only when its inputs change.
     let mut hasher = std::hash::DefaultHasher::new();
-    (&pieces, cell, cols, rows, app.theme.dark).hash(&mut hasher);
+    (view, app.width, cell, app.theme.dark).hash(&mut hasher);
     let key = hasher.finish();
-    let (Ok(cols16), Ok(rows16)) = (u16::try_from(cols), u16::try_from(rows)) else {
-        return hide(out, state);
+    let [first, second] = state.ids;
+    let (front_id, back_id) = match state.front {
+        0 => (first, second),
+        _ => (second, first),
     };
     if state.painted == Some(key) {
         if state.at != Some(at) {
-            let id = CARD_IDS.get(state.front).copied().unwrap_or(CARD_IDS[0]);
-            let _ = kitty::place_under(out, id, at.0, at.1, cols16, rows16);
+            let _ = kitty::place_nth(out, front_id, (1, -1), at, state.size);
             state.at = Some(at);
         }
         return;
     }
-    let back = 1usize.saturating_sub(state.front);
-    let (Some(&back_id), Some(&front_id)) = (CARD_IDS.get(back), CARD_IDS.get(state.front)) else {
-        return;
+    let (lines, pieces) = view.card(app.width, &app.theme);
+    let (cols, rows) = (app.width, lines.len());
+    let (Ok(cols16), Ok(rows16)) = (u16::try_from(cols), u16::try_from(rows)) else {
+        return hide(out, state);
     };
-    let canvas = paint(&pieces, (cols, rows), cell, &app.theme);
+    let mut hasher = std::hash::DefaultHasher::new();
+    (cols, rows, cell, app.theme.dark).hash(&mut hasher);
+    let base_key = hasher.finish();
+    let (panel, rest) = pieces.split_at(pieces.len().min(1));
+    let canvas = match (state.base.take(), state.last.take()) {
+        (Some((key, base)), Some((old, mut canvas))) if key == base_key => {
+            if let Some(rect) = dirty(&old, &pieces, cell) {
+                canvas.restore(&base, rect);
+                paint(&mut canvas, rest, cell, &app.theme);
+            }
+            state.base = Some((key, base));
+            canvas
+        }
+        _ => {
+            let mut base = Canvas::new(cols.saturating_mul(cell.0), rows.saturating_mul(cell.1));
+            paint(&mut base, panel, cell, &app.theme);
+            let mut canvas = base.clone();
+            paint(&mut canvas, rest, cell, &app.theme);
+            state.base = Some((base_key, base));
+            canvas
+        }
+    };
     let _ = kitty::transmit(out, back_id, &canvas.pixels, (canvas.width, canvas.height));
-    let _ = kitty::place_under(out, back_id, at.0, at.1, cols16, rows16);
+    let _ = kitty::place_nth(out, back_id, (1, -1), at, (cols16, rows16));
     if state.shown {
         let _ = kitty::delete_id(out, front_id);
     }
-    *state = CardTick {
-        front: back,
-        shown: true,
-        painted: Some(key),
-        at: Some(at),
-    };
+    state.front = 1usize.saturating_sub(state.front);
+    state.shown = true;
+    state.painted = Some(key);
+    state.at = Some(at);
+    state.size = (cols16, rows16);
+    state.last = Some((pieces, canvas));
 }

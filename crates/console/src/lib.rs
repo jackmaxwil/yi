@@ -496,7 +496,10 @@ fn place_chat_orbs(
                 _ => false,
             });
         if !kept {
-            for id in crate::app::orb_ids(*pane) {
+            for id in crate::app::orb_ids(*pane)
+                .into_iter()
+                .chain(crate::app::card_ids(*pane))
+            {
                 let _ = yi_tui::orb::kitty::delete_id(out, id);
             }
         }

@@ -22,6 +22,8 @@ use crate::layout::PaneId;
 use crate::model::{Chat, PaneContent, PendingAsk, SessionId, SessionRow};
 
 const ORB_ID_BASE: u32 = 7800;
+/// Below every other kitty id (the solo orb's 7601 is the lowest) for the first 200 panes.
+const CARD_ID_BASE: u32 = 7200;
 
 const CHILD_ROW_CAP: usize = 32;
 
@@ -49,13 +51,19 @@ pub(crate) fn orb_ids(pane: PaneId) -> [u32; 2] {
     [base, base.saturating_add(1)]
 }
 
+/// Incident: one id pair for every pane let a hidden pane's card delete the focused pane's.
+pub(crate) fn card_ids(pane: PaneId) -> [u32; 2] {
+    let base = CARD_ID_BASE.saturating_add(pane.raw().saturating_mul(2));
+    [base, base.saturating_add(1)]
+}
+
 impl App {
     pub(super) fn chat_for(&mut self, pane_id: PaneId, session: &SessionId) -> Box<Chat> {
         match self.state.parked.remove(session) {
             Some(mut chat) => {
                 chat.orb = yi_tui::orb::Tick::with_ids(orb_ids(pane_id));
                 chat.logos = yi_tui::logos::Tick::default();
-                chat.card = yi_tui::question::CardTick::default();
+                chat.card = yi_tui::question::CardTick::with_ids(card_ids(pane_id));
                 chat
             }
             None => self.make_chat(pane_id, session),
@@ -87,7 +95,7 @@ impl App {
             orb: yi_tui::orb::Tick::with_ids(orb_ids(pane_id)),
             phase: 0,
             logos: yi_tui::logos::Tick::default(),
-            card: yi_tui::question::CardTick::default(),
+            card: yi_tui::question::CardTick::with_ids(card_ids(pane_id)),
             ask: None,
             events: std::sync::mpsc::channel(),
             commands: command_channel(),
