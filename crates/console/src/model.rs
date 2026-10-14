@@ -426,7 +426,7 @@ pub struct ConsoleState {
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
     pub parked: BTreeMap<SessionId, Box<Chat>>,
     pub chrome: crate::browser::Chrome,
-    pub browser_placed: BTreeMap<PaneId, crate::placed::Placed>,
+    pub browser_placed: BTreeMap<PaneId, crate::browser::Placed>,
 }
 
 impl ConsoleState {

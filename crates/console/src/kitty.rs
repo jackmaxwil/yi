@@ -1,5 +1,5 @@
-//! Kitty graphics for the notebook and browser panes: base64 PNG payloads go out as `f=100` transmits and
-//! a cell-rect placement, inside the synchronized frame so image and text land together.
+//! Kitty graphics for the notebook and browser panes: base64 PNG payloads go out as `f=100`
+//! transmits and a cell-rect placement, inside the synchronized frame with the text.
 
 use std::io::Write;
 
@@ -10,10 +10,6 @@ use ratatui::layout::Rect;
 const IMAGE_ID: u32 = 7701;
 const CHUNK: usize = 4096;
 
-pub fn image_id() -> u32 {
-    IMAGE_ID
-}
-
 pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
     term.is_some_and(|term| term.contains("kitty") || term.contains("ghostty"))
         || term_program.is_some_and(|program| program == "ghostty")
@@ -23,9 +19,12 @@ pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
 /// already base64, the wire form the kernel attachment carries, so nothing decodes here.
 pub fn place_png(out: &mut impl Write, base64_png: &str, rect: Rect) -> std::io::Result<()> {
     write!(out, "\u{1b}_Ga=d,d=i,i={IMAGE_ID},q=2\u{1b}\\")?;
-    if !transmit_png(out, IMAGE_ID, base64_png)? {
+    // Invariant (#817): a byte outside base64 could end this escape and start another; the
+    // kernel refuses such data, but a session saved before it did still replays here.
+    if !yi_types::image::is_strict_base64(base64_png) {
         return Ok(());
     }
+    transmit_base64(out, IMAGE_ID, base64_png)?;
     let row = rect.y.saturating_add(1);
     let col = rect.x.saturating_add(1);
     let rows = rect.height.max(1);
@@ -34,17 +33,6 @@ pub fn place_png(out: &mut impl Write, base64_png: &str, rect: Rect) -> std::io:
         out,
         "\u{1b}7\u{1b}[{row};{col}H\u{1b}_Ga=p,i={IMAGE_ID},r={rows},c={cols},q=2\u{1b}\\\u{1b}8"
     )
-}
-
-/// Transmits base64 PNG under `id` with no placement; false when it was refused unsent.
-pub fn transmit_png(out: &mut impl Write, id: u32, base64_png: &str) -> std::io::Result<bool> {
-    // Invariant (#817): a byte outside base64 could end this escape and start another; the
-    // kernel refuses such data, but a session saved before it did still replays here.
-    if !yi_types::image::is_strict_base64(base64_png) {
-        return Ok(false);
-    }
-    transmit_base64(out, id, base64_png)?;
-    Ok(true)
 }
 
 /// Transmits base64 its caller already checked with [`yi_types::image::is_strict_base64`].
