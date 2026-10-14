@@ -183,6 +183,8 @@ pub struct App {
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
+    pub(crate) title_cover: bool,
+    pub(crate) orb_slot: Option<(u16, u16)>,
     /// Where the picker's first model row sits, set by the last paint; the logo slot column.
     pub(crate) logo_rows: Option<(u16, u16)>,
     pub(crate) card_at: Option<(u16, u16)>,
@@ -227,14 +229,13 @@ pub struct App {
     pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
 
-pub use crate::frame::next_spinner_wake;
-
 mod asks;
 mod bridge;
 mod children;
 mod clock;
 mod stream;
 
+pub use crate::frame::next_spinner_wake;
 pub(crate) use asks::mail_source;
 pub use bridge::forward;
 pub(crate) use bridge::spawn_runtime_bridge;
@@ -310,6 +311,8 @@ impl App {
             user_turns: 0,
             mode: TranscriptMode::default(),
             kitty: false,
+            title_cover: false,
+            orb_slot: None,
             logo_rows: None,
             card_at: None,
             orb_placement: None,
