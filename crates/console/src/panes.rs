@@ -502,8 +502,8 @@ pub fn notebook_lines(
             ));
         }
         for size in &cell.images_dropped {
-            let what = format!("image {} KB png dropped", size.saturating_mul(3) / 4 / 1024);
-            let cap = format!("notebook cap {} KiB", crate::model::IMAGE_CAP / 1024);
+            let what = format!("image {size} B base64 dropped");
+            let cap = format!("notebook cap {} B", crate::model::IMAGE_CAP);
             out.push(cap_row(&what, &cap, "the transcript holds it", theme));
         }
         if cell.images_past_limit > 0 {
