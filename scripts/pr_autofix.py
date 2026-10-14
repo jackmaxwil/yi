@@ -782,7 +782,7 @@ def render(n, fields, verdict, reason="", status="", meter=None):
                   fields["summary"]]
     elif verdict == "declined":
         lines += [f"**Autofix declined** every finding of review round {fields['round']} with a reason and changed "
-                  "nothing; a person decides, and the fixer waits for a new round or head.", "", "```", reason.strip(), "```"]
+                  "nothing; a person decides, and the fixer waits for a new round, a new head or `just pr autofix N`.", "", "```", reason.strip(), "```"]
     elif verdict == "deferred":
         lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
@@ -855,11 +855,12 @@ def attempt(repo, pr, ids, asked=False):
     if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
         blocked = False
     conflicted = conflicts_of(pr["base"]["ref"], pr["head"]["sha"])
-    # A round the fixer declined whole on this head waits for a person, a new round or a new head.
-    if blocked and not conflicted and any(
+    # A round the fixer declined whole on this head waits for a person, a new round, a new head or
+    # an explicit `just pr autofix N`.
+    if blocked and not conflicted and not asked and any(
             row["kind"] == "yi-autofix" and row.get("verdict") == "declined" and row.get("from") == pr["head"]["sha"][:12]
             and row.get("round") == str(rnd["n"]) for row in bot_meter.rows(notes)):
-        return "declined"
+        return "waiting"
     lanes = [] if conflicted or blocked else red_lanes(repo, pr["head"]["sha"])
     said = decide(labels, conflicted, quiet_for(pr, notes, time.time()), asked, blocked, bool(lanes))
     if said == "clean" and "autofix" in labels:
@@ -982,7 +983,7 @@ def cmd_autofix(args):
         said = attempt(repo, pr, ids)
         # Incident: a PR already labelled failed answered "failed" here too, so three of them
         # filled every pass's quota with skips and no other PR was tried for a day.
-        fixed += said in ("pushed", "failed", "missed", "moved")
+        fixed += said in ("pushed", "failed", "missed", "moved", "declined")
         print(f"#{pr['number']}: {said}")
         # A missed tier climbs in this pass, not 15 minutes and a queue later: #1187 took four passes.
         if said != "missed":
@@ -1410,6 +1411,10 @@ def selfcheck():
         attempt("o/r", draft, {})
         if passed.get("kind") is not None:
             errs.append("a round the fixer declined whole on this head was handed to the model again")
+        attempt("o/r", draft, {}, asked=True)
+        if passed.get("kind") != "findings":
+            errs.append("`just pr autofix N` could not retry a round the fixer had declined whole")
+        passed.clear()
         pr_review.rounds_of = lambda *a: [{"n": 3, "sha": "abc", "verdict": "blocked", "findings": []}]
         passed.clear()
         attempt("o/r", draft, {})
