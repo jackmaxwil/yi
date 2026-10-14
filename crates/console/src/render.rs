@@ -127,13 +127,16 @@ impl Hits {
     /// The control under the pointer; a move redraws only when this changes. A close mark is
     /// hovered here but pressed apart, since it closes on a release that did not drag.
     pub fn hover_at(&self, x: u16, y: u16) -> Option<Rect> {
-        let at = ratatui::layout::Position::new(x, y);
-        let closer = self
-            .closers
-            .iter()
-            .map(|(_, rect)| *rect)
-            .find(|r| r.contains(at));
+        let closer = self.closer_at(x, y).map(|(_, rect)| rect);
         self.hit_at(x, y).map(|(rect, _)| rect).or(closer)
+    }
+
+    pub fn closer_at(&self, x: u16, y: u16) -> Option<(PaneId, Rect)> {
+        let at = ratatui::layout::Position::new(x, y);
+        self.closers
+            .iter()
+            .find(|(_, rect)| rect.contains(at))
+            .copied()
     }
 }
 

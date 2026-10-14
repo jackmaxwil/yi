@@ -103,12 +103,7 @@ impl App {
     }
 
     fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {
-        let hits = self.hits.as_ref()?;
-        let (pane, _) = hits
-            .closers
-            .iter()
-            .find(|(_, rect)| rect.contains(Position::new(x, y)))?;
-        Some(*pane)
+        self.hits.as_ref()?.closer_at(x, y).map(|(pane, _)| pane)
     }
 
     fn press(&mut self, outbound: &Outbound, x: u16, y: u16) {
