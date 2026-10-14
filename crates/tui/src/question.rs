@@ -127,7 +127,6 @@ pub(crate) struct QuestionView {
     page: usize,
     cursor: usize,
     typing: bool,
-    collapsed: bool,
     kitty: bool,
     other: String,
     answers: Vec<String>,
@@ -143,7 +142,6 @@ impl QuestionView {
             page: 0,
             cursor: 0,
             typing: open,
-            collapsed: false,
             kitty,
             other: String::new(),
             answers: Vec::new(),
@@ -222,13 +220,7 @@ impl QuestionView {
             );
             col = col.saturating_add(chip.width()).saturating_add(1);
         }
-        let controls = if self.collapsed {
-            "⌃  ✕"
-        } else {
-            "⌄  ✕"
-        };
-        let controls_at = right.saturating_sub(controls.width());
-        let room = controls_at.saturating_sub(2);
+        let room = right.saturating_sub(2);
         let prompt = Line::raw(question.prompt.clone());
         let wrapped = crate::wrap::wrap_line(&prompt, room.saturating_sub(col).max(1), "");
         for (at, line) in wrapped.iter().enumerate() {
@@ -242,23 +234,13 @@ impl QuestionView {
                 _ => Row::default(),
             };
             row.put(col, &words, text.add_modifier(bold), room);
-            if at == 0 {
-                row.put(
-                    controls_at,
-                    controls,
-                    theme.muted_style(),
-                    right.saturating_add(1),
-                );
-            }
             rows.push(row);
         }
 
-        if !self.collapsed {
-            rows.push(Row::default());
-            self.tiles(question, width, theme, pictured, &mut rows, &mut pieces);
-            rows.push(self.footer(question, left, right, theme, &mut pieces, rows.len()));
-            rows.push(Row::default());
-        }
+        rows.push(Row::default());
+        self.tiles(question, width, theme, pictured, &mut rows, &mut pieces);
+        rows.push(self.footer(question, left, right, theme, &mut pieces, rows.len()));
+        rows.push(Row::default());
         let panel = piece(Part::Panel, 1, 0, width.saturating_sub(2), rows.len());
         pieces.insert(0, panel);
         let lines = rows.into_iter().map(|row| Line::from(row.spans)).collect();
@@ -422,7 +404,7 @@ impl QuestionView {
         let keys = question.choices.len().saturating_add(1);
         let hint = match self.typing {
             true => "⏎ send · esc back".to_owned(),
-            false => format!("1-{keys} choose · ↑↓ move · tab hide · esc close"),
+            false => format!("1-{keys} choose · ↑↓ move · esc close"),
         };
         let mut foot = Row::default();
         foot.put(left, &hint, theme.dim_style(), skip_at.saturating_sub(3));
@@ -566,15 +548,11 @@ impl BottomView for QuestionView {
         }
         match key.code {
             KeyCodeValue::Esc => PopupResult::Close,
-            KeyCodeValue::Tab => {
-                self.collapsed = !self.collapsed;
-                PopupResult::Open
-            }
             KeyCodeValue::Up => {
                 self.cursor = self.cursor.saturating_sub(1);
                 PopupResult::Open
             }
-            KeyCodeValue::Down => {
+            KeyCodeValue::Down | KeyCodeValue::Tab => {
                 self.cursor = self.cursor.saturating_add(1).min(others);
                 PopupResult::Open
             }
@@ -851,7 +829,17 @@ pub fn tick_with(
     let base_key = hasher.finish();
     let (panel, rest) = pieces.split_at(pieces.len().min(1));
     let canvas = match (state.base.take(), state.last.take()) {
-        (Some((key, base)), Some((old, mut canvas))) if key == base_key => {
+        (Some((key, base)), Some((old, canvas))) if key == base_key => {
+            if dirty(&old, &pieces, cell).is_none()
+                && state.at == Some(at)
+                && state.size == (cols16, rows16)
+            {
+                state.base = Some((key, base));
+                state.last = Some((pieces, canvas));
+                state.painted = Some(key);
+                return;
+            }
+            let mut canvas = canvas;
             if let Some(rect) = dirty(&old, &pieces, cell) {
                 canvas.restore(&base, rect);
                 paint(&mut canvas, rest, cell, &app.theme);

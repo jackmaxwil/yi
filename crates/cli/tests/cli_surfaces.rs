@@ -2295,6 +2295,52 @@ fn a_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
     Ok(())
 }
 
+/// Dies with the CLI's unattended wiring dropped from `main`: an unattended `ask` run whose
+/// model calls `ask_user` must resolve to the default and go on, not end its turn at a
+/// question nobody can answer.
+#[test]
+fn an_unattended_run_answers_ask_user_with_the_default_and_goes_on() -> TestResult {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason::{Stop, ToolUse};
+    let alone = Workspace::new("unattended-ask-user")?;
+    let question = json!({
+        "question": "Ship it now or hold for the report?",
+        "options": [{"label": "Ship it"}, {"label": "Hold"}],
+        "default": "Ship it"
+    });
+    let runs = [
+        (
+            vec![faux_tool_call(
+                "c0",
+                "ask_user",
+                question.as_object().cloned().unwrap_or_default(),
+            )],
+            ToolUse,
+        ),
+        (
+            vec![faux_text("Went with the default and carried on.")],
+            Stop,
+        ),
+    ];
+    let lines = runs
+        .into_iter()
+        .map(|(content, stop)| serde_json::to_string(&faux_assistant_message(content, stop)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let script = alone.project().join("script.jsonl");
+    std::fs::write(&script, lines.join("\n"))?;
+    let script = script.display().to_string();
+    let answered = ask(&alone, "ship or hold", &["--faux", &script])?;
+    let said = String::from_utf8_lossy(&answered.stderr).into_owned();
+    assert_eq!(answered.status.code(), Some(0), "{said}");
+    let out = stdout(&answered);
+    assert!(
+        out.contains("Went with the default and carried on."),
+        "{out}"
+    );
+    assert!(told_it_is_alone(&alone)?);
+    Ok(())
+}
+
 /// Dies with the bare-words spelling (`yi build the report`), which runs the same ask path
 /// with `command` set to its first word, told nothing.
 #[test]

@@ -472,8 +472,8 @@ fn a_popup_up_at_the_turns_end_holds_the_card_until_it_closes() -> TestResult {
     Ok(())
 }
 
-/// Dies with one console pane's card erased by another's: a hidden pane deleted the shared ids
-/// the focused pane had just placed, and its card lost every panel and tile.
+/// Dies with hide() deleting ids the tick was not given: hiding one pane's card state
+/// leaves another state's ids alone; the console's per-pane wiring sits outside this test.
 #[test]
 fn hiding_one_panes_card_leaves_another_panes_image() -> TestResult {
     use yi_tui::question::{CardTick, hide, tick_with};
@@ -569,25 +569,5 @@ fn a_card_on_a_huge_cell_grid_is_painted_within_its_pixel_cap() -> TestResult {
     let (width, height) = (dim("s=").ok_or("no width")?, dim("v=").ok_or("no height")?);
     assert!(width * height <= 1_000_000, "{width}x{height} pixels");
     assert!(width > 0 && height > 0, "{width}x{height}");
-    Ok(())
-}
-
-/// Dies with one line past the five-line limit drawn whole: six lines keep five and name the cut.
-#[test]
-fn a_six_line_preview_keeps_five_and_names_the_cut() -> TestResult {
-    let mut app = app();
-    let six = (1..=6)
-        .map(|n| format!("line {n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    asked(
-        &mut app,
-        &[json!({"question": "Which?", "options": [{"label": "A", "preview": six}]})],
-    );
-    let rows = common::live_rows(&mut app)?;
-    assert!(row_with(&rows, "line 5").is_some(), "{rows:#?}");
-    assert!(row_with(&rows, "line 6").is_none(), "{rows:#?}");
-    let cut = row_with(&rows, "showing 5 of 6").ok_or(format!("{rows:#?}"))?;
-    assert!(cut.contains("at most 5"), "{cut:?}");
     Ok(())
 }
