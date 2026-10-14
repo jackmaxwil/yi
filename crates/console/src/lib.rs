@@ -602,13 +602,11 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
         want,
         &mut app.notebook_image,
         &mut |_: (), old: Option<u32>| old.map_or(0, |old| (old + 1) % 2),
-        &mut |_: (), rect: ratatui::layout::Rect, image: &&String, _: u32| {
-            let mut out = out.borrow_mut();
-            crate::kitty::place_png(&mut *out, image.as_str(), rect).is_ok()
+        &mut |_: (), rect: ratatui::layout::Rect, image: &&String, id: u32| {
+            crate::kitty::place_png(&mut *out.borrow_mut(), id, image.as_str(), rect).is_ok()
         },
-        &mut |_: (), _: u32| {
-            let mut out = out.borrow_mut();
-            let _ = crate::kitty::delete(&mut *out);
+        &mut |_: (), id: u32| {
+            let _ = yi_tui::orb::kitty::delete_id(&mut *out.borrow_mut(), id);
         },
     );
 }
@@ -861,6 +859,53 @@ mod tests {
         outbound.shutdown();
         draw(&mut app, &mut terminal, &theme)?;
         assert!(placed(&mut app), "placed again after the clear");
+        Ok(())
+    }
+
+    /// Round-9 review (#1386): a changed notebook image placed the new id and then
+    /// deleted it, so the image vanished after the first content change.
+    #[test]
+    fn a_changed_notebook_image_places_and_keeps_the_new_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Notebook {
+                session: None,
+                cells: vec![crate::model::NbCell {
+                    images: vec!["iVBORw0KGgo=".to_owned()],
+                    ..crate::model::NbCell::default()
+                }],
+                full: false,
+                drawn: None,
+            };
+        }
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let stream = |app: &mut App| {
+            let mut out = Vec::new();
+            place_notebook_image(app, &mut out);
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        draw(&mut app, &mut terminal, &theme)?;
+        let first = stream(&mut app);
+        assert!(first.contains("a=p,i=0,"), "{first:?}");
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            let crate::model::PaneContent::Notebook { cells, .. } = &mut pane.content else {
+                return Err("a notebook".into());
+            };
+            cells[0].images[0] =
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAElFTkSuQmCC".to_owned();
+        }
+        app.dirty = true;
+        draw(&mut app, &mut terminal, &theme)?;
+        let second = stream(&mut app);
+        assert!(second.contains("a=p,i=1,"), "{second:?}");
+        assert!(
+            !second.contains("a=d,d=i,i=1"),
+            "the repaint deleted the id it just placed: {second:?}"
+        );
         Ok(())
     }
 
