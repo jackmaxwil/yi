@@ -267,7 +267,7 @@ impl Motion {
     /// fifteen times a second for a row whose words already say it waits.
     fn still(&self) -> bool {
         self.state == yi_tui::orb::OrbState::Listening
-            && self.orb.holding(Some(yi_tui::orb::OrbState::Listening))
+            && self.orb.holding(yi_tui::orb::OrbState::Listening)
     }
 }
 
