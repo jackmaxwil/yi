@@ -121,13 +121,10 @@ fn journal(store: &yi_session::SharedSession, line: &ChildTrail) {
         yi_session::lock_session(store).append_custom("main", CHILD_ENTRY, Some(data));
 }
 
-/// Reaped children's transcripts held open; a hundred-child swarm pinned every store before.
-const KEPT_OPEN: usize = 4;
-
 /// Invariant: at most one live store per reaped child, so an inbox write and a history read
 /// never append through two instances of one file.
 #[derive(Default)]
-pub(crate) struct Kept(Vec<KeptChild>);
+pub(crate) struct Kept(Mutex<Vec<KeptChild>>);
 
 struct KeptChild {
     name: String,
@@ -137,44 +134,42 @@ struct KeptChild {
 }
 
 impl Kept {
-    pub(crate) fn keep(&mut self, name: String, store: yi_session::SharedSession) {
+    pub(crate) fn keep(&self, name: String, store: yi_session::SharedSession) {
         let file = yi_session::lock_session(&store).file_path().cloned();
-        self.0.retain(|child| child.name != name);
+        let held = file.is_none().then(|| Arc::clone(&store));
         let live = Arc::downgrade(&store);
-        self.0.push(KeptChild {
+        let Ok(mut children) = self.0.lock() else {
+            return;
+        };
+        children.retain(|child| child.name != name);
+        children.push(KeptChild {
             name,
             file,
             live,
-            held: Some(store),
+            held,
         });
-        self.trim();
     }
 
-    /// Most recently used children sit last; a file-backed one past the cap lets its store go.
-    fn trim(&mut self) {
-        let mut open = 0;
-        for child in self.0.iter_mut().rev().filter(|child| child.file.is_some()) {
-            open += usize::from(child.held.is_some());
-            if open > KEPT_OPEN {
-                child.held = None;
+    pub(crate) fn get(&self, name: &str) -> Option<yi_session::SharedSession> {
+        let file = {
+            let children = self.0.lock().ok()?;
+            let child = children.iter().find(|child| child.name == name)?;
+            if let Some(store) = child.held.clone() {
+                return Some(store);
             }
+            if let Some(store) = child.live.upgrade() {
+                return Some(store);
+            }
+            child.file.clone()?
+        };
+        let store = Arc::new(Mutex::new(yi_session::load_session(&file).ok()?));
+        let mut children = self.0.lock().ok()?;
+        let child = children.iter_mut().find(|child| child.name == name)?;
+        if let Some(live) = child.live.upgrade() {
+            return Some(live);
         }
-    }
-
-    pub(crate) fn get(&mut self, name: &str) -> Option<yi_session::SharedSession> {
-        let at = self.0.iter().position(|child| child.name == name)?;
-        let mut child = self.0.remove(at);
-        let store = child.live.upgrade().or_else(|| {
-            let file = child.file.as_ref()?;
-            Some(Arc::new(Mutex::new(yi_session::load_session(file).ok()?)))
-        });
-        if let Some(store) = &store {
-            child.live = Arc::downgrade(store);
-            child.held = Some(Arc::clone(store));
-        }
-        self.0.push(child);
-        self.trim();
-        store
+        child.live = Arc::downgrade(&store);
+        Some(store)
     }
 }
 
@@ -185,12 +180,12 @@ mod tests {
     type Outcome = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn kept_children_past_the_cap_reopen_once_from_their_file() -> Outcome {
+    fn kept_children_are_not_pinned_and_reopen_once_from_their_file() -> Outcome {
         let root = crate::scratch::Scratch::new("yi-kept-transcripts")?;
         let mut repo = yi_session::JsonlRepo::new(root.to_path_buf(), "/work");
-        let mut kept = Kept::default();
+        let kept = Kept::default();
         let mut first = Weak::new();
-        for n in 0..=KEPT_OPEN {
+        for n in 0..5 {
             let options = yi_session::CreateOptions {
                 id: None,
                 parent_session_id: None,
@@ -204,7 +199,7 @@ mod tests {
         }
         assert!(
             first.upgrade().is_none(),
-            "a child past the cap stayed resident"
+            "a kept child's store stayed resident with no reader"
         );
         let reopened = kept.get("child-0").ok_or("child-0 not reopened")?;
         let again = kept.get("child-0").ok_or("child-0 lost")?;

@@ -388,10 +388,8 @@ impl SubagentHost {
                     disposition: Disposition::Settled,
                 }))
             })?;
-        if let Some(store) = record.session.store()
-            && let Ok(mut reaped) = self.reaped.lock()
-        {
-            reaped.keep(record.session_name.clone(), store);
+        if let Some(store) = record.session.store() {
+            self.reaped.keep(record.session_name.clone(), store);
         }
         let reason = record
             .lease
