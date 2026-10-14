@@ -88,6 +88,15 @@ class Missed(RuntimeError):
     refusal it repeated. Incident: #1110's findings stopped on GLM changing nothing, never tried higher."""
 
 
+class Declined(RuntimeError):
+    """The model answered every finding with a reason and changed nothing, which a stronger tier
+    would repeat. Incident: #1387 paid three tiers to decline one stale finding, then failed."""
+
+    def __init__(self, reasons, highs):
+        super().__init__(reasons)
+        self.highs = highs  # the (n, finding, reason) rows the owner rules on
+
+
 def verdict_of(err, notes):
     """A miss retries one tier up until the top tier has missed too; a disk or provider blip waits."""
     if TRANSIENT.search(str(err)):
@@ -253,6 +262,12 @@ def accept(clone, conflicted, before, keep_new=lambda path: False):
     staged = {entry.split("\t", 1)[1] for entry in before ^ snapshot(clone) if "\t" in entry}
     touched = sorted(set(sh(clone, "git", "diff", "--name-only", "--no-renames").stdout.split()) | staged | set(conflicted)
                      | set(sh(clone, "git", "ls-files", "--others", "--exclude-standard").stdout.split()))
+    # Incident: #1405's fix was thrown away whole for one edit to binary_size_budget.json; a
+    # baseline is measured, never written, so the edit is put back and the rest of the fix stands.
+    numbers = [p for p in pr_review.walled(touched) if p.startswith(BASELINES)]
+    if numbers:
+        put_back(clone, numbers, before)
+        touched = [p for p in touched if p not in numbers]
     walled = pr_review.walled(touched)
     if walled:
         raise Missed(f"the model edited a file the fixer may not touch: {', '.join(walled)}")
@@ -265,7 +280,27 @@ def accept(clone, conflicted, before, keep_new=lambda path: False):
     strays = sh(clone, "git", "ls-files", "--others", "--exclude-standard", "--directory").stdout.split()
     sh(clone, "git", "clean", "-fdq")
     note = f"\n\nLeft out of the commit, as files the model created: {', '.join(strays)}" if strays else ""
+    if numbers:
+        note += f"\n\nPut back the model's edits to {', '.join(numbers)}: a baseline moves only by its gate's own `--update`."
     return [p for p in touched if p not in strays and not any(p.startswith(s) for s in strays)], note
+
+
+BASELINES = "scripts/guardrails/baselines/"
+
+
+def put_back(clone, paths, before):
+    """Each of `paths` as the index held it in `before`, worktree too; gone if it was not there."""
+    held = {entry.split("\t", 1)[1]: entry.split("\t", 1)[0].split() for entry in before if "\t" in entry}
+    for path in paths:
+        if path in held:
+            mode, blob, stage = held[path]
+            if stage != "0":
+                raise Missed(f"{path} was conflicted before the model ran; the baseline driver owns it")
+            sh(clone, "git", "update-index", "--cacheinfo", f"{mode},{blob},{path}")
+            sh(clone, "git", "checkout", "--", path)
+        else:
+            sh(clone, "git", "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--", path)
+            (clone / path).unlink(missing_ok=True)
 
 
 def reprice(clone, base="MERGE_HEAD"):
@@ -641,6 +676,8 @@ def findings_in(clone, pr, rnd, answer, tried=0):
                        for d in stray)
     summary += reasons + left + note
     if not sh(clone, "git", "diff", "--cached", "--name-only").stdout.strip():
+        if todo and {d["n"] for d in declined} == set(range(1, len(todo) + 1)):
+            raise Declined(reasons.strip(), declined_highs)
         raise Missed("the fixer changed nothing" + reasons)
     return summary, model, touched, declined_highs
 
@@ -743,6 +780,9 @@ def render(n, fields, verdict, reason="", status="", meter=None):
         lines += [f"**Autofix** answered review round {fields['round']}: `{fields['from'][:8]}` → `{fields['to'][:8]}`, "
                   f"{fields['files']} file(s) changed by `{fields['model']}` ({fields['tier']} tier). The review bot reads it like any push.", "",
                   fields["summary"]]
+    elif verdict == "declined":
+        lines += [f"**Autofix declined** every finding of review round {fields['round']} with a reason and changed "
+                  "nothing; a person decides, and the fixer waits for a new round or head.", "", "```", reason.strip(), "```"]
     elif verdict == "deferred":
         lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
@@ -815,6 +855,11 @@ def attempt(repo, pr, ids, asked=False):
     if blocked and not pr.get("title", "").startswith(forge_pr.DRAFT):
         blocked = False
     conflicted = conflicts_of(pr["base"]["ref"], pr["head"]["sha"])
+    # A round the fixer declined whole on this head waits for a person, a new round or a new head.
+    if blocked and not conflicted and any(
+            row["kind"] == "yi-autofix" and row.get("verdict") == "declined" and row.get("from") == pr["head"]["sha"][:12]
+            and row.get("round") == str(rnd["n"]) for row in bot_meter.rows(notes)):
+        return "declined"
     lanes = [] if conflicted or blocked else red_lanes(repo, pr["head"]["sha"])
     said = decide(labels, conflicted, quiet_for(pr, notes, time.time()), asked, blocked, bool(lanes))
     if said == "clean" and "autofix" in labels:
@@ -845,6 +890,10 @@ def attempt(repo, pr, ids, asked=False):
         # The author pushed meanwhile; the next pass reads the new head.
         print(f"#{number}: the push was refused, the branch moved: {err}")
         return "moved"
+    except Declined as err:
+        # A declined high is the owner's call, as when a fix declines one beside its edits.
+        fields = {"kind": "findings", "from": pr["head"]["sha"][:12], "round": rnd["n"], "declined": err.highs}
+        reason, verdict = str(err), "declined"
     except (RuntimeError, pr_review.Unanswered, subprocess.TimeoutExpired) as err:
         reason, verdict = str(err), verdict_of(err, notes)
     finally:
@@ -1207,6 +1256,9 @@ def selfcheck():
             errs.append("a fix rewrote a skill the PR does not touch")
         if "names no finding" not in str(findings_run({}, declined=[99])):
             errs.append("a decline that names no listed finding lost its reason")
+        whole, part = findings_run({}, declined=[1, 2]), findings_run({}, declined=[1])
+        if "changed nothing" in str(whole) or "Declined 2 (high)" not in str(whole) or "changed nothing" not in str(part):
+            errs.append(f"declining every finding read {whole!r} and declining one read {part!r}")
         first = len(asked)
         good = findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n}\n"}, declined=[2])
         sh(tmp, "git", "fetch", "-q", "origin")
@@ -1337,12 +1389,65 @@ def selfcheck():
                                "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}, {})
         if said != "deferred" or ("autofix:failed", True) in labelled:
             errs.append(f"a provider 429 read {said} with labels {labelled}, not deferred and unlabelled")
+        # A round declined whole is posted once and holds its head; a declined high stops for the owner.
+        draft = {"number": 1, "title": forge_pr.DRAFT + "t", "labels": [{"name": "autofix"}],
+                 "head": {"sha": "abc", "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}}
+        posted = []
+        forge_pr.fgj_api = lambda method, path, body=None, **k: posted.append((body or {}).get("body", "")) or {}
+        high = (1, {"claim": "a false alarm", "path": "a.rs", "line": 3}, "already fixed at a.rs:3")
+        for highs in ([], [high]):
+            def all_declined(pr, highs=highs, **kw):
+                raise Declined("Declined 1: already fixed at a.rs:3", highs)
+            module.fix, labelled[:], posted[:] = all_declined, [], []
+            said = attempt("o/r", draft, {})
+            owner = bool(highs) and "a false alarm (`a.rs:3`)" in "".join(posted)
+            if said != "declined" or (("autofix:failed", True) in labelled) != bool(highs) or bool(highs) != owner:
+                errs.append(f"a round declined whole (highs={len(highs)}) read {said} with labels {labelled}, owner list shown={owner}")
+        forge_pr.fgj_api = lambda *a, **k: {}
+        declined = tried_notes + [dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 kind=findings from=abc round=2 verdict=declined -->\n")]
+        pr_review.comments, module.fix = (lambda repo, n: declined), stand["fix"]
+        passed.clear()
+        attempt("o/r", draft, {})
+        if passed.get("kind") is not None:
+            errs.append("a round the fixer declined whole on this head was handed to the model again")
+        pr_review.rounds_of = lambda *a: [{"n": 3, "sha": "abc", "verdict": "blocked", "findings": []}]
+        passed.clear()
+        attempt("o/r", draft, {})
+        if passed.get("kind") != "findings":
+            errs.append("a new round on a head whose last round was declined was never answered")
+        if misses(declined) != misses(tried_notes):
+            errs.append("a round declined whole counted as a miss, so the next head would start a tier up")
     finally:
         for (mod, name), value in zip(((forge_pr, "git"), (forge_pr, "fgj_api"), (pr_review, "comments"),
                                        (pr_review, "authors"), (bot_meter, "since"), (pr_review, "rounds_of")), saved.values()):
             setattr(mod, name, value)
         for name, value in kept.items():
             setattr(module, name, value)
+    # A baseline the model wrote, or added, is put back, and the rest of its fix stands.
+    repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-putback-"))
+    try:
+        g = lambda *a: sh(repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        g("init", "-q")
+        (repo / BASELINES).mkdir(parents=True)
+        (repo / BASELINES / "b.json").write_text("{}\n")
+        (repo / "a.rs").write_text("old\n")
+        g("add", "-A")
+        g("commit", "-qm", "seed")
+        before = snapshot(repo)
+        for path, text in (("b.json", '{"max_bytes": 9}\n'), ("new.json", "{}\n")):
+            (repo / BASELINES / path).write_text(text)
+        (repo / "a.rs").write_text("new\n")
+        g("add", "-A")
+        try:
+            touched, note = accept(repo, [], before)
+        except Missed as err:
+            touched, note = [], str(err)
+        staged = sh(repo, "git", "diff", "--cached", "--name-only").stdout.split()
+        if touched != ["a.rs"] or staged != ["a.rs"] or (repo / BASELINES / "b.json").read_text() != "{}\n" \
+                or (repo / BASELINES / "new.json").exists() or "Put back" not in note:
+            errs.append(f"a model's baseline edits were not put back beside its fix: touched={touched}, staged={staged}")
+    finally:
+        shutil.rmtree(repo)
     # findings_in hands a clean round's mediums to the model, and refuses one with nothing it answers.
     bare = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-bare-"))
     try:
