@@ -1,4 +1,4 @@
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::colors::Theme;
 use yi_tui::diffview::{self, DiffBudget};
@@ -298,4 +298,217 @@ pub fn review_view(
     lines.push(Line::default());
     lines.extend(diffview::render(&patch, width, theme, DiffBudget::FULL));
     (title, lines)
+}
+
+const CODE_ROWS: usize = 24;
+const STREAM_ROWS: usize = 40;
+const RESULT_ROWS: usize = 20;
+const TRACE_ROWS: usize = 12;
+
+fn cap_row(what: &str, cap: &str, next: &str, theme: &Theme) -> Line<'static> {
+    Line::styled(
+        format!("  […] {what} · {cap} · {next}"),
+        theme.muted_style(),
+    )
+}
+
+fn capped(
+    text: &str,
+    lead: Span<'static>,
+    style: Style,
+    (width, cap, tail, full): (usize, usize, bool, bool),
+    noun: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let indent = " ".repeat(lead.width());
+    let mut rows: Vec<Line<'static>> = text
+        .lines()
+        .flat_map(|line| {
+            let line = Line::from(vec![
+                lead.clone(),
+                Span::styled(yi_tui::transcript::show_controls(line), style),
+            ]);
+            yi_tui::wrap::wrap_line(&line, width, &indent)
+        })
+        .collect();
+    let total = rows.len();
+    if full || total <= cap {
+        return rows;
+    }
+    let what = format!(
+        "{noun} {} {cap} of {total} rows",
+        if tail { "last" } else { "first" }
+    );
+    let row = cap_row(
+        &what,
+        &format!("notebook cap {cap}"),
+        "v shows every row",
+        theme,
+    );
+    if tail {
+        let mut kept = rows.split_off(total.saturating_sub(cap));
+        kept.insert(0, row);
+        kept
+    } else {
+        rows.truncate(cap);
+        rows.push(row);
+        rows
+    }
+}
+
+/// Incident: a `│` gutter read as part of the `cargo tree` box-drawing a cell parsed, so rows
+/// are numbered; a wrapped row hangs past its own indent so the Python still reads.
+fn code_rows(code: &str, width: usize, full: bool, theme: &Theme) -> Vec<Line<'static>> {
+    let lines: Vec<String> = code
+        .lines()
+        .map(|line| yi_tui::pycell::redact(&yi_tui::transcript::show_controls(line)))
+        .collect();
+    let gutter = lines.len().to_string().len().max(2);
+    let shown = if full {
+        lines.len()
+    } else {
+        lines.len().min(CODE_ROWS)
+    };
+    let mut lang = yi_tui::highlight::lang_for("python");
+    let base = Style::default().fg(theme.text);
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().take(shown).enumerate() {
+        let spans = match lang.as_mut() {
+            Some(lang) => yi_tui::highlight::spans(line.as_str(), lang, theme, base),
+            None => vec![Span::styled(line.clone(), base)],
+        };
+        let depth = line.chars().take_while(|c| c.is_whitespace()).count();
+        let hang = " ".repeat(depth.min(width / 2).saturating_add(4));
+        let body = width.saturating_sub(gutter.saturating_add(1));
+        let wrapped = yi_tui::wrap::wrap_line(&Line::from(spans), body, &hang);
+        for (row, mut wrapped) in wrapped.into_iter().enumerate() {
+            let mark = if row == 0 {
+                format!("{:>gutter$} ", index.saturating_add(1))
+            } else {
+                format!("{:>gutter$} ", "↪")
+            };
+            wrapped
+                .spans
+                .insert(0, Span::styled(mark, theme.dim_style()));
+            out.push(wrapped);
+        }
+    }
+    if shown < lines.len() {
+        let what = format!("code first {shown} of {} lines", lines.len());
+        out.push(cap_row(
+            &what,
+            &format!("notebook cap {CODE_ROWS}"),
+            "v shows every row",
+            theme,
+        ));
+    }
+    out
+}
+
+pub fn notebook_lines(
+    cells: &[crate::model::NbCell],
+    width: usize,
+    full: bool,
+    theme: &Theme,
+    close: &str,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let Some(first) = cells.first() else {
+        out.push(Line::styled(
+            "no kernel cells yet — they appear as the agent computes",
+            theme.dim_style(),
+        ));
+        out.push(Line::styled(
+            format!("{close} closes · an idle notebook closes itself"),
+            theme.dim_style(),
+        ));
+        return out;
+    };
+    if first.number > 1 {
+        let dropped = first.number.saturating_sub(1);
+        let noun = if dropped == 1 { "cell" } else { "cells" };
+        let what = format!("{dropped} older {noun} not shown");
+        let cap = format!("notebook keeps {}", crate::model::KEPT_CELLS);
+        out.push(cap_row(
+            &what,
+            &cap,
+            "the transcript holds every call",
+            theme,
+        ));
+    }
+    let text = Style::default().fg(theme.text);
+    let error = Style::default().fg(theme.error);
+    for cell in cells {
+        let (marker, style) = if cell.running {
+            ("◐", Style::default().fg(theme.warning))
+        } else if cell.error.is_some() {
+            ("●", error)
+        } else {
+            ("●", Style::default().fg(theme.success))
+        };
+        let label = format!("{marker} [{}]", cell.number);
+        let took = match cell.duration_ms {
+            _ if cell.running => "running".to_owned(),
+            Some(ms) => yi_tui::cell::elapsed_label(ms),
+            None => String::new(),
+        };
+        let pad = width.saturating_sub(label.chars().count() + took.chars().count());
+        out.push(Line::from(vec![
+            Span::styled(label, style.add_modifier(Modifier::BOLD)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(took, theme.dim_style()),
+        ]));
+        out.extend(code_rows(&cell.code, width, full, theme));
+        let shape = |cap, tail| (width, cap, tail, full);
+        let pad = Span::raw("  ");
+        let warn = Style::default().fg(theme.warning);
+        out.extend(capped(
+            &cell.stdout,
+            pad.clone(),
+            text,
+            shape(STREAM_ROWS, false),
+            "stdout",
+            theme,
+        ));
+        out.extend(capped(
+            &cell.stderr,
+            pad,
+            warn,
+            shape(STREAM_ROWS, false),
+            "stderr",
+            theme,
+        ));
+        if let Some(result) = &cell.result {
+            let lead = Span::styled("↳ ", theme.accent_style());
+            let bold = theme.accent_style().add_modifier(Modifier::BOLD);
+            out.extend(capped(
+                result,
+                lead,
+                bold,
+                shape(RESULT_ROWS, false),
+                "result",
+                theme,
+            ));
+        }
+        if let Some(trace) = &cell.error {
+            let lead = Span::styled("✕ ", error);
+            out.extend(capped(
+                trace,
+                lead,
+                error,
+                shape(TRACE_ROWS, true),
+                "traceback",
+                theme,
+            ));
+        }
+        for image in &cell.images {
+            let kb = image.len().saturating_mul(3) / 4 / 1024;
+            out.push(Line::styled(
+                format!("  ▲ image · {kb} KB png"),
+                theme.accent_style(),
+            ));
+        }
+        out.push(Line::default());
+    }
+    out
 }
