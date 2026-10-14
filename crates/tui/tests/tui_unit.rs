@@ -58,6 +58,20 @@ fn wrap_splits_plain_overlong_tokens_and_indents_continuations() -> TestResult {
     Ok(())
 }
 
+/// An indented token wider than any row left its indentation alone on a blank first row
+/// (a notebook cell's line number sat beside nothing).
+#[test]
+fn wrap_starts_an_overlong_token_on_its_own_indented_row() -> TestResult {
+    let line = Line::from(Span::raw(format!("    {}", "x".repeat(30))));
+    let rows: Vec<String> = wrap_line(&line, 12, "").iter().map(flat).collect();
+    assert_eq!(
+        rows.first().map(String::as_str),
+        Some("    xxxxxxxx"),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn wrap_is_unicode_width_aware() -> TestResult {
     let line = Line::from(Span::raw("汉字汉字汉字"));

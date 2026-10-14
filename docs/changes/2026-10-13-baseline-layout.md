@@ -1,0 +1,4 @@
+---
+issue: Closes #1394
+---
+The autofixer stops failing on baseline files. The merge driver wrote the baselines with a two-space indent, while `check_schemas_lock.py --update` and `check_request_budget.py --update` wrote a one-space indent and a single line. Every re-measure therefore rewrote about 700 lines of `schemas.lock` with no change in content. The review bot flagged that churn, and every tier of the fixer then failed: the fix had to edit a baseline, and the fixer may not touch one (#1370 failed this way). The writers now emit the driver's layout. The driver's selfcheck fails on any baseline file in another layout, so the next writer that drifts reddens the guardrails rather than the review. Findings on files inside the fixer's wall are now held back from the model. The fixer answers the rest and names the held-back findings as left for a person; a round blocked only by those stops at once, at no cost, instead of after three paid tiers.
