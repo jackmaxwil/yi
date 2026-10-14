@@ -17,6 +17,8 @@ ratatui = { workspace = true }
 unicode-width = { workspace = true }
 tui-textarea = { workspace = true }
 serde_json = { workspace = true }
+rustix = { workspace = true, features = ["pty", "termios", "process"] }
+vt100 = { workspace = true }
 
 [[test]]
 name = "integration"
