@@ -37,7 +37,7 @@ pub fn reconcile<K, W>(
         if !paint(out, id, *rect, png) {
             continue;
         }
-        if let Some(old) = old {
+        if let Some(old) = old.filter(|old| old.id != id) {
             delete(out, old.id);
         }
         placed.insert(
@@ -48,5 +48,31 @@ pub fn reconcile<K, W>(
                 id,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_changed_image_under_the_same_id_is_not_deleted_after_its_paint() {
+        let rect = Rect::new(0, 0, 10, 5);
+        let mut placed = BTreeMap::new();
+        let mut out = Vec::new();
+        for seq in [1, 2] {
+            let want = BTreeMap::from([((), (rect, seq, "png"))]);
+            reconcile(
+                &mut out,
+                &want,
+                &mut placed,
+                |_, _| 7,
+                |out, id, _, _| write!(out, "P{id};").is_ok(),
+                |out, id| {
+                    let _ = write!(out, "D{id};");
+                },
+            );
+        }
+        assert_eq!(String::from_utf8_lossy(&out), "P7;P7;");
     }
 }
