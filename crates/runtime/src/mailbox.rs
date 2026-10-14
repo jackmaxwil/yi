@@ -347,7 +347,7 @@ impl SubagentHost {
         target: &str,
         draft: &Draft,
     ) -> Result<Value, String> {
-        let mut children = self
+        let children = self
             .children
             .lock()
             .map_err(|_| "subagent state poisoned".to_owned())?;
@@ -358,12 +358,22 @@ impl SubagentHost {
             return Err(error.clone());
         }
         let key = key.ok();
-        let record = key.as_ref().and_then(|key| children.get(key));
-        let (name, store) = match record {
-            Some(record) => (record.session_name.clone(), record.session.store()),
-            // A reaped child's chain is kept (D210), and that is where its inbox lives.
+        let live = key
+            .as_ref()
+            .and_then(|key| children.get(key))
+            .map(|record| (record.session_name.clone(), record.session.store()));
+        drop(children);
+        // A reaped child's chain is kept (D210), and that is where its inbox lives. The
+        // parse below must not run under the children mutex: reaps would queue behind it.
+        let (name, store) = match live {
+            Some(live) => live,
             None => (target.to_owned(), self.kept_transcript(target)),
         };
+        let mut children = self
+            .children
+            .lock()
+            .map_err(|_| "subagent state poisoned".to_owned())?;
+        let record = key.as_ref().and_then(|key| children.get(key));
         let Some(store) = store else {
             let known: Vec<&str> = children
                 .values()
@@ -887,10 +897,8 @@ impl SubagentHost {
             (None, None) => "(no product)".to_owned(),
         };
         let name = record.session_name.clone();
-        if let Some(store) = record.session.store()
-            && let Ok(mut reaped) = self.reaped.lock()
-        {
-            reaped.keep(name.clone(), store);
+        if let Some(store) = record.session.store() {
+            self.reaped.keep(name.clone(), store);
         }
         let block = format!("<reaped_child from=\"{name}\">\n{body}\n</reaped_child>");
         let harvested = self.harvests.lock().is_ok_and(|mut held| {
