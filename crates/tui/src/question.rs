@@ -21,6 +21,9 @@ const SKIPPED: &str = "Skip: go with your recommendation and say which.";
 /// Above the logos' ids (7610 on), below the console notebook's 7701. Two ping-pong as the
 /// orb's do, so a repaint never shows the ground between delete and place.
 const CARD_IDS: [u32; 2] = [7690, 7691];
+/// Pixels of one card image, 4 MB of RGBA; a larger card is painted at a smaller cell size and
+/// the terminal scales it back to the card's cells, so only its softness changes.
+const MAX_CARD_PX: usize = 1_000_000;
 /// A side preview column needs room for tiles and a readable mock beside them.
 const WIDE: usize = 110;
 
@@ -125,13 +128,13 @@ pub(crate) struct QuestionView {
     cursor: usize,
     typing: bool,
     collapsed: bool,
-    pictured: bool,
+    kitty: bool,
     other: String,
     answers: Vec<String>,
 }
 
 impl QuestionView {
-    pub(crate) fn new(questions: Vec<Question>, pictured: bool) -> Self {
+    pub(crate) fn new(questions: Vec<Question>, kitty: bool) -> Self {
         let open = questions
             .first()
             .is_some_and(|question| question.choices.is_empty());
@@ -141,7 +144,7 @@ impl QuestionView {
             cursor: 0,
             typing: open,
             collapsed: false,
-            pictured,
+            kitty,
             other: String::new(),
             answers: Vec::new(),
         }
@@ -192,7 +195,12 @@ impl QuestionView {
     }
 
     /// The card's text rows and the chrome under them, in cells of a `width`-wide bottom block.
-    pub(crate) fn card(&self, width: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<Piece>) {
+    pub(crate) fn card(
+        &self,
+        width: usize,
+        theme: &Theme,
+        pictured: bool,
+    ) -> (Vec<Line<'static>>, Vec<Piece>) {
         let Some(question) = self.current() else {
             return (Vec::new(), Vec::new());
         };
@@ -247,7 +255,7 @@ impl QuestionView {
 
         if !self.collapsed {
             rows.push(Row::default());
-            self.tiles(question, width, theme, &mut rows, &mut pieces);
+            self.tiles(question, width, theme, pictured, &mut rows, &mut pieces);
             rows.push(self.footer(question, left, right, theme, &mut pieces, rows.len()));
             rows.push(Row::default());
         }
@@ -262,6 +270,7 @@ impl QuestionView {
         question: &Question,
         width: usize,
         theme: &Theme,
+        pictured: bool,
         rows: &mut Vec<Row>,
         pieces: &mut Vec<Piece>,
     ) {
@@ -282,7 +291,7 @@ impl QuestionView {
             let on = at == self.cursor;
             let start = rows.len();
             let mut label = Row::default();
-            if on && !self.pictured {
+            if on && !pictured {
                 label.put(left.saturating_sub(2), "▸", theme.accent_style(), left);
             }
             let mut name = choice.label.clone();
@@ -320,7 +329,7 @@ impl QuestionView {
         let on = self.cursor == others;
         let start = rows.len();
         let mut label = Row::default();
-        if on && !self.pictured {
+        if on && !pictured {
             label.put(left.saturating_sub(2), "▸", theme.accent_style(), left);
         }
         let name = if others == 0 { "Answer" } else { "Other" };
@@ -516,7 +525,8 @@ fn side_preview(choice: Option<&Choice>, rows: &mut [Row], at: usize, right: usi
 
 impl BottomView for QuestionView {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-        self.card(width, theme).0
+        let pictured = self.kitty && cell_pixels().is_some();
+        self.card(width, theme, pictured).0
     }
 
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult {
@@ -738,6 +748,19 @@ fn dirty(old: &[Piece], new: &[Piece], (cw, ch): (usize, usize)) -> Option<[Rang
     })
 }
 
+/// `cell` itself, or scaled down until `cols` by `rows` cells fit [`MAX_CARD_PX`].
+fn fit(cell: (usize, usize), cols: usize, rows: usize) -> (usize, usize) {
+    let area = cols
+        .saturating_mul(cell.0)
+        .saturating_mul(rows.saturating_mul(cell.1));
+    if area <= MAX_CARD_PX {
+        return cell;
+    }
+    let scale = (MAX_CARD_PX as f64 / area as f64).sqrt();
+    let side = |px: usize| ((px as f64 * scale) as usize).max(1);
+    (side(cell.0), side(cell.1))
+}
+
 /// Where the card's image was last placed and what it showed, so an unchanged card re-places
 /// nothing and a moved one re-places without repainting.
 pub struct CardTick {
@@ -817,8 +840,9 @@ pub fn tick_with(
         }
         return;
     }
-    let (lines, pieces) = view.card(app.width, &app.theme);
+    let (lines, pieces) = view.card(app.width, &app.theme, true);
     let (cols, rows) = (app.width, lines.len());
+    let cell = fit(cell, cols, rows);
     let (Ok(cols16), Ok(rows16)) = (u16::try_from(cols), u16::try_from(rows)) else {
         return hide(out, state);
     };
