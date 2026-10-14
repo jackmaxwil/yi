@@ -377,4 +377,62 @@ mod tests {
             "the press reached the sidebar row under it"
         );
     }
+
+    fn app_with_a_browser_page() -> Result<(App, PaneId), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let pane = app.state.focused_pane_id().ok_or("a pane")?;
+        let mut browser = crate::browser::BrowserPane::new(Some("http://localhost:1/".to_owned()));
+        browser.view(Rect::new(0, 0, 40, 20), true, &theme);
+        if let Some(slot) = app.state.panes.get_mut(&pane) {
+            slot.content = PaneContent::Browser(Box::new(browser));
+        }
+        app.hits = Some(crate::render::Hits {
+            panes: vec![(pane, Rect::new(0, 0, 40, 20))],
+            ..crate::render::Hits::default()
+        });
+        Ok((app, pane))
+    }
+
+    fn mouse(app: &mut App, kind: MouseKind, x: u16, y: u16) {
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-browser-mouse-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.handle_mouse(&outbound, kind, x, y);
+        outbound.shutdown();
+    }
+
+    /// Incident: the page took every event over it, so a split drag or a chat selection that
+    /// moved onto a browser pane never moved and never finished.
+    #[test]
+    fn a_drag_that_began_outside_the_page_goes_on_over_it() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut app, pane) = app_with_a_browser_page()?;
+        app.selection = Some(crate::select::Drag::new(pane, 1, 1, 0));
+        mouse(&mut app, MouseKind::Drag, 10, 10);
+        assert_eq!(app.selection.as_ref().map(|drag| drag.head), Some((10, 10)));
+        app.drag = Some((app.state.active_tab, Vec::new()));
+        mouse(&mut app, MouseKind::Up, 10, 10);
+        assert!(app.drag.is_none(), "the release never reached the console");
+        assert!(app.selection.is_none(), "the selection never finished");
+        Ok(())
+    }
+
+    #[test]
+    fn a_press_on_the_page_keeps_its_drag_and_release_from_the_console()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, pane) = app_with_a_browser_page()?;
+        mouse(&mut app, MouseKind::Down, 10, 10);
+        app.selection = Some(crate::select::Drag::new(pane, 1, 1, 0));
+        mouse(&mut app, MouseKind::Drag, 30, 15);
+        mouse(&mut app, MouseKind::Up, 30, 15);
+        assert_eq!(
+            app.selection.as_ref().map(|drag| drag.head),
+            Some((1, 1)),
+            "the console moved a selection the page's drag owned"
+        );
+        mouse(&mut app, MouseKind::Drag, 12, 12);
+        assert_eq!(app.selection.as_ref().map(|drag| drag.head), Some((12, 12)));
+        Ok(())
+    }
 }

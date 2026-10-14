@@ -76,9 +76,17 @@ impl App {
         true
     }
 
-    /// A press on a browser pane focuses it before the page sees the click.
+    /// A press on a browser pane focuses it before the page sees the click; a drag and its
+    /// release go to the page only when its press began there.
     pub(super) fn browser_mouse(&mut self, kind: MouseKind, x: u16, y: u16) -> bool {
-        let Some(id) = self.hits.as_ref().and_then(|hits| hits.pane_at(x, y)) else {
+        let held = matches!(kind, MouseKind::Drag | MouseKind::Up);
+        let id = match held {
+            true => self.state.panes.iter().find_map(|(id, pane)| {
+                matches!(&pane.content, PaneContent::Browser(page) if page.pressed()).then_some(*id)
+            }),
+            false => self.hits.as_ref().and_then(|hits| hits.pane_at(x, y)),
+        };
+        let Some(id) = id else {
             return false;
         };
         let cell = crate::chrome::cell_pixels();
