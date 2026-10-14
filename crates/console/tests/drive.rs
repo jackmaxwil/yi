@@ -407,6 +407,7 @@ fn run_console(
             root: "/tmp/demo-root".to_owned(),
             autostart,
             auto_side: true,
+            title: None,
             open_apps,
             sidebar,
             pace: 0,
@@ -446,6 +447,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             root: "/tmp/demo-root".to_owned(),
             autostart: false,
             auto_side: true,
+            title: None,
             open_apps: Vec::new(),
             sidebar: SidebarMode::Rail,
             pace: 0,
@@ -1021,8 +1023,8 @@ fn notebook_shows_image(name: &str, prompt: Responder) -> TestResult {
          wait-frame 5000 replayed world\n\
          type chart it\n\
          key enter\n\
-         wait-frame 5000 nb:s-alpha\n\
-         wait-frame 5000 In [1]\n\
+         wait-frame 5000 ▤ s-alpha\n\
+         wait-frame 5000 ● [1]\n\
          wait-frame 3000 plot_drift\n\
          wait-frame 3000 computing drift\n\
          wait-frame 3000 image · 0 KB png\n\
@@ -1270,10 +1272,10 @@ fn cmd_i_toggles_the_notebook_pane() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          cmd-i\n\
-         wait-frame 3000 nb:s-alpha\n\
+         wait-frame 3000 ▤ s-alpha\n\
          wait-frame 3000 no kernel cells yet\n\
          cmd-i\n\
-         wait-frame 3000 !nb:s-alpha\n\
+         wait-frame 3000 !▤ s-alpha\n\
          wait-frame 3000 replayed world\n\
          quit\n",
     )
@@ -1683,7 +1685,7 @@ fn first_kernel_cell_opens_the_notebook_and_spends_the_auto_side() -> TestResult
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 nb:s-alpha\n\
+         wait-frame 5000 ▤ s-alpha\n\
          wait-frame 5000 brand new line\n\
          wait-frame 2000 !Review ·\n\
          quit\n",
@@ -1753,92 +1755,6 @@ fn subagent_rows_render_under_parent() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 5000 └GR grep-bot-sub-1a2b3c4 ◐\n\
-         quit\n",
-    )
-}
-
-fn kernel_execute_reply(frame: &Value) -> Vec<Value> {
-    vec![
-        ok(frame, json!({"callId": "user-1"})),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "tool_call_update",
-            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
-            "status": "in_progress", "rawInput": {"code": "print(1)"}}),
-        ),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "tool_call_update",
-            "toolCallId": "user-1", "status": "completed",
-            "rawOutput": {"stdout": "1\n", "result": "", "error": null}}),
-        ),
-    ]
-}
-
-fn kernel_execute_running(frame: &Value) -> Vec<Value> {
-    vec![
-        ok(frame, json!({"callId": "user-1"})),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "tool_call_update",
-            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
-            "status": "in_progress", "rawInput": {"code": "sleep()"}}),
-        ),
-    ]
-}
-
-/// ⇧↩ on the notebook pane runs the draft on the session's kernel, and the cell comes back
-/// through the same tool-call stream the agent's cells use.
-#[test]
-fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
-    run(
-        "user-cell",
-        vec![
-            Step::Expect("initialize", init_reply),
-            Step::Expect("session/list", two_session_list),
-            Step::Expect("session/list", empty_list),
-            Step::Expect("session/resume", resume_alpha),
-            Step::Expect("_yi/seen", seen_ok),
-            Step::Expect("_yi/kernel_execute", kernel_execute_reply),
-        ],
-        "wait-frame 5000 s-alpha\n\
-         key enter\n\
-         wait-frame 5000 replayed world\n\
-         cmd-i\n\
-         wait-frame 3000 nb:s-alpha\n\
-         wait-frame 3000 ⇧↩ runs\n\
-         type print(1)\n\
-         key shift-enter\n\
-         wait-frame 5000 ● In [1]\n\
-         wait-frame 3000 print(1)\n\
-         quit\n",
-    )
-}
-
-/// Esc on the notebook cancels the newest running user cell.
-#[test]
-fn esc_cancels_running_user_cell() -> TestResult {
-    run(
-        "user-cell-cancel",
-        vec![
-            Step::Expect("initialize", init_reply),
-            Step::Expect("session/list", two_session_list),
-            Step::Expect("session/list", empty_list),
-            Step::Expect("session/resume", resume_alpha),
-            Step::Expect("_yi/seen", seen_ok),
-            Step::Expect("_yi/kernel_execute", kernel_execute_running),
-            Step::Expect("_yi/kernel_cancel", seen_ok),
-        ],
-        "wait-frame 5000 s-alpha\n\
-         key enter\n\
-         wait-frame 5000 replayed world\n\
-         cmd-i\n\
-         wait-frame 3000 nb:s-alpha\n\
-         type sleep()\n\
-         key shift-enter\n\
-         wait-frame 5000 ◐ In [1]\n\
-         key esc\n\
-         wait 300\n\
          quit\n",
     )
 }
@@ -3061,98 +2977,6 @@ fn a_working_session_shows_the_working_line() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 3000 [esc] interrupt\n\
-         quit\n",
-    )
-}
-
-fn tape_reply(frame: &Value) -> Vec<Value> {
-    vec![ok(
-        frame,
-        json!({"start": 0, "end": 60_000, "model": [[0, 30_000]], "tools": [],
-            "marks": [{"at": 0, "kind": "user", "entry": "e0", "label": "hello agent"}]}),
-    )]
-}
-
-/// Dies with a rewind sent into a running turn from the Tape: the pane says to wait for the
-/// turn to end, and sends nothing.
-#[test]
-fn the_tape_refuses_a_rewind_while_a_turn_runs() -> TestResult {
-    let mut fixture = session_fixture();
-    fixture.push(Step::Push(running_push));
-    fixture.push(Step::Expect("_yi/tape", tape_reply));
-    run(
-        "tape-running",
-        fixture,
-        "wait-frame 5000 s-alpha\n\
-         key enter\n\
-         wait-frame 5000 replayed world\n\
-         wait-frame 3000 [esc] interrupt\n\
-         cmd-y\n\
-         wait-frame 3000 +0s · hello agent\n\
-         key alt-right\n\
-         key enter\n\
-         wait-frame 3000 a turn is running: rewind once it ends\n\
-         quit\n",
-    )
-}
-
-fn tape_of(frame: &Value, labels: &[&str]) -> Vec<Value> {
-    let marks: Vec<Value> = labels
-        .iter()
-        .enumerate()
-        .map(|(index, label)| {
-            json!({"at": index * 60_000, "kind": "user", "entry": format!("e{index}"), "label": label})
-        })
-        .collect();
-    let end = labels.len() * 60_000;
-    vec![ok(
-        frame,
-        json!({"start": 0, "end": end, "model": [], "tools": [], "marks": marks}),
-    )]
-}
-
-fn prompt_then_idle(frame: &Value) -> Vec<Value> {
-    vec![
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "state_update", "state": "running"}),
-        ),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "state_update", "state": "idle"}),
-        ),
-        ok(frame, json!({"stopReason": "end_turn"})),
-    ]
-}
-
-/// Dies with the chosen mark jumping to the newest on every idle refresh: a user who picked
-/// an older turn loses it as soon as a turn ends.
-#[test]
-fn a_tape_refresh_keeps_the_chosen_mark() -> TestResult {
-    let mut fixture = session_fixture();
-    fixture.push(Step::Expect("_yi/tape", |frame| {
-        tape_of(frame, &["first turn", "second turn"])
-    }));
-    fixture.push(Step::Expect("session/prompt", prompt_then_idle));
-    fixture.push(Step::Expect("_yi/tape", |frame| {
-        tape_of(frame, &["first turn", "second turn", "third turn"])
-    }));
-    run(
-        "tape-cursor",
-        fixture,
-        "wait-frame 5000 s-alpha\n\
-         key enter\n\
-         wait-frame 5000 replayed world\n\
-         cmd-y\n\
-         wait-frame 3000 +1m · second turn\n\
-         key alt-right\n\
-         key left\n\
-         wait-frame 3000 +0s · first turn\n\
-         key alt-left\n\
-         type third turn\n\
-         key enter\n\
-         wait-frame 5000 Tape · 3m\n\
-         wait-frame 1000 +0s · first turn\n\
          quit\n",
     )
 }
@@ -4492,17 +4316,5 @@ fn a_pasted_control_character_is_dropped_from_a_submitted_console_message() -> T
          type x\u{7}y\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\nquit\n",
     )?;
     assert_eq!(row_holding(&frame, "┃   xy")?, "┃   xy");
-    Ok(())
-}
-
-#[test]
-fn a_pasted_control_character_is_dropped_from_the_notebook_pane_input() -> TestResult {
-    let frame = run_frames(
-        "paste-notebook",
-        session_fixture(),
-        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
-         cmd-i\nwait-frame 3000 nb:s-alpha\ntype x\u{1b}[31mredy\nquit\n",
-    )?;
-    assert_eq!(row_holding(&frame, "[31mredy")?, "x[31mredy");
     Ok(())
 }

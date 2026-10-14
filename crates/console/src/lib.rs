@@ -16,10 +16,12 @@ pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
+pub mod pty;
 pub mod render;
 pub mod select;
 pub mod settings;
 pub mod sidebar;
+mod title;
 
 use std::io::Stdout;
 use std::path::PathBuf;
@@ -44,11 +46,15 @@ use crate::client::{ClientEvent, Outbound};
 use crate::layout::PaneId;
 use crate::model::{Link, SessionId, SessionStatus};
 
+pub use title::{TitleOptions, UnknownScene};
+use title::{title_playing, title_tick};
+
 pub struct ConsoleOptions {
     pub socket: PathBuf,
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub title: Option<TitleOptions>,
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
@@ -70,6 +76,7 @@ pub enum ConsoleStep {
     Tui(Step),
     Mouse(MouseKind, u16, u16),
     Cmd(yi_tui::keymap::SingleKey),
+    Paste(String),
 }
 
 /// The drive harness speaks crossterm, so a script runs the same button mapping a terminal does.
@@ -131,6 +138,10 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             steps.push(ConsoleStep::Cmd(key));
             continue;
         }
+        if let Some(rest) = line.strip_prefix("paste ") {
+            steps.push(ConsoleStep::Paste(rest.to_owned()));
+            continue;
+        }
         let parsed = yi_tui::drive::parse_script(line).map_err(error)?;
         if parsed
             .iter()
@@ -145,7 +156,7 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     }
     yi_tui::drive::refuse_repeated_snaps(steps.iter().filter_map(|step| match step {
         ConsoleStep::Tui(step) => Some(step),
-        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) => None,
+        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) | ConsoleStep::Paste(_) => None,
     }))?;
     Ok(steps)
 }
@@ -203,6 +214,7 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     span.set("events", count);
     let _tick = yi_types::trace::span("console.tick");
     app.tick(outbound);
+    title_tick(app);
 }
 
 fn draw<B: Backend>(
@@ -267,6 +279,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx.clone());
     app.kitty = crate::kitty::supported(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -450,6 +463,7 @@ fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
+        .filter(|_| !title_playing(app))
         .map(|hits| crate::avatar::uncovered(hits.avatars.clone(), &hits.overlays))
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
@@ -475,6 +489,11 @@ fn chat_wake(app: &App) -> Duration {
         })
         .min()
         .unwrap_or(IDLE_POLL)
+        .min(if title_playing(app) {
+            yi_tui::title::FRAME
+        } else {
+            Duration::MAX
+        })
 }
 
 /// One orb per drawn chat pane on its own image ids; only the focused pane animates, the rest
@@ -544,13 +563,14 @@ fn place_chat_orbs(
 /// the top half of the pane; text placeholders stay for every other terminal.
 fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
+    let playing = title_playing(app);
     let placed = &mut app.notebook_image;
     let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
         if placed.take().is_some() {
             let _ = crate::kitty::delete(out);
         }
     };
-    let Some(pane_id) = app.state.focused_pane_id() else {
+    let Some(pane_id) = app.state.focused_pane_id().filter(|_| !playing) else {
         return clear(out, placed);
     };
     let Some(pane) = app.state.panes.get(&pane_id) else {
@@ -628,8 +648,9 @@ fn drive_idle(app: &App) -> bool {
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
     let (event_tx, events) = client::events();
-    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx);
+    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx);
     if drive
         .script
         .iter()
@@ -661,14 +682,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         return 1;
     }
 
-    let mut frame_index = 0_u32;
-    let mut last_frame = String::new();
+    let (mut frame_index, mut last_frame) = (0_u32, String::new());
     let mut steps = drive.script.into_iter();
     let mut current: Option<(ConsoleStep, Instant)> = None;
     let deadline = Deadline::new(drive.deadline_secs);
-    let mut exit_code = 0;
-    let mut type_ms = 0;
-    let mut pending_snap = None;
+    let (mut exit_code, mut type_ms, mut pending_snap) = (0, 0, None);
 
     while !app.state.quit {
         if deadline.passed() {
@@ -697,6 +715,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 event.modifiers |= ratatui::crossterm::event::KeyModifiers::SUPER;
                 app.handle_event(&outbound, CtEvent::Key(event));
             }
+            (ConsoleStep::Paste(text), _) => {
+                app.handle_event(&outbound, CtEvent::Paste(text.clone()));
+            }
             (ConsoleStep::Tui(Step::TypeMs(ms)), _) => type_ms = ms,
             (ConsoleStep::Tui(Step::Snap(name)), _) => pending_snap = Some(name),
             (ConsoleStep::Tui(Step::Tick(ms)), _) => tick(&mut app, &outbound, &events, ms),
@@ -718,11 +739,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     std::thread::sleep(Duration::from_millis(2));
                 }
             }
-            (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
+            step @ (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
                 match poll_condition(!drive_idle(&app), started, ms, "wait-idle") {
-                    WaitPoll::Retry => {
-                        current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
-                    }
+                    WaitPoll::Retry => current = Some(step),
                     WaitPoll::Failed(error) => {
                         eprintln!("error: {error}");
                         exit_code = 1;
@@ -778,6 +797,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
 fn configure(app: &mut App, options: &ConsoleOptions) {
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
+    app.state.title_start = app.clock.now();
+    app.state.title = options
+        .title
+        .as_ref()
+        .and_then(|title| yi_tui::title::pick(&title.weights, title.seed));
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
@@ -817,7 +841,8 @@ mod tests {
                     images: vec!["iVBORw0KGgo=".to_owned()],
                     ..crate::model::NbCell::default()
                 }],
-                input: Box::default(),
+                full: false,
+                drawn: None,
             };
         }
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
@@ -839,6 +864,49 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn v_on_the_notebook_shows_the_code_rows_its_cap_cut() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        app.state.zone = crate::model::Zone::Panes;
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Notebook {
+                session: None,
+                cells: vec![crate::model::NbCell {
+                    number: 1,
+                    code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
+                    ..crate::model::NbCell::default()
+                }],
+                full: false,
+                drawn: None,
+            };
+        }
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40))?;
+        let screen = |terminal: &Terminal<ratatui::backend::TestBackend>| -> String {
+            let cells = terminal.backend().buffer().content();
+            cells.iter().map(ratatui::buffer::Cell::symbol).collect()
+        };
+        draw(&mut app, &mut terminal, &theme)?;
+        let before = screen(&terminal);
+        assert!(before.contains("[…] code first 24 of 30 lines"), "{before}");
+        assert!(!before.contains("x30 = 30"), "{before}");
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-notebook-full-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        let v = ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Char('v'),
+        );
+        app.handle_event(&outbound, CtEvent::Key(v));
+        outbound.shutdown();
+        draw(&mut app, &mut terminal, &theme)?;
+        let after = screen(&terminal);
+        assert!(after.contains("x30 = 30"), "{after}");
+        assert!(!after.contains("[…]"), "{after}");
+        Ok(())
+    }
+
     /// Dies with an image written after the frame's update closed: a presented frame then
     /// showed it on its old rows over text that had moved, 19 times in one measured reply.
     #[test]
@@ -854,7 +922,8 @@ mod tests {
                     images: vec!["iVBORw0KGgo=".to_owned()],
                     ..crate::model::NbCell::default()
                 }],
-                input: Box::default(),
+                full: false,
+                drawn: None,
             };
         }
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;

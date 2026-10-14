@@ -239,12 +239,12 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             app.state.panes.get(&pane_rect.id).is_some_and(|pane| {
                 matches!(pane.content, PaneContent::Session { chat: Some(_), .. })
             });
-        if pane_rect.focused
-            && panes_zone
-            && let Some(PaneContent::Editor(editor)) =
-                app.state.panes.get(&pane_rect.id).map(|pane| &pane.content)
-        {
-            editor_cursor = editor_cursor_cell(editor, inner);
+        if pane_rect.focused && panes_zone {
+            editor_cursor = match app.state.panes.get(&pane_rect.id).map(|pane| &pane.content) {
+                Some(PaneContent::Editor(editor)) => editor_cursor_cell(editor, inner),
+                Some(PaneContent::Terminal(pty)) => pty.cursor(inner),
+                _ => editor_cursor,
+            };
         }
         panes.push(PaneView {
             scroll,
@@ -411,7 +411,7 @@ fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> Strin
     note
 }
 
-pub use crate::panes::{hunk_lines, review_files, review_view, tape_view};
+pub use crate::panes::{hunk_lines, review_files, review_view};
 
 fn pane_view_content(
     pane: &mut crate::model::Pane,
@@ -426,18 +426,18 @@ fn pane_view_content(
         PaneContent::Session { session, .. } => {
             let title = session.as_ref().map_or_else(
                 || "❯ no session".to_owned(),
-                |id| format!("❯ {}", label_of(sessions, id, 14)),
+                |id| format!("❯ {}", label_of(sessions, id, usize::from(inner.width))),
             );
             (title, Vec::new(), None)
         }
         PaneContent::Markdown { path, source } => {
             let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
             (format!("¶ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Diff { path, source } => {
             let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
@@ -451,9 +451,9 @@ fn pane_view_content(
             let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
             ("Settings".to_owned(), lines, None)
         }
-        PaneContent::Tape { tape, cursor, .. } => {
-            let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
-            (title, all, None)
+        PaneContent::Terminal(pty) => {
+            let (title, lines) = pty.view(inner, &mut pane.scroll_from_bottom);
+            (title, lines, None)
         }
         PaneContent::SessionDiff { session, scope } => {
             let note = view.notes.get(session).map_or("", String::as_str);
@@ -464,126 +464,33 @@ fn pane_view_content(
                 usize::from(inner.width),
                 theme,
             );
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
-        PaneContent::Notebook { session, cells, .. } => {
+        PaneContent::Notebook {
+            session,
+            cells,
+            full,
+            drawn,
+        } => {
             let title = session.as_ref().map_or_else(
                 || "▤ notebook".to_owned(),
-                |id| format!("▤ nb:{}", label_of(sessions, id, 11)),
+                |id| format!("▤ {}", label_of(sessions, id, usize::from(inner.width))),
             );
-            let all = notebook_lines(cells, usize::from(inner.width), theme, close_hint);
+            let width = usize::from(inner.width);
+            if drawn.as_ref().is_none_or(|(at, _)| *at != width) {
+                let all = crate::panes::notebook_lines(cells, width, *full, theme, close_hint);
+                *drawn = Some((width, all));
+            }
+            let all = drawn.as_ref().map_or(&[][..], |(_, all)| all.as_slice());
             let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
     }
-}
-
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
-            out.push(String::new());
-        }
-        for chunk in chars.chunks(width) {
-            out.push(chunk.iter().collect());
-        }
-    }
-    out
-}
-
-fn notebook_lines(
-    cells: &[crate::model::NbCell],
-    width: usize,
-    theme: &Theme,
-    close: &str,
-) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    if cells.is_empty() {
-        out.push(Line::styled(
-            "no kernel cells yet — they appear as the agent computes",
-            theme.dim_style(),
-        ));
-        out.push(Line::styled(
-            format!("{close} closes · an idle notebook closes itself"),
-            theme.dim_style(),
-        ));
-        return out;
-    }
-    let body = width.saturating_sub(4).max(1);
-    for (index, cell) in cells.iter().enumerate() {
-        let (marker, style) = if cell.running {
-            ("◐", Style::default().fg(theme.warning))
-        } else if cell.error.is_some() {
-            ("●", Style::default().fg(theme.error))
-        } else {
-            ("●", Style::default().fg(theme.success))
-        };
-        out.push(Line::from(vec![
-            Span::styled(format!("{marker} "), style),
-            Span::styled(
-                format!("In [{}]", index.saturating_add(1)),
-                style.add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        let mut lang = yi_tui::highlight::lang_for("python");
-        let base = Style::default().fg(theme.text);
-        for code_line in cell.code.lines().take(24) {
-            let mut spans = vec![Span::styled("  │ ", theme.dim_style())];
-            match lang.as_mut() {
-                Some(lang) => spans.extend(yi_tui::highlight::spans(code_line, lang, theme, base)),
-                None => spans.push(Span::styled(code_line.to_owned(), base)),
-            }
-            out.extend(yi_tui::wrap::wrap_line(&Line::from(spans), width, "  │ "));
-        }
-        let has_output = !cell.stdout.is_empty() || cell.result.is_some() || cell.error.is_some();
-        if has_output {
-            out.push(Line::from(Span::styled(
-                format!("  Out [{}]", index.saturating_add(1)),
-                theme.muted_style(),
-            )));
-        }
-        for stream_line in wrap(&cell.stdout, body).into_iter().take(40) {
-            out.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(stream_line, Style::default().fg(theme.text)),
-            ]));
-        }
-        if let Some(result) = &cell.result {
-            for result_line in wrap(result, body).into_iter().take(20) {
-                out.push(Line::from(vec![
-                    Span::styled("  ↳ ", theme.accent_style()),
-                    Span::styled(
-                        result_line,
-                        theme.accent_style().add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-            }
-        }
-        if let Some(error) = &cell.error {
-            for error_line in wrap(error, body).into_iter().take(8) {
-                out.push(Line::from(vec![
-                    Span::styled("  ✕ ", Style::default().fg(theme.error)),
-                    Span::styled(error_line, Style::default().fg(theme.error)),
-                ]));
-            }
-        }
-        for image in &cell.images {
-            let kb = image.len().saturating_mul(3) / 4 / 1024;
-            out.push(Line::styled(
-                format!("  ▲ image · {kb} KB png"),
-                theme.accent_style(),
-            ));
-        }
-        out.push(Line::default());
-    }
-    out
 }
 
 fn windowed(
-    all: Vec<Line<'static>>,
+    all: &[Line<'static>],
     from_bottom: &mut usize,
     visible: usize,
 ) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
@@ -596,7 +503,7 @@ fn windowed(
     (window(all, from_bottom, visible), extent)
 }
 
-fn window(all: Vec<Line<'static>>, from_bottom: usize, visible: usize) -> Vec<Line<'static>> {
+fn window(all: &[Line<'static>], from_bottom: usize, visible: usize) -> Vec<Line<'static>> {
     let end = all.len().saturating_sub(from_bottom);
     let start = end.saturating_sub(visible);
     all.get(start..end)
@@ -694,7 +601,7 @@ fn editor_view(
     (format!("✎ {}{mark}", short_path(&editor.path)), out, extent)
 }
 
-fn short_path(path: &str) -> String {
+pub(crate) fn short_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
@@ -753,19 +660,6 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         render_borders(app, frame, view, theme);
     }
     render_thumbs(frame, view, theme);
-    let notebook = app
-        .state
-        .focused_pane_id()
-        .and_then(|id| app.state.panes.get(&id))
-        .and_then(|pane| match &pane.content {
-            PaneContent::Notebook { input, .. } => Some(input.as_ref()),
-            _ => None,
-        });
-    if let (Some(input), Some(pane)) = (notebook, view.panes.iter().find(|pane| pane.focused)) {
-        let inner = pane.rect.inner(pane_margin(framed));
-        let (_, row) = split_off_bottom(inner, 3);
-        frame.render_widget(input, row);
-    }
     if let Some(area) = view.banner {
         render_banner(app, frame, area, theme);
     }
@@ -792,6 +686,24 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         hits.overlays = vec![popup];
         hits.dismiss = Some(crate::palette::dismiss_mark(popup));
     }
+    if crate::title_playing(app)
+        && let Some(scene) = app.state.title
+    {
+        let landing = app
+            .state
+            .focused_pane_id()
+            .and_then(|id| app.state.panes.get(&id))
+            .and_then(|pane| match &pane.content {
+                PaneContent::Session {
+                    chat: Some(chat), ..
+                } => chat.app.orb_rect(),
+                _ => None,
+            });
+        let elapsed = app.clock.since(app.state.title_start);
+        let screen = frame.area();
+        let buffer = frame.buffer_mut();
+        yi_tui::title::cover(buffer, screen, (scene, elapsed), landing, theme);
+    }
 }
 
 /// Solo's chat into the pane's rectangle, its orb row reserved whether or not it has focus.
@@ -805,6 +717,7 @@ fn paint_chat_pane(
     theme: &Theme,
 ) {
     let kitty = app.kitty;
+    let covered = crate::title_playing(app);
     let title = (!framed)
         .then(|| {
             app.state
@@ -836,6 +749,7 @@ fn paint_chat_pane(
         return;
     };
     chat.app.set_kitty(kitty);
+    chat.app.set_title_cover(covered);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
