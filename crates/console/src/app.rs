@@ -634,6 +634,15 @@ impl App {
         let Some(sessions) = result.get("sessions").and_then(Value::as_array) else {
             return;
         };
+        let listed: std::collections::HashSet<&str> = sessions
+            .iter()
+            .filter_map(|entry| entry.get("sessionId").and_then(Value::as_str))
+            .collect();
+        for (id, row) in &mut self.state.sessions {
+            if !listed.contains(id.0.as_str()) {
+                row.pinned = None;
+            }
+        }
         for entry in sessions {
             let Some(id) = entry.get("sessionId").and_then(Value::as_str) else {
                 continue;
@@ -1120,6 +1129,8 @@ mod navigator;
 mod notebook;
 pub mod port;
 mod review;
+#[cfg(test)]
+mod rows;
 mod settings;
 
 pub(crate) use chat::orb_ids;

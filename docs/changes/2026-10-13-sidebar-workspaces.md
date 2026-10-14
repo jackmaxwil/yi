@@ -1,8 +1,8 @@
 ---
 issue: Closes #1376
-growth: +402 measured from the fork, the stacked #1371 chrome change included; this change's share is the daemon's `_yi/pin` (+27), the ledger field (+4) and the console's groups, pins and header controls; deleted for it the workspaces block, the root filter and its ←/→ walk, the inbox section headers and the empty-sidebar fallback; weighed and kept the folded header's needs-you mark (a fold must not hide a session waiting on the user) and the `cwd` that lets a pin create a ledger row (after a restart most listed sessions are the worker's alone)
+growth: +306 measured from the fork, +493 less the stacked #1371 chrome change's +187; this change's share is the daemon's `_yi/pin` and a pin's hold across a worker exit (+33), the ledger field (+4) and the console's groups, pins and header controls; deleted for it the workspaces block, the root filter and its ←/→ walk, the inbox section headers and the empty-sidebar fallback; weighed and kept the folded header's needs-you mark (a fold must not hide a session waiting on the user) and the `cwd` that lets a pin create a ledger row (after a restart most listed sessions are the worker's alone)
 decision: the console's full sidebar groups sessions by workspace under a PINNED section, in place of D276's needs you / working / idle sections and the separate workspaces block (amends D276) | the owner asked to "organize by workspace + pinned. Copy the claude code sidebar organization and layout" and chose "Needs-you first, then recent (Recommended)" inside a group (#1376); the inbox mixed every root's sessions into one need-ranked list, and the workspaces block was a filter beside it rather than the list's own structure | restore the section headers in `sidebar_lines`, the need-then-recency sort across roots in `visible_rows`, `render_roots` with its `root_filter`, and drop `groups`, `folded` and `_yi/pin`; a ledger written meanwhile keeps `pinnedMs`, which an older daemon reads as an unknown field
-raise: crate acp +27, crate console +374, crate types +4, tests +538, comments +12
+raise: crate acp +33, crate console +270, crate types +4, tests +376, comments +11
 ---
 The console's full sidebar is laid out like Claude Code's (Closes #1376). It opens with
 `+ New session` and `⌕ Search`, each naming its key; a click on either starts a session or
@@ -19,7 +19,8 @@ and the ←/→ workspace filter are gone: the groups are the workspaces. Every 
 the pointer.
 
 The dist binary grew with this change and the stacked chrome change: `binary_size_budget.json`
-moved from 8,372,272 to 8,388,800 bytes through the two measured `Ratchet:` commits on this
-branch, 192 bytes past the old 8 MiB cap (8,388,608), which is why the branch rides on the 9 MiB
+moved from 8,372,272 to 8,388,816 bytes through the measured `Ratchet:` commits on this
+branch, 208 bytes past the old 8 MiB cap (8,388,608), which is why the branch rides on the 9 MiB
 cap of #1380. A workspace whose sessions are all pinned keeps its header, so its `+` still starts
-a session there.
+a session there. A pin outlives its worker's exit: the daemon keeps the pinned row, idle and unattached, and
+a console clears the pin of a row the daemon stops listing.

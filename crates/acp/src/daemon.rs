@@ -689,9 +689,15 @@ impl Supervisor {
                 self.send_client(request.client, exited);
             }
         }
-        self.sessions.retain(|_, entry| entry.root != root);
+        // Invariant: a pin outlives its worker, or the next persist writes the ledger without it.
+        self.sessions
+            .retain(|_, entry| entry.root != root || entry.pinned_ms.is_some());
+        for entry in self.sessions.values_mut().filter(|e| e.root == root) {
+            entry.attached.clear();
+            entry.last_state = entry.last_state.take().map(|_| "idle".to_owned());
+        }
         self.parked
-            .retain(|session_id, _| self.sessions.contains_key(session_id));
+            .retain(|id, _| self.sessions.get(id).is_some_and(|e| e.root != root));
     }
 
     /// The daemon answers for the config, not a worker: a worker holds the copy it started on.

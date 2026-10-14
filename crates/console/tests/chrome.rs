@@ -12,7 +12,7 @@ use yi_console::layout::PaneId;
 use yi_console::model::{
     Link, PaneContent, SessionId, SessionRow, SessionStatus, SidebarMode, Zone,
 };
-use yi_console::settings::{Settings, tab_name};
+use yi_console::settings::{Edit, Settings, tab_name};
 use yi_tui::colors::{ColorTier, Theme};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -102,6 +102,35 @@ fn a_click_on_a_settings_tab_opens_that_tab() -> TestResult {
         _ => return Err("the settings pane went away".into()),
     };
     assert_eq!(tab, want, "the click left the pane on tab {tab}");
+    Ok(())
+}
+
+/// Dies with a typed edit left pending across a tab click, so Enter saves it onto row 0 of the new tab.
+#[test]
+fn a_click_on_a_settings_tab_drops_a_pending_edit() -> TestResult {
+    let (mut app, pane) = console()?;
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    draw(&mut app, &mut terminal)?;
+    if let Some(PaneContent::Settings(settings)) =
+        app.state.panes.get_mut(&pane).map(|p| &mut p.content)
+    {
+        settings.edit = Some(Edit::Type("typed".to_owned()));
+        settings.status = Some("saved".to_owned());
+    }
+    let (keys, ..) = hits(&app)?
+        .settings_tabs
+        .iter()
+        .copied()
+        .rfind(|(_, at, tab)| *at == pane && *tab > 0)
+        .ok_or("no other tab has a click target")?;
+    mouse(&mut app, MouseKind::Down, keys.x.saturating_add(1), keys.y);
+    match app.state.panes.get(&pane).map(|pane| &pane.content) {
+        Some(PaneContent::Settings(settings)) => {
+            assert!(settings.edit.is_none(), "the edit survived the tab click");
+            assert!(settings.status.is_none(), "the old tab's status survived");
+        }
+        _ => return Err("the settings pane went away".into()),
+    }
     Ok(())
 }
 
