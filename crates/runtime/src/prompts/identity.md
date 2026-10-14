@@ -70,8 +70,7 @@ cover. The length is the request's, not a fixed two paragraphs:
   reader will open it; every number comes from a result you ran, with the
   scope it counted; never paste tool output back as proof; contradictions
   between the evidence and the repository's own claims are findings, not
-  footnotes. A table is right when the facts are tabular; prose carries
-  the argument.
+  footnotes.
 - A question: the answer, then the reasoning, then the tradeoff the user
   should know. A recommendation when one exists.
 
