@@ -32,9 +32,8 @@ pub enum Action {
     ToggleSidebar,
     ToggleNotebook,
     ToggleDiff,
-    ToggleTape,
-    OpenEditor,
     OpenTerminal,
+    OpenEditor,
     OpenBrowser,
     Find,
     Save,
@@ -88,7 +87,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
-        KeyCode::Char('y') => Some(Action::ToggleTape),
+        KeyCode::Char('y') => Some(Action::OpenTerminal),
         KeyCode::Char('w') => Some(Action::OpenBrowser),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('?') => Some(Action::Keys),
@@ -120,7 +119,7 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         ('p', false) => Action::Navigator,
         ('b', false) => Action::ToggleSidebar,
         ('i', false) => Action::ToggleNotebook,
-        ('y', false) => Action::ToggleTape,
+        ('y', false) => Action::OpenTerminal,
         ('b', true) => Action::OpenBrowser,
         ('o', false) => Action::OpenEditor,
         ('s', false) => Action::Save,
@@ -195,7 +194,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 26] = [
+pub const CHORDS: [Chord; 25] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌥1..9", "", None),
@@ -220,11 +219,11 @@ pub const CHORDS: [Chord; 26] = [
     ),
     chord("review pane", "⌥g", "⌘⇧R", "", Some(Action::ToggleDiff)),
     chord(
-        "tape: where the time went",
+        "terminal pane in the session's directory",
         "⌥y",
         "⌘Y",
         "",
-        Some(Action::ToggleTape),
+        Some(Action::OpenTerminal),
     ),
     chord(
         "open a file in a pane",
@@ -268,7 +267,6 @@ pub const CHORDS: [Chord; 26] = [
         "",
         Some(Action::StopDaemon),
     ),
-    chord("terminal pane", "", "", "", Some(Action::OpenTerminal)),
     chord("browser pane", "⌥w", "⌘⇧B", "", Some(Action::OpenBrowser)),
     chord("settings", "⌥,", "⌥,", ",", Some(Action::Settings)),
     chord("all keys, in settings", "⌥?", "⌘/", "", Some(Action::Keys)),
