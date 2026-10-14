@@ -521,10 +521,9 @@ mod tests {
             let said = format!("[… {kept} of {total} bytes kept · notebook cap {cap} KiB");
             assert!(text.contains(&said), "{said:?} not in {text:?}");
         }
-        assert!(
-            !one_cell(json!({"stdout": "x".repeat(8192)}))[0]
-                .stdout
-                .contains("[…]"),
+        assert_eq!(
+            one_cell(json!({"stdout": "x".repeat(8192)}))[0].stdout,
+            "x".repeat(8192),
             "a cap-sized stream is not cut"
         );
         Ok(())
@@ -550,7 +549,7 @@ mod tests {
         let said = rows(&cells, 80, false);
         assert!(
             said.iter()
-                .any(|row| row.contains("[…] image 48 KB png dropped · notebook cap 64 KiB")),
+                .any(|row| row.contains("[…] image 65537 B base64 dropped · notebook cap 65536 B")),
             "{said:#?}"
         );
         assert!(
