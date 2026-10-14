@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 use yi_types::config::{
     BashConfig, CatalogConfig, ClassifierConfig, CompactionConfig, ConsoleConfig, EditConfig,
-    KernelConfig, McpConfig, ModelRoles, NodeConfig, PermissionsConfig, PlanConfig, PlansConfig,
-    RlmConfig, SkillsConfig, SpendConfig, TelemetryConfig, TuiConfig, UserConfig,
+    KernelConfig, MailConfig, McpConfig, ModelRoles, NodeConfig, PermissionsConfig, PlanConfig,
+    PlansConfig, RlmConfig, SkillsConfig, SpendConfig, TelemetryConfig, TuiConfig, UserConfig,
 };
 use yi_types::lane::LanesConfig;
 use yi_types::settings::{SettingKind, SettingRow, refusal, rows};
@@ -53,6 +53,7 @@ fn leaves() -> Vec<String> {
         skills,
         classifier,
         permissions,
+        mail,
         open,
     });
     let nested = [
@@ -129,6 +130,7 @@ fn leaves() -> Vec<String> {
             }),
         ),
         ("permissions", fields!(PermissionsConfig { mode })),
+        ("mail", fields!(MailConfig { hop_limit })),
     ];
     top.into_iter()
         .flat_map(

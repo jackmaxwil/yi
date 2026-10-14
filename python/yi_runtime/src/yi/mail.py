@@ -1,4 +1,4 @@
-"""yi.mail: messages between family members, over ``rlm``.
+"""yi.mail: messages between family members, and letters to other sessions, over ``rlm``.
 
     send      one message; the receipt says what the host did with it
     request   send and wait for the reply
@@ -9,6 +9,12 @@ The host writes an envelope to the receiver's inbox before it delivers anything,
 so a receipt of ``inboxed`` is a message kept, not a message lost: the receiver
 finds it with ``inbox()`` whenever it next runs. Reading an inbox never changes
 it, and ``since`` is the ``seq`` of the last entry you handled.
+
+A root sends to another session by its address, ``send("history://<id or name>", text,
+kind="request")``. The receipt is ``stored``: the letter waits in that session's mail channel
+and becomes a todo there after the turn it is in. Its reply comes back the same way, as a
+todo here; ``request`` refuses another session, and a chain of letters longer than
+``mail.hopLimit`` raises ``HopLimit``.
 
     from yi import mail
     answer = await mail.request("tests", "which suite is red?", timeout=120)
@@ -26,6 +32,7 @@ import rlm
 send = rlm.send
 request = rlm.request
 receive = rlm.receive
+HopLimit = rlm.HopLimit
 
 
 async def inbox(agent: str = "self", since: int = 0, limit: int | None = None) -> list[dict[str, Any]]:

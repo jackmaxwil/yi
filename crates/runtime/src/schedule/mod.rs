@@ -947,6 +947,7 @@ impl HeartbeatService {
                 let shared = shared::intern(path, |hub| self.lane_into(hub, &session_id));
                 *lock_or_poisoned(&self.store) = std::sync::Arc::clone(&shared.store);
                 *lock_or_poisoned(&self.hub) = Some(std::sync::Arc::clone(&shared.hub));
+                self.ensure_mailbox(&session_id);
             }
             _ => {
                 if let Some(hub) = self.hub() {

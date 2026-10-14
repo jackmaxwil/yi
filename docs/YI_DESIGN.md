@@ -680,10 +680,29 @@ A family message: an envelope in the receiver's inbox before delivery, then its 
 - `rlm.wait` clamps to 1-300 s and returns `state` (`asks`, `settled`, `moved`, `timeout`),
   a cursor and `causes`; `rlm.receive` takes queued envelopes into `agent_message_read`.
 - A target resolves by exact name, else the one child named `.../<target>`; ambiguity refuses.
+- A letter to another session: a root sends to `history://<id or name>`, resolved as a read of
+  it is and judged by the same wall; the target must be a root, a transcript directly under a
+  repository directory of the sessions store. It is appended to `channel://mail-<id>`, receipt
+  `stored`. `from` is the sender's `history://<id>`, its reply address; `origin` points at the
+  sender's entry, `intent` at the words behind its run. A `ref` in the reader's own store
+  (`family://`, `kernel://`) is refused.
+- Each durable root subscribes to its own mail channel at bind, from the channel's start, with
+  no heartbeat source, so `/heartbeat clear` leaves it: one todo per letter, any number open,
+  `FollowUp`; an `inform` waits for the next turn. A sender in the same process makes it due at
+  once; another process's waits up to a minute. The wake shows the envelope as fenced data.
+  A subscription to another session's mailbox is refused, in any letter case. A mailbox holding
+  256 unread letters refuses the next one by name, so mail for a session nobody runs is bounded.
+- Only a root sends outside; a child is refused and asks its root. `request` refuses another
+  session, whose reply comes back as a letter. The envelope must fit the 16 KiB channel cap.
+- `hops`: walking back to what started the run, a mail wake gives its highest letter's hop and
+  intent, the user's words or the task give 0, and family mail and notices are passed over, so a
+  child's report keeps the chain. Another wake, a clock's, gives 0 only when the letter before it
+  is over an hour old, so a clock between a letter and its reply cannot reset a live chain. A
+  letter carries that plus one; past `mail.hopLimit` (20) the send is refused with `yi.HopLimit`.
 - State: `Kind { Inform, Request, Reply, Progress, Failure, Cancel }`,
-  `Delivery { Queued, Woken, Inboxed, Answered }`.
+  `Delivery { Queued, Woken, Inboxed, Answered, Stored }`.
 - Owner: [`runtime/src/mail.rs`](../crates/runtime/src/mail.rs),
-  [`mailbox.rs`](../crates/runtime/src/mailbox.rs),
+  [`mailbox.rs`](../crates/runtime/src/mailbox.rs), [`post.rs`](../crates/runtime/src/post.rs),
   [`session/run.rs`](../crates/runtime/src/session/run.rs)
 - Shapes: [`types/src/mail.rs`](../crates/types/src/mail.rs) (`Envelope`, `Receipt`)
 - Settled by: D214, D230, D233, D235, D236
@@ -917,7 +936,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
   `classifier{url,timeoutMs,threshold,approve,approval,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`,
-  `open[{name,command}]`.
+  `mail{hopLimit}`, `open[{name,command}]`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
@@ -1110,7 +1129,7 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 |---|---|---|---|
 | direct deps | 22 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 171 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 8,372,256 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| dist binary | 8,372,272 bytes, a measured ratchet under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
 The binary and startup gates run only after a local dist build; a failed build fails both. Under

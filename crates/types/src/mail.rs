@@ -66,11 +66,32 @@ pub struct Envelope {
     /// the host took off the end of a turn that left the request open; absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_by: Option<String>,
+    /// The sender's entry the letter went out from, as `history://<sender>/<entry id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Url>,
+    /// The user's words the sender was serving, each `history://<sender>/<entry id>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intent: Vec<Url>,
+    #[serde(default, skip_serializing_if = "Hops::is_zero")]
+    pub hops: Hops,
+}
+
+/// How many letters between sessions led to this one: a letter sent by a turn that a letter
+/// of `n` hops woke carries `n + 1`; family mail and a turn the user started carry 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Hops(pub u32);
+
+impl Hops {
+    pub fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 /// What the host did with an accepted envelope, every one written to the inbox first:
 /// `Queued` for a running turn to drain, `Woken` a turn started on it, `Inboxed` neither,
-/// `Answered` a reply the waiting request's call returned, which is never presented again.
+/// `Answered` a reply the waiting request's call returned, which is never presented again,
+/// `Stored` a letter to another session, kept in its mail channel until that session reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {
@@ -78,6 +99,7 @@ pub enum Delivery {
     Woken,
     Inboxed,
     Answered,
+    Stored,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

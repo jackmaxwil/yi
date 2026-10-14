@@ -422,6 +422,9 @@ fn wire_fetch(
     }
     let resolver = Arc::new(resolver);
     host.set_resolver(Arc::clone(&resolver));
+    if let (Some(sessions), 0) = (&wiring.sessions_dir, wiring.depth) {
+        crate::post::wire(host, sessions.join("channels"));
+    }
     let handler = Arc::clone(&resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);
@@ -977,6 +980,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     tools.push(ipython);
     let annotate = crate::annotate::AnnotateTool::new(session.store_handle(), session.reclaimed());
     tools.push(Arc::new(annotate));
+    tools.push(crate::answer::tool(session.answer_handle(), &tools));
     crate::auto_review::wire(session, &wiring, &mut tools);
     if let Some(broker) = &wiring.broker {
         broker.set_journal(journal_into(session.store_handle()));
