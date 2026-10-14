@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::SessionError;
@@ -12,6 +13,13 @@ pub fn lock_session(session: &SharedSession) -> MutexGuard<'_, SessionStore> {
     session
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Reopen a session file as the shared store, poisoning tolerated as [`lock_session`] does.
+pub fn open_shared(path: &Path) -> Option<SharedSession> {
+    crate::jsonl::load_session(path)
+        .ok()
+        .map(|store| Arc::new(Mutex::new(store)))
 }
 
 pub trait SessionRepo {
