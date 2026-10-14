@@ -621,6 +621,24 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         hits.overlays = vec![popup];
         hits.dismiss = Some(crate::palette::dismiss_mark(popup));
     }
+    if crate::title_playing(app)
+        && let Some(scene) = app.state.title
+    {
+        let landing = app
+            .state
+            .focused_pane_id()
+            .and_then(|id| app.state.panes.get(&id))
+            .and_then(|pane| match &pane.content {
+                PaneContent::Session {
+                    chat: Some(chat), ..
+                } => chat.app.orb_rect(),
+                _ => None,
+            });
+        let elapsed = app.clock.since(app.state.title_start);
+        let screen = frame.area();
+        let buffer = frame.buffer_mut();
+        yi_tui::title::cover(buffer, screen, (scene, elapsed), landing, theme);
+    }
 }
 
 /// Solo's chat into the pane's rectangle; the focused pane alone carries the orb.
@@ -634,6 +652,7 @@ fn paint_chat_pane(
     theme: &Theme,
 ) {
     let kitty = app.kitty;
+    let covered = crate::title_playing(app);
     let title = (!framed)
         .then(|| {
             app.state
@@ -665,6 +684,7 @@ fn paint_chat_pane(
         return;
     };
     chat.app.set_kitty(kitty && view.focused);
+    chat.app.set_title_cover(covered);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
