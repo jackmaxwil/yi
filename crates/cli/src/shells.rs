@@ -317,6 +317,24 @@ fn chrome_pin() -> Option<yi_console::browser::Pinned> {
 /// `yi console` — the workspace shell, an ACP client over the serve daemon.
 #[cfg(feature = "tui")]
 pub fn run_console_command(args: &Args) -> i32 {
+    let console = config().console.clone().unwrap_or_default();
+    // A headless drive keeps the title off unless the config asks, so its frames hold still.
+    let title = if console.title_intro.unwrap_or(!args.headless) {
+        let seed = yi_console::model::now_ms();
+        let weights = console
+            .title_weights
+            .filter(|map| !map.is_empty())
+            .map(|map| map.into_iter().collect());
+        match yi_console::TitleOptions::new(weights, seed) {
+            Ok(title) => Some(title),
+            Err(unknown) => {
+                eprintln!("error: {unknown}");
+                return 2;
+            }
+        }
+    } else {
+        None
+    };
     let options = yi_console::ConsoleOptions {
         socket: daemon_socket(args),
         root: effective_cwd(args).display().to_string(),
@@ -326,6 +344,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .as_ref()
             .and_then(|console| console.auto_side)
             .unwrap_or(true),
+        title,
         open_apps: config()
             .open
             .iter()

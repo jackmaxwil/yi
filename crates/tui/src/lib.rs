@@ -37,6 +37,7 @@ pub mod status;
 pub mod table;
 pub mod term;
 pub mod terminal;
+pub mod title;
 pub mod transcript;
 pub mod tree;
 pub mod wrap;
