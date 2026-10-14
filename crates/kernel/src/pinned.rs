@@ -28,12 +28,7 @@ const TREE_FILES: usize = 512;
 const TREE_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    let response = crate::tarball::agent()
-        .build()
-        .get(url)
-        .call()
-        .map_err(|error| error.to_string())?;
-    crate::tarball::read_capped(response.into_reader())
+    crate::tarball::download(&crate::tarball::agent().build(), url)
 }
 
 /// The digest check behind every pin: `subject` names the file or URL, `remedy` what to do
