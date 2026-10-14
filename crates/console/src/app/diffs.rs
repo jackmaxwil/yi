@@ -166,10 +166,11 @@ impl App {
         for id in due {
             let session = match self.state.panes.get(&id).map(|pane| &pane.content) {
                 Some(PaneContent::Notebook { session, .. }) => {
-                    let running = session
-                        .as_ref()
-                        .and_then(|session| self.state.notebooks.get(session))
-                        .is_some_and(|cells| cells.iter().any(|cell| cell.running));
+                    let running = session.as_ref().is_some_and(|session| {
+                        crate::model::notebook_cells(&self.state.notebooks, session)
+                            .iter()
+                            .any(|cell| cell.running)
+                    });
                     if running {
                         continue;
                     }

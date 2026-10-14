@@ -548,11 +548,12 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     let PaneContent::Notebook { session, .. } = &pane.content else {
         return clear(out, placed);
     };
-    let image = session
+    let cells = session
         .as_ref()
-        .and_then(|session| app.state.notebooks.get(session))
-        .into_iter()
-        .flatten()
+        .map(|session| crate::model::notebook_cells(&app.state.notebooks, session))
+        .unwrap_or(&[]);
+    let image = cells
+        .iter()
         .rev()
         .flat_map(|cell| cell.images.iter())
         .next();

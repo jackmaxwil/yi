@@ -1,6 +1,22 @@
 use serde_json::Value;
 use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolCallUpdate, AcpToolContent};
 
+const STDOUT_CAP: usize = 8 * 1024;
+const RESULT_CAP: usize = 2 * 1024;
+const IMAGE_CAP: usize = 64 * 1024;
+const IMAGE_MAX: usize = 4;
+
+fn clamp_bytes(text: &str, cap: usize) -> String {
+    let mut end = cap.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    match text.get(..end) {
+        Some(head) => head.to_owned(),
+        None => String::new(),
+    }
+}
+
 /// Kernel cells out of the tool-call stream: the start carries the code,
 /// the end carries streams and attachments in the details record.
 pub(super) fn apply_notebook(
@@ -45,13 +61,13 @@ pub(super) fn apply_notebook(
                 cell.stdout = details
                     .get("stdout")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
+                    .map(|text| clamp_bytes(text, STDOUT_CAP))
+                    .unwrap_or_default();
                 cell.result = details
                     .get("result")
                     .and_then(Value::as_str)
                     .filter(|text| !text.is_empty())
-                    .map(str::to_owned);
+                    .map(|text| clamp_bytes(text, RESULT_CAP));
                 cell.error = details
                     .pointer("/error/evalue")
                     .and_then(Value::as_str)
@@ -78,11 +94,14 @@ pub(super) fn apply_notebook(
                     }
                     _ => None,
                 });
-                cell.images = legacy
+                let images: Vec<String> = legacy
                     .chain(current)
                     .filter_map(Value::as_str)
+                    .filter(|data| data.len() <= IMAGE_CAP)
                     .map(str::to_owned)
                     .collect();
+                let skip = images.len().saturating_sub(IMAGE_MAX);
+                cell.images = images.into_iter().skip(skip).collect();
             }
             if status.is_some() || raw_output.is_some() {
                 cell.running = false;
@@ -90,5 +109,74 @@ pub(super) fn apply_notebook(
             true
         }
         (None, false) => false,
+    }
+}
+#[cfg(test)]
+mod tests {
+    use yi_types::acp::AcpToolCallStatus;
+
+    use super::*;
+
+    fn start(id: &str) -> AcpSessionUpdate {
+        AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
+            tool_call_id: id.to_owned(),
+            title: Some("ipython".to_owned()),
+            raw_input: Some(serde_json::json!({"code": "1 + 1"})),
+            ..AcpToolCallUpdate::default()
+        })
+    }
+
+    fn end(id: &str, details: serde_json::Value) -> AcpSessionUpdate {
+        AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
+            tool_call_id: id.to_owned(),
+            status: Some(AcpToolCallStatus::Completed),
+            raw_output: Some(details),
+            ..AcpToolCallUpdate::default()
+        })
+    }
+
+    #[test]
+    fn a_cells_stdout_is_capped() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cells = Vec::new();
+        assert!(apply_notebook(&mut cells, &start("c1")));
+        let big = "x".repeat(8193);
+        assert!(apply_notebook(
+            &mut cells,
+            &end("c1", serde_json::json!({"stdout": big}))
+        ));
+        assert_eq!(cells[0].stdout.chars().count(), 8192, "stdout capped");
+        Ok(())
+    }
+
+    #[test]
+    fn a_cells_result_is_capped() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cells = Vec::new();
+        assert!(apply_notebook(&mut cells, &start("c1")));
+        let big = "y".repeat(2049);
+        assert!(apply_notebook(
+            &mut cells,
+            &end("c1", serde_json::json!({"stdout": "ok", "result": big}))
+        ));
+        assert_eq!(cells[0].result.as_deref().map(str::len), Some(2048));
+        Ok(())
+    }
+
+    #[test]
+    fn a_cells_images_are_capped() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cells = Vec::new();
+        assert!(apply_notebook(&mut cells, &start("c1")));
+        let big = "a".repeat(65537);
+        let media: Vec<_> = std::iter::once(big)
+            .chain((0..5).map(|i| format!("small{i}")))
+            .map(|data| serde_json::json!({"mime_type": "image/png", "data": data}))
+            .collect();
+        assert!(apply_notebook(
+            &mut cells,
+            &end("c1", serde_json::json!({"attachmentMedia": media}))
+        ));
+        assert_eq!(cells[0].images.len(), 4, "image count capped");
+        assert!(cells[0].images.iter().all(|image| image.len() <= 65536));
+        assert_eq!(cells[0].images.last().map(String::as_str), Some("small4"));
+        Ok(())
     }
 }
