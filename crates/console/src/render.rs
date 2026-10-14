@@ -48,6 +48,7 @@ pub enum Hit {
 pub struct Hits {
     pub sidebar_width: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
+    /// (column, row, session) of every avatar cell on screen; the kitty pass places there.
     pub avatars: Vec<crate::avatar::Placement>,
     pub root_rows: Vec<(u16, usize)>,
     pub panes: Vec<(PaneId, Rect)>,
@@ -56,6 +57,7 @@ pub struct Hits {
     pub closers: Vec<(PaneId, Rect)>,
     pub titles: Vec<(PaneId, Rect)>,
     pub settings_tabs: Vec<(Rect, PaneId, usize)>,
+    /// Popups over the panes, outermost first: they take every click and hide kitty images.
     pub overlays: Vec<Rect>,
     pub dismiss: Option<Rect>,
     pub gear: Option<Rect>,
@@ -64,6 +66,20 @@ pub struct Hits {
 }
 
 impl Hits {
+    pub fn split_at(&self, x: u16, y: u16) -> Option<&crate::layout::SplitBorder> {
+        self.splits.iter().find(|border| match border.direction {
+            ratatui::layout::Direction::Horizontal => {
+                x == border.pos
+                    && y >= border.area.y
+                    && y < border.area.y.saturating_add(border.area.height)
+            }
+            ratatui::layout::Direction::Vertical => {
+                y == border.pos
+                    && x >= border.area.x
+                    && x < border.area.x.saturating_add(border.area.width)
+            }
+        })
+    }
     pub fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
         let at = ratatui::layout::Position::new(x, y);
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
@@ -906,6 +922,8 @@ fn title_tile(app: &mut App, id: &str, seed: &str, hue: usize, x: u16, y: u16) -
     Span::raw(" ".repeat(text.chars().count()))
 }
 
+/// Border cells with edge-bit union, so shared pane edges resolve to real
+/// junctions instead of doubled lines.
 fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
     #[derive(Default, Clone, Copy)]
     struct EdgeCell {

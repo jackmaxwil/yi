@@ -158,29 +158,20 @@ impl App {
                 self.open_selected(outbound);
                 return;
             }
-            Some((_, crate::render::Hit::Title(pane))) => {
+            // Incident: the lower pane's title sits on the split row, and a press there
+            // meant as a resize focused the pane instead; the split is tried first.
+            Some((_, crate::render::Hit::Title(pane))) if hits.split_at(x, y).is_none() => {
                 self.focus_pane(pane);
+                self.mark_focused_seen(outbound);
                 self.dirty = true;
                 return;
             }
-            None => {}
+            Some((_, crate::render::Hit::Title(_))) | None => {}
         }
         if x < hits.sidebar_width {
             return;
         }
-        let split = hits.splits.iter().find(|border| match border.direction {
-            ratatui::layout::Direction::Horizontal => {
-                x == border.pos
-                    && y >= border.area.y
-                    && y < border.area.y.saturating_add(border.area.height)
-            }
-            ratatui::layout::Direction::Vertical => {
-                y == border.pos
-                    && x >= border.area.x
-                    && x < border.area.x.saturating_add(border.area.width)
-            }
-        });
-        if let Some(border) = split {
+        if let Some(border) = hits.split_at(x, y) {
             self.drag = Some((self.state.active_tab, border.path.clone()));
             return;
         }
@@ -207,16 +198,20 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            if let Some(session) = self.state.focused_session()
-                && self
-                    .state
-                    .sessions
-                    .get(&session)
-                    .is_some_and(|row| row.status == SessionStatus::DoneUnseen)
-            {
-                self.mark_seen(outbound, &session);
-            }
+            self.mark_focused_seen(outbound);
             self.dirty = true;
+        }
+    }
+
+    fn mark_focused_seen(&mut self, outbound: &Outbound) {
+        if let Some(session) = self.state.focused_session()
+            && self
+                .state
+                .sessions
+                .get(&session)
+                .is_some_and(|row| row.status == SessionStatus::DoneUnseen)
+        {
+            self.mark_seen(outbound, &session);
         }
     }
 
