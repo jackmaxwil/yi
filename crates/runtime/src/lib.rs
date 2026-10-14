@@ -3,6 +3,7 @@
 pub mod advisor;
 pub mod affordance;
 mod annotate;
+mod answer;
 mod args;
 pub mod auto_review;
 pub mod cache_miss;
@@ -52,7 +53,6 @@ pub mod skills;
 pub mod slash;
 pub mod spend;
 pub mod subagent;
-pub mod tape;
 pub mod telemetry;
 pub mod title;
 pub mod todo;
