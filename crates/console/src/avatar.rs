@@ -260,14 +260,14 @@ struct Motion {
     orb: yi_tui::orb::Orb,
     state: yi_tui::orb::OrbState,
     last: Instant,
-    painted: bool,
 }
 
 impl Motion {
     /// A session waiting on the person draws one still frame: animating it woke the console
     /// fifteen times a second for a row whose words already say it waits.
     fn still(&self) -> bool {
-        self.painted && self.state == yi_tui::orb::OrbState::Listening
+        self.state == yi_tui::orb::OrbState::Listening
+            && self.orb.holding(Some(yi_tui::orb::OrbState::Listening))
     }
 }
 
@@ -333,16 +333,12 @@ impl Avatars {
                 }
             };
             match (place.state, self.motion.get_mut(&place.key)) {
-                (Some(state), Some(motion)) => {
-                    motion.painted &= motion.state == state;
-                    motion.state = state;
-                }
+                (Some(state), Some(motion)) => motion.state = state,
                 (Some(state), None) => {
                     let motion = Motion {
                         orb: yi_tui::orb::Orb::default(),
                         state,
                         last: Instant::now(),
-                        painted: false,
                     };
                     self.motion.insert(place.key.clone(), motion);
                 }
@@ -372,7 +368,6 @@ impl Avatars {
                 continue;
             }
             motion.last = Instant::now();
-            motion.painted = true;
             let frame = motion.orb.frame(elapsed, Some(motion.state));
             let pixels = kitty::paint_rgba(&frame, 64.0, PX, PX);
             retransmit(out, *image, &pixels, self.placed.get(key));
@@ -555,13 +550,39 @@ mod tests {
     }
 
     #[test]
-    fn a_session_waiting_on_the_person_paints_one_still_frame() {
+    fn a_session_waiting_on_the_person_freezes_on_its_listening_loop() {
         let mut avatars = Avatars::default();
         let waiting = alpha(Some(yi_tui::orb::OrbState::Listening));
         avatars.sync(&mut Vec::new(), std::slice::from_ref(&waiting));
         assert!(!pass(&mut avatars).is_empty(), "the first frame is painted");
-        assert!(pass(&mut avatars).is_empty(), "a waiting avatar animated");
-        assert_eq!(avatars.wake(), None, "a still avatar keeps the loop waking");
+        assert!(
+            !pass(&mut avatars).is_empty(),
+            "a waiting avatar animates until its Listening loop arrives"
+        );
+        assert!(
+            avatars.wake().is_some(),
+            "a waiting avatar keeps the loop waking before it settles"
+        );
+        let mut paints = 2;
+        let mut froze = false;
+        for _ in 0..600 {
+            if pass(&mut avatars).is_empty() {
+                froze = true;
+                break;
+            }
+            paints += 1;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(froze, "the waiting avatar never froze");
+        assert!(
+            paints >= 5,
+            "froze after {paints} paints, before its Listening loop arrived"
+        );
+        assert_eq!(
+            avatars.wake(),
+            None,
+            "a frozen avatar keeps the loop waking"
+        );
         let working = alpha(Some(yi_tui::orb::OrbState::Working));
         avatars.sync(&mut Vec::new(), std::slice::from_ref(&working));
         assert!(!pass(&mut avatars).is_empty());
