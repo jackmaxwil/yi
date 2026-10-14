@@ -783,11 +783,8 @@ impl App {
         };
         cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
         cell.preview = result_preview(text, &details);
-        if cell.name == "ask_user"
-            && !is_error
-            && let Some(row) = crate::transcript::asked_row(text)
-        {
-            cell.digest = Some(row);
+        if cell.name == "ask_user" && !is_error {
+            cell.digest = None;
             cell.preview = Vec::new();
         }
         cell.details = details;

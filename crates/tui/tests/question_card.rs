@@ -13,6 +13,10 @@ use yi_types::event::AgentEvent;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn app() -> App {
+    app_at(80)
+}
+
+fn app_at(width: usize) -> App {
     App::new(
         TuiOptions {
             model: common::test_model("faux-1"),
@@ -27,7 +31,7 @@ fn app() -> App {
         },
         Theme::new(ColorTier::TrueColor, true),
         default_keymap(),
-        80,
+        width,
     )
 }
 
@@ -250,6 +254,15 @@ fn a_five_line_preview_is_whole_and_bare_string_options_read() -> TestResult {
     assert!(row_with(&rows, "line 5").is_some(), "{rows:#?}");
     assert!(row_with(&rows, "showing").is_none(), "{rows:#?}");
     assert!(row_with(&rows, " B ").is_some(), "{rows:#?}");
+    let mut cut = app_at(80);
+    let six = format!("{five}\nline 6");
+    asked(
+        &mut cut,
+        &[json!({"question": "Which?", "options": [{"label": "A", "preview": six}]})],
+    );
+    let rows = common::live_rows(&mut cut)?;
+    assert!(row_with(&rows, "line 6").is_none(), "{rows:#?}");
+    assert!(row_with(&rows, "showing 5 of 6").is_some(), "{rows:#?}");
     Ok(())
 }
 
@@ -272,19 +285,26 @@ fn wide_glyphs_keep_the_key_on_the_row_at_forty_columns() -> TestResult {
     Ok(())
 }
 
-/// Dies with the answered question left as a five-row tool cell cut by `… 1 more lines`, whose
-/// only hidden row was the sentence addressed to the model: one row says what was asked.
+/// Dies with the answered question left as five rows cut by `… 1 more lines`, or with a label's
+/// own colon read as the description's: one row says what was asked, every label whole.
 #[test]
 fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResult {
     use yi_types::event::ToolResult;
     use yi_types::message::Content;
     let mut app = app();
+    let args = json!({
+        "question": "Which layout?",
+        "options": [
+            {"label": "Tree: nested", "description": "Keeps todos as they are."},
+            {"label": "Stages"}
+        ]
+    });
     app.reduce_agent(AgentEvent::ToolExecutionStart {
         tool_call_id: "ask-0".to_owned(),
         tool_name: "ask_user".to_owned(),
-        args: layout(),
+        args,
     });
-    let text = "Question for the user: Which layout?\n  1. Tree: Keeps nested todos.\n  2. Stages: Numbers each todo.\n  3. Focus card\nThe turn ends here; the user's next message is the answer.";
+    let text = "Question for the user: Which layout?\n  1. Tree: nested: Keeps todos as they are.\n  2. Stages\nThe turn ends here; the user's next message is the answer.";
     app.reduce_agent(AgentEvent::ToolExecutionEnd {
         tool_call_id: "ask-0".to_owned(),
         tool_name: "ask_user".to_owned(),
@@ -312,7 +332,7 @@ fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResul
         .collect();
     let asked = row_with(&rows, "Which layout").ok_or(format!("{rows:#?}"))?;
     assert!(
-        asked.contains("Which layout?  [Tree · Stages · Focus card]"),
+        asked.contains("Which layout?  [Tree: nested · Stages]"),
         "{asked:?}"
     );
     assert!(row_with(&rows, "The turn ends here").is_none(), "{rows:#?}");
@@ -362,6 +382,151 @@ fn a_kitty_terminal_gets_the_card_as_one_image_under_its_text() -> TestResult {
         gone.matches("a=d").count(),
         2,
         "both image ids deleted: {gone}"
+    );
+    Ok(())
+}
+
+/// Dies with a long question cut at the card's edge: the prompt is the card's content, so it
+/// wraps onto the rows below and every word of it is on screen.
+#[test]
+fn a_long_question_wraps_and_keeps_every_word() -> TestResult {
+    let mut app = app();
+    let prompt = "Should the plan pane keep its tree with a progress bar under every stage, or number each todo by how long its chain is and end on the zebra?";
+    asked(
+        &mut app,
+        &[json!({"question": prompt, "options": ["Tree", "Stages"]})],
+    );
+    let rows = common::rows_at(&mut app, 34)?;
+    let shown = rows.join(" ");
+    for word in prompt.split_whitespace() {
+        assert!(shown.contains(word), "{word} missing: {rows:#?}");
+    }
+    assert!(row_with(&rows, "zebra?").is_some(), "{rows:#?}");
+    Ok(())
+}
+
+/// Dies with the side pane missing at 110 columns and up, or with a long preview's last row or
+/// its cut row drawn below the pane, floating on its own just above the footer.
+#[test]
+fn a_wide_card_keeps_a_long_preview_inside_its_side_pane() -> TestResult {
+    let mut app = app_at(120);
+    let long = (1..=30)
+        .map(|n| format!("mock {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let args = json!({
+        "question": "Which mock?",
+        "options": [{"label": "Dense", "preview": long}, {"label": "Sparse"}]
+    });
+    asked(&mut app, &[args]);
+    let rows = common::rows_sized(&mut app, 120, 40)?;
+    let title = row_with(&rows, "Dense (Recommended)").ok_or(format!("{rows:#?}"))?;
+    assert!(
+        title.contains("Preview"),
+        "the pane sits beside the tiles: {title:?}"
+    );
+    assert!(row_with(&rows, "mock 1").is_some(), "{rows:#?}");
+    let note = rows
+        .iter()
+        .position(|row| row.contains("of 30 lines; pane fits"))
+        .ok_or(format!("{rows:#?}"))?;
+    let below = rows
+        .get(note.saturating_add(1))
+        .ok_or("no row below the cut")?;
+    assert!(
+        !below.contains("Submit"),
+        "the cut row sits on the pane's edge: {rows:#?}"
+    );
+    press(&mut app, &[KeyCode::Down]);
+    let rows = common::rows_sized(&mut app, 120, 40)?;
+    assert!(
+        row_with(&rows, "No preview for this option").is_some(),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// Dies with the questions dropped when a popup was up at the turn's end: the model waits on
+/// an answer the person was never shown. The card opens once the popup closes.
+#[test]
+fn a_popup_up_at_the_turns_end_holds_the_card_until_it_closes() -> TestResult {
+    let mut app = app();
+    app.reduce_agent(AgentEvent::AgentStart);
+    press(&mut app, &keys("/"));
+    app.reduce_agent(AgentEvent::ToolExecutionStart {
+        tool_call_id: "ask-0".to_owned(),
+        tool_name: "ask_user".to_owned(),
+        args: layout(),
+    });
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let rows = common::live_rows(&mut app)?;
+    assert!(row_with(&rows, "Recommended").is_none(), "{rows:#?}");
+    press(&mut app, &[KeyCode::Esc]);
+    let rows = common::live_rows(&mut app)?;
+    assert!(
+        row_with(&rows, "Tree with a progress bar").is_some(),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// Dies with one console pane's card erased by another's: a hidden pane deleted the shared ids
+/// the focused pane had just placed, and its card lost every panel and tile.
+#[test]
+fn hiding_one_panes_card_leaves_another_panes_image() -> TestResult {
+    use yi_tui::question::{CardTick, hide, tick_with};
+    let mut app = app();
+    app.set_kitty(true);
+    asked(&mut app, &[layout()]);
+    common::rows_at(&mut app, 34)?;
+    let (mut left, mut right) = (
+        CardTick::with_ids([7200, 7201]),
+        CardTick::with_ids([7202, 7203]),
+    );
+    let mut out = Vec::new();
+    tick_with(&app, &mut out, &mut left, (10, 20));
+    tick_with(&app, &mut out, &mut right, (10, 20));
+    out.clear();
+    hide(&mut out, &mut left);
+    let sent = String::from_utf8_lossy(&out).into_owned();
+    assert!(sent.contains("i=7200") && sent.contains("i=7201"), "{sent}");
+    assert!(
+        !sent.contains("i=7202") && !sent.contains("i=7203"),
+        "{sent}"
+    );
+    Ok(())
+}
+
+/// Dies with a moved highlight leaving ink behind or missing a tile edge: the image a key
+/// repaints in part must be the image a fresh card paints whole, byte for byte.
+#[test]
+fn a_partly_repainted_card_is_the_card_painted_whole() -> TestResult {
+    use yi_tui::question::{CardTick, tick_with};
+    let mut app = app();
+    app.set_kitty(true);
+    asked(&mut app, &[layout()]);
+    common::rows_at(&mut app, 34)?;
+    let (mut moved, mut out) = (CardTick::with_ids([1, 2]), Vec::new());
+    tick_with(&app, &mut out, &mut moved, (10, 20));
+    press(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    common::rows_at(&mut app, 34)?;
+    out.clear();
+    tick_with(&app, &mut out, &mut moved, (10, 20));
+    let (mut whole, mut fresh) = (CardTick::with_ids([2, 1]), Vec::new());
+    tick_with(&app, &mut fresh, &mut whole, (10, 20));
+    let image = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        text.split("\u{1b}7")
+            .next()
+            .map(str::to_owned)
+            .unwrap_or_default()
+    };
+    assert!(image(&fresh).contains("a=t,i=1,"), "{:.80}", image(&fresh));
+    assert!(
+        image(&out) == image(&fresh),
+        "the partial repaint drifted from a whole paint"
     );
     Ok(())
 }

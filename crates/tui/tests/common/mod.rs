@@ -480,7 +480,15 @@ pub fn rows_at(
     app: &mut yi_tui::app::App,
     height: u16,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(80, height), 4)?;
+    rows_sized(app, 80, height)
+}
+
+pub fn rows_sized(
+    app: &mut yi_tui::app::App,
+    width: u16,
+    height: u16,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut terminal = yi_tui::terminal::Terminal::new(VT100Backend::new(width, height), 4)?;
     yi_tui::render::draw(app, &mut terminal, None);
     let backend = terminal.backend();
     Ok((0..height)

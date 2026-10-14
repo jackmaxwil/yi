@@ -339,7 +339,7 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
 
 /// `text` less at least `over` cells, whole characters only, ending in `…`. Measures the
 /// string, not the characters: `⚠️` is 1 + 0 cells apart and 2 together.
-fn clip_cells(text: &str, over: usize) -> String {
+pub(crate) fn clip_cells(text: &str, over: usize) -> String {
     let keep = text.width().saturating_sub(over + 1);
     let cells = crate::wrap::flatten_spans(&[Span::raw(text)]);
     let kept = crate::wrap::take_cells(&cells, keep);
