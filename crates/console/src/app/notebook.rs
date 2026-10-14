@@ -7,14 +7,7 @@ const IMAGE_CAP: usize = 64 * 1024;
 const IMAGE_MAX: usize = 4;
 
 fn clamp_bytes(text: &str, cap: usize) -> String {
-    let mut end = cap.min(text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    match text.get(..end) {
-        Some(head) => head.to_owned(),
-        None => String::new(),
-    }
+    yi_types::text::truncate_utf8(text, cap).to_owned()
 }
 
 /// Kernel cells out of the tool-call stream: the start carries the code,
@@ -94,13 +87,20 @@ pub(super) fn apply_notebook(
                     }
                     _ => None,
                 });
-                let images: Vec<String> = legacy
-                    .chain(current)
-                    .filter_map(Value::as_str)
+                let all: Vec<&str> = legacy.chain(current).filter_map(Value::as_str).collect();
+                cell.images_dropped = all
+                    .iter()
+                    .filter(|data| data.len() > IMAGE_CAP)
+                    .map(|data| data.len())
+                    .collect();
+                let images: Vec<String> = all
+                    .into_iter()
                     .filter(|data| data.len() <= IMAGE_CAP)
                     .map(str::to_owned)
                     .collect();
                 let skip = images.len().saturating_sub(IMAGE_MAX);
+                cell.images_dropped
+                    .extend(images[..skip].iter().map(|data| data.len()));
                 cell.images = images.into_iter().skip(skip).collect();
             }
             if status.is_some() || raw_output.is_some() {
@@ -177,6 +177,23 @@ mod tests {
         assert_eq!(cells[0].images.len(), 4, "image count capped");
         assert!(cells[0].images.iter().all(|image| image.len() <= 65536));
         assert_eq!(cells[0].images.last().map(String::as_str), Some("small4"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_cells_dropped_images_are_recorded() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cells = Vec::new();
+        assert!(apply_notebook(&mut cells, &start("c1")));
+        let big = "a".repeat(65537);
+        let media: Vec<_> = std::iter::once(big)
+            .chain((0..6).map(|i| format!("small{i}")))
+            .map(|data| serde_json::json!({"mime_type": "image/png", "data": data}))
+            .collect();
+        assert!(apply_notebook(
+            &mut cells,
+            &end("c1", serde_json::json!({"attachmentMedia": media}))
+        ));
+        assert_eq!(cells[0].images_dropped, vec![65537, 6, 6]);
         Ok(())
     }
 }
