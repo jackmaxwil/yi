@@ -31,6 +31,7 @@ import bot_meter  # noqa: E402
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
 import _common  # noqa: E402
 import forge_pr  # noqa: E402
+import merge_baseline  # noqa: E402
 import pr_review  # noqa: E402
 
 LABELS = {
@@ -303,6 +304,20 @@ def remeasure(clone):
     budget and moved tool hashes, and the hook refused a ceiling no file the model owns could meet."""
     for gate in ("check_schemas_lock.py", "check_request_budget.py"):
         sh(clone, sys.executable, f"scripts/guardrails/{gate}", "--update", env=scrubbed(), check=False)
+    relayout(clone)
+
+
+def relayout(clone):
+    """Every baseline in the merge driver's layout, which its selfcheck gates and the model may not
+    write: a one-sided merge keeps a branch's file in whatever layout its old writer used."""
+    base = clone / "scripts/guardrails/baselines"
+    if not base.is_dir():
+        return
+    for path in [*base.glob("*.json"), base / "schemas.lock"]:
+        try:
+            path.write_text(merge_baseline.layout(json.loads(path.read_text())))
+        except (OSError, ValueError):
+            continue
     sh(clone, "git", "add", "--", "scripts/guardrails/baselines")
 
 
@@ -454,9 +469,15 @@ def round_on(rounds, head, holds=pr_review.on_head):
     return rounds[-1] if rounds and holds(rounds[-1]["sha"], head) else None
 
 
+def answers(finding):
+    """A finding the fixer can answer: no intake check, and no file inside the wall. Incident: #1370's
+    three tiers each failed on a finding that named a baseline, which the fixer may not edit."""
+    return finding["lens"] not in pr_review.INTAKE and not pr_review.walled([finding.get("path") or ""])
+
+
 def owed_mediums(rnd):
-    """A clean round's medium findings the fixer answers: every one still holding the draft but the intake checks'."""
-    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and f["lens"] not in pr_review.INTAKE for f in pr_review.holding(rnd))
+    """A clean round's medium findings the fixer answers: every one still holding the draft that `answers`."""
+    return rnd["verdict"] == "clean" and any(f["severity"] == "medium" and answers(f) for f in pr_review.holding(rnd))
 
 
 def red_lanes(repo, sha):
@@ -543,12 +564,16 @@ def gate_in(clone, pr, lanes, answer, tried=0):
     """Make the red lanes pass in the clone, the deterministic repairs first; a model only for what
     they leave. Returns (summary, model, touched)."""
     reprice(clone, f"origin/{pr['base']['ref']}")
+    relayout(clone)
     refused = lane_failures(clone, lanes, pr["base"]["ref"])
     staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     if not refused:
         if staged:
-            return "The change files' raises and growth memo were repriced to what the gates measure.", None, staged
+            return "The change files' raises, growth memo and baseline layout were repaired to what the gates measure.", None, staged
         raise Flaky(f"the {', '.join(lanes)} lane(s) pass in the fixer's clone at this head")
+    # A baseline edit may not ride beside the model's code in one commit, so the relayout waits.
+    sh(clone, "git", "checkout", "HEAD", "--", "scripts/guardrails/baselines", check=False)
+    staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     model, touched = tier_for(3 * len(lanes), tried), staged
     for turn in range(2):
         before = snapshot(clone)
@@ -570,12 +595,16 @@ def gate_in(clone, pr, lanes, answer, tried=0):
 def findings_in(clone, pr, rnd, answer, tried=0):
     """Answer a round's high and medium findings in the clone: a blocked round's, or a clean one's
     mediums. Returns (summary, model, touched, declined highs)."""
-    todo = [f for f in pr_review.holding(rnd) if f["lens"] not in pr_review.INTAKE]
+    todo = [f for f in pr_review.holding(rnd) if answers(f)]
+    held = [f for f in pr_review.holding(rnd) if f["lens"] not in pr_review.INTAKE and not answers(f)]
+    walled = sorted({f["path"] for f in held})
+    left = f"\n\nLeft for a person: the findings on {', '.join(walled)}, which the fixer may not touch." if walled else ""
     highs = [f for f in todo if f["severity"] == "high"]
     if not highs and not owed_mediums(rnd):
-        lenses = sorted({f["lens"] for f in rnd["findings"] if f["severity"] == "high"})
-        raise RuntimeError(f"round {rnd['n']} is blocked by {', '.join(lenses) or 'nothing'} findings the fixer does not "
-                           "answer (the PR body's template, a duplicate); a person does")
+        lenses = sorted({f["lens"] for f in rnd["findings"] if f["severity"] == "high" and f["lens"] in pr_review.INTAKE})
+        why = [f"{', '.join(lenses)} (the PR body's template, a duplicate)"] if lenses else []
+        why += [f"findings on {', '.join(walled)}, which the fixer may not touch"] if walled else []
+        raise RuntimeError(f"round {rnd['n']} is blocked by findings the fixer does not answer; a person does: {'; '.join(why) or 'none'}")
     model = tier_for(points(len(highs), len(todo) - len(highs)), tried)
     before = snapshot(clone)
     said = answer(findings_prompt(pr, rnd["n"], todo), model, FINDINGS_SCHEMA)
@@ -605,11 +634,12 @@ def findings_in(clone, pr, rnd, answer, tried=0):
     declined = [d for d in every if isinstance(d.get("n"), int) and 0 < d["n"] <= len(todo)]
     stray = [d for d in every if d not in declined]
     declined_highs = [(d["n"], todo[d["n"] - 1], d["reason"]) for d in declined if todo[d["n"] - 1]["severity"] == "high"]
+    declined_highs += [("held", f, "the fixer may not touch this file") for f in held if f["severity"] == "high"]
     summary = (said.get("summary") or "").strip() or "the model gave no summary"
     reasons = "".join(f"\n\nDeclined {d['n']} ({todo[d['n'] - 1]['severity']}): {d.get('reason')}" for d in declined)
     reasons += "".join(f"\n\nDeclined {d.get('n')!r}, which names no finding of the {len(todo)} listed: {d.get('reason')}"
                        for d in stray)
-    summary += reasons + note
+    summary += reasons + left + note
     if not sh(clone, "git", "diff", "--cached", "--name-only").stdout.strip():
         raise Missed("the fixer changed nothing" + reasons)
     return summary, model, touched, declined_highs
@@ -1124,7 +1154,7 @@ def selfcheck():
             if landed != "main and topic\n" or len(parents) != 2 or len(turns) != 2 or "FAIL file_size" not in turns[1]:
                 errs.append(f"the repaired fix landed {landed!r} with {len(parents)} parents after {len(turns)} turns")
             budget = sh(tmp, "git", "show", "origin/topic:scripts/guardrails/baselines/request_budget.json", check=False).stdout
-            if budget != '{"total": 15}':
+            if budget != merge_baseline.layout({"total": 15}):
                 errs.append(f"the merge carried the request budget {budget!r}, not the merged tree's measure")
         except RuntimeError as err:
             errs.append(f"a hook refusal the repair turn fixes still failed the fix: {err}")
@@ -1319,10 +1349,16 @@ def selfcheck():
         sh(bare, "git", "init", "-q")
         class Asked(Exception):
             pass
-        def asked(*a, **k):
+        prompts = []
+        def asked(prompt, *a, **k):
+            prompts.append(prompt)
             raise Asked()
         for found, want in (([{"severity": "medium", "lens": "correctness", "claim": "c"}], "asked"),
-                            ([{"severity": "medium", "lens": "template", "claim": "c"}], "refused")):
+                            ([{"severity": "medium", "lens": "template", "claim": "c"}], "refused"),
+                            ([{"severity": "medium", "lens": "intent", "claim": "c",
+                               "path": "scripts/guardrails/baselines/schemas.lock"}], "refused"),
+                            ([{"severity": "high", "lens": "intent", "claim": "c", "path": "scripts/guardrails/baselines/x.json"},
+                              {"severity": "medium", "lens": "correctness", "claim": "c", "path": "a.rs"}], "asked")):
             try:
                 findings_in(bare, {"number": 1, "title": "t", "base": {"ref": "main"}},
                             {"n": 2, "verdict": "clean", "findings": found}, asked)
@@ -1333,6 +1369,15 @@ def selfcheck():
                 got = "refused"
             if got != want:
                 errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
+            if got == "asked" and "baselines/" in prompts[-1]:
+                errs.append("findings_in handed the model a finding on a file the fixer may not touch")
+        base = bare / "scripts/guardrails/baselines"
+        base.mkdir(parents=True)
+        (base / "schemas.lock").write_text('{\n "b": "y",\n "a": "x"\n}\n')
+        (base / "torn.json").write_text("<<<<<<< ours\n{}\n")
+        relayout(bare)
+        if (base / "schemas.lock").read_text() != '{\n  "a": "x",\n  "b": "y"\n}\n' or (base / "torn.json").read_text()[:7] != "<<<<<<<":
+            errs.append("relayout left a baseline outside the merge driver's layout, or rewrote one it could not parse")
     finally:
         shutil.rmtree(bare)
     merged_only = [{"n": 2, "sha": "771bd2c", "verdict": "clean", "findings": []}]
