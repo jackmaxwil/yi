@@ -53,8 +53,6 @@ pub enum RequestKind {
     BranchDiff(SessionId),
     Tape(SessionId),
     Why(SessionId),
-    KernelExecute,
-    KernelCancel,
     Slash(SessionId),
     Rewind(SessionId),
     Plan(SessionId),
@@ -515,9 +513,7 @@ impl App {
             RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
             RequestKind::Tape(session) => self.absorb_tape(&session, &result),
             RequestKind::Why(session) => self.absorb_why(&session, &result),
-            RequestKind::KernelExecute
-            | RequestKind::KernelCancel
-            | RequestKind::SetConfig(_)
+            RequestKind::SetConfig(_)
             | RequestKind::Settings(..)
             | RequestKind::Fork(_)
             | RequestKind::Steer
@@ -739,8 +735,9 @@ impl App {
         {
             for (pane_id, pane) in &mut self.state.panes {
                 if pane.session() == Some(&id)
-                    && matches!(pane.content, PaneContent::Notebook { .. })
+                    && let PaneContent::Notebook { drawn, .. } = &mut pane.content
                 {
+                    *drawn = None;
                     pane.scroll_from_bottom = 0;
                     if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
                         *seen = Instant::now();
@@ -778,61 +775,6 @@ impl App {
             .focused_pane_id()
             .and_then(|id| self.state.panes.get(&id))
             .is_some_and(|pane| matches!(pane.content, PaneContent::Notebook { .. }))
-    }
-
-    fn run_notebook_cell(&mut self, outbound: &Outbound) {
-        if !self.connected() {
-            return self.note("not connected — cell not sent");
-        }
-        let Some(PaneContent::Notebook {
-            session: Some(session),
-            input,
-            ..
-        }) = self.state.focused_pane_mut().map(|pane| &mut pane.content)
-        else {
-            return self.note("no session behind this notebook");
-        };
-        let code = input.lines().join("\n");
-        if code.trim().is_empty() {
-            return;
-        }
-        let session = session.clone();
-        *input = crate::model::notebook_input();
-        self.send_request(
-            outbound,
-            RequestKind::KernelExecute,
-            "_yi/kernel_execute",
-            json!({"sessionId": session.0, "code": code}),
-        );
-    }
-
-    fn cancel_notebook_cell(&mut self, outbound: &Outbound) {
-        let Some(PaneContent::Notebook {
-            session: Some(session),
-            ..
-        }) = self
-            .state
-            .focused_pane_id()
-            .and_then(|id| self.state.panes.get(&id))
-            .map(|pane| &pane.content)
-        else {
-            return;
-        };
-        let running = crate::model::notebook_cells(&self.state.notebooks, session)
-            .iter()
-            .rev()
-            .find(|cell| cell.running && cell.call_id.starts_with("user-"))
-            .map(|cell| cell.call_id.clone());
-        let Some(call_id) = running else {
-            return self.note("no user cell is running");
-        };
-        let session = session.clone();
-        self.send_request(
-            outbound,
-            RequestKind::KernelCancel,
-            "_yi/kernel_cancel",
-            json!({"sessionId": session.0, "callId": call_id}),
-        );
     }
 
     fn open_selected(&mut self, outbound: &Outbound) {
@@ -1154,20 +1096,16 @@ impl App {
                 _ => {}
             },
             Zone::Panes if self.on_editor() => self.editor_key(key),
-            Zone::Panes if self.on_notebook() => match key.code {
-                KeyCode::Esc => self.cancel_notebook_cell(outbound),
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    self.run_notebook_cell(outbound);
-                }
-                _ => {
-                    if let Some(PaneContent::Notebook { input, .. }) =
-                        self.state.focused_pane_mut().map(|pane| &mut pane.content)
-                    {
-                        let _ = yi_tui::composer::edit_key(input, key);
-                    }
+            Zone::Panes if self.on_notebook() => {
+                if let (KeyCode::Char('v'), Some(pane)) = (key.code, self.state.focused_pane_mut())
+                    && let PaneContent::Notebook { full, drawn, .. } = &mut pane.content
+                {
+                    *full = !*full;
+                    *drawn = None;
+                    pane.scroll_from_bottom = 0;
                     self.dirty = true;
                 }
-            },
+            }
             Zone::Panes if self.on_review().is_some() => self.review_key(key),
             Zone::Panes if self.on_tape() => self.tape_key(key),
             Zone::Panes if self.on_settings() => self.settings_key(outbound, key),
