@@ -545,6 +545,53 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
     Ok(())
 }
 
+/// Dies with an unattended run ended by its own question: nobody answers a root's `ask_user`
+/// there, so it gets the default to act on and the turn goes on.
+#[test]
+fn a_root_nobody_attends_is_handed_the_default_and_goes_on() -> TestResult {
+    for unattended in [false, true] {
+        let dir = Scratch::new(&format!("yi-alone-{unattended}"))?;
+        let (events, _receiver) = tokio::sync::broadcast::channel(4);
+        let broker = PermissionBroker::new(
+            PermissionMode::Auto,
+            dir.to_path_buf(),
+            Vec::new(),
+            None,
+            events,
+        )
+        .with_unattended(unattended);
+        let provider = Arc::new(ProviderStream::new(None));
+        let session = yi_runtime::AgentSession::new(
+            yi_runtime::SessionConfig {
+                system_prompt: String::new(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: yi_runtime::ExecutionMode::Sequential,
+            },
+            Arc::clone(&provider),
+        );
+        let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
+        let role = (None, Some(Arc::new(broker)));
+        yi_runtime::auto_review::wire_role(&session, role, &provider, &mut tools, None);
+        let ask = tools
+            .iter()
+            .find(|tool| tool.name() == "ask_user")
+            .ok_or("a root has ask_user")?;
+        let mut input = serde_json::Map::new();
+        input.insert("question".to_owned(), serde_json::json!("Which base?"));
+        input.insert("options".to_owned(), serde_json::json!(["main", "dev"]));
+        input.insert("default".to_owned(), serde_json::json!("main"));
+        let output = ask.execute(input, &yi_tools::ToolContext::new(dir.to_path_buf()));
+        let text = match output.result.content.first() {
+            Some(yi_types::message::Content::Text { text, .. }) => text.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(output.result.terminate == Some(true), !unattended, "{text}");
+        assert_eq!(text.contains("Go on with main"), unattended, "{text}");
+    }
+    Ok(())
+}
+
 #[test]
 fn the_review_fragment_names_the_tool_that_answers_a_denial() {
     let fragment = review_fragment();
@@ -623,7 +670,10 @@ fn an_option_with_a_description_lists_both_and_one_without_a_label_is_skipped() 
         _ => String::new(),
     };
     assert!(text.contains("  1. Quiet: One dim line."), "{text}");
-    assert!(text.contains("  3. Loud"), "{text}");
+    assert!(
+        text.contains("  2. Loud"),
+        "the card's key 2 is Loud: {text}"
+    );
     Ok(())
 }
 

@@ -128,11 +128,12 @@ impl Reviewer {
     }
 }
 
-/// Registered only when the role names a reviewer: a denial that names a
-/// request the model cannot answer is worse than no reviewer at all.
+/// `request` takes the broker the reviewer was wired into: a denial that names a request the
+/// model cannot answer is worse than no reviewer at all.
 pub struct AskUserTool {
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     parent: Option<crate::mailbox::ParentLink>,
+    unattended: bool,
 }
 
 impl AskUserTool {
@@ -140,6 +141,7 @@ impl AskUserTool {
         Self {
             broker,
             parent: None,
+            unattended: false,
         }
     }
 
@@ -147,6 +149,44 @@ impl AskUserTool {
         self.parent = parent;
         self
     }
+
+    pub fn unattended(mut self, unattended: bool) -> Self {
+        self.unattended = unattended;
+        self
+    }
+}
+
+/// One `ask_user` option as the result text and the question card both read it.
+pub struct AskOption<'a> {
+    pub label: &'a str,
+    pub description: Option<&'a str>,
+    pub preview: Option<&'a str>,
+}
+
+/// Invariant: the one reader of `options`, so the number the model is shown and the key the
+/// person presses name the same option; an entry with no label is dropped from both.
+pub fn ask_options(options: Option<&Value>) -> Vec<AskOption<'_>> {
+    fn text<'a>(option: &'a Value, key: &str) -> Option<&'a str> {
+        let text = option.get(key)?.as_str()?.trim();
+        (!text.is_empty()).then_some(text)
+    }
+    let options = options.and_then(Value::as_array).into_iter().flatten();
+    options
+        .filter_map(|option| {
+            let label = match option {
+                Value::String(label) => Some(label.trim()).filter(|label| !label.is_empty()),
+                _ => text(option, "label"),
+            }?;
+            let preview = option.get("preview").and_then(Value::as_str);
+            Some(AskOption {
+                label,
+                description: text(option, "description"),
+                preview: preview
+                    .filter(|preview| !preview.trim().is_empty())
+                    .map(str::trim_end),
+            })
+        })
+        .collect()
 }
 
 fn question_text(input: &Map<String, Value>) -> Option<String> {
@@ -155,20 +195,13 @@ fn question_text(input: &Map<String, Value>) -> Option<String> {
         return None;
     }
     let mut text = question.to_owned();
-    let options = input.get("options").and_then(Value::as_array);
-    for (index, option) in options.into_iter().flatten().enumerate() {
-        let (label, description) = match option {
-            Value::Object(parts) => (
-                parts.get("label").and_then(Value::as_str),
-                parts.get("description").and_then(Value::as_str),
-            ),
-            other => (other.as_str(), None),
-        };
-        let Some(label) = label else { continue };
+    for (index, option) in ask_options(input.get("options")).iter().enumerate() {
         let number = index.saturating_add(1);
-        match description {
-            Some(description) => text.push_str(&format!("\n  {number}. {label}: {description}")),
-            None => text.push_str(&format!("\n  {number}. {label}")),
+        match option.description {
+            Some(description) => {
+                text.push_str(&format!("\n  {number}. {}: {description}", option.label));
+            }
+            None => text.push_str(&format!("\n  {number}. {}", option.label)),
         }
     }
     if let Some(default) = input.get("default").and_then(Value::as_str) {
@@ -245,6 +278,15 @@ impl yi_tools::Tool for AskUserTool {
                 Err(refusal) => yi_tools::error_output(refusal),
             };
         }
+        if self.unattended {
+            let options = ask_options(input.get("options"));
+            let default = input.get("default").and_then(Value::as_str);
+            let taken = default.or_else(|| options.first().map(|option| option.label));
+            return yi_tools::text_output(format!(
+                "Nobody is attached to answer: {text}\nGo on with {}, and name that assumption in the report.",
+                taken.unwrap_or("your recommendation")
+            ));
+        }
         let mut output = yi_tools::text_output(format!(
             "Question for the user: {text}\nThe turn ends here; the user's next message is the answer."
         ));
@@ -266,8 +308,8 @@ pub fn resolution_text(display: &str, verdict: UserVerdict) -> String {
     }
 }
 
-/// Model-role-gated the way the advisor is (D28/D50): with the role unnamed nothing here is
-/// constructed, `ask_user` is never registered, and auto mode stays deterministic.
+/// Model-role-gated the way the advisor is (D28/D50): with the role unnamed no reviewer is
+/// constructed and auto mode stays deterministic; `ask_user` is registered either way.
 pub fn wire(
     session: &AgentSession,
     wiring: &crate::wiring::RuntimeWiring,
@@ -292,14 +334,20 @@ pub fn wire_role(
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
     parent: Option<crate::mailbox::ParentLink>,
 ) {
+    // Invariant: a question on a root nobody attends would end the run unanswered, so it
+    // returns the default to act on instead; a child's parent always answers.
+    let unattended = parent.is_none() && broker.as_ref().is_some_and(|broker| broker.unattended());
     let (Some(model), Some(broker)) = (role, broker) else {
-        tools.push(Arc::new(AskUserTool::new(None).asking(parent)));
+        let ask = AskUserTool::new(None).asking(parent).unattended(unattended);
+        tools.push(Arc::new(ask));
         return;
     };
     broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(provider), model)));
     // P3: tools freeze after SessionStart, so registration is here or nowhere.
     tools.push(Arc::new(
-        AskUserTool::new(Some(Arc::clone(&broker))).asking(parent),
+        AskUserTool::new(Some(Arc::clone(&broker)))
+            .asking(parent)
+            .unattended(unattended),
     ));
     if let Some(host) = session.extensions()
         && let Ok(mut host) = host.lock()

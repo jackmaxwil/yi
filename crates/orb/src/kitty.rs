@@ -186,44 +186,24 @@ pub fn place(
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
-    place_nth(out, id, 1, col, row, cols, rows)
+    place_nth(out, id, (1, 0), (col, row), (cols, rows))
 }
 
 /// Invariant: no `?2026` of its own, since the mode does not nest and an inner end showed the
-/// frame early; the caller brackets. One image on several rows takes a placement id `p` per row.
+/// frame early; the caller brackets. A negative `z` draws under the glyphs, above cell grounds.
 pub fn place_nth(
     out: &mut impl Write,
     id: u32,
-    placement: u32,
-    col: u16,
-    row: u16,
-    cols: u16,
-    rows: u16,
+    (placement, z): (u32, i32),
+    (col, row): (u16, u16),
+    (cols, rows): (u16, u16),
 ) -> std::io::Result<()> {
     write!(out, "\x1b7\x1b[{};{}H", row + 1, col + 1)?;
-    write!(
-        out,
-        "\x1b_Ga=p,i={id},p={placement},q=2,C=1,c={cols},r={rows}\x1b\\"
-    )?;
-    write!(out, "\x1b8")?;
-    out.flush()
-}
-
-/// Place the id's one placement under the text of its cells: a negative `z` draws the image
-/// below the glyphs but above cell backgrounds, so the cells' text stays the terminal's own.
-pub fn place_under(
-    out: &mut impl Write,
-    id: u32,
-    col: u16,
-    row: u16,
-    cols: u16,
-    rows: u16,
-) -> std::io::Result<()> {
-    write!(out, "\x1b7\x1b[{};{}H", row + 1, col + 1)?;
-    write!(
-        out,
-        "\x1b_Ga=p,i={id},p=1,q=2,C=1,z=-1,c={cols},r={rows}\x1b\\"
-    )?;
+    write!(out, "\x1b_Ga=p,i={id},p={placement},q=2,C=1")?;
+    if z != 0 {
+        write!(out, ",z={z}")?;
+    }
+    write!(out, ",c={cols},r={rows}\x1b\\")?;
     write!(out, "\x1b8")?;
     out.flush()
 }

@@ -48,6 +48,7 @@ pub fn handle_terminal_event(
             }
             if app.bottom.is_some() {
                 handle_bottom_key(app, cmd_tx, &key);
+                app.open_questions();
                 return;
             }
             let ctx = EvalContext {

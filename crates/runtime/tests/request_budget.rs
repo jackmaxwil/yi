@@ -828,7 +828,6 @@ fn every_deferred_guide_is_one_read_away() -> TestResult {
     pointed.sort();
     assert_eq!(
         pointed,
-        // Every root registers `ask_user`, reviewer or not: a root's question is a card.
         [
             "yi://tools/answer",
             "yi://tools/ask_user",

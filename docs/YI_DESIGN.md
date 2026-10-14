@@ -29,8 +29,7 @@ JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WA
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
 §17.1) · a GUI · browser automation, computer use, email, or any capability that
-is not a coding agent · an `ask_user` tool on a root session with no reviewer (a root asks in
-its reply; demoted when `annotate` entered) · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
+is not a coding agent · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
@@ -325,7 +324,7 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
-  `ipython`, `annotate`, `plan`, `todo`, and `ask_user` in a child or with auto-review on. `check_request_budget.py` prices system block plus tool
+  `ipython`, `annotate`, `plan`, `todo`, and `ask_user`. `check_request_budget.py` prices system block plus tool
   table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema

@@ -216,19 +216,10 @@ pub(crate) fn closer_image(hits: &mut Hits, pane: &PaneView, at: Rect, theme: &T
 }
 
 fn rgb(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        _ => yi_tui::orb::kitty::INK_RGB,
-    }
+    yi_tui::chrome::rgb(color, yi_tui::orb::kitty::INK_RGB)
 }
 
 /// 8×16 when the terminal does not report its pixel size.
 fn cell_pixels() -> (usize, usize) {
-    match ratatui::crossterm::terminal::window_size() {
-        Ok(size) if size.columns > 0 && size.rows > 0 && size.width > 0 && size.height > 0 => (
-            usize::from(size.width / size.columns),
-            usize::from(size.height / size.rows),
-        ),
-        _ => (8, 16),
-    }
+    yi_tui::chrome::cell_pixels().unwrap_or((8, 16))
 }
