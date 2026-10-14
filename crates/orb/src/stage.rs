@@ -69,8 +69,8 @@ impl Orb {
         self.now.is_none() && want.is_none() && self.next.is_none() && self.morph.is_none()
     }
 
-    pub fn holding(&self, state: Option<OrbState>) -> bool {
-        self.now == state && self.next.is_none() && self.morph.is_none()
+    pub fn holding(&self, state: OrbState) -> bool {
+        self.now == Some(state) && self.next.is_none() && self.morph.is_none()
     }
 
     pub fn frame(&mut self, dt: Duration, want: Option<OrbState>) -> OrbFrame {
