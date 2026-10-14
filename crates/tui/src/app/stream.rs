@@ -783,7 +783,7 @@ impl App {
         };
         cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
         cell.preview = result_preview(text, &details);
-        if cell.name == "ask_user" && !is_error {
+        if cell.name == "ask_user" && !is_error && text.starts_with("Question for the user: ") {
             cell.digest = None;
             cell.preview = Vec::new();
         }
