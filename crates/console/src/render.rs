@@ -412,10 +412,9 @@ fn pane_view_content(
             (title, lines, scroll)
         }
         PaneContent::Notebook { session, .. } => {
-            let cells = session
-                .as_ref()
-                .and_then(|id| view.notebooks.get(id))
-                .map_or(&[][..], Vec::as_slice);
+            let cells = session.as_ref().map_or(&[][..], |id| {
+                crate::model::notebook_cells(view.notebooks, id)
+            });
             let title = session.as_ref().map_or_else(
                 || "▤ notebook".to_owned(),
                 |id| format!("▤ nb:{}", label_of(sessions, id, 11)),

@@ -187,6 +187,13 @@ pub struct NbCell {
     pub running: bool,
 }
 
+pub(crate) fn notebook_cells<'a>(
+    notebooks: &'a BTreeMap<SessionId, Vec<NbCell>>,
+    session: &SessionId,
+) -> &'a [NbCell] {
+    notebooks.get(session).map_or(&[][..], Vec::as_slice)
+}
+
 /// What a pane shows: the provider seam — a new kind is a new variant plus
 /// its render arm, nothing else.
 pub enum PaneContent {

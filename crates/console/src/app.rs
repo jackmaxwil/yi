@@ -818,12 +818,8 @@ impl App {
         else {
             return;
         };
-        let running = self
-            .state
-            .notebooks
-            .get(session)
-            .into_iter()
-            .flatten()
+        let running = crate::model::notebook_cells(&self.state.notebooks, session)
+            .iter()
             .rev()
             .find(|cell| cell.running && cell.call_id.starts_with("user-"))
             .map(|cell| cell.call_id.clone());
