@@ -258,7 +258,7 @@ fn stream_lines(text: &str, style: Style, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn traceback_of(details: &Value) -> String {
+pub fn traceback_of(details: &Value) -> String {
     let rows: Vec<String> = details
         .pointer("/error/traceback")
         .and_then(Value::as_array)

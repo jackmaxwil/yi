@@ -336,7 +336,7 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
     );
     let third = (hooks.intercept_stop)(&snapshot(&message)).ok_or("rung 3")?;
     let (_, _, text) = custom_type(&third);
-    assert!(text.contains("call no tools"), "{text}");
+    assert!(text.contains("call no other tools"), "{text}");
     assert!(
         (hooks.intercept_stop)(&snapshot(&message)).is_none(),
         "past the top rung the turn ends"
@@ -721,7 +721,7 @@ fn an_empty_stop_answers_the_unsourced_send_back() -> TestResult {
     let claim = stop("The rule in D240 says 2500 checks run.");
     let first = (hooks.intercept_stop)(&snapshot(&claim)).ok_or("an unsourced number re-drives")?;
     let (_, _, text) = custom_type(&first);
-    assert!(text.contains("end the turn with no text"), "{text}");
+    assert!(text.contains("submit the draft unchanged"), "{text}");
     assert!(!text.contains("quote the tool result"), "{text}");
     let empty = stop("");
     assert!(
