@@ -2306,7 +2306,7 @@ fn an_unattended_run_answers_ask_user_with_the_default_and_goes_on() -> TestResu
     let question = json!({
         "question": "Ship it now or hold for the report?",
         "options": [{"label": "Ship it"}, {"label": "Hold"}],
-        "default": "Ship it"
+        "default": "Hold"
     });
     let runs = [
         (
@@ -2338,6 +2338,13 @@ fn an_unattended_run_answers_ask_user_with_the_default_and_goes_on() -> TestResu
         "{out}"
     );
     assert!(told_it_is_alone(&alone)?);
+    let ledger = session_files(&alone.0.join("home/sessions"))?
+        .iter()
+        .map(|path| std::fs::read_to_string(path).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(ledger.contains("Nobody is attached to answer"), "{ledger}");
+    assert!(ledger.contains("Go on with Hold"), "{ledger}");
     Ok(())
 }
 
