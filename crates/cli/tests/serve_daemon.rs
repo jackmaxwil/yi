@@ -796,6 +796,47 @@ fn a_pin_survives_a_daemon_restart() -> TestResult {
     outcome
 }
 
+/// A worker that dies takes its unpinned rows with it and leaves the pinned one listed, so a
+/// later `_yi/seen` persists the ledger with the pin still in it.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_pin_survives_its_worker_dying() -> TestResult {
+    let dir = Scratch::new("yi-serve-pin-kill")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let pinned_id = new_session(&mut client, "2", &dir)?;
+        let loose_id = new_session(&mut client, "3", &dir)?;
+        let params = json!({"sessionId": pinned_id, "pinned": true});
+        let at = client.request("p", "_yi/pin", params)?["result"]["pinnedMs"].clone();
+        assert!(at.is_u64(), "the pin answers its time");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the worker is a grandchild the test can only see through the process table"
+        )]
+        let workers = Command::new("pgrep")
+            .args(["-f", &format!("acp --cwd {}", dir.display())])
+            .output()?;
+        for pid in String::from_utf8_lossy(&workers.stdout).split_whitespace() {
+            kill(&["-9", pid])?;
+        }
+        wait_until(Instant::now() + Duration::from_secs(10), || {
+            Ok(listed_row(&mut client, &loose_id)?.is_none())
+        })?;
+        client.request("s", "_yi/seen", json!({"sessionId": pinned_id}))?;
+        let row = listed_row(&mut client, &pinned_id)?.ok_or("the pinned row must stay listed")?;
+        assert_eq!(
+            row["_meta"]["yi"]["pinnedMs"], at,
+            "the pin survives: {row}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// `_yi/shutdown` answers, then the daemon exits, its socket goes, and its worker dies
 /// with it — the console's double ctrl+c must leave no orphan behind.
 #[test]

@@ -139,6 +139,7 @@ impl App {
             self.state.zone = Zone::Panes;
             if let Some(settings) = self.settings_pane(pane) {
                 (settings.tab, settings.cursor) = (tab, 0);
+                (settings.edit, settings.status) = (None, None);
             }
             self.dirty = true;
             return;
