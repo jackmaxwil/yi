@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 
 /// (rect, payload frame, kitty id) of one placement that is currently on screen.
 pub type Placed = (Rect, u64, u32);
-pub type Slots = BTreeMap<(), Placed>;
 
 /// One reconcile loop for every kitty placement: a want that vanished deletes its id, an
 /// unchanged (rect, frame) pair is skipped, and a paint that lands records its id and

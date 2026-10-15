@@ -46,6 +46,10 @@ fn flags(no_sandbox: bool) -> impl Iterator<Item = &'static str> {
         .into_iter()
         .chain(no_sandbox.then_some("--no-sandbox"))
 }
+
+fn no_sandbox(root: bool, chrome: &Path, pinned: Option<&Path>) -> bool {
+    root && Some(chrome) == pinned
+}
 /// A frame past this is drained to its NUL and refused; a 4K screencast PNG is about 12 MiB
 /// of base64.
 const MAX_FRAME: u64 = 32 << 20;
@@ -158,9 +162,11 @@ impl Browser {
         let mut child = std::process::Command::new(shim)
             .arg("__fds")
             .arg(chrome)
-            .args(flags(
-                rustix::process::geteuid().is_root() && Some(chrome) == pinned,
-            ))
+            .args(flags(no_sandbox(
+                rustix::process::geteuid().is_root(),
+                chrome,
+                pinned,
+            )))
             .arg(profile_flag)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -306,6 +312,21 @@ mod tests {
 
     #[test]
     fn only_the_pinned_headless_shell_drops_its_sandbox() {
+        let pinned = Path::new("/root/.yi/plugins/chrome");
+        assert!(
+            no_sandbox(true, pinned, Some(pinned)),
+            "the pinned headless shell drops its sandbox under root"
+        );
+        let installed = Path::new("/usr/bin/google-chrome");
+        assert!(
+            !no_sandbox(true, installed, Some(pinned)),
+            "a root launch of an installed Chrome keeps its sandbox"
+        );
+        assert!(
+            !no_sandbox(false, pinned, Some(pinned)),
+            "a non-root launch keeps its sandbox even for the pinned shell"
+        );
+        assert!(!no_sandbox(true, pinned, None));
         assert!(flags(true).any(|flag| flag == "--no-sandbox"));
         assert!(flags(false).all(|flag| flag != "--no-sandbox"));
     }
