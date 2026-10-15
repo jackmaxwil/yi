@@ -556,4 +556,21 @@ mod tests {
         );
         Ok(())
     }
+
+    /// A child session never reaches attach_runtime, so `new` itself must wire the
+    /// hook: unwired, its cut OpenRouter turn settles inline and stalls the child.
+    #[test]
+    fn a_session_built_without_attach_runtime_still_carries_a_settle_hook() {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        super::AgentSession::new(
+            crate::session::SessionConfig {
+                system_prompt: String::new(),
+                model: crate::plan::dispatch::tests::faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            Arc::clone(&provider),
+        );
+        assert!(provider.settle_wired_for_test());
+    }
 }
