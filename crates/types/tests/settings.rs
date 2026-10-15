@@ -85,7 +85,14 @@ fn leaves() -> Vec<String> {
         ),
         ("kernel", fields!(KernelConfig { prewarm })),
         ("edit", fields!(EditConfig { freeform_grammar })),
-        ("console", fields!(ConsoleConfig { auto_side })),
+        (
+            "console",
+            fields!(ConsoleConfig {
+                auto_side,
+                title_intro,
+                title_weights
+            }),
+        ),
         ("tui", fields!(TuiConfig { pace })),
         (
             "lanes",
@@ -131,6 +138,7 @@ fn leaves() -> Vec<String> {
         ),
         ("permissions", fields!(PermissionsConfig { mode })),
         ("mail", fields!(MailConfig { hop_limit })),
+        ("routing", vec!["order", "only"]),
     ];
     top.into_iter()
         .flat_map(
