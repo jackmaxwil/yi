@@ -94,7 +94,8 @@ pub struct ProviderStream {
     /// the script (#943).
     force_faux: bool,
     cursor: CursorStream,
-    /// Where a cut turn's usage is booked once its record lands: the first session wired keeps it.
+    /// Where a cut turn's usage is booked once its record lands; `new` wires a parentless
+    /// default and attach_runtime re-wires it with the parent's bill.
     settle: Mutex<Option<yi_ai::settle::Settle>>,
 }
 
@@ -169,8 +170,13 @@ impl ProviderStream {
 
     pub(crate) fn settle_into(&self, hook: yi_ai::settle::Settle) {
         if let Ok(mut slot) = self.settle.lock() {
-            slot.get_or_insert(hook);
+            *slot = Some(hook);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settle_wired_for_test(&self) -> bool {
+        self.settle.lock().is_ok_and(|slot| slot.is_some())
     }
 
     /// Seeds `provider`'s entry with a credential already resolved.
