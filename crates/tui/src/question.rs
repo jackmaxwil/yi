@@ -829,12 +829,12 @@ pub fn tick_with(
     let base_key = hasher.finish();
     let (panel, rest) = pieces.split_at(pieces.len().min(1));
     let canvas = match (state.base.take(), state.last.take()) {
-        (Some((key, base)), Some((old, canvas))) if key == base_key => {
+        (Some((cached, base)), Some((old, canvas))) if cached == base_key => {
             if dirty(&old, &pieces, cell).is_none()
                 && state.at == Some(at)
                 && state.size == (cols16, rows16)
             {
-                state.base = Some((key, base));
+                state.base = Some((cached, base));
                 state.last = Some((pieces, canvas));
                 state.painted = Some(key);
                 return;
@@ -844,7 +844,7 @@ pub fn tick_with(
                 canvas.restore(&base, rect);
                 paint(&mut canvas, rest, cell, &app.theme);
             }
-            state.base = Some((key, base));
+            state.base = Some((cached, base));
             canvas
         }
         _ => {

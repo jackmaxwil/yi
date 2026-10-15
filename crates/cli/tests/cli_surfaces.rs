@@ -278,7 +278,7 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
 /// "`lines[0]`" before a read, or answered and then wrapped up its todos in prose; both exited 3.
 #[test]
 fn a_schema_answer_is_the_newest_message_that_matches() -> TestResult {
-    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_runtime::faux::{faux_text, faux_tool_call};
     use yi_types::message::StopReason::{Stop, ToolUse};
     let workspace = Workspace::new("schema-newest")?;
     std::fs::write(workspace.project().join("r.rs"), "let lines = vec![1];\n")?;
@@ -307,14 +307,8 @@ fn a_schema_answer_is_the_newest_message_that_matches() -> TestResult {
         ],
     ];
     let schema = r#"{"type":"object","required":["refuted","reason"],"properties":{"refuted":{"type":"boolean"},"reason":{"type":"string"}}}"#;
-    for (n, run) in runs.into_iter().enumerate() {
-        let lines = run
-            .into_iter()
-            .map(|(content, stop)| serde_json::to_string(&faux_assistant_message(content, stop)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let script = workspace.project().join(format!("script-{n}.jsonl"));
-        std::fs::write(&script, lines.join("\n"))?;
-        let script = script.display().to_string();
+    for (n, run) in runs.iter().enumerate() {
+        let script = turns_script(&workspace, &format!("script-{n}"), run)?;
         let answered = ask(
             &workspace,
             "break the claim",
@@ -2043,6 +2037,27 @@ fn tool_script(
     Ok(path.display().to_string())
 }
 
+/// A `--faux` script: one line per `(content, stop)` turn, written to `<name>.jsonl`.
+fn turns_script(
+    workspace: &Workspace,
+    name: &str,
+    turns: &[(
+        Vec<yi_types::message::Content>,
+        yi_types::message::StopReason,
+    )],
+) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::faux::faux_assistant_message;
+    let lines = turns
+        .iter()
+        .map(|(content, stop)| {
+            serde_json::to_string(&faux_assistant_message(content.clone(), *stop))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let path = workspace.project().join(format!("{name}.jsonl"));
+    std::fs::write(&path, lines.join("\n"))?;
+    Ok(path.display().to_string())
+}
+
 /// Dies with the last word started at `--deadline` and followed 90 s past it: the eval
 /// harness kills `yi ask` at the deadline, so the answer and the lane release were lost.
 #[test]
@@ -2300,7 +2315,7 @@ fn a_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
 /// question nobody can answer.
 #[test]
 fn an_unattended_run_answers_ask_user_with_the_default_and_goes_on() -> TestResult {
-    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_runtime::faux::{faux_text, faux_tool_call};
     use yi_types::message::StopReason::{Stop, ToolUse};
     let alone = Workspace::new("unattended-ask-user")?;
     let question = json!({
@@ -2322,13 +2337,7 @@ fn an_unattended_run_answers_ask_user_with_the_default_and_goes_on() -> TestResu
             Stop,
         ),
     ];
-    let lines = runs
-        .into_iter()
-        .map(|(content, stop)| serde_json::to_string(&faux_assistant_message(content, stop)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let script = alone.project().join("script.jsonl");
-    std::fs::write(&script, lines.join("\n"))?;
-    let script = script.display().to_string();
+    let script = turns_script(&alone, "script", &runs)?;
     let answered = ask(&alone, "ship or hold", &["--faux", &script])?;
     let said = String::from_utf8_lossy(&answered.stderr).into_owned();
     assert_eq!(answered.status.code(), Some(0), "{said}");
