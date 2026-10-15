@@ -1825,18 +1825,7 @@ fn a_worker_keeps_eight_idle_sessions_and_reloads_the_one_it_evicted() -> TestRe
     client.request("init", "initialize", json!({"protocolVersion": 2}))?;
     let mut ids = Vec::new();
     for n in 0..9 {
-        let new = client.request(
-            &format!("new-{n}"),
-            "session/new",
-            json!({"cwd": dir.display().to_string()}),
-        )?;
-        let id = (new
-            .last()
-            .and_then(|frame| frame["result"]["sessionId"].as_str()))
-        .ok_or("missing sessionId")?
-        .to_owned();
-        prompt_until_idle(&mut client, &format!("prompt-{n}"), &id, "hello")?;
-        ids.push(id);
+        ids.push(new_idle_session(&mut client, &dir, n)?);
         let loaded = attached(&mut client, &format!("list-{n}"))?;
         let first_kept = loaded.contains(&ids[0]);
         assert_eq!(
@@ -1959,18 +1948,7 @@ fn a_letter_to_an_evicted_session_loads_it_and_reads_the_letter() -> TestResult 
     client.request("init", "initialize", json!({"protocolVersion": 2}))?;
     let mut ids = Vec::new();
     for n in 0..9 {
-        let new = client.request(
-            &format!("new-{n}"),
-            "session/new",
-            json!({"cwd": dir.display().to_string()}),
-        )?;
-        let id = (new
-            .last()
-            .and_then(|frame| frame["result"]["sessionId"].as_str()))
-        .ok_or("missing sessionId")?
-        .to_owned();
-        prompt_until_idle(&mut client, &format!("prompt-{n}"), &id, "hello")?;
-        ids.push(id);
+        ids.push(new_idle_session(&mut client, &dir, n)?);
     }
     let (asleep, sender) = (ids[0].clone(), ids[8].clone());
     assert!(!attached(&mut client, "list")?.contains(&asleep));

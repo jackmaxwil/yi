@@ -582,8 +582,10 @@ impl AcpState {
     }
 
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
-        if method != "session/resume"
-            && let Some(id) = params.get("sessionId").and_then(Value::as_str)
+        if !matches!(
+            method,
+            "session/resume" | "session/close" | "session/delete"
+        ) && let Some(id) = params.get("sessionId").and_then(Value::as_str)
         {
             let id = id.to_owned();
             self.reload(&id);
@@ -665,15 +667,9 @@ impl AcpState {
                     .to_owned();
                 let store = match self.store_of(&id) {
                     Some(store) => store,
-                    None => {
-                        let _span = yi_types::trace::span("acp.repo_open");
-                        let store = self
-                            .repo
-                            .open(&id)
-                            .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
-                        self.attach_later(&store);
-                        store
-                    }
+                    None => self
+                        .open_later(&id)
+                        .map_err(|error| (INVALID_PARAMS, error))?,
                 };
                 let mut result = self.session_result(&id);
                 result.session_id = None;
@@ -710,6 +706,7 @@ impl AcpState {
                     .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
                     .to_owned();
                 self.drop_session(&id);
+                crate::resident::forget(&id);
                 self.repo
                     .delete(&id)
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
