@@ -369,7 +369,7 @@ pub fn fire(todos: &TodoStore, job: &Job, sub: &ChannelSub) -> Result<Fired, Str
     ) {
         return Ok(Fired::Stopped(stopped));
     }
-    let acked = meta.acks.get(&job.id).copied().unwrap_or(0);
+    let acked = acked(&meta, job);
     let size = usize::try_from(sub.batch.unwrap_or(DEFAULT_BATCH).max(1)).unwrap_or(usize::MAX);
     let (mut scanned, mut batch) = (acked, Vec::new());
     for entry in channel
@@ -615,15 +615,23 @@ impl HeartbeatService {
 /// Whether the buffer holds an entry past the job's ack; read only for a session not loaded.
 pub(crate) fn unread(job: &Job, sub: &ChannelSub) -> bool {
     let channel = Channel::at(&sub.path);
-    let acks = channel.meta().map(|meta| meta.acks).unwrap_or_default();
-    let acked = acks.get(&job.id).copied().unwrap_or(0);
+    let acked = channel.meta().map_or(0, |meta| acked(&meta, job));
     channel.last().is_some_and(|entry| entry.offset > acked)
 }
 
+fn acked(meta: &ChannelMeta, job: &Job) -> u64 {
+    meta.acks.get(&job.id).copied().unwrap_or(0)
+}
+
 impl HeartbeatService {
-    /// Keeps this session's timer when it is unloaded while idle; its next due job loads it.
-    pub fn hold_unloaded(&self) {
-        if let Some(hub) = self.hub() {
+    /// Keeps the timer of a session unloaded while idle that still has a job to come due; that
+    /// job asks `reload` to load it.
+    pub fn hold_unloaded(&self, reload: impl Fn(&str) -> bool + Send + Sync + 'static) {
+        let session = self.session_id();
+        let owes = (self.store().snapshot().jobs.iter())
+            .any(|job| job.session_id == session && super::claimable(job));
+        if let Some(hub) = self.hub().filter(|_| owes) {
+            hub.on_absent(std::sync::Arc::new(reload));
             hub.hold();
         }
     }
@@ -633,9 +641,7 @@ impl HeartbeatService {
         let (session, now) = (self.session_id(), yi_session::now_ms());
         self.store().mutate(|state| {
             for job in (state.jobs.iter_mut()).filter(|job| {
-                job.session_id == session
-                    && job.channel.is_some()
-                    && job.status == JobStatus::Active
+                job.session_id == session && job.channel.is_some() && super::claimable(job)
             }) {
                 job.next_run_at = Some(job.next_run_at.map_or(now, |at| at.min(now)));
             }

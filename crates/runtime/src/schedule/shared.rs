@@ -14,6 +14,7 @@ pub(crate) struct DeliveryHub {
     /// Invariant: set while a session is unloaded idle, cleared when a lane registers again, so
     /// the timer outlives only the unloaded session and not its close.
     held: std::sync::atomic::AtomicBool,
+    absent: Mutex<Option<Arc<AbsentFn>>>,
 }
 
 impl DeliveryHub {
@@ -22,11 +23,21 @@ impl DeliveryHub {
             lanes: Mutex::new(HashMap::new()),
             stops: Mutex::new(HashMap::new()),
             held: std::sync::atomic::AtomicBool::new(false),
+            absent: Mutex::new(None),
         }
     }
 
     pub(crate) fn hold(&self) {
         self.held.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Invariant: an evicted session's wake is owed, not skipped: `reload` loads it and the
+    /// deferred job delivers once its lane is back.
+    pub(crate) fn on_absent(&self, reload: Arc<AbsentFn>) {
+        *self
+            .absent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reload);
     }
 
     pub(crate) fn register(&self, session_id: String, deliver: Arc<DeliverFn>) {
@@ -70,7 +81,14 @@ impl DeliveryHub {
     ) -> Result<RunOutcome, String> {
         let lane = lock_lanes(&self.lanes).get(&job.session_id).map(Arc::clone);
         let owed = || (job.channel.as_ref()).is_none_or(|sub| super::channel::unread(job, sub));
-        let absent = || owed() && ABSENT.get().is_some_and(|reload| reload(&job.session_id));
+        let reload = || {
+            let hook = self
+                .absent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            hook.clone()
+        };
+        let absent = || owed() && reload().is_some_and(|reload| reload(&job.session_id));
         match lane {
             Some(deliver) => deliver(job, firing),
             None if absent() => Ok(RunOutcome::Deferred),
@@ -80,15 +98,7 @@ impl DeliveryHub {
 }
 
 /// Answers whether the session `id`, unloaded while idle, is being loaded again for a wake.
-pub type AbsentFn = dyn Fn(&str) -> bool + Send + Sync;
-
-static ABSENT: OnceLock<Box<AbsentFn>> = OnceLock::new();
-
-/// Invariant: an evicted session's wake is owed, not skipped: the host reloads it and the
-/// deferred job delivers once its lane is back. The first hook a process sets stays.
-pub fn on_absent_lane(reload: Box<AbsentFn>) {
-    let _first_hook_stays = ABSENT.set(reload);
-}
+pub(crate) type AbsentFn = dyn Fn(&str) -> bool + Send + Sync;
 
 pub(crate) struct SharedSchedule {
     pub store: Arc<JobStore>,
@@ -383,6 +393,26 @@ mod tests {
         drop(new);
         assert_eq!(hub.lane_count(), 0, "the reopened session's lane leaked");
         Ok(())
+    }
+
+    #[test]
+    fn a_clock_job_due_for_an_unloaded_session_defers_and_wakes_it_once() {
+        let hub = DeliveryHub::new();
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        hub.on_absent(Arc::new(move |id| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            id == "a"
+        }));
+        let due = job("a");
+        assert!(due.channel.is_none());
+
+        assert_eq!(
+            hub.dispatch(&due, &Firing::at(0)),
+            Ok(RunOutcome::Deferred),
+            "a heartbeat due for an evicted session was skipped instead of loading it"
+        );
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

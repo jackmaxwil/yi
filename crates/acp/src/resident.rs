@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::mpsc::WeakUnboundedSender;
-use yi_runtime::session_store::SessionRepo;
 use yi_types::subagent::ChildStatus;
 
 use crate::attach::Incoming;
@@ -47,34 +46,16 @@ fn owed(id: &str, wake: &WeakUnboundedSender<Incoming>) -> bool {
     was.is_some()
 }
 
-/// What keeps a session loaded past [`RESIDENT_MAX`]: dropping it would stop or lose this.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Pin {
-    Turn,
-    Queued,
-    Children,
-    Kernel,
-}
-
-pub(crate) fn pin(handle: &SessionHandle) -> Option<Pin> {
+/// Whether dropping the session would stop or lose something, so it stays past [`RESIDENT_MAX`].
+pub(crate) fn pinned(handle: &SessionHandle) -> bool {
     let session = &handle.session;
-    let children = || {
-        (handle.host.children_view().iter())
+    session.status() == yi_runtime::Status::Running
+        || !crate::update::queued(&handle.prompts).is_empty()
+        || session.pending_count() > 0
+        || (handle.host.children_view().iter())
             .any(|child| child.update.status == ChildStatus::Running)
-    };
-    let kernel = || {
-        (session.kernel_service())
+        || (session.kernel_service())
             .is_some_and(|kernel| kernel.unsaved() || kernel.user_cell_running())
-    };
-    if session.status() == yi_runtime::Status::Running {
-        Some(Pin::Turn)
-    } else if !crate::update::queued(&handle.prompts).is_empty() || session.pending_count() > 0 {
-        Some(Pin::Queued)
-    } else if children() {
-        Some(Pin::Children)
-    } else {
-        kernel().then_some(Pin::Kernel)
-    }
 }
 
 impl AcpState {
@@ -86,7 +67,7 @@ impl AcpState {
         }
         while self.sessions.len() > RESIDENT_MAX {
             let idlest = (self.sessions.iter())
-                .filter(|(id, handle)| id.as_str() != kept && pin(handle).is_none())
+                .filter(|(id, handle)| id.as_str() != kept && !pinned(handle))
                 .min_by_key(|(_, handle)| handle.last_active.load(Ordering::Relaxed))
                 .map(|(id, _)| id.clone());
             let Some(id) = idlest else {
@@ -96,11 +77,10 @@ impl AcpState {
                 );
                 return;
             };
-            let wake = self.wake.clone();
-            yi_runtime::schedule::on_absent_lane(Box::new(move |id| owed(id, &wake)));
             let handle = self.sessions.get(&id);
             if let Some(heartbeats) = handle.and_then(|handle| handle.session.heartbeat_service()) {
-                heartbeats.hold_unloaded();
+                let wake = self.wake.clone();
+                heartbeats.hold_unloaded(move |id| owed(id, &wake));
             }
             self.user_cells.close(&id);
             self.drop_session(&id);
@@ -110,20 +90,17 @@ impl AcpState {
 
     /// Starts loading `id` again if this worker evicted it; a no-op for any other session.
     pub(crate) fn reload(&mut self, id: &str) {
-        if self.sessions.contains_key(id) || self.building.contains_key(id) {
+        if self.store_of(id).is_some() {
             return;
         }
-        let mut away = away();
-        let Some(state) = away.get_mut(id) else {
+        let mut states = away();
+        let Some(state) = states.get_mut(id) else {
             return;
         };
         *state = Away::Loading;
-        drop(away);
-        match self.repo.open(id) {
-            Ok(store) => {
-                self.attach_later(&store);
-            }
-            Err(_) => forget(id),
+        drop(states);
+        if self.open_later(id).is_err() {
+            away().insert(id.to_owned(), Away::Evicted);
         }
     }
 }

@@ -86,6 +86,14 @@ impl AcpState {
         }
     }
 
+    pub(crate) fn open_later(&mut self, session_id: &str) -> Result<SharedSession, String> {
+        let _span = yi_types::trace::span("acp.repo_open");
+        let store = yi_runtime::session_store::SessionRepo::open(&mut self.repo, session_id)
+            .map_err(|error| error.to_string())?;
+        self.attach_later(&store);
+        Ok(store)
+    }
+
     pub(crate) fn store_of(&self, session_id: &str) -> Option<SharedSession> {
         match self.sessions.get(session_id) {
             Some(handle) => handle.session.store(),
