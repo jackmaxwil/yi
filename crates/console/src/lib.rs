@@ -829,25 +829,37 @@ fn keep_osc(dir: Option<&std::path::Path>, osc: &mut Vec<String>) -> Result<(), 
 mod tests {
     use super::*;
 
-    /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
-    /// while the cache still said placed, so the notebook image never came back.
-    #[test]
-    fn a_resize_places_the_notebook_image_again() -> Result<(), Box<dyn std::error::Error>> {
+    fn notebook_app(
+        image: &str,
+    ) -> Result<(App, Theme, Terminal<ratatui::backend::TestBackend>), Box<dyn std::error::Error>>
+    {
         let theme = Theme::new(ColorTier::TrueColor, true);
         let mut app = App::new("/repo".to_owned(), theme);
         let home = app.state.focused_pane_id().ok_or("a pane")?;
-        if let Some(pane) = app.state.panes.get_mut(&home) {
+        notebook_pane(&mut app, home, image);
+        let terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        Ok((app, theme, terminal))
+    }
+
+    fn notebook_pane(app: &mut App, pane_id: crate::layout::PaneId, image: &str) {
+        if let Some(pane) = app.state.panes.get_mut(&pane_id) {
             pane.content = crate::model::PaneContent::Notebook {
                 session: None,
                 cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
+                    images: vec![image.to_owned()],
                     ..crate::model::NbCell::default()
                 }],
                 full: false,
                 drawn: None,
             };
         }
-        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+    }
+
+    /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
+    /// while the cache still said placed, so the notebook image never came back.
+    #[test]
+    fn a_resize_places_the_notebook_image_again() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, theme, mut terminal) = notebook_app("iVBORw0KGgo=")?;
         let placed = |app: &mut App| {
             let mut out = Vec::new();
             place_notebook_image(app, &mut out);
@@ -871,21 +883,7 @@ mod tests {
     #[test]
     fn a_changed_notebook_image_places_and_keeps_the_new_id()
     -> Result<(), Box<dyn std::error::Error>> {
-        let theme = Theme::new(ColorTier::TrueColor, true);
-        let mut app = App::new("/repo".to_owned(), theme);
-        let home = app.state.focused_pane_id().ok_or("a pane")?;
-        if let Some(pane) = app.state.panes.get_mut(&home) {
-            pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
-                full: false,
-                drawn: None,
-            };
-        }
-        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let (mut app, theme, mut terminal) = notebook_app("iVBORw0KGgo=")?;
         let stream = |app: &mut App| {
             let mut out = Vec::new();
             place_notebook_image(app, &mut out);
@@ -907,8 +905,58 @@ mod tests {
         let second = stream(&mut app);
         assert!(second.contains("a=p,i=1,"), "{second:?}");
         assert!(
-            !second.contains("a=d,d=i,i=1"),
+            !second.contains("a=d,d=I,i=1"),
             "the repaint deleted the id it just placed: {second:?}"
+        );
+        Ok(())
+    }
+
+    /// Round-11 review (#1386): the placement cache was keyed by one slot, so focus moving
+    /// between two notebook panes with equal-rect, equal-length images skipped the repaint
+    /// and the newly focused pane kept showing the other pane's image.
+    #[test]
+    fn a_focused_pane_places_its_own_image_and_deletes_the_other_pane_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, theme, mut terminal) = notebook_app("iVBORw0KGgo=")?;
+        let other = app
+            .state
+            .split_focused(ratatui::layout::Direction::Horizontal)
+            .ok_or("a split")?;
+        notebook_pane(&mut app, other, "AAAAAAAAAAA=");
+        let stream = |app: &mut App| {
+            let mut out = Vec::new();
+            place_notebook_image(app, &mut out);
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        let Some(tab) = app.state.tab_mut() else {
+            return Err("a tab".into());
+        };
+        tab.zoomed = true;
+        tab.layout.focus_direction(
+            crate::layout::NavDirection::Left,
+            ratatui::layout::Rect::new(0, 0, 200, 100),
+        );
+        app.dirty = true;
+        draw(&mut app, &mut terminal, &theme)?;
+        let first = stream(&mut app);
+        assert!(first.contains("m=0;iVBORw0KGgo="), "{first:?}");
+        let Some(tab) = app.state.tab_mut() else {
+            return Err("a tab".into());
+        };
+        tab.layout.focus_direction(
+            crate::layout::NavDirection::Right,
+            ratatui::layout::Rect::new(0, 0, 200, 100),
+        );
+        app.dirty = true;
+        draw(&mut app, &mut terminal, &theme)?;
+        let second = stream(&mut app);
+        assert!(
+            second.contains("m=0;AAAAAAAAAAA="),
+            "the focused pane placed its own image: {second:?}"
+        );
+        assert!(
+            second.contains("a=d,d=I,i=0"),
+            "the unfocused pane's id was not deleted: {second:?}"
         );
         Ok(())
     }
