@@ -13,7 +13,7 @@ mod prompt_slots_support;
 use prompt_slots_support::prompt_slots;
 #[path = "support/session_files.rs"]
 mod session_files;
-use session_files::session_files;
+use session_files::{session_files, session_text};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -1171,10 +1171,7 @@ fn plans_config_takes_dir_and_names_every_other_key() -> TestResult {
 fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     let workspace = Workspace::new("attribution")?;
     ask(&workspace, "prove it", &[])?;
-    let lines: String = session_files(&workspace.0.join("home/sessions"))?
-        .iter()
-        .map(std::fs::read_to_string)
-        .collect::<std::io::Result<_>>()?;
+    let lines = session_text(&workspace.0.join("home/sessions"))?;
     assert!(lines.contains("prove it"), "{lines}");
     assert!(lines.contains(r#""attribution":"user""#), "{lines}");
     Ok(())
@@ -2347,11 +2344,7 @@ fn an_unattended_run_answers_ask_user_with_the_default_and_goes_on() -> TestResu
         "{out}"
     );
     assert!(told_it_is_alone(&alone)?);
-    let ledger = session_files(&alone.0.join("home/sessions"))?
-        .iter()
-        .map(|path| std::fs::read_to_string(path).unwrap_or_default())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let ledger = session_text(&alone.0.join("home/sessions"))?;
     assert!(ledger.contains("Nobody is attached to answer"), "{ledger}");
     assert!(ledger.contains("Go on with Hold"), "{ledger}");
     Ok(())

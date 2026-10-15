@@ -355,6 +355,80 @@ fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResul
     Ok(())
 }
 
+/// Dies with the answered question replayed as the model's boilerplate rows cut by
+/// `… N more lines`: a resumed session reads the same one compact row the live turn left.
+#[test]
+fn a_replayed_answered_question_leaves_the_one_row_the_live_turn_did() -> TestResult {
+    use yi_types::entry::Entry;
+    use yi_types::message::{ATTRIBUTED_SINCE_MS, AgentMessage, Content};
+    let text = "Question for the user: Which layout?\n  1. Tree: nested: Keeps todos as they are.\n  2. Stages\nThe turn ends here; the user's next message is the answer.";
+    let args = serde_json::json!({
+        "question": "Which layout?",
+        "options": [
+            {"label": "Tree: nested", "description": "Keeps todos as they are."},
+            {"label": "Stages"}
+        ]
+    });
+    let tool_call = Entry::Message {
+        id: "e0".to_owned(),
+        message: serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": [{
+                "type": "toolCall", "id": "ask-0", "name": "ask_user", "arguments": args
+            }],
+            "api": "faux", "provider": "faux", "model": "faux-1", "stopReason": "stop",
+            "timestamp": 0,
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                "totalTokens": 0, "unknown": false,
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+        }))?,
+        terminate: None,
+        parent_id: None,
+        seq: 0,
+        timestamp: ATTRIBUTED_SINCE_MS,
+    };
+    let entry = Entry::Message {
+        id: "e1".to_owned(),
+        message: AgentMessage::ToolResult {
+            tool_call_id: "ask-0".to_owned(),
+            tool_name: "ask_user".to_owned(),
+            content: vec![Content::Text {
+                text: text.to_owned(),
+                text_signature: None,
+            }],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        },
+        terminate: Some(true),
+        parent_id: None,
+        seq: 1,
+        timestamp: ATTRIBUTED_SINCE_MS + 1,
+    };
+    let mut app = app();
+    app.replay_entries(&[tool_call, entry]);
+    let rows: Vec<String> = app
+        .take_commits()
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let asked = row_with(&rows, "Which layout").ok_or(format!("{rows:#?}"))?;
+    assert!(
+        asked.contains("Which layout?  [Tree: nested · Stages]"),
+        "{asked:?}"
+    );
+    assert!(row_with(&rows, "The turn ends here").is_none(), "{rows:#?}");
+    assert!(row_with(&rows, "more line").is_none(), "{rows:#?}");
+    Ok(())
+}
+
 /// Dies with the card drawn as text alone on a kitty terminal, its image left on screen after
 /// it closes, or a repaint every frame: one image under the text, repainted only on a change.
 #[test]
