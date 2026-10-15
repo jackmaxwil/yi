@@ -237,6 +237,10 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     round found nothing, since leaving draft takes two. Incident: a second read of a head was a
     fresh draw that added to the first (#1043: three mediums, then a high and seven)."""
     here = [r for r in rounds if holds(r["sha"], head)]
+    # Incident: #1415 and #1416 sat blocked on a round-1 twin after it closed; a twin round reads no
+    # lens, so its head is read again, and cmd_review posts nothing while the twin still stands.
+    if here and twin_round(here[-1]):
+        return None
     if here and here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
     if here and (len(rounds) >= wanted or any(f.get("severity") in REPORTED for f in here[-1].get("findings", []))):
@@ -394,6 +398,11 @@ def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: Fal
                         "claim": f"Closes #{n}, which is already closed: {issue.get('title', '')}",
                         "fix": "cite the open issue this work finishes, or /override with why it lands"})
     return out
+
+
+def twin_round(rnd):
+    """Whether a posted round stopped at a twin, so no lens read its head."""
+    return any(f.get("lens") == "duplicate" for f in rnd.get("findings") or [])
 
 
 def has_twin(found):
@@ -832,6 +841,11 @@ def cmd_review(args):
                 forge_pr.fgj_api("POST", f"repos/{repo}/issues/{number}/comments", {"body": void_body(number, pr["head"]["sha"], err, pr_total, day_total)})
             return 1
         n, sha, base, findings, dropped = read["n"], read["sha"], read["base"], read["intake"] + read["kept"], read["dropped"]
+        last = rounds_of(notes, allowed, number)
+        if has_twin(read["intake"]) and last and twin_round(last[-1]) and \
+                sorted(f["claim"] for f in read["intake"]) == sorted(f["claim"] for f in last[-1]["findings"] if f["lens"] in INTAKE):
+            print(f"#{number}: no round — round {last[-1]['n']}'s twin still stands")
+            return 0
         pr_total, day_total = bot_meter.totals(repo, notes, METER) if not args.dry_run else (METER.cost, METER.cost)
         status = bot_meter.status_line(METER, pr_total, day_total, f"review round {n}")
         body = render(n, number, sha, base, findings, dropped, None, MODE, read["outside"], read["unanswered"], METER, status,
@@ -1065,6 +1079,8 @@ def selfcheck():
     assert skip_reason([{"n": 1, "sha": "0000000", "verdict": "clean"}] + one, "abc1234ff"), "a PR with two rounds reads a head once"
     assert skip_reason(one + [{"n": 2, "sha": "abc1234", "verdict": "clean"}], "abc1234ff"), "never a third"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff"), "a blocked head is the fixer's"
+    twin_block = {"n": 1, "sha": "abc1234", "verdict": "blocked", "findings": [{"lens": "duplicate", "severity": "high", "claim": "#9 (closed) also closes #4: x"}]}
+    assert skip_reason([twin_block], "abc1234ff") is None, "a head a twin blocked is read again, since no lens read it"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "def5678") is None, "a new head is read"
     assert answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 2, 733)
     assert not answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 3, 733)

@@ -543,13 +543,23 @@ STOP_AT = 4
 
 
 def stalled(before, rnd, prev):
-    """Why a findings fix stops for a person, or None: two fixes in a row whose last left as many
-    held findings as the round before it, or STOP_AT in a row. Incident: #1386 went from seven
+    """Why a findings fix stops for a person, or None: STOP_AT fixes in a row, or two whose last
+    left more held findings than the round it answered (`prev`). Incident: #1386 went from seven
     held findings to three to two and was stopped at two fixes all the same."""
     if before >= STOP_AT:
         return f"{before} fixes in a row did not clear the review; a person is next"
-    if before >= 2 and not (prev and len(pr_review.holding(rnd)) < len(pr_review.holding(prev))):
-        return "two fixes in a row did not clear the review, and the last held as much as the one before; a person is next"
+    if before >= 2 and prev and len(pr_review.holding(rnd)) > len(pr_review.holding(prev)):
+        return "two fixes in a row did not clear the review, and the last left more held than it answered; a person is next"
+    return None
+
+
+def answered_round(repo, sha, number):
+    """The review round the newest findings fix at the head of `sha` answered, or None. Incident:
+    #1391's gate fix came between, and the stop weighed the gate's round instead of the fix's."""
+    log = sh(repo, "git", "log", "--first-parent", "-n", "16", "--format=%B%x1e", sha, check=False).stdout
+    for body in log.split("\x1e"):
+        if m := re.search(rf"{SIGNED} (\d+) on #{number}\.", body):
+            return int(m.group(1))
     return None
 
 
@@ -945,7 +955,8 @@ def attempt(repo, pr, ids, asked=False):
     set_label(repo, number, ids, "autofix:working", True)
     fields, verdict, reason, meter = {}, "failed", "", bot_meter.Meter()
     try:
-        prev = rounds[-2] if rnd and len(rounds) > 1 and rounds[-1] is rnd else None
+        n = answered_round(ROOT, pr["head"]["sha"], number)
+        prev = next((r for r in rounds if r["n"] == n), None)
         fields = fix(pr, kind=KINDS[said], rnd=rnd, tried=misses(notes), meter=meter, stopped=last_stop(notes), lanes=lanes, prev=prev)
         verdict = "pushed"
     except Flaky as err:
@@ -1339,6 +1350,8 @@ def selfcheck():
             errs.append("a findings fix rewrote a change file main holds")
         if prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
             errs.append("the fixer's own commit at the head is not counted as one prior fix")
+        if answered_round(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip(), 7) != 4:
+            errs.append("the round the newest findings fix answered was not read from its signature")
         head_now = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
         stop = [dict(bot, created_at="2099-01-01T00:00:00Z", body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=7 verdict=failed -->\n")]
         if prior_fixes(tmp, head_now, last_stop(stop)) != 0 or last_stop(notes) != 0.0:
@@ -1353,7 +1366,8 @@ def selfcheck():
         second = findings_run({"tests/t.rs": lambda cwd: (pathlib.Path(cwd) / "tests/t.rs").write_text(next(turns_))})
         if not (isinstance(second, dict) and "Refused once (the fix deletes a test" in second["summary"]):
             errs.append(f"a fix refused for deleting a test got no turn to restore it: {second if isinstance(second, str) else 'pushed'}")
-        third = findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n    assert!(h());\n    assert!(i());\n}\n"})
+        third = findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n    assert!(h());\n    assert!(i());\n}\n"},
+                             prev=dict(rnd, findings=[]))
         if asked[first] != TIERS[0][0] or asked[-1] != TIERS[1][0]:
             errs.append(f"the first fix took {asked[first]} and the one after it {asked[-1]}: a fix the review did not clear moves up a tier")
         if not isinstance(second, dict) or "two fixes in a row" not in str(third):
@@ -1535,7 +1549,8 @@ def selfcheck():
     finally:
         shutil.rmtree(repo)
     held = lambda n: {"n": 4, "verdict": "blocked", "findings": [{"severity": "high", "lens": "tests"}] * n}
-    for before, now, prev, stops in ((1, 3, None, False), (2, 3, None, True), (2, 2, 3, False), (2, 3, 3, True), (4, 1, 3, True)):
+    for before, now, prev, stops in ((1, 3, None, False), (2, 3, None, False), (2, 2, 3, False), (2, 3, 3, False),
+                                     (2, 4, 3, True), (4, 1, 3, True)):
         if bool(stalled(before, held(now), prev and held(prev))) != stops:
             errs.append(f"{before} fixes in a row, {now} held after {prev} before: stopped={not stops}, want {stops}")
     # Three baselines moving at once still make a subject the commit-style gate passes.
