@@ -300,6 +300,43 @@ fn wide_glyphs_keep_the_key_on_the_row_at_forty_columns() -> TestResult {
     Ok(())
 }
 
+fn answered_question_args() -> serde_json::Value {
+    serde_json::json!({
+        "question": "Which layout?",
+        "options": [
+            {"label": "Tree: nested", "description": "Keeps todos as they are."},
+            {"label": "Stages"}
+        ]
+    })
+}
+
+fn answered_question_text() -> &'static str {
+    "Question for the user: Which layout?\n  1. Tree: nested: Keeps todos as they are.\n  2. Stages\nThe turn ends here; the user's next message is the answer."
+}
+
+fn committed_rows(app: &mut App) -> Vec<String> {
+    app.take_commits()
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+fn assert_one_compact_question_row(rows: &[String]) -> TestResult {
+    let asked = row_with(rows, "Which layout").ok_or_else(|| format!("{rows:#?}"))?;
+    assert!(
+        asked.contains("Which layout?  [Tree: nested · Stages]"),
+        "{asked:?}"
+    );
+    assert!(row_with(rows, "The turn ends here").is_none(), "{rows:#?}");
+    assert!(row_with(rows, "more line").is_none(), "{rows:#?}");
+    Ok(())
+}
+
 /// Dies with the answered question left as five rows cut by `… 1 more lines`, or with a label's
 /// own colon read as the description's: one row says what was asked, every label whole.
 #[test]
@@ -307,19 +344,13 @@ fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResul
     use yi_types::event::ToolResult;
     use yi_types::message::Content;
     let mut app = app();
-    let args = json!({
-        "question": "Which layout?",
-        "options": [
-            {"label": "Tree: nested", "description": "Keeps todos as they are."},
-            {"label": "Stages"}
-        ]
-    });
+    let args = answered_question_args();
     app.reduce_agent(AgentEvent::ToolExecutionStart {
         tool_call_id: "ask-0".to_owned(),
         tool_name: "ask_user".to_owned(),
         args,
     });
-    let text = "Question for the user: Which layout?\n  1. Tree: nested: Keeps todos as they are.\n  2. Stages\nThe turn ends here; the user's next message is the answer.";
+    let text = answered_question_text();
     app.reduce_agent(AgentEvent::ToolExecutionEnd {
         tool_call_id: "ask-0".to_owned(),
         tool_name: "ask_user".to_owned(),
@@ -335,24 +366,8 @@ fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResul
         },
         is_error: false,
     });
-    let rows: Vec<String> = app
-        .take_commits()
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect();
-    let asked = row_with(&rows, "Which layout").ok_or(format!("{rows:#?}"))?;
-    assert!(
-        asked.contains("Which layout?  [Tree: nested · Stages]"),
-        "{asked:?}"
-    );
-    assert!(row_with(&rows, "The turn ends here").is_none(), "{rows:#?}");
-    assert!(row_with(&rows, "more line").is_none(), "{rows:#?}");
-    Ok(())
+    let rows = committed_rows(&mut app);
+    assert_one_compact_question_row(&rows)
 }
 
 /// Dies with the answered question replayed as the model's boilerplate rows cut by
@@ -361,14 +376,8 @@ fn an_answered_question_leaves_one_row_not_the_models_boilerplate() -> TestResul
 fn a_replayed_answered_question_leaves_the_one_row_the_live_turn_did() -> TestResult {
     use yi_types::entry::Entry;
     use yi_types::message::{ATTRIBUTED_SINCE_MS, AgentMessage, Content};
-    let text = "Question for the user: Which layout?\n  1. Tree: nested: Keeps todos as they are.\n  2. Stages\nThe turn ends here; the user's next message is the answer.";
-    let args = serde_json::json!({
-        "question": "Which layout?",
-        "options": [
-            {"label": "Tree: nested", "description": "Keeps todos as they are."},
-            {"label": "Stages"}
-        ]
-    });
+    let text = answered_question_text();
+    let args = answered_question_args();
     let tool_call = Entry::Message {
         id: "e0".to_owned(),
         message: serde_json::from_value(serde_json::json!({
@@ -409,24 +418,8 @@ fn a_replayed_answered_question_leaves_the_one_row_the_live_turn_did() -> TestRe
     };
     let mut app = app();
     app.replay_entries(&[tool_call, entry]);
-    let rows: Vec<String> = app
-        .take_commits()
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect();
-    let asked = row_with(&rows, "Which layout").ok_or(format!("{rows:#?}"))?;
-    assert!(
-        asked.contains("Which layout?  [Tree: nested · Stages]"),
-        "{asked:?}"
-    );
-    assert!(row_with(&rows, "The turn ends here").is_none(), "{rows:#?}");
-    assert!(row_with(&rows, "more line").is_none(), "{rows:#?}");
-    Ok(())
+    let rows = committed_rows(&mut app);
+    assert_one_compact_question_row(&rows)
 }
 
 /// Dies with the card drawn as text alone on a kitty terminal, its image left on screen after
