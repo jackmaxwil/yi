@@ -240,7 +240,7 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     here = [r for r in rounds if holds(r["sha"], head)]
     # Incident: #1415 and #1416 sat blocked on a round-1 twin after it closed; a twin round reads no
     # lens, so its head is read again, and cmd_review posts nothing while the twin still stands.
-    if here and twin_round(here[-1]):
+    if here and twin_round(here[-1]) and here[-1]["verdict"] != "override":
         return None
     if here and here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
@@ -402,8 +402,13 @@ def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: Fal
 
 
 def twin_round(rnd):
-    """Whether a posted round stopped at a twin, so no lens read its head; an overridden one is settled."""
-    return rnd.get("verdict") != "override" and any(f.get("lens") == "duplicate" for f in rnd.get("findings") or [])
+    """Whether a posted round stopped at a twin, so no lens read its head."""
+    return any(f.get("lens") == "duplicate" for f in rnd.get("findings") or [])
+
+
+def twins(findings):
+    """The twins a round's duplicate findings name, by their leading `#N` or `Closes`."""
+    return {f["claim"].split(" ", 1)[0] for f in findings if f.get("lens") == "duplicate"}
 
 
 def has_twin(found):
@@ -835,10 +840,16 @@ def cmd_review(args):
             print(f"#{number}: no round — {why}")
             return 0
         rounds = rounds_of(comments(repo, number), allowed, number)
-        twin = rounds[-1] if rounds and twin_round(rounds[-1]) else None
-        if twin and not args.dry_run and has_twin(intake_of(repo, pr)):
-            print(f"#{number}: no round — round {twin['n']}'s twin still stands; close one or /override")
-            return STANDS
+        twin = rounds[-1] if rounds and twin_round(rounds[-1]) and rounds[-1]["verdict"] != "override" else None
+        if twin and not args.dry_run:
+            try:
+                standing = twins(intake_of(repo, pr))
+            except Unanswered as err:
+                print(f"#{number}: no round — the twin check could not run ({err})")
+                return 1
+            if standing and standing == twins(twin["findings"]):
+                print(f"#{number}: no round — round {twin['n']}'s twin still stands; close one or /override")
+                return STANDS
         global METER
         METER = bot_meter.Meter()
         notes = comments(repo, number)
@@ -1092,6 +1103,9 @@ def selfcheck():
     twin_block = {"n": 1, "sha": "abc1234", "verdict": "blocked", "findings": [{"lens": "duplicate", "severity": "high", "claim": "#9 (open) also closes #4: x"}]}
     assert skip_reason([twin_block], "abc1234ff") is None, "a head a twin blocked is read again, since no lens read it"
     assert skip_reason([dict(twin_block, verdict="override")], "abc1234ff"), "an overridden twin is settled, not read again"
+    assert delta_base([dict(twin_block, verdict="override")], "m" * 8, lambda sha: True, "fff9999") == "m" * 8, \
+        "an overridden twin round read no lens either"
+    assert twins(twin_block["findings"]) == {"#9"} and twins([]) == set(), "a twin is named by its number"
     assert delta_base([twin_block], "m" * 8, lambda sha: True, "fff9999") == "m" * 8, "a read after a twin round reads the whole PR"
     lens = {"n": 2, "sha": "abc1234", "verdict": "clean", "findings": []}
     assert ready_problems([twin_block, lens], "abc1234ff"), "a twin round is not one of the two reads a PR needs"
