@@ -595,17 +595,21 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                             hits.overlays.iter().any(|cover| cover.intersects(*half))
                         })
                 })?;
-            Some(((), (rect, u64::try_from(image.len()).unwrap_or(0), image)))
+            let pane_id = focused?;
+            Some((
+                pane_id,
+                (rect, u64::try_from(image.len()).unwrap_or(0), image),
+            ))
         });
     let out = std::cell::RefCell::new(out);
     crate::placed::reconcile(
         want,
         &mut app.notebook_image,
-        &mut |_: (), old: Option<u32>| old.map_or(0, |old| (old + 1) % 2),
-        &mut |_: (), rect: ratatui::layout::Rect, image: &&String, id: u32| {
+        &mut |_: PaneId, old: Option<u32>| old.map_or(0, |old| (old + 1) % 2),
+        &mut |_: PaneId, rect: ratatui::layout::Rect, image: &&String, id: u32| {
             crate::kitty::place_png(&mut *out.borrow_mut(), id, image.as_str(), rect).is_ok()
         },
-        &mut |_: (), id: u32| {
+        &mut |_: PaneId, id: u32| {
             let _ = yi_tui::orb::kitty::delete_id(&mut *out.borrow_mut(), id);
         },
     );

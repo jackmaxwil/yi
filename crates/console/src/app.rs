@@ -83,7 +83,7 @@ pub struct App {
     pub pending_clear: bool,
     /// (rect, payload length, kitty id) of the placed notebook image; unchanged frames skip
     /// the retransmit, and a drawn clear empties it, since the clear took the image with it.
-    pub notebook_image: crate::placed::Slots,
+    pub notebook_image: std::collections::BTreeMap<PaneId, crate::placed::Placed>,
     animations: Vec<Anim>,
     pub animate: bool,
     pub cmd_hints: bool,
