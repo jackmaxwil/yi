@@ -367,6 +367,10 @@ def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: Fal
     for other in others:
         if other["number"] == pr["number"] or other["head"]["ref"] in (pr["base"]["ref"],) or other["base"]["ref"] == pr["head"]["ref"]:
             continue
+        # Incident: #1415 and #1416 reopened the work of the closed #1411 and #1405 and were blocked
+        # as their twins; a PR closed unmerged landed nothing and closes nothing.
+        if other["state"] == "closed" and not other.get("merged"):
+            continue
         theirs = {int(n) for kind, named, n in CITE.findall(other.get("body") or "") if kind.lower() == "closes" and named in ("", repo)}
         # Incident: #909 moved code #902 had merged and was blocked as its twin; merged text is
         # main's, so a merged PR is a twin only by the issue it already closed.
@@ -1327,6 +1331,8 @@ def selfcheck():
     assert [f["claim"].split(" ")[0] for f in found] == ["#6", "#7"], found
     landed = dict(twin, number=11, state="closed", merged=True)
     assert duplicate_findings(pr, diff, [landed], {11: other}.get, "apex/yi") == [], "a merged PR's text is main's, not a twin"
+    abandoned = dict(same_issue, number=13, state="closed", merged=False)
+    assert duplicate_findings(pr, diff, [abandoned], {13: other}.get, "apex/yi") == [], "a PR closed unmerged is no twin"
     successor = dict(twin, number=10)
     assert duplicate_findings(pr, diff, [successor], {10: other}.get, "apex/yi", lambda a, b: b["number"] == 10) == [], \
         "a successor opened against main that carries this head is a stack, not a twin"

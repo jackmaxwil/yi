@@ -30,11 +30,11 @@ session in front wears a tinted row.
 | `⌥←→↑↓` | move focus between panes (solo child focus when there is one pane) |
 | `⌥t` `⌥]` `⌥[` `ctrl+b 1..9` | tabs |
 | `⌥/` | palette: `e path` opens an editor pane, `md path`, `diff path`, `nb` |
-| `⌥⇧j` `⌥g` | notebook pane, diff pane for the focused session |
+| `⌥⇧j` `⌥g` `⌥y` | notebook pane, diff pane for the focused session, a terminal pane in its directory (a focused terminal keeps only ⌘ chords, `⌥←→↑↓` and `ctrl+b`) |
 | `Tab` | sidebar ↔ panes |
 | `ctrl+b` | prefix for terminals that eat alt |
 | `⌘P` `⌘⇧N` `⌘\` `⌘⇧\` `⌘X` `⌘⇧M` | over kitty or Ghostty: palette, new session, split right, split down, close, zoom |
-| `⌘I` `⌘⇧R` `⌘Y` `⌘O` `⌘B` `⌘⇧O` `⌘/` | notebook, review, tape, open a file, sidebar, new tab, all keys |
+| `⌘I` `⌘⇧R` `⌘Y` `⌘O` `⌘B` `⌘⇧O` `⌘/` | notebook, review, terminal, open a file, sidebar, new tab, all keys |
 | `⌘S` `⌘⇧L` `⌘U` `⌘⇧U` | in an editor pane: save, find, undo, redo (`⌘U` `⌘⇧U` also in a chat draft) |
 
 No ⌘ chord is one Ghostty or kitty binds by default, so every one reaches the console;
