@@ -391,7 +391,7 @@ impl App {
                         details: Value::Null,
                     };
                     let details = details.clone().unwrap_or(Value::Null);
-                    self.settle_tool(cell, &text_of(content), *is_error, details);
+                    self.settle_tool(cell, &text_of(content), *is_error, details, false);
                 }
                 _ => {}
             }

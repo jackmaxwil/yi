@@ -119,6 +119,21 @@ fn a_number_key_answers_with_the_option_label() -> TestResult {
     Ok(())
 }
 
+/// Dies with Tab swallowed after the fold's remap: the highlight must advance like Down, or
+/// the card's documented key is dead while every other test stays green.
+#[test]
+fn tab_moves_the_highlight_down_like_down() -> TestResult {
+    let mut app = app();
+    asked(&mut app, &[layout()]);
+    press(&mut app, &[KeyCode::Tab]);
+    let rows = common::rows_at(&mut app, 34)?;
+    let on = row_with(&rows, "Stages").ok_or(format!("{rows:#?}"))?;
+    assert!(on.contains('▸'), "Tab left the highlight unmoved: {on:?}");
+    let off = row_with(&rows, "Tree with a progress bar").ok_or(format!("{rows:#?}"))?;
+    assert!(!off.contains('▸'), "{off:?}");
+    Ok(())
+}
+
 /// Dies with Other swallowing digits and `s` as picks: typing into it must stay typing.
 #[test]
 fn other_takes_the_users_own_words_digits_and_s_included() -> TestResult {
