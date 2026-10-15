@@ -94,7 +94,7 @@ pub struct ProviderStream {
     /// the script (#943).
     force_faux: bool,
     cursor: CursorStream,
-    /// Where a cut turn's usage is booked once its record lands; each session wires its own.
+    /// Where a cut turn's usage is booked once its record lands: the first session wired keeps it.
     settle: Mutex<Option<yi_ai::settle::Settle>>,
 }
 
@@ -169,7 +169,7 @@ impl ProviderStream {
 
     pub(crate) fn settle_into(&self, hook: yi_ai::settle::Settle) {
         if let Ok(mut slot) = self.settle.lock() {
-            *slot = Some(hook);
+            slot.get_or_insert(hook);
         }
     }
 

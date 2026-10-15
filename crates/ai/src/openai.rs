@@ -912,13 +912,12 @@ fn run_request(
         // error turn is settled from the record (D79, #331); one that died before any chunk
         // has no record and stays unknown
         Err(message) => {
-            let job = settle_from_record(&mut mapper.output, model, &wire);
+            start(settle_from_record(&mut mapper.output, model, &wire));
             let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
                 &message,
                 oauth,
                 &model.provider,
             )));
-            start(job);
             return Ok(());
         }
     };
@@ -939,13 +938,14 @@ fn run_request(
             ..
         }
     );
-    let job = (cut || failed)
-        .then(|| settle_from_record(&mut mapper.output, model, &wire))
-        .flatten();
+    start(
+        (cut || failed)
+            .then(|| settle_from_record(&mut mapper.output, model, &wire))
+            .flatten(),
+    );
     for event in mapper.finish() {
         let _ = sender.blocking_send(event);
     }
-    start(job);
     Ok(())
 }
 
