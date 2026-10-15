@@ -558,8 +558,9 @@ def answered_round(repo, sha, number):
     #1391's gate fix came between, and the stop weighed the gate's round instead of the fix's."""
     log = sh(repo, "git", "log", "--first-parent", "-n", "16", "--format=%B%x1e", sha, check=False).stdout
     for body in log.split("\x1e"):
-        if m := re.search(rf"{SIGNED} (\d+) on #{number}\.", body):
-            return int(m.group(1))
+        # The signature closes the body; a summary that quotes one comes before it.
+        if found := re.findall(rf"{re.escape(SIGNED)} (\d+) on #{number}\.", body):
+            return int(found[-1])
     return None
 
 
@@ -1549,8 +1550,8 @@ def selfcheck():
     finally:
         shutil.rmtree(repo)
     held = lambda n: {"n": 4, "verdict": "blocked", "findings": [{"severity": "high", "lens": "tests"}] * n}
-    for before, now, prev, stops in ((1, 3, None, False), (2, 3, None, False), (2, 2, 3, False), (2, 3, 3, False),
-                                     (2, 4, 3, True), (4, 1, 3, True)):
+    for before, now, prev, stops in ((1, 3, None, False), (1, 4, 3, False), (2, 3, None, False), (2, 2, 3, False),
+                                     (2, 3, 3, False), (2, 4, 3, True), (4, 1, 3, True)):
         if bool(stalled(before, held(now), prev and held(prev))) != stops:
             errs.append(f"{before} fixes in a row, {now} held after {prev} before: stopped={not stops}, want {stops}")
     # Three baselines moving at once still make a subject the commit-style gate passes.
