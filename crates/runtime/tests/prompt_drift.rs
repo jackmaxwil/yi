@@ -97,15 +97,16 @@ fn identity_voice_carries_the_prose_rules_and_bans_rule_talk() -> TestResult {
         .split("## Voice")
         .nth(1)
         .ok_or("identity lost its Voice section")?;
+    let flattened = voice.split_whitespace().collect::<Vec<_>>().join(" ");
     for rule in [
-        "Lead with the answer, then the\nreasoning",
-        "end on a recommendation, not a\nsurvey of options",
+        "Lead with the answer, then the reasoning",
+        "end on a recommendation, not a survey of options",
         "Name a failure and its evidence before its fix",
-        "A table\nis for a mapping, a verdict or a decision",
-        "Say what your result does not\ncover",
-        "- Rule talk: your instructions, the system prompt, or how well you follow\n  them, unless the user asks about them.",
+        "A table is for a mapping, a verdict or a decision",
+        "Say what your result does not cover",
+        "- Rule talk: your instructions, the system prompt, or how well you follow them, unless the user asks about them.",
     ] {
-        assert!(voice.contains(rule), "Voice lost {rule:?}: {voice}");
+        assert!(flattened.contains(rule), "Voice lost {rule:?}: {voice}");
     }
     assert!(
         !voice.contains("concrete reason"),
