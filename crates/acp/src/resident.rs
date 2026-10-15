@@ -52,10 +52,20 @@ pub(crate) fn pinned(handle: &SessionHandle) -> bool {
     session.status() == yi_runtime::Status::Running
         || !crate::update::queued(&handle.prompts).is_empty()
         || session.pending_count() > 0
-        || (handle.host.children_view().iter())
-            .any(|child| child.update.status == ChildStatus::Running)
-        || (session.kernel_service())
-            .is_some_and(|kernel| kernel.unsaved() || kernel.user_cell_running())
+        || handle
+            .host
+            .children_view()
+            .iter()
+            .any(|child| child_pins(&child.update))
+        || kernel_pins(session.kernel_service().as_deref())
+}
+
+pub(crate) fn child_pins(update: &yi_types::subagent::ChildUpdate) -> bool {
+    update.status == ChildStatus::Running
+}
+
+pub(crate) fn kernel_pins(kernel: Option<&yi_runtime::KernelService>) -> bool {
+    kernel.is_some_and(|kernel| kernel.unsaved() || kernel.user_cell_running())
 }
 
 impl AcpState {
@@ -127,5 +137,64 @@ mod tests {
         assert!(!owed("never-evicted", &weak));
         forget("two-due");
         Ok(())
+    }
+
+    fn child_update(status: yi_types::subagent::ChildStatus) -> yi_types::subagent::ChildUpdate {
+        use yi_types::subagent::{ChildActivity, ChildId, ChildUpdate};
+        ChildUpdate {
+            id: ChildId("c1".to_owned()),
+            name: "c1".to_owned(),
+            status,
+            activity: ChildActivity::Waiting,
+            tool_use_count: 0,
+            token_count: 0,
+            cost: None,
+            answer_preview: None,
+            error: None,
+            exit: None,
+            flag: None,
+        }
+    }
+
+    #[test]
+    fn a_running_child_pins_its_session() {
+        use yi_types::subagent::ChildStatus;
+        assert!(child_pins(&child_update(ChildStatus::Running)));
+        assert!(!child_pins(&child_update(ChildStatus::Completed)));
+    }
+
+    #[tokio::test]
+    async fn an_unsaved_kernel_pins_its_session() {
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
+
+        let mut registry = HostRegistry::default();
+        registry.register_mcp_stubs();
+        let service = KernelService::new(KernelServiceOptions {
+            cwd: std::env::temp_dir(),
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(registry),
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        });
+        assert!(!kernel_pins(Some(&service)), "an idle kernel pins nothing");
+        type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
+        let cancelled: Cancel = Arc::new(|| false);
+        service
+            .execute_user_cell("unsaved_pin_probe = 1", &cancelled)
+            .await;
+        assert!(
+            kernel_pins(Some(&service)),
+            "a kernel whose snapshot does not hold its names stays loaded"
+        );
     }
 }
