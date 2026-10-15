@@ -196,12 +196,12 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             app.state.panes.get(&pane_rect.id).is_some_and(|pane| {
                 matches!(pane.content, PaneContent::Session { chat: Some(_), .. })
             });
-        if pane_rect.focused
-            && panes_zone
-            && let Some(PaneContent::Editor(editor)) =
-                app.state.panes.get(&pane_rect.id).map(|pane| &pane.content)
-        {
-            editor_cursor = editor_cursor_cell(editor, inner);
+        if pane_rect.focused && panes_zone {
+            editor_cursor = match app.state.panes.get(&pane_rect.id).map(|pane| &pane.content) {
+                Some(PaneContent::Editor(editor)) => editor_cursor_cell(editor, inner),
+                Some(PaneContent::Terminal(pty)) => pty.cursor(inner),
+                _ => editor_cursor,
+            };
         }
         panes.push(PaneView {
             scroll,
@@ -353,7 +353,7 @@ fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> Strin
     note
 }
 
-pub use crate::panes::{hunk_lines, review_files, review_view, tape_view};
+pub use crate::panes::{hunk_lines, review_files, review_view};
 
 fn pane_view_content(
     pane: &mut crate::model::Pane,
@@ -393,9 +393,9 @@ fn pane_view_content(
             let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
             (format!("{GEAR} Settings"), lines, None)
         }
-        PaneContent::Tape { tape, cursor, .. } => {
-            let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
-            (title, all, None)
+        PaneContent::Terminal(pty) => {
+            let (title, lines) = pty.view(inner, &mut pane.scroll_from_bottom);
+            (title, lines, None)
         }
         PaneContent::SessionDiff { session, scope } => {
             let note = view.notes.get(session).map_or("", String::as_str);
@@ -543,7 +543,7 @@ fn editor_view(
     (format!("✎ {}{mark}", short_path(&editor.path)), out, extent)
 }
 
-fn short_path(path: &str) -> String {
+pub(crate) fn short_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
@@ -621,6 +621,24 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         hits.overlays = vec![popup];
         hits.dismiss = Some(crate::palette::dismiss_mark(popup));
     }
+    if crate::title_playing(app)
+        && let Some(scene) = app.state.title
+    {
+        let landing = app
+            .state
+            .focused_pane_id()
+            .and_then(|id| app.state.panes.get(&id))
+            .and_then(|pane| match &pane.content {
+                PaneContent::Session {
+                    chat: Some(chat), ..
+                } => chat.app.orb_rect(),
+                _ => None,
+            });
+        let elapsed = app.clock.since(app.state.title_start);
+        let screen = frame.area();
+        let buffer = frame.buffer_mut();
+        yi_tui::title::cover(buffer, screen, (scene, elapsed), landing, theme);
+    }
 }
 
 /// Solo's chat into the pane's rectangle; the focused pane alone carries the orb.
@@ -634,6 +652,7 @@ fn paint_chat_pane(
     theme: &Theme,
 ) {
     let kitty = app.kitty;
+    let covered = crate::title_playing(app);
     let title = (!framed)
         .then(|| {
             app.state
@@ -665,6 +684,7 @@ fn paint_chat_pane(
         return;
     };
     chat.app.set_kitty(kitty && view.focused);
+    chat.app.set_title_cover(covered);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
