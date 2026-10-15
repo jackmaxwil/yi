@@ -66,6 +66,9 @@ pub struct Tick {
 }
 
 fn wanted(app: &App) -> Vec<(u32, u16, u16)> {
+    if app.title_cover {
+        return Vec::new();
+    }
     let (Some(Bottom::Model(popup)), Some((col, row0))) = (&app.bottom, app.logo_rows) else {
         return Vec::new();
     };
