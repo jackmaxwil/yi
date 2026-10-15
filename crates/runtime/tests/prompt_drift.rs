@@ -107,6 +107,10 @@ fn identity_voice_carries_the_prose_rules_and_bans_rule_talk() -> TestResult {
     ] {
         assert!(voice.contains(rule), "Voice lost {rule:?}: {voice}");
     }
+    assert!(
+        !voice.contains("concrete reason"),
+        "the Voice rule-talk bullet restates the doctrine.md fallback wording"
+    );
     Ok(())
 }
 
