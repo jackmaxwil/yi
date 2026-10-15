@@ -28,13 +28,13 @@ pub fn place_png(
         return Ok(());
     }
     transmit_base64(out, id, base64_png)?;
-    let row = rect.y.saturating_add(1);
-    let col = rect.x.saturating_add(1);
-    let rows = rect.height.max(1);
-    let cols = rect.width.max(1);
-    write!(
+    yi_tui::orb::kitty::place(
         out,
-        "\u{1b}7\u{1b}[{row};{col}H\u{1b}_Ga=p,i={id},r={rows},c={cols},q=2\u{1b}\\\u{1b}8"
+        id,
+        rect.x,
+        rect.y,
+        rect.width.max(1),
+        rect.height.max(1),
     )
 }
 
