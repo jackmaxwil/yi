@@ -877,6 +877,9 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     if let Some(total) = wiring.deadline {
         session.set_deadline(total);
     }
+    let parent = wiring.parent_link.as_ref().and_then(|l| l.host.upgrade());
+    let bill = parent.map(|host| Arc::clone(&host.options.attribute));
+    session.provider().settle_into(session.settle_hook(bill));
     let plans_dir = wiring
         .plans_dir
         .clone()
@@ -897,8 +900,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §9.2).
         registry.register("compact.run", move |payload| {
-            let instructions = payload.str_of("instructions").map(str::to_owned);
-            compactor.schedule_with_instructions(instructions);
+            compactor.schedule_with_instructions(payload.str_of("instructions").map(str::to_owned));
             Box::pin(async {
                 let mut reply = Map::new();
                 reply.insert("scheduled".to_owned(), Value::Bool(true));
@@ -925,11 +927,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let host = subagent_host(session, &wiring, &plans_dir);
     host.register(&mut registry);
     crate::mailbox::register_receive(session, &host, &mut registry);
-    session.set_environment(crate::environment::hook(
-        session,
-        &wiring,
-        Arc::clone(&host),
-    ));
+    let environment = crate::environment::hook(session, &wiring, Arc::clone(&host));
+    session.set_environment(environment);
     if let Some(link) = wiring.parent_link.clone() {
         register_child_messaging(link, &host, &mut registry);
     }
@@ -985,7 +984,6 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     if let Some(broker) = &wiring.broker {
         broker.set_journal(journal_into(session.store_handle()));
     }
-    let fetch_for_rules = Arc::clone(&fetch_log);
     wire_plan_engine(session, &wiring, &plans_dir, &host, &mut tools, plan);
     if let (Some(plan), Some(advisor)) = (session.plan_service(), session.advisor()) {
         plan.set_on_change(Arc::new(move |plan| {
@@ -1002,7 +1000,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     // Attached even with zero rules: the adapters capture this Arc when tools
     // are installed, so a rule promoted mid-session (§16) arms immediately.
     let engine = Arc::new(crate::rules::RuleEngine::new(rule_set.rules));
-    engine.set_fetch(fetch_for_rules);
+    engine.set_fetch(fetch_log);
     crate::rules::attach_rules(session, Arc::clone(&engine));
     session.set_rules_engine(Arc::clone(&engine));
     wire_compacted(session, &service, &plans_dir, engine);

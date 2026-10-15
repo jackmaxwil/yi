@@ -37,24 +37,10 @@ pub(crate) fn append_main_usage(
     Ok(())
 }
 
-/// A cut turn's usage, settled after its turn ended, lands where [`append_main_usage`] books,
-/// with the upstream the record named: the turn's own entry was written without it.
-pub(crate) fn book_settled(session: &AgentSession) {
-    let store = session.store_handle();
-    session
-        .provider()
-        .settle_into(yi_ai::settle::Settle(Arc::new(move |usage, upstream| {
-            if let Some(store) = store() {
-                let details = upstream.map(|name| serde_json::json!({"upstream": name}));
-                let _booked = append_main_usage(&store, "settled".to_owned(), usage, details);
-            }
-        })));
-}
-
 /// One-shot runs call this before they exit: the settled cost of a cut turn lands seconds after
-/// the turn, and a process that leaves first never books it.
-pub fn drain_settled() {
-    yi_ai::settle::drain(yi_ai::settle::DRAIN_CAP);
+/// the turn, and a process that leaves first never books it. `None` waits the full fetch budget.
+pub fn drain_settled(cap: Option<std::time::Duration>) {
+    yi_ai::settle::drain(cap.unwrap_or(yi_ai::settle::DRAIN_CAP));
 }
 
 /// Invariant: a side call that reports spend leaves one [`yi_types::record::LaneRecord::Usage`]

@@ -18,8 +18,8 @@ impl std::fmt::Debug for Settle {
 
 static PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The schedule's 28 s of waiting plus the fetches' own time.
-pub const DRAIN_CAP: std::time::Duration = std::time::Duration::from_secs(32);
+/// The schedule's 28 s of waiting plus four fetches at their 5 s connect and 20 s read bound.
+pub const DRAIN_CAP: std::time::Duration = std::time::Duration::from_secs(128);
 
 struct Pending;
 
