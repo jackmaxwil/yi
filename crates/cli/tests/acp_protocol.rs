@@ -1848,6 +1848,30 @@ fn a_worker_keeps_eight_idle_sessions_and_reloads_the_one_it_evicted() -> TestRe
     client.finish()
 }
 
+/// Incident: closing a session the worker had unloaded started loading it again, so the close
+/// answered Ok and the session it closed was back in memory a moment later.
+#[test]
+fn closing_an_evicted_session_does_not_load_it_again() -> TestResult {
+    let dir = temp_dir("resident-close")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for n in 0..9 {
+        ids.push(new_idle_session(&mut client, &dir, n)?);
+    }
+    assert!(!attached(&mut client, "list")?.contains(&ids[0]));
+    let closed = client.request("close", "session/close", json!({"sessionId": ids[0]}))?;
+    let reply = closed.last().ok_or("no reply")?;
+    assert!(reply.get("error").is_none(), "{reply}");
+    let cancel = client.request("cancel", "session/cancel", json!({"sessionId": ids[0]}))?;
+    let after = cancel.last().ok_or("no reply")?;
+    assert!(
+        after.get("error").is_some() && !attached(&mut client, "list-after")?.contains(&ids[0]),
+        "the closed session was loaded again: {after}"
+    );
+    client.finish()
+}
+
 fn new_idle_session(
     client: &mut AcpClient,
     dir: &std::path::Path,
