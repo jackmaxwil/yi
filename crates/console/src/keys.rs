@@ -34,6 +34,7 @@ pub enum Action {
     ToggleDiff,
     OpenTerminal,
     OpenEditor,
+    OpenBrowser,
     Find,
     Save,
     Undo,
@@ -88,6 +89,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
         KeyCode::Char('y') => Some(Action::OpenTerminal),
+        KeyCode::Char('w') => Some(Action::OpenBrowser),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('?') => Some(Action::Keys),
         KeyCode::Char('c') => Some(Action::Menu),
@@ -121,6 +123,7 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         ('b', false) => Action::ToggleSidebar,
         ('i', false) => Action::ToggleNotebook,
         ('y', false) => Action::OpenTerminal,
+        ('b', true) => Action::OpenBrowser,
         ('o', false) => Action::OpenEditor,
         ('s', false) => Action::Save,
         ('u', false) => Action::Undo,
@@ -194,7 +197,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 25] = [
+pub const CHORDS: [Chord; 26] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌥1..9", "", None),
@@ -267,6 +270,7 @@ pub const CHORDS: [Chord; 25] = [
         "",
         Some(Action::StopDaemon),
     ),
+    chord("browser pane", "⌥w", "⌘⇧B", "", Some(Action::OpenBrowser)),
     chord("settings", "⌥,", "⌥,", ",", Some(Action::Settings)),
     chord(
         "pin or unpin the session",

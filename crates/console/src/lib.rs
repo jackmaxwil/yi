@@ -8,6 +8,7 @@ pub mod app;
 pub mod avatar;
 mod chrome;
 pub mod client;
+mod header;
 pub mod keys;
 pub mod kitty;
 pub mod layout;
@@ -530,7 +531,13 @@ fn place_chat_orbs(
             pane.is_some_and(|(_, rect)| !hits.overlays.iter().any(|cover| cover.intersects(*rect)))
         })
     };
-    let shown = focused.filter(|id| shown(*id));
+    let shown: Vec<PaneId> = app
+        .state
+        .panes
+        .keys()
+        .copied()
+        .filter(|id| shown(*id))
+        .collect();
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
             session,
@@ -540,11 +547,14 @@ fn place_chat_orbs(
             continue;
         };
         owners.entry(*id).or_insert_with(|| session.clone());
-        if Some(*id) == shown {
-            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, true);
-            yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
+        if shown.contains(id) {
+            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
         } else {
             chat.orb.hide(out);
+        }
+        if shown.contains(id) && Some(*id) == focused {
+            yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
+        } else {
             yi_tui::logos::delete_all(out, &mut chat.logos);
         }
     }
@@ -586,7 +596,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     let Some(rect) = rect else {
         return clear(out, placed);
     };
-    let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+    let inner = rect.inner(render::pane_margin(true));
     let half = ratatui::layout::Rect {
         height: inner.height / 2,
         ..inner

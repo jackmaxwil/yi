@@ -137,7 +137,8 @@ fn a_titled_session_name_reaches_a_pane() -> Result<(), String> {
 fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String> {
     use yi_console::app::App;
     use yi_console::model::SidebarMode;
-    use yi_console::sidebar::{Control, sidebar_lines};
+    use yi_console::render::Hit;
+    use yi_console::sidebar::sidebar_lines;
     use yi_tui::colors::{ColorTier, Theme};
     let theme = Theme::new(ColorTier::Ansi16, true);
     let mut app = App::new("/w/yi".to_owned(), theme);
@@ -187,7 +188,7 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
         sidebar_lines(app, &theme, 60)
             .into_iter()
             .filter_map(|row| match (row.control, row.index) {
-                (Some(Control::Fold(_)), _) => {
+                (Some(Hit::Fold(_)), _) => {
                     let words: Vec<String> = row
                         .line
                         .to_string()
@@ -196,8 +197,8 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
                         .collect();
                     Some(words.join(" "))
                 }
-                (Some(Control::New(_)), _) => Some("new".to_owned()),
-                (Some(Control::Search), _) => Some("search".to_owned()),
+                (Some(Hit::New(_)), _) => Some("new".to_owned()),
+                (Some(Hit::Search), _) => Some("search".to_owned()),
                 (None, Some(index)) if last != Some(index) => {
                     last = Some(index);
                     let id = app.state.order.get(index)?;
@@ -206,6 +207,7 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
                 (None, None) if row.line.to_string().trim() == "PINNED" => {
                     Some("PINNED".to_owned())
                 }
+                (Some(other), _) => Some(format!("{other:?}")),
                 (None, _) => None,
             })
             .collect()
