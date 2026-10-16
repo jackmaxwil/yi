@@ -472,13 +472,6 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
     draw(&mut app, &mut terminal)?;
     let lit = face(&terminal)?;
     assert_ne!(lit, rest, "the hovered diff button looks the same");
-    let browser = at(Action::OpenBrowser)?;
-    mouse(&mut app, MouseKind::Down, browser.x, browser.y);
-    assert_eq!(
-        app.state.banner.as_deref(),
-        Some("browser pane lands with #1379")
-    );
-    app.state.banner = None;
     let files = at(Action::OpenEditor)?;
     mouse(&mut app, MouseKind::Down, files.x, files.y);
     assert!(
@@ -494,6 +487,12 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
         .filter(|pane| matches!(pane.content, PaneContent::SessionDiff { .. }))
         .count();
     assert_eq!(diffs, 1, "the diff button opened no review pane");
+    let browser = at(Action::OpenBrowser)?;
+    mouse(&mut app, MouseKind::Down, browser.x, browser.y);
+    let browsers = (app.state.panes.values())
+        .filter(|pane| matches!(pane.content, PaneContent::Browser(_)))
+        .count();
+    assert_eq!(browsers, 1, "the browser button opened no browser pane");
     Ok(())
 }
 

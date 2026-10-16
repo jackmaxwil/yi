@@ -88,6 +88,13 @@ impl Hits {
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
     }
+
+    pub fn covered(&self, rect: ratatui::layout::Rect) -> bool {
+        self.overlays.iter().any(|cover| cover.intersects(rect))
+    }
+
+    /// The control under the pointer; a move redraws only when this changes. A session's
+    /// rows lift together, as one click target.
     pub fn hit_at(&self, x: u16, y: u16) -> Option<(Rect, Hit)> {
         let at = ratatui::layout::Position::new(x, y);
         let in_sidebar = x < self.sidebar_width;
@@ -289,6 +296,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
                     notes: &notes,
                     options: &app.state.session_options,
                     cmd: app.cmd_hints,
+                    kitty: app.kitty,
                 };
                 pane_view_content(pane, &view, inner, theme, close_hint)
             }
@@ -478,6 +486,7 @@ struct PaneData<'a> {
     notes: &'a std::collections::BTreeMap<SessionId, String>,
     options: &'a std::collections::BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     cmd: bool,
+    kitty: bool,
 }
 
 fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> String {
@@ -533,6 +542,10 @@ fn pane_view_content(
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
+        PaneContent::Browser(browser) => {
+            let (title, lines) = browser.view(inner, view.kitty, theme);
+            (title, lines, None)
+        }
         PaneContent::Settings(settings) => {
             let options = settings
                 .session
@@ -581,6 +594,21 @@ fn pane_view_content(
             (title, lines, scroll)
         }
     }
+}
+
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+        }
+        for chunk in chars.chunks(width) {
+            out.push(chunk.iter().collect());
+        }
+    }
+    out
 }
 
 fn windowed(
