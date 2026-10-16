@@ -11,6 +11,7 @@ use super::{
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+const SETTLE_WAIT: Duration = Duration::from_secs(32);
 
 pub(super) fn run(args: &Args) -> i32 {
     use std::io::IsTerminal;
@@ -98,7 +99,7 @@ pub(super) fn run(args: &Args) -> i32 {
     });
     release_lane(lane.as_deref());
     runtime.shutdown_timeout(left(deadline));
-    yi_runtime::spend::drain_settled(deadline.map(|_| left(deadline)));
+    yi_runtime::spend::drain_settled(deadline.map_or(SETTLE_WAIT, |_| left(deadline)));
     code
 }
 

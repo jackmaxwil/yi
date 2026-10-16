@@ -501,29 +501,68 @@ mod tests {
     use yi_types::message::Usage;
     use yi_types::record::LaneRecord;
 
+    fn settle_test_config() -> crate::session::SessionConfig {
+        crate::session::SessionConfig {
+            system_prompt: String::new(),
+            model: crate::plan::dispatch::tests::faux_model(),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        }
+    }
+
+    fn store(id: &str) -> yi_session::SharedSession {
+        Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
+            yi_session::SessionMetadata {
+                id: id.to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+                name: None,
+            },
+        )))
+    }
+
+    fn wiring(
+        provider: &Arc<crate::provider::ProviderStream>,
+        root: &std::path::Path,
+        parent_link: Option<crate::ParentLink>,
+    ) -> crate::RuntimeWiring {
+        crate::RuntimeWiring {
+            provider: Arc::clone(provider),
+            system_prompt: String::new(),
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+            cwd: root.join("cwd"),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(Vec::new),
+            depth: u8::from(parent_link.is_some()),
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link,
+            wall: crate::wall::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: crate::fetch::KernelServiceMap::new(),
+        }
+    }
+
     /// Dies with the hook unwired: a child's cut turn settled after it ended reached neither its
     /// own ledger nor the parent's bill.
     #[test]
     fn a_settled_usage_lands_on_the_ledger_and_bills_the_parent()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(crate::provider::ProviderStream::new(None));
-        let session = super::AgentSession::new(
-            crate::session::SessionConfig {
-                system_prompt: String::new(),
-                model: crate::plan::dispatch::tests::faux_model(),
-                thinking_level: None,
-                tool_execution: yi_loop::ExecutionMode::Sequential,
-            },
-            provider,
-        );
-        let store: yi_session::SharedSession = Arc::new(Mutex::new(
-            yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
-                id: "settled".to_owned(),
-                created_at: 0,
-                parent_session_id: None,
-                name: None,
-            }),
-        ));
+        let session = super::AgentSession::new(settle_test_config(), provider);
+        let store = store("settled");
         session.attach_store(Arc::clone(&store))?;
         let billed = Arc::new(Mutex::new(Vec::new()));
         let bill = Arc::clone(&billed);
@@ -562,46 +601,52 @@ mod tests {
     #[test]
     fn a_session_built_without_attach_runtime_still_carries_a_settle_hook() {
         let provider = Arc::new(crate::provider::ProviderStream::new(None));
-        super::AgentSession::new(
-            crate::session::SessionConfig {
-                system_prompt: String::new(),
-                model: crate::plan::dispatch::tests::faux_model(),
-                thinking_level: None,
-                tool_execution: yi_loop::ExecutionMode::Sequential,
-            },
-            Arc::clone(&provider),
-        );
+        super::AgentSession::new(settle_test_config(), Arc::clone(&provider));
         assert!(provider.settle_wired_for_test().is_some());
     }
 
-    /// Dies with the re-wire ignored: `new` wires a parentless hook first, so a child's settled
-    /// usage booked on its own ledger and never billed the parent.
+    /// Dies with attach_runtime's re-wire gone: `new` wires a parentless hook first, so a child's
+    /// settled usage booked on its own ledger and never billed the parent.
     #[test]
-    fn attach_runtimes_rewire_replaces_the_parentless_hook()
+    fn attach_runtime_bills_a_childs_settled_usage_to_its_parent()
     -> Result<(), Box<dyn std::error::Error>> {
-        let provider = Arc::new(crate::provider::ProviderStream::new(None));
-        let session = super::AgentSession::new(
-            crate::session::SessionConfig {
-                system_prompt: String::new(),
-                model: crate::plan::dispatch::tests::faux_model(),
-                thinking_level: None,
-                tool_execution: yi_loop::ExecutionMode::Sequential,
-            },
-            Arc::clone(&provider),
-        );
-        let billed = Arc::new(Mutex::new(Vec::new()));
-        let bill = Arc::clone(&billed);
-        let parent: Arc<crate::subagent::AttributeFn> = Arc::new(move |usage: &Usage| {
-            if let Ok(mut seen) = bill.lock() {
-                seen.push(usage.output);
-            }
-        });
-        provider.settle_into(session.settle_hook(Some(parent)));
-        let hook = provider.settle_wired_for_test().ok_or("no hook wired")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let _reactor = runtime.enter();
+        let dir = std::env::temp_dir().join(format!("yi-settle-rewire-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("cwd"))?;
+        std::fs::create_dir_all(dir.join("home"))?;
+        let root_stream = Arc::new(crate::provider::ProviderStream::new(None));
+        let mut root = super::AgentSession::new(settle_test_config(), Arc::clone(&root_stream));
+        let ledger = store("root");
+        root.attach_store(Arc::clone(&ledger))?;
+        let host = crate::attach_runtime(&mut root, wiring(&root_stream, &dir, None));
+        let child_stream = Arc::new(crate::provider::ProviderStream::new(None));
+        let mut child = super::AgentSession::new(settle_test_config(), Arc::clone(&child_stream));
+        child.attach_store(store("child"))?;
+        let link = crate::ParentLink {
+            child_name: "scout".to_owned(),
+            host: Arc::downgrade(&host),
+        };
+        let _child_host =
+            crate::attach_runtime(&mut child, wiring(&child_stream, &dir, Some(link)));
+        let hook = child_stream
+            .settle_wired_for_test()
+            .ok_or("no hook wired")?;
         let mut usage = Usage::zero();
         usage.output = 3089;
         (hook.0)(usage, None);
-        assert_eq!(*billed.lock().map_err(|_| "poisoned")?, [3089]);
+        let records = yi_session::lock_session(&ledger).find_records(&Default::default())?;
+        let billed = records.iter().any(|record| {
+            matches!(record, LaneRecord::Usage { cause, usage, .. }
+                if cause == yi_context::attribution::CHILD_USAGE_CAUSE && usage.output == 3089)
+        });
+        let _cleanup = std::fs::remove_dir_all(&dir);
+        assert!(
+            billed,
+            "the child's settled usage never reached the parent's ledger"
+        );
         Ok(())
     }
 
@@ -611,23 +656,10 @@ mod tests {
     fn a_side_session_on_the_root_stream_keeps_the_root_hook()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(crate::provider::ProviderStream::new(None));
-        let config = || crate::session::SessionConfig {
-            system_prompt: String::new(),
-            model: crate::plan::dispatch::tests::faux_model(),
-            thinking_level: None,
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-        };
-        let root = super::AgentSession::new(config(), Arc::clone(&provider));
-        let store: yi_session::SharedSession = Arc::new(Mutex::new(
-            yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
-                id: "root".to_owned(),
-                created_at: 0,
-                parent_session_id: None,
-                name: None,
-            }),
-        ));
+        let root = super::AgentSession::new(settle_test_config(), Arc::clone(&provider));
+        let store = store("root");
         root.attach_store(Arc::clone(&store))?;
-        let _reviewer = super::AgentSession::new(config(), Arc::clone(&provider));
+        let _reviewer = super::AgentSession::new(settle_test_config(), Arc::clone(&provider));
         let hook = provider.settle_wired_for_test().ok_or("no hook wired")?;
         let mut usage = Usage::zero();
         usage.output = 3089;
