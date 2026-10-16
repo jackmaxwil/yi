@@ -368,3 +368,106 @@ async fn a_prewarmed_kernel_owns_the_snapshot_its_bootstrap_writes() -> TestResu
     );
     Ok(())
 }
+
+fn blobs_in(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir.join("kernel-state.blobs"))? {
+        found.push(entry?.path());
+    }
+    Ok(found)
+}
+
+type Stamped = (PathBuf, u64, i64, i64);
+
+/// Every file over 8 MB under `dir`, with its inode and modification time.
+fn large_files(dir: &Path) -> Result<Vec<Stamped>, Box<dyn Error>> {
+    use std::os::unix::fs::MetadataExt;
+    let (mut found, mut walk) = (Vec::new(), vec![dir.to_path_buf()]);
+    while let Some(next) = walk.pop() {
+        for entry in std::fs::read_dir(next)? {
+            let path = entry?.path();
+            let meta = std::fs::metadata(&path)?;
+            if meta.is_dir() {
+                walk.push(path);
+            } else if meta.len() > 8_000_000 {
+                found.push((path, meta.ino(), meta.mtime(), meta.mtime_nsec()));
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Incident: every clean cell re-pickled the whole namespace into one file, so a cell that
+/// touched one small name rewrote a 10 MB value beside it.
+#[tokio::test]
+async fn a_cell_that_changes_one_name_writes_only_that_name() -> TestResult {
+    let dir = Scratch::new("yi-snap-blobs")?;
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let first = service(&dir, &notices);
+    cell(&first, "big = b'x' * 10_000_000\nsmall = 1").await?;
+    first.dispose().await;
+    let held = large_files(&dir)?;
+    assert!(!held.is_empty(), "no file holds the large value");
+    let before = blobs_in(&dir).unwrap_or_default();
+
+    let second = service(&dir, &notices);
+    cell(&second, "small = 2").await?;
+    second.dispose().await;
+    assert_eq!(
+        large_files(&dir)?,
+        held,
+        "the unchanged value was rewritten"
+    );
+    let after = blobs_in(&dir)?;
+    let added: Vec<&PathBuf> = after.iter().filter(|path| !before.contains(path)).collect();
+    assert_eq!(added.len(), 1, "one changed name wrote one blob: {added:?}");
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "the replaced value's blob outlived the commit"
+    );
+
+    std::fs::remove_file(added.first().ok_or("no new blob")?)?;
+    let third = service(&dir, &notices);
+    let outcome = cell(&third, "print(len(big))").await?;
+    third.dispose().await;
+    assert!(
+        outcome.result.stdout.contains("10000000"),
+        "{}",
+        outcome.result.stderr
+    );
+    let announced = notices
+        .lock()
+        .map(|queue| queue.join("\n"))
+        .unwrap_or_default();
+    assert!(
+        announced.contains("could not be restored and must be recreated if needed: small."),
+        "a missing blob must be named, not dropped: {announced}"
+    );
+    Ok(())
+}
+
+/// A snapshot written before blobs, one pickled dict of name to bytes, still restores.
+#[tokio::test]
+async fn a_single_file_snapshot_from_before_blobs_restores() -> TestResult {
+    let dir = Scratch::new("yi-snap-legacy")?;
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let writer = service(&Scratch::new("yi-snap-legacy-writer")?, &notices);
+    let target = dir.join("kernel-state.dill");
+    let code = format!(
+        "import dill\nopen({:?}, 'wb').write(dill.dumps({{'legacy': dill.dumps(7)}}))",
+        target.display().to_string()
+    );
+    cell(&writer, code.leak()).await?;
+    writer.dispose().await;
+    let reader = service(&dir, &notices);
+    let outcome = cell(&reader, "print(legacy * 6)").await?;
+    reader.dispose().await;
+    assert!(
+        outcome.result.stdout.contains("42"),
+        "{}",
+        outcome.result.stderr
+    );
+    Ok(())
+}
