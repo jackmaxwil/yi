@@ -82,9 +82,9 @@ pub struct App {
     /// Incident: a W1→W2→W1 flip inside one frame left ratatui's size unchanged, so it drew
     /// no clear over a screen the terminal had reflowed; every resize event now asks for one.
     pub pending_clear: bool,
-    /// (payload length, rect) of the placed notebook image; unchanged frames skip the
-    /// retransmit, and a drawn clear empties it, since the clear took the image with it.
-    pub notebook_image: Option<(usize, ratatui::layout::Rect)>,
+    /// (rect, payload length, kitty id) of the placed notebook image; unchanged frames skip
+    /// the retransmit, and a drawn clear empties it, since the clear took the image with it.
+    pub notebook_image: std::collections::BTreeMap<PaneId, crate::placed::Placed>,
     animations: Vec<Anim>,
     pub animate: bool,
     pub cmd_hints: bool,
@@ -152,7 +152,7 @@ impl App {
             next_list_poll: Instant::now() + LIST_POLL,
             dirty: true,
             pending_clear: false,
-            notebook_image: None,
+            notebook_image: Default::default(),
             animations: Vec::new(),
             cmd_hints: false,
             autostart: false,
@@ -286,6 +286,7 @@ impl App {
         self.check_editors(now);
         self.poll_terminals();
         self.pump_chats(outbound);
+        self.pump_browsers();
         if self
             .shutdown_at
             .is_some_and(|at| now.saturating_duration_since(at) > Duration::from_secs(2))
@@ -925,7 +926,7 @@ impl App {
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::OpenTerminal => self.open_terminal(),
             Action::OpenEditor => self.open_navigator("e "),
-            Action::OpenBrowser => self.note("browser pane lands with #1379"),
+            Action::OpenBrowser => self.open_browser(),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
                 if !self.editor_action(action) {
@@ -1054,7 +1055,7 @@ impl App {
             self.dirty = true;
             return;
         }
-        if self.state.zone == Zone::Panes && self.terminal_key(&key) {
+        if self.state.zone == Zone::Panes && (self.browser_key(&key) || self.terminal_key(&key)) {
             return;
         }
         let on_chat = self.state.zone == Zone::Panes && self.on_chat();
@@ -1129,6 +1130,7 @@ impl App {
     }
 }
 
+mod browser;
 mod chat;
 mod diffs;
 mod editor;

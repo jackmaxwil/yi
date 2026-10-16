@@ -774,7 +774,7 @@ impl App {
     pub(super) fn chat_event(&mut self, event: CtEvent) {
         self.dirty = true;
         if let CtEvent::Paste(text) = &event
-            && self.terminal_paste(text)
+            && (self.browser_paste(text) || self.terminal_paste(text))
         {
             return;
         }
