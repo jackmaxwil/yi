@@ -302,8 +302,8 @@ fn the_draw_follows_the_weights_and_the_seed() {
     assert!((0..200).all(|seed| title::pick(&only, seed) == Some(Scene::Echo)));
 }
 
-/// Incident: the default odds moved with every scene added and no test said so. Every scene is
-/// in the draw a config without weights gets, Kali at 8 and each other scene at 2.
+/// Invariant: every scene in [`title::Scene::ALL`] is in the draw a config without weights gets,
+/// Kali at 8 and each other scene at 2, so a scene added without its weight fails here by name.
 #[test]
 fn every_scene_is_in_the_default_draw_and_kali_leads() {
     for (name, scene) in Scene::ALL {
