@@ -179,8 +179,8 @@ async fn a_restore_to_an_earlier_turn_moves_back_what_the_agent_wrote_and_keeps_
     Ok(())
 }
 
-/// Dies with a `/undo` after a Tape restore that finds no record of it and reverts the turn
-/// before as well, deleting work the restore never touched.
+/// Dies with a `/undo` after a rewind's file restore that finds no record of it and reverts
+/// the turn before as well, deleting work the restore never touched.
 #[tokio::test]
 async fn an_undo_after_a_restore_puts_back_what_the_restore_moved_and_nothing_else()
 -> Result<(), Box<dyn Error>> {
