@@ -15,6 +15,8 @@ pub enum Update {
     Url(String),
     /// A navigation Chrome could not finish; the page stays usable.
     NavigateFailed(String),
+    /// One frame from Chrome was refused (over the cap, or not CDP); the browser carries on.
+    Skipped(String),
     Failed(String),
 }
 
@@ -33,17 +35,20 @@ pub struct Router {
     session: Option<String>,
     queued: Vec<CdpCommand>,
     size: (u32, u32),
+    scale: u32,
 }
 
 impl Router {
-    /// Opens `url` in a new page target; frames start once it is attached.
-    pub fn new(url: &str, size: (u32, u32)) -> Self {
+    /// Opens `url` in a new page target; frames start once it is attached. `size` is the
+    /// viewport in CSS pixels and `scale` the display's pixel ratio.
+    pub fn new(url: &str, size: (u32, u32), scale: u32) -> Self {
         let mut router = Self {
             next: 0,
             waiting: BTreeMap::new(),
             session: None,
             queued: Vec::new(),
             size,
+            scale: scale.max(1),
         };
         router.call(
             Waiting::Target,
@@ -113,7 +118,7 @@ impl Router {
             Waiting::Attach => {
                 self.session = Some(result.get("sessionId")?.as_str()?.to_owned());
                 self.call(Waiting::Other, "Page.enable", json!({}));
-                self.resize(self.size);
+                self.resize(self.size, self.scale);
             }
             Waiting::Navigate => {
                 let error = result.get("errorText").and_then(Value::as_str);
@@ -133,14 +138,15 @@ impl Router {
         None
     }
 
-    /// The page's viewport and the screencast's frame size, both in CSS pixels.
-    pub fn resize(&mut self, (width, height): (u32, u32)) {
-        self.size = (width, height);
+    /// The page's viewport in CSS pixels at `scale` device pixels each; frames come back at
+    /// the device size.
+    pub fn resize(&mut self, (width, height): (u32, u32), scale: u32) {
+        (self.size, self.scale) = ((width, height), scale.max(1));
         if self.session.is_none() {
             return;
         }
         let metrics = json!({
-            "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false,
+            "width": width, "height": height, "deviceScaleFactor": self.scale, "mobile": false,
         });
         self.call(
             Waiting::Other,
@@ -153,7 +159,10 @@ impl Router {
     /// Incident: after a cross-document navigation headless Chrome sent no frame until the
     /// screencast restarted, and it refuses a start while one runs, so a start follows a stop.
     fn cast(&mut self) {
-        let (width, height) = self.size;
+        let (width, height) = (
+            self.size.0.saturating_mul(self.scale),
+            self.size.1.saturating_mul(self.scale),
+        );
         self.call(Waiting::Other, "Page.stopScreencast", json!({}));
         let cast = json!({
             "format": "png", "maxWidth": width, "maxHeight": height, "everyNthFrame": 1,

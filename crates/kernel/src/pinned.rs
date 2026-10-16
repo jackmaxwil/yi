@@ -57,7 +57,7 @@ fn digest_is(subject: &str, digest: &str, pinned_sha: &str, remedy: &str) -> Res
 }
 
 /// Downloads through `fetch`, checks the digest before unpacking, and publishes the whole zip
-/// as `dir` by one rename once its member matches `member_sha256` and runs.
+/// as `dir` by one rename once its member matches `member_sha256`.
 pub fn install_tree(
     pin: &Unzipped<'_>,
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,

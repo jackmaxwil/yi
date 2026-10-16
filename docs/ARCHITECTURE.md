@@ -30,11 +30,11 @@ Internal deps are the allowlist in `scripts/guardrails/boundaries.toml` (YI_DESI
 | `yi-tools` | `Tool` trait, builtin tools, hashline edits, bash jobs, sandbox, checkpoints (§7) | yi-types, yi-permission | 12,379 |
 | `yi-mcp-cli` | the `yi mcp` one-shot JSON-RPC client, refused unless `mcp.enabled` (§7.6) | yi-oauth, yi-types | 2,302 |
 | `yi-kernel` | Jupyter client: connection file, ZMQ framing, HMAC, snapshot, uv install (§9) | yi-types | 4,254 |
-| `yi-runtime` | `AgentSession` and the modules that compose the crates above (§4, §6, §10-§16) | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel | 45,704 |
+| `yi-runtime` | `AgentSession` and the modules that compose the crates above (§4, §6, §10-§16) | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel, yi-browser | 45,704 |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon (§17.2) | yi-types, yi-runtime | 2,627 |
 | `yi-tui` | the ratatui solo chat (§17.3) | yi-types, yi-runtime, yi-orb | 12,657 |
 | `yi-console` | the multi-pane workspace, an ACP client of the daemon (§17.4) | yi-types, yi-tui, yi-browser | 7,555 |
-| `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router (§17.4) | yi-types | 435 |
+| `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router (§17.4) | yi-types | 590 |
 | `yi-cli` | the `yi` binary: composition root, verbs, `yi rpc`, `yi ask` (§17.1) | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser | 4,556 |
 
 Non-crate: `python/yi_runtime` (§9), `skills/yi` (§7.8), `scripts/guardrails` (§21), `evals/`

@@ -121,6 +121,7 @@ fn a_click_on_a_served_link_brings_its_page_and_a_new_frame() -> TestResult {
         &dir.join("profile"),
         &url,
         (320, 200),
+        1,
     )?;
     until(&mut browser, |seen| frames(seen) > 0)?;
     browser.router.mouse(&press(MouseKind::MousePressed, 1));

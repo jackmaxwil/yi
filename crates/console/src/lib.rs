@@ -617,7 +617,10 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     crate::placed::reconcile(
         want,
         &mut app.notebook_image,
-        &mut |_: PaneId, old: Option<u32>| old.map_or(0, |old| (old + 1) % 2),
+        &mut |_: PaneId, old: Option<u32>| {
+            let [even, odd] = crate::kitty::NOTEBOOK_IDS;
+            if old == Some(even) { odd } else { even }
+        },
         &mut |_: PaneId, rect: ratatui::layout::Rect, image: &&String, id: u32| {
             crate::kitty::place_png(&mut *out.borrow_mut(), id, image.as_str(), rect).is_ok()
         },
@@ -903,7 +906,7 @@ mod tests {
         };
         draw(&mut app, &mut terminal, &theme)?;
         let first = stream(&mut app);
-        assert!(first.contains("a=p,i=0,"), "{first:?}");
+        assert!(first.contains("a=p,i=7701,"), "{first:?}");
         let home = app.state.focused_pane_id().ok_or("a pane")?;
         if let Some(pane) = app.state.panes.get_mut(&home) {
             let crate::model::PaneContent::Notebook { cells, .. } = &mut pane.content else {
@@ -915,9 +918,9 @@ mod tests {
         app.dirty = true;
         draw(&mut app, &mut terminal, &theme)?;
         let second = stream(&mut app);
-        assert!(second.contains("a=p,i=1,"), "{second:?}");
+        assert!(second.contains("a=p,i=7702,"), "{second:?}");
         assert!(
-            !second.contains("a=d,d=I,i=1"),
+            !second.contains("a=d,d=I,i=7702"),
             "the repaint deleted the id it just placed: {second:?}"
         );
         Ok(())
@@ -967,7 +970,7 @@ mod tests {
             "the focused pane placed its own image: {second:?}"
         );
         assert!(
-            second.contains("a=d,d=I,i=0"),
+            second.contains("a=d,d=I,i=7701"),
             "the unfocused pane's id was not deleted: {second:?}"
         );
         Ok(())

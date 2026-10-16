@@ -5,8 +5,9 @@ use std::io::Write;
 
 use ratatui::layout::Rect;
 
-// Invariant (#817-era): ids come from the caller's reconcile, alternating so a repaint
-// deletes the id it replaced, never the one it just placed.
+/// Incident: ids 0 and 1 alternated once, and kitty id 0 means "no id": Ghostty refuses to place
+/// it and keeps the transmit. A repaint alternates these, so it never deletes the id it placed.
+pub(crate) const NOTEBOOK_IDS: [u32; 2] = [7701, 7702];
 const CHUNK: usize = 4096;
 
 pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
@@ -69,7 +70,7 @@ mod tests {
         let rect = ratatui::layout::Rect::new(0, 0, 10, 5);
         let mut out = Vec::new();
         let payload = "AAAA\u{1b}\\\u{1b}]52;c;ZWNobyBwd25lZA==\u{7}";
-        super::place_png(&mut out, 7701, payload, rect)?;
+        super::place_png(&mut out, super::NOTEBOOK_IDS[0], payload, rect)?;
         assert!(out.is_empty(), "no transmit or placement escape: {out:?}");
         Ok(())
     }
@@ -80,7 +81,7 @@ mod tests {
         let rect = ratatui::layout::Rect::new(0, 0, 10, 5);
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
         let mut out = Vec::new();
-        super::place_png(&mut out, 7701, png, rect)?;
+        super::place_png(&mut out, super::NOTEBOOK_IDS[0], png, rect)?;
         let written = String::from_utf8_lossy(&out);
         assert!(
             written.contains(&format!("m=0;{png}\u{1b}\\")),
