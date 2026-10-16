@@ -128,7 +128,7 @@ const NAME_FLOOR: usize = 10;
 fn name_cols(app: &App) -> usize {
     let roots = app.state.roots().into_iter().map(|root| {
         let label = root.rsplit('/').next().unwrap_or(&root);
-        drawn_width(label).saturating_sub(3)
+        drawn_width(label).saturating_sub(2)
     });
     app.state
         .visible_rows()
@@ -152,11 +152,11 @@ fn name_cols(app: &App) -> usize {
 
 pub fn width(app: &mut App) -> u16 {
     match app.state.sidebar {
-        SidebarMode::Rail => 9,
+        SidebarMode::Rail => 8,
         SidebarMode::Full => {
             // Incident: narrowing as a turn's children cleared re-wrapped every pane mid-turn.
             app.state.sidebar_cols = name_cols(app);
-            u16::try_from(app.state.sidebar_cols.saturating_add(9)).unwrap_or(u16::MAX)
+            u16::try_from(app.state.sidebar_cols.saturating_add(8)).unwrap_or(u16::MAX)
         }
     }
 }
@@ -238,7 +238,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                 line: Line::from(vec![
                     Span::styled(slot_text, on_row(number)),
                     tile_span(app, name_tile(row.seed()), hue),
-                    Span::styled("   ".to_owned(), on_row(Style::default())),
+                    Span::styled("  ".to_owned(), on_row(Style::default())),
                     Span::styled(
                         row.status.glyph().to_owned(),
                         on_row(status_style(theme, row.status)),
@@ -248,7 +248,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
             });
             rows.push(SidebarRow::plain(
                 Some(index),
-                Line::from(Span::styled(" ".repeat(8), on_row(Style::default()))),
+                Line::from(Span::styled(" ".repeat(7), on_row(Style::default()))),
             ));
             rows.extend(child_rows(app, id, theme, true, cols));
             continue;
@@ -270,7 +270,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         let tail = if row.attached { "·" } else { " " };
         let icon = spans.pop();
         spans.pop();
-        spans.push(Span::styled("   ".to_owned(), on_row(Style::default())));
+        spans.push(Span::styled("  ".to_owned(), on_row(Style::default())));
         spans.push(Span::styled(pad_cells(&label, cols), on_row(name_style)));
         spans.push(Span::styled(" ".to_owned(), on_row(Style::default())));
         spans.extend(icon);
@@ -282,7 +282,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         });
         let text: String = detail(app, id, row, now)
             .chars()
-            .take(cols.saturating_add(3))
+            .take(cols.saturating_add(2))
             .collect();
         rows.push(SidebarRow::plain(
             Some(index),
@@ -369,7 +369,7 @@ fn shown_children<'a>(app: &'a App, id: &SessionId) -> (Vec<&'a ChildUpdate>, us
 const CHILD_ROWS: usize = 3;
 
 /// Children hang off their session on `├`/`└` at column 2, the glyph in the session glyph
-/// column (7 on the rail, `cols + 8` in full); past three, the last row counts the rest.
+/// column (6 on the rail, `cols + 7` in full); past three, the last row counts the rest.
 fn child_rows(
     app: &App,
     id: &SessionId,
@@ -391,7 +391,7 @@ fn child_rows(
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
             tile_span(app, name_tile(&child.name), hue),
-            Span::raw("  "),
+            Span::raw(" "),
         ];
         if !rail {
             spans.push(Span::styled(
