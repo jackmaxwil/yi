@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use yi_orb::smooth;
+use yi_orb::{V, add, dot, norm, rot_y, smooth};
 
 use crate::app::App;
 use crate::colors::Theme;
@@ -241,31 +241,22 @@ fn solid(strokes: &Strokes, thick: f64, (u, v): (f64, f64), t: f64, leave: f64) 
         return None;
     }
     let fat = 0.05 * (1.0 - leave);
-    let (sin, cos) = (0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave)).sin_cos();
-    let f =
-        |x: f64, y: f64, z: f64| (distance_to(strokes, thick, x, y) - fat).max(z.abs() - half_z);
-    let eye = [-3.0 * sin, 0.0, -3.0 * cos];
-    let aim = [u * cos + 3.0 * sin, v, -u * sin + 3.0 * cos];
-    let len = (aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]).sqrt();
-    let dir = aim.map(|c| c / len);
+    let swing = 0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave);
+    let f = |p: V| (distance_to(strokes, thick, p[0], p[1]) - fat).max(p[2].abs() - half_z);
+    let eye = rot_y([0.0, 0.0, -3.0], swing);
+    let dir = norm(rot_y([u, v, 3.0], swing));
     let mut at = 0.0;
     for _ in 0..40 {
-        let p = [
-            eye[0] + dir[0] * at,
-            eye[1] + dir[1] * at,
-            eye[2] + dir[2] * at,
-        ];
-        let d = f(p[0], p[1], p[2]);
+        let p = add(eye, dir, at);
+        let d = f(p);
         if d < 0.006 {
-            let e = 0.012;
-            let n = [
-                f(p[0] + e, p[1], p[2]) - f(p[0] - e, p[1], p[2]),
-                f(p[0], p[1] + e, p[2]) - f(p[0], p[1] - e, p[2]),
-                f(p[0], p[1], p[2] + e) - f(p[0], p[1], p[2] - e),
-            ];
-            let size = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
-            let lum = (n[0] * -0.45 + n[1] * 0.65 + n[2] * -0.6) / size;
-            return Some(0.30 + 0.70 * lum.max(0.0));
+            let probe = |axis: V| f(add(p, axis, 0.012)) - f(add(p, axis, -0.012));
+            let n = norm([
+                probe([1.0, 0.0, 0.0]),
+                probe([0.0, 1.0, 0.0]),
+                probe([0.0, 0.0, 1.0]),
+            ]);
+            return Some(0.30 + 0.70 * dot(n, [-0.45, 0.65, -0.6]).max(0.0));
         }
         at += d * 0.9;
         if at > 6.0 {
