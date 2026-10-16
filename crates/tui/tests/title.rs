@@ -256,12 +256,6 @@ fn the_solid_name_rises_swings_and_shows_a_lit_side() {
         0,
         "it covers the screen like the others"
     );
-    let lit = held
-        .iter()
-        .flatten()
-        .filter(|g| matches!(**g, '*' | '#' | '%' | '@'))
-        .count();
-    assert!(lit > 150, "only {lit} cells are on its lit side");
     let lit_cells = |frame: &[Vec<char>]| -> Vec<bool> {
         frame
             .iter()
@@ -269,6 +263,8 @@ fn the_solid_name_rises_swings_and_shows_a_lit_side() {
             .map(|g| matches!(*g, '*' | '#' | '%' | '@'))
             .collect()
     };
+    let lit = lit_cells(&held).into_iter().filter(|on| *on).count();
+    assert!(lit > 150, "only {lit} cells are on its lit side");
     let (swung, settled) = (lit_cells(&at(1.3)), lit_cells(&at(2.1)));
     let moved = swung.iter().zip(&settled).filter(|(a, b)| a != b).count();
     assert!(moved > 60, "the swing moved only {moved} lit cells");
@@ -450,8 +446,8 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
 }
 
 /// The coral is a simulation the cache advances to the second asked for: it grows out of the
-/// strokes, and a kept run agrees with a fresh one after a later second, an earlier one and a
-/// resize, so a frozen clock replays any frame.
+/// strokes, a kept run agrees with a fresh one after a later second, an earlier one and a
+/// resize, and a repeat second steps nothing, so a frozen clock replays any frame.
 #[test]
 fn the_growth_spreads_and_a_kept_cache_agrees_with_a_fresh_one() {
     let draw = |cache: &mut title::Cache, (w, h): (u16, u16), secs: f64| {
@@ -469,10 +465,16 @@ fn the_growth_spreads_and_a_kept_cache_agrees_with_a_fresh_one() {
         late > early + 200,
         "the coral did not spread: {early} then {late}"
     );
+    let done = cache.work();
     assert_eq!(
         draw(&mut cache, (80, 24), 1.6),
         fresh((80, 24), 1.6),
         "a kept run equals a fresh one"
+    );
+    assert_eq!(
+        cache.work(),
+        done,
+        "the cache stepped a repeat second again, so every frame would re-grow the coral"
     );
     assert_eq!(
         draw(&mut cache, (80, 24), 0.4),
@@ -487,19 +489,20 @@ fn the_growth_spreads_and_a_kept_cache_agrees_with_a_fresh_one() {
 }
 
 /// The cyclic automaton starts as noise and the cache steps it at 55 a second: the screen
-/// changes while it runs, a kept run equals a fresh one, and a second that runs back starts over.
+/// changes while it runs, a kept run equals a fresh one, a repeat second steps nothing and a
+/// second that runs back starts over.
 #[test]
 fn the_spirals_turn_and_a_kept_cache_agrees_with_a_fresh_one() {
-    let area = Rect::new(0, 0, 80, 24);
-    let draw = |cache: &mut title::Cache, secs: f64| {
+    let draw = |cache: &mut title::Cache, (w, h): (u16, u16), secs: f64| {
+        let area = Rect::new(0, 0, w, h);
         let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
         let at = (Scene::Spirals, Duration::from_secs_f64(secs));
         title::cover(&mut buffer, area, at, None, &theme(), cache);
         rows(&buffer, area)
     };
     let mut cache = title::Cache::default();
-    let early = draw(&mut cache, 0.4);
-    let late = draw(&mut cache, 1.0);
+    let early = draw(&mut cache, (80, 24), 0.4);
+    let late = draw(&mut cache, (80, 24), 1.0);
     let moved = early
         .iter()
         .flatten()
@@ -509,20 +512,28 @@ fn the_spirals_turn_and_a_kept_cache_agrees_with_a_fresh_one() {
     assert!(moved > 500, "the spirals moved only {moved} cells in 0.6 s");
     assert_eq!(
         late,
-        draw(&mut title::Cache::default(), 1.0),
+        draw(&mut title::Cache::default(), (80, 24), 1.0),
         "a kept run equals a fresh one"
     );
-    assert_eq!(draw(&mut cache, 0.4), early, "back in time starts over");
-    let wide = |cache: &mut title::Cache| {
-        let area = Rect::new(0, 0, 120, 30);
-        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
-        let at = (Scene::Spirals, Duration::from_secs_f64(1.0));
-        title::cover(&mut buffer, area, at, None, &theme(), cache);
-        rows(&buffer, area)
-    };
+    let done = cache.work();
     assert_eq!(
-        wide(&mut cache),
-        wide(&mut title::Cache::default()),
+        draw(&mut cache, (80, 24), 1.0),
+        late,
+        "a repeat second holds"
+    );
+    assert_eq!(
+        cache.work(),
+        done,
+        "the cache stepped a repeat second again, so every frame would re-spin the spirals"
+    );
+    assert_eq!(
+        draw(&mut cache, (80, 24), 0.4),
+        early,
+        "back in time starts over"
+    );
+    assert_eq!(
+        draw(&mut cache, (120, 30), 1.0),
+        draw(&mut title::Cache::default(), (120, 30), 1.0),
         "a new size starts over"
     );
 }
