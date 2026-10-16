@@ -829,7 +829,12 @@ fn every_deferred_guide_is_one_read_away() -> TestResult {
     assert_eq!(
         pointed,
         // A root with no reviewer has no `ask_user` since annotations took its slot.
-        ["yi://tools/edit", "yi://tools/plan", "yi://tools/todo"]
+        [
+            "yi://tools/answer",
+            "yi://tools/edit",
+            "yi://tools/plan",
+            "yi://tools/todo"
+        ]
     );
     Ok(())
 }

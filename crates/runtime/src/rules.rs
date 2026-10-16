@@ -179,14 +179,7 @@ fn fields_to_rule(
         .ok_or("no file name")?;
     let needles: Vec<String> = fields
         .get("trigger")
-        .map(|trigger| {
-            trigger
-                .split(',')
-                .map(str::trim)
-                .filter(|needle| !needle.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
+        .map(|trigger| yi_types::settings::comma_list(trigger))
         .unwrap_or_default();
     if needles.is_empty() {
         return Err("no `trigger:` frontmatter (literal substring, comma-separated)".to_owned());
@@ -263,11 +256,10 @@ fn parse_paths(fields: &BTreeMap<String, String>) -> Result<Vec<yi_permission::P
     let Some(raw) = fields.get("paths") else {
         return Ok(Vec::new());
     };
-    raw.split(',')
-        .map(str::trim)
-        .filter(|pattern| !pattern.is_empty())
+    yi_types::settings::comma_list(raw)
+        .into_iter()
         .map(|pattern| {
-            yi_permission::PathGlob::new(pattern).map_err(|error| format!("paths: {error}"))
+            yi_permission::PathGlob::new(&pattern).map_err(|error| format!("paths: {error}"))
         })
         .collect()
 }
