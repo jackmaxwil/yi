@@ -1,10 +1,14 @@
-//! The title scenes that remember: a simulation advanced to the second asked for and kept between
-//! frames. A second that runs backwards, or a new screen size, starts it again from nothing.
+//! The title scenes that remember: a simulation kept between frames and advanced toward the
+//! second asked for, at most a frame's worth of steps per call. A second that runs backwards,
+//! or a new screen size, starts it again from nothing.
 
 use super::distance;
 
 /// Steps a second: the coral takes 1500 of them by the time the name lands.
 const GROWTH_STEPS_PER_SEC: f64 = 500.0;
+/// Steps one cover call may advance: a replay from zero, on boot or after a resize, then
+/// spreads over frames instead of stalling one.
+const GROWTH_STEPS_PER_CALL: u32 = 64;
 const GROWTH_COLS: usize = 80;
 const GROWTH_ROWS: usize = 32;
 
@@ -12,14 +16,17 @@ const GROWTH_ROWS: usize = 32;
 #[derive(Default)]
 pub struct Cache {
     growth: Option<Growth>,
+    steps_run: u64,
 }
 
-/// Gray–Scott coral seeded on the strokes, with the feed and kill rates the lab settled on.
+/// Gray–scott coral seeded on the strokes, with the feed and kill rates the lab settled on.
 pub(super) struct Growth {
     size: (u16, u16),
     steps: u32,
     u: Vec<f32>,
     v: Vec<f32>,
+    u_next: Vec<f32>,
+    v_next: Vec<f32>,
 }
 
 impl Growth {
@@ -30,6 +37,8 @@ impl Growth {
             steps: 0,
             u: vec![1.0; GROWTH_COLS * GROWTH_ROWS],
             v: vec![0.0; GROWTH_COLS * GROWTH_ROWS],
+            u_next: vec![1.0; GROWTH_COLS * GROWTH_ROWS],
+            v_next: vec![0.0; GROWTH_COLS * GROWTH_ROWS],
         };
         for j in 0..GROWTH_ROWS {
             for i in 0..GROWTH_COLS {
@@ -38,6 +47,8 @@ impl Growth {
                 if distance(x, y) < 0.02 {
                     growth.u[j * GROWTH_COLS + i] = 0.5;
                     growth.v[j * GROWTH_COLS + i] = 0.25;
+                    growth.u_next[j * GROWTH_COLS + i] = 0.5;
+                    growth.v_next[j * GROWTH_COLS + i] = 0.25;
                 }
             }
         }
@@ -49,18 +60,21 @@ impl Growth {
         const DV: f32 = 0.105;
         const FEED: f32 = 0.0545;
         const KILL: f32 = 0.062;
-        let (u, v) = (self.u.clone(), self.v.clone());
+        let lap = |g: &[f32], at: usize| {
+            g[at - 1] + g[at + 1] + g[at - GROWTH_COLS] + g[at + GROWTH_COLS] - 4.0 * g[at]
+        };
         for j in 1..GROWTH_ROWS - 1 {
             for i in 1..GROWTH_COLS - 1 {
                 let at = j * GROWTH_COLS + i;
-                let lap = |g: &[f32]| {
-                    g[at - 1] + g[at + 1] + g[at - GROWTH_COLS] + g[at + GROWTH_COLS] - 4.0 * g[at]
-                };
-                let react = u[at] * v[at] * v[at];
-                self.u[at] = u[at] + DU * lap(&u) - react + FEED * (1.0 - u[at]);
-                self.v[at] = v[at] + DV * lap(&v) + react - (FEED + KILL) * v[at];
+                let react = self.u[at] * self.v[at] * self.v[at];
+                self.u_next[at] =
+                    self.u[at] + DU * lap(&self.u, at) - react + FEED * (1.0 - self.u[at]);
+                self.v_next[at] =
+                    self.v[at] + DV * lap(&self.v, at) + react - (FEED + KILL) * self.v[at];
             }
         }
+        std::mem::swap(&mut self.u, &mut self.u_next);
+        std::mem::swap(&mut self.v, &mut self.v_next);
         self.steps += 1;
     }
 
@@ -80,19 +94,28 @@ impl Growth {
 }
 
 impl Cache {
-    /// The coral `t` seconds in on a screen of `size`, advanced from where the last frame left it.
+    /// The coral `t` seconds in on a screen of `size`, advanced from where the last frame left
+    /// it, at most a frame's worth of steps further.
     pub(super) fn growth(&mut self, size: (u16, u16), t: f64) -> &Growth {
         let want = (t * GROWTH_STEPS_PER_SEC) as u32;
-        let fresh = self
-            .growth
-            .take()
-            .filter(|g| g.size == size && g.steps <= want);
-        let growth = self
-            .growth
-            .insert(fresh.unwrap_or_else(|| Growth::new(size)));
-        while growth.steps < want {
+        let old = self.growth.take();
+        let mut growth = match old.filter(|g| g.size == size && g.steps <= want) {
+            Some(kept) => kept,
+            None => Growth::new(size),
+        };
+        let target = want.min(growth.steps.saturating_add(GROWTH_STEPS_PER_CALL));
+        let before = growth.steps;
+        while growth.steps < target {
             growth.step();
         }
-        growth
+        self.steps_run = self
+            .steps_run
+            .saturating_add(u64::from(growth.steps - before));
+        self.growth.insert(growth)
+    }
+
+    /// Simulation steps this cache has executed; a redraw that reuses its coral adds none.
+    pub fn growth_steps_run(&self) -> u64 {
+        self.steps_run
     }
 }

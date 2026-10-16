@@ -31,8 +31,9 @@ fn rows(buffer: &Buffer, area: Rect) -> Vec<Vec<char>> {
         .collect()
 }
 
-/// A screen the TUI has already drawn, every cell an `X`, then the cover over it.
-fn screen(
+/// A screen the TUI has already drawn, every cell an `X`, then the cover over `cache`.
+fn screen_with(
+    cache: &mut title::Cache,
     which: Scene,
     (width, height): (u16, u16),
     secs: f64,
@@ -41,7 +42,6 @@ fn screen(
     let area = Rect::new(0, 0, width, height);
     let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
     let elapsed = Duration::from_secs_f64(secs);
-    let cache = &mut title::Cache::default();
     title::cover(
         &mut buffer,
         area,
@@ -53,8 +53,25 @@ fn screen(
     rows(&buffer, area)
 }
 
+/// A screen as a console's first frame sees it: the cover over a cache of its own.
+fn screen(which: Scene, size: (u16, u16), secs: f64, landing: Option<Rect>) -> Vec<Vec<char>> {
+    screen_with(&mut title::Cache::default(), which, size, secs, landing)
+}
+
 fn count(glyphs: &[Vec<char>], want: impl Fn(char) -> bool) -> usize {
     glyphs.iter().flatten().filter(|g| want(**g)).count()
+}
+
+fn changed(a: &[Vec<char>], b: &[Vec<char>]) -> usize {
+    a.iter()
+        .flatten()
+        .zip(b.iter().flatten())
+        .filter(|(x, y)| x != y)
+        .count()
+}
+
+fn lit(g: char) -> bool {
+    matches!(g, '*' | '#' | '%' | '@')
 }
 
 /// The mark's strokes in `MARK_STROKES` span x from -0.62 to 0.46 and y from -0.62 to 0.62, so
@@ -139,13 +156,7 @@ fn the_rings_move_and_the_loop_closes() {
         at(start + title::RING_SECS),
         "a whole period is the same frame"
     );
-    let changed = |a: &[Vec<char>], b: &[Vec<char>]| {
-        a.iter()
-            .flatten()
-            .zip(b.iter().flatten())
-            .filter(|(x, y)| x != y)
-            .count()
-    };
+
     let ring = title::RING_SECS;
     let step = changed(&at(0.9), &at(0.901));
     let seam = changed(&at(ring - 0.001), &at(ring));
@@ -255,19 +266,13 @@ fn the_solid_name_rises_swings_and_shows_a_lit_side() {
         0,
         "it covers the screen like the others"
     );
-    let lit = held
-        .iter()
-        .flatten()
-        .filter(|g| matches!(**g, '*' | '#' | '%' | '@'))
-        .count();
-    assert!(lit > 150, "only {lit} cells are on its lit side");
-    let lit_cells = |frame: &[Vec<char>]| -> Vec<bool> {
-        frame
-            .iter()
-            .flatten()
-            .map(|g| matches!(*g, '*' | '#' | '%' | '@'))
-            .collect()
-    };
+    let lit_count = count(&held, lit);
+    assert!(
+        lit_count > 150,
+        "only {lit_count} cells are on its lit side"
+    );
+    let lit_cells =
+        |frame: &[Vec<char>]| -> Vec<bool> { frame.iter().flatten().map(|g| lit(*g)).collect() };
     let (swung, settled) = (lit_cells(&at(1.3)), lit_cells(&at(2.1)));
     let moved = swung.iter().zip(&settled).filter(|(a, b)| a != b).count();
     assert!(moved > 60, "the swing moved only {moved} lit cells");
@@ -434,12 +439,7 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
         count(&a, |g| g != ' ') > 500,
         "the weather fills the screen"
     );
-    let moved = a
-        .iter()
-        .flatten()
-        .zip(b.iter().flatten())
-        .filter(|(x, y)| x != y)
-        .count();
+    let moved = changed(&a, &b);
     assert!(
         moved > 200,
         "the drift moved only {moved} cells in half a second before the name rises"
@@ -447,38 +447,47 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
     assert_eq!(at(2.1)[14][35], '@', "and the Y stem is solid through it");
 }
 
-/// The coral is a simulation the cache advances to the second asked for: it grows out of the
-/// strokes, and a kept run agrees with a fresh one after a later second, an earlier one and a
-/// resize, so a frozen clock replays any frame.
+/// The coral is a simulation the cache advances a bounded way per frame: it grows out of the
+/// strokes, a kept run agrees with a fresh one after a later second, an earlier one and a
+/// resize, and a redraw at a settled second runs no new steps, which only a kept cache can.
 #[test]
 fn the_growth_spreads_and_a_kept_cache_agrees_with_a_fresh_one() {
-    let draw = |cache: &mut title::Cache, (w, h): (u16, u16), secs: f64| {
-        let area = Rect::new(0, 0, w, h);
-        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
-        let at = (Scene::Growth, Duration::from_secs_f64(secs));
-        title::cover(&mut buffer, area, at, None, &theme(), cache);
-        rows(&buffer, area)
+    let settle = |cache: &mut title::Cache, size: (u16, u16), secs: f64| -> Vec<Vec<char>> {
+        let mut frame = screen_with(cache, Scene::Growth, size, secs, None);
+        let mut before = cache.growth_steps_run();
+        for _ in 0..40 {
+            frame = screen_with(cache, Scene::Growth, size, secs, None);
+            let now = cache.growth_steps_run();
+            if now == before {
+                return frame;
+            }
+            before = now;
+        }
+        frame
     };
-    let fresh = |size, secs| draw(&mut title::Cache::default(), size, secs);
+    let fresh = |size, secs| settle(&mut title::Cache::default(), size, secs);
     let mut cache = title::Cache::default();
-    let early = count(&draw(&mut cache, (80, 24), 0.4), |g| g != ' ');
-    let late = count(&draw(&mut cache, (80, 24), 1.6), |g| g != ' ');
+    let early = count(&settle(&mut cache, (80, 24), 0.4), |g| g != ' ');
+    let late = count(&settle(&mut cache, (80, 24), 1.6), |g| g != ' ');
     assert!(
         late > early + 200,
         "the coral did not spread: {early} then {late}"
     );
+    let settled = cache.growth_steps_run();
+    let still = settle(&mut cache, (80, 24), 1.6);
     assert_eq!(
-        draw(&mut cache, (80, 24), 1.6),
-        fresh((80, 24), 1.6),
-        "a kept run equals a fresh one"
+        cache.growth_steps_run(),
+        settled,
+        "a redraw at a settled second replayed the run"
     );
+    assert_eq!(still, fresh((80, 24), 1.6), "a kept run equals a fresh one");
     assert_eq!(
-        draw(&mut cache, (80, 24), 0.4),
+        settle(&mut cache, (80, 24), 0.4),
         fresh((80, 24), 0.4),
         "back in time starts over"
     );
     assert_eq!(
-        draw(&mut cache, (120, 30), 1.0),
+        settle(&mut cache, (120, 30), 1.0),
         fresh((120, 30), 1.0),
         "a new size starts over"
     );
