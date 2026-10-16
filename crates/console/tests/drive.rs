@@ -327,6 +327,16 @@ fn run_frames_with(
     sidebar: SidebarMode,
     width: u16,
 ) -> Result<String, Box<dyn Error>> {
+    run_frames_sized(name, fixture, script, sidebar, (width, 30))
+}
+
+fn run_frames_sized(
+    name: &str,
+    fixture: Vec<Step>,
+    script: &str,
+    sidebar: SidebarMode,
+    size: (u16, u16),
+) -> Result<String, Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
     run_opts(
         name,
@@ -335,7 +345,7 @@ fn run_frames_with(
         false,
         sidebar,
         Some(dir.to_path_buf()),
-        (width, 30),
+        size,
     )?;
     last_frame(&dir)
 }
@@ -650,7 +660,7 @@ fn resume_alpha_on_a_lane(frame: &Value) -> Vec<Value> {
             json!({
                 "sessionUpdate": "_yi/workdir",
                 "cwd": "/home/user/.yi/lanes/897d6e91/1",
-                "lane": "yi ⎇ lane 1",
+                "lane": "yi",
             }),
         ),
     );
@@ -672,7 +682,7 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 ⎇ lane 1\n\
+         wait-frame 5000 ·  yi \n\
          quit\n",
     )
 }
@@ -1622,7 +1632,7 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
-         wait-frame 3000 │l again to /land s-alpha · any other\n\
+         wait-frame 3000 │ l again to /land s-alpha · any other\n\
          key x\n\
          wait-frame 3000 !l again to /land\n\
          key l\n\
@@ -1756,7 +1766,7 @@ fn subagent_rows_render_under_parent() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 └GR  grep-bot-sub-1a2b3c4 ◐\n\
+         wait-frame 5000 └GR grep-bot-sub-1a2b3c4 ◐\n\
          quit\n",
     )
 }
@@ -1792,17 +1802,19 @@ fn editor_script(path: &std::path::Path, split: &str, rest: &str) -> String {
     )
 }
 
-/// At 100 columns beside the full sidebar the hint row drops whole keys by rank,
+/// At 99 columns beside the full sidebar the hint row drops whole keys by rank,
 /// notebook then sidebar, and still ends in `⌥? keys` rather than a key cut in half.
 #[test]
 fn the_hint_row_keeps_whole_keys() -> TestResult {
-    let frame = run_frames(
+    let frame = run_frames_with(
         "hint-row",
         session_fixture(),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
          quit\n",
+        SidebarMode::Full,
+        99,
     )?;
     let last = frame.lines().last().unwrap_or_default();
     let keys: Vec<String> = last
@@ -1945,15 +1957,15 @@ fn cmd_u_undoes_the_chat_draft() -> TestResult {
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
-    // The sidebar fits `s-alpha` to its ten-column floor, 19 wide: border at x=19, inner
-    // x=20, gutter "1 " puts text at x=22; row 0 at y=1.
+    // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, one padding
+    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=2 under the header row.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 24 1\nmouse up 24 1\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 22 1\nmouse drag 24 1\nmouse up 24 1\n\
+            "wait-frame 3000 abcdef\nmouse down 24 3\nmouse up 24 3\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 22 3\nmouse drag 24 3\nmouse up 24 3\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -2330,9 +2342,9 @@ fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
             Step::Expect("session/list", named_list),
             Step::Expect("session/list", two_root_ledger),
         ],
-        "wait-frame 5000 1 SG   s-gamma\n\
-         wait-frame 3000 2 RE   release notes\n\
-         wait-frame 3000 3 FI   fix login bug\n\
+        "wait-frame 5000 1 SG  s-gamma\n\
+         wait-frame 3000 2 RE  release notes\n\
+         wait-frame 3000 3 FI  fix login bug\n\
          wait-frame 3000 \"  idle\n\
          quit\n",
     )
@@ -2366,13 +2378,13 @@ fn a_state_transition_moves_the_row_to_the_top() -> TestResult {
             Step::Expect("session/resume", resume_then_run),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE   release notes\n\
-         wait-frame 3000 2 FI   fix login bug\n\
+        "wait-frame 5000 1 RE  release notes\n\
+         wait-frame 3000 2 FI  fix login bug\n\
          key down\n\
          key enter\n\
          wait-frame 5000 resumed s-alpha\n\
-         wait-frame 3000 1 FI   fix login bug\n\
-         wait-frame 3000 2 RE   release notes\n\
+         wait-frame 3000 1 FI  fix login bug\n\
+         wait-frame 3000 2 RE  release notes\n\
          quit\n",
     )
 }
@@ -2425,8 +2437,8 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE   release notes\n\
-         wait-frame 3000 2 FI   fix login bug\n\
+        "wait-frame 5000 1 RE  release notes\n\
+         wait-frame 3000 2 FI  fix login bug\n\
          wait-frame 3000 idle · 5m\n\
          wait-frame 3000 idle · 3h\n\
          key down\n\
@@ -2557,7 +2569,7 @@ fn a_child_row_hangs_off_its_session_with_the_glyph_in_the_column() -> TestResul
         assert_eq!(row.avatar.as_ref().map(|at| at.col), Some(3), "{text}");
     }
     for row in [session, first, last] {
-        assert_eq!(cell_of(&row.line), Some(7), "glyph column: {}", row.line);
+        assert_eq!(cell_of(&row.line), Some(6), "glyph column: {}", row.line);
     }
     Ok(())
 }
@@ -2630,9 +2642,9 @@ fn a_long_wide_name_is_cut_in_drawn_cells_and_keeps_its_glyph() -> TestResult {
     let rows = full_rows(&app);
     let session = last_mark(row_with(&rows, "修复")?);
     let child = last_mark(row_with(&rows, "构建")?);
-    assert_eq!(session, Some((28, "?".to_owned())), "{rows:#?}");
-    assert_eq!(child, Some((28, "◐".to_owned())), "{rows:#?}");
-    assert!(28 < edge, "the glyph fits the sidebar: {edge}");
+    assert_eq!(session, Some((27, "?".to_owned())), "{rows:#?}");
+    assert_eq!(child, Some((27, "◐".to_owned())), "{rows:#?}");
+    assert!(27 < edge, "the glyph fits the sidebar: {edge}");
     Ok(())
 }
 
@@ -2684,7 +2696,7 @@ fn a_child_that_needs_you_is_never_hidden_behind_finished_ones() -> TestResult {
     let starts: Vec<String> = rows.iter().map(|row| row.trim_end().to_owned()).collect();
     assert_eq!(
         starts,
-        ["  ├AS  ?", "  ├ON  ○", "  ├TW  ○", "  └ +1"],
+        ["  ├AS ?", "  ├ON ○", "  ├TW ○", "  └ +1"],
         "{rows:#?}"
     );
     Ok(())
@@ -2753,7 +2765,7 @@ fn a_child_name_sizes_the_sidebar_by_its_own_width() -> TestResult {
     let children = [wire_child("fifteen-cell-ab", "running", None)];
     let mut app =
         session_with_children(SidebarMode::Full, SessionStatus::Working, "fix", &children)?;
-    assert_eq!(yi_console::sidebar::width(&mut app), 15 + 9);
+    assert_eq!(yi_console::sidebar::width(&mut app), 15 + 8);
     Ok(())
 }
 
@@ -2768,15 +2780,15 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
             Step::Expect("session/list", ledger_list),
         ],
         "wait-frame 5000 ●\n\
-         wait-frame 3000 1 SB   ●│\n\
+         wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 2 SA\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 !workspaces\n\
          cmd-b\n\
-         wait-frame 3000 2 SA   s-alpha\n\
+         wait-frame 3000 2 SA  s-alpha\n\
          wait-frame 3000 workspaces\n\
          cmd-b\n\
-         wait-frame 3000 1 SB   ●│\n\
+         wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\
          quit\n",
         false,
@@ -3098,7 +3110,7 @@ fn alt_digit_resumes_the_rail_slot() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 2 FI   fix login bug\n\
+        "wait-frame 5000 2 FI  fix login bug\n\
          key alt-2\n\
          wait-frame 5000 resumed s-alpha\n\
          wait-frame 3000 FI · fix login\n\
@@ -3237,7 +3249,7 @@ fn the_command_palette_runs_an_action_by_name() -> TestResult {
 /// ⌥? shows every chord with its keys; the next key closes it.
 #[test]
 fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
-    let frame = run_frames_with(
+    let frame = run_frames_sized(
         "keys",
         vec![
             Step::Expect("initialize", init_reply),
@@ -3250,7 +3262,7 @@ fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
          wait-frame 3000 ctrl+b q\n\
          quit\n",
         SidebarMode::Full,
-        160,
+        (160, 34),
     )?;
     assert!(
         frame.contains("Interface  Keys "),
@@ -3363,9 +3375,9 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         mouse down 32 2\n\
-         mouse drag 60 5\n\
-         mouse up 60 5\n\
+         mouse down 32 3\n\
+         mouse drag 60 6\n\
+         mouse up 60 6\n\
          wait-frame 3000 copied 3 lines\n\
          quit\n",
     )
@@ -3543,8 +3555,8 @@ fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
          wait-frame 5000 !grep-bot\n\
          quit\n",
     )?;
-    let top = frame.lines().next().ok_or("no frame")?;
-    let at = top.find("s-alpha").ok_or(format!("no title: {top}"))?;
+    let top = frame.lines().nth(1).ok_or("no frame")?;
+    let at = top.rfind("s-alpha").ok_or(format!("no title: {top}"))?;
     let column = top.get(..at).unwrap_or_default().chars().count();
     assert!(
         column >= 30,
@@ -3661,7 +3673,7 @@ fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
         "close-mark",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-v\nwait-frame 3000 ✕\nmouse down 97 0\nmouse up 97 0\n\
+         key alt-v\nwait-frame 3000 ✕\nmouse down 97 2\nmouse up 97 2\n\
          wait-frame 3000 !✕\nquit\n",
     )?;
     assert!(
@@ -3810,7 +3822,7 @@ fn the_gear_toggles_settings_and_the_rail_keeps_one_line_to_the_bottom() -> Test
     // Each frame row is a quoted string, so column x is char x + 1.
     let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
     for (y, row) in rows.iter().enumerate() {
-        let (edge, inside) = (row.get(9).copied(), row.get(10).copied());
+        let (edge, inside) = (row.get(8).copied(), row.get(9).copied());
         assert!(
             edge.is_some_and(|c| "│┃╭╰├".contains(c)),
             "row {y} has no rail line: {row:?}"
@@ -3826,17 +3838,17 @@ fn the_gear_toggles_settings_and_the_rail_keeps_one_line_to_the_bottom() -> Test
 /// Each hint is a button: a press on the `⌥? keys` keycap, columns 79-89 past the rail, runs it.
 #[test]
 fn a_press_on_a_hint_runs_its_key() -> TestResult {
-    run_frames_with(
+    run_frames_sized(
         "hint-button",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
         ],
-        "wait-frame 5000 command palette\nmouse down 84 29\nmouse up 84 29\n\
+        "wait-frame 5000 command palette\nmouse down 84 33\nmouse up 84 33\n\
          wait-frame 3000 stop the daemon and quit\nquit\n",
         SidebarMode::Rail,
-        100,
+        (100, 34),
     )?;
     Ok(())
 }
