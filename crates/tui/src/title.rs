@@ -51,7 +51,7 @@ impl Scene {
     }
 }
 
-/// Used when the config names no weights: the Kali fold eight parts in twelve.
+/// Used when the config names no weights: the Kali fold 8, every other scene 2.
 pub const DEFAULT_WEIGHTS: [(Scene, u32); 9] = [
     (Scene::Kali, 8),
     (Scene::Echo, 2),
