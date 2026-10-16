@@ -571,6 +571,42 @@ mod tests {
             },
             Arc::clone(&provider),
         );
-        assert!(provider.settle_wired_for_test());
+        assert!(provider.settle_wired_for_test().is_some());
+    }
+
+    /// Dies with the hook overwritten: an auto-review session built on the root's stream took
+    /// the slot, and with no store of its own it dropped the root's settled cost.
+    #[test]
+    fn a_side_session_on_the_root_stream_keeps_the_root_hook()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let config = || crate::session::SessionConfig {
+            system_prompt: String::new(),
+            model: crate::plan::dispatch::tests::faux_model(),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        };
+        let root = super::AgentSession::new(config(), Arc::clone(&provider));
+        let store: yi_session::SharedSession = Arc::new(Mutex::new(
+            yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
+                id: "root".to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+                name: None,
+            }),
+        ));
+        root.attach_store(Arc::clone(&store))?;
+        let _reviewer = super::AgentSession::new(config(), Arc::clone(&provider));
+        let hook = provider.settle_wired_for_test().ok_or("no hook wired")?;
+        let mut usage = Usage::zero();
+        usage.output = 3089;
+        (hook.0)(usage, None);
+        let records = yi_session::lock_session(&store).find_records(&Default::default())?;
+        let settled = records.iter().any(|record| {
+            matches!(record, LaneRecord::Usage { cause, usage, .. }
+                if cause == "settled" && usage.output == 3089)
+        });
+        assert!(settled, "the root's settled usage was dropped");
+        Ok(())
     }
 }

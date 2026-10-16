@@ -900,7 +900,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §9.2).
         registry.register("compact.run", move |payload| {
-            compactor.schedule_with_instructions(payload.str_of("instructions").map(str::to_owned));
+            let instructions = payload.str_of("instructions").map(str::to_owned);
+            compactor.schedule_with_instructions(instructions);
             Box::pin(async {
                 let mut reply = Map::new();
                 reply.insert("scheduled".to_owned(), Value::Bool(true));

@@ -98,7 +98,7 @@ pub(super) fn run(args: &Args) -> i32 {
     });
     release_lane(lane.as_deref());
     runtime.shutdown_timeout(left(deadline));
-    yi_runtime::spend::drain_settled(deadline.map(|_| left(deadline)));
+    yi_runtime::spend::drain_settled(left(deadline));
     code
 }
 
