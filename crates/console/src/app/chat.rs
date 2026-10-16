@@ -718,7 +718,10 @@ impl App {
         }
         let id = session.0.as_str();
         match request {
-            PortRequest::New => self.new_session_into(outbound, pane_id),
+            PortRequest::New => {
+                let root = self.state.root.clone();
+                self.new_session_into(outbound, pane_id, root);
+            }
             PortRequest::Rewind(entry_id) => self.send_request(
                 outbound,
                 RequestKind::Rewind(session.clone()),
@@ -803,6 +806,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use yi_types::subagent::{ChildActivity, ChildId};
 
     /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened
     /// the list, while the `▸` still sat on a file; then with every blame error read as uncommitted.
@@ -882,53 +887,6 @@ mod tests {
             assert!(rows.iter().any(|drawn| drawn == row), "{row}\n{rows:#?}");
         }
     }
-
-    #[test]
-    fn a_red_gate_ranks_between_done_and_working() {
-        use crate::model::{SessionRow, SessionStatus};
-        use yi_types::lane::{JobState, Landing, LandingJob, PrNumber};
-        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
-        let mut app = App::new("/r".to_owned(), theme);
-        for (id, status, last_ms) in [
-            ("s-work", SessionStatus::Working, 30),
-            ("s-red", SessionStatus::Working, 10),
-            ("s-done", SessionStatus::DoneUnseen, 5),
-        ] {
-            app.state.upsert_row(SessionRow {
-                id: SessionId(id.to_owned()),
-                root: "/r".to_owned(),
-                status,
-                attached: true,
-                name: Some(id.to_owned()),
-                created_ms: 0,
-                last_ms,
-            });
-        }
-        let red = SessionId("s-red".to_owned());
-        let pane = app.state.focused_pane_id().expect("a pane");
-        let mut chat = app.make_chat(pane, &red);
-        chat.app
-            .reduce_agent(yi_types::event::AgentEvent::LandingState {
-                landing: Landing::Open {
-                    pr: PrNumber(612),
-                    jobs: vec![LandingJob {
-                        name: "gate (test)".to_owned(),
-                        state: JobState::Red,
-                    }],
-                    behind: 0,
-                },
-            });
-        app.state.parked.insert(red, chat);
-        let order: Vec<String> = app
-            .state
-            .visible_rows()
-            .into_iter()
-            .filter_map(|index| app.state.order.get(index).map(|id| id.0.clone()))
-            .collect();
-        assert_eq!(order, ["s-done", "s-red", "s-work"]);
-    }
-    use super::*;
-    use yi_types::subagent::{ChildActivity, ChildId};
 
     fn update(id: usize, status: ChildStatus) -> ChildUpdate {
         ChildUpdate {

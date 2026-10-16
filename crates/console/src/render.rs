@@ -34,13 +34,16 @@ pub struct PaneView {
 }
 
 /// The one control table hover and press both walk; press maps it to an action, hover to a rect.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hit {
     Tab(usize),
     Settings(PaneId, usize),
     Button(keys::Action),
     Gear,
     Title(PaneId),
-    Root(usize),
+    New(Option<String>),
+    Search,
+    Fold(String),
     Session(usize),
 }
 
@@ -50,7 +53,7 @@ pub struct Hits {
     pub sidebar_rows: Vec<(u16, usize)>,
     /// (column, row, session) of every avatar cell on screen; the kitty pass places there.
     pub avatars: Vec<crate::avatar::Placement>,
-    pub root_rows: Vec<(u16, usize)>,
+    pub controls: Vec<(Rect, Hit)>,
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
     pub tabs: Vec<(Rect, usize)>,
@@ -122,15 +125,10 @@ impl Hits {
                     .map(|(pane, rect)| (*rect, Hit::Title(*pane)))
             })
             .or_else(|| {
-                in_sidebar
-                    .then(|| self.root_rows.iter().find(|(row_y, _)| *row_y == y))
-                    .flatten()
-                    .map(|(row_y, index)| {
-                        (
-                            Rect::new(0, *row_y, self.sidebar_width, 1),
-                            Hit::Root(*index),
-                        )
-                    })
+                self.controls
+                    .iter()
+                    .find(|(rect, _)| rect.contains(at))
+                    .cloned()
             })
             .or_else(|| {
                 let (_, index) = in_sidebar
@@ -178,7 +176,6 @@ fn lift(buffer: &mut Buffer, rect: Rect, theme: &Theme) {
 
 pub struct ViewState {
     pub sidebar: Rect,
-    pub roots: Rect,
     pub editor_cursor: Option<(u16, u16)>,
     pub header: Rect,
     pub panes_area: Rect,
@@ -246,15 +243,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         width: sidebar_width,
         ..area
     };
-    let root_count = app.state.roots().len();
-    let roots_height = if sidebar_width > 0 && app.state.sidebar == SidebarMode::Full {
-        u16::try_from(root_count.saturating_add(1).min(8)).unwrap_or(8)
-    } else {
-        0
-    };
     let gear_rows = crate::chrome::gear_height(sidebar_width, app.kitty);
     let (sidebar, gear) = split_off_bottom(sidebar, gear_rows);
-    let (sidebar, roots_area) = split_off_bottom(sidebar, roots_height);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
         width: area.width.saturating_sub(sidebar_width),
@@ -335,18 +325,10 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         });
     }
 
-    let (sidebar_rows, avatars) = sidebar_hits(app, theme, sidebar, sidebar_width);
+    let (sidebar_rows, avatars, controls) = sidebar_hits(app, theme, sidebar, sidebar_width);
     for pane in &mut panes {
         pane.hue = pane_hue(app, pane.id, theme);
     }
-    let root_rows = (0..root_count)
-        .filter_map(|index| {
-            let y = roots_area
-                .y
-                .checked_add(u16::try_from(index.saturating_add(1)).ok()?)?;
-            (y < roots_area.y.saturating_add(roots_area.height)).then_some((y, index))
-        })
-        .collect();
     let tab_hits = if app.state.tabs.len() > 1 {
         tab_hits(app, header)
     } else {
@@ -359,7 +341,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         sidebar_width,
         sidebar_rows,
         avatars,
-        root_rows,
+        controls,
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
@@ -371,7 +353,6 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
 
     ViewState {
         sidebar,
-        roots: roots_area,
         editor_cursor,
         header,
         panes_area,
@@ -425,38 +406,64 @@ fn settings_hits(app: &App, panes: &[PaneView], framed: bool) -> Vec<(Rect, Pane
     hits
 }
 
-fn sidebar_hits(
-    app: &mut App,
-    theme: &Theme,
-    sidebar: Rect,
-    sidebar_width: u16,
-) -> (Vec<(u16, usize)>, Vec<crate::avatar::Placement>) {
+type SidebarHits = (
+    Vec<(u16, usize)>,
+    Vec<crate::avatar::Placement>,
+    Vec<(Rect, Hit)>,
+);
+
+fn sidebar_hits(app: &mut App, theme: &Theme, sidebar: Rect, sidebar_width: u16) -> SidebarHits {
     app.assign_accents();
     let lines = crate::sidebar::sidebar_lines(app, theme, sidebar.height);
     let top = sidebar.y;
+    let at = |offset: usize| top.checked_add(u16::try_from(offset).ok()?);
     let sidebar_rows: Vec<(u16, usize)> = lines
         .iter()
         .enumerate()
-        .filter_map(|(offset, row)| {
-            let y = top.checked_add(u16::try_from(offset).ok()?)?;
-            row.index.map(|index| (y, index))
-        })
+        .filter_map(|(offset, row)| Some((at(offset)?, row.index?)))
         .collect();
+    let mut controls = Vec::new();
+    for (offset, row) in lines.iter().enumerate() {
+        let (Some(y), Some(control)) = (at(offset), row.control.clone()) else {
+            continue;
+        };
+        let whole = Rect::new(sidebar.x, y, sidebar_width, 1);
+        if let Hit::Fold(root) = &control {
+            let (head, plus) = crate::sidebar::plus_split(&row.line);
+            let head = head.min(usize::from(sidebar_width));
+            let plus = plus.min(usize::from(sidebar_width).saturating_sub(head));
+            let (head, plus) = (
+                u16::try_from(head).unwrap_or(0),
+                u16::try_from(plus).unwrap_or(0),
+            );
+            controls.push((
+                Rect {
+                    width: head,
+                    ..whole
+                },
+                control.clone(),
+            ));
+            let x = sidebar.x.saturating_add(head);
+            let new = Hit::New(Some(root.clone()));
+            controls.push((Rect::new(x, y, plus, 1), new));
+        } else {
+            controls.push((whole, control));
+        }
+    }
     let avatars: Vec<crate::avatar::Placement> = lines
         .into_iter()
         .enumerate()
         .filter(|_| sidebar_width > 0)
         .filter_map(|(offset, row)| {
-            let y = top.checked_add(u16::try_from(offset).ok()?)?;
             let avatar = row.avatar?;
             Some(crate::avatar::Placement {
                 col: sidebar.x.saturating_add(avatar.col),
-                row: y,
+                row: at(offset)?,
                 ..avatar
             })
         })
         .collect();
-    (sidebar_rows, avatars)
+    (sidebar_rows, avatars, controls)
 }
 
 pub(crate) fn label_of(
@@ -735,9 +742,6 @@ pub(crate) fn status_style(theme: &Theme, status: SessionStatus) -> Style {
 pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme: &Theme) {
     if view.sidebar.width > 0 {
         crate::sidebar::render_sidebar(app, frame, view.sidebar, theme);
-    }
-    if view.roots.height > 0 {
-        crate::sidebar::render_roots(app, frame, view.roots, theme);
     }
     if let Some(gear) = app.hits.as_ref().and_then(|hits| hits.gear) {
         crate::chrome::render_gear(app, frame, gear, theme);
