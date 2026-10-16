@@ -27,7 +27,8 @@ fn red_gate(app: &mut App, id: &str) {
 #[test]
 fn a_folded_group_marks_a_red_gate_session() {
     use crate::model::{SessionRow, SessionStatus, SidebarMode};
-    use crate::sidebar::{Control, sidebar_lines};
+    use crate::render::Hit;
+    use crate::sidebar::sidebar_lines;
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
     let mut app = App::new("/r".to_owned(), theme);
     app.state.sidebar = SidebarMode::Full;
@@ -48,7 +49,7 @@ fn a_folded_group_marks_a_red_gate_session() {
     let header = |root: &str| {
         sidebar_lines(&app, &theme, 60)
             .into_iter()
-            .find(|row| matches!(&row.control, Some(Control::Fold(r)) if r == root))
+            .find(|row| matches!(&row.control, Some(Hit::Fold(r)) if r == root))
             .map(|row| row.line.to_string())
             .unwrap_or_default()
     };

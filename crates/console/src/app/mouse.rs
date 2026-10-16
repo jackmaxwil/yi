@@ -5,7 +5,6 @@ use crate::client::Outbound;
 use crate::keys::Action;
 use crate::layout::PaneId;
 use crate::model::{Editor, Mode, PaneContent, SessionStatus, Zone};
-use crate::sidebar::Control;
 
 use super::App;
 
@@ -109,7 +108,7 @@ impl App {
             .panes
             .iter()
             .find(|(id, _)| *id == pane_id)?;
-        let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+        let inner = rect.inner(crate::render::pane_margin(true));
         let PaneContent::Editor(editor) = &self.state.panes.get(&pane_id)?.content else {
             return None;
         };
@@ -119,12 +118,7 @@ impl App {
     }
 
     fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {
-        let hits = self.hits.as_ref()?;
-        let (pane, _) = hits
-            .closers
-            .iter()
-            .find(|(_, rect)| rect.contains(Position::new(x, y)))?;
-        Some(*pane)
+        self.hits.as_ref()?.closer_at(x, y).map(|(pane, _)| pane)
     }
 
     fn press(&mut self, outbound: &Outbound, x: u16, y: u16) {
@@ -136,78 +130,71 @@ impl App {
         // Incident: a lower pane's mark sits on the split it can be dragged by, and a press meant
         // as a resize closed the pane; a mark closes on a release over it that did not drag.
         self.pending_close = self.closer_at(x, y);
-        if let Some((_, index)) = hits
-            .tabs
-            .iter()
-            .find(|(rect, _)| rect.contains(Position::new(x, y)))
-        {
-            let index = *index;
-            self.state.select_tab(index);
-            self.dirty = true;
-            return;
-        }
-        let strip = hits.settings_tabs.iter();
-        if let Some((_, pane, tab)) = strip.copied().find(|(r, ..)| r.contains((x, y).into())) {
-            if let Some(layout) = self.state.tab_mut() {
-                layout.layout.focus_pane(pane);
+        match hits.hit_at(x, y) {
+            Some((_, crate::render::Hit::Tab(index))) => {
+                self.state.select_tab(index);
+                self.dirty = true;
+                return;
             }
-            self.state.zone = Zone::Panes;
-            if let Some(settings) = self.settings_pane(pane) {
-                (settings.tab, settings.cursor) = (tab, 0);
-                (settings.edit, settings.status) = (None, None);
+            Some((_, crate::render::Hit::Settings(pane, tab))) => {
+                self.focus_pane(pane);
+                if let Some(settings) = self.settings_pane(pane) {
+                    (settings.tab, settings.cursor) = (tab, 0);
+                    (settings.edit, settings.status) = (None, None);
+                }
+                self.dirty = true;
+                return;
             }
-            self.dirty = true;
-            return;
-        }
-        let hint = hits
-            .hint_buttons
-            .iter()
-            .find(|(rect, _)| rect.contains(Position::new(x, y)));
-        if let Some((_, action)) = hint {
-            return self.apply_action(outbound, *action);
-        }
-        if hits
-            .gear
-            .is_some_and(|gear| gear.contains(Position::new(x, y)))
-        {
-            let Some(pane) = self.open_settings_pane() else {
-                return self.apply_action(outbound, Action::Settings);
-            };
-            if let Some(tab) = self.state.tab_mut() {
-                tab.layout.focus_pane(pane);
+            Some((_, crate::render::Hit::Button(action))) => {
+                return self.apply_action(outbound, action);
             }
-            self.dirty = true;
-            return self.apply_action(outbound, Action::ClosePane);
-        }
-        if x < hits.sidebar_width {
-            let control = hits
-                .controls
-                .iter()
-                .find(|(rect, _)| rect.contains((x, y).into()));
-            if let Some((_, control)) = control.cloned() {
-                return self.sidebar_control(outbound, control);
+            Some((_, crate::render::Hit::Gear)) => {
+                let Some(pane) = self.open_settings_pane() else {
+                    return self.apply_action(outbound, Action::Settings);
+                };
+                if let Some(tab) = self.state.tab_mut() {
+                    tab.layout.focus_pane(pane);
+                }
+                self.dirty = true;
+                return self.apply_action(outbound, Action::ClosePane);
             }
-            if let Some((_, index)) = hits.sidebar_rows.iter().find(|(row_y, _)| *row_y == y) {
-                self.state.selected = *index;
+            Some((_, crate::render::Hit::New(root))) => {
+                let root = root.unwrap_or_else(|| self.state.root.clone());
+                if let Some(pane) = self.state.focused_pane_id() {
+                    self.new_session_into(outbound, pane, root);
+                }
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Search)) => {
+                return self.apply_action(outbound, Action::Navigator);
+            }
+            Some((_, crate::render::Hit::Fold(root))) => {
+                self.state.toggle_fold(&root);
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Session(index))) => {
+                self.state.selected = index;
                 self.state.cursor_moved = true;
                 self.state.zone = Zone::Sidebar;
                 self.open_selected(outbound);
+                return;
             }
+            // Incident: the lower pane's title sits on the split row, and a press there
+            // meant as a resize focused the pane instead; the split is tried first.
+            Some((_, crate::render::Hit::Title(pane))) if hits.split_at(x, y).is_none() => {
+                self.focus_pane(pane);
+                self.mark_focused_seen(outbound);
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Title(_))) | None => {}
+        }
+        if x < hits.sidebar_width {
             return;
         }
-        let split = hits.splits.iter().find(|border| match border.direction {
-            ratatui::layout::Direction::Horizontal => {
-                x == border.pos
-                    && y >= border.area.y
-                    && y < border.area.y.saturating_add(border.area.height)
-            }
-            ratatui::layout::Direction::Vertical => {
-                y == border.pos
-                    && x >= border.area.x
-                    && x < border.area.x.saturating_add(border.area.width)
-            }
-        });
-        if let Some(border) = split {
+        if let Some(border) = hits.split_at(x, y) {
             self.drag = Some((self.state.active_tab, border.path.clone()));
             return;
         }
@@ -234,31 +221,21 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            if let Some(session) = self.state.focused_session()
-                && self
-                    .state
-                    .sessions
-                    .get(&session)
-                    .is_some_and(|row| row.status == SessionStatus::DoneUnseen)
-            {
-                self.mark_seen(outbound, &session);
-            }
+            self.mark_focused_seen(outbound);
             self.dirty = true;
         }
     }
 
-    fn sidebar_control(&mut self, outbound: &Outbound, control: Control) {
-        match control {
-            Control::New(root) => {
-                let root = root.unwrap_or_else(|| self.state.root.clone());
-                if let Some(pane) = self.state.focused_pane_id() {
-                    self.new_session_into(outbound, pane, root);
-                }
-            }
-            Control::Search => self.apply_action(outbound, Action::Navigator),
-            Control::Fold(root) => self.state.toggle_fold(&root),
+    fn mark_focused_seen(&mut self, outbound: &Outbound) {
+        if let Some(session) = self.state.focused_session()
+            && self
+                .state
+                .sessions
+                .get(&session)
+                .is_some_and(|row| row.status == SessionStatus::DoneUnseen)
+        {
+            self.mark_seen(outbound, &session);
         }
-        self.dirty = true;
     }
 
     /// Incident: a click with the palette open reached the pane under it. A popup takes every

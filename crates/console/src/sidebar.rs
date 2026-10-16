@@ -11,25 +11,18 @@ use crate::app::App;
 use crate::avatar::Placement;
 use crate::keys::{self, Action};
 use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Zone, now_ms};
+use crate::render::Hit;
 use crate::render::{NAME_WIDTH, status_style};
 use yi_tui::orb::OrbState;
 use yi_tui::port::SessionPort;
 use yi_types::status_mark::StatusMark;
 use yi_types::subagent::{ChildFlag, ChildStatus, ChildUpdate};
 
-/// A workspace header's last three cells are its `+`, which starts a session in that root.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Control {
-    New(Option<String>),
-    Search,
-    Fold(String),
-}
-
 pub struct SidebarRow {
     pub index: Option<usize>,
     pub line: Line<'static>,
     pub avatar: Option<Placement>,
-    pub control: Option<Control>,
+    pub control: Option<Hit>,
 }
 
 impl SidebarRow {
@@ -186,7 +179,7 @@ fn flush_right(left: &str, right: &str, width: usize) -> String {
     format!("{}{right}", pad_cells(left, room))
 }
 
-fn control_row(text: String, style: Style, control: Control) -> SidebarRow {
+fn control_row(text: String, style: Style, control: Hit) -> SidebarRow {
     SidebarRow {
         control: Some(control),
         ..SidebarRow::plain(None, Line::styled(text, style))
@@ -233,7 +226,7 @@ fn group_header(
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled("  +".to_owned(), theme.dim_style()));
     SidebarRow {
-        control: Some(Control::Fold(root.to_owned())),
+        control: Some(Hit::Fold(root.to_owned())),
         ..SidebarRow::plain(None, Line::from(spans))
     }
 }
@@ -266,9 +259,9 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         let chord = |action| keys::chord_for(action, app.cmd_hints);
         let text = Style::default().fg(theme.text);
         let new = flush_right(" + New session", chord(Action::NewSession), width);
-        rows.push(control_row(new, text, Control::New(None)));
+        rows.push(control_row(new, text, Hit::New(None)));
         let search = flush_right(" ⌕ Search", chord(Action::Navigator), width);
-        rows.push(control_row(search, text, Control::Search));
+        rows.push(control_row(search, text, Hit::Search));
     }
     for group in app.state.groups() {
         if rail {

@@ -970,10 +970,10 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the focused pane's mark missing, or with an unfocused pane placing its own
-    /// orb or waking the loop every frame: only the focused pane carries kitty images.
+    /// Dies with the mark gone from every chat pane but the focused one, or with an unfocused
+    /// pane retransmitting its orb or waking the loop every frame: only the focused pane animates.
     #[test]
-    fn only_the_focused_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
+    fn every_drawn_chat_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
         let mut app = App::new("/r".to_owned(), theme);
         app.kitty = true;
@@ -997,21 +997,14 @@ mod tests {
         }
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
         let mut out = Vec::new();
-        app.state.zone = crate::model::Zone::Panes;
         let mut owners = std::collections::HashMap::new();
         crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
         let written = String::from_utf8_lossy(&out);
-        assert!(
-            orb_ids(left)
+        for pane in [left, right] {
+            let placed = orb_ids(pane)
                 .iter()
-                .any(|id| written.contains(&format!("a=p,i={id},"))),
-            "the focused pane has no mark: {written:?}"
-        );
-        for id in orb_ids(right) {
-            assert!(
-                !written.contains(&format!("a=p,i={id},")),
-                "the unfocused pane placed its own mark: {written:?}"
-            );
+                .any(|id| written.contains(&format!("a=p,i={id},")));
+            assert!(placed, "pane {} has no mark: {written:?}", pane.raw());
         }
         let right_chat = app
             .state
