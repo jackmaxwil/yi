@@ -185,7 +185,7 @@ pub struct CouplingOptions {
 
 fn stop_text(plan: &Plan) -> String {
     format!(
-        "The turn ended with open todos.\n{}\nContinue the work or step the ledger; block a todo on the user only when truly stuck.",
+        "Open todos remain.\n{}\nContinue the work or step the ledger; block a todo on the user only when truly stuck.",
         reinjection_text(plan)
     )
 }
