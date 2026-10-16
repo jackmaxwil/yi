@@ -8,6 +8,7 @@ pub mod app;
 pub mod avatar;
 mod chrome;
 pub mod client;
+mod header;
 pub mod keys;
 pub mod kitty;
 pub mod layout;
@@ -595,7 +596,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     let Some(rect) = rect else {
         return clear(out, placed);
     };
-    let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+    let inner = rect.inner(render::pane_margin(true));
     let half = ratatui::layout::Rect {
         height: inner.height / 2,
         ..inner
