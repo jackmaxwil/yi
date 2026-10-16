@@ -646,6 +646,7 @@ fn the_ledger_names_a_holder() -> TestResult {
             last_state: Some("idle".to_owned()),
             last_event_ms: 0,
             name: Some("fix the auth\x1b[31m bug".to_owned()),
+            pinned_ms: None,
             extra: Default::default(),
         },
     );
@@ -704,6 +705,19 @@ fn handle_for(
             let _ = tx.send(format!("{message:?}"));
         });
     (LaneHandle::new(lane, None, land_command, events, steer), rx)
+}
+
+/// The status row's lane label is the repo's name alone: the slot number the console's `_yi/workdir`
+/// carries was noise beside the session name.
+#[test]
+fn a_lane_row_names_the_repo_without_the_slot() -> TestResult {
+    let rig = Rig::new("row")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-row", ClaimBase::Main)?;
+    let path = lane.path().to_path_buf();
+    let (handle, _steers) = handle_for(Some(lane), None);
+    assert_eq!(handle.row(), Some((path, "repo".to_owned())));
+    Ok(())
 }
 
 /// Two `/land` calls are one poller; the second is refused at once while the first pushes.
