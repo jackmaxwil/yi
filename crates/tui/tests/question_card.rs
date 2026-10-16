@@ -1,5 +1,6 @@
 //! A root's `ask_user` call as the person sees it: the card, its keys, the one reply it sends.
 use crate::common;
+use crate::common::flat;
 
 use std::error::Error;
 
@@ -315,15 +316,7 @@ fn answered_question_text() -> &'static str {
 }
 
 fn committed_rows(app: &mut App) -> Vec<String> {
-    app.take_commits()
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
+    flat(&app.take_commits())
 }
 
 fn assert_one_compact_question_row(rows: &[String]) -> TestResult {

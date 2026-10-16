@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use ratatui::text::Line;
+use crate::common::flat_trimmed as text;
 use serde_json::json;
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
@@ -10,20 +10,6 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
-}
-
-fn text(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
 }
 
 fn cell(details: serde_json::Value, status: ToolStatus) -> ToolCell {

@@ -2,8 +2,8 @@
 //! slice by slice, is what the history rebuilds on a resize.
 
 use crate::common;
+use crate::common::flat_trimmed as flat;
 
-use ratatui::text::Line;
 use serde_json::json;
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::cell::TranscriptMode;
@@ -31,20 +31,6 @@ fn app(rows: usize) -> App {
     );
     app.set_rows(rows);
     app
-}
-
-fn flat(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
 }
 
 fn text(text: &str) -> Content {

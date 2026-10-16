@@ -1,5 +1,6 @@
 //! What the turn is held up by, and the call the model is still writing, drawn as they happen.
 use crate::common;
+use crate::common::flat_trimmed;
 
 use std::error::Error;
 
@@ -137,18 +138,7 @@ fn a_boot_warning_outlives_the_boot_wait() -> TestResult {
         });
     }
     app.reduce_agent(AgentEvent::Wait { wait: None });
-    let rows: Vec<String> = app
-        .take_commits()
-        .iter()
-        .map(|line| {
-            let row: String = line
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect();
-            row.trim_end().to_owned()
-        })
-        .collect();
+    let rows: Vec<String> = flat_trimmed(&app.take_commits());
     assert!(
         rows.iter().any(|row| row == &format!("  ▌ ⚑ {warning}")),
         "{rows:#?}"
