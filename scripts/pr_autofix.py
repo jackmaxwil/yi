@@ -127,9 +127,11 @@ def points(heavy, light):
     return 3 * heavy + light
 
 
-def tier_for(score, tried=0):
-    """The tier for a fix of `score` points, one up for each earlier try that did not clear it."""
-    return TIERS[min(sum(score >= at for at in TIER_AT) + tried, len(TIERS) - 1)]
+def tier_for(score, tried=0, floor=0):
+    """The tier for a fix of `score` points, one up for each earlier try that did not clear it, and
+    never under `floor`. Incident: #1415's and #1416's Opus fixes were followed by GLM ones, scored
+    on a smaller round, that left the Opus findings standing or undid its design."""
+    return TIERS[min(max(sum(score >= at for at in TIER_AT) + tried, floor), len(TIERS) - 1)]
 
 
 def misses(notes):
@@ -342,6 +344,46 @@ def remeasure(clone):
     relayout(clone)
 
 
+RATCHET = "Ratchet: "
+
+
+def measured(clone):
+    """The re-measured baselines in the worktree only, out of the index: a fix's code commit may not
+    carry them, so they ride in a `Ratchet:` commit of their own after it. Incident: #1412's two fixes
+    each edited a prompt, the hook refused the stale request budget, and the edit was backed out."""
+    remeasure(clone)
+    sh(clone, "git", "restore", "--staged", "--", "scripts/guardrails/baselines", check=False)
+
+
+def unmeasured(clone):
+    """The baselines back at HEAD before a model turn, so what `measured` wrote is not read as the
+    model's edit and put back with a note the model never earned."""
+    sh(clone, "git", "checkout", "HEAD", "--", "scripts/guardrails/baselines", check=False)
+
+
+def ratchet(clone, base="HEAD"):
+    """The `Ratchet:` subject for the baselines the worktree moved past `base`, or None."""
+    moved = sh(clone, "git", "diff", "--name-only", base, "--", "scripts/guardrails/baselines").stdout.split()
+    if not moved:
+        return None
+    def read(path, rev):
+        text = sh(clone, "git", "show", f"{rev}:{path}", check=False).stdout if rev else (clone / path).read_text()
+        try:
+            return json.loads(text)
+        except ValueError:
+            return {}
+    parts = []
+    for path in moved:
+        old, new = read(path, base), read(path, None)
+        if path.endswith("request_budget.json"):
+            parts.append(f"request budget {old.get('total', 0)} -> {new.get('total', 0)}")
+        elif path.endswith("schemas.lock"):
+            parts.append(f"schemas {len(old)} -> {len(new)} shapes")
+        else:
+            parts.append(pathlib.Path(path).stem.replace("_", " "))
+    return forge_pr.ratchet_subject(parts, "")
+
+
 def relayout(clone):
     """Every baseline in the merge driver's layout, which its selfcheck gates and the model may not
     write: a one-sided merge keeps a branch's file in whatever layout its old writer used."""
@@ -487,14 +529,31 @@ def prior_fixes(repo, sha, stopped=0.0, signed=SIGNED):
     last stop (a Unix time): a person removing `autofix:failed` restarts the count. Incident: four
     PRs stopped at two fixes, and lifting the label would have stopped them again at once. Only
     fixes signed `signed` count: #1111's two findings fixes stopped its first gate fix unrun."""
-    log = sh(repo, "git", "log", "--first-parent", "-n", "4", "--format=%ct%x00%an%x00%B%x1e", sha, check=False).stdout
+    log = sh(repo, "git", "log", "--first-parent", "-n", "16", "--format=%ct%x00%an%x00%B%x1e", sha, check=False).stdout
     count = 0
     for record in filter(str.strip, log.split("\x1e")):
         when, author, body = (record.strip("\n").split("\x00", 2) + ["", ""])[:3]
+        if author == pr_review.BOT and body.startswith(RATCHET):
+            continue
         if author != pr_review.BOT or not (SIGNED in body or GATE_SIGNED in body) or float(when or 0) <= stopped:
             break
         count += signed in body
     return count
+
+
+STOP_AT = 4
+
+
+def last_tier(repo, sha):
+    """The tier index of the newest findings fix at the head of `sha`, from its signature, or -1."""
+    log = sh(repo, "git", "log", "--first-parent", "-n", "16", "--format=%B%x1e", sha, check=False).stdout
+    names = [model for model, _ in TIERS]
+    for body in log.split("\x1e"):
+        # The signature closes the body; a summary that quotes one comes before it. A model the
+        # tier list no longer names was a tier this streak paid for, so it holds the top one.
+        if SIGNED in body and (found := re.findall(r"Made by the autofixer with (\S+);", body)):
+            return names.index(found[-1]) if found[-1] in names else len(names) - 1
+    return -1
 
 
 def round_on(rounds, head, holds=pr_review.on_head):
@@ -599,18 +658,18 @@ def gate_in(clone, pr, lanes, answer, tried=0):
     """Make the red lanes pass in the clone, the deterministic repairs first; a model only for what
     they leave. Returns (summary, model, touched)."""
     reprice(clone, f"origin/{pr['base']['ref']}")
-    relayout(clone)
+    measured(clone)
     refused = lane_failures(clone, lanes, pr["base"]["ref"])
     staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     if not refused:
-        if staged:
-            return "The change files' raises, growth memo and baseline layout were repaired to what the gates measure.", None, staged
+        moved = sh(clone, "git", "diff", "--name-only", "HEAD", "--", "scripts/guardrails/baselines").stdout.split()
+        if staged or moved:
+            return ("The change files' raises, growth memo and baselines were repaired to what the gates measure.", None,
+                    sorted(set(staged) | set(moved)))
         raise Flaky(f"the {', '.join(lanes)} lane(s) pass in the fixer's clone at this head")
-    # A baseline edit may not ride beside the model's code in one commit, so the relayout waits.
-    sh(clone, "git", "checkout", "HEAD", "--", "scripts/guardrails/baselines", check=False)
-    staged = sh(clone, "git", "diff", "--cached", "--name-only").stdout.split()
     model, touched = tier_for(3 * len(lanes), tried), staged
     for turn in range(2):
+        unmeasured(clone)
         before = snapshot(clone)
         said = answer(gate_prompt(pr, lanes, refused), model, deadline=FIX_SECS if turn == 0 else REPAIR_SECS)
         more, note = accept(clone, [], before, keep_new=lambda path: False)
@@ -620,6 +679,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
             raise Missed(cut)
         formatted(clone)
         reprice(clone, f"origin/{pr['base']['ref']}")
+        measured(clone)
         summary = ((said.get("summary") or "").strip() or "the model gave no summary") + note
         refused = lane_failures(clone, lanes, pr["base"]["ref"])
         if not refused:
@@ -627,7 +687,7 @@ def gate_in(clone, pr, lanes, answer, tried=0):
     raise Missed("the lanes still fail after the fix and one more turn:\n" + refused)
 
 
-def findings_in(clone, pr, rnd, answer, tried=0):
+def findings_in(clone, pr, rnd, answer, tried=0, floor=0):
     """Answer a round's high and medium findings in the clone: a blocked round's, or a clean one's
     mediums. Returns (summary, model, touched, declined highs)."""
     todo = [f for f in pr_review.holding(rnd) if answers(f)]
@@ -640,7 +700,7 @@ def findings_in(clone, pr, rnd, answer, tried=0):
         why = [f"{', '.join(lenses)} (the PR body's template, a duplicate)"] if lenses else []
         why += [f"findings on {', '.join(walled)}, which the fixer may not touch"] if walled else []
         raise RuntimeError(f"round {rnd['n']} is blocked by findings the fixer does not answer; a person does: {'; '.join(why) or 'none'}")
-    model = tier_for(points(len(highs), len(todo) - len(highs)), tried)
+    model = tier_for(points(len(highs), len(todo) - len(highs)), tried, floor)
     before = snapshot(clone)
     said = answer(findings_prompt(pr, rnd["n"], todo), model, FINDINGS_SCHEMA)
     own = set(sh(clone, "git", "diff", "--name-only", f"origin/{pr['base']['ref']}...HEAD").stdout.split())
@@ -705,13 +765,14 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             subject, signed = f"Fix what the {' and '.join(lanes)} gate refused", f"{GATE_SIGNED} {sha[:12]} of #{pr['number']}.\n"
         else:
             before = prior_fixes(root, sha, stopped)
-            if before >= 2:
-                raise RuntimeError("two fixes in a row did not clear the review; a person is next")
-            summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before)
+            if before >= STOP_AT:
+                raise RuntimeError(f"{before} fixes in a row did not clear the review; a person is next")
+            # A fix after a fix the review did not clear goes up from that fix's tier, never down.
+            floor = last_tier(root, sha) + 1 if before else 0
+            summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before, floor)
             subject, signed = f"Answer the findings review round {rnd['n']} confirmed", f"{SIGNED} {rnd['n']} on #{pr['number']}.\n"
         reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
-        if kind == "conflict":
-            remeasure(clone)
+        settle = remeasure if kind == "conflict" else measured
         message = lambda: (f"{subject}\n\n{summary}\n\n{signed}"
                            f"Made by the autofixer{f' with {model[0]}' if model else ''}; #{pr['number']}.\n")
         # The author is set in the environment: git hands a hook's own GIT_AUTHOR_* to every child,
@@ -721,11 +782,16 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
         commit = lambda text: sh(clone, "git", "-c", "core.hooksPath=scripts/hooks", "commit", "-q", "-F", "-",
                                  input=text, env={**scrubbed(), **bot}, check=False)
         formatted(clone)
-        committed = commit(message())
+        settle(clone)
+        # A gate repair that only re-measured has nothing for a code commit; its Ratchet carries it.
+        bare = kind == "gate" and not sh(clone, "git", "diff", "--cached", "--name-only").stdout.strip()
+        committed = subprocess.CompletedProcess((), 0) if bare else commit(message())
         if committed.returncode:
             # Incident: #970's merge resolved cleanly and left session.rs one line past the 1,200
             # cap; a hook's FAIL lines are a task the model can do, so it gets one turn at them.
             refused = failures(committed.stdout + committed.stderr)
+            if kind != "conflict":
+                unmeasured(clone)
             before = snapshot(clone)
             said = answer(hook_prompt(pr, refused), model or TIERS[0], deadline=REPAIR_SECS)
             more, note = accept(clone, [], before, keep_new=NEW_FILE.match if kind == "findings" else lambda path: False)
@@ -734,15 +800,22 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0, me
             if refused:
                 raise Missed(refused)
             reprice(clone, "MERGE_HEAD" if kind == "conflict" else f"origin/{base_ref}")
-            if kind == "conflict":
-                remeasure(clone)
             summary += ("\n\nThe commit hook refused the first attempt; one more turn: "
                         + ((said.get("summary") or "").strip() or "no summary") + note)
             formatted(clone)
+            settle(clone)
             committed = commit(message())
             if committed.returncode:
                 raise Missed("the commit hook refused the fix, and again after one repair turn:\n"
                                    + failures(committed.stdout + committed.stderr))
+        if subject_ := ratchet(clone):
+            sh(clone, "git", "add", "--", "scripts/guardrails/baselines")
+            # The head carries the fix's account and signature, which the review's refuters and the
+            # sweep's dedupe read from `log -1`; prior_fixes skips a Ratchet before it reads either.
+            ratcheted = commit(message().replace(subject, subject_, 1))
+            if ratcheted.returncode:
+                raise Missed("the commit hook refused the re-measured baselines:\n" + failures(ratcheted.stdout + ratcheted.stderr))
+            summary += f"\n\nThe fix moved what the gates measure, so `{subject_}` follows it as its own commit."
         new = sh(clone, "git", "rev-parse", "HEAD").stdout.strip()
         sh(root, "git", "fetch", "-q", str(clone), new)
         pushed = sh(root, "git", "push", "-q", "origin", f"{new}:refs/heads/{ref}", env=push_url_env(root), check=False)
@@ -786,7 +859,7 @@ def render(n, fields, verdict, reason="", status="", meter=None):
     elif verdict == "deferred":
         lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
-        lines += ["**Autofix missed**; the next pass tries one model tier up, and a miss on the top tier stops it.",
+        lines += ["**Autofix missed**; the next pass tries again a tier up while one is left, and a miss on the top tier stops it.",
                   "", "```", reason.strip(), "```"]
     else:
         lines += ["**Autofix failed**; `autofix:failed` stops it until the label is removed.", "", "```", reason.strip(), "```"]
@@ -1270,6 +1343,8 @@ def selfcheck():
             errs.append("a findings fix rewrote a change file main holds")
         if prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
             errs.append("the fixer's own commit at the head is not counted as one prior fix")
+        if last_tier(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 0:
+            errs.append("the tier of the newest findings fix was not read from its signature")
         head_now = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
         stop = [dict(bot, created_at="2099-01-01T00:00:00Z", body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=7 verdict=failed -->\n")]
         if prior_fixes(tmp, head_now, last_stop(stop)) != 0 or last_stop(notes) != 0.0:
@@ -1285,10 +1360,22 @@ def selfcheck():
         if not (isinstance(second, dict) and "Refused once (the fix deletes a test" in second["summary"]):
             errs.append(f"a fix refused for deleting a test got no turn to restore it: {second if isinstance(second, str) else 'pushed'}")
         third = findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n    assert!(h());\n    assert!(i());\n}\n"})
-        if asked[first] != TIERS[0][0] or asked[-1] != TIERS[1][0]:
-            errs.append(f"the first fix took {asked[first]} and the one after it {asked[-1]}: a fix the review did not clear moves up a tier")
-        if not isinstance(second, dict) or "two fixes in a row" not in str(third):
-            errs.append(f"a third fix in a row was not stopped: second={'pushed' if isinstance(second, dict) else second}, third={third}")
+        if asked[first] != TIERS[0][0] or asked[first + 1] != TIERS[1][0] or asked[-1] != TIERS[2][0] or not isinstance(third, dict):
+            errs.append(f"fixes in a row took {asked[first:]}, third={'pushed' if isinstance(third, dict) else third}: each one the review did not clear moves up a tier")
+        # A fourth fix goes on at the top tier, and a fix that moves what the gates measure lands its
+        # edit with the re-measured baselines in a Ratchet commit of their own after it.
+        fourth = findings_run({"a.txt": "main and topic and more\n"})
+        sh(tmp, "git", "fetch", "-q", "origin")
+        subjects = sh(tmp, "git", "log", "-2", "--format=%s", "origin/topic").stdout.splitlines()
+        code = sh(tmp, "git", "show", "--name-only", "--format=", "origin/topic~1").stdout.split()
+        tip = sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()
+        if not (isinstance(fourth, dict) and subjects[:1] == ["Ratchet: request budget 15 -> 24"]
+                and subjects[1:2] == ["Answer the findings review round 4 confirmed"] and "a.txt" in code
+                and not any("baselines" in path for path in code) and prior_fixes(tmp, tip) == 4
+                and pr_review.answered(sh(tmp, "git", "log", "-1", "--format=%B", tip).stdout, 4, 7)):
+            errs.append(f"a fix that moved the request budget read {fourth if isinstance(fourth, str) else subjects}, code={code}")
+        if f"{STOP_AT} fixes in a row" not in str(findings_run({"tests/t.rs": "#[test]\nfn t() {\n    assert!(f());\n}\n"})):
+            errs.append(f"a fix after {STOP_AT} in a row was not stopped for a person")
     finally:
         shutil.rmtree(tmp)
         shutil.rmtree(tmp.parent / (tmp.name + "-remote.git"), ignore_errors=True)
@@ -1453,15 +1540,38 @@ def selfcheck():
             errs.append(f"a model's baseline edits were not put back beside its fix: touched={touched}, staged={staged}")
     finally:
         shutil.rmtree(repo)
+    if tier_for(1, 0, 2) != TIERS[2] or tier_for(20, 0, 0) != TIERS[2] or tier_for(1, 1, 0) != TIERS[1]:
+        errs.append("a tier floor does not hold a fix at or above the tier of the fix before it")
+    # Three baselines moving at once still make a subject the commit-style gate passes.
+    repo = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-ratchet-"))
+    try:
+        g = lambda *a: sh(repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        g("init", "-q")
+        (repo / BASELINES).mkdir(parents=True)
+        files = {"request_budget.json": ({"total": 45971}, {"total": 46012}), "schemas.lock": ({"a": "x"}, {"a": "x", "b": "y"}),
+                 "tool_surface.json": ({"prompt:identity": "1"}, {"prompt:identity": "2"})}
+        for name, (old, _) in files.items():
+            (repo / BASELINES / name).write_text(json.dumps(old))
+        g("add", "-A")
+        g("commit", "-qm", "seed")
+        for name, (_, new) in files.items():
+            (repo / BASELINES / name).write_text(json.dumps(new))
+        said = ratchet(repo) or ""
+        from check_commit_style import subject_errors
+        if not said.startswith("Ratchet: request budget 45971 -> 46012") or subject_errors(said):
+            errs.append(f"three moved baselines made the ratchet subject {said!r}")
+    finally:
+        shutil.rmtree(repo)
     # findings_in hands a clean round's mediums to the model, and refuses one with nothing it answers.
     bare = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-bare-"))
     try:
         sh(bare, "git", "init", "-q")
         class Asked(Exception):
             pass
-        prompts = []
+        prompts, models = [], []
         def asked(prompt, *a, **k):
             prompts.append(prompt)
+            models.append(a[0] if a else k.get("model"))
             raise Asked()
         for found, want in (([{"severity": "medium", "lens": "correctness", "claim": "c"}], "asked"),
                             ([{"severity": "medium", "lens": "template", "claim": "c"}], "refused"),
@@ -1481,6 +1591,13 @@ def selfcheck():
                 errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
             if got == "asked" and "baselines/" in prompts[-1]:
                 errs.append("findings_in handed the model a finding on a file the fixer may not touch")
+        try:
+            findings_in(bare, {"number": 1, "title": "t", "base": {"ref": "main"}},
+                        {"n": 2, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness", "claim": "c"}]}, asked, 0, 2)
+        except Asked:
+            pass
+        if models[-1:] != [TIERS[2]]:
+            errs.append(f"a one-medium fix under a top-tier floor asked {models[-1:]}, not {TIERS[2]}")
         base = bare / "scripts/guardrails/baselines"
         base.mkdir(parents=True)
         (base / "schemas.lock").write_text('{\n "b": "y",\n "a": "x"\n}\n')
