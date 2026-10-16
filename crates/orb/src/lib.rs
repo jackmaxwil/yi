@@ -10,4 +10,4 @@ pub mod states;
 
 pub use core::OrbFrame;
 pub use stage::{Orb, mark_at, render};
-pub use states::{MARK_STROKES, OrbState, Point, pose, smooth};
+pub use states::{MARK_STROKES, OrbState, Point, V, add, dot, norm, pose, rot_y, smooth};
