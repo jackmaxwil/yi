@@ -257,8 +257,13 @@ impl Supervisor {
     fn pin(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
         let Some(id) = id else { return };
         let param = |key: &str| frame.pointer(&format!("/params/{key}"));
-        let session_id = param("sessionId").and_then(Value::as_str).unwrap_or("");
-        let pinned = param("pinned").and_then(Value::as_bool).unwrap_or(false);
+        let session_id = param("sessionId").and_then(Value::as_str);
+        let (Some(session_id), Some(pinned)) =
+            (session_id, param("pinned").and_then(Value::as_bool))
+        else {
+            let refused = error_frame(id, -32602, "_yi/pin takes a sessionId and a bool pinned");
+            return self.send_client(client, refused);
+        };
         if pinned && let Some(cwd) = param("cwd").and_then(Value::as_str) {
             self.sessions
                 .entry(session_id.to_owned())
@@ -976,6 +981,71 @@ mod tests {
             "the temp file was renamed"
         );
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// A supervisor with no worker, its pinned and unpinned `/repo` rows mid-turn for client 7.
+    fn supervisor_with_rows() -> Supervisor {
+        let (ledger, _stored) = std::sync::mpsc::channel();
+        let (input, _inputs) = mpsc::unbounded_channel();
+        let mut supervisor = Supervisor {
+            options: DaemonOptions {
+                socket: PathBuf::new(),
+                worker_args: Vec::new(),
+                agent_version: String::new(),
+                home: PathBuf::new(),
+            },
+            ledger,
+            workers: HashMap::new(),
+            clients: HashMap::new(),
+            sessions: HashMap::new(),
+            requests: HashMap::new(),
+            worker_requests: HashMap::new(),
+            parked: HashMap::new(),
+            next_request: 0,
+            input,
+        };
+        for (id, pinned_ms) in [("pinned", Some(1)), ("loose", None)] {
+            let mut entry = SessionEntry::new("/repo".to_owned(), Some(7));
+            (entry.last_state, entry.pinned_ms) = (Some("running".to_owned()), pinned_ms);
+            supervisor.sessions.insert(id.to_owned(), entry);
+        }
+        supervisor
+    }
+
+    /// Dies with a dead worker's pinned row still attached or still running, which lists a
+    /// session nothing serves as Working forever; the root's unpinned row goes with the worker.
+    #[test]
+    fn a_dead_workers_pinned_row_stays_listed_idle_and_unattached() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        supervisor.handle_worker_closed("/repo".to_owned());
+        assert!(!supervisor.sessions.contains_key("loose"));
+        let row = supervisor
+            .sessions
+            .get("pinned")
+            .ok_or("the pinned row goes")?;
+        assert!(row.attached.is_empty(), "{:?}", row.attached);
+        assert_eq!(row.last_state.as_deref(), Some("idle"));
+        Ok(())
+    }
+
+    /// Dies with a pin whose `pinned` is missing or not a bool read as an unpin.
+    #[test]
+    fn a_pin_without_a_bool_is_refused_and_keeps_the_pin() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let (sink, mut replies) = mpsc::channel(4);
+        supervisor.clients.insert(7, sink);
+        for pinned in [json!(null), json!("false")] {
+            let frame = json!({"params": {"sessionId": "pinned", "pinned": pinned}});
+            supervisor.pin(7, Some(json!(1)), &frame);
+            let reply = replies.try_recv().map_err(|error| error.to_string())?;
+            assert!(reply.contains("-32602"), "{reply}");
+        }
+        let row = supervisor
+            .sessions
+            .get("pinned")
+            .ok_or("the pinned row goes")?;
+        assert_eq!(row.pinned_ms, Some(1));
         Ok(())
     }
 

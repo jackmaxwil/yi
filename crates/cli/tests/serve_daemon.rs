@@ -805,15 +805,8 @@ fn a_pin_survives_its_worker_dying() -> TestResult {
         let params = json!({"sessionId": pinned_id, "pinned": true});
         let at = client.request("p", "_yi/pin", params)?["result"]["pinnedMs"].clone();
         assert!(at.is_u64(), "the pin answers its time");
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the worker is a grandchild the test can only see through the process table"
-        )]
-        let workers = Command::new("pgrep")
-            .args(["-f", &format!("acp --cwd {}", dir.display())])
-            .output()?;
-        for pid in String::from_utf8_lossy(&workers.stdout).split_whitespace() {
-            kill(&["-9", pid])?;
+        for pid in worker_pids(&dir)? {
+            kill(&["-9", &pid])?;
         }
         wait_until(Instant::now() + Duration::from_secs(10), || {
             Ok(listed_row(&mut client, &loose_id)?.is_none())
@@ -869,14 +862,7 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
         if socket.exists() {
             return Err("the socket must be removed on shutdown".into());
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the worker is a grandchild the test can only see through the process table"
-        )]
-        let workers = Command::new("pgrep")
-            .args(["-f", &format!("acp --cwd {}", root.display())])
-            .output()?;
-        if workers.status.success() {
+        if !worker_pids(&root)?.is_empty() {
             return Err("the worker must die with the daemon".into());
         }
         Ok(())
@@ -884,6 +870,19 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome
+}
+
+/// The pids of the workers serving `root`, read from the process table.
+fn worker_pids(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the worker is a grandchild the test can only see through the process table"
+    )]
+    let workers = Command::new("pgrep")
+        .args(["-f", &format!("acp --cwd {}", root.display())])
+        .output()?;
+    let pids = String::from_utf8_lossy(&workers.stdout);
+    Ok(pids.split_whitespace().map(str::to_owned).collect())
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {

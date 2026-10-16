@@ -258,3 +258,49 @@ fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String>
     assert_eq!(drawn(&app), folded);
     Ok(())
 }
+
+/// Dies with the rail mixing workspaces, dropping the pin to its group, or running two
+/// workspaces together with no blank row between them.
+#[test]
+fn the_rail_lists_the_pin_first_and_parts_workspaces_with_a_blank_row() -> Result<(), String> {
+    use yi_console::app::App;
+    use yi_console::model::SidebarMode;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Rail;
+    let rows = [
+        ("legios-new", "/w/legios", 900, None),
+        ("yi-old", "/w/yi", 100, None),
+        ("legios-pin", "/w/legios", 10, Some(1_000)),
+        ("yi-new", "/w/yi", 500, None),
+    ];
+    for (id, root, last_ms, pinned) in rows {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: root.to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms,
+            pinned,
+        });
+    }
+    let mut last = None;
+    let drawn: Vec<String> = sidebar_lines(&app, &theme, 60)
+        .into_iter()
+        .filter_map(|row| match row.index {
+            Some(index) if last != Some(index) => {
+                last = Some(index);
+                Some(app.state.order.get(index)?.0.clone())
+            }
+            Some(_) => None,
+            None => row.line.to_string().trim().is_empty().then(String::new),
+        })
+        .collect();
+    let want = ["legios-pin", "", "yi-new", "yi-old", "", "legios-new"];
+    assert_eq!(drawn, want);
+    Ok(())
+}
