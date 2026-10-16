@@ -236,15 +236,16 @@ impl KaliFrame {
     }
 }
 
+/// The flow's multiplier at `t`, the same for every cell of a frame; none once it has unwound.
+fn vortex(t: f64) -> Option<(f64, f64)> {
+    let s = 1.7 * (1.0 - smooth(t / 2.0));
+    let (re, im) = (s * 0.9, s * 1.6);
+    (s >= 1e-3).then(|| (re.exp() * im.cos(), re.exp() * im.sin()))
+}
+
 /// Where the plane is sampled for the name: a loxodromic Möbius flow with fixed points at `u = ±1`
 /// that unwinds to the identity by 2 s, so the name comes out of a vortex and settles.
-fn mobius(u: f64, v: f64, t: f64) -> (f64, f64) {
-    let s = 1.7 * (1.0 - smooth(t / 2.0));
-    if s < 1e-3 {
-        return (u, v);
-    }
-    let (re, im) = (s * 0.9, s * 1.6);
-    let lam = (re.exp() * im.cos(), re.exp() * im.sin());
+fn mobius(u: f64, v: f64, lam: (f64, f64)) -> (f64, f64) {
     let div = |a: (f64, f64), b: (f64, f64)| {
         let n = (b.0 * b.0 + b.1 * b.1).max(1e-12);
         ((a.0 * b.0 + a.1 * b.1) / n, (a.1 * b.0 - a.0 * b.1) / n)
@@ -345,6 +346,7 @@ pub fn cover(
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
     let turn = KaliFrame::at(t);
+    let lam = vortex(t);
     let rise = match scene {
         Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
         Scene::Echo | Scene::Mobius => 1.0,
@@ -358,7 +360,7 @@ pub fn cover(
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
             let (wu, wv) = match scene {
-                Scene::Mobius => mobius(u, v, t),
+                Scene::Mobius => lam.map_or((u, v), |lam| mobius(u, v, lam)),
                 _ => (u, v),
             };
             let d = distance_to(&strokes, thick, wu, wv);
