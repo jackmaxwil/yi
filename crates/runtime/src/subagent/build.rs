@@ -130,7 +130,7 @@ impl SubagentHost {
 
     /// Invariant: a child that runs unrecorded leaves nothing to read when it fails, so a
     /// transcript it cannot open refuses the build. `kept` is a respawned service's own.
-    pub(super) fn build(
+    pub(crate) fn build(
         self: &std::sync::Arc<Self>,
         (model, thinking, wall, reader): Cast,
         name: &str,
@@ -156,6 +156,8 @@ impl SubagentHost {
             tokens: lease.tokens,
             reader,
         })?;
+        let bill = Some(std::sync::Arc::clone(&self.options.attribute));
+        child.provider().settle_into(child.settle_hook(bill));
         if let Some(clock) = clock {
             child.set_deadline(clock);
         }
