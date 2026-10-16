@@ -733,17 +733,18 @@ impl App {
         }
         self.absorb_edit(outbound, &id, &update);
         self.absorb_kernel(&id, &update);
-        for (pane_id, pane) in &mut self.state.panes {
-            if pane.session() != Some(&id) {
-                continue;
-            }
-            if let PaneContent::Notebook { cells, drawn, .. } = &mut pane.content
-                && apply_notebook(cells, &update)
-            {
-                *drawn = None;
-                pane.scroll_from_bottom = 0;
-                if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
-                    *seen = Instant::now();
+        if matches!(update, AcpSessionUpdate::ToolCallUpdate(_))
+            && apply_notebook(self.state.notebooks.entry(id.clone()).or_default(), &update)
+        {
+            for (pane_id, pane) in &mut self.state.panes {
+                if pane.session() == Some(&id)
+                    && let PaneContent::Notebook { drawn, .. } = &mut pane.content
+                {
+                    *drawn = None;
+                    pane.scroll_from_bottom = 0;
+                    if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
+                        *seen = Instant::now();
+                    }
                 }
             }
         }

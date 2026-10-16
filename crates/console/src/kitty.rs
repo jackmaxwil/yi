@@ -7,7 +7,12 @@ use ratatui::layout::Rect;
 
 /// Incident: ids 0 and 1 alternated once, and kitty id 0 means "no id": Ghostty refuses to place
 /// it and keeps the transmit. A repaint alternates these, so it never deletes the id it placed.
-pub(crate) const NOTEBOOK_IDS: [u32; 2] = [7701, 7702];
+const NOTEBOOK_IDS: [u32; 2] = [7701, 7702];
+
+pub(crate) fn next_notebook_id(old: Option<u32>) -> u32 {
+    let [even, odd] = NOTEBOOK_IDS;
+    if old == Some(even) { odd } else { even }
+}
 const CHUNK: usize = 4096;
 
 pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
