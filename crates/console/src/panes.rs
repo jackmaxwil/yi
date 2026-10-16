@@ -394,9 +394,9 @@ pub fn notebook_lines(
                 theme,
             ));
         }
-        for size in &cell.images_dropped {
+        for size in &cell.dropped_image_bytes {
             let what = format!("image {size} B base64 dropped");
-            let cap = format!("notebook cap {} B", crate::model::IMAGE_CAP);
+            let cap = format!("notebook cap {} B", crate::model::IMAGE_BYTES_MAX);
             out.push(cap_row(&what, &cap, "the transcript holds it", theme));
         }
         if cell.images_past_limit > 0 {
@@ -406,7 +406,7 @@ pub fn notebook_lines(
                 "images"
             };
             let what = format!("{} older {noun} not shown", cell.images_past_limit);
-            let cap = format!("notebook keeps {} per cell", crate::model::IMAGE_MAX);
+            let cap = format!("notebook keeps {} per cell", crate::model::IMAGES_PER_CELL);
             out.push(cap_row(&what, &cap, "the transcript holds them", theme));
         }
         for image in &cell.images {

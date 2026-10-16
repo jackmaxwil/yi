@@ -177,8 +177,8 @@ pub struct PendingAsk {
 }
 
 pub const KEPT_CELLS: usize = 50;
-pub const IMAGE_CAP: usize = 64 * 1024;
-pub const IMAGE_MAX: usize = 4;
+pub const IMAGE_BYTES_MAX: usize = 64 * 1024;
+pub const IMAGES_PER_CELL: usize = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct NbCell {
@@ -191,7 +191,7 @@ pub struct NbCell {
     pub result: Option<String>,
     pub error: Option<String>,
     pub images: Vec<String>,
-    pub images_dropped: Vec<usize>,
+    pub dropped_image_bytes: Vec<usize>,
     pub images_past_limit: usize,
     pub duration_ms: Option<u64>,
     pub running: bool,

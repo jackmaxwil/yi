@@ -3,7 +3,7 @@ use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolCallUpdate, AcpToo
 
 const TEXT_CAP: usize = 8 * 1024;
 const RESULT_CAP: usize = 2 * 1024;
-use crate::model::{IMAGE_CAP, IMAGE_MAX};
+use crate::model::{IMAGE_BYTES_MAX, IMAGES_PER_CELL};
 
 fn clamp_bytes(text: &str, cap: usize) -> String {
     if text.len() <= cap {
@@ -104,16 +104,16 @@ pub(super) fn apply_notebook(
                     _ => None,
                 });
                 let all: Vec<&str> = legacy.chain(current).filter_map(Value::as_str).collect();
-                cell.images_dropped = all
+                cell.dropped_image_bytes = all
                     .iter()
-                    .filter(|data| data.len() > IMAGE_CAP)
+                    .filter(|data| data.len() > IMAGE_BYTES_MAX)
                     .map(|data| data.len())
                     .collect();
                 let kept: Vec<&str> = all
                     .into_iter()
-                    .filter(|data| data.len() <= IMAGE_CAP)
+                    .filter(|data| data.len() <= IMAGE_BYTES_MAX)
                     .collect();
-                cell.images_past_limit = kept.len().saturating_sub(IMAGE_MAX);
+                cell.images_past_limit = kept.len().saturating_sub(IMAGES_PER_CELL);
                 cell.images = kept
                     .into_iter()
                     .skip(cell.images_past_limit)
@@ -509,14 +509,14 @@ mod tests {
     fn a_cells_text_is_capped_and_says_where() -> TestResult {
         let cells = one_cell(json!({
             "stdout": "x".repeat(8193),
-            "stderr": "é".repeat(5000),
+            "stderr": "€".repeat(4000),
             "result": "y".repeat(2049),
         }));
         let cell = cells.first().ok_or("no cell")?;
         for (text, kept, total, cap) in [
             (cell.stdout.as_str(), 8192, 8193, 8),
             (cell.result.as_deref().unwrap_or_default(), 2048, 2049, 2),
-            (cell.stderr.as_str(), 8192, 10000, 8),
+            (cell.stderr.as_str(), 8190, 12000, 8),
         ] {
             let said = format!("[… {kept} of {total} bytes kept · notebook cap {cap} KiB");
             assert!(text.contains(&said), "{said:?} not in {text:?}");
@@ -533,12 +533,12 @@ mod tests {
     fn dropped_images_are_recorded_by_the_cap_that_dropped_them() -> TestResult {
         let cells = one_cell(media(&[65537, 6, 6, 6, 6, 6, 6]));
         let cell = cells.first().ok_or("no cell")?;
-        assert_eq!(cell.images_dropped, vec![65537], "over the size cap");
+        assert_eq!(cell.dropped_image_bytes, vec![65537], "over the size cap");
         assert_eq!(cell.images_past_limit, 2, "past the four-image limit");
         assert_eq!(cell.images.len(), 4);
         let at_limit = one_cell(media(&[65536, 6, 6, 6]));
         assert_eq!(at_limit[0].images.len(), 4, "the limit itself is kept");
-        assert!(at_limit[0].images_dropped.is_empty());
+        assert!(at_limit[0].dropped_image_bytes.is_empty());
         assert_eq!(at_limit[0].images_past_limit, 0);
         Ok(())
     }
