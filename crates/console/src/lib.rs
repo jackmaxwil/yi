@@ -607,9 +607,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                 .filter(|half| {
                     half.height >= 3
                         && half.width >= 8
-                        && !app.hits.as_ref().is_some_and(|hits| {
-                            hits.overlays.iter().any(|cover| cover.intersects(*half))
-                        })
+                        && !app.hits.as_ref().is_some_and(|hits| hits.covered(*half))
                 })?;
             let pane_id = focused?;
             Some((
@@ -951,9 +949,7 @@ mod tests {
         draw(&mut app, &mut terminal, &theme)?;
         let first = stream(&mut app);
         assert!(first.contains("m=0;iVBORw0KGgo="), "{first:?}");
-        let Some(tab) = app.state.tab_mut() else {
-            return Err("a tab".into());
-        };
+        let tab = app.state.tab_mut().ok_or("a tab")?;
         tab.layout.focus_direction(
             crate::layout::NavDirection::Right,
             ratatui::layout::Rect::new(0, 0, 200, 100),
@@ -1093,11 +1089,8 @@ mod tests {
         );
         assert!(out.contains("s=32,v=48,a=t,i=8000"), "{out:?}");
         assert!(out.contains("a=p,i=8000,p=1,q=2,C=1,c=4,r=3"), "{out:?}");
-        let gear = app
-            .hits
-            .as_ref()
-            .and_then(|hits| hits.gear)
-            .ok_or("no gear")?;
+        let hits = app.hits.as_ref();
+        let gear = hits.and_then(|hits| hits.gear).ok_or("no gear")?;
         assert_eq!(gear.height, 3);
         if let Some(hits) = app.hits.as_mut() {
             hits.overlays = vec![gear];
@@ -1116,24 +1109,15 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.state.link = crate::model::Link::Connected;
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
-        let key_bg = |terminal: &Terminal<ratatui::backend::TestBackend>,
-                      at: ratatui::layout::Rect| {
-            let cell = terminal
-                .backend()
-                .buffer()
-                .cell((at.x.saturating_add(2), at.y));
+        let key_bg = |t: &Terminal<ratatui::backend::TestBackend>, at: ratatui::layout::Rect| {
+            let cell = t.backend().buffer().cell((at.x.saturating_add(2), at.y));
             cell.map(|cell| cell.bg)
         };
         draw(&mut app, &mut terminal, &theme)?;
-        let buttons = app
-            .hits
-            .as_ref()
-            .map(|hits| hits.hint_buttons.clone())
-            .unwrap_or_default();
-        let (first, second) = (
-            buttons.first().ok_or("no hint")?.0,
-            buttons.get(1).ok_or("one hint")?.0,
-        );
+        let hits = app.hits.as_ref();
+        let buttons = hits.map(|h| h.hint_buttons.clone()).unwrap_or_default();
+        let first = buttons.first().ok_or("no hint")?.0;
+        let second = buttons.get(1).ok_or("one hint")?.0;
         let rest = (key_bg(&terminal, first), key_bg(&terminal, second));
         assert_ne!(rest.0, rest.1, "each keycap wears its own colour");
         let (events, _received) = client::events();

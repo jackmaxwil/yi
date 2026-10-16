@@ -85,10 +85,13 @@ impl Hits {
         let (pane, _) = self.panes.iter().find(|(_, rect)| rect.contains(at))?;
         Some(*pane)
     }
+
     pub fn covered(&self, rect: ratatui::layout::Rect) -> bool {
         self.overlays.iter().any(|cover| cover.intersects(rect))
     }
 
+    /// The control under the pointer; a move redraws only when this changes. A session's
+    /// rows lift together, as one click target.
     pub fn hit_at(&self, x: u16, y: u16) -> Option<(Rect, Hit)> {
         let at = ratatui::layout::Position::new(x, y);
         let in_sidebar = x < self.sidebar_width;
