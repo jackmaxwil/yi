@@ -158,11 +158,19 @@ impl App {
                 self.dirty = true;
                 return self.apply_action(outbound, Action::ClosePane);
             }
-            Some((_, crate::render::Hit::Root(index))) => {
-                let root = self.state.roots().get(index).cloned();
-                let next = root.filter(|r| self.state.root_filter.as_ref() != Some(r));
-                self.state.set_root_filter(next);
-                self.state.zone = Zone::Sidebar;
+            Some((_, crate::render::Hit::New(root))) => {
+                let root = root.unwrap_or_else(|| self.state.root.clone());
+                if let Some(pane) = self.state.focused_pane_id() {
+                    self.new_session_into(outbound, pane, root);
+                }
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Search)) => {
+                return self.apply_action(outbound, Action::Navigator);
+            }
+            Some((_, crate::render::Hit::Fold(root))) => {
+                self.state.toggle_fold(&root);
                 self.dirty = true;
                 return;
             }

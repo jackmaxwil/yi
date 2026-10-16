@@ -38,6 +38,7 @@ pub enum Verb {
     Act(Action),
     Open,
     OpenBeside,
+    Pin,
 }
 
 #[derive(Clone)]
@@ -78,6 +79,7 @@ pub struct Facts {
     pub open: Vec<String>,
     pub last_pane: bool,
     pub zoomed: bool,
+    pub pinned: bool,
 }
 
 pub fn items(target: &Target, facts: &Facts) -> Vec<Item> {
@@ -96,6 +98,11 @@ pub fn items(target: &Target, facts: &Facts) -> Vec<Item> {
         Target::Session(_) => vec![
             item("Open", Verb::Open, "enter"),
             item("Open beside", Verb::OpenBeside, ""),
+            item(
+                if facts.pinned { "Unpin" } else { "Pin" },
+                Verb::Pin,
+                chord_for(Action::Pin, facts.cmd),
+            ),
         ],
     }
 }
@@ -330,6 +337,7 @@ mod tests {
             open: Vec::new(),
             last_pane: false,
             zoomed: false,
+            pinned: false,
         }
     }
 
