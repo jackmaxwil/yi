@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use yi_console::app::MouseKind;
-use yi_console::browser::{Clicks, css_point, css_size, key_inputs, last_local_url, wheel};
+use yi_console::browser::{
+    Clicks, css_cell, css_point, css_size, device_scale, key_inputs, last_local_url, wheel,
+};
 use yi_types::cdp::{KeyKind, MouseKind as CdpMouse};
 
 const CELL: (usize, usize) = (10, 20);
@@ -23,6 +25,19 @@ fn a_cell_maps_to_its_centre_in_css_pixels_and_off_the_page_to_nothing() {
         assert_eq!(css_point(page, CELL, x, y), want, "cell ({x}, {y})");
     }
     assert_eq!(css_size(page, CELL), (400, 200));
+}
+
+/// A terminal reports backing pixels: a 2x display's 16x36 cell is 8x18 CSS pixels at scale 2,
+/// so the page keeps its size on screen; a 1x display's 8x16 cell is taken whole.
+#[test]
+fn a_retina_cell_is_halved_into_css_pixels_and_a_plain_one_is_not() {
+    let page = Rect::new(0, 0, 40, 10);
+    assert_eq!((device_scale((16, 36)), css_cell((16, 36))), (2, (8, 18)));
+    assert_eq!((device_scale((8, 16)), css_cell((8, 16))), (1, (8, 16)));
+    assert_eq!(device_scale((9, 27)), 1);
+    assert_eq!(device_scale((14, 28)), 2);
+    assert_eq!(css_size(page, css_cell((16, 36))), (320, 180));
+    assert_eq!(css_size(page, css_cell((8, 16))), (320, 160));
 }
 
 #[test]

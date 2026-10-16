@@ -135,6 +135,7 @@ pub struct BrowserPane {
     notice: Option<String>,
     page: Rect,
     size: (u32, u32),
+    scale: u32,
     clicks: Clicks,
     pressed: bool,
 }
@@ -150,6 +151,7 @@ impl BrowserPane {
             notice: None,
             page: Rect::default(),
             size: (0, 0),
+            scale: 1,
             clicks: Clicks::default(),
             pressed: false,
         }
@@ -203,7 +205,8 @@ impl BrowserPane {
         if !kitty || self.page.width == 0 || self.page.height == 0 {
             return false;
         }
-        let size = css_size(self.page, cell);
+        let scale = device_scale(cell);
+        let size = css_size(self.page, css_cell(cell));
         match &mut self.engine {
             Engine::Failed(_) => false,
             Engine::Installing(_) => match chrome.installed() {
@@ -218,14 +221,14 @@ impl BrowserPane {
                 }
             },
             Engine::Idle => {
-                self.size = size;
-                self.engine = launch(chrome, &self.url, size);
+                (self.size, self.scale) = (size, scale);
+                self.engine = launch(chrome, &self.url, size, scale);
                 true
             }
             Engine::Live(browser) => {
-                if size != self.size {
-                    self.size = size;
-                    browser.router.resize(size);
+                if (size, scale) != (self.size, self.scale) {
+                    (self.size, self.scale) = (size, scale);
+                    browser.router.resize(size, scale);
                 }
                 let updates = browser.poll();
                 let dirty = !updates.is_empty();
@@ -246,6 +249,9 @@ impl BrowserPane {
                 }
                 Update::NavigateFailed(why) => {
                     self.notice = Some(format!("[couldn't open the page: {why}]"));
+                }
+                Update::Skipped(why) => {
+                    self.notice = Some(format!("[skipped a frame from Chrome: {why}]"));
                 }
                 Update::Failed(why) => self.engine = Engine::Failed(why),
             }
@@ -330,6 +336,7 @@ impl BrowserPane {
 
     /// A mouse event at a cell of this pane: the bar's three marks and its text, or the page.
     pub fn mouse(&mut self, kind: MouseKind, x: u16, y: u16, cell: (usize, usize)) -> bool {
+        let cell = css_cell(cell);
         let on_bar =
             y.checked_add(1) == Some(self.page.y) && (self.page.x..self.page.right()).contains(&x);
         if on_bar && kind == MouseKind::Down {
@@ -392,6 +399,7 @@ impl BrowserPane {
         if !self.pressed {
             return;
         }
+        let cell = css_cell(cell);
         self.pressed = false;
         let count = self.clicks.count;
         let Some(((x, y), _)) = self.clicks.last else {
@@ -408,7 +416,7 @@ impl BrowserPane {
             .mouse(&button(CdpMouse::MouseReleased, point, count, 0));
     }
 }
-fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32)) -> Engine {
+fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32), scale: u32) -> Engine {
     let pinned = chrome
         .pinned
         .as_ref()
@@ -418,7 +426,15 @@ fn launch(chrome: &mut Chrome, url: &str, size: (u32, u32)) -> Engine {
         Err(looked) => return chrome.missing(&looked),
     };
     let launched = std::env::current_exe().and_then(|yi| {
-        Browser::launch(&yi, &chrome, pinned, &yi_browser::profile_dir(), url, size)
+        Browser::launch(
+            &yi,
+            &chrome,
+            pinned,
+            &yi_browser::profile_dir(),
+            url,
+            size,
+            scale,
+        )
     });
     match launched {
         Ok(browser) => Engine::Live(Box::new(browser)),
@@ -456,6 +472,18 @@ pub fn last_local_url<'a>(sources: impl Iterator<Item = &'a str>) -> Option<Stri
         }
     }
     last
+}
+
+/// The page's pixel ratio, guessed from the cell: the terminal reports backing pixels and no
+/// escape reports the ratio, so a cell 28 or more pixels tall is taken for a 2x display.
+pub fn device_scale((_, height): (usize, usize)) -> u32 {
+    if height >= 28 { 2 } else { 1 }
+}
+
+/// A cell in CSS pixels: the terminal's backing pixels over [`device_scale`].
+pub fn css_cell(cell: (usize, usize)) -> (usize, usize) {
+    let scale = usize::try_from(device_scale(cell)).unwrap_or(1);
+    (cell.0 / scale, cell.1 / scale)
 }
 
 pub fn css_size(page: Rect, (width, height): (usize, usize)) -> (u32, u32) {
@@ -722,6 +750,23 @@ mod tests {
         let drawn: String = lines.iter().map(|line| line.to_string()).collect();
         assert!(!drawn.contains("couldn't open the page"), "{drawn:?}");
         Ok(())
+    }
+
+    #[test]
+    fn a_skipped_frame_is_a_notice_and_never_fails_the_engine() {
+        let theme = Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut pane = BrowserPane::new(Some("http://localhost:1/".to_owned()));
+        pane.engine = Engine::Idle;
+        pane.absorb(vec![Update::Skipped(
+            "a CDP frame passed 33554432 bytes".to_owned(),
+        )]);
+        assert!(!matches!(pane.engine, Engine::Failed(_)));
+        let (_, lines) = pane.view(Rect::new(0, 0, 70, 6), true, &theme);
+        let drawn: String = lines.iter().map(|line| line.to_string()).collect();
+        assert!(
+            drawn.contains("[skipped a frame from Chrome: a CDP frame passed"),
+            "{drawn:?}"
+        );
     }
 
     /// Incident: a press the page still held ends when an overlay takes its release, so the

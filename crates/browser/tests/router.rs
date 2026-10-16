@@ -21,7 +21,7 @@ fn a_recorded_pipe_replays_into_the_commands_chrome_answered()
 -> Result<(), Box<dyn std::error::Error>> {
     let transcript = fixture("cdp-pipe-v1.bin")?;
     let expected: Vec<Value> = serde_json::from_slice(&fixture("cdp-pipe-v1-sent.json")?)?;
-    let mut router = Router::new(FIRST, (64, 48));
+    let mut router = Router::new(FIRST, (64, 48), 1);
     let mut commands = sent(&mut router)?;
     let mut updates = Vec::new();
     for frame in transcript
@@ -48,6 +48,7 @@ fn a_recorded_pipe_replays_into_the_commands_chrome_answered()
             Update::Url(url) if url == SECOND => "second",
             Update::Url(_) => "another url",
             Update::NavigateFailed(_) => "navigate failed",
+            Update::Skipped(_) => "skipped",
             Update::Failed(_) => "failed",
         })
         .collect();
@@ -58,7 +59,7 @@ fn a_recorded_pipe_replays_into_the_commands_chrome_answered()
 #[test]
 fn an_error_answer_names_its_method_and_a_stray_id_is_ignored()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut router = Router::new("about:blank", (10, 10));
+    let mut router = Router::new("about:blank", (10, 10), 1);
     router.take();
     let stray: CdpMessage = serde_json::from_str(r#"{"id": 99, "result": {}}"#)?;
     assert_eq!(router.feed(stray), None);
@@ -75,7 +76,7 @@ fn an_error_answer_names_its_method_and_a_stray_id_is_ignored()
 /// failing the pane; it is dropped until the page session exists.
 #[test]
 fn input_before_the_page_session_sends_nothing() -> Result<(), Box<dyn std::error::Error>> {
-    let mut router = Router::new("about:blank", (10, 10));
+    let mut router = Router::new("about:blank", (10, 10), 1);
     router.take();
     router.insert_text("a");
     router.reload();
@@ -83,10 +84,40 @@ fn input_before_the_page_session_sends_nothing() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// At scale 2 the viewport is in CSS pixels with a device scale factor of 2, and the screencast
+/// asks for the device size, so the frame is sharp rather than stretched.
+#[test]
+fn a_scaled_viewport_asks_for_device_sized_frames() -> Result<(), Box<dyn std::error::Error>> {
+    let mut router = Router::new("about:blank", (32, 24), 2);
+    router.take();
+    router.feed(serde_json::from_str(
+        r#"{"id": 1, "result": {"targetId": "T"}}"#,
+    )?);
+    router.feed(serde_json::from_str(
+        r#"{"id": 2, "result": {"sessionId": "S"}}"#,
+    )?);
+    let params = |commands: &[Value], method: &str| {
+        commands
+            .iter()
+            .find(|command| command["method"] == method)
+            .map(|command| command["params"].clone())
+    };
+    let commands = sent(&mut router)?;
+    let metrics = params(&commands, "Emulation.setDeviceMetricsOverride").ok_or("no metrics")?;
+    assert_eq!(metrics["width"], 32);
+    assert_eq!(metrics["deviceScaleFactor"], 2);
+    let cast = params(&commands, "Page.startScreencast").ok_or("no screencast")?;
+    assert_eq!(
+        (&cast["maxWidth"], &cast["maxHeight"]),
+        (&64.into(), &48.into())
+    );
+    Ok(())
+}
+
 /// A bad URL is a page outcome, not a dead browser.
 #[test]
 fn a_navigation_error_is_not_a_failure() -> Result<(), Box<dyn std::error::Error>> {
-    let mut router = Router::new("about:blank", (10, 10));
+    let mut router = Router::new("about:blank", (10, 10), 1);
     router.take();
     let target: CdpMessage = serde_json::from_str(r#"{"id": 1, "result": {"targetId": "T"}}"#)?;
     router.feed(target);
@@ -110,26 +141,33 @@ fn a_navigation_error_is_not_a_failure() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// The navigate goes out after the attach: before it page commands are dropped, and the error
+/// would answer `Target.createTarget` instead.
 #[test]
 fn an_error_object_answering_a_navigation_is_a_page_outcome()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut router = Router::new("about:blank", (10, 10));
+    let mut router = Router::new("about:blank", (10, 10), 1);
+    router.take();
+    router.feed(serde_json::from_str(
+        r#"{"id": 1, "result": {"targetId": "T"}}"#,
+    )?);
+    router.feed(serde_json::from_str(
+        r#"{"id": 2, "result": {"sessionId": "S"}}"#,
+    )?);
+    router.take();
     router.navigate("http://my server");
     let commands = router.take();
-    let Some(id) = commands.last().map(|command| command.id) else {
-        return Err("no navigate command was queued".into());
-    };
-    let refused: CdpMessage = serde_json::from_str(
-        r#"{"id": ID, "error": {"code": -32602, "message": "Cannot navigate to invalid URL"}}"#
-            .replace("ID", &id.to_string())
-            .as_str(),
-    )?;
-    assert_ne!(
+    let navigate = commands.last().ok_or("no navigate command was queued")?;
+    assert_eq!(navigate.method, "Page.navigate");
+    let refused: CdpMessage = serde_json::from_str(&format!(
+        r#"{{"id": {}, "error": {{"code": -32602, "message": "Cannot navigate to invalid URL"}}}}"#,
+        navigate.id
+    ))?;
+    assert_eq!(
         router.feed(refused),
-        Some(Update::Failed(
-            "Page.navigate: Cannot navigate to invalid URL".to_owned()
-        )),
-        "an error object answering a navigate must be a page outcome, never a dead engine"
+        Some(Update::NavigateFailed(
+            "Cannot navigate to invalid URL".to_owned()
+        ))
     );
     Ok(())
 }

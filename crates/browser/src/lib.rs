@@ -135,10 +135,16 @@ pub fn profile_orphaned(dir: &Path) -> bool {
     pid.is_some_and(|pid| rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH))
 }
 
+enum Inbound {
+    Message(Box<CdpMessage>),
+    Skipped(String),
+    Closed(String),
+}
+
 pub struct Browser {
     pub router: Router,
     child: Child,
-    inbox: Receiver<Result<CdpMessage, String>>,
+    inbox: Receiver<Inbound>,
     outbox: Option<SyncSender<Vec<u8>>>,
     profile: PathBuf,
 }
@@ -152,6 +158,7 @@ impl Browser {
         profile: &Path,
         url: &str,
         size: (u32, u32),
+        scale: u32,
     ) -> std::io::Result<Self> {
         let mut profile_flag = OsString::from("--user-data-dir=");
         profile_flag.push(profile);
@@ -192,7 +199,7 @@ impl Browser {
             }
         });
         Ok(Self {
-            router: Router::new(url, size),
+            router: Router::new(url, size, scale),
             child,
             inbox,
             outbox: Some(outbox),
@@ -204,8 +211,9 @@ impl Browser {
         let mut updates = Vec::new();
         while let Ok(message) = self.inbox.try_recv() {
             match message {
-                Ok(message) => updates.extend(self.router.feed(message)),
-                Err(why) => updates.push(Update::Failed(why)),
+                Inbound::Message(message) => updates.extend(self.router.feed(*message)),
+                Inbound::Skipped(why) => updates.push(Update::Skipped(why)),
+                Inbound::Closed(why) => updates.push(Update::Failed(why)),
             }
         }
         for command in self.router.take() {
@@ -226,7 +234,8 @@ impl Browser {
 
 impl Drop for Browser {
     fn drop(&mut self) {
-        // Invariant: a closed pipe is Chrome's own signal to quit; the kill only backs it up.
+        // The writer thread closes the pipe only once it wakes, so the kill usually lands first
+        // and Chrome never quits on its own; the profile goes after the wait.
         self.outbox = None;
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -234,32 +243,35 @@ impl Drop for Browser {
     }
 }
 
-fn read_frames(stdout: impl Read, frames: &SyncSender<Result<CdpMessage, String>>) {
+fn read_frames(stdout: impl Read, frames: &SyncSender<Inbound>) {
     let mut reader = BufReader::new(stdout);
     loop {
         let mut frame = Vec::new();
         let read = (&mut reader).take(MAX_FRAME).read_until(0, &mut frame);
-        let (message, end) = match read {
-            Ok(0) => (Err("Chrome closed its pipe".to_owned()), true),
-            Err(error) => (Err(format!("reading Chrome's pipe: {error}")), true),
+        let message = match read {
+            Ok(0) => Inbound::Closed("Chrome closed its pipe".to_owned()),
+            Err(error) => Inbound::Closed(format!("reading Chrome's pipe: {error}")),
             Ok(_) if frame.last() == Some(&0) => {
                 frame.pop();
-                let parsed = serde_json::from_slice(&frame);
-                (
-                    parsed.map_err(|error| format!("an unreadable CDP frame: {error}")),
-                    false,
-                )
+                match serde_json::from_slice(&frame) {
+                    Ok(message) => Inbound::Message(Box::new(message)),
+                    Err(error) => Inbound::Skipped(format!("an unreadable CDP frame: {error}")),
+                }
             }
             Ok(_) if u64::try_from(frame.len()).is_ok_and(|len| len < MAX_FRAME) => {
-                (Err("Chrome closed its pipe mid-frame".to_owned()), true)
+                Inbound::Closed("Chrome closed its pipe mid-frame".to_owned())
             }
             Ok(_) => {
                 let mut rest = Vec::new();
                 let drained = (&mut reader).take(MAX_FRAME).read_until(0, &mut rest);
-                let end = drained.is_err() || rest.last() != Some(&0);
-                (Err(format!("a CDP frame passed {MAX_FRAME} bytes")), end)
+                let why = format!("a CDP frame passed {MAX_FRAME} bytes");
+                match drained.is_err() || rest.last() != Some(&0) {
+                    true => Inbound::Closed(why),
+                    false => Inbound::Skipped(why),
+                }
             }
         };
+        let end = matches!(message, Inbound::Closed(_));
         if frames.send(message).is_err() || end {
             return;
         }
@@ -329,5 +341,39 @@ mod tests {
         assert!(!no_sandbox(true, pinned, None));
         assert!(flags(true).any(|flag| flag == "--no-sandbox"));
         assert!(flags(false).all(|flag| flag != "--no-sandbox"));
+    }
+
+    #[test]
+    fn one_unreadable_or_oversized_frame_is_skipped_and_the_next_is_read() {
+        let pipe = |bytes: Vec<u8>| {
+            let (frames, inbox) = sync_channel(8);
+            read_frames(bytes.as_slice(), &frames);
+            inbox.try_iter().collect::<Vec<_>>()
+        };
+        let good = br#"{"id":1,"result":{}}"#;
+        let mut bytes = b"{not cdp".to_vec();
+        bytes.push(0);
+        bytes.extend_from_slice(good);
+        bytes.push(0);
+        let seen = pipe(bytes);
+        assert!(
+            matches!(
+                &seen[..],
+                [Inbound::Skipped(_), Inbound::Message(_), Inbound::Closed(_)]
+            ),
+            "an unreadable frame skipped, the next read, then the pipe closed"
+        );
+        let mut bytes = vec![b'a'; usize::try_from(MAX_FRAME).unwrap_or(0) + 5];
+        bytes.push(0);
+        bytes.extend_from_slice(good);
+        bytes.push(0);
+        let seen = pipe(bytes);
+        assert!(
+            matches!(
+                &seen[..],
+                [Inbound::Skipped(_), Inbound::Message(_), Inbound::Closed(_)]
+            ),
+            "an oversized frame skipped, the next read"
+        );
     }
 }
