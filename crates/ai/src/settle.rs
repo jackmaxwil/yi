@@ -18,8 +18,8 @@ impl std::fmt::Debug for Settle {
 
 static PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The schedule's 28 s of waiting plus four fetches at their 5 s connect and 20 s read bound.
-pub const DRAIN_CAP: std::time::Duration = std::time::Duration::from_secs(128);
+/// The schedule's 28 s of waiting plus typical fetch time; a fetch hung past it is lost.
+const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(32);
 
 struct Pending;
 
@@ -29,26 +29,48 @@ impl Drop for Pending {
     }
 }
 
+/// Invariant: counted from creation, which precedes the turn's terminal event, so a drain run
+/// on that event waits for a settlement whose thread has not started yet.
+#[must_use]
+pub struct Job {
+    pending: Pending,
+    run: Box<dyn FnOnce() + Send>,
+}
+
+pub fn job(run: impl FnOnce() + Send + 'static) -> Job {
+    PENDING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    Job {
+        pending: Pending,
+        run: Box::new(run),
+    }
+}
+
 /// Invariant: the record lands seconds after the turn, so its wait runs on a thread of its own
 /// that nothing joins; a one-shot process calls [`drain`] before it exits.
-pub fn detach(job: impl FnOnce() + Send + 'static) {
-    PENDING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    let guard = Pending;
+pub fn detach(job: Job) {
     let _detached = std::thread::Builder::new()
         .name("yi-settle".to_owned())
         .spawn(move || {
-            let _guard = guard;
-            job();
+            let Job { pending, run } = job;
+            run();
+            drop(pending);
         });
 }
 
-/// Waits up to `cap` for the detached settlements of this process; what is still running then
-/// is lost with the process, which costs only that turn's settled usage.
-pub fn drain(cap: std::time::Duration) {
+/// Waits for the detached settlements of this process, never past `deadline`; what is still
+/// running then is lost with the process, which costs only that turn's settled usage.
+pub fn drain(deadline: Option<std::time::Instant>) {
+    let cap = drain_bound(deadline);
     let began = std::time::Instant::now();
     while PENDING.load(std::sync::atomic::Ordering::Acquire) > 0 && began.elapsed() < cap {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+fn drain_bound(deadline: Option<std::time::Instant>) -> std::time::Duration {
+    deadline.map_or(SETTLE_WAIT, |at| {
+        SETTLE_WAIT.min(at.saturating_duration_since(std::time::Instant::now()))
+    })
 }
 
 /// Settlement only exists where the record does; every other provider keeps the estimate.
@@ -121,5 +143,34 @@ mod tests {
         assert!(!usage.unknown);
         assert_eq!(usage.cost.total.as_f64(), Some(0.000773975));
         assert!(usage_from_generation(&serde_json::json!({"id": "gen-1"})).is_none());
+    }
+
+    /// Dies with the count taken when the thread starts: the terminal event goes out first, and
+    /// a drain run on it returned at once with the settlement unbooked.
+    #[test]
+    fn a_created_settlement_holds_the_drain_before_its_thread_starts() {
+        let owed = job(|| {});
+        let began = std::time::Instant::now();
+        let hold = std::time::Duration::from_millis(200);
+        drain(Some(began + hold));
+        assert!(began.elapsed() >= hold, "the drain left before the job ran");
+        detach(owed);
+        drain(None);
+    }
+
+    /// Dies with the drain capped at the shutdown grace: the record usually lands on the 16 s
+    /// fetch, so a `--deadline` run lost the cut turn's settled cost.
+    #[test]
+    fn a_drain_runs_to_the_deadline_and_never_past_it() {
+        let now = std::time::Instant::now();
+        let ahead = drain_bound(Some(now + std::time::Duration::from_secs(20)));
+        assert!(ahead > std::time::Duration::from_secs(19), "{ahead:?}");
+        assert!(ahead <= std::time::Duration::from_secs(20), "{ahead:?}");
+        assert_eq!(drain_bound(Some(now)), std::time::Duration::ZERO);
+        assert_eq!(
+            drain_bound(Some(now + std::time::Duration::from_secs(600))),
+            SETTLE_WAIT
+        );
+        assert_eq!(drain_bound(None), SETTLE_WAIT);
     }
 }

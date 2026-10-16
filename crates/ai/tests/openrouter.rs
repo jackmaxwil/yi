@@ -700,7 +700,7 @@ async fn a_drain_waits_for_the_settlement_and_it_names_the_upstream() -> TestRes
             .all(|note| note.diagnostic_type != "upstream"),
         "no chunk named the upstream, so the entry cannot carry it"
     );
-    tokio::task::spawn_blocking(|| yi_ai::settle::drain(yi_ai::settle::DRAIN_CAP)).await?;
+    tokio::task::spawn_blocking(|| yi_ai::settle::drain(None)).await?;
     let (usage, upstream) = settled.try_recv()?;
     assert_eq!((usage.input, usage.output), (5200, 900));
     assert_eq!(upstream.as_deref(), Some("Wafer"));

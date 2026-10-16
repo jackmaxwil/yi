@@ -39,8 +39,8 @@ pub(crate) fn append_main_usage(
 
 /// One-shot runs call this before they exit: the settled cost of a cut turn lands seconds after
 /// the turn, and a process that leaves first never books it.
-pub fn drain_settled(cap: std::time::Duration) {
-    yi_ai::settle::drain(cap);
+pub fn drain_settled(deadline: Option<std::time::Instant>) {
+    yi_ai::settle::drain(deadline);
 }
 
 /// Invariant: a side call that reports spend leaves one [`yi_types::record::LaneRecord::Usage`]

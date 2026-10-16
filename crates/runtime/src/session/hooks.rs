@@ -499,6 +499,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use yi_types::message::Usage;
+    use yi_types::model::Effort;
     use yi_types::record::LaneRecord;
 
     fn settle_test_config() -> crate::session::SessionConfig {
@@ -596,7 +597,7 @@ mod tests {
         Ok(())
     }
 
-    /// A child session never reaches attach_runtime, so `new` itself must wire the
+    /// A reader or worker child never reaches attach_runtime, so `new` itself must wire the
     /// hook: unwired, its cut OpenRouter turn settles inline and stalls the child.
     #[test]
     fn a_session_built_without_attach_runtime_still_carries_a_settle_hook() {
@@ -605,11 +606,11 @@ mod tests {
         assert!(provider.settle_wired_for_test().is_some());
     }
 
-    /// Dies with attach_runtime's re-wire gone: `new` wires a parentless hook first, so a child's
-    /// settled usage booked on its own ledger and never billed the parent.
+    /// Dies with the parent bill wired only in attach_runtime: a reader or worker child never
+    /// reaches it, so its settled cost booked on its own ledger and the parent's total missed it.
     #[test]
-    fn attach_runtime_bills_a_childs_settled_usage_to_its_parent()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn every_child_bills_its_settled_usage_to_its_parent() -> Result<(), Box<dyn std::error::Error>>
+    {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -622,30 +623,43 @@ mod tests {
         let ledger = store("root");
         root.attach_store(Arc::clone(&ledger))?;
         let host = crate::attach_runtime(&mut root, wiring(&root_stream, &dir, None));
-        let child_stream = Arc::new(crate::provider::ProviderStream::new(None));
-        let mut child = super::AgentSession::new(settle_test_config(), Arc::clone(&child_stream));
-        child.attach_store(store("child"))?;
-        let link = crate::ParentLink {
-            child_name: "scout".to_owned(),
-            host: Arc::downgrade(&host),
+        let lease = yi_types::lease::Lease {
+            holder: String::new(),
+            parent: String::new(),
+            deadline_ms: None,
+            tokens: None,
+            granted_at: 0,
+            revoked: None,
         };
-        let _child_host =
-            crate::attach_runtime(&mut child, wiring(&child_stream, &dir, Some(link)));
-        let hook = child_stream
-            .settle_wired_for_test()
-            .ok_or("no hook wired")?;
-        let mut usage = Usage::zero();
-        usage.output = 3089;
-        (hook.0)(usage, None);
+        for (output, role) in [(1, "root"), (2, "reader"), (3, "worker")] {
+            let kwargs = serde_json::json!({ "role": role });
+            let reader = crate::subagent::reader::parse(kwargs.as_object().ok_or("kwargs")?)?;
+            let model = settle_test_config().model;
+            let cast = (model, Effort::Low, crate::wall::Wall::default(), reader);
+            let child = host.build(cast, role, &dir.join(role), None, &lease, None)?;
+            let hook = child.provider().settle_wired_for_test().ok_or("no hook")?;
+            let mut usage = Usage::zero();
+            usage.output = output;
+            (hook.0)(usage, None);
+        }
         let records = yi_session::lock_session(&ledger).find_records(&Default::default())?;
-        let billed = records.iter().any(|record| {
-            matches!(record, LaneRecord::Usage { cause, usage, .. }
-                if cause == yi_context::attribution::CHILD_USAGE_CAUSE && usage.output == 3089)
-        });
+        let mut billed: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                LaneRecord::Usage { cause, usage, .. }
+                    if cause == yi_context::attribution::CHILD_USAGE_CAUSE =>
+                {
+                    Some(usage.output)
+                }
+                _ => None,
+            })
+            .collect();
+        billed.sort_unstable();
         let _cleanup = std::fs::remove_dir_all(&dir);
-        assert!(
+        assert_eq!(
             billed,
-            "the child's settled usage never reached the parent's ledger"
+            [1, 2, 3],
+            "a child's settled usage missed the parent"
         );
         Ok(())
     }

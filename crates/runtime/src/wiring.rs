@@ -877,9 +877,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     if let Some(total) = wiring.deadline {
         session.set_deadline(total);
     }
-    let parent = wiring.parent_link.as_ref().and_then(|l| l.host.upgrade());
-    let bill = parent.map(|host| Arc::clone(&host.options.attribute));
-    session.provider().settle_into(session.settle_hook(bill));
+    session.provider().settle_into(session.settle_hook(None));
     let plans_dir = wiring
         .plans_dir
         .clone()
