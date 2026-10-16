@@ -9,6 +9,7 @@ pub mod avatar;
 pub mod browser;
 mod chrome;
 pub mod client;
+mod header;
 pub mod keys;
 pub mod kitty;
 pub mod layout;
@@ -592,7 +593,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                         .iter()
                         .find(|(id, _)| focused.is_some_and(|pane| id == &pane))
                         .map(|(_, rect)| {
-                            let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+                            let inner = rect.inner(render::pane_margin(true));
                             ratatui::layout::Rect {
                                 height: inner.height / 2,
                                 ..inner
@@ -602,9 +603,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
                 .filter(|half| {
                     half.height >= 3
                         && half.width >= 8
-                        && !app.hits.as_ref().is_some_and(|hits| {
-                            hits.overlays.iter().any(|cover| cover.intersects(*half))
-                        })
+                        && !app.hits.as_ref().is_some_and(|hits| hits.covered(*half))
                 })?;
             let pane_id = focused?;
             Some((
