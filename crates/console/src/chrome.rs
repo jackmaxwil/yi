@@ -126,7 +126,7 @@ pub(crate) fn render_hint_buttons(app: &mut App, frame: &mut Frame<'_>, area: Re
     }
 }
 
-fn lighten(color: Color) -> Color {
+pub(crate) fn lighten(color: Color) -> Color {
     let (r, g, b) = rgb(color);
     let up = |c: u8| c.saturating_add((255 - c) / 4);
     match color {
