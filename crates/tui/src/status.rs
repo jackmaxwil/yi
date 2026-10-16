@@ -13,7 +13,7 @@ pub struct StatusInput {
     pub thinking: Option<String>,
     pub mode: Option<String>,
     pub cwd: String,
-    /// `repo ⎇ lane N`: shown instead of `path@branch` when the session is on a lane.
+    /// The repo a lane checks out, shown instead of the slot's `path@branch`.
     pub lane: Option<String>,
     pub branch: Option<String>,
     pub landing: Option<String>,

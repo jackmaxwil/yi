@@ -59,20 +59,26 @@ pub struct Images {
 
 impl Images {
     pub fn tick(&mut self, app: &mut crate::app::App, out: &mut impl std::io::Write) {
-        tick(app, out, &mut self.orb);
+        tick(app, out, &mut self.orb, true);
         crate::logos::tick(app, out, &mut self.logos);
         crate::question::tick(app, out, &mut self.card);
     }
 }
 
 /// Paint a due frame on the app's clock; at rest, or only moved, re-place the image sent.
-pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mut Tick) {
+/// An unfocused pane holds one placed frame: `focused` false suppresses the due-frame repaint.
+pub fn tick(
+    app: &mut crate::app::App,
+    out: &mut impl std::io::Write,
+    state: &mut Tick,
+    focused: bool,
+) {
     if !app.kitty {
         return;
     }
     let want = app.orb_state();
     let resting = app.orb.at_rest(want);
-    let due = !resting && app.clock.since(state.last) >= FRAME;
+    let due = focused && !resting && app.clock.since(state.last) >= FRAME;
     let stale = app.take_orb_stale();
     match app.orb_placement {
         Some((col, row)) if due || stale || !state.shown => {

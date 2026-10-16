@@ -166,7 +166,7 @@ impl App {
         self.run_verb(outbound, menu.target, verb);
     }
 
-    fn focus_pane(&mut self, pane: PaneId) {
+    pub(super) fn focus_pane(&mut self, pane: PaneId) {
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(pane);
         }
