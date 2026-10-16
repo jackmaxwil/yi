@@ -395,7 +395,7 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
         0,
         "nothing at the first instant"
     );
-    let (a, b) = (at(1.0), at(1.5));
+    let (a, b) = (at(0.4), at(0.9));
     assert!(
         count(&a, |g| g != ' ') > 500,
         "the weather fills the screen"
@@ -408,7 +408,7 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
         .count();
     assert!(
         moved > 200,
-        "the drift moved only {moved} cells in half a second"
+        "the drift moved only {moved} cells in half a second before the name rises"
     );
     assert_eq!(at(2.1)[14][35], '@', "and the Y stem is solid through it");
 }
