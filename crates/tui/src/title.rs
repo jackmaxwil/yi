@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use yi_orb::smooth;
+use yi_orb::{V, add, dot, norm, rot_y, smooth};
 
 use crate::app::App;
 use crate::colors::Theme;
@@ -281,13 +281,19 @@ fn fbm(mut x: f64, mut y: f64) -> f64 {
     sum
 }
 
-/// Domain-warped noise: weather that drifts a lap every six seconds, in `0.0..=1.0`.
-fn clouds(u: f64, v: f64, t: f64) -> f64 {
-    let (sin, cos) = (TAU * t / 6.0).sin_cos();
+/// Domain-warped noise, in `0.0..=1.0`: `(sin, cos)` of its six-second lap and its fade-up.
+fn clouds(u: f64, v: f64, (sin, cos): (f64, f64), open: f64) -> f64 {
     let (x, y) = (u * 1.7, v * 1.7);
     let qx = fbm(x + 0.4 * cos, y + 0.4 * sin);
     let qy = fbm(x + 5.2, y + 1.3 + 0.4 * sin);
-    (fbm(x + 3.2 * qx, y + 3.2 * qy) * 1.6 - 0.2).clamp(0.0, 1.0) * smooth(t / 0.3)
+    (fbm(x + 3.2 * qx, y + 3.2 * qy) * 1.6 - 0.2).clamp(0.0, 1.0) * open
+}
+
+/// The flow's multiplier at `t`, the same for every cell of a frame; none once it has unwound.
+fn vortex(t: f64) -> Option<(f64, f64)> {
+    let s = 1.7 * (1.0 - smooth(t / 2.0));
+    let (re, im) = (s * 0.9, s * 1.6);
+    (s >= 1e-3).then(|| (re.exp() * im.cos(), re.exp() * im.sin()))
 }
 
 /// A Clifford orbit binned onto the cells, shaded by the log of visits. `c` and `d` fix its bounds
@@ -366,13 +372,7 @@ fn streamlines((width, height): (u16, u16), t: f64) -> Vec<f32> {
 
 /// Where the plane is sampled for the name: a loxodromic Möbius flow with fixed points at `u = ±1`
 /// that unwinds to the identity by 2 s, so the name comes out of a vortex and settles.
-fn mobius(u: f64, v: f64, t: f64) -> (f64, f64) {
-    let s = 1.7 * (1.0 - smooth(t / 2.0));
-    if s < 1e-3 {
-        return (u, v);
-    }
-    let (re, im) = (s * 0.9, s * 1.6);
-    let lam = (re.exp() * im.cos(), re.exp() * im.sin());
+fn mobius(u: f64, v: f64, lam: (f64, f64)) -> (f64, f64) {
     let div = |a: (f64, f64), b: (f64, f64)| {
         let n = (b.0 * b.0 + b.1 * b.1).max(1e-12);
         ((a.0 * b.0 + a.1 * b.1) / n, (a.1 * b.0 - a.0 * b.1) / n)
@@ -399,31 +399,22 @@ fn solid(strokes: &Strokes, thick: f64, (u, v): (f64, f64), t: f64, leave: f64) 
         return None;
     }
     let fat = 0.05 * (1.0 - leave);
-    let (sin, cos) = (0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave)).sin_cos();
-    let f =
-        |x: f64, y: f64, z: f64| (distance_to(strokes, thick, x, y) - fat).max(z.abs() - half_z);
-    let eye = [-3.0 * sin, 0.0, -3.0 * cos];
-    let aim = [u * cos + 3.0 * sin, v, -u * sin + 3.0 * cos];
-    let len = (aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]).sqrt();
-    let dir = aim.map(|c| c / len);
+    let swing = 0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave);
+    let f = |p: V| (distance_to(strokes, thick, p[0], p[1]) - fat).max(p[2].abs() - half_z);
+    let eye = rot_y([0.0, 0.0, -3.0], swing);
+    let dir = norm(rot_y([u, v, 3.0], swing));
     let mut at = 0.0;
     for _ in 0..40 {
-        let p = [
-            eye[0] + dir[0] * at,
-            eye[1] + dir[1] * at,
-            eye[2] + dir[2] * at,
-        ];
-        let d = f(p[0], p[1], p[2]);
+        let p = add(eye, dir, at);
+        let d = f(p);
         if d < 0.006 {
-            let e = 0.012;
-            let n = [
-                f(p[0] + e, p[1], p[2]) - f(p[0] - e, p[1], p[2]),
-                f(p[0], p[1] + e, p[2]) - f(p[0], p[1] - e, p[2]),
-                f(p[0], p[1], p[2] + e) - f(p[0], p[1], p[2] - e),
-            ];
-            let size = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
-            let lum = (n[0] * -0.45 + n[1] * 0.65 + n[2] * -0.6) / size;
-            return Some(0.30 + 0.70 * lum.max(0.0));
+            let probe = |axis: V| f(add(p, axis, 0.012)) - f(add(p, axis, -0.012));
+            let n = norm([
+                probe([1.0, 0.0, 0.0]),
+                probe([0.0, 1.0, 0.0]),
+                probe([0.0, 0.0, 1.0]),
+            ]);
+            return Some(0.30 + 0.70 * dot(n, [-0.45, 0.65, -0.6]).max(0.0));
         }
         at += d * 0.9;
         if at > 6.0 {
@@ -483,6 +474,8 @@ pub fn cover(
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
     let turn = KaliFrame::at(t);
+    let lam = vortex(t);
+    let drift = (TAU * t / 6.0).sin_cos();
     let rise = match scene {
         Scene::Kali
         | Scene::Clouds
@@ -503,23 +496,16 @@ pub fn cover(
         Scene::Streamlines if fade > 0.0 => streamlines(size, t),
         _ => Vec::new(),
     };
-    let sim: Option<Box<dyn Fn(f64, f64) -> f64 + '_>> = match scene {
-        _ if fade <= 0.0 => None,
-        Scene::Growth => {
-            let coral = cache.growth(size, t);
-            Some(Box::new(move |u, v| coral.at(u, v)))
-        }
-        Scene::Spirals => {
-            let spirals = cache.spirals(size, t);
-            Some(Box::new(move |u, v| spirals.at(u, v)))
-        }
-        _ => None,
+    let sim = if fade > 0.0 {
+        cache.sim(scene, size, t)
+    } else {
+        None
     };
     for y in 0..area.height {
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
             let (wu, wv) = match scene {
-                Scene::Mobius => mobius(u, v, t),
+                Scene::Mobius => lam.map_or((u, v), |lam| mobius(u, v, lam)),
                 _ => (u, v),
             };
             let d = distance_to(&strokes, thick, wu, wv);
@@ -540,12 +526,12 @@ pub fn cover(
                 Scene::Echo => echo(d, t) * fade,
                 Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
                 Scene::Mobius => rings(d, t) * fade,
-                Scene::Clouds => clouds(u, v, t) * fade,
+                Scene::Clouds => clouds(u, v, drift, turn.fade) * fade,
                 Scene::Attractor | Scene::Streamlines => {
                     let at = usize::from(y) * usize::from(area.width) + usize::from(x);
                     plot.get(at).map_or(0.0, |d| f64::from(*d)) * fade
                 }
-                Scene::Growth | Scene::Spirals => sim.as_ref().map_or(0.0, |at| at(u, v)) * fade,
+                Scene::Growth | Scene::Spirals => sim.map_or(0.0, |sim| sim.at(u, v)) * fade,
             };
             let value = match solid_hit {
                 Some(lit) => lit,

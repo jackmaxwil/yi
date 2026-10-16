@@ -129,7 +129,7 @@ pub fn pose(state: Option<OrbState>, t: f64) -> Vec<Point> {
     pad(points)
 }
 
-pub(crate) fn add(a: V, b: V, s: f64) -> V {
+pub fn add(a: V, b: V, s: f64) -> V {
     [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]
 }
 
@@ -137,7 +137,7 @@ pub(crate) fn scale(a: V, s: f64) -> V {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
-pub(crate) fn dot(a: V, b: V) -> f64 {
+pub fn dot(a: V, b: V) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
@@ -145,7 +145,7 @@ pub(crate) fn len(a: V) -> f64 {
     dot(a, a).sqrt()
 }
 
-fn norm(a: V) -> V {
+pub fn norm(a: V) -> V {
     scale(a, 1.0 / len(a).max(1e-9))
 }
 
@@ -162,7 +162,7 @@ pub(crate) fn rot_x(v: V, a: f64) -> V {
     [v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c]
 }
 
-fn rot_y(v: V, a: f64) -> V {
+pub fn rot_y(v: V, a: f64) -> V {
     let (s, c) = a.sin_cos();
     [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
 }

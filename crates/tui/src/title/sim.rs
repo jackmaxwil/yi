@@ -26,7 +26,7 @@ pub(super) struct Growth {
     v: Vec<f32>,
 }
 
-impl Growth {
+impl Sim for Growth {
     fn new(size: (u16, u16)) -> Self {
         let aspect = f64::from(size.0) / f64::from(size.1.max(1));
         let mut growth = Self {
@@ -68,28 +68,14 @@ impl Growth {
         self.steps += 1;
     }
 
+    fn kept(&self) -> ((u16, u16), u32) {
+        (self.size, self.steps)
+    }
+
     /// The coral's concentration at plane point `(u, v)`, in `0.0..=1.0`.
-    pub(super) fn at(&self, u: f64, v: f64) -> f64 {
+    fn at(&self, u: f64, v: f64) -> f64 {
         grid_cell(self.size, (GROWTH_COLS, GROWTH_ROWS), u, v)
             .map_or(0.0, |at| f64::from((self.v[at] * 3.2).clamp(0.0, 1.0)))
-    }
-}
-
-impl Cache {
-    /// The coral `t` seconds in on a screen of `size`, advanced from where the last frame left it.
-    pub(super) fn growth(&mut self, size: (u16, u16), t: f64) -> &Growth {
-        let want = (t * GROWTH_STEPS_PER_SEC) as u32;
-        let fresh = self
-            .growth
-            .take()
-            .filter(|g| g.size == size && g.steps <= want);
-        let growth = self
-            .growth
-            .insert(fresh.unwrap_or_else(|| Growth::new(size)));
-        while growth.steps < want {
-            growth.step();
-        }
-        growth
     }
 }
 
@@ -111,7 +97,7 @@ pub(super) struct Spirals {
     cells: Vec<u8>,
 }
 
-impl Spirals {
+impl Sim for Spirals {
     fn new(size: (u16, u16)) -> Self {
         let grid = (
             usize::from(size.0.clamp(1, 120)),
@@ -154,28 +140,61 @@ impl Spirals {
         self.steps += 1;
     }
 
+    fn kept(&self) -> ((u16, u16), u32) {
+        (self.size, self.steps)
+    }
+
     /// The cell's place in the cycle at plane point `(u, v)`, in `0.0..1.0`.
-    pub(super) fn at(&self, u: f64, v: f64) -> f64 {
+    fn at(&self, u: f64, v: f64) -> f64 {
         grid_cell(self.size, self.grid, u, v).map_or(0.0, |at| {
             f64::from(self.cells[at]) / f64::from(SPIRAL_STATES)
         })
     }
 }
 
+/// A simulation the cache can keep: made for a screen size, stepped, and read at a plane point.
+pub(super) trait Sim {
+    fn new(size: (u16, u16)) -> Self
+    where
+        Self: Sized;
+    fn kept(&self) -> ((u16, u16), u32);
+    fn step(&mut self);
+    fn at(&self, u: f64, v: f64) -> f64;
+}
+
+/// Invariant: a kept run is only continued forwards on the size it was made for, so it always
+/// equals a fresh run to the same step and a frozen clock replays any frame.
+fn advance<S: Sim>(slot: &mut Option<S>, size: (u16, u16), want: u32) -> &S {
+    let fresh = slot
+        .take()
+        .filter(|sim| sim.kept().0 == size && sim.kept().1 <= want);
+    let sim = slot.insert(fresh.unwrap_or_else(|| S::new(size)));
+    while sim.kept().1 < want {
+        sim.step();
+    }
+    sim
+}
+
 impl Cache {
-    /// The spirals `t` seconds in on a screen of `size`, advanced from where the last frame left them.
-    pub(super) fn spirals(&mut self, size: (u16, u16), t: f64) -> &Spirals {
-        let want = (t * SPIRAL_STEPS_PER_SEC) as u32;
-        let fresh = self
-            .spirals
-            .take()
-            .filter(|s| s.size == size && s.steps <= want);
-        let spirals = self
-            .spirals
-            .insert(fresh.unwrap_or_else(|| Spirals::new(size)));
-        while spirals.steps < want {
-            spirals.step();
+    /// The stateful scene's simulation `t` seconds in on a screen of `size`, if `scene` has one.
+    pub(super) fn sim(
+        &mut self,
+        scene: super::Scene,
+        size: (u16, u16),
+        t: f64,
+    ) -> Option<&dyn Sim> {
+        match scene {
+            super::Scene::Growth => Some(advance::<Growth>(
+                &mut self.growth,
+                size,
+                (t * GROWTH_STEPS_PER_SEC) as u32,
+            )),
+            super::Scene::Spirals => Some(advance::<Spirals>(
+                &mut self.spirals,
+                size,
+                (t * SPIRAL_STEPS_PER_SEC) as u32,
+            )),
+            _ => None,
         }
-        spirals
     }
 }
