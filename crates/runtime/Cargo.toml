@@ -20,6 +20,7 @@ yi-session = { workspace = true }
 yi-tools = { workspace = true }
 yi-permission = { workspace = true }
 yi-kernel = { workspace = true }
+yi-browser = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

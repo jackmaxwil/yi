@@ -216,6 +216,6 @@ fn rgb(color: Color) -> (u8, u8, u8) {
 }
 
 /// 8×16 when the terminal does not report its pixel size.
-fn cell_pixels() -> (usize, usize) {
+pub(crate) fn cell_pixels() -> (usize, usize) {
     yi_tui::chrome::cell_pixels().unwrap_or((8, 16))
 }

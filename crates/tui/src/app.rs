@@ -26,7 +26,6 @@ use crate::term;
 use crate::transcript::{arg_summary, intent_of, result_preview, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
 use yi_orb::OrbState;
-
 pub enum UiEvent {
     Agent(AgentEvent),
     Child { child_id: String, event: AgentEvent },
@@ -35,7 +34,6 @@ pub enum UiEvent {
     Ask(AskRequest),
     Reply(crate::port::Reply),
 }
-
 pub enum Command {
     Prompt(String),
     Steer(String),
@@ -53,7 +51,6 @@ pub enum Command {
     Abort,
     Shutdown,
 }
-
 pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
     Question(crate::question::QuestionView),
@@ -62,14 +59,11 @@ pub(crate) enum Bottom {
     Agents(crate::agents::AgentsPopup),
     Model(Box<crate::model::ModelPopup>),
 }
-
 pub type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
 pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
-
 pub fn command_channel() -> (CommandSender, CommandReceiver) {
     tokio::sync::mpsc::unbounded_channel()
 }
-
 pub struct TuiOptions {
     pub model: yi_types::model::Model,
     pub session_name: String,
@@ -606,6 +600,11 @@ impl App {
     /// The source of transcript cell `index`, for rows a drag read before they scrolled away.
     pub fn cell_source(&self, index: usize) -> Option<&str> {
         self.history.source(index)
+    }
+
+    /// The transcript's prompts, answers and thoughts, oldest first; tool cells have no source.
+    pub fn sources(&self) -> impl Iterator<Item = &str> {
+        (0..self.history.len()).filter_map(|index| self.history.source(index))
     }
 
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {

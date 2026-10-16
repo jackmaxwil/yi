@@ -33,6 +33,7 @@ fn console() -> Result<(App, PaneId), Box<dyn Error>> {
         name: Some("alpha".to_owned()),
         created_ms: 0,
         last_ms: 0,
+        pinned: None,
     });
     let pane = app
         .state
@@ -147,19 +148,27 @@ fn a_pane_with_no_session_titles_itself_without_a_status_dot() -> TestResult {
 #[test]
 fn hovering_a_control_lifts_it_and_only_a_new_target_redraws() -> TestResult {
     let (mut app, pane) = console()?;
+    app.state.sidebar = SidebarMode::Full;
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
     let found = hits(&app)?;
     let session = found.sidebar_rows.first().ok_or("no sidebar row")?.0;
     let title = found.titles.iter().find(|(at, _)| *at == pane);
     let tab = found.settings_tabs.iter().find(|(_, _, tab)| *tab > 0);
-    let targets: Vec<(&str, Rect)> = vec![
-        ("sidebar row", Rect::new(1, session, 1, 1)),
-        ("gear", found.gear.ok_or("no gear")?),
-        ("pane title", title.ok_or("no title target")?.1),
-        ("closer", found.closers.first().ok_or("no closer")?.1),
-        ("settings tab", tab.ok_or("no tab target")?.0),
-    ];
+    let controls = found
+        .controls
+        .iter()
+        .map(|(rect, _)| ("sidebar control", *rect));
+    assert_eq!(controls.len(), 4, "new, search, a header and its +");
+    let targets: Vec<(&str, Rect)> = controls
+        .chain([
+            ("sidebar row", Rect::new(1, session, 1, 1)),
+            ("gear", found.gear.ok_or("no gear")?),
+            ("pane title", title.ok_or("no title target")?.1),
+            ("closer", found.closers.first().ok_or("no closer")?.1),
+            ("settings tab", tab.ok_or("no tab target")?.0),
+        ])
+        .collect();
     let look = |terminal: &Terminal<TestBackend>, x: u16, y: u16| {
         terminal
             .backend()
@@ -236,6 +245,7 @@ fn row_of(id: &str, name: &str) -> SessionRow {
         name: Some(name.to_owned()),
         created_ms: 0,
         last_ms: 0,
+        pinned: None,
     }
 }
 
@@ -462,13 +472,6 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
     draw(&mut app, &mut terminal)?;
     let lit = face(&terminal)?;
     assert_ne!(lit, rest, "the hovered diff button looks the same");
-    let browser = at(Action::OpenBrowser)?;
-    mouse(&mut app, MouseKind::Down, browser.x, browser.y);
-    assert_eq!(
-        app.state.banner.as_deref(),
-        Some("browser pane lands with #1379")
-    );
-    app.state.banner = None;
     let files = at(Action::OpenEditor)?;
     mouse(&mut app, MouseKind::Down, files.x, files.y);
     assert!(
@@ -484,6 +487,12 @@ fn the_header_row_carries_four_buttons_that_hover_and_open_their_panes() -> Test
         .filter(|pane| matches!(pane.content, PaneContent::SessionDiff { .. }))
         .count();
     assert_eq!(diffs, 1, "the diff button opened no review pane");
+    let browser = at(Action::OpenBrowser)?;
+    mouse(&mut app, MouseKind::Down, browser.x, browser.y);
+    let browsers = (app.state.panes.values())
+        .filter(|pane| matches!(pane.content, PaneContent::Browser(_)))
+        .count();
+    assert_eq!(browsers, 1, "the browser button opened no browser pane");
     Ok(())
 }
 

@@ -9,7 +9,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 ### 1.1 What Yi is
 | Topic | Decision | Settled by |
 |---|---|---|
-| Language | Rust workspace of 16 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
+| Language | Rust workspace of 17 crates (§2); every dependency declared once in `[workspace.dependencies]` (§18) | D31 |
 | Session file | Pi's v4 session JSONL format: a header, then one `Mutation` per line; any other version is rejected (§4.1) | D32 |
 | Pi RPC | `yi rpc` serves Pi's RPC JSONL command names plus Yi's own (§17.1) | |
 | Providers | Four wire APIs (Anthropic messages, OpenAI completions, OpenAI responses, Cursor agent) plus `faux`; a compiled-in model catalog (§5) | |
@@ -28,10 +28,11 @@ refinement or self-extension · embeddings and semantic search · resident LSP o
 JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WASM · document
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6; a `yi plugin` is a pinned external program whose reader is compiled in,
-§17.1) · a GUI · browser automation, computer use, email, or any capability that
-is not a coding agent · server-side terminal-frame streaming or blit encoding in the console (a
-terminal pane's PTY is the console's own, §17.4) · the console's Tape pane, a session's ledger
-over wall time (left when the terminal pane entered) · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
+§17.1) · a GUI · browser automation as an agent tool, computer use, email, or any capability that
+is not a coding agent (the console's browser pane shows the user a page and gives the model nothing) ·
+server-side terminal-frame streaming or blit
+encoding in the console (a terminal pane's PTY is the console's own, §17.4) · the console's
+Tape pane, a session's ledger over wall time (left when the terminal pane entered) · a keys overlay beside the settings page (the keys are its tab) · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
 channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
@@ -55,11 +56,12 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-tools` | `Tool` trait, builtin tools, hashline edits, bash jobs, sandbox, checkpoints | yi-types, yi-permission |
 | `yi-mcp-cli` | The `yi mcp` one-shot JSON-RPC client | yi-oauth, yi-types |
 | `yi-kernel` | Jupyter client: connection file, ZMQ framing, HMAC, snapshot, uv install | yi-types |
-| `yi-runtime` | `AgentSession` and everything that composes the crates above | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel |
+| `yi-runtime` | `AgentSession` and everything that composes the crates above | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel, yi-browser |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon | yi-types, yi-runtime |
 | `yi-tui` | The ratatui shell | yi-types, yi-runtime, yi-orb |
-| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui |
-| `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli |
+| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui, yi-browser |
+| `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router | yi-types |
+| `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser |
 
 `yi-tui` and `yi-console` are optional in `yi-cli`, behind its default feature `tui`. Rules:
 - `yi-types` depends on `serde`, `serde_json`, `sha2` and `thiserror` only: no async, filesystem
@@ -71,6 +73,9 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 - Surfaces (`yi-acp`, `yi-tui`, `yi-console`, `yi-cli`) never depend on `yi-tools`, `yi-ai` or
   `yi-permission`; `yi-console` does not depend on `yi-runtime`.
 - Only `yi-cli` depends on `yi-mcp-cli`.
+- `yi-browser` starts the user's Chrome, through `yi __fds`, and runs `yi plugin add chrome`
+  when there is none, for the console's browser pane; `yi-runtime` depends on it only to retain
+  crashed browser profiles.
 - Advisor, schedule, goal, subagent, mailbox, lane, plan, fetch, memory and prompt extensions are
   modules of `yi-runtime` (`crates/runtime/src/lib.rs`), not crates.
 - `python/yi_runtime` (distribution `yi-runtime`) has two import packages: `rlm`, the host
@@ -921,7 +926,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. Yi uses only the pinned version, else one on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed ones first on PATH |
+| `plugin list\|add <name>\|--all\|remove <name>\|sync` | Pinned external programs (`yi_tools::plugin::PLUGINS`: a version and one sha256 per target, and the member's own): `add` downloads, verifies and publishes one, with the skill directories its row names, into `~/.yi/plugins/<name>/<version>/` and deletes its older versions; `sync` brings each installed one to this binary's pin. A row is a `Program` (a tar.gz member published as its name) or a `Tree` (a zip unpacked whole by the in-tree reader, its member the executable inside, its digest checked before the one rename): `chrome`, Chrome for Testing's headless shell, is the one tree. Yi uses only the pinned version, else a program on PATH; spawns through `yi_tools::command` (the bash tool, the post-edit check) and the kernel, at boot, put the installed programs first on PATH, and a tree is neither on PATH nor carded: the console starts it, never the model |
 | `update` | the installed binary, and the release's skills written over `~/.yi/skills`, each top-level directory the release ships (`yi/`) replaced whole so a skill it dropped goes (other skills kept), from the latest signed release, only when this process is that install; a token in `~/.config/fgj` for this forge is sent with the request |
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
@@ -958,6 +963,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again in `_meta.yi.prefill`) or `at` it, attached beside the source, which keeps its own branch; any other position is refused by name (`AcpForkParams`) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
+| `_yi/pin{sessionId, pinned, cwd?}` | daemon | Pin a session to the top of the console's sidebar or unpin it, answered `{pinnedMs}`; the ledger keeps the pin's time, which orders the pinned list, and `session/list` carries it as `_meta.yi.pinnedMs`; `cwd` makes the ledger row of a session only the worker listed |
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
@@ -1026,17 +1032,23 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   JSON, Quote, Inspect; on a prompt Re-ask from here and Rewind to here, the conversation or it and
   its files; on an answer Fork here, a side session beside the chat; Open in ▸ each app `open` in config.json
   names, run by the daemon on the message saved as markdown),
-  a pane (close, zoom, split) or a sidebar session (open, open beside); ⌥c opens it for the
+  a pane (close, zoom, split) or a sidebar session (open, open beside, pin or unpin); ⌥c opens it for the
   focused pane or session. A verb that never applies is absent, one blocked now is greyed with
   its reason, and a row with a key names it. With more than one pane in a tab, the focused pane's
   title carries `✕` and its close key where the title leaves room, and a sibling's a bare `✕`;
   a mark closes its pane on a release that did not drag. The palette and the menu take every
   press while open and lift the kitty images of the panes they cover.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
-- The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
-  those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
-  session stays under "needs you" until focused; a poll never clears it. A working or blocked
-  session's avatar plays its state loop at 15 fps in place of its identicon.
+- The full sidebar opens with New session and Search (the palette), then PINNED, the pinned
+  sessions in pin order (⌥p, ⌘⇧K or the menu; the daemon's ledger keeps a pin), then one group
+  per workspace, the console's own root first: a header with the root's name, a fold mark and a
+  `+` that starts a session in that root, over its unpinned sessions ranked blocked, done and
+  unseen, a red gate (heard by an open or parked chat), working, idle, then by recency, two lines
+  a row (name; what it needs or is doing, its list, its age). A click on a header folds the group
+  for this console only; a folded header still shows a session that needs you. A done session
+  stays loud until focused; a poll never clears it. The rail keeps the same order, pinned first,
+  a blank row between workspaces and no headers. A working or blocked session's avatar plays its
+  state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
 - ⌘⇧R opens Review beside a session: its scope is the lane's branch against its merge base with
@@ -1058,7 +1070,18 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   tab over the session's live options (`d` keeps one as the default), a tab per group of every
   config default, each row saying when a saved change applies, and a Keys tab listing every
   chord, which replaced the keys overlay. An edit saves at once or names why it was refused.
-- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Terminal, Editor, Settings}`,
+- ⌘⇧B or ⌥w opens a browser pane beside the focused one, at the last `http://localhost:*` or
+  `http://127.0.0.1:*` URL the session's transcript holds, else with its URL bar open. `yi-browser`
+  finds the installed Chrome or Chromium (`browser.path` overrides), else the headless shell `yi
+  plugin add chrome` pins; with none and no `browser.path`, it runs that add once, off the frame
+  loop, every pane showing its `[installing …]` row, then its error line. It starts Chrome
+  headless with `--remote-debugging-pipe` through `yi __fds`, which moves the pipe to fds 3 and
+  4 and execs it, and speaks CDP as NUL-ended JSON. `Page.startScreencast` PNGs go to kitty as `f=100` undecoded,
+  on two ids per pane far above the orb and avatar ids; the screencast restarts after each
+  main-frame navigation. Clicks, drags, the wheel and keys map to `Input.dispatch*`, the cell
+  centre in CSS pixels at the terminal's cell size; ⌘, ⌥, ctrl+b and ctrl+c stay the console's.
+  No Chrome, or a terminal without kitty graphics, is a `[…]` row in the pane naming the fix.
+- State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Terminal, Editor, Settings, Browser}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Menu}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
@@ -1107,13 +1130,13 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools | the `grep` tool; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
-| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive and the release tarball | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
+| `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
 | `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
-| `rustix` | `fs`, `std`; `pty`, `termios`, `process` in console | permission, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
+| `rustix` | `fs`, `std`, `stdio`; `pty`, `termios`, `process` in console; `process` in browser (`geteuid`, `test_kill_process`) | permission, browser, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
 Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
