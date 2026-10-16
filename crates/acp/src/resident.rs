@@ -195,11 +195,19 @@ mod tests {
         let mut registry = HostRegistry::default();
         registry.register_mcp_stubs();
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let service = KernelService::new(KernelServiceOptions::bare(
-            std::env::temp_dir(),
-            home.unwrap_or_default(),
-            Arc::new(registry),
-        ));
+        let service = KernelService::new(KernelServiceOptions {
+            cwd: std::env::temp_dir(),
+            home: home.unwrap_or_default(),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(registry),
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        });
         assert!(!kernel_pins(Some(&service)), "an idle kernel pins nothing");
         type Cancel = Arc<dyn Fn() -> bool + Send + Sync>;
         let cancelled: Cancel = Arc::new(|| false);

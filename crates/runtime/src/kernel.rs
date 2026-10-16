@@ -201,25 +201,6 @@ pub struct KernelServiceOptions {
     pub per_session_state: bool,
 }
 
-impl KernelServiceOptions {
-    /// A kernel with no session, family, sandbox, hooks or ceiling of its own.
-    pub fn bare(cwd: PathBuf, home: PathBuf, host: Arc<dyn HostHandlers>) -> Self {
-        Self {
-            cwd,
-            home,
-            session_dir: None,
-            family_dir: None,
-            host,
-            on_restore: None,
-            on_boot: None,
-            sandbox: None,
-            snapshot_key: None,
-            cell_ceiling: None,
-            per_session_state: false,
-        }
-    }
-}
-
 /// A session's snapshot files in `base`, prefixed with its id.
 pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, PathBuf) {
     let (snapshot, manifest) = (
@@ -1138,11 +1119,19 @@ mod tests {
         let job = spawned.get("job_id").ok_or("no job_id")?.clone();
         let id = yi_tools::JobId(job.as_u64().ok_or("job_id is not a number")?);
         assert!(yi_tools::jobs::registry().report(id).is_some());
-        let service = KernelService::new(KernelServiceOptions::bare(
-            std::env::temp_dir(),
-            std::env::temp_dir(),
-            registry,
-        ));
+        let service = KernelService::new(KernelServiceOptions {
+            cwd: std::env::temp_dir(),
+            home: std::env::temp_dir(),
+            session_dir: None,
+            family_dir: None,
+            host: registry,
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        });
         service.dispose().await;
         assert!(
             yi_tools::jobs::registry().report(id).is_none(),
@@ -1154,12 +1143,21 @@ mod tests {
     fn service() -> KernelService {
         let mut registry = HostRegistry::default();
         registry.register_mcp_stubs();
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        KernelService::new(KernelServiceOptions::bare(
-            std::env::temp_dir(),
-            home.unwrap_or_default(),
-            Arc::new(registry),
-        ))
+        KernelService::new(KernelServiceOptions {
+            cwd: std::env::temp_dir(),
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(registry),
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        })
     }
 
     #[tokio::test]
