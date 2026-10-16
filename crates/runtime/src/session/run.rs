@@ -37,6 +37,110 @@ impl Queued {
     fn current(&self) -> bool {
         self.news.as_ref().is_none_or(|news| news())
     }
+
+    /// What an answered turn still lets through: current news that could start a turn alone.
+    fn survives_answer(&self) -> bool {
+        let starts = self.wakes
+            || self.news.is_some()
+            || crate::mail::envelope_id(&self.message).is_some()
+            || matches!(
+                self.message.attribution(),
+                Attribution::User | Attribution::Task
+            );
+        starts && self.current()
+    }
+}
+
+impl super::AgentSession {
+    pub fn pending_count(&self) -> usize {
+        let steer = self
+            .shared
+            .steer
+            .lock()
+            .map(|queue| queue.len())
+            .unwrap_or(0);
+        let follow = self
+            .shared
+            .follow_up
+            .lock()
+            .map(|queue| queue.len())
+            .unwrap_or(0);
+        steer.saturating_add(follow)
+    }
+
+    pub fn steer(&self, text: &str) {
+        self.steer_message(super::task(text));
+    }
+
+    pub fn steer_message(&self, message: AgentMessage) {
+        self.deliver(message, false);
+    }
+
+    pub fn follow_up(&self, text: &str) {
+        self.follow_up_message(super::task(text));
+    }
+
+    /// Taken after a running turn's answer, or it starts an idle session's turn.
+    pub fn follow_up_message(&self, message: AgentMessage) -> bool {
+        follow(&self.parts(), message, None)
+    }
+
+    /// Presented in arrival order at the next boundary; `wakes` starts an idle session's turn.
+    pub fn deliver(&self, message: AgentMessage, wakes: bool) -> yi_types::mail::Delivery {
+        enqueue(&self.parts(), Queued::new(message, wakes, None))
+    }
+
+    pub(crate) fn answer_handle(&self) -> super::AnswerHandle {
+        super::AnswerHandle(Arc::clone(&self.shared))
+    }
+}
+
+/// Once the turn is answered, a host note is dropped unread and anything that survives opens
+/// the next turn; typed input also gives a held draft's plain-text stop a fresh judgment.
+fn after_answer(shared: &Shared, taken: Vec<Queued>) -> Vec<Queued> {
+    use super::answer::Answering;
+    let mut state = super::answer::state(shared);
+    let typed = |queued: &Queued| {
+        matches!(
+            queued.message.attribution(),
+            Attribution::User | Attribution::Task
+        )
+    };
+    match &*state {
+        Answering::Answered => {
+            let kept: Vec<Queued> = (taken.into_iter())
+                .filter(Queued::survives_answer)
+                .collect();
+            if !kept.is_empty() {
+                *state = Answering::Open;
+            }
+            kept
+        }
+        Answering::Held { draft, .. } if taken.iter().any(typed) => {
+            let draft = draft.clone();
+            *state = Answering::Held {
+                draft,
+                noted: false,
+            };
+            taken
+        }
+        _ => taken,
+    }
+}
+
+fn purge_after_answer(shared: &Shared) {
+    if !matches!(
+        &*super::answer::state(shared),
+        super::answer::Answering::Answered
+    ) {
+        return;
+    }
+    if let Ok(mut queue) = shared.steer.lock() {
+        queue.retain(Queued::survives_answer);
+    }
+    if let Ok(mut queue) = shared.follow_up.lock() {
+        queue.retain(Queued::survives_answer);
+    }
 }
 
 /// Invariant: an envelope is queued once; a sender's newer progress replaces its queued one.
@@ -60,12 +164,13 @@ pub(super) fn take_mail(queue: &mut VecDeque<Queued>) -> Vec<AgentMessage> {
 }
 
 pub(super) fn drain(shared: &Shared) -> Vec<AgentMessage> {
+    purge_after_answer(shared);
     let taken = shared
         .steer
         .lock()
         .map(|mut queue| std::mem::take(&mut *queue))
         .unwrap_or_default();
-    taken
+    after_answer(shared, taken.into())
         .into_iter()
         .filter(Queued::current)
         .map(|queued| queued.message)
@@ -204,6 +309,7 @@ pub(super) fn spawn_run(
 /// Invariant: every run is counted under the status lock that admits it.
 fn admit(shared: &Shared, status: &mut Status) {
     *status = Status::Running;
+    *super::answer::state(shared) = super::answer::Answering::Open;
     shared
         .runs
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -226,6 +332,7 @@ async fn settle(parts: RunParts, ended_clean: bool) {
         Ok(mut status) => {
             // An abort keeps what was queued for after the answer until the user's next turn.
             let undisturbed = !shared.signal.is_fired();
+            purge_after_answer(&shared);
             let next = owed(&shared, undisturbed, undisturbed && ended_clean);
             match next {
                 Some(_) => admit(&shared, &mut status),
@@ -520,15 +627,18 @@ fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
         let cancelled = clock.cancelled.load(std::sync::atomic::Ordering::SeqCst);
         let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
         let out_of_time = out_of_time || clock.last_word_due();
-        if capped.load(std::sync::atomic::Ordering::SeqCst) && !out_of_time && !cancelled {
-            word_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            return Some(super::host_text(
-                yi_types::message::HostSource::Deadline,
-                TURN_CAP_WORD,
-            ));
-        }
-        (out_of_time && !cancelled)
-            .then(|| super::host_text(yi_types::message::HostSource::Deadline, LAST_WORD))
+        let capped_now = capped.load(std::sync::atomic::Ordering::SeqCst) && !out_of_time;
+        let word = match (cancelled, capped_now, out_of_time) {
+            (true, _, _) | (false, false, false) => return None,
+            (false, true, _) => TURN_CAP_WORD,
+            (false, false, true) => LAST_WORD,
+        };
+        word_flag.store(capped_now, std::sync::atomic::Ordering::SeqCst);
+        super::answer::last_word(&clock);
+        Some(super::host_text(
+            yi_types::message::HostSource::Deadline,
+            word,
+        ))
     }));
     let due = Arc::clone(shared);
     config.last_word_due = Some(Box::new(move || due.last_word_due()));
@@ -568,11 +678,11 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         taken
     }));
     config.get_follow_up_messages = Some(Box::new(move || {
-        let taken: Vec<AgentMessage> = follow
-            .follow_up
-            .lock()
+        purge_after_answer(&follow);
+        let taken = (follow.follow_up.lock())
             .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let taken: Vec<AgentMessage> = after_answer(&follow, taken)
             .into_iter()
             .filter(Queued::current)
             .map(|queued| queued.message)
@@ -584,16 +694,10 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         .lock()
         .ok()
         .and_then(|slot| slot.as_ref().cloned());
-    if let Some(coupling) = coupling {
-        config.first_turn_tool_choice = (coupling.on_prompt)(prompt);
-        let observe = Arc::clone(&coupling.on_turn);
-        config.prepare_next_turn = Some(Box::new(move |snapshot| {
-            observe(snapshot);
-            None
-        }));
-        let intercept = Arc::clone(&coupling.intercept_stop);
-        config.intercept_stop = Some(Box::new(move |snapshot| intercept(snapshot)));
-    }
+    config.first_turn_tool_choice = (coupling.as_ref()).and_then(|c| (c.on_prompt)(prompt));
+    let (observe, gate) =
+        coupling.map_or((None, None), |c| (Some(c.on_turn), Some(c.intercept_stop)));
+    super::answer::wire(config, shared, observe, gate);
     config.waiting = shared.waits.lock().ok().and_then(|slot| slot.clone());
 }
 
