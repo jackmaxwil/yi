@@ -7,9 +7,7 @@ use serde_json::{Map, Value, json};
 use yi_tools::{GetContextTool, Tool, ToolContext};
 use yi_types::message::Content;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -340,8 +338,9 @@ fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestRe
     fs::set_permissions(&ripwire, fs::Permissions::from_mode(0o755))?;
     // Incident: a fresh script's first exec stalled past a second under load; run it once here.
     yi_tools::command(&ripwire).env("YI_WARM", "1").output()?;
+    let name = crate::exact_path(module_path!(), name);
     let rerun = yi_tools::command(std::env::current_exe()?)
-        .args(["--exact", name])
+        .args(["--exact", &name])
         .env("PATH", &*dir)
         .env("HOME", &*dir)
         .env("YI_FAKE_RIPWIRE", &*dir)
