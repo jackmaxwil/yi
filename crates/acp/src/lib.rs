@@ -708,7 +708,7 @@ impl AcpState {
             }
             "session/set_config_option" => self.set_config_option(params),
             "_yi/fork" => self.fork(params),
-            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff" | "_yi/tape"
+            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff"
             | "_yi/kernel_execute" | "_yi/kernel_cancel" | "_yi/slash" => {
                 self.handle_extension(method, params)
             }
@@ -842,13 +842,9 @@ impl AcpState {
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
             }
             "_yi/why" => Ok(crate::review::why(&handle.session, &self.cwd, params)),
-            "_yi/tape" | "_yi/branch_diff" => {
-                let value = if method == "_yi/tape" {
-                    serde_json::to_value(yi_runtime::tape::session_tape(&handle.session))
-                } else {
-                    let root = crate::review::root(&handle.session, &self.cwd);
-                    serde_json::to_value(yi_runtime::environment::branch_diff(&root))
-                };
+            "_yi/branch_diff" => {
+                let root = crate::review::root(&handle.session, &self.cwd);
+                let value = serde_json::to_value(yi_runtime::environment::branch_diff(&root));
                 Ok(value.unwrap_or(Value::Null))
             }
             "_yi/slash" => {
