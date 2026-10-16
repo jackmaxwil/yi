@@ -833,7 +833,7 @@ fn settle_from_record(
     output: &mut AgentMessage,
     model: &Model,
     wire: &crate::request::Wire<'_>,
-) -> Option<impl FnOnce() + Send + 'static> {
+) -> Option<crate::settle::Job> {
     let AgentMessage::Assistant {
         usage,
         response_id: Some(id),
@@ -848,13 +848,13 @@ fn settle_from_record(
     if let Some(hook) = wire.settle {
         let (hook, model, id) = (hook.clone(), model.clone(), id.clone());
         let (key, proxy) = (wire.api_key.to_owned(), wire.proxy.cloned());
-        return Some(move || {
+        return Some(crate::settle::job(move || {
             if let Some((settled, upstream)) =
                 crate::settle::generation_usage(&model, &key, proxy.as_ref(), &id)
             {
                 (hook.0)(settled, upstream);
             }
-        });
+        }));
     }
     if let Some((settled, upstream)) =
         crate::settle::generation_usage(model, wire.api_key, wire.proxy, id)
@@ -867,7 +867,7 @@ fn settle_from_record(
     None
 }
 
-fn start(job: Option<impl FnOnce() + Send + 'static>) {
+fn detach_settlement(job: Option<crate::settle::Job>) {
     if let Some(job) = job {
         crate::settle::detach(job);
     }
@@ -912,7 +912,7 @@ fn run_request(
         // error turn is settled from the record (D79, #331); one that died before any chunk
         // has no record and stays unknown
         Err(message) => {
-            start(settle_from_record(&mut mapper.output, model, &wire));
+            detach_settlement(settle_from_record(&mut mapper.output, model, &wire));
             let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
                 &message,
                 oauth,
@@ -938,7 +938,7 @@ fn run_request(
             ..
         }
     );
-    start(
+    detach_settlement(
         (cut || failed)
             .then(|| settle_from_record(&mut mapper.output, model, &wire))
             .flatten(),
