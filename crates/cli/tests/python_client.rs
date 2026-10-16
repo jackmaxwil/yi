@@ -9,12 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_types::message::StopReason;
 
-#[path = "../../types/tests/support/repo.rs"]
-mod repo;
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use repo::init_repo;
-use scratch::Scratch;
+use crate::repo::init_repo;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
