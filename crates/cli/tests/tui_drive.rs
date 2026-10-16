@@ -1,12 +1,8 @@
 use std::error::Error;
 use std::process::Command;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
-#[path = "support/session_files.rs"]
-mod session_files;
-use session_files::session_files;
+use crate::scratch::Scratch;
+use crate::session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
