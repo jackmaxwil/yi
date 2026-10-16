@@ -46,9 +46,9 @@ impl Transcripts for SessionTranscripts {
         if let Some(store) = self
             .host
             .trail(agent)
-            .and_then(|file| yi_session::load_session(&file).ok())
+            .and_then(|file| yi_session::open_shared(&file))
         {
-            return Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))));
+            return Some(Transcript::Kept(store));
         }
         let dir = self.sessions_dir.clone()?;
         let mut repo = yi_session::JsonlRepo::new(dir.clone(), self.cwd.clone());
@@ -56,8 +56,7 @@ impl Transcripts for SessionTranscripts {
             return Some(Transcript::Kept(session));
         }
         let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
-        let store = yi_session::load_session(&file).ok()?;
-        Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
+        yi_session::open_shared(&file).map(Transcript::Kept)
     }
 
     /// `root/child` names a child by the session that spawned it: like a name, another spelling

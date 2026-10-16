@@ -215,7 +215,7 @@ pub fn first_list_text() -> String {
     )
 }
 
-pub const CLOSED_LIST_TEXT: &str = "Every item is done and nothing has changed for three turns. Either `append` what remains and `start` it, or write the final answer; call no other tools.";
+pub const CLOSED_LIST_TEXT: &str = "Every item is done and nothing has changed for three turns. Either `append` what remains and `start` it, or call `answer`; call no other tools.";
 
 pub const IMPOSSIBLE_WORDS: [&str; 7] = [
     "not feasible",
@@ -418,13 +418,13 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     let moves = open_moves(list);
     match rung {
         1 => format!(
-            "The turn ended with open todos. Continue the running item, or move each open item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason. {ASK_USER} Do not restate your answer.\n{moves}"
+            "Open todos remain. Continue the running item, or move each open item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason. {ASK_USER}\n{moves}"
         ),
         2 => format!(
-            "No todo moved since the last stop. A clean stop needs every open item done, blocked on someone else with the blocker named, or dropped with a reason. {ASK_USER}\n{moves}"
+            "No todo moved since the last refusal. A clean stop needs every open item done, blocked on someone else with the blocker named, or dropped with a reason. {ASK_USER}\n{moves}"
         ),
         _ => format!(
-            "The turn ends now. Write the closing message naming each open item and why it is not done; call no tools.\n{moves}"
+            "The turn ends now. Call `answer`, naming each open item and why it is not done; call no other tools.\n{moves}"
         ),
     }
 }
@@ -511,13 +511,13 @@ pub fn unsourced(text: &str, seen: &str) -> Vec<String> {
 
 pub fn unsourced_text(numbers: &[String]) -> String {
     format!(
-        "These numbers appear in no tool result or user message: {}. If one is wrong or unmeasured, reply with one line that corrects only it. If each is a name, a path or an id, end the turn with no text. Do not restate the answer or quote sources.",
+        "These numbers appear in no tool result or user message: {}. If one is wrong or unmeasured, compute it in a tool and correct only that number in the draft. If each is a name, a path or an id, submit the draft unchanged.",
         numbers.join(", ")
     )
 }
 
 pub const EMPTY_STOP_TEXT: &str =
-    "The turn produced no output. Give the final answer, or make the next tool call.";
+    "The turn produced no output. Call `answer` with the final answer, or make the next tool call.";
 
 fn text_of(message: &AgentMessage) -> String {
     let AgentMessage::Assistant { content, .. } = message else {
