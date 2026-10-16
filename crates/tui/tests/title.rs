@@ -238,7 +238,8 @@ fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
 }
 
 /// The solid name is sphere-traced: it is absent before it has any thickness, lit once it has,
-/// and a camera that swings once moves it between frames.
+/// and the camera swing alone moves its lit cells. The echo under it never reaches `*`, so the
+/// lit glyphs are the solid's; at 1.3 s and 2.1 s its thickness is whole and only the swing differs.
 #[test]
 fn the_solid_name_rises_swings_and_shows_a_lit_side() {
     let at = |secs: f64| screen(Scene::Solid, (80, 24), secs, None);
@@ -260,13 +261,16 @@ fn the_solid_name_rises_swings_and_shows_a_lit_side() {
         .filter(|g| matches!(**g, '*' | '#' | '%' | '@'))
         .count();
     assert!(lit > 150, "only {lit} cells are on its lit side");
-    let moved = at(1.0)
-        .iter()
-        .flatten()
-        .zip(at(1.6).iter().flatten())
-        .filter(|(a, b)| a != b)
-        .count();
-    assert!(moved > 60, "the swing moved only {moved} cells");
+    let lit_cells = |frame: &[Vec<char>]| -> Vec<bool> {
+        frame
+            .iter()
+            .flatten()
+            .map(|g| matches!(*g, '*' | '#' | '%' | '@'))
+            .collect()
+    };
+    let (swung, settled) = (lit_cells(&at(1.3)), lit_cells(&at(2.1)));
+    let moved = swung.iter().zip(&settled).filter(|(a, b)| a != b).count();
+    assert!(moved > 60, "the swing moved only {moved} lit cells");
 }
 
 #[test]
@@ -295,6 +299,21 @@ fn the_draw_follows_the_weights_and_the_seed() {
     assert_eq!(title::pick(&[(Scene::Kali, 0), (Scene::Echo, 0)], 1), None);
     let only = [(Scene::Kali, 0), (Scene::Echo, 3)];
     assert!((0..200).all(|seed| title::pick(&only, seed) == Some(Scene::Echo)));
+}
+
+/// Incident: the default odds moved with every scene added and no test said so. Every scene is
+/// in the draw a config without weights gets, Kali at 8 and each other scene at 2.
+#[test]
+fn every_scene_is_in_the_default_draw_and_kali_leads() {
+    for (name, scene) in Scene::ALL {
+        let weight = title::DEFAULT_WEIGHTS
+            .iter()
+            .find(|(s, _)| *s == scene)
+            .map(|(_, w)| *w);
+        let want = if scene == Scene::Kali { 8 } else { 2 };
+        assert_eq!(weight, Some(want), "{name}");
+    }
+    assert_eq!(title::DEFAULT_WEIGHTS.len(), Scene::ALL.len());
 }
 
 #[test]
@@ -429,32 +448,38 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
 }
 
 /// The coral is a simulation the cache advances to the second asked for: it grows out of the
-/// strokes, a later frame continues the same run, and an earlier second starts it over.
+/// strokes, and a kept run agrees with a fresh one after a later second, an earlier one and a
+/// resize, so a frozen clock replays any frame.
 #[test]
-fn the_growth_spreads_from_the_strokes_and_the_cache_keeps_its_place() {
-    let area = Rect::new(0, 0, 80, 24);
-    let draw = |cache: &mut title::Cache, secs: f64| {
+fn the_growth_spreads_and_a_kept_cache_agrees_with_a_fresh_one() {
+    let draw = |cache: &mut title::Cache, (w, h): (u16, u16), secs: f64| {
+        let area = Rect::new(0, 0, w, h);
         let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
         let at = (Scene::Growth, Duration::from_secs_f64(secs));
         title::cover(&mut buffer, area, at, None, &theme(), cache);
         rows(&buffer, area)
     };
+    let fresh = |size, secs| draw(&mut title::Cache::default(), size, secs);
     let mut cache = title::Cache::default();
-    let early = count(&draw(&mut cache, 0.4), |g| g != ' ');
-    let late = count(&draw(&mut cache, 1.6), |g| g != ' ');
+    let early = count(&draw(&mut cache, (80, 24), 0.4), |g| g != ' ');
+    let late = count(&draw(&mut cache, (80, 24), 1.6), |g| g != ' ');
     assert!(
         late > early + 200,
         "the coral did not spread: {early} then {late}"
     );
-    let again = draw(&mut cache, 1.6);
     assert_eq!(
-        again,
-        draw(&mut title::Cache::default(), 1.6),
+        draw(&mut cache, (80, 24), 1.6),
+        fresh((80, 24), 1.6),
         "a kept run equals a fresh one"
     );
     assert_eq!(
-        draw(&mut cache, 0.4),
-        draw(&mut title::Cache::default(), 0.4),
+        draw(&mut cache, (80, 24), 0.4),
+        fresh((80, 24), 0.4),
         "back in time starts over"
+    );
+    assert_eq!(
+        draw(&mut cache, (120, 30), 1.0),
+        fresh((120, 30), 1.0),
+        "a new size starts over"
     );
 }
