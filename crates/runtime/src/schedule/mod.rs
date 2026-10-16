@@ -107,6 +107,12 @@ fn parse_every_clause(text: &str) -> Option<Result<u64, String>> {
     Some(Ok(interval_ms))
 }
 
+/// A session the worker closed or deleted without loading it: lift the hold its
+/// eviction put on the schedule hub so the held timer goes with the session.
+pub fn release_unloaded(root: &std::path::Path, session_id: &str) {
+    shared::unhold(&root.join(session_id).join("scheduled-jobs.json"));
+}
+
 pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), String> {
     parse_schedule_in(input, now_ms, &Zone::local())
 }
@@ -1035,7 +1041,6 @@ fn local_time(utc_ms: u64) -> String {
         zone.abbreviation(utc_ms)
     )
 }
-
 fn render_job_line(job: &Job) -> String {
     format!(
         "{} [{}{}] {} — {} (runs: {}, next: {})",
@@ -1058,7 +1063,6 @@ fn render_job_line(job: &Job) -> String {
             .unwrap_or_else(|| "-".to_owned()),
     )
 }
-
 impl HeartbeatService {
     fn heartbeat_jobs(state: &ScheduleState) -> Vec<&Job> {
         state
@@ -1067,7 +1071,6 @@ impl HeartbeatService {
             .filter(|job| is_heartbeat_job(job) && job.status != JobStatus::Cancelled)
             .collect()
     }
-
     /// Applies one `/heartbeat` command; the returned text is the user-facing
     /// reply.
     pub fn apply(&self, command: &HeartbeatCommand, now_ms: u64) -> Result<String, String> {
@@ -1190,7 +1193,6 @@ impl HeartbeatService {
             }
         }
     }
-
     /// Parses and applies one `/heartbeat` line, the entry point RPC, ACP and slash share (§15.2).
     pub fn run(&self, line: &str) -> Result<String, String> {
         parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))

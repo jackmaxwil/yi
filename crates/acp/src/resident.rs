@@ -110,7 +110,7 @@ impl AcpState {
         *state = Away::Loading;
         drop(states);
         if self.open_later(id).is_err() {
-            away().insert(id.to_owned(), Away::Evicted);
+            forget(id);
         }
     }
 }
