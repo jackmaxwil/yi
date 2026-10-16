@@ -4024,6 +4024,7 @@ fn the_session_tab_sets_the_live_option_and_makes_it_the_default() -> TestResult
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
          key alt-,\nwait-frame 3000 Thinking level\n\
          key enter\nwait-frame 3000 ‹ medium ›\nkey down\nkey enter\n\
+         wait-frame 3000 Thinking level         high\n\
          key d\nwait-frame 3000 saved\nwait-frame 500 !not saved\nquit\n",
     )
 }
