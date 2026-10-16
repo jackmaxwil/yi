@@ -177,7 +177,7 @@ pub struct PendingAsk {
 }
 
 pub const KEPT_CELLS: usize = 50;
-pub const IMAGE_BYTES_MAX: usize = 64 * 1024;
+pub const IMAGE_BYTES_MAX: usize = 512 * 1024;
 pub const IMAGES_PER_CELL: usize = 4;
 
 #[derive(Debug, Clone, Default)]
