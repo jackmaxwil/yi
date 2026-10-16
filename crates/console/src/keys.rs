@@ -34,13 +34,13 @@ pub enum Action {
     ToggleDiff,
     OpenTerminal,
     OpenEditor,
+    OpenBrowser,
     Find,
     Save,
     Undo,
     Redo,
     Menu,
     Settings,
-    OpenBrowser,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -88,11 +88,11 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
         KeyCode::Char('y') => Some(Action::OpenTerminal),
+        KeyCode::Char('w') => Some(Action::OpenBrowser),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('?') => Some(Action::Keys),
         KeyCode::Char('c') => Some(Action::Menu),
         KeyCode::Char(',') => Some(Action::Settings),
-        KeyCode::Char('w') => Some(Action::OpenBrowser),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
