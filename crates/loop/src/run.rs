@@ -976,6 +976,7 @@ pub async fn run_loop<S: StreamFn>(
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
             let refused_last_word = last_word_said && !calls.is_empty();
+            let mut answered_now = false;
             if !calls.is_empty() {
                 let (finalized, terminate) = if reason == StopReason::Length {
                     length_stops = length_stops.saturating_add(1);
@@ -995,6 +996,16 @@ pub async fn run_loop<S: StreamFn>(
                 for result in &tool_results {
                     context.messages.push(result.clone());
                     collected.push(result.clone());
+                }
+                let snapshot = TurnSnapshot {
+                    message: &message,
+                    tool_results: &tool_results,
+                };
+                if let Some(answer) = (config.answer.as_ref()).and_then(|take| take(&snapshot)) {
+                    if let Some(answer) = answer {
+                        crate::answer::push(answer, context, &mut collected, emit);
+                    }
+                    (has_more_tool_calls, answered_now) = (false, true);
                 }
             } else if reason == StopReason::Length {
                 // a cut is not a length strike: it has its own, longer count (D168)
@@ -1037,6 +1048,7 @@ pub async fn run_loop<S: StreamFn>(
             if refused_last_word
                 && !followed_up
                 && !answered(&message)
+                && !answered_now
                 && config
                     .last_word_capped
                     .as_ref()
@@ -1083,11 +1095,19 @@ pub async fn run_loop<S: StreamFn>(
             pending = read_steering(config);
             // after three repeating turns in a row, so a fresh edit before each check is progress,
             // and once per stretch: two batches taking turns hold the count at three for good
-            if repeats >= REPEAT_STEER_AT && repeating >= REPEAT_STEER_AT && !steered {
+            if repeats >= REPEAT_STEER_AT
+                && repeating >= REPEAT_STEER_AT
+                && !steered
+                && !answered_now
+            {
                 steered = true;
                 pending.push(repeat_break());
             }
-            if !has_more_tool_calls && pending.is_empty() && reason == StopReason::Length {
+            if !has_more_tool_calls
+                && pending.is_empty()
+                && reason == StopReason::Length
+                && !answered_now
+            {
                 let rung = if cut.is_some() {
                     cut_stops
                 } else {

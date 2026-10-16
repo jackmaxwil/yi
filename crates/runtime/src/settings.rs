@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value};
-use yi_types::settings::{SettingKind, SettingRow, lookup, refusal, rows};
+use yi_types::settings::{SettingKind, SettingRow, lookup, pane_edits_list, refusal, rows};
 
 pub fn config_path(home: &Path) -> PathBuf {
     home.join(".yi/config.json")
@@ -27,16 +27,17 @@ pub fn current(home: &Path) -> Result<Vec<SettingRow>, String> {
     Ok(rows()
         .into_iter()
         .map(|mut row| {
-            row.value = shown(&row.kind, lookup(&config, &row.id));
+            row.value = shown(&row, lookup(&config, &row.id));
             row
         })
         .collect())
 }
 
-/// Incident: the owner once kept an API key under `keys`; a list or JSON value leaves this
-/// process as its entry count, which is all the page shows of it.
-fn shown(kind: &SettingKind, value: &Value) -> Value {
-    match (kind, value) {
+/// Incident: the owner once kept an API key under `keys`; a JSON value leaves this process as
+/// its entry count, and a list keeps it too unless the pane edits it (the routing rows).
+fn shown(row: &SettingRow, value: &Value) -> Value {
+    match (&row.kind, value) {
+        (SettingKind::List, _) if pane_edits_list(&row.id) => value.clone(),
         (SettingKind::List | SettingKind::Json, Value::Array(items)) => Value::from(items.len()),
         (SettingKind::List | SettingKind::Json, Value::Object(fields)) => Value::from(fields.len()),
         (SettingKind::List | SettingKind::Json, Value::Null) => Value::Null,
@@ -180,22 +181,25 @@ fn stage(staging: &Path, text: &str, mode: u32) -> std::io::Result<()> {
 }
 
 fn set(root: &mut Value, keys: &[&str], value: Value) -> Result<(), String> {
-    let (last, parents) = keys.split_last().ok_or("an empty key path")?;
-    let mut node = root;
-    for key in parents {
-        node = node
-            .as_object_mut()
-            .ok_or_else(|| format!("`{key}` sits under a value that is not an object"))?
-            .entry((*key).to_owned())
-            .or_insert_with(|| Value::Object(Map::new()));
-    }
-    let object = node
+    let (first, rest) = keys.split_first().ok_or("an empty key path")?;
+    let object = root
         .as_object_mut()
-        .ok_or_else(|| format!("`{last}` sits under a value that is not an object"))?;
-    if value.is_null() {
-        object.remove(*last);
-    } else {
-        object.insert((*last).to_owned(), value);
+        .ok_or_else(|| format!("`{first}` sits under a value that is not an object"))?;
+    if rest.is_empty() {
+        if value.is_null() {
+            object.remove(*first);
+        } else {
+            object.insert((*first).to_owned(), value);
+        }
+        return Ok(());
+    }
+    let unset = value.is_null();
+    let child = object
+        .entry((*first).to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    set(child, rest, value)?;
+    if unset && child.as_object().is_some_and(Map::is_empty) {
+        object.remove(*first);
     }
     Ok(())
 }
@@ -254,6 +258,14 @@ mod tests {
     }
 
     #[test]
+    fn unsetting_the_last_nested_key_prunes_the_empty_parent() -> Result<(), String> {
+        let mut config = json!({"thinking": "high", "routing": {"order": ["a"]}});
+        set(&mut config, &["routing", "order"], Value::Null)?;
+        assert_eq!(config, json!({"thinking": "high"}));
+        Ok(())
+    }
+
+    #[test]
     fn a_save_keeps_a_removed_key_and_null_unsets() -> Result<(), Box<dyn std::error::Error>> {
         let home = Scratch::new("yi-settings-keeps")?;
         let path = config_path(&home);
@@ -293,6 +305,20 @@ mod tests {
             .find(|row| row.id == "skills.global")
             .ok_or("no skills row")?;
         assert_eq!(skills.value, json!(2));
+        Ok(())
+    }
+
+    /// An unset JSON row must stay unset on the wire: with no `keys` in config.json the page
+    /// says "unset", never a fabricated entry count.
+    #[test]
+    fn an_unset_json_row_shows_unset_not_a_count() -> Result<(), Box<dyn std::error::Error>> {
+        let home = Scratch::new("yi-settings-unset")?;
+        let rows = current(&home)?;
+        let keys = rows
+            .iter()
+            .find(|row| row.id == "keys")
+            .ok_or("no keys row")?;
+        assert_eq!(keys.value, Value::Null);
         Ok(())
     }
 

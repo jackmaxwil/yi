@@ -11,10 +11,12 @@ use yi_types::message::{AgentMessage, Usage, UserContent};
 use yi_types::model::{Effort, Model};
 
 use crate::provider::ProviderStream;
+mod answer;
 mod deadline;
 mod hooks;
 mod run;
 
+pub(crate) use answer::AnswerHandle;
 use deadline::Deadline;
 use run::Queued;
 pub use run::StillNews;
@@ -72,6 +74,7 @@ struct Shared {
     on_turn_start: Mutex<Option<Arc<TurnHook>>>,
     on_turn_end: Mutex<Option<Arc<TurnHook>>>,
     coupling: Mutex<Option<TurnCoupling>>,
+    answer: Mutex<answer::Answering>,
     waits: Mutex<Option<Arc<dyn Fn() -> u64 + Send + Sync>>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     reuse: Mutex<yi_types::model::Reuse>,
@@ -203,6 +206,7 @@ impl AgentSession {
                 rules: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
+                answer: Mutex::default(),
                 waits: Mutex::new(None),
                 deadline: OnceLock::new(),
                 turn_cap: OnceLock::new(),
@@ -826,22 +830,6 @@ impl AgentSession {
         }
     }
 
-    pub fn pending_count(&self) -> usize {
-        let steer = self
-            .shared
-            .steer
-            .lock()
-            .map(|queue| queue.len())
-            .unwrap_or(0);
-        let follow = self
-            .shared
-            .follow_up
-            .lock()
-            .map(|queue| queue.len())
-            .unwrap_or(0);
-        steer.saturating_add(follow)
-    }
-
     /// Detaches any store; [`AgentSession::attach_store`] afterwards points at a new file.
     pub fn reset(&self) {
         if let Some(broker) = self.permission_broker() {
@@ -858,18 +846,6 @@ impl AgentSession {
         }
     }
 
-    pub fn steer(&self, text: &str) {
-        self.steer_message(task(text));
-    }
-
-    pub fn steer_message(&self, message: AgentMessage) {
-        self.deliver(message, false);
-    }
-
-    pub fn follow_up(&self, text: &str) {
-        self.follow_up_message(task(text));
-    }
-
     /// Runs admitted so far, and how many of them have ended.
     pub(crate) fn runs(&self) -> (u64, u64) {
         let running = self
@@ -879,16 +855,6 @@ impl AgentSession {
             .is_ok_and(|status| *status == Status::Running);
         let started = self.shared.runs.load(std::sync::atomic::Ordering::SeqCst);
         (started, started.saturating_sub(u64::from(running)))
-    }
-
-    /// Taken after a running turn's answer, or it starts an idle session's turn.
-    pub fn follow_up_message(&self, message: AgentMessage) -> bool {
-        run::follow(&self.parts(), message, None)
-    }
-
-    /// Presented in arrival order at the next boundary; `wakes` starts an idle session's turn.
-    pub fn deliver(&self, message: AgentMessage, wakes: bool) -> yi_types::mail::Delivery {
-        run::enqueue(&self.parts(), Queued::new(message, wakes, None))
     }
 
     pub(crate) fn adopt_pending(&self, dead: &AgentSession) {

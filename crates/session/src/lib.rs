@@ -23,5 +23,5 @@ pub use query::{
     BranchBounds, CreateOptions, EntryOrder, EntryQuery, ForkPosition, ForkScope, HistoryHit,
     LanePointer, LogOptions, RecordQuery, SessionMetadata, SessionStats,
 };
-pub use repo::{MemRepo, SessionRepo, SharedSession, lock_session};
+pub use repo::{MemRepo, SessionRepo, SharedSession, lock_session, open_shared};
 pub use store::{GREP_PAGE_MAX, SessionStore};
