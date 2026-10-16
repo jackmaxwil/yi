@@ -298,6 +298,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             Some(pane) => {
                 let view = PaneData {
                     diffs,
+                    notebooks: &app.state.notebooks,
                     sessions,
                     notes: &notes,
                     options: &app.state.session_options,
@@ -470,6 +471,7 @@ pub(crate) fn label_of(
 
 struct PaneData<'a> {
     diffs: &'a std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
+    notebooks: &'a std::collections::BTreeMap<SessionId, Vec<crate::model::NbCell>>,
     sessions: &'a std::collections::BTreeMap<SessionId, SessionRow>,
     notes: &'a std::collections::BTreeMap<SessionId, String>,
     options: &'a std::collections::BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
@@ -562,7 +564,6 @@ fn pane_view_content(
         }
         PaneContent::Notebook {
             session,
-            cells,
             full,
             drawn,
         } => {
@@ -572,6 +573,9 @@ fn pane_view_content(
             );
             let width = usize::from(inner.width);
             if drawn.as_ref().is_none_or(|(at, _)| *at != width) {
+                let cells = session.as_ref().map_or(&[][..], |id| {
+                    crate::model::notebook_cells(view.notebooks, id)
+                });
                 let all = crate::panes::notebook_lines(cells, width, *full, theme, close_hint);
                 *drawn = Some((width, all));
             }
