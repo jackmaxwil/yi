@@ -549,8 +549,10 @@ def last_tier(repo, sha):
     log = sh(repo, "git", "log", "--first-parent", "-n", "16", "--format=%B%x1e", sha, check=False).stdout
     names = [model for model, _ in TIERS]
     for body in log.split("\x1e"):
-        if SIGNED in body and (m := re.search(r"Made by the autofixer with (\S+);", body)):
-            return names.index(m.group(1)) if m.group(1) in names else -1
+        # The signature closes the body; a summary that quotes one comes before it. A model the
+        # tier list no longer names was a tier this streak paid for, so it holds the top one.
+        if SIGNED in body and (found := re.findall(r"Made by the autofixer with (\S+);", body)):
+            return names.index(found[-1]) if found[-1] in names else len(names) - 1
     return -1
 
 
@@ -857,7 +859,7 @@ def render(n, fields, verdict, reason="", status="", meter=None):
     elif verdict == "deferred":
         lines += ["**Autofix deferred**: the model's provider was busy, so the next pass tries again.", "", "```", reason.strip(), "```"]
     elif verdict == "missed":
-        lines += ["**Autofix missed**; the next pass tries one model tier up, and a miss on the top tier stops it.",
+        lines += ["**Autofix missed**; the next pass tries again a tier up while one is left, and a miss on the top tier stops it.",
                   "", "```", reason.strip(), "```"]
     else:
         lines += ["**Autofix failed**; `autofix:failed` stops it until the label is removed.", "", "```", reason.strip(), "```"]
@@ -1566,9 +1568,10 @@ def selfcheck():
         sh(bare, "git", "init", "-q")
         class Asked(Exception):
             pass
-        prompts = []
+        prompts, models = [], []
         def asked(prompt, *a, **k):
             prompts.append(prompt)
+            models.append(a[0] if a else k.get("model"))
             raise Asked()
         for found, want in (([{"severity": "medium", "lens": "correctness", "claim": "c"}], "asked"),
                             ([{"severity": "medium", "lens": "template", "claim": "c"}], "refused"),
@@ -1588,6 +1591,13 @@ def selfcheck():
                 errs.append(f"a clean round's {found[0]['lens']} medium was {got} by findings_in, not {want}")
             if got == "asked" and "baselines/" in prompts[-1]:
                 errs.append("findings_in handed the model a finding on a file the fixer may not touch")
+        try:
+            findings_in(bare, {"number": 1, "title": "t", "base": {"ref": "main"}},
+                        {"n": 2, "verdict": "clean", "findings": [{"severity": "medium", "lens": "correctness", "claim": "c"}]}, asked, 0, 2)
+        except Asked:
+            pass
+        if models[-1:] != [TIERS[2]]:
+            errs.append(f"a one-medium fix under a top-tier floor asked {models[-1:]}, not {TIERS[2]}")
         base = bare / "scripts/guardrails/baselines"
         base.mkdir(parents=True)
         (base / "schemas.lock").write_text('{\n "b": "y",\n "a": "x"\n}\n')
