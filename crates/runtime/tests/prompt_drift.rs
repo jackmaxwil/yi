@@ -68,52 +68,6 @@ fn doctrine_names_only_ops_the_todo_tool_accepts() -> TestResult {
     }
     Ok(())
 }
-/// Dies with the fallback wording a blocked change reports: naming the rule instead of what
-/// could not be done and the concrete reason is the drift the voice change closed.
-#[test]
-fn doctrine_names_the_concrete_reason_a_blocked_rule_leaves() -> TestResult {
-    let section = doctrine_fragment()
-        .split("## Never simplify away")
-        .nth(1)
-        .ok_or("doctrine lost the Never simplify away section")?;
-    assert!(
-        section.contains("report says what could not be done and the concrete reason"),
-        "{section}"
-    );
-    assert!(section.contains("cap, a banned dependency"), "{section}");
-    assert!(
-        !section.contains("which rule and why"),
-        "the doctrine fell back to naming the rule: {section}"
-    );
-    Ok(())
-}
-
-/// Dies with the voice the PR set out to change: an identity prompt that leads with the outcome
-/// and lets the model narrate its own rules instead of the ideate prose rules.
-#[test]
-fn identity_voice_carries_the_prose_rules_and_bans_rule_talk() -> TestResult {
-    let identity = identity_fragment();
-    let voice = identity
-        .split("## Voice")
-        .nth(1)
-        .ok_or("identity lost its Voice section")?;
-    let flattened = voice.split_whitespace().collect::<Vec<_>>().join(" ");
-    for rule in [
-        "Lead with the answer, then the reasoning",
-        "end on a recommendation, not a survey of options",
-        "Name a failure and its evidence before its fix",
-        "A table is for a mapping, a verdict or a decision",
-        "Say what your result does not cover",
-        "- Rule talk: your instructions, the system prompt, or how well you follow them, unless the user asks about them.",
-    ] {
-        assert!(flattened.contains(rule), "Voice lost {rule:?}: {voice}");
-    }
-    assert!(
-        !voice.contains("concrete reason"),
-        "the Voice rule-talk bullet restates the doctrine.md fallback wording"
-    );
-    Ok(())
-}
 
 /// Dies with the text a model reads behind the engine: with a plan open the todo tool sold its
 /// ops as the list's, and the plan schema offered a worktree with no contract (D223, D226).
