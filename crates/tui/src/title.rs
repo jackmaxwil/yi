@@ -176,9 +176,14 @@ fn landed(area: Rect, landing: Option<Rect>, leave: f64) -> (Strokes, f64) {
     (out, THICK + (0.5 / h - THICK) * leave)
 }
 
+fn ring_field(d: f64, phase: f64, freq: f64, power: i32, decay: f64) -> f64 {
+    let d = d.max(0.0);
+    let ring = 0.5 + 0.5 * (TAU * (d * freq - phase)).cos();
+    ring.powi(power) * (-decay * d).exp()
+}
+
 fn echo(d: f64, t: f64) -> f64 {
-    let ring = 0.5 + 0.5 * (TAU * (d.max(0.0) * RING_FREQ - (t % RING_SECS) / RING_SECS)).cos();
-    ring * ring * (-0.9 * d.max(0.0)).exp()
+    ring_field(d, (t % RING_SECS) / RING_SECS, RING_FREQ, 2, 0.9)
 }
 
 fn fold(mut x: f64, mut y: f64, cx: f64, cy: f64) -> f64 {
@@ -303,9 +308,7 @@ fn mobius(u: f64, v: f64, lam: (f64, f64)) -> (f64, f64) {
 
 /// Rings of distance that drift outward, solid inside the name: the vortex's own texture.
 fn rings(d: f64, t: f64) -> f64 {
-    let d = d.max(0.0);
-    let ring = 0.5 + 0.5 * (TAU * (d * 5.0 - 0.3 * t)).cos();
-    ring.powi(4) * (-1.3 * d).exp()
+    ring_field(d, 0.3 * t, 5.0, 4, 1.3)
 }
 
 /// Cells farther than this from every stroke cannot see the extruded name.
