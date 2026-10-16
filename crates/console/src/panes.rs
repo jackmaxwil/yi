@@ -146,7 +146,7 @@ pub fn review_view(
     if let Some(title) = diff.and_then(|diff| diff.land_armed.as_deref()) {
         lines.push(Line::styled(
             format!("l again to /land {title} · any other key cancels"),
-            theme.accent_style(),
+            Style::default().fg(theme.warning),
         ));
     }
     let selected = diff.map_or(0, |diff| diff.selected.min(files.len().saturating_sub(1)));
@@ -371,9 +371,10 @@ pub fn notebook_lines(
             "stderr",
             theme,
         ));
+        let teal = Style::default().fg(theme.teal);
         if let Some(result) = &cell.result {
-            let lead = Span::styled("↳ ", theme.accent_style());
-            let bold = theme.accent_style().add_modifier(Modifier::BOLD);
+            let lead = Span::styled("↳ ", teal);
+            let bold = teal.add_modifier(Modifier::BOLD);
             out.extend(capped(
                 result,
                 lead,
@@ -396,10 +397,7 @@ pub fn notebook_lines(
         }
         for image in &cell.images {
             let kb = image.len().saturating_mul(3) / 4 / 1024;
-            out.push(Line::styled(
-                format!("  ▲ image · {kb} KB png"),
-                theme.accent_style(),
-            ));
+            out.push(Line::styled(format!("  ▲ image · {kb} KB png"), teal));
         }
         out.push(Line::default());
     }
