@@ -16,21 +16,12 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn service() -> Arc<KernelService> {
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
-    Arc::new(KernelService::new(KernelServiceOptions {
-        cwd: std::env::temp_dir(),
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        session_dir: None,
-        family_dir: None,
-        host: Arc::new(registry),
-        on_restore: None,
-        on_boot: None,
-        sandbox: None,
-        snapshot_key: None,
-        per_session_state: false,
-        cell_ceiling: None,
-    }))
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    Arc::new(KernelService::new(KernelServiceOptions::bare(
+        std::env::temp_dir(),
+        home.unwrap_or_default(),
+        Arc::new(registry),
+    )))
 }
 
 fn never_cancelled() -> CancelFlag {

@@ -446,6 +446,14 @@ impl AcpState {
         yi_runtime::schedule::release_unloaded(&self.schedules_root, id);
     }
 
+    fn session_id(params: &Value) -> Result<String, (i64, String)> {
+        params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))
+    }
+
     fn session(&self, params: &Value) -> Result<(&SessionHandle, String), (i64, String)> {
         let id = params
             .get("sessionId")
@@ -642,11 +650,7 @@ impl AcpState {
             }
             "session/list" => self.list_sessions(),
             "session/resume" => {
-                let id = params
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
-                    .to_owned();
+                let id = Self::session_id(params)?;
                 let store = match self.store_of(&id) {
                     Some(store) => store,
                     None => self
@@ -676,12 +680,10 @@ impl AcpState {
                 Ok(json!(result))
             }
             "session/close" => {
-                let id = params
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
-                    .to_owned();
-                self.settle(&id);
+                let id = Self::session_id(params)?;
+                if self.building.contains_key(&id) {
+                    self.settle(&id);
+                }
                 let loaded = self.sessions.contains_key(&id);
                 if !loaded {
                     self.release_parked(&id);
@@ -692,11 +694,7 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/delete" => {
-                let id = params
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
-                    .to_owned();
+                let id = Self::session_id(params)?;
                 let loaded = self.sessions.contains_key(&id);
                 self.drop_session(&id);
                 if !loaded {
