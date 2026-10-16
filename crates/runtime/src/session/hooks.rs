@@ -574,6 +574,37 @@ mod tests {
         assert!(provider.settle_wired_for_test().is_some());
     }
 
+    /// Dies with the re-wire ignored: `new` wires a parentless hook first, so a child's settled
+    /// usage booked on its own ledger and never billed the parent.
+    #[test]
+    fn attach_runtimes_rewire_replaces_the_parentless_hook()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let session = super::AgentSession::new(
+            crate::session::SessionConfig {
+                system_prompt: String::new(),
+                model: crate::plan::dispatch::tests::faux_model(),
+                thinking_level: None,
+                tool_execution: yi_loop::ExecutionMode::Sequential,
+            },
+            Arc::clone(&provider),
+        );
+        let billed = Arc::new(Mutex::new(Vec::new()));
+        let bill = Arc::clone(&billed);
+        let parent: Arc<crate::subagent::AttributeFn> = Arc::new(move |usage: &Usage| {
+            if let Ok(mut seen) = bill.lock() {
+                seen.push(usage.output);
+            }
+        });
+        provider.settle_into(session.settle_hook(Some(parent)));
+        let hook = provider.settle_wired_for_test().ok_or("no hook wired")?;
+        let mut usage = Usage::zero();
+        usage.output = 3089;
+        (hook.0)(usage, None);
+        assert_eq!(*billed.lock().map_err(|_| "poisoned")?, [3089]);
+        Ok(())
+    }
+
     /// Dies with the hook overwritten: an auto-review session built on the root's stream took
     /// the slot, and with no store of its own it dropped the root's settled cost.
     #[test]
