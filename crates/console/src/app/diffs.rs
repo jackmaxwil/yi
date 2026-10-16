@@ -361,6 +361,56 @@ mod tests {
         assert_eq!(seen, [("x = 1 + 2", "3\n"), ("x * 2", "6\n")]);
     }
 
+    /// Incident: re-pointing a notebook pane to another session kept the rows cached for the
+    /// first, so the title named the new session over the old one's cells.
+    #[test]
+    fn a_repointed_notebook_pane_shows_the_new_sessions_cells() {
+        let (mut app, alpha) = app_with_session();
+        let beta = SessionId("s-beta".to_owned());
+        let pane = app.state.focused_pane_id().expect("pane");
+        let cell = |code: &str| {
+            vec![NbCell {
+                number: 1,
+                code: code.to_owned(),
+                ..NbCell::default()
+            }]
+        };
+        app.state
+            .notebooks
+            .insert(alpha.clone(), cell("alpha_marker"));
+        app.state
+            .notebooks
+            .insert(beta.clone(), cell("beta_marker"));
+        if let Some(slot) = app.state.panes.get_mut(&pane) {
+            slot.content = PaneContent::Notebook {
+                session: Some(alpha),
+                full: false,
+                drawn: None,
+            };
+        }
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let shown = |app: &mut App| -> String {
+            let view = crate::render::compute_view(app, area, &theme);
+            view.panes
+                .iter()
+                .flat_map(|pane| &pane.lines)
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(shown(&mut app).contains("alpha_marker"));
+        app.bind_pane(pane, &beta);
+        let after = shown(&mut app);
+        assert!(after.contains("beta_marker"), "{after}");
+        assert!(!after.contains("alpha_marker"), "{after}");
+    }
+
     #[test]
     fn a_focused_auto_notebook_becomes_the_users() {
         let (mut app, session) = app_with_session();
