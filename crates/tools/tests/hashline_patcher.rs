@@ -8,9 +8,7 @@ use yi_tools::hashline::tool::{
 use yi_tools::{Tool, ToolContext, ToolOutput, WriteTool};
 use yi_types::message::Content;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

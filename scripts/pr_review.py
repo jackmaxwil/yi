@@ -202,8 +202,9 @@ def ready_problems(rounds, head, holds=on_head):
     """What keeps a PR from leaving draft or merging: two rounds, the last holding for this
     head and not blocked. A round holds when only merges from the base came after it."""
     errs = []
-    if len(rounds) < 2:
-        errs.append(f"{len(rounds)} review round(s); a PR needs two — just pr review")
+    read = [r for r in rounds if not twin_round(r)]
+    if len(read) < 2:
+        errs.append(f"{len(read)} review round(s) past intake; a PR needs two — just pr review")
     if rounds and not holds(rounds[-1]["sha"], head):
         errs.append(f"round {rounds[-1]['n']} reviewed {rounds[-1]['sha'][:8]}, not the head {head[:8]} — just pr review")
     elif rounds and silent(rounds[-1]) and rounds[-1]["verdict"] != "override":
@@ -237,9 +238,13 @@ def skip_reason(rounds, head, wanted=2, holds=on_head):
     round found nothing, since leaving draft takes two. Incident: a second read of a head was a
     fresh draw that added to the first (#1043: three mediums, then a high and seven)."""
     here = [r for r in rounds if holds(r["sha"], head)]
+    # Incident: #1415 and #1416 sat blocked on a round-1 twin after it closed; a twin round reads no
+    # lens, so its head is read again, and cmd_review posts nothing while the twin still stands.
+    if here and twin_round(here[-1]) and here[-1]["verdict"] != "override":
+        return None
     if here and here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
-    if here and (len(rounds) >= wanted or any(f.get("severity") in REPORTED for f in here[-1].get("findings", []))):
+    if here and (len([r for r in rounds if not twin_round(r)]) >= wanted or any(f.get("severity") in REPORTED for f in here[-1].get("findings", []))):
         return f"round {here[-1]['n']} read this head; the fixer or the next push is next"
     return None
 
@@ -272,7 +277,7 @@ def delta_base(rounds, merge_base, is_ancestor, head):
     unchanged head reads what the first one read, not an empty diff. The range may carry commits
     the base branch merged in since; `review_diff` keeps only the PR's own change inside it."""
     for r in reversed(rounds):
-        if silent(r):
+        if silent(r) or twin_round(r):
             continue
         if head.startswith(r["sha"]):
             return r.get("base") or merge_base
@@ -367,6 +372,10 @@ def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: Fal
     for other in others:
         if other["number"] == pr["number"] or other["head"]["ref"] in (pr["base"]["ref"],) or other["base"]["ref"] == pr["head"]["ref"]:
             continue
+        # Incident: #1415 and #1416 reopened the work of the closed #1411 and #1405 and were blocked
+        # as their twins; a PR closed unmerged landed nothing and closes nothing.
+        if other["state"] == "closed" and not other.get("merged"):
+            continue
         theirs = {int(n) for kind, named, n in CITE.findall(other.get("body") or "") if kind.lower() == "closes" and named in ("", repo)}
         # Incident: #909 moved code #902 had merged and was blocked as its twin; merged text is
         # main's, so a merged PR is a twin only by the issue it already closed.
@@ -390,6 +399,16 @@ def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: Fal
                         "claim": f"Closes #{n}, which is already closed: {issue.get('title', '')}",
                         "fix": "cite the open issue this work finishes, or /override with why it lands"})
     return out
+
+
+def twin_round(rnd):
+    """Whether a posted round stopped at a twin, so no lens read its head."""
+    return any(f.get("lens") == "duplicate" for f in rnd.get("findings") or [])
+
+
+def twins(findings):
+    """The twins a round's duplicate findings name, by their leading `#N` or `Closes`."""
+    return {f["claim"].split(" ", 1)[0] for f in findings if f.get("lens") == "duplicate"}
 
 
 def has_twin(found):
@@ -737,6 +756,14 @@ def discard(tree):
     shutil.rmtree(tree, ignore_errors=True)
 
 
+def intake_of(repo, pr):
+    """The zero-token checks on a PR as it stands: its body's template and its twins."""
+    others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
+             (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=50") or [])
+    return intake(pr, raw_diff(repo, pr["number"]), others, lambda n: raw_diff(repo, n), repo, stacked,
+                  lambda n: forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}"))
+
+
 def read_pr(repo, number, allowed):
     """One round's reading of a PR, posted nowhere: the number it would take, its range and
     its findings. Raises Unanswered when a lens or refuter stays silent."""
@@ -757,10 +784,7 @@ def read_pr(repo, number, allowed):
         if base != merge_base:
             since = added_at(diff)
             own = {path: lines & since.get(path, set()) for path, lines in own.items()}
-        others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
-                 (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=50") or [])
-        found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo, stacked,
-                       lambda n: forge_pr.fgj_api("GET", f"repos/{repo}/issues/{n}"))
+        found = intake_of(repo, pr)
         message = forge_pr.git("log", "-1", "--format=%B", sha)
         fix_note = message if rounds and answered(message, rounds[-1]["n"], number) else ""
         # The owner (2026-10-07): duplicates are checked first; a twin is the owner's call, so no lens is paid for.
@@ -815,6 +839,17 @@ def cmd_review(args):
         if why and not (args.dry_run or getattr(args, "again", False)):
             print(f"#{number}: no round — {why}")
             return 0
+        rounds = rounds_of(comments(repo, number), allowed, number)
+        twin = rounds[-1] if rounds and twin_round(rounds[-1]) and rounds[-1]["verdict"] != "override" else None
+        if twin and not args.dry_run:
+            try:
+                standing = twins(intake_of(repo, pr))
+            except Unanswered as err:
+                print(f"#{number}: no round — the twin check could not run ({err})")
+                return 1
+            if standing and standing == twins(twin["findings"]):
+                print(f"#{number}: no round — round {twin['n']}'s twin still stands; close one or /override")
+                return STANDS
         global METER
         METER = bot_meter.Meter()
         notes = comments(repo, number)
@@ -925,6 +960,10 @@ def promote(repo, pr, rounds):
 ROUND_SECS, SWEEP_HEADS = 20 * 60, 3
 
 
+# A twin round still standing: the job stays red as its round was, and a sweep spends no slot on it.
+STANDS = 3
+
+
 def cmd_sweep(args):
     """One pass over the open drafts: promote one already clean, review a head no round has read
     (a push whose job died, or a draft opened before the job ran); the autofixer answers a blocked one."""
@@ -945,8 +984,8 @@ def cmd_sweep(args):
             if read >= SWEEP_HEADS or JOB_ENDS - time.monotonic() < ROUND_SECS:
                 print(f"sweep: {read} head(s) read in {int(time.monotonic() - started)}s; the rest wait for the next sweep")
                 break
-            cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False))
-            read += 1
+            if cmd_review(argparse.Namespace(number=pr["number"], dry_run=False, again=False)) != STANDS:
+                read += 1
     return 0
 
 
@@ -1061,6 +1100,15 @@ def selfcheck():
     assert skip_reason([{"n": 1, "sha": "0000000", "verdict": "clean"}] + one, "abc1234ff"), "a PR with two rounds reads a head once"
     assert skip_reason(one + [{"n": 2, "sha": "abc1234", "verdict": "clean"}], "abc1234ff"), "never a third"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "abc1234ff"), "a blocked head is the fixer's"
+    twin_block = {"n": 1, "sha": "abc1234", "verdict": "blocked", "findings": [{"lens": "duplicate", "severity": "high", "claim": "#9 (open) also closes #4: x"}]}
+    assert skip_reason([twin_block], "abc1234ff") is None, "a head a twin blocked is read again, since no lens read it"
+    assert skip_reason([dict(twin_block, verdict="override")], "abc1234ff"), "an overridden twin is settled, not read again"
+    assert delta_base([dict(twin_block, verdict="override")], "m" * 8, lambda sha: True, "fff9999") == "m" * 8, \
+        "an overridden twin round read no lens either"
+    assert twins(twin_block["findings"]) == {"#9"} and twins([]) == set(), "a twin is named by its number"
+    assert delta_base([twin_block], "m" * 8, lambda sha: True, "fff9999") == "m" * 8, "a read after a twin round reads the whole PR"
+    lens = {"n": 2, "sha": "abc1234", "verdict": "clean", "findings": []}
+    assert ready_problems([twin_block, lens], "abc1234ff"), "a twin round is not one of the two reads a PR needs"
     assert skip_reason([{"n": 1, "sha": "abc1234", "verdict": "blocked"}], "def5678") is None, "a new head is read"
     assert answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 2, 733)
     assert not answered("Fix x\n\nThe fixer's answer to review round 2 on #733.\n", 3, 733)
@@ -1327,6 +1375,8 @@ def selfcheck():
     assert [f["claim"].split(" ")[0] for f in found] == ["#6", "#7"], found
     landed = dict(twin, number=11, state="closed", merged=True)
     assert duplicate_findings(pr, diff, [landed], {11: other}.get, "apex/yi") == [], "a merged PR's text is main's, not a twin"
+    abandoned = dict(same_issue, number=13, state="closed", merged=False)
+    assert duplicate_findings(pr, diff, [abandoned], {13: other}.get, "apex/yi") == [], "a PR closed unmerged is no twin"
     successor = dict(twin, number=10)
     assert duplicate_findings(pr, diff, [successor], {10: other}.get, "apex/yi", lambda a, b: b["number"] == 10) == [], \
         "a successor opened against main that carries this head is a stack, not a twin"
