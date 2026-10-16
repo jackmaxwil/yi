@@ -5,6 +5,7 @@ use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::prelude::CrosstermBackend;
+use ratatui::text::Line;
 
 /// Test backend (§17.3; ratatui 0.29 keeps
 /// `CrosstermBackend::writer` private, so the parser sits behind a shared
@@ -13,6 +14,24 @@ use ratatui::prelude::CrosstermBackend;
 /// from the parser.
 mod session {
     include!("session.rs");
+}
+pub fn flat(lines: &[Line<'_>]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+pub fn flat_trimmed(lines: &[Line<'_>]) -> Vec<String> {
+    flat(lines)
+        .into_iter()
+        .map(|row| row.trim_end().to_owned())
+        .collect()
 }
 
 use std::sync::{Arc, Mutex};
