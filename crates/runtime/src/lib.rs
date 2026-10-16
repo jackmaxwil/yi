@@ -53,7 +53,6 @@ pub mod skills;
 pub mod slash;
 pub mod spend;
 pub mod subagent;
-pub mod tape;
 pub mod telemetry;
 pub mod title;
 pub mod todo;
