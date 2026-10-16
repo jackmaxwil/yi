@@ -395,6 +395,21 @@ pub fn notebook_lines(
                 theme,
             ));
         }
+        for size in &cell.dropped_image_bytes {
+            let what = format!("image {size} B base64 dropped");
+            let cap = format!("notebook cap {} B", crate::model::IMAGE_BYTES_MAX);
+            out.push(cap_row(&what, &cap, "the transcript holds it", theme));
+        }
+        if cell.images_past_limit > 0 {
+            let noun = if cell.images_past_limit == 1 {
+                "image"
+            } else {
+                "images"
+            };
+            let what = format!("{} older {noun} not shown", cell.images_past_limit);
+            let cap = format!("notebook keeps {} per cell", crate::model::IMAGES_PER_CELL);
+            out.push(cap_row(&what, &cap, "the transcript holds them", theme));
+        }
         for image in &cell.images {
             let kb = image.len().saturating_mul(3) / 4 / 1024;
             out.push(Line::styled(format!("  ▲ image · {kb} KB png"), teal));

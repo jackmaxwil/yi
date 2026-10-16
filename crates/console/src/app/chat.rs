@@ -485,7 +485,17 @@ impl App {
         };
         let mut left = None;
         match (&mut pane.content, fresh) {
-            (PaneContent::Notebook { session: slot, .. }, _) => *slot = Some(session.clone()),
+            (
+                PaneContent::Notebook {
+                    session: slot,
+                    drawn,
+                    ..
+                },
+                _,
+            ) => {
+                *slot = Some(session.clone());
+                *drawn = None;
+            }
             (_, Some(chat)) => {
                 left = Some(std::mem::replace(
                     &mut pane.content,
