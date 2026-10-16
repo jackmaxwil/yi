@@ -52,6 +52,15 @@ impl App {
             }),
             Target::Pane(_) | Target::Session(_) => false,
         };
+        let pinned = match &target {
+            Target::Session(index) => self
+                .state
+                .order
+                .get(*index)
+                .and_then(|id| self.state.sessions.get(id))
+                .is_some_and(|row| row.pinned.is_some()),
+            Target::Message { .. } | Target::Pane(_) => false,
+        };
         let tab = self.state.tab();
         let facts = Facts {
             cmd: self.cmd_hints,
@@ -59,6 +68,7 @@ impl App {
             open: self.state.open_apps.clone(),
             last_pane: tab.is_none_or(|tab| tab.layout.pane_ids().len() < 2),
             zoomed: tab.is_some_and(|tab| tab.zoomed),
+            pinned,
         };
         self.state.mode = Mode::Menu(Menu::new(target, at, &facts));
         self.dirty = true;
@@ -86,6 +96,32 @@ impl App {
         };
         if let Some((target, at)) = opened {
             self.open_menu(target, at);
+        }
+    }
+
+    pub(super) fn pin_focus(&mut self, outbound: &Outbound) {
+        let target = match self.state.zone {
+            Zone::Sidebar => self.state.selected_id().cloned(),
+            Zone::Panes => self.state.focused_session(),
+        };
+        match target {
+            Some(id) => self.toggle_pin(outbound, &id),
+            None => self.note("no session to pin"),
+        }
+    }
+
+    /// Invariant: a row shows a pin only once the daemon answers it, so a refused pin never does.
+    fn toggle_pin(&mut self, outbound: &Outbound, id: &SessionId) {
+        let Some(row) = self.state.sessions.get(id) else {
+            return self.note("no session to pin");
+        };
+        let params = json!({"sessionId": id.0, "pinned": row.pinned.is_none(), "cwd": row.root});
+        self.send_request(outbound, RequestKind::Pin(id.clone()), "_yi/pin", params);
+    }
+
+    pub(super) fn absorb_pin(&mut self, id: &SessionId, result: &Value) {
+        if let Some(row) = self.state.sessions.get_mut(id) {
+            row.pinned = result.get("pinnedMs").and_then(Value::as_u64);
         }
     }
 
@@ -237,6 +273,11 @@ impl App {
             (Target::Session(_), Verb::OpenBeside) if !self.connected() => {
                 self.note("not connected")
             }
+            (Target::Session(index), Verb::Pin) => {
+                if let Some(id) = self.state.order.get(index).cloned() {
+                    self.toggle_pin(outbound, &id);
+                }
+            }
             (Target::Session(index), Verb::OpenBeside) => {
                 self.state.selected = index;
                 self.state.cursor_moved = true;
@@ -361,6 +402,7 @@ impl App {
             name: None,
             created_ms: now_ms(),
             last_ms: 0,
+            pinned: None,
         });
         self.resume_into(outbound, pane, &session);
         // Incident: a daemon from the last build keeps serving after a rebuild, and its worker
@@ -466,6 +508,7 @@ mod tests {
             open: Vec::new(),
             last_pane: false,
             zoomed: false,
+            pinned: false,
         };
         app.state.mode = Mode::Menu(Menu::new(Target::Pane(gone), (0, 0), &facts));
         app.activate(&outbound);

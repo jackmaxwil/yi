@@ -745,6 +745,85 @@ fn the_ledger_survives_a_daemon_restart() -> TestResult {
     outcome
 }
 
+/// A pin answers its time, is listed, survives a daemon restart, and an unpin clears it.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_pin_survives_a_daemon_restart() -> TestResult {
+    let dir = Scratch::new("yi-serve-pin")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let mut first = DaemonClient::connect(&socket)?;
+        first.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut first, "2", &dir)?;
+        let pin = |client: &mut DaemonClient, pinned: bool| {
+            let params = json!({"sessionId": session_id, "pinned": pinned});
+            client.request("p", "_yi/pin", params)
+        };
+        let pinned = pin(&mut first, true)?;
+        let at = pinned["result"]["pinnedMs"].clone();
+        assert!(at.is_u64(), "the pin answers its time: {pinned}");
+        let listed = listed_row(&mut first, &session_id)?.ok_or("the session is listed")?;
+        assert_eq!(listed["_meta"]["yi"]["pinnedMs"], at, "{listed}");
+        first.request("s", "_yi/shutdown", json!({}))?;
+        wait_until(Instant::now() + Duration::from_secs(5), || {
+            Ok(!socket.exists())
+        })?;
+        let _ = daemon.wait();
+
+        let (restarted, socket) = spawn_daemon(&dir)?;
+        daemon = restarted;
+        let mut second = DaemonClient::connect(&socket)?;
+        second.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let row = listed_row(&mut second, &session_id)?
+            .ok_or("the restarted daemon must list the session")?;
+        assert_eq!(
+            row["_meta"]["yi"]["pinnedMs"], at,
+            "the pin survives: {row}"
+        );
+        pin(&mut second, false)?;
+        let row = listed_row(&mut second, &session_id)?.ok_or("still listed")?;
+        assert!(row["_meta"]["yi"]["pinnedMs"].is_null(), "unpinned: {row}");
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
+/// A worker that dies takes its unpinned rows with it and leaves the pinned one listed, so a
+/// later `_yi/seen` persists the ledger with the pin still in it.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_pin_survives_its_worker_dying() -> TestResult {
+    let dir = Scratch::new("yi-serve-pin-kill")?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let pinned_id = new_session(&mut client, "2", &dir)?;
+        let loose_id = new_session(&mut client, "3", &dir)?;
+        let params = json!({"sessionId": pinned_id, "pinned": true});
+        let at = client.request("p", "_yi/pin", params)?["result"]["pinnedMs"].clone();
+        assert!(at.is_u64(), "the pin answers its time");
+        for pid in worker_pids(&dir)? {
+            kill(&["-9", &pid])?;
+        }
+        wait_until(Instant::now() + Duration::from_secs(10), || {
+            Ok(listed_row(&mut client, &loose_id)?.is_none())
+        })?;
+        client.request("s", "_yi/seen", json!({"sessionId": pinned_id}))?;
+        let row = listed_row(&mut client, &pinned_id)?.ok_or("the pinned row must stay listed")?;
+        assert_eq!(
+            row["_meta"]["yi"]["pinnedMs"], at,
+            "the pin survives: {row}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// `_yi/shutdown` answers, then the daemon exits, its socket goes, and its worker dies
 /// with it — the console's double ctrl+c must leave no orphan behind.
 #[test]
@@ -783,14 +862,7 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
         if socket.exists() {
             return Err("the socket must be removed on shutdown".into());
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the worker is a grandchild the test can only see through the process table"
-        )]
-        let workers = Command::new("pgrep")
-            .args(["-f", &format!("acp --cwd {}", root.display())])
-            .output()?;
-        if workers.status.success() {
+        if !worker_pids(&root)?.is_empty() {
             return Err("the worker must die with the daemon".into());
         }
         Ok(())
@@ -798,6 +870,19 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome
+}
+
+/// The pids of the workers serving `root`, read from the process table.
+fn worker_pids(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the worker is a grandchild the test can only see through the process table"
+    )]
+    let workers = Command::new("pgrep")
+        .args(["-f", &format!("acp --cwd {}", root.display())])
+        .output()?;
+    let pids = String::from_utf8_lossy(&workers.stdout);
+    Ok(pids.split_whitespace().map(str::to_owned).collect())
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
