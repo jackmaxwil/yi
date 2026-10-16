@@ -8,16 +8,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use yi_types::schedule::ScheduleState;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
-#[path = "support/config_option.rs"]
-mod config_option;
-use config_option::current_value;
-#[path = "support/daemon.rs"]
-mod daemon;
-use daemon::{spawn_daemon, spawn_daemon_in, spawn_daemon_with};
+use crate::config_option::current_value;
+use crate::daemon::{spawn_daemon, spawn_daemon_in, spawn_daemon_with};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
