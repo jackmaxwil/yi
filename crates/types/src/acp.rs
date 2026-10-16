@@ -149,6 +149,10 @@ pub struct DaemonLedgerEntry {
     pub last_event_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// When the session was pinned to the top of the console's sidebar, which lists pins in
+    /// this order; absent means unpinned. Not `pinned`: the v1 fixture keeps that as an unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_ms: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
