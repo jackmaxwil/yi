@@ -30,6 +30,11 @@ impl DeliveryHub {
     pub(crate) fn hold(&self) {
         self.held.store(true, std::sync::atomic::Ordering::SeqCst);
     }
+    /// Invariant: a session closed or deleted while it was parked idle goes with the
+    /// timer its eviction held onto, or the schedule outlives the session.
+    pub(crate) fn unhold(&self) {
+        self.held.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 
     /// Invariant: an evicted session's wake is owed, not skipped: `reload` loads it and the
     /// deferred job delivers once its lane is back.
@@ -215,6 +220,20 @@ pub(crate) fn release(store: &Arc<JobStore>) {
             let held = shared.hub.held.load(std::sync::atomic::Ordering::SeqCst);
             !Arc::ptr_eq(&shared.store, store) || shared.hub.lane_count() > 0 || held
         });
+}
+/// A session this worker will never load again: lift the eviction hold so the held
+/// timer and interned store leave with the session instead of firing forever.
+pub(crate) fn unhold(path: &std::path::Path) {
+    let map = intern_map()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(shared) = map.get(path) else {
+        return;
+    };
+    shared.hub.unhold();
+    let store = std::sync::Arc::clone(&shared.store);
+    drop(map);
+    release(&store);
 }
 
 #[cfg(test)]
@@ -433,6 +452,33 @@ mod tests {
         assert!(
             !interned(),
             "a closed session's timer kept ticking and skipping its jobs"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_deleted_while_parked_leaves_no_held_timer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-unheld")?;
+        let path = dir.join("a").join("scheduled-jobs.json");
+        let shared = intern(path.clone(), DeliveryHub::hold);
+        let interned = || intern_map().lock().is_ok_and(|map| map.contains_key(&path));
+
+        let lane: Arc<DeliverFn> = Arc::new(|_, _| Ok(RunOutcome::Ran));
+        shared.hub.register("a".to_owned(), Arc::clone(&lane));
+        shared.hub.hold();
+        shared.hub.on_absent(Arc::new(|_| false));
+        assert!(shared.hub.unregister("a", &lane));
+        release(&shared.store);
+        assert!(
+            interned(),
+            "a parked session has a held timer to lift in the first place"
+        );
+
+        crate::schedule::release_unloaded(&dir, "a");
+        assert!(
+            !interned(),
+            "a deleted session's held timer kept firing and skipping its jobs forever"
         );
         Ok(())
     }
