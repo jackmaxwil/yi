@@ -2,9 +2,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 use yi_tui::port::SessionPort;
 use yi_types::acp::AcpSessionUpdate;
-use yi_types::tape::MarkKind;
 
-use crate::model::{PaneContent, SessionId, SessionStatus};
+use crate::model::{PaneContent, SessionId};
 
 use super::App;
 
@@ -98,127 +97,6 @@ impl App {
             .branch_due = true;
     }
 
-    pub(super) fn refresh_tape(&mut self, session: &SessionId) {
-        self.state
-            .diffs
-            .entry(session.clone())
-            .or_default()
-            .tape_due = true;
-    }
-
-    pub(super) fn on_tape(&self) -> bool {
-        self.state
-            .focused_pane()
-            .is_some_and(|pane| matches!(pane.content, PaneContent::Tape { .. }))
-    }
-
-    pub(super) fn tape_key(&mut self, key: KeyEvent) {
-        let busy = match self.state.focused_pane().map(|pane| &pane.content) {
-            Some(PaneContent::Tape { session, .. }) => {
-                self.state.sessions.get(session).is_some_and(|row| {
-                    matches!(row.status, SessionStatus::Working | SessionStatus::Blocked)
-                })
-            }
-            _ => return,
-        };
-        let Some(PaneContent::Tape {
-            session,
-            tape,
-            cursor,
-            armed,
-        }) = self.state.focused_pane_mut().map(|pane| &mut pane.content)
-        else {
-            return;
-        };
-        let marks = tape.as_ref().map_or(0, |tape| tape.marks.len());
-        let chosen = tape
-            .as_ref()
-            .and_then(|tape| tape.marks.get(*cursor))
-            .filter(|mark| mark.kind == MarkKind::User)
-            .map(|mark| mark.entry.clone());
-        let session = session.clone();
-        let confirmed = std::mem::take(armed) && key.code == KeyCode::Char('u');
-        let (request, note) = match (key.code, chosen) {
-            (KeyCode::Left, _) => {
-                *cursor = cursor.saturating_sub(1);
-                (None, None)
-            }
-            (KeyCode::Right, _) => {
-                *cursor = (*cursor + 1).min(marks.saturating_sub(1));
-                (None, None)
-            }
-            // Invariant: a rewind re-attaches the history a running turn is writing.
-            (KeyCode::Enter | KeyCode::Char('u'), Some(_)) if busy => {
-                (None, Some("a turn is running: rewind once it ends"))
-            }
-            (KeyCode::Enter, Some(entry)) => (
-                Some(super::port::PortRequest::Rewind(entry)),
-                Some(
-                    "rewound to before that turn: its prompt is back in the composer, the old branch kept",
-                ),
-            ),
-            (KeyCode::Char('u'), Some(entry)) if confirmed => (
-                Some(super::port::PortRequest::RewindFiles(entry)),
-                Some("restoring files to before that turn, then rewinding"),
-            ),
-            (KeyCode::Char('u'), Some(_)) => {
-                *armed = true;
-                (
-                    None,
-                    Some(
-                        "u again restores files to before that turn; paths you changed since the last turn are kept",
-                    ),
-                )
-            }
-            (KeyCode::Enter | KeyCode::Char('u'), None) if marks > 0 => {
-                (None, Some("only a turn you typed is a place to rewind to"))
-            }
-            _ => (None, None),
-        };
-        if let Some(request) = request
-            && let Some(chat) = self.state.chats_mut(&session).into_iter().next()
-        {
-            chat.port.queue.push(request);
-        }
-        if let Some(note) = note {
-            self.note(note);
-        }
-        self.dirty = true;
-    }
-
-    pub(super) fn absorb_tape(&mut self, session: &SessionId, result: &Value) {
-        let fresh: Option<yi_types::tape::Tape> = serde_json::from_value(result.clone()).ok();
-        for pane in self.state.panes.values_mut() {
-            if let PaneContent::Tape {
-                session: bound,
-                tape,
-                cursor,
-                ..
-            } = &mut pane.content
-                && bound == session
-            {
-                let marks = tape.as_ref().map_or(&[][..], |tape| tape.marks.as_slice());
-                let chosen = marks
-                    .get(*cursor)
-                    .filter(|_| cursor.saturating_add(1) < marks.len());
-                let last = fresh
-                    .as_ref()
-                    .map_or(0, |tape| tape.marks.len().saturating_sub(1));
-                *cursor = chosen
-                    .and_then(|mark| {
-                        fresh
-                            .as_ref()?
-                            .marks
-                            .iter()
-                            .position(|kept| kept.entry == mark.entry)
-                    })
-                    .unwrap_or(last);
-                tape.clone_from(&fresh);
-            }
-        }
-        self.dirty = true;
-    }
-
     pub(super) fn ask_branches(&mut self, outbound: &crate::client::Outbound) {
         let whys: Vec<(SessionId, (String, Vec<u32>))> = self
             .state
@@ -232,20 +110,6 @@ impl App {
                 super::RequestKind::Why(session.clone()),
                 "_yi/why",
                 serde_json::json!({"sessionId": session.0, "path": path, "lines": lines}),
-            );
-        }
-        let tapes: Vec<SessionId> = self
-            .state
-            .diffs
-            .iter_mut()
-            .filter_map(|(id, diff)| std::mem::take(&mut diff.tape_due).then(|| id.clone()))
-            .collect();
-        for session in tapes {
-            self.send_request(
-                outbound,
-                super::RequestKind::Tape(session.clone()),
-                "_yi/tape",
-                serde_json::json!({"sessionId": session.0}),
             );
         }
         let due: Vec<SessionId> = self
@@ -338,12 +202,6 @@ impl App {
                 });
                 if reviewing {
                     self.refresh_branch(session);
-                }
-                let taping = self.state.panes.values().any(|pane| {
-                    matches!(&pane.content, PaneContent::Tape { session: bound, .. } if bound == session)
-                });
-                if taping {
-                    self.refresh_tape(session);
                 }
             }
             AcpSessionUpdate::ToolCallUpdate(yi_types::acp::AcpToolCallUpdate {
