@@ -371,8 +371,8 @@ fn the_first_message_makes_the_session_not_idle() {
     assert!(!app.title_idle());
 }
 
-/// The vortex is the name sampled through a flow that is gone by 2 s: the first frame is not the
-/// held frame, and the held frame has the name where every other scene has it.
+/// The vortex is the name sampled through a flow that is gone by 2 s. The cells inside the
+/// unwarped strokes (by [`title::distance`]) are all solid at the hold, and most are not at 0.1 s.
 #[test]
 fn the_mobius_name_comes_out_of_a_vortex_and_settles() {
     let at = |secs: f64| screen(Scene::Mobius, (80, 24), secs, None);
@@ -382,17 +382,27 @@ fn the_mobius_name_comes_out_of_a_vortex_and_settles() {
         0,
         "the vortex covers the screen too"
     );
-    let moved = first
-        .iter()
-        .flatten()
-        .zip(held.iter().flatten())
-        .filter(|(a, b)| a != b)
-        .count();
-    assert!(
-        moved > 300,
-        "the vortex moved only {moved} cells by the hold"
+    let inside: Vec<(usize, usize)> = (0..24)
+        .flat_map(|y| (0..80).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let u = (x as f64 + 0.5 - 40.0) / 24.0;
+            let v = (24.0 - 2.0 * y as f64 - 1.0) / 24.0;
+            title::distance(u, v) < -0.02
+        })
+        .collect();
+    let solid = |frame: &[Vec<char>]| inside.iter().filter(|&&(x, y)| frame[y][x] == '@').count();
+    assert!(inside.len() > 20, "{} stroke cells", inside.len());
+    assert_eq!(
+        solid(&held),
+        inside.len(),
+        "the name is where the others put it"
     );
-    assert_eq!(held[14][35], '@', "the Y stem is where the others put it");
+    assert!(
+        solid(&first) * 2 < inside.len(),
+        "the vortex left {} of {} stroke cells in place",
+        solid(&first),
+        inside.len()
+    );
 }
 
 /// The weather fades up from nothing, drifts, and the name rises through it as in the fold.
@@ -404,7 +414,7 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
         0,
         "nothing at the first instant"
     );
-    let (a, b) = (at(1.0), at(1.5));
+    let (a, b) = (at(0.4), at(0.9));
     assert!(
         count(&a, |g| g != ' ') > 500,
         "the weather fills the screen"
@@ -417,7 +427,7 @@ fn the_clouds_fade_up_drift_and_let_the_name_through() {
         .count();
     assert!(
         moved > 200,
-        "the drift moved only {moved} cells in half a second"
+        "the drift moved only {moved} cells in half a second before the name rises"
     );
     assert_eq!(at(2.1)[14][35], '@', "and the Y stem is solid through it");
 }
