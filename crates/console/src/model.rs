@@ -177,6 +177,8 @@ pub struct PendingAsk {
 }
 
 pub const KEPT_CELLS: usize = 50;
+pub const IMAGE_BYTES_MAX: usize = 512 * 1024;
+pub const IMAGES_PER_CELL: usize = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct NbCell {
@@ -189,8 +191,17 @@ pub struct NbCell {
     pub result: Option<String>,
     pub error: Option<String>,
     pub images: Vec<String>,
+    pub dropped_image_bytes: Vec<usize>,
+    pub images_past_limit: usize,
     pub duration_ms: Option<u64>,
     pub running: bool,
+}
+
+pub(crate) fn notebook_cells<'a>(
+    notebooks: &'a BTreeMap<SessionId, Vec<NbCell>>,
+    session: &SessionId,
+) -> &'a [NbCell] {
+    notebooks.get(session).map_or(&[][..], Vec::as_slice)
 }
 
 /// What a pane shows: the provider seam — a new kind is a new variant plus
@@ -210,7 +221,6 @@ pub enum PaneContent {
     },
     Notebook {
         session: Option<SessionId>,
-        cells: Vec<NbCell>,
         full: bool,
         /// Invariant: the rows drawn at a width, cleared by every cell update and by `v`.
         drawn: Option<(usize, Vec<ratatui::text::Line<'static>>)>,
@@ -411,6 +421,7 @@ pub struct ConsoleState {
     pub sidebar_cols: usize,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
+    pub notebooks: BTreeMap<SessionId, Vec<NbCell>>,
     pub side_opened: std::collections::BTreeSet<SessionId>,
     pub auto_side: bool,
     pub title: Option<yi_tui::title::Scene>,
@@ -452,6 +463,7 @@ impl ConsoleState {
             sidebar_cols: 0,
             cursor_moved: false,
             diffs: BTreeMap::new(),
+            notebooks: BTreeMap::new(),
             side_opened: std::collections::BTreeSet::new(),
             auto_side: true,
             title: None,

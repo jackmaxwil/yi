@@ -577,9 +577,13 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     let Some(pane) = app.state.panes.get(&pane_id) else {
         return clear(out, placed);
     };
-    let PaneContent::Notebook { cells, .. } = &pane.content else {
+    let PaneContent::Notebook { session, .. } = &pane.content else {
         return clear(out, placed);
     };
+    let cells = session
+        .as_ref()
+        .map(|session| crate::model::notebook_cells(&app.state.notebooks, session))
+        .unwrap_or(&[]);
     let image = cells
         .iter()
         .rev()
@@ -835,17 +839,21 @@ mod tests {
         let theme = Theme::new(ColorTier::TrueColor, true);
         let mut app = App::new("/repo".to_owned(), theme);
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec!["iVBORw0KGgo=".to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
         let placed = |app: &mut App| {
             let mut out = Vec::new();
@@ -872,18 +880,22 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.state.zone = crate::model::Zone::Panes;
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    number: 1,
-                    code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                number: 1,
+                code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40))?;
         let screen = |terminal: &Terminal<ratatui::backend::TestBackend>| -> String {
             let cells = terminal.backend().buffer().content();
@@ -916,17 +928,21 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.kitty = true;
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec!["iVBORw0KGgo=".to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
         let mut out = Vec::new();
         present(
