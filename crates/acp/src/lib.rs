@@ -441,17 +441,14 @@ impl AcpState {
     }
 
     fn session(&self, params: &Value) -> Result<(&SessionHandle, String), (i64, String)> {
-        let id = params
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?;
-        if let Some(error) = self.failed.get(id) {
+        let id = Self::session_id(params)?;
+        if let Some(error) = self.failed.get(&id) {
             return Err((INTERNAL_ERROR, error.clone()));
         }
-        self.sessions
-            .get(id)
-            .map(|handle| (handle, id.to_owned()))
-            .ok_or((INVALID_PARAMS, format!("unknown session {id}")))
+        match self.sessions.get(&id) {
+            Some(handle) => Ok((handle, id)),
+            None => Err((INVALID_PARAMS, format!("unknown session {id}"))),
+        }
     }
 
     fn session_result(&self, session_id: &str) -> AcpSessionResult {
