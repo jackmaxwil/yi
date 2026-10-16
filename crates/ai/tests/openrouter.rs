@@ -549,17 +549,18 @@ fn answer(listener: &TcpListener, content_type: &str, reply: &str) -> std::io::R
     )
 }
 
-/// D175: an in-band error chunk ends the stream with no usage chunk and no transport fault,
-/// so the turn is settled from the generation record like a dropped one. Settlement exists
-/// only on an `openrouter.ai` base URL; this one cannot resolve, and the loopback proxy
-/// answers both the stream and the record.
-#[tokio::test]
-async fn an_in_band_error_chunk_is_settled_from_the_record() -> TestResult {
+/// Binds a loopback stand-in and spawns a detached server thread answering the two-exchange
+/// OpenRouter wire: the SSE stream whose second chunk carries the in-band error, then the
+/// generation record. The thread is never joined: a turn left unsettled never asks for it.
+fn settled_stand_in(
+    tag: &str,
+    chunk_provider: Option<&str>,
+) -> std::io::Result<(u16, serde_json::Value)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let stream_body: String = [
-        json!({"id": "gen-1", "provider": "Wafer", "choices": [{"index": 0, "delta": {"reasoning": "hmm"}}]}),
-        json!({"id": "gen-1", "provider": "Wafer",
+        json!({"id": tag, "provider": chunk_provider, "choices": [{"index": 0, "delta": {"reasoning": "hmm"}}]}),
+        json!({"id": tag, "provider": chunk_provider,
                "error": {"code": 502, "message": "Internal Server Error", "metadata": {"error_type": "server_error"}},
                "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}]}),
     ]
@@ -567,13 +568,22 @@ async fn an_in_band_error_chunk_is_settled_from_the_record() -> TestResult {
     .map(|chunk| format!("data: {chunk}\n\n"))
     .collect();
     let record = json!({"data": {"tokens_prompt": 5200, "tokens_completion": 900,
-        "native_tokens_reasoning": 900, "total_cost": 0.0004, "provider_name": "Wafer"}})
-    .to_string();
-    // not joined: a turn left unsettled never asks for the record, so the second accept waits
+        "native_tokens_reasoning": 900, "total_cost": 0.0004, "provider_name": "Wafer"}});
+    let record_body = record.to_string();
     std::thread::spawn(move || -> std::io::Result<()> {
         answer(&listener, "text/event-stream", &stream_body)?;
-        answer(&listener, "application/json", &record)
+        answer(&listener, "application/json", &record_body)
     });
+    Ok((port, record))
+}
+
+/// D175: an in-band error chunk ends the stream with no usage chunk and no transport fault,
+/// so the turn is settled from the generation record like a dropped one. Settlement exists
+/// only on an `openrouter.ai` base URL; this one cannot resolve, and the loopback proxy
+/// answers both the stream and the record.
+#[tokio::test]
+async fn an_in_band_error_chunk_is_settled_from_the_record() -> TestResult {
+    let (port, _) = settled_stand_in("gen-1", Some("Wafer"))?;
 
     let mut model = target_model()?;
     model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
@@ -609,5 +619,90 @@ async fn an_in_band_error_chunk_is_settled_from_the_record() -> TestResult {
     );
     assert_eq!((usage.input, usage.output), (5200, 900));
     assert_eq!(usage.cost.total.as_f64(), Some(0.0004));
+    Ok(())
+}
+
+/// Incident: a turn owed a settlement waited 3 + 5 + 8 + 12 s for the generation record before
+/// it ended. With a hook it ends at once and the record's usage arrives through the hook.
+#[tokio::test]
+async fn a_hooked_turn_ends_before_its_record_is_fetched() -> TestResult {
+    let (port, _) = settled_stand_in("gen-2", Some("Wafer"))?;
+
+    let (booked, settled) = std::sync::mpsc::channel();
+    let hook = move |usage, _upstream| {
+        let _receiver_gone = booked.send(usage);
+    };
+    let mut model = target_model()?;
+    model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
+    let options = OpenAiOptions {
+        proxy: ProxyConfig::from_values(Some(&format!("http://127.0.0.1:{port}")), None, None)?,
+        settle: Some(yi_ai::settle::Settle(std::sync::Arc::new(hook))),
+        ..OpenAiOptions::default()
+    };
+    let mut events = yi_ai::openai::stream(&model, &history_context(), &options, "sk-test");
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut last = None;
+        while let Some(event) = events.recv().await {
+            last = Some(event);
+        }
+        last
+    })
+    .await
+    .map_err(|_| "the turn waited for its generation record")?;
+    let Some(AssistantMessageEvent::Error { error, .. }) = ended else {
+        return Err(format!("expected an error event: {ended:?}").into());
+    };
+    let AgentMessage::Assistant { usage, .. } = error else {
+        return Err("not an assistant message".into());
+    };
+    assert!(
+        usage.unknown,
+        "the turn ended before its record could be read"
+    );
+    let usage = settled.recv_timeout(std::time::Duration::from_secs(20))?;
+    assert_eq!((usage.input, usage.output), (5200, 900));
+    assert_eq!(usage.cost.total.as_f64(), Some(0.0004));
+    Ok(())
+}
+
+/// Incident: a one-shot run exits when its turn ends, before the detached settlement lands, and
+/// lost the cut turn's cost; a record that names an upstream no chunk named lost that label too.
+#[tokio::test]
+async fn a_drain_waits_for_the_settlement_and_it_names_the_upstream() -> TestResult {
+    let (port, _) = settled_stand_in("gen-3", None)?;
+
+    let (booked, settled) = std::sync::mpsc::channel();
+    let hook = move |usage, upstream| {
+        let _receiver_gone = booked.send((usage, upstream));
+    };
+    let mut model = target_model()?;
+    model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
+    let options = OpenAiOptions {
+        proxy: ProxyConfig::from_values(Some(&format!("http://127.0.0.1:{port}")), None, None)?,
+        settle: Some(yi_ai::settle::Settle(std::sync::Arc::new(hook))),
+        ..OpenAiOptions::default()
+    };
+    let mut events = yi_ai::openai::stream(&model, &history_context(), &options, "sk-test");
+    let mut last = None;
+    while let Some(event) = events.recv().await {
+        last = Some(event);
+    }
+    let Some(AssistantMessageEvent::Error { error, .. }) = last else {
+        return Err(format!("expected an error event: {last:?}").into());
+    };
+    let AgentMessage::Assistant { diagnostics, .. } = error else {
+        return Err("not an assistant message".into());
+    };
+    assert!(
+        diagnostics
+            .iter()
+            .flatten()
+            .all(|note| note.diagnostic_type != "upstream"),
+        "no chunk named the upstream, so the entry cannot carry it"
+    );
+    tokio::task::spawn_blocking(|| yi_ai::settle::drain(None)).await?;
+    let (usage, upstream) = settled.try_recv()?;
+    assert_eq!((usage.input, usage.output), (5200, 900));
+    assert_eq!(upstream.as_deref(), Some("Wafer"));
     Ok(())
 }
