@@ -531,12 +531,12 @@ mod tests {
 
     #[test]
     fn dropped_images_are_recorded_by_the_cap_that_dropped_them() -> TestResult {
-        let cells = one_cell(media(&[65537, 6, 6, 6, 6, 6, 6]));
+        let cells = one_cell(media(&[524289, 6, 6, 6, 6, 6, 6]));
         let cell = cells.first().ok_or("no cell")?;
-        assert_eq!(cell.dropped_image_bytes, vec![65537], "over the size cap");
+        assert_eq!(cell.dropped_image_bytes, vec![524289], "over the size cap");
         assert_eq!(cell.images_past_limit, 2, "past the four-image limit");
         assert_eq!(cell.images.len(), 4);
-        let at_limit = one_cell(media(&[65536, 6, 6, 6]));
+        let at_limit = one_cell(media(&[524288, 6, 6, 6]));
         assert_eq!(at_limit[0].images.len(), 4, "the limit itself is kept");
         assert!(at_limit[0].dropped_image_bytes.is_empty());
         assert_eq!(at_limit[0].images_past_limit, 0);
@@ -545,11 +545,12 @@ mod tests {
 
     #[test]
     fn each_dropped_image_notice_names_its_own_cap() -> TestResult {
-        let cells = one_cell(media(&[65537, 6, 6, 6, 6, 6, 6]));
+        let cells = one_cell(media(&[524289, 6, 6, 6, 6, 6, 6]));
         let said = rows(&cells, 80, false);
         assert!(
-            said.iter()
-                .any(|row| row.contains("[…] image 65537 B base64 dropped · notebook cap 65536 B")),
+            said.iter().any(
+                |row| row.contains("[…] image 524289 B base64 dropped · notebook cap 524288 B")
+            ),
             "{said:#?}"
         );
         assert!(
