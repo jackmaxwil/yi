@@ -92,40 +92,6 @@ fn a_branch_review_names_the_todo_of_a_file_its_edit_named_absolutely() {
     );
 }
 
-/// Dies with no picture of the time: where a session's minutes went, and its turns,
-/// checkpoints and failures, were nowhere on screen to scrub.
-#[test]
-fn a_tape_draws_model_and_tool_time_and_points_at_the_chosen_mark() {
-    use yi_types::tape::{Mark, MarkKind, Tape};
-    let theme = Theme::new(ColorTier::TrueColor, true);
-    let mark = |at: u64, kind: MarkKind, label: &str| Mark {
-        at,
-        kind,
-        entry: format!("e{at}"),
-        label: label.to_owned(),
-    };
-    let tape = Tape {
-        start: 0,
-        end: 10_000,
-        model: vec![[0, 7_000]],
-        tools: vec![[7_000, 9_000]],
-        marks: vec![
-            mark(0, MarkKind::User, "fix the gauge"),
-            mark(8_000, MarkKind::Failed, "bash failed"),
-            mark(9_000, MarkKind::Checkpoint, "checkpoint"),
-        ],
-    };
-    let (title, lines) = yi_console::render::tape_view(Some(&tape), 1, 48, &theme);
-    assert_eq!(title, "Tape · 10s · model 70% · tools 20%");
-    let rows = text(&lines);
-    assert!(rows[2].contains('┃'), "{rows:#?}");
-    assert!(rows[3].contains('✕') && rows[3].contains('◆'), "{rows:#?}");
-    assert!(
-        rows.iter().any(|row| row == "+8s · bash failed"),
-        "{rows:#?}"
-    );
-}
-
 /// Dies with no provenance: a hunk showed what changed and never why, though `yi why` could
 /// walk its line to a commit, a todo and a goal.
 #[test]

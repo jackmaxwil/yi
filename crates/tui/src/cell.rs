@@ -316,7 +316,7 @@ fn grep_row(line: &str) -> Option<(&str, &str, &str)> {
     Some((path, number, text))
 }
 
-pub(crate) fn elapsed_label(ms: u64) -> String {
+pub fn elapsed_label(ms: u64) -> String {
     if ms >= 60_000 {
         format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
     } else if ms >= 1000 {
