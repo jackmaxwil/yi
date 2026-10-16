@@ -756,7 +756,7 @@ fn paint_chat_pane(
     else {
         return;
     };
-    chat.app.set_kitty(kitty && view.focused);
+    chat.app.set_kitty(kitty);
     chat.app.set_title_cover(covered);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
