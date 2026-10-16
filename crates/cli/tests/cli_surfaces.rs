@@ -4,16 +4,10 @@ use std::process::{Command, Output};
 
 use serde_json::{Value, json};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
-#[path = "support/prompt_slots.rs"]
-mod prompt_slots_support;
-use prompt_slots_support::prompt_slots;
-#[path = "support/session_files.rs"]
-mod session_files;
-use session_files::{session_files, session_text};
+use crate::prompt_slots_support::prompt_slots;
+use crate::session_files::{session_files, session_text};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
