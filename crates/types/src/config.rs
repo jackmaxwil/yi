@@ -248,7 +248,7 @@ pub struct CatalogConfig {
 }
 
 /// `console.titleIntro`: draw the title field at console start (on);
-/// `console.titleWeights`: scene name to weight, the draw's odds; absent or empty, Kali four in five.
+/// `console.titleWeights`: scene name to weight, the draw's odds; absent or empty, Kali 8, every other scene 2.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConsoleConfig {
