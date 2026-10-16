@@ -52,3 +52,21 @@ fn no_hint_names_a_key_the_terminal_takes() {
         assert!(!named.contains(&label.as_str()), "{label} is advertised");
     }
 }
+
+#[test]
+fn the_header_buttons_and_terminal_keep_chords_the_terminal_leaves_alone() {
+    use yi_console::keys::Action;
+    let shifted = KeyModifiers::SUPER | KeyModifiers::SHIFT;
+    let cases = [
+        (KeyModifiers::ALT, 'y', Action::OpenTerminal),
+        (KeyModifiers::SUPER, 'y', Action::OpenTerminal),
+        (shifted, 'B', Action::OpenBrowser),
+        (KeyModifiers::ALT, 'w', Action::OpenBrowser),
+        (KeyModifiers::SUPER, 'o', Action::OpenEditor),
+        (shifted, 'R', Action::ToggleDiff),
+    ];
+    for (modifiers, c, want) in cases {
+        let key = KeyEvent::new(KeyCode::Char(c), modifiers);
+        assert_eq!(direct(&key), Some(want), "{modifiers:?} {c}");
+    }
+}

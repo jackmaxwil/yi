@@ -1022,6 +1022,74 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with the mark gone from every chat pane but the focused one, or with an unfocused
+    /// pane retransmitting its orb or waking the loop every frame: only the focused pane animates.
+    #[test]
+    fn every_drawn_chat_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.kitty = true;
+        let left = app.state.focused_pane_id().ok_or("a pane")?;
+        let right = app
+            .state
+            .split_focused(ratatui::layout::Direction::Horizontal)
+            .ok_or("no split")?;
+        for (pane, id) in [(left, "s-a"), (right, "s-b")] {
+            let session = SessionId(id.to_owned());
+            let chat = app.make_chat(pane, &session);
+            if let Some(slot) = app.state.panes.get_mut(&pane) {
+                slot.content = PaneContent::Session {
+                    session: Some(session),
+                    chat: Some(chat),
+                };
+            }
+        }
+        if let Some(tab) = app.state.tab_mut() {
+            tab.layout.focus_pane(left);
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
+        let mut out = Vec::new();
+        let mut owners = std::collections::HashMap::new();
+        crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
+        let written = String::from_utf8_lossy(&out);
+        for pane in [left, right] {
+            let placed = orb_ids(pane)
+                .iter()
+                .any(|id| written.contains(&format!("a=p,i={id},")));
+            assert!(placed, "pane {} has no mark: {written:?}", pane.raw());
+        }
+        let right_chat = app
+            .state
+            .chats_mut(&SessionId("s-b".to_owned()))
+            .into_iter()
+            .next()
+            .ok_or("no chat")?;
+        right_chat
+            .app
+            .reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        std::thread::sleep(yi_tui::orb::FRAME * 2);
+        out.clear();
+        crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
+        let written = String::from_utf8_lossy(&out);
+        for id in orb_ids(right) {
+            assert!(
+                !written.contains(&format!("a=t,i={id},")),
+                "the unfocused pane retransmitted its mark: {written:?}"
+            );
+            assert!(
+                !written.contains(&format!("a=p,i={id},")),
+                "the unfocused pane re-placed its mark: {written:?}"
+            );
+        }
+        assert!(
+            crate::chat_wake(&app) > yi_tui::orb::FRAME,
+            "an unfocused running pane wakes the loop in {:?}, inside one {:?} frame",
+            crate::chat_wake(&app),
+            yi_tui::orb::FRAME
+        );
+        Ok(())
+    }
+
     /// Dies with the chat's orb frozen mid-morph: a loop step that drew no text ran no image
     /// tick, so the orb moved only on steps that happened to repaint.
     #[test]
