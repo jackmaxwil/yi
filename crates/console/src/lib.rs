@@ -575,9 +575,13 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     let want = focused
         .and_then(|pane_id| app.state.panes.get(&pane_id))
         .and_then(|pane| {
-            let PaneContent::Notebook { cells, .. } = &pane.content else {
+            let PaneContent::Notebook { session, .. } = &pane.content else {
                 return None;
             };
+            let cells = session
+                .as_ref()
+                .map(|session| crate::model::notebook_cells(&app.state.notebooks, session))
+                .unwrap_or(&[]);
             cells
                 .iter()
                 .rev()
@@ -852,17 +856,21 @@ mod tests {
     }
 
     fn notebook_pane(app: &mut App, pane_id: crate::layout::PaneId, image: &str) {
+        let session = crate::model::SessionId(format!("s-nb-{pane_id:?}"));
         if let Some(pane) = app.state.panes.get_mut(&pane_id) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec![image.to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec![image.to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
     }
 
     /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
@@ -903,12 +911,23 @@ mod tests {
         let first = stream(&mut app);
         assert!(first.contains("a=p,i=0,"), "{first:?}");
         let home = app.state.focused_pane_id().ok_or("a pane")?;
-        if let Some(pane) = app.state.panes.get_mut(&home) {
-            let crate::model::PaneContent::Notebook { cells, .. } = &mut pane.content else {
+        if let Some(pane) = app.state.panes.get(&home) {
+            let crate::model::PaneContent::Notebook {
+                session: Some(session),
+                ..
+            } = &pane.content
+            else {
                 return Err("a notebook".into());
             };
-            cells[0].images[0] =
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAElFTkSuQmCC".to_owned();
+            if let Some(cell) = app
+                .state
+                .notebooks
+                .get_mut(session)
+                .and_then(|cells| cells.first_mut())
+                && let Some(image) = cell.images.first_mut()
+            {
+                *image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAElFTkSuQmCC".to_owned();
+            }
         }
         app.dirty = true;
         draw(&mut app, &mut terminal, &theme)?;
@@ -938,9 +957,7 @@ mod tests {
             place_notebook_image(app, &mut out);
             String::from_utf8_lossy(&out).into_owned()
         };
-        let Some(tab) = app.state.tab_mut() else {
-            return Err("a tab".into());
-        };
+        let tab = app.state.tab_mut().ok_or("a tab")?;
         tab.zoomed = true;
         tab.layout.focus_direction(
             crate::layout::NavDirection::Left,
@@ -950,9 +967,7 @@ mod tests {
         draw(&mut app, &mut terminal, &theme)?;
         let first = stream(&mut app);
         assert!(first.contains("m=0;iVBORw0KGgo="), "{first:?}");
-        let Some(tab) = app.state.tab_mut() else {
-            return Err("a tab".into());
-        };
+        let tab = app.state.tab_mut().ok_or("a tab")?;
         tab.layout.focus_direction(
             crate::layout::NavDirection::Right,
             ratatui::layout::Rect::new(0, 0, 200, 100),
@@ -978,18 +993,22 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.state.zone = crate::model::Zone::Panes;
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    number: 1,
-                    code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                number: 1,
+                code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40))?;
         let screen = |terminal: &Terminal<ratatui::backend::TestBackend>| -> String {
             let cells = terminal.backend().buffer().content();
@@ -1022,17 +1041,21 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.kitty = true;
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec!["iVBORw0KGgo=".to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
         let mut out = Vec::new();
         present(
@@ -1084,11 +1107,8 @@ mod tests {
         );
         assert!(out.contains("s=32,v=48,a=t,i=8000"), "{out:?}");
         assert!(out.contains("a=p,i=8000,p=1,q=2,C=1,c=4,r=3"), "{out:?}");
-        let gear = app
-            .hits
-            .as_ref()
-            .and_then(|hits| hits.gear)
-            .ok_or("no gear")?;
+        let hits = app.hits.as_ref();
+        let gear = hits.and_then(|hits| hits.gear).ok_or("no gear")?;
         assert_eq!(gear.height, 3);
         if let Some(hits) = app.hits.as_mut() {
             hits.overlays = vec![gear];
@@ -1107,24 +1127,15 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.state.link = crate::model::Link::Connected;
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
-        let key_bg = |terminal: &Terminal<ratatui::backend::TestBackend>,
-                      at: ratatui::layout::Rect| {
-            let cell = terminal
-                .backend()
-                .buffer()
-                .cell((at.x.saturating_add(2), at.y));
+        let key_bg = |t: &Terminal<ratatui::backend::TestBackend>, at: ratatui::layout::Rect| {
+            let cell = t.backend().buffer().cell((at.x.saturating_add(2), at.y));
             cell.map(|cell| cell.bg)
         };
         draw(&mut app, &mut terminal, &theme)?;
-        let buttons = app
-            .hits
-            .as_ref()
-            .map(|hits| hits.hint_buttons.clone())
-            .unwrap_or_default();
-        let (first, second) = (
-            buttons.first().ok_or("no hint")?.0,
-            buttons.get(1).ok_or("one hint")?.0,
-        );
+        let hits = app.hits.as_ref();
+        let buttons = hits.map(|h| h.hint_buttons.clone()).unwrap_or_default();
+        let first = buttons.first().ok_or("no hint")?.0;
+        let second = buttons.get(1).ok_or("one hint")?.0;
         let rest = (key_bg(&terminal, first), key_bg(&terminal, second));
         assert_ne!(rest.0, rest.1, "each keycap wears its own colour");
         let (events, _received) = client::events();
