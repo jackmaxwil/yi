@@ -174,9 +174,17 @@ impl ProviderStream {
         }
     }
 
+    /// Invariant: a side session (an auto-review) shares the root's stream, so its hook never
+    /// replaces the one wired first, which books on the root's ledger.
+    pub(crate) fn settle_unless_wired(&self, hook: yi_ai::settle::Settle) {
+        if let Ok(mut slot) = self.settle.lock() {
+            slot.get_or_insert(hook);
+        }
+    }
+
     #[cfg(test)]
-    pub(crate) fn settle_wired_for_test(&self) -> bool {
-        self.settle.lock().is_ok_and(|slot| slot.is_some())
+    pub(crate) fn settle_wired_for_test(&self) -> Option<yi_ai::settle::Settle> {
+        self.settle.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// Seeds `provider`'s entry with a credential already resolved.

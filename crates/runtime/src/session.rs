@@ -235,7 +235,9 @@ impl AgentSession {
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
         };
-        session.provider().settle_into(session.settle_hook(None));
+        session
+            .provider()
+            .settle_unless_wired(session.settle_hook(None));
         session
     }
 
