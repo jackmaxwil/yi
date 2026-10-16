@@ -440,20 +440,6 @@ impl AcpState {
         Ok(json!({ "callId": call_id }))
     }
 
-    /// A session closed or deleted without a loaded lane: its parked schedule timer
-    /// would otherwise be held forever by the eviction that unloaded it.
-    fn release_parked(&self, id: &str) {
-        yi_runtime::schedule::release_unloaded(&self.schedules_root, id);
-    }
-
-    fn session_id(params: &Value) -> Result<String, (i64, String)> {
-        params
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))
-    }
-
     fn session(&self, params: &Value) -> Result<(&SessionHandle, String), (i64, String)> {
         let id = params
             .get("sessionId")
@@ -521,6 +507,7 @@ impl AcpState {
             refuse(&self.sink, &handle.prompts, REQUEST_CANCELLED, closed);
         }
     }
+
     fn emit_config(&self, session_id: &str) {
         let Some(handle) = self.sessions.get(session_id) else {
             return;
@@ -537,10 +524,12 @@ impl AcpState {
         );
         (self.sink)(&update_notification(session_id, update));
     }
+
     fn emit_goal(&self, session_id: &str, goal: &Value) {
         let update = extension("_yi/goal", [("goal", goal.clone())]);
         (self.sink)(&update_notification(session_id, update));
     }
+
     fn set_config_option(&mut self, params: &Value) -> Result<Value, (i64, String)> {
         let (handle, id) = self.session(params)?;
         let config_id = params.get("configId").and_then(Value::as_str).unwrap_or("");
@@ -592,6 +581,7 @@ impl AcpState {
         self.emit_config(&id);
         Ok(json!({"configOptions": self.session_result(&id).config_options}))
     }
+
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         if !matches!(
             method,
@@ -648,7 +638,28 @@ impl AcpState {
                 handle.session.abort();
                 Ok(json!({}))
             }
-            "session/list" => self.list_sessions(),
+            "session/list" => {
+                let _listing = yi_types::trace::span("acp.repo_list");
+                let sessions: Vec<Value> = self
+                    .repo
+                    .list()
+                    .map_err(|error| (INTERNAL_ERROR, error.to_string()))?
+                    .iter()
+                    .map(|metadata| {
+                        json!({
+                            "sessionId": metadata.id,
+                            "cwd": self.cwd,
+                            "title": metadata.name,
+                            "_meta": {"yi": {
+                                "attached": self.sessions.contains_key(&metadata.id)
+                                    || self.building.contains_key(&metadata.id),
+                                "createdAt": metadata.created_at,
+                            }},
+                        })
+                    })
+                    .collect();
+                Ok(json!({"sessions": sessions}))
+            }
             "session/resume" => {
                 let id = Self::session_id(params)?;
                 let store = match self.store_of(&id) {
@@ -695,6 +706,7 @@ impl AcpState {
             }
             "session/delete" => {
                 let id = Self::session_id(params)?;
+                self.building.remove(&id);
                 let loaded = self.sessions.contains_key(&id);
                 self.drop_session(&id);
                 if !loaded {
@@ -717,28 +729,7 @@ impl AcpState {
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
-    fn list_sessions(&mut self) -> Result<Value, (i64, String)> {
-        let _listing = yi_types::trace::span("acp.repo_list");
-        let sessions: Vec<Value> = self
-            .repo
-            .list()
-            .map_err(|error| (INTERNAL_ERROR, error.to_string()))?
-            .iter()
-            .map(|metadata| {
-                json!({
-                    "sessionId": metadata.id,
-                    "cwd": self.cwd,
-                    "title": metadata.name,
-                    "_meta": {"yi": {
-                        "attached": self.sessions.contains_key(&metadata.id)
-                            || self.building.contains_key(&metadata.id),
-                        "createdAt": metadata.created_at,
-                    }},
-                })
-            })
-            .collect();
-        Ok(json!({"sessions": sessions}))
-    }
+
     fn handle_control(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         let (handle, session_id) = self.session(params)?;
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
@@ -822,6 +813,7 @@ impl AcpState {
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
+
     /// `_yi/*` extension methods (§17.2): the heartbeat and goal surfaces.
     fn handle_extension(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         let (handle, session_id) = self.session(params)?;
@@ -927,6 +919,7 @@ impl AcpState {
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
+
     fn sessions_text(&mut self) -> Result<String, (i64, String)> {
         let listed = self
             .repo
@@ -934,6 +927,7 @@ impl AcpState {
             .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
         Ok(yi_runtime::slash::sessions_listing(&listed))
     }
+
     /// A schedule mutation is a fact the client cannot infer from the
     /// method reply alone, since a heartbeat also fires without one.
     fn emit_heartbeat_changed(&self, session_id: &str, reply: &str) {
@@ -945,6 +939,7 @@ impl AcpState {
         });
         (self.sink)(&update_notification(session_id, update));
     }
+
     fn context_window(&self, session_id: &str) -> u64 {
         self.sessions
             .get(session_id)
@@ -952,6 +947,7 @@ impl AcpState {
             .or_else(|| (self.defaults)().map(|defaults| defaults.model.context_window))
             .unwrap_or(0)
     }
+
     fn emit_replay(
         &self,
         session_id: &str,
@@ -968,6 +964,7 @@ impl AcpState {
         self.emit_replay_from(session_id, &store, from, context_window, child)
             .map(|_| ())
     }
+
     fn emit_replay_from(
         &self,
         session_id: &str,
@@ -1032,6 +1029,7 @@ impl AcpState {
         }
         Ok(total)
     }
+
     /// Design §17.2: the stored branch replayed as `session/update`s. `from` skips entries the
     /// client holds (valid only if it saw nothing since); returns the next `replayedTo`.
     fn replay(
@@ -1062,6 +1060,7 @@ impl AcpState {
         Ok(total)
     }
 }
+
 /// Invariant: the daemon fans this worker's asks out to every attached client, so a submit
 /// carries no principal and is never confirmed here: an administrative op is `NoConfirmer`.
 fn submit_plan(
@@ -1074,12 +1073,14 @@ fn submit_plan(
     yi_runtime::plan::authority::submit_request(service, payload, None)
         .map_err(|error| (INVALID_PARAMS, error))
 }
+
 fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
     let waiting = std::mem::take(&mut *crate::update::queued(prompts));
     for prompt in waiting {
         respond(sink, prompt.request, Err((code, why.to_owned())));
     }
 }
+
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
     let frame = match outcome {
         Ok(result) => json!(AcpResponse {
@@ -1095,8 +1096,9 @@ fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
     };
     sink(&frame);
 }
+
 pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
-    let schedules_root = options.session_dir.join("schedules");
+    let schedules_root = yi_runtime::schedule::schedules_root(&options.session_dir);
     let repo = JsonlRepo::new(options.session_dir, options.cwd.display().to_string());
     let sink = stdout_sink();
     let pending: PendingAsks = Arc::new(Mutex::new(Some(HashMap::new())));

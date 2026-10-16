@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use serde_json::Value;
 use tokio::sync::mpsc::WeakUnboundedSender;
 use yi_types::subagent::ChildStatus;
 
@@ -69,6 +70,20 @@ pub(crate) fn kernel_pins(kernel: Option<&yi_runtime::KernelService>) -> bool {
 }
 
 impl AcpState {
+    /// A session closed or deleted without a loaded lane: its parked schedule timer
+    /// would otherwise be held forever by the eviction that unloaded it.
+    pub(crate) fn release_parked(&self, id: &str) {
+        yi_runtime::schedule::release_unloaded(&self.schedules_root, id);
+    }
+
+    pub(crate) fn session_id(params: &Value) -> Result<String, (i64, String)> {
+        params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or((crate::INVALID_PARAMS, "missing sessionId".to_owned()))
+    }
+
     /// Drops the longest-idle unpinned sessions past [`RESIDENT_MAX`], never `kept`.
     pub(crate) fn evict_idle(&mut self, kept: &str) {
         let back = away().remove(kept).and_then(|_| self.sessions.get(kept));
@@ -157,10 +172,18 @@ mod tests {
     }
 
     #[test]
-    fn a_running_child_pins_its_session() {
+    fn only_a_running_child_pins_its_session() {
         use yi_types::subagent::ChildStatus;
         assert!(child_pins(&child_update(ChildStatus::Running)));
         assert!(!child_pins(&child_update(ChildStatus::Completed)));
+        assert!(
+            !child_pins(&child_update(ChildStatus::Error)),
+            "a failed child holds nothing an eviction could lose"
+        );
+        assert!(
+            !child_pins(&child_update(ChildStatus::Other("paused".to_owned()))),
+            "a status a newer Yi wrote is not known to be running"
+        );
     }
 
     #[tokio::test]

@@ -2007,3 +2007,25 @@ fn a_letter_to_an_evicted_session_loads_it_and_reads_the_letter() -> TestResult 
     );
     client.finish()
 }
+
+/// Incident: a delete arriving while the session's build was in flight returned Ok, and the
+/// build then landed and loaded the deleted session back into memory.
+#[test]
+fn deleting_a_session_while_it_loads_does_not_load_it() -> TestResult {
+    let dir = temp_dir("resident-delete")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+    let id = new_idle_session(&mut client, &dir, 0)?;
+    client.request("close", "session/close", json!({"sessionId": id}))?;
+    client.request("resume", "session/resume", json!({"sessionId": id}))?;
+    let deleted = client.request("delete", "session/delete", json!({"sessionId": id}))?;
+    let reply = deleted.last().ok_or("no reply")?;
+    assert!(reply.get("error").is_none(), "{reply}");
+    let cancel = client.request("cancel", "session/cancel", json!({"sessionId": id}))?;
+    let after = cancel.last().ok_or("no reply")?;
+    assert!(
+        after.get("error").is_some() && !attached(&mut client, "list")?.contains(&id),
+        "the deleted session was loaded again: {after}"
+    );
+    client.finish()
+}

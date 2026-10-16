@@ -221,6 +221,22 @@ pub(crate) fn release(store: &Arc<JobStore>) {
             !Arc::ptr_eq(&shared.store, store) || shared.hub.lane_count() > 0 || held
         });
 }
+/// The durable schedules directory under a sessions directory, one subdirectory per session.
+pub fn schedules_root(session_dir: &std::path::Path) -> PathBuf {
+    session_dir.join("schedules")
+}
+
+/// A session's durable job file under [`schedules_root`].
+pub fn jobs_path(root: &std::path::Path, session_id: &str) -> PathBuf {
+    root.join(session_id).join("scheduled-jobs.json")
+}
+
+/// A session the worker closed or deleted without loading it: lift the hold its
+/// eviction put on the schedule hub so the held timer goes with the session.
+pub fn release_unloaded(root: &std::path::Path, session_id: &str) {
+    unhold(&jobs_path(root, session_id));
+}
+
 /// A session this worker will never load again: lift the eviction hold so the held
 /// timer and interned store leave with the session instead of firing forever.
 pub(crate) fn unhold(path: &std::path::Path) {
@@ -460,7 +476,7 @@ mod tests {
     async fn a_session_deleted_while_parked_leaves_no_held_timer()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = Scratch::new("yi-hub-unheld")?;
-        let path = dir.join("a").join("scheduled-jobs.json");
+        let path = jobs_path(&dir, "a");
         let shared = intern(path.clone(), DeliveryHub::hold);
         let interned = || intern_map().lock().is_ok_and(|map| map.contains_key(&path));
 
