@@ -473,14 +473,16 @@ fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
 /// or the idle poll woke the loop and drew at 28 fps in 2-row lurches.
 fn chat_wake(app: &App) -> Duration {
     use crate::model::PaneContent;
+    let focused = app.state.focused_pane_id();
     app.state
         .panes
-        .values()
-        .filter_map(|pane| match &pane.content {
+        .iter()
+        .filter_map(|(id, pane)| match &pane.content {
             PaneContent::Session {
                 chat: Some(chat), ..
             } => {
-                let orb = chat.app.orb_animating().then(|| chat.orb.wake());
+                let orb =
+                    (Some(*id) == focused && chat.app.orb_animating()).then(|| chat.orb.wake());
                 Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
             }
             _ => None,
@@ -494,8 +496,8 @@ fn chat_wake(app: &App) -> Duration {
         })
 }
 
-/// One orb per chat pane on its own image ids; only the focused pane animates. Incident: a
-/// closed or switched pane kept its orb, as the next chat's `Tick` deletes only what it placed.
+/// One orb per drawn chat pane on its own image ids; only the focused pane animates, the rest
+/// hold one placed frame. Incident: a closed or switched pane kept its orb.
 fn place_chat_orbs(
     app: &mut App,
     owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
@@ -522,13 +524,19 @@ fn place_chat_orbs(
         kept
     });
     let focused = app.state.focused_pane_id();
-    let covered = |id: PaneId| {
+    let shown = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
             let pane = hits.panes.iter().find(|(pane, _)| *pane == id);
-            pane.is_some_and(|(_, rect)| hits.overlays.iter().any(|cover| cover.intersects(*rect)))
+            pane.is_some_and(|(_, rect)| !hits.overlays.iter().any(|cover| cover.intersects(*rect)))
         })
     };
-    let shown = focused.filter(|id| !covered(*id));
+    let shown: Vec<PaneId> = app
+        .state
+        .panes
+        .keys()
+        .copied()
+        .filter(|id| shown(*id))
+        .collect();
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
             session,
@@ -538,11 +546,14 @@ fn place_chat_orbs(
             continue;
         };
         owners.entry(*id).or_insert_with(|| session.clone());
-        if Some(*id) == shown {
-            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
-            yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
+        if shown.contains(id) {
+            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
         } else {
             chat.orb.hide(out);
+        }
+        if shown.contains(id) && Some(*id) == focused {
+            yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
+        } else {
             yi_tui::logos::delete_all(out, &mut chat.logos);
         }
     }
