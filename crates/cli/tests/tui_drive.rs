@@ -6,6 +6,21 @@ use crate::session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+fn frames_text(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = entries.pop();
+    assert!(last.is_some(), "at least one frame must be dumped");
+    let mut frames = String::new();
+    for entry in entries {
+        frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    if let Some(last) = last {
+        frames.push_str(&std::fs::read_to_string(last.path())?);
+    }
+    Ok(frames)
+}
+
 #[test]
 fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     let dir = Scratch::new("yi-tui-drive")?;
@@ -48,13 +63,7 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let mut all_frames = String::new();
-    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    assert!(!entries.is_empty(), "at least one frame must be dumped");
-    for entry in entries {
-        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
+    let all_frames = frames_text(&frames)?;
     for needle in ["┃   ping", "faux: ping", "┃   follow-up", "╭", "faux-1"] {
         assert!(
             all_frames.contains(needle),
@@ -901,10 +910,7 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
     std::thread::sleep(std::time::Duration::from_millis(500));
     let seen = seen.lock().map_err(|_| "proxy log")?.clone();
     assert!(seen.is_empty(), "--faux left the process: {seen:?}");
-    let mut all_frames = String::new();
-    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
-        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
+    let all_frames = frames_text(&frames)?;
     for needle in ["scripted and offline", "claude-opus-5"] {
         assert!(
             all_frames.contains(needle),
@@ -1323,10 +1329,7 @@ fn a_lane_session_commits_contained() -> TestResult {
         "drive run must exit 0: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut all_frames = String::new();
-    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
-        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
+    let all_frames = frames_text(&frames)?;
     assert!(
         !all_frames.contains("Operation not permitted") && all_frames.contains("committed"),
         "the contained commit must run to the final reply: {all_frames}"
@@ -1387,10 +1390,7 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
         .current_dir(&*dir)
         .env("HOME", &home)
         .output()?;
-    let mut all_frames = String::new();
-    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
-        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
+    let all_frames = frames_text(&frames)?;
     assert!(
         output.status.success(),
         "drive run must exit 0: {}\n{all_frames}",
@@ -1462,10 +1462,7 @@ fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
         .current_dir(&*dir)
         .env("HOME", &home)
         .output()?;
-    let mut all_frames = String::new();
-    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
-        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
+    let all_frames = frames_text(&frames)?;
     assert!(
         output.status.success(),
         "the second write must not ask: {}\n{all_frames}",
@@ -1566,7 +1563,6 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
             &dir.join("sessions").display().to_string(),
             "--keys",
             &keys.display().to_string(),
-            "run a long command",
             "--frames",
             &frames.display().to_string(),
         ])
@@ -1629,10 +1625,7 @@ fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut all_frames = String::new();
-    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
-        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
-    }
+    let all_frames = frames_text(&frames)?;
     assert!(
         all_frames.contains("still running after"),
         "no backgrounding announcement in any frame: the bash call ran in the turn instead"
