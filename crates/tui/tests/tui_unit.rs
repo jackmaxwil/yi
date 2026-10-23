@@ -578,6 +578,47 @@ fn the_context_meter_changes_hue_as_the_window_fills() {
     assert_eq!(meter_hue(850, Some("reader")), Some(theme.dim));
 }
 
+/// Dies with the old one-colour row: every role takes its own hue, and a focused child's row
+/// goes one dim colour so it reads as borrowed.
+#[test]
+fn each_role_in_the_row_has_its_own_hue() {
+    let theme = theme();
+    let input = StatusInput {
+        model: "m".to_owned(),
+        mode: Some("verbose".to_owned()),
+        cwd: "/p".to_owned(),
+        branch: Some("main".to_owned()),
+        landing: Some("PR #7 ●".to_owned()),
+        cost: Some("$0.12".to_owned()),
+        cache: Some("80% cached".to_owned()),
+        subagents: 2,
+        ..StatusInput::default()
+    };
+    let hue_of = |input: &StatusInput, text: &str| {
+        let row = yi_tui::status::render(input, 120, &theme);
+        row.spans
+            .iter()
+            .find(|span| span.content.contains(text))
+            .and_then(|span| span.style.fg)
+    };
+    for (text, color) in [
+        ("◉ verbose", theme.blue5),
+        ("/p", theme.cyan),
+        ("⎇ main", theme.orange),
+        ("PR #7", theme.purple),
+        ("👥 2", theme.magenta),
+        ("$0.12", theme.success),
+        ("80% cached", theme.teal),
+    ] {
+        assert_eq!(hue_of(&input, text), Some(color), "{text}");
+        let borrowed = StatusInput {
+            focused_child: Some("reader".to_owned()),
+            ..input.clone()
+        };
+        assert_eq!(hue_of(&borrowed, text), Some(theme.dim), "{text} focused");
+    }
+}
+
 #[test]
 fn the_branch_carries_its_changed_path_count_only_when_there_is_one() {
     let theme = theme();

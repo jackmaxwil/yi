@@ -98,31 +98,81 @@ pub(crate) fn git_branch(cwd: &str) -> Option<String> {
         .map(|head| head.label())
 }
 
-/// The work tree's changed-path count, read by a short-lived thread so the render thread
-/// never waits on git. One read at a time; a read that finds none in flight starts the next.
+/// The work tree's changed-path count, read off the render thread. A request that arrives
+/// while a read runs replaces it, so a count is never shown beside another directory's branch.
 #[derive(Default)]
-pub(crate) struct Dirty {
+pub struct Dirty {
     count: std::sync::atomic::AtomicU32,
-    busy: std::sync::atomic::AtomicBool,
+    read_while_idle: std::sync::atomic::AtomicBool,
+    reading: std::sync::Mutex<Reading>,
+}
+
+#[derive(Default)]
+struct Reading {
+    running: bool,
+    wanted: Option<std::path::PathBuf>,
 }
 
 impl Dirty {
-    pub(crate) fn get(&self) -> u32 {
+    pub fn get(&self) -> u32 {
         self.count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// The count for a draw: the first idle draw after a turn (or ever) starts a read, so a
+    /// turn of twenty tool rounds costs one `git status`, taken once its edits are done.
+    pub fn count(self: &Arc<Self>, running: bool, cwd: &str) -> u32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        if running {
+            self.read_while_idle.store(false, Relaxed);
+        } else if !self.read_while_idle.swap(true, Relaxed) {
+            self.refresh(cwd);
+        }
+        self.get()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Reading> {
+        self.reading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// An unanswered read leaves the badge off rather than claiming a clean tree.
-    pub(crate) fn refresh(self: &Arc<Self>, cwd: &str) {
-        use std::sync::atomic::Ordering::{AcqRel, Relaxed, Release};
-        if self.busy.swap(true, AcqRel) {
+    pub fn refresh(self: &Arc<Self>, cwd: &str) {
+        let mut reading = self.lock();
+        reading.wanted = Some(std::path::PathBuf::from(cwd));
+        if std::mem::replace(&mut reading.running, true) {
             return;
         }
-        let (cell, cwd) = (Arc::clone(self), std::path::PathBuf::from(cwd));
-        std::thread::spawn(move || {
-            let count = yi_runtime::lane::dirty(&cwd).unwrap_or(0);
-            cell.count.store(count, Relaxed);
-            cell.busy.store(false, Release);
-        });
+        drop(reading);
+        let cell = Arc::clone(self);
+        std::thread::spawn(move || cell.serve());
+    }
+
+    fn serve(&self) {
+        loop {
+            let cwd = {
+                let mut reading = self.lock();
+                match reading.wanted.take() {
+                    Some(cwd) => cwd,
+                    None => {
+                        reading.running = false;
+                        return;
+                    }
+                }
+            };
+            let count = yi_runtime::environment::git_summary(&cwd)
+                .map_or(0, |(_, modified, untracked)| {
+                    modified.saturating_add(untracked)
+                });
+            let mut reading = self.lock();
+            if reading.wanted.is_none() {
+                let count = u32::try_from(count).unwrap_or(u32::MAX);
+                self.count
+                    .store(count, std::sync::atomic::Ordering::Relaxed);
+                reading.running = false;
+                return;
+            }
+        }
     }
 }
 

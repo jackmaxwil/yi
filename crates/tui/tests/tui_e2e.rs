@@ -2794,11 +2794,7 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
         &mut buffer,
         Rect::new(rect.x, rect.y.saturating_add(above), rect.width, used),
     );
-    let row = |y: u16| -> String {
-        (0..80)
-            .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
-            .collect()
-    };
+    let row = |y: u16| text_of(&buffer, y);
     let top = row(rect.y + rect.height - 3);
     assert!(
         top.contains("faux-1"),
@@ -3267,25 +3263,89 @@ fn the_composer_cursor_is_an_accent_block() {
     assert!(block.is_some(), "no accent block cursor in the composer");
 }
 
-/// Dies with the status painted over a search title or lost: while reverse-i-search holds the
-/// border, the status keeps a row of its own below the box.
+/// Dies with a fourth row for the status: idle, the status is the composer's top border, the
+/// third row from the bottom of a three-row region. With reverse-i-search holding that border
+/// it keeps a row of its own below the box instead of vanishing under the title.
 #[test]
-fn a_search_title_sends_the_status_back_to_its_own_row() {
+fn the_status_rides_the_border_idle_and_drops_below_it_during_a_search() {
     use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let mut app = app();
+    let idle = painted(&mut app);
+    assert!(
+        text_of(&idle, 21).contains("faux-1"),
+        "{}",
+        text_of(&idle, 21)
+    );
+    assert!(text_of(&idle, 23).contains('╰'), "{}", text_of(&idle, 23));
+
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let ctrl_r = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
     yi_tui::input::handle_terminal_event(&mut app, &tx, ctrl_r);
-    let buffer = painted(&mut app);
+    let search = painted(&mut app);
     assert!(
-        text_of(&buffer, 20).contains("reverse-i-search"),
+        text_of(&search, 20).contains("reverse-i-search"),
         "{}",
-        text_of(&buffer, 20)
+        text_of(&search, 20)
     );
-    assert!(!text_of(&buffer, 20).contains("faux-1"));
+    assert!(!text_of(&search, 20).contains("faux-1"));
     assert!(
-        text_of(&buffer, 23).contains("faux-1"),
+        text_of(&search, 23).contains("faux-1"),
         "{}",
-        text_of(&buffer, 23)
+        text_of(&search, 23)
     );
+}
+
+/// Dies with a count that outlives its directory: a refresh for another tree that arrived
+/// while a read ran was dropped, so the first tree's count sat beside the second's branch.
+#[test]
+fn a_dirty_count_follows_the_directory_asked_for_last() -> TestResult {
+    let root = Scratch::new("yi-dirty")?;
+    let (first, second) = (root.join("first"), root.join("second"));
+    crate::repo::init_repo(&first)?;
+    crate::repo::init_repo(&second)?;
+    for n in 0..3 {
+        std::fs::write(first.join(format!("new{n}")), "x")?;
+    }
+    std::fs::write(second.join("new"), "x")?;
+    let dirty = Arc::new(yi_tui::port::Dirty::default());
+    dirty.refresh(&first.to_string_lossy());
+    dirty.refresh(&second.to_string_lossy());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while dirty.get() != 1 {
+        assert!(Instant::now() < deadline, "count stuck at {}", dirty.get());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(dirty.get(), 1, "a late read of the first tree overwrote it");
+    Ok(())
+}
+
+/// Dies with a `git status` per draw, or per tool round: the count is read once when a turn
+/// has ended and not again until another turn has run, however many idle draws come between.
+#[test]
+fn a_dirty_count_is_read_once_per_idle_period() -> TestResult {
+    let root = Scratch::new("yi-dirty-turn")?;
+    let repo = root.join("repo");
+    crate::repo::init_repo(&repo)?;
+    std::fs::write(repo.join("one"), "x")?;
+    let cwd = repo.to_string_lossy().into_owned();
+    let dirty = Arc::new(yi_tui::port::Dirty::default());
+    let settled = |want: u32| -> TestResult {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while dirty.count(false, &cwd) != want {
+            assert!(Instant::now() < deadline, "stuck at {}", dirty.get());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    };
+    settled(1)?;
+    std::fs::write(repo.join("two"), "x")?;
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(dirty.count(false, &cwd), 1, "an idle draw re-read the tree");
+    assert_eq!(
+        dirty.count(true, &cwd),
+        1,
+        "a running draw re-read the tree"
+    );
+    settled(2)
 }

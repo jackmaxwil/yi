@@ -682,7 +682,7 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 ·  yi \n\
+         wait-frame 5000 › yi \n\
          wait-frame 3000 !⎇ lane\n\
          quit\n",
     )

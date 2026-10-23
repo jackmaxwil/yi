@@ -77,8 +77,7 @@ pub struct TuiOptions {
     pub pace: u16,
 }
 
-// Starting tall anchors the composer mid-screen until the first commit pushes it down,
-// so the viewport opens at an empty live region's height and grows upward from the cursor.
+// The viewport opens at an empty live region's height: starting tall anchors the composer mid-screen.
 const MIN_VIEWPORT_ROWS: u16 = 3;
 
 pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
@@ -346,7 +345,6 @@ impl App {
             pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
-        app.dirty.refresh(&app.options.cwd);
         app.scheduler.request();
         app
     }
@@ -449,7 +447,6 @@ impl App {
                 self.context_used = tokens.0;
             }
             self.branch = crate::port::git_branch(&self.options.cwd);
-            self.dirty.refresh(&self.options.cwd);
         }
     }
 

@@ -269,7 +269,7 @@ pub fn layout_chat(
         cwd: app.options.cwd.clone(),
         lane: app.options.lane.clone(),
         branch: app.branch.clone(),
-        dirty: app.dirty.get(),
+        dirty: app.dirty.count(app.running, &app.options.cwd),
         landing: app.landing.as_ref().and_then(|landing| {
             crate::status::landing_segment(landing, app.landing_at.map(|at| app.clock.since(at)))
         }),
@@ -355,13 +355,11 @@ pub fn layout_chat(
     let cursor = Style::default()
         .fg(theme.accent)
         .add_modifier(Modifier::REVERSED);
-    app.composer.set_frame(
-        border,
-        theme.dim_style(),
-        cursor,
-        reply,
-        on_rule.then(|| status_row.clone()),
-    );
+    let title = reply
+        .map(ratatui::text::Line::from)
+        .or_else(|| on_rule.then(|| status_row.clone()));
+    app.composer
+        .set_frame(border, theme.dim_style(), cursor, title);
     let composer_height = app.composer.layout(
         u16::try_from(width).unwrap_or(u16::MAX),
         u16::try_from(app.rows).unwrap_or(u16::MAX),
