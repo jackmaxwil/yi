@@ -1751,3 +1751,150 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
     );
     Ok(())
 }
+
+/// A one-shot classifier sidecar: each body answers one POST in order, and the joined handle
+/// returns the requests it saw.
+fn classifier_sidecar(
+    bodies: Vec<&'static str>,
+) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let handle = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for body in bodies {
+            let Ok((stream, _)) = listener.accept() else {
+                break;
+            };
+            use std::io::Write;
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0
+                    || line == "\r\n"
+                {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut sent = vec![0; length];
+            let _ = std::io::Read::read_exact(&mut reader, &mut sent);
+            seen.push(String::from_utf8_lossy(&sent).into_owned());
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = reader.get_mut().write_all(reply.as_bytes());
+        }
+        seen
+    });
+    Ok((port, handle))
+}
+
+/// The PR's central change, driven where it is consumed: a config that names the classifier and
+/// no threshold points at 0.9 through `classifier::attach`, and an answer under it stays
+/// record-only.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<(), Box<dyn Error>>
+{
+    use yi_runtime::rules::RuleEngine;
+    use yi_runtime::session::user_input;
+    const LAND: &str = r#"{"answers":{"skill":{"choice":"land","answer_confidence":0.91}},"routing":{"model":"english"}}"#;
+    const BELOW: &str = r#"{"answers":{"skill":{"choice":"land","answer_confidence":0.89}},"routing":{"model":"english"}}"#;
+    let root = Scratch::new("yi-unset-threshold")?;
+    let home = root.join("home");
+    for base in [root.join("skills"), home.join(".yi").join("skills")] {
+        let dir = base.join("land");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: land\ndescription: how to open a pull request\ntrigger: pull request\n---\nbody\n",
+        )?;
+    }
+    let (port, served) = classifier_sidecar(vec![LAND, BELOW])?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        ["one", "two"]
+            .into_iter()
+            .map(|text| faux_assistant_message(vec![faux_text(text)], StopReason::Stop))
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-unset-threshold");
+    session.attach_store(Arc::clone(&repo.create(CreateOptions::default())?))?;
+    session.set_rules_engine(Arc::new(RuleEngine::new(Vec::new())));
+    let raw = format!(
+        r#"{{"models":{{"classifier":"english"}},"classifier":{{"url":"http://127.0.0.1:{port}"}}}}"#
+    );
+    let (config, _) = yi_types::config::parse(&raw)?;
+    let warnings = yi_runtime::classifier::attach(&session, &root, &home, &config);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    session.prompt_message(user_input("tidy the widget code"))?;
+    session.wait_idle().await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let text = journal_text(&root).unwrap_or_default();
+        if text.contains(r#""fired":true"#) || std::time::Instant::now() > deadline {
+            assert!(text.contains(r#""fired":true"#), "{text}");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    session.prompt_message(user_input("then tidy the docs too"))?;
+    session.wait_idle().await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let text = journal_text(&root).unwrap_or_default();
+        if text.matches(r#""fired":"#).count() >= 2 || std::time::Instant::now() > deadline {
+            assert!(text.contains(r#""fired":false"#), "{text}");
+            let lines = transcript(&session);
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line
+                        == "reminder: Relevant: yi://skills/land (the classifier, 0.91)"),
+                "the 0.91 answer points at the 0.9 default: {lines:?}"
+            );
+            assert!(
+                lines.iter().all(|line| !line.contains("0.89")),
+                "the 0.89 answer stays record-only: {lines:?}"
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(served.join().map_err(|_| "sidecar thread")?.len(), 2);
+    Ok(())
+}
+
+fn journal_text(root: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    fn visit(
+        dir: &std::path::Path,
+        journal: &mut Option<std::path::PathBuf>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                visit(&path, journal)?;
+            } else if path.extension().is_some_and(|name| name == "jsonl") {
+                *journal = Some(path);
+            }
+        }
+        Ok(())
+    }
+    let mut journal = None;
+    visit(&root.join("sessions"), &mut journal)?;
+    Ok(std::fs::read_to_string(
+        journal.ok_or("no session journal was written")?,
+    )?)
+}

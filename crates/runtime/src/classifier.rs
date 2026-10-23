@@ -210,7 +210,9 @@ impl SkillClassifier {
         succeed(&self.breaker);
         let answer = response.answers.get(QUESTION);
         record.answer = answer.and_then(|answer| answer.choice.clone());
-        record.confidence = answer.and_then(|answer| answer.answer_confidence);
+        record.confidence = answer
+            .and_then(|answer| answer.answer_confidence)
+            .map(|confidence| confidence.clamp(0.0, 1.0 - f64::EPSILON));
         record.model = response.routing.map(|routing| routing.model);
         if let (Some(name), Some(confidence)) = (record.answer.as_deref(), record.confidence)
             && confidence >= self.sidecar.threshold
@@ -486,7 +488,7 @@ fn number(value: &Option<serde_json::Number>, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
-pub fn threshold(block: &ClassifierConfig) -> f64 {
+fn threshold(block: &ClassifierConfig) -> f64 {
     number(&block.threshold, DEFAULT_THRESHOLD)
 }
 
@@ -604,6 +606,19 @@ mod tests {
         assert!(
             token.exists(),
             "an armed session mints the key it arms with"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unset_threshold_is_0_9_and_a_set_one_wins() -> serde_json::Result<()> {
+        let read = |json: serde_json::Value| {
+            serde_json::from_value::<yi_types::config::ClassifierConfig>(json)
+        };
+        assert_eq!(super::threshold(&read(serde_json::json!({}))?), 0.9);
+        assert_eq!(
+            super::threshold(&read(serde_json::json!({"threshold": 0.5}))?),
+            0.5
         );
         Ok(())
     }

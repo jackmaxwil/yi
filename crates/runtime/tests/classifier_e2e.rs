@@ -947,18 +947,26 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
     );
     Ok(())
 }
-
-/// A config naming the classifier and no threshold points at 0.9, so turning it on is enough.
-#[test]
-fn the_skill_threshold_is_0_9_unless_the_config_says_otherwise() -> TestResult {
-    use yi_runtime::classifier::threshold;
-    use yi_types::config::ClassifierConfig;
-    let read = |json: serde_json::Value| serde_json::from_value::<ClassifierConfig>(json);
-    assert_eq!(threshold(&read(serde_json::json!({}))?), 0.9);
-    assert_eq!(
-        threshold(&read(serde_json::json!({"threshold": 0.5}))?),
-        0.5
+/// A sidecar saturated at exactly 1.0 cannot point at threshold 1: the confidence is clamped
+/// just under 1, so threshold 1 stays the record-only setting.
+#[tokio::test(flavor = "multi_thread")]
+async fn at_threshold_one_a_saturated_answer_never_points() -> TestResult {
+    const SATURATED: &str = r#"{"answers":{"skill":{"choice":"land","answer_confidence":1.0}},"routing":{"model":"english"}}"#;
+    let (port, served) = sidecar(vec![SATURATED])?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 1.0)?;
+    assert!(
+        rig.engine
+            .observe_user(&typed("land this branch once it is green"))
+            .is_empty()
     );
+    let record = next(&rig, Duration::from_secs(5))
+        .await
+        .ok_or("no decision recorded")?;
+    assert_eq!(
+        (record.answer.as_deref(), record.confidence, record.fired),
+        (Some("land"), Some(1.0 - f64::EPSILON), false)
+    );
+    assert_eq!(served.join().map_err(|_| "sidecar thread")?.len(), 1);
     Ok(())
 }
 
