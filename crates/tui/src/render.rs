@@ -132,6 +132,9 @@ fn draw_frame<B>(
     });
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
+    app.card_at = placed
+        .bottom
+        .filter(|_| matches!(app.bottom, Some(Bottom::Question(_))));
 }
 
 fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
@@ -205,6 +208,7 @@ pub struct ChatLayout {
     bottom: Option<Vec<Line<'static>>>,
     status: Line<'static>,
     composer_height: u16,
+    composer_too: bool,
     show_working: bool,
     kitty: bool,
     pub floor: u16,
@@ -291,6 +295,7 @@ pub fn layout_chat(
     } else {
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
+            Some(Bottom::Question(view)) => Some(view.lines(width, &theme)),
             Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Model(popup)) => Some(popup.lines(width, &theme)),
@@ -344,8 +349,12 @@ pub fn layout_chat(
         u16::try_from(app.rows).unwrap_or(u16::MAX),
     );
 
+    let composer_too = app.tree.is_none()
+        && app.plan_tree.is_none()
+        && matches!(app.bottom, Some(Bottom::Question(_)));
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
-        u16::try_from(lines.len()).unwrap_or(composer_height)
+        let card = u16::try_from(lines.len()).unwrap_or(composer_height);
+        card.saturating_add(if composer_too { composer_height } else { 0 })
     });
     let rows = |lines: &[Line<'static>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
     // Incident: `resize_viewport` clamps to the screen and `put` drops what no longer fits,
@@ -372,6 +381,7 @@ pub fn layout_chat(
         bottom: bottom_lines,
         status: status_row,
         composer_height,
+        composer_too,
         show_working,
         kitty: app.kitty,
         floor,
@@ -417,24 +427,24 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
         put(buffer, &layout.working, &mut y);
     }
     put(buffer, &layout.hud, &mut y);
-    match &layout.bottom {
+    let composer = match &layout.bottom {
         Some(lines) => {
             bottom_at = Some((area.left(), y));
             put(buffer, lines, &mut y);
+            layout.composer_too
         }
-        None => {
-            if y < area.bottom() {
-                let height = layout.composer_height.min(area.bottom().saturating_sub(y));
-                let rect = Rect::new(
-                    area.left().saturating_add(1),
-                    y,
-                    area.width.saturating_sub(2),
-                    height,
-                );
-                app.composer.render(rect, buffer);
-                y = y.saturating_add(height);
-            }
-        }
+        None => true,
+    };
+    if composer && y < area.bottom() {
+        let height = layout.composer_height.min(area.bottom().saturating_sub(y));
+        let rect = Rect::new(
+            area.left().saturating_add(1),
+            y,
+            area.width.saturating_sub(2),
+            height,
+        );
+        app.composer.render(rect, buffer);
+        y = y.saturating_add(height);
     }
     put(buffer, std::slice::from_ref(&layout.status), &mut y);
     Placed {
@@ -571,6 +581,9 @@ pub fn paint_pane(
     app.orb_slot = placed.orb;
     app.orb_placement = placed.orb.filter(|_| !app.title_cover);
     app.logo_rows = logo_rows(placed.bottom);
+    app.card_at = placed
+        .bottom
+        .filter(|_| matches!(app.bottom, Some(Bottom::Question(_))));
     thumb
 }
 

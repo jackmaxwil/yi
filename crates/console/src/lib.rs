@@ -524,7 +524,10 @@ fn place_chat_orbs(
                 _ => false,
             });
         if !kept {
-            for id in crate::app::orb_ids(*pane) {
+            for id in crate::app::orb_ids(*pane)
+                .into_iter()
+                .chain(crate::app::card_ids(*pane))
+            {
                 let _ = yi_tui::orb::kitty::delete_id(out, id);
             }
         }
@@ -555,6 +558,7 @@ fn place_chat_orbs(
         owners.entry(*id).or_insert_with(|| session.clone());
         if shown.contains(id) {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
+            yi_tui::question::tick(&chat.app, out, &mut chat.card);
         } else {
             chat.orb.hide(out);
         }
@@ -562,6 +566,7 @@ fn place_chat_orbs(
             yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
         } else {
             yi_tui::logos::delete_all(out, &mut chat.logos);
+            yi_tui::question::hide(out, &mut chat.card);
         }
     }
 }

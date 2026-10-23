@@ -24,6 +24,7 @@ mod motion;
 mod pane_scroll;
 mod plantree;
 mod pycell;
+mod question_card;
 mod resume;
 mod reveal;
 mod settled;

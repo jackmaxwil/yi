@@ -1,8 +1,8 @@
 use std::error::Error;
 
+use crate::common::flat;
 use crate::common::test_model;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::text::Line;
 use yi_tui::agents::{AgentRow, AgentState, AgentsPopup};
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
@@ -15,18 +15,6 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
-}
-
-fn flat(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
 }
 
 fn key(code: KeyCodeValue) -> SingleKey {

@@ -1145,7 +1145,7 @@ mod rows;
 mod settings;
 mod terminal;
 
-pub(crate) use chat::orb_ids;
+pub(crate) use chat::{card_ids, orb_ids};
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;
 use notebook::apply_notebook;
