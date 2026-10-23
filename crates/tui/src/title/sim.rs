@@ -1,17 +1,20 @@
 //! The title scenes that remember: a simulation advanced to the second asked for and kept between
 //! frames. A second that runs backwards, or a new screen size, starts it again from nothing.
 
-use super::distance;
+use super::{distance, lattice};
 
 /// Steps a second: the coral takes 1500 of them by the time the name lands.
 const GROWTH_STEPS_PER_SEC: f64 = 500.0;
 const GROWTH_COLS: usize = 80;
 const GROWTH_ROWS: usize = 32;
+const SPIRAL_STATES: u8 = 12;
+const SPIRAL_STEPS_PER_SEC: f64 = 55.0;
 
 /// What the stateful scenes keep between frames; one per console, empty until a scene asks.
 #[derive(Default)]
 pub struct Cache {
     growth: Option<Growth>,
+    spirals: Option<Spirals>,
 }
 
 /// Gray–Scott coral seeded on the strokes, with the feed and kill rates the lab settled on.
@@ -22,7 +25,7 @@ pub(super) struct Growth {
     v: Vec<f32>,
 }
 
-impl Growth {
+impl Sim for Growth {
     fn new(size: (u16, u16)) -> Self {
         let aspect = f64::from(size.0) / f64::from(size.1.max(1));
         let mut growth = Self {
@@ -64,35 +67,128 @@ impl Growth {
         self.steps += 1;
     }
 
+    fn kept(&self) -> ((u16, u16), u32) {
+        (self.size, self.steps)
+    }
+
     /// The coral's concentration at plane point `(u, v)`, in `0.0..=1.0`.
-    pub(super) fn at(&self, u: f64, v: f64) -> f64 {
-        let aspect = f64::from(self.size.0) / f64::from(self.size.1.max(1));
-        let col = ((u / aspect + 0.5) * GROWTH_COLS as f64).floor();
-        let row = ((1.0 - v) / 2.0 * GROWTH_ROWS as f64).floor();
-        let inside =
-            (0.0..GROWTH_COLS as f64).contains(&col) && (0.0..GROWTH_ROWS as f64).contains(&row);
-        if !inside {
-            return 0.0;
-        }
-        let cell = row as usize * GROWTH_COLS + col as usize;
-        f64::from((self.v[cell] * 3.2).clamp(0.0, 1.0))
+    fn at(&self, u: f64, v: f64) -> f64 {
+        grid_cell(self.size, (GROWTH_COLS, GROWTH_ROWS), u, v)
+            .map_or(0.0, |at| f64::from((self.v[at] * 3.2).clamp(0.0, 1.0)))
     }
 }
 
-impl Cache {
-    /// The coral `t` seconds in on a screen of `size`, advanced from where the last frame left it.
-    pub(super) fn growth(&mut self, size: (u16, u16), t: f64) -> &Growth {
-        let want = (t * GROWTH_STEPS_PER_SEC) as u32;
-        let fresh = self
-            .growth
-            .take()
-            .filter(|g| g.size == size && g.steps <= want);
-        let growth = self
-            .growth
-            .insert(fresh.unwrap_or_else(|| Growth::new(size)));
-        while growth.steps < want {
-            growth.step();
+/// The grid cell under plane point `(u, v)` on a screen of `size`, none outside the screen.
+fn grid_cell(size: (u16, u16), (cols, rows): (usize, usize), u: f64, v: f64) -> Option<usize> {
+    let aspect = f64::from(size.0) / f64::from(size.1.max(1));
+    let col = ((u / aspect + 0.5) * cols as f64).floor();
+    let row = ((1.0 - v) / 2.0 * rows as f64).floor();
+    let inside = (0.0..cols as f64).contains(&col) && (0.0..rows as f64).contains(&row);
+    inside.then(|| row as usize * cols + col as usize)
+}
+
+/// Cyclic cellular automaton on a torus: a cell takes the next of twelve states when a neighbour
+/// already holds it, and spirals organise out of the noise it starts as.
+pub(super) struct Spirals {
+    size: (u16, u16),
+    grid: (usize, usize),
+    steps: u32,
+    cells: Vec<u8>,
+}
+
+impl Sim for Spirals {
+    fn new(size: (u16, u16)) -> Self {
+        let grid = (
+            usize::from(size.0.clamp(1, 120)),
+            usize::from(size.1.clamp(1, 50)),
+        );
+        let cells = (0..grid.0 * grid.1)
+            .map(|at| {
+                let (x, y) = ((at % grid.0) as i32, (at / grid.0) as i32);
+                (lattice(x, y + 90) * f64::from(SPIRAL_STATES)) as u8 % SPIRAL_STATES
+            })
+            .collect();
+        Self {
+            size,
+            grid,
+            steps: 0,
+            cells,
         }
-        growth
+    }
+
+    fn step(&mut self) {
+        let (cols, rows) = self.grid;
+        let old = self.cells.clone();
+        for y in 0..rows {
+            for x in 0..cols {
+                let next = (old[y * cols + x] + 1) % SPIRAL_STATES;
+                let taken = (0..9).any(|k| {
+                    let at = ((y + rows + k / 3 - 1) % rows) * cols + (x + cols + k % 3 - 1) % cols;
+                    k != 4 && old[at] == next
+                });
+                if taken {
+                    self.cells[y * cols + x] = next;
+                }
+            }
+        }
+        self.steps += 1;
+    }
+
+    fn kept(&self) -> ((u16, u16), u32) {
+        (self.size, self.steps)
+    }
+
+    /// The cell's place in the cycle at plane point `(u, v)`, in `0.0..1.0`.
+    fn at(&self, u: f64, v: f64) -> f64 {
+        grid_cell(self.size, self.grid, u, v).map_or(0.0, |at| {
+            f64::from(self.cells[at]) / f64::from(SPIRAL_STATES)
+        })
+    }
+}
+
+/// A simulation the cache can keep: made for a screen size, stepped, and read at a plane point.
+pub(super) trait Sim {
+    fn new(size: (u16, u16)) -> Self
+    where
+        Self: Sized;
+    fn kept(&self) -> ((u16, u16), u32);
+    fn step(&mut self);
+    fn at(&self, u: f64, v: f64) -> f64;
+}
+
+/// Invariant: a kept run is only continued forwards on the size it was made for, so it always
+/// equals a fresh run to the same step and a frozen clock replays any frame.
+fn advance<S: Sim>(slot: &mut Option<S>, size: (u16, u16), want: u32) -> &S {
+    let fresh = slot
+        .take()
+        .filter(|sim| sim.kept().0 == size && sim.kept().1 <= want);
+    let sim = slot.insert(fresh.unwrap_or_else(|| S::new(size)));
+    while sim.kept().1 < want {
+        sim.step();
+    }
+    sim
+}
+
+impl Cache {
+    /// The stateful scene's simulation `t` seconds in on a screen of `size`, if `scene` has one.
+    pub(super) fn sim(
+        &mut self,
+        scene: super::Scene,
+        size: (u16, u16),
+        t: f64,
+    ) -> Option<&dyn Sim> {
+        match scene {
+            super::Scene::Growth => Some(advance::<Growth>(
+                &mut self.growth,
+                size,
+                (t * GROWTH_STEPS_PER_SEC) as u32,
+            )),
+            super::Scene::Spirals => Some(advance::<Spirals>(
+                &mut self.spirals,
+                size,
+                (t * SPIRAL_STEPS_PER_SEC) as u32,
+            )),
+            _ => None,
+        }
     }
 }
