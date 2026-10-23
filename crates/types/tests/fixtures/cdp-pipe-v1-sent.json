@@ -1,0 +1,13 @@
+[
+{"id": 1, "method": "Target.createTarget", "params": {"url": "data:text/html,<body style='margin:0;background:%23c33'><a href=x>first</a>"}},
+{"id": 2, "method": "Target.attachToTarget", "params": {"targetId": "0F1DBD6520FCC16DBB5D59DF3D6C3FBE", "flatten": true}},
+{"id": 3, "method": "Page.enable", "params": {}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 4, "method": "Emulation.setDeviceMetricsOverride", "params": {"width": 64, "height": 48, "deviceScaleFactor": 1, "mobile": false}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 5, "method": "Page.stopScreencast", "params": {}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 6, "method": "Page.startScreencast", "params": {"format": "png", "maxWidth": 64, "maxHeight": 48, "everyNthFrame": 1}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 7, "method": "Page.screencastFrameAck", "params": {"sessionId": 1}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 8, "method": "Page.navigate", "params": {"url": "data:text/html,<body style='margin:0;background:%233c3'>second</body>"}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 9, "method": "Page.stopScreencast", "params": {}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 10, "method": "Page.startScreencast", "params": {"format": "png", "maxWidth": 64, "maxHeight": 48, "everyNthFrame": 1}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"},
+{"id": 11, "method": "Page.screencastFrameAck", "params": {"sessionId": 2}, "sessionId": "3E0455DF06D0CA349391DBB5825A6E2F"}
+]
