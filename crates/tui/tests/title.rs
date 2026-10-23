@@ -185,33 +185,78 @@ fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
 #[test]
 fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
     let landing = Rect::new(2, 1, 10, 5);
-    let at = |secs: f64| screen(Scene::Kali, (80, 24), secs, Some(landing));
-    let held = at(2.1);
+    for which in [Scene::Kali, Scene::Solid] {
+        let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
+        let held = at(2.1);
+        assert_eq!(
+            count(&held, |g| g == 'X'),
+            0,
+            "{which:?}: covered whole until the landing"
+        );
+        assert!(
+            !" .:".contains(held[14][35]),
+            "{which:?}: the name is in the middle"
+        );
+
+        let landed = at(2.99);
+        assert!(
+            !" .:X".contains(landed[4][5]),
+            "{which:?}: the stem's foot is on the small mark"
+        );
+        let strays = landed
+            .iter()
+            .enumerate()
+            .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
+            .filter(|(x, y, g)| *g != 'X' && !((1..=12).contains(x) && (0..=6).contains(y)))
+            .count();
+        assert_eq!(
+            strays, 0,
+            "{which:?}: the TUI is back but for the name, on the small mark"
+        );
+
+        let over = at(3.0);
+        assert_eq!(
+            count(&over, |g| g != 'X'),
+            0,
+            "{which:?}: and then it is over"
+        );
+    }
+}
+
+/// The solid name is sphere-traced: it is absent before it has any thickness, lit once it has,
+/// and the camera swing alone moves its lit cells. The echo under it never reaches `*`, so the
+/// lit glyphs are the solid's; at 1.3 s and 2.1 s its thickness is whole and only the swing differs.
+#[test]
+fn the_solid_name_rises_swings_and_shows_a_lit_side() {
+    let at = |secs: f64| screen(Scene::Solid, (80, 24), secs, None);
+    let flat = at(0.1);
+    assert_eq!(
+        count(&flat, |g| g == '@' || g == '%'),
+        0,
+        "no solid yet at the first instant"
+    );
+    let held = at(1.8);
     assert_eq!(
         count(&held, |g| g == 'X'),
         0,
-        "covered whole until the landing starts"
+        "it covers the screen like the others"
     );
-    assert_eq!(held[14][35], '@', "the name is in the middle");
-
-    let landed = at(2.99);
-    assert_eq!(
-        landed[4][5], '@',
-        "the stem's foot is on the small mark's stem"
-    );
-    let strays = landed
+    let lit = held
         .iter()
-        .enumerate()
-        .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
-        .filter(|(x, y, glyph)| *glyph != 'X' && !((1..=12).contains(x) && (0..=6).contains(y)))
+        .flatten()
+        .filter(|g| matches!(**g, '*' | '#' | '%' | '@'))
         .count();
-    assert_eq!(
-        strays, 0,
-        "the TUI is back everywhere but the name, on the small mark"
-    );
-
-    let over = at(3.0);
-    assert_eq!(count(&over, |g| g != 'X'), 0, "and then it is over");
+    assert!(lit > 150, "only {lit} cells are on its lit side");
+    let lit_cells = |frame: &[Vec<char>]| -> Vec<bool> {
+        frame
+            .iter()
+            .flatten()
+            .map(|g| matches!(*g, '*' | '#' | '%' | '@'))
+            .collect()
+    };
+    let (swung, settled) = (lit_cells(&at(1.3)), lit_cells(&at(2.1)));
+    let moved = swung.iter().zip(&settled).filter(|(a, b)| a != b).count();
+    assert!(moved > 60, "the swing moved only {moved} lit cells");
 }
 
 #[test]
@@ -242,10 +287,26 @@ fn the_draw_follows_the_weights_and_the_seed() {
     assert!((0..200).all(|seed| title::pick(&only, seed) == Some(Scene::Echo)));
 }
 
+/// Invariant: every scene in [`title::Scene::ALL`] is in the draw a config without weights gets,
+/// Kali at 8 and each other scene at 2, so a scene added without its weight fails here by name.
+#[test]
+fn every_scene_is_in_the_default_draw_and_kali_leads() {
+    for (name, scene) in Scene::ALL {
+        let weight = title::DEFAULT_WEIGHTS
+            .iter()
+            .find(|(s, _)| *s == scene)
+            .map(|(_, w)| *w);
+        let want = if scene == Scene::Kali { 8 } else { 2 };
+        assert_eq!(weight, Some(want), "{name}");
+    }
+    assert_eq!(title::DEFAULT_WEIGHTS.len(), Scene::ALL.len());
+}
+
 #[test]
 fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("kali"), Some(Scene::Kali));
     assert_eq!(Scene::named("echo"), Some(Scene::Echo));
+    assert_eq!(Scene::named("solid"), Some(Scene::Solid));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
