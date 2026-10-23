@@ -1,26 +1,47 @@
 //! The title animation: a scalar over a whole pane, sampled into glyph cells, a pure function of
 //! size, scene and seconds since the console started. The name lands on the orb's own mark.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use yi_orb::smooth;
+use yi_orb::{V, add, dot, norm, rot_y, smooth};
 
 use crate::app::App;
 use crate::colors::Theme;
+
+mod sim;
+
+pub use sim::Cache;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scene {
     Kali,
     Echo,
+    Solid,
+    Mobius,
+    Clouds,
+    Growth,
+    Spirals,
+    Attractor,
+    Streamlines,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 2] = [("kali", Scene::Kali), ("echo", Scene::Echo)];
+    pub const ALL: [(&'static str, Scene); 9] = [
+        ("kali", Scene::Kali),
+        ("echo", Scene::Echo),
+        ("solid", Scene::Solid),
+        ("mobius", Scene::Mobius),
+        ("clouds", Scene::Clouds),
+        ("growth", Scene::Growth),
+        ("spirals", Scene::Spirals),
+        ("attractor", Scene::Attractor),
+        ("streamlines", Scene::Streamlines),
+    ];
 
     pub fn named(name: &str) -> Option<Scene> {
         Self::ALL
@@ -30,8 +51,18 @@ impl Scene {
     }
 }
 
-/// Used when the config names no weights: the Kali fold four times in five.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 2] = [(Scene::Kali, 8), (Scene::Echo, 2)];
+/// Used when the config names no weights: the Kali fold 8, every other scene 2.
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 9] = [
+    (Scene::Kali, 8),
+    (Scene::Echo, 2),
+    (Scene::Solid, 2),
+    (Scene::Mobius, 2),
+    (Scene::Clouds, 2),
+    (Scene::Growth, 2),
+    (Scene::Spirals, 2),
+    (Scene::Attractor, 2),
+    (Scene::Streamlines, 2),
+];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
 pub fn pick(weights: &[(Scene, u32)], seed: u64) -> Option<Scene> {
@@ -224,6 +255,175 @@ impl KaliFrame {
     }
 }
 
+fn lattice(x: i32, y: i32) -> f64 {
+    let n = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
+    let n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
+    f64::from((n ^ (n >> 16)) & 0xFFFF) / 65_535.0
+}
+
+/// Value noise, smoothly interpolated between lattice points.
+fn noise(x: f64, y: f64) -> f64 {
+    let (ix, iy) = (x.floor(), y.floor());
+    let (fx, fy) = (x - ix, y - iy);
+    let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (ix, iy) = (ix as i32, iy as i32);
+    let top = lattice(ix, iy) + (lattice(ix + 1, iy) - lattice(ix, iy)) * sx;
+    let bottom = lattice(ix, iy + 1) + (lattice(ix + 1, iy + 1) - lattice(ix, iy + 1)) * sx;
+    top + (bottom - top) * sy
+}
+
+fn fbm(mut x: f64, mut y: f64) -> f64 {
+    let (mut sum, mut amp) = (0.0, 0.5);
+    for _ in 0..3 {
+        sum += amp * noise(x, y);
+        (x, y, amp) = (x * 2.02 + 3.1, y * 2.02 + 1.7, amp * 0.5);
+    }
+    sum
+}
+
+/// Domain-warped noise, in `0.0..=1.0`: `(sin, cos)` of its six-second lap and its fade-up.
+fn clouds(u: f64, v: f64, (sin, cos): (f64, f64), open: f64) -> f64 {
+    let (x, y) = (u * 1.7, v * 1.7);
+    let qx = fbm(x + 0.4 * cos, y + 0.4 * sin);
+    let qy = fbm(x + 5.2, y + 1.3 + 0.4 * sin);
+    (fbm(x + 3.2 * qx, y + 3.2 * qy) * 1.6 - 0.2).clamp(0.0, 1.0) * open
+}
+
+/// The flow's multiplier at `t`, the same for every cell of a frame; none once it has unwound.
+fn vortex(t: f64) -> Option<(f64, f64)> {
+    let s = 1.7 * (1.0 - smooth(t / 2.0));
+    let (re, im) = (s * 0.9, s * 1.6);
+    (s >= 1e-3).then(|| (re.exp() * im.cos(), re.exp() * im.sin()))
+}
+
+/// A Clifford orbit binned onto the cells, shaded by the log of visits. `c` and `d` fix its bounds
+/// at |x| < 2, |y| < 1.7, so `a` and `b` drift and the shape stays on screen; rerun each frame.
+fn attractor((width, height): (u16, u16), t: f64) -> Vec<f32> {
+    const POINTS: u32 = 20_000;
+    let (w, h) = (usize::from(width), usize::from(height));
+    let (a, b) = (
+        -1.4 + 0.12 * (0.7 * t).sin(),
+        1.6 + 0.1 * (0.5 * t + 1.0).cos(),
+    );
+    let mut bins = vec![0_u32; w * h];
+    let (mut x, mut y) = (0.1_f64, 0.0_f64);
+    for i in 0..POINTS + 20 {
+        (x, y) = (
+            (a * y).sin() + (a * x).cos(),
+            (b * x).sin() + 0.7 * (b * y).cos(),
+        );
+        let col = ((x / 2.0 * 0.95 + 1.0) / 2.0 * w as f64).floor();
+        let row = ((1.0 - y / 1.7 * 0.95) / 2.0 * h as f64).floor();
+        let inside = (0.0..w as f64).contains(&col) && (0.0..h as f64).contains(&row);
+        if i >= 20 && inside {
+            bins[row as usize * w + col as usize] += 1;
+        }
+    }
+    let mut seen: Vec<u32> = bins.iter().copied().filter(|n| *n > 0).collect();
+    seen.sort_unstable();
+    let top = f64::from(seen.get(seen.len() * 9 / 10).copied().unwrap_or(1).max(1));
+    bins.iter()
+        .map(|n| (f64::from(*n) / top).min(1.0).powf(0.55) as f32)
+        .collect()
+}
+
+/// Lines of constant stream function from a jittered grid of seeds, so none cross, with a pulse of
+/// light riding each one along the flow; the lines stand still and the light moves.
+fn streamlines((width, height): (u16, u16), t: f64) -> Vec<f32> {
+    const REACH: i32 = 20;
+    let (w, h) = (usize::from(width), usize::from(height));
+    let scale = f64::from(height.max(1));
+    let psi = |u: f64, v: f64| noise(u * 2.2 + 7.0, v * 2.2 + 3.0);
+    let flow = |u: f64, v: f64| {
+        let e = 0.01;
+        let (dx, dy) = (psi(u + e, v) - psi(u - e, v), psi(u, v + e) - psi(u, v - e));
+        let n = dx.hypot(dy).max(1e-6);
+        (dy / n, -dx / n)
+    };
+    let mut grid = vec![0.0_f32; w * h];
+    for j in 0..h.div_ceil(5) {
+        for i in 0..w.div_ceil(11) {
+            let (si, sj) = (i as i32, j as i32);
+            let col = (i as f64 + lattice(si, sj)) * 11.0;
+            let row = (j as f64 + lattice(si + 50, sj)) * 5.0;
+            let phase = lattice(si, sj + 50);
+            for dir in [1.0, -1.0] {
+                let (mut u, mut v) = ((col - w as f64 / 2.0) / scale, (scale - 2.0 * row) / scale);
+                for k in 0..=REACH {
+                    let (fx, fy) = flow(u, v);
+                    (u, v) = (u + dir * fx / scale, v + dir * fy / scale);
+                    let (x, y) = (
+                        (u * scale + w as f64 / 2.0).floor(),
+                        ((scale - v * scale) / 2.0).floor(),
+                    );
+                    if !((0.0..w as f64).contains(&x) && (0.0..h as f64).contains(&y)) {
+                        break;
+                    }
+                    let along = dir * f64::from(k) / 16.0 - t * 0.9 + phase;
+                    let light = (TAU * along).cos().max(0.0).powi(4);
+                    let at = y as usize * w + x as usize;
+                    grid[at] = grid[at].max((0.35 + 0.65 * light) as f32);
+                }
+            }
+        }
+    }
+    grid
+}
+
+/// Where the plane is sampled for the name: a loxodromic Möbius flow with fixed points at `u = ±1`
+/// that unwinds to the identity by 2 s, so the name comes out of a vortex and settles.
+fn mobius(u: f64, v: f64, lam: (f64, f64)) -> (f64, f64) {
+    let div = |a: (f64, f64), b: (f64, f64)| {
+        let n = (b.0 * b.0 + b.1 * b.1).max(1e-12);
+        ((a.0 * b.0 + a.1 * b.1) / n, (a.1 * b.0 - a.0 * b.1) / n)
+    };
+    let q = div(div((u + 1.0, v), (u - 1.0, v)), lam);
+    div((-1.0 - q.0, -q.1), (1.0 - q.0, -q.1))
+}
+
+/// Rings of distance that drift outward, solid inside the name: the vortex's own texture.
+fn rings(d: f64, t: f64) -> f64 {
+    let d = d.max(0.0);
+    let ring = 0.5 + 0.5 * (TAU * (d * 5.0 - 0.3 * t)).cos();
+    ring.powi(4) * (-1.3 * d).exp()
+}
+
+/// Cells farther than this from every stroke cannot see the extruded name.
+const SOLID_NEAR: f64 = 0.45;
+
+/// The name as a lit extrusion, sphere-traced from a camera that swings once while it holds;
+/// `None` where the ray misses. It shrinks onto the small mark with the same strokes.
+fn solid(strokes: &Strokes, thick: f64, (u, v): (f64, f64), t: f64, leave: f64) -> Option<f64> {
+    let half_z = 0.17 * smooth((t - 0.3) / 0.9) * (1.0 - 0.85 * leave);
+    if half_z < 0.01 {
+        return None;
+    }
+    let fat = 0.05 * (1.0 - leave);
+    let swing = 0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave);
+    let f = |p: V| (distance_to(strokes, thick, p[0], p[1]) - fat).max(p[2].abs() - half_z);
+    let eye = rot_y([0.0, 0.0, -3.0], swing);
+    let dir = norm(rot_y([u, v, 3.0], swing));
+    let mut at = 0.0;
+    for _ in 0..40 {
+        let p = add(eye, dir, at);
+        let d = f(p);
+        if d < 0.006 {
+            let probe = |axis: V| f(add(p, axis, 0.012)) - f(add(p, axis, -0.012));
+            let n = norm([
+                probe([1.0, 0.0, 0.0]),
+                probe([0.0, 1.0, 0.0]),
+                probe([0.0, 0.0, 1.0]),
+            ]);
+            return Some(0.30 + 0.70 * dot(n, [-0.45, 0.65, -0.6]).max(0.0));
+        }
+        at += d * 0.9;
+        if at > 6.0 {
+            return None;
+        }
+    }
+    None
+}
+
 /// Dim the field near the strokes and fill them: `rise` 0 leaves the field, 1 is the name.
 fn name(field: f64, d: f64, rise: f64) -> f64 {
     if d < 0.0 {
@@ -265,6 +465,7 @@ pub fn cover(
     (scene, elapsed): (Scene, Duration),
     landing: Option<Rect>,
     theme: &Theme,
+    cache: &mut Cache,
 ) {
     if elapsed >= OVER {
         return;
@@ -273,27 +474,70 @@ pub fn cover(
     let h = f64::from(area.height);
     let cell = (1.0 / h, 2.0 / h);
     let turn = KaliFrame::at(t);
+    let lam = vortex(t);
+    let drift = (TAU * t / 6.0).sin_cos();
     let rise = match scene {
-        Scene::Kali => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
-        Scene::Echo => 1.0,
+        Scene::Kali
+        | Scene::Clouds
+        | Scene::Growth
+        | Scene::Spirals
+        | Scene::Attractor
+        | Scene::Streamlines => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
+        Scene::Echo | Scene::Mobius => 1.0,
+        Scene::Solid => 0.0,
     };
     let leave = smooth((t - HOLD_SECS) / LAND_SECS);
     let fade = 1.0 - smooth(leave * 1.25);
     let reveal = smooth((leave - 0.1) / 0.9);
     let (strokes, thick) = landed(area, landing, leave);
+    let size = (area.width, area.height);
+    let plot = match scene {
+        Scene::Attractor if fade > 0.0 => attractor(size, t),
+        Scene::Streamlines if fade > 0.0 => streamlines(size, t),
+        _ => Vec::new(),
+    };
+    let sim = if fade > 0.0 {
+        cache.sim(scene, size, t)
+    } else {
+        None
+    };
     for y in 0..area.height {
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
-            let d = distance_to(&strokes, thick, u, v);
-            if d >= 0.0 && dissolve(x, y) < reveal {
+            let (wu, wv) = match scene {
+                Scene::Mobius => lam.map_or((u, v), |lam| mobius(u, v, lam)),
+                _ => (u, v),
+            };
+            let d = distance_to(&strokes, thick, wu, wv);
+            let solid_hit = match scene {
+                Scene::Solid if d < SOLID_NEAR => solid(&strokes, thick, (u, v), t, leave),
+                _ => None,
+            };
+            let in_name = match scene {
+                Scene::Solid => solid_hit.is_some(),
+                _ => d < 0.0,
+            };
+            if !in_name && dissolve(x, y) < reveal {
                 continue;
             }
             let field = match scene {
                 _ if fade <= 0.0 => 0.0,
                 Scene::Kali => kali(u, v, cell, &turn) * fade,
                 Scene::Echo => echo(d, t) * fade,
+                Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
+                Scene::Mobius => rings(d, t) * fade,
+                Scene::Clouds => clouds(u, v, drift, turn.fade) * fade,
+                Scene::Attractor | Scene::Streamlines => {
+                    let at = usize::from(y) * usize::from(area.width) + usize::from(x);
+                    plot.get(at).map_or(0.0, |d| f64::from(*d)) * fade
+                }
+                Scene::Growth | Scene::Spirals => sim.map_or(0.0, |sim| sim.at(u, v)) * fade,
             };
-            let value = name(field, d, rise).clamp(0.0, 1.0);
+            let value = match solid_hit {
+                Some(lit) => lit,
+                None => name(field, d, rise),
+            }
+            .clamp(0.0, 1.0);
             let step = usize::from((value * f64::from(TOP)).round() as u8);
             let place = (area.x.saturating_add(x), area.y.saturating_add(y));
             if let Some(target) = buffer.cell_mut(place) {
