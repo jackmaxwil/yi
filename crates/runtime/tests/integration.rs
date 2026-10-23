@@ -63,6 +63,7 @@ mod plan_timer;
 mod plan_trace;
 mod plan_verify;
 mod plan_walkthrough;
+mod plugin_tree;
 mod prompt_drift;
 mod prompts;
 mod provider_keys;

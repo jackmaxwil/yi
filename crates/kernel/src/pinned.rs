@@ -14,25 +14,103 @@ pub struct Pinned<'a> {
     pub dirs: &'a [String],
 }
 
+/// A zip published whole: `member` is the executable inside it, checked against `member_sha256`.
+pub struct Unzipped<'a> {
+    pub label: &'a str,
+    pub url: &'a str,
+    pub sha256: &'a str,
+    pub member: &'a str,
+    pub member_sha256: &'a str,
+    pub dir: &'a Path,
+}
+
 const TREE_FILES: usize = 512;
 const TREE_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    let response = crate::tarball::agent()
-        .build()
-        .get(url)
-        .call()
-        .map_err(|error| error.to_string())?;
-    crate::tarball::read_capped(response.into_reader())
+    crate::tarball::download(&crate::tarball::agent().build(), url)
 }
 
 /// The digest check behind every pin: `subject` names the file or URL, `remedy` what to do
 /// about a mismatch.
 pub fn checked(subject: &str, bytes: &[u8], pinned_sha: &str, remedy: &str) -> Result<(), String> {
-    let digest = crate::tarball::sha256_hex(bytes);
+    digest_is(
+        subject,
+        &crate::tarball::sha256_hex(bytes),
+        pinned_sha,
+        remedy,
+    )
+}
+
+pub fn checked_file(path: &Path, pinned_sha: &str, remedy: &str) -> Result<(), String> {
+    let digest = crate::tarball::sha256_file(path).map_err(at(path))?;
+    digest_is(&path.display().to_string(), &digest, pinned_sha, remedy)
+}
+
+fn digest_is(subject: &str, digest: &str, pinned_sha: &str, remedy: &str) -> Result<(), String> {
     if digest != pinned_sha {
         return Err(format!(
             "{subject} has sha256 {digest}, yi pins {pinned_sha}{remedy}"
+        ));
+    }
+    Ok(())
+}
+
+/// Downloads through `fetch`, checks the digest before unpacking, and publishes the whole zip
+/// as `dir` by one rename once its member matches `member_sha256`.
+pub fn install_tree(
+    pin: &Unzipped<'_>,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<PathBuf, String> {
+    let archive =
+        fetch(pin.url).map_err(|error| format!("couldn't download {}: {error}", pin.label))?;
+    checked(pin.url, &archive, pin.sha256, "; not installing")?;
+    let adopt = || checked_file(&pin.dir.join(pin.member), pin.member_sha256, "").is_ok();
+    stage(
+        pin.dir,
+        pin.label,
+        |staging| publish_tree(staging, pin, &archive),
+        adopt,
+    )?;
+    Ok(pin.dir.join(pin.member))
+}
+
+/// Builds `dir` in a sibling staging directory through `body`, publishes it by one rename,
+/// and removes whatever staging is left; `adopt` judges a `dir` the rename lost to.
+fn stage(
+    dir: &Path,
+    label: &str,
+    body: impl FnOnce(&Path) -> Result<(), String>,
+    adopt: impl Fn() -> bool,
+) -> Result<(), String> {
+    let parent = dir
+        .parent()
+        .ok_or_else(|| format!("{}: no parent to stage {label} in", dir.display()))?;
+    std::fs::create_dir_all(parent).map_err(at(parent))?;
+    let tick = STAGING.fetch_add(1, Ordering::Relaxed);
+    let staging = parent.join(format!(".staging-{}-{tick}", std::process::id()));
+    let published = body(&staging).and_then(|()| {
+        // Incident: the rename can lose to a concurrent installer or find a tree a poisoned
+        // cache wrote, so an existing tree is adopted only when `adopt` finds the pinned bytes.
+        match std::fs::rename(&staging, dir) {
+            Ok(()) => Ok(()),
+            Err(_) if adopt() => Ok(()),
+            Err(error) => Err(at(dir)(error)),
+        }
+    });
+    let _ = std::fs::remove_dir_all(&staging);
+    published
+}
+
+fn publish_tree(staging: &Path, pin: &Unzipped<'_>, archive: &[u8]) -> Result<(), String> {
+    crate::tarball::unzip(archive, staging)
+        .map_err(|error| format!("the {} archive {error}", pin.label))?;
+    let program = staging.join(pin.member);
+    checked_file(&program, pin.member_sha256, "; not installing")?;
+    if !crate::bootstrap::is_executable(&program) {
+        return Err(format!(
+            "the {} archive's {} is not executable",
+            pin.label, pin.member
         ));
     }
     Ok(())
@@ -56,16 +134,13 @@ pub fn install(
         .map(|entry| entry.bytes)
         .ok_or_else(|| format!("the {} archive carries no {}", pin.label, pin.member))?;
     let tree = tree(pin, &entries)?;
-    let parent = pin
-        .dir
-        .parent()
-        .ok_or_else(|| format!("{}: no parent to stage {} in", pin.dir.display(), pin.label))?;
-    std::fs::create_dir_all(parent).map_err(at(parent))?;
-    let tick = STAGING.fetch_add(1, Ordering::Relaxed);
-    let staging = parent.join(format!(".staging-{}-{tick}", std::process::id()));
-    let published = publish(&staging, pin, binary, &tree);
-    let _ = std::fs::remove_dir_all(&staging);
-    published?;
+    let adopt = || std::fs::read(pin.dir.join(pin.file)).is_ok_and(|existing| existing == binary);
+    stage(
+        pin.dir,
+        pin.label,
+        |staging| publish(staging, pin, binary, &tree),
+        adopt,
+    )?;
     let path = pin.dir.join(pin.file);
     crate::bootstrap::is_executable(&path)
         .then_some(path)
@@ -139,17 +214,7 @@ fn publish(
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
             .map_err(at(&file))?;
     }
-    // Incident: the rename can lose to a concurrent installer or find a target written by a
-    // poisoned cache, so an existing file is adopted only when it is the verified bytes.
-    match std::fs::rename(staging, pin.dir) {
-        Ok(()) => Ok(()),
-        Err(_)
-            if std::fs::read(pin.dir.join(pin.file)).is_ok_and(|existing| existing == binary) =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(at(pin.dir)(error)),
-    }
+    Ok(())
 }
 
 fn at(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {

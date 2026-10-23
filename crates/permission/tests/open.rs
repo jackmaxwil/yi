@@ -10,9 +10,6 @@ use std::time::{Duration, Instant};
 
 use yi_permission::{CatastrophicContext, ReadGate};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-
 type TestResult = Result<(), Box<dyn Error>>;
 
 const KEY: &str = "FAKE KEY MARKER\n";
@@ -24,7 +21,7 @@ type Try = dyn Fn(&ReadGate, &Path, &[PathBuf], &Path) -> Result<bool, Box<dyn E
 /// Calls `try_once` against `d/id_rsa` while `d` flips, up to 20,000 times or 5 s, and counts
 /// the calls `try_once` says reached the key.
 fn flipping(name: &str, try_once: &Try) -> Result<(usize, usize), Box<dyn Error>> {
-    let scratch = scratch::Scratch::new(name)?;
+    let scratch = crate::scratch::Scratch::new(name)?;
     let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
     std::fs::create_dir_all(home.join(".ssh"))?;
     std::fs::create_dir_all(workspace.join("d"))?;
