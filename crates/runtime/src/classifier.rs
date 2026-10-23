@@ -210,11 +210,10 @@ impl SkillClassifier {
         succeed(&self.breaker);
         let answer = response.answers.get(QUESTION);
         record.answer = answer.and_then(|answer| answer.choice.clone());
-        record.confidence = answer
-            .and_then(|answer| answer.answer_confidence)
-            .map(|confidence| confidence.clamp(0.0, 1.0 - f64::EPSILON));
+        record.confidence = answer.and_then(|answer| answer.answer_confidence);
         record.model = response.routing.map(|routing| routing.model);
         if let (Some(name), Some(confidence)) = (record.answer.as_deref(), record.confidence)
+            && self.sidecar.threshold < 1.0
             && confidence >= self.sidecar.threshold
             && self.candidates.contains_key(name)
             && !already.iter().any(|pointed| pointed == name)
