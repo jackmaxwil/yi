@@ -25,7 +25,7 @@ pub(crate) fn start(home: &Path) {
     }
     let home = home.to_path_buf();
     std::thread::spawn(
-        move || match own(&home, &checkpoint, host, port, key.ok()) {
+        move || match own(&home, &checkpoint, &host, port, key.ok()) {
             Ok(Some(_child)) => loop {
                 std::thread::park();
             },
@@ -36,6 +36,20 @@ pub(crate) fn start(home: &Path) {
             ),
         },
     );
+}
+
+/// Invariant: userinfo and an IPv6 loopback never start the sidecar, as before the shared
+/// parser, which on its own accepts both (`http://localhost@localhost:8080`).
+fn loopback(url: &str) -> Option<(String, u16)> {
+    let authority = url
+        .strip_prefix("http://")?
+        .split(['/', '?', '#', '\\'])
+        .next()?;
+    if authority.contains('@') || authority.starts_with('[') {
+        return None;
+    }
+    let (host, port) = yi_types::url::http_loopback_host_and_port(url)?;
+    Some((host.to_owned(), port?.parse().ok()?))
 }
 
 /// A note made off the lock, so a daemon with no sidecar to start never waits on another's.
@@ -105,14 +119,27 @@ fn own(
     command.spawn().map(Some)
 }
 
-fn loopback(url: &str) -> Option<(&'static str, u16)> {
-    let rest = url.strip_prefix("http://")?;
-    ["127.0.0.1", "localhost"].into_iter().find_map(|host| {
-        let port = rest
-            .strip_prefix(host)?
-            .strip_prefix(':')?
-            .split('/')
-            .next()?;
-        Some((host, port.parse().ok()?))
-    })
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_a_plain_loopback_host_with_a_port_starts_the_sidecar() {
+        let ok = [
+            ("http://127.0.0.1:8080/x", ("127.0.0.1", 8080)),
+            ("http://localhost:9090", ("localhost", 9090)),
+        ];
+        for (url, (host, port)) in ok {
+            assert_eq!(super::loopback(url), Some((host.to_owned(), port)), "{url}");
+        }
+        for url in [
+            "http://localhost@localhost:8080",
+            "http://localhost:1@localhost:9090",
+            "http://user@localhost:8080",
+            "http://[::1]:8080",
+            "http://localhost/",
+            "http://evil.com\\@localhost:8080/",
+            "https://localhost:8080",
+        ] {
+            assert_eq!(super::loopback(url), None, "{url}");
+        }
+    }
 }

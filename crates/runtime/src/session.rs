@@ -174,7 +174,7 @@ pub struct AgentSession {
 impl AgentSession {
     pub fn new(config: SessionConfig, provider: Arc<ProviderStream>) -> Self {
         let (events, _) = broadcast::channel(1024);
-        Self {
+        let session = Self {
             shared: Arc::new(Shared {
                 ext: Mutex::new(None),
                 model: Mutex::new(config.model.clone()),
@@ -234,7 +234,11 @@ impl AgentSession {
             selector: Mutex::new(None),
             kernel: Arc::new(Mutex::new(None)),
             on_attach: Mutex::new(Vec::new()),
-        }
+        };
+        session
+            .provider()
+            .settle_unless_wired(session.settle_hook(None));
+        session
     }
 
     pub fn set_kernel_service(&self, service: Arc<crate::kernel::KernelService>) {
@@ -1104,6 +1108,7 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
             &store,
             yi_context::attribution::CHILD_USAGE_CAUSE.to_owned(),
             child.clone(),
+            None,
         );
         if let Err(error) = recorded {
             record_store_error(shared, &error);
