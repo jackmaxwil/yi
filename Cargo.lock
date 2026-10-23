@@ -1229,6 +1229,7 @@ checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
 dependencies = [
  "bitflags",
  "errno",
+ "itoa",
  "libc",
  "linux-raw-sys 0.4.15",
  "windows-sys 0.52.0",
@@ -1249,9 +1250,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -2259,6 +2260,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "yi-browser"
+version = "0.2.0"
+dependencies = [
+ "rustix 0.38.44",
+ "serde_json",
+ "yi-types",
+]
+
+[[package]]
 name = "yi-cli"
 version = "0.2.0"
 dependencies = [
@@ -2268,6 +2278,7 @@ dependencies = [
  "tokio",
  "ureq",
  "yi-acp",
+ "yi-browser",
  "yi-console",
  "yi-mcp-cli",
  "yi-runtime",
@@ -2281,9 +2292,12 @@ name = "yi-console"
 version = "0.2.0"
 dependencies = [
  "ratatui",
+ "rustix 0.38.44",
  "serde_json",
  "tui-textarea",
  "unicode-width 0.2.0",
+ "vt100",
+ "yi-browser",
  "yi-tui",
  "yi-types",
 ]
@@ -2376,6 +2390,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "yi-ai",
+ "yi-browser",
  "yi-context",
  "yi-kernel",
  "yi-loop",

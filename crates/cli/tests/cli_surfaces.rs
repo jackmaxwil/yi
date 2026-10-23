@@ -4,16 +4,10 @@ use std::process::{Command, Output};
 
 use serde_json::{Value, json};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
-#[path = "support/prompt_slots.rs"]
-mod prompt_slots_support;
-use prompt_slots_support::prompt_slots;
-#[path = "support/session_files.rs"]
-mod session_files;
-use session_files::session_files;
+use crate::prompt_slots_support::prompt_slots;
+use crate::session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -759,6 +753,57 @@ fn gc_fix_takes_the_checkpoints_of_a_deleted_project() -> TestResult {
         );
     }
     assert!(!shadow.exists(), "the deleted project's repo was kept");
+    Ok(())
+}
+
+/// Incident: a console killed by SIGHUP never ran its browser's drop, and its profile stayed
+/// for good. `yi gc --fix` takes the idle one whose pid is gone, never a live or fresh one.
+#[test]
+fn gc_fix_takes_the_profile_of_a_browser_whose_process_died() -> TestResult {
+    let workspace = Workspace::new("gc-browser")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a finished child is a pid known to be dead"
+    )]
+    let dead = {
+        let mut child = Command::new("true").spawn()?;
+        let pid = child.id();
+        child.wait()?;
+        pid
+    };
+    let root = workspace.0.join("home/.yi/browser/profile");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the sweep reads real ages, so the fixture sets one"
+    )]
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+    let mut dirs = Vec::new();
+    for (name, aged) in [
+        (format!("{dead}-0"), true),
+        (format!("{dead}-1"), false),
+        (format!("{}-0", std::process::id()), true),
+    ] {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("Local State"), "{}")?;
+        if aged {
+            std::fs::File::open(&dir)?.set_modified(old)?;
+        }
+        dirs.push(dir);
+    }
+    let swept = stdout(&workspace.yi(&["gc", "--fix"])?);
+    assert!(
+        swept
+            .lines()
+            .any(|row| row.starts_with("browser profiles: kept 2 of 3, removed 1,")),
+        "{swept}"
+    );
+    let left: Vec<bool> = dirs.iter().map(|dir| dir.exists()).collect();
+    assert_eq!(
+        left,
+        [false, true, true],
+        "an idle dead profile goes; a fresh one and a live pid's stay"
+    );
     Ok(())
 }
 
@@ -2255,7 +2300,7 @@ fn a_plugin_at_an_unpinned_version_is_named_by_list_and_doctor() -> TestResult {
 }
 
 /// `yi plugin list --json` is what the eval adapter reads (`evals/adapters/yi_usage.py`
-/// `installed_plugins`): one row per plugin with `name`, `version`, `state` and `path`.
+/// `installed_plugins`): one row per plugin with `name`, `version`, `state`, `path` and `shape`.
 #[test]
 fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
     let workspace = Workspace::new("plugin-json")?;
@@ -2274,6 +2319,14 @@ fn the_plugin_list_json_names_an_installed_plugin_and_its_path() -> TestResult {
         ripwire["path"],
         json!(pinned.join("ripwire").display().to_string()),
         "{rows}"
+    );
+    let chrome = (rows.as_array().ok_or("not an array")?.iter())
+        .find(|row| row["name"] == "chrome")
+        .ok_or("no chrome row")?;
+    assert_eq!(
+        (&ripwire["shape"], &chrome["shape"]),
+        (&json!("program"), &json!("tree")),
+        "the adapter carries programs and never the console's Chrome: {rows}"
     );
     Ok(())
 }

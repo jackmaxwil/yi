@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-pub use yi_tools::plugin::{PLUGINS, Plugin};
+pub use yi_tools::plugin::{PLUGINS, Plugin, Shape};
 
 pub use yi_kernel::pinned::fetch;
 
@@ -72,8 +72,20 @@ fn install_pin(
         return verified(plugin, &path);
     }
     let asset = plugin.asset().ok_or_else(|| unsupported(plugin))?;
+    let label = format!("{} {}", plugin.name, plugin.version);
+    if plugin.shape == Shape::Tree {
+        let tree = yi_kernel::pinned::Unzipped {
+            label: &label,
+            url: asset.url,
+            sha256: asset.sha256,
+            member: asset.member,
+            member_sha256: asset.member_sha256,
+            dir: &plugin.dir(home),
+        };
+        return yi_kernel::pinned::install_tree(&tree, fetch);
+    }
     let pin = yi_kernel::pinned::Pinned {
-        label: &format!("{} {}", plugin.name, plugin.version),
+        label: &label,
         url: asset.url,
         sha256: asset.sha256,
         member: asset.member,
@@ -115,17 +127,11 @@ fn verified(plugin: &Plugin, path: &Path) -> Result<PathBuf, String> {
     let Some(asset) = plugin.asset() else {
         return Ok(path.to_path_buf());
     };
-    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let remedy = format!(
         ": `yi plugin remove {}` then `yi plugin add {}`",
         plugin.name, plugin.name
     );
-    yi_kernel::pinned::checked(
-        &path.display().to_string(),
-        &bytes,
-        asset.member_sha256,
-        &remedy,
-    )?;
+    yi_kernel::pinned::checked_file(path, asset.member_sha256, &remedy)?;
     Ok(path.to_path_buf())
 }
 
@@ -212,6 +218,7 @@ mod tests {
             name: "tool",
             version: "2.0",
             summary: "a test tool",
+            shape: Shape::Program,
             card: "tool card",
             skills: &["tool-map"],
             assets,

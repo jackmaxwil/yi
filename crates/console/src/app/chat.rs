@@ -485,7 +485,17 @@ impl App {
         };
         let mut left = None;
         match (&mut pane.content, fresh) {
-            (PaneContent::Notebook { session: slot, .. }, _) => *slot = Some(session.clone()),
+            (
+                PaneContent::Notebook {
+                    session: slot,
+                    drawn,
+                    ..
+                },
+                _,
+            ) => {
+                *slot = Some(session.clone());
+                *drawn = None;
+            }
             (_, Some(chat)) => {
                 left = Some(std::mem::replace(
                     &mut pane.content,
@@ -708,7 +718,10 @@ impl App {
         }
         let id = session.0.as_str();
         match request {
-            PortRequest::New => self.new_session_into(outbound, pane_id),
+            PortRequest::New => {
+                let root = self.state.root.clone();
+                self.new_session_into(outbound, pane_id, root);
+            }
             PortRequest::Rewind(entry_id) => self.send_request(
                 outbound,
                 RequestKind::Rewind(session.clone()),
@@ -760,6 +773,11 @@ impl App {
 
     pub(super) fn chat_event(&mut self, event: CtEvent) {
         self.dirty = true;
+        if let CtEvent::Paste(text) = &event
+            && (self.browser_paste(text) || self.terminal_paste(text))
+        {
+            return;
+        }
         if let Some(chat) = self.focused_chat() {
             let enter = matches!(event, CtEvent::Key(key) if key.code == KeyCode::Enter);
             let drafted = enter && !chat.app.composer_text().is_empty();
@@ -788,53 +806,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn a_file_restore_from_the_tape_waits_for_a_second_press() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use yi_types::tape::{Mark, MarkKind, Tape};
-        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
-        let mut app = App::new("/r".to_owned(), theme);
-        let session = SessionId("s-a".to_owned());
-        let pane = app.state.focused_pane_id().expect("a pane");
-        let chat = app.make_chat(pane, &session);
-        app.state.parked.insert(session.clone(), chat);
-        if let Some(focused) = app.state.focused_pane_mut() {
-            focused.content = PaneContent::Tape {
-                session: session.clone(),
-                tape: Some(Tape {
-                    start: 0,
-                    end: 10,
-                    marks: vec![Mark {
-                        at: 0,
-                        kind: MarkKind::User,
-                        entry: "u1".to_owned(),
-                        label: "first".to_owned(),
-                    }],
-                    ..Tape::default()
-                }),
-                cursor: 0,
-                armed: false,
-            };
-        }
-        let press = |app: &mut App| {
-            app.tape_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
-        };
-        let queued = |app: &mut App| {
-            app.state
-                .chats_mut(&session)
-                .into_iter()
-                .map(|chat| chat.port.queue.len())
-                .sum::<usize>()
-        };
-        press(&mut app);
-        assert_eq!(queued(&mut app), 0, "the first press only arms");
-        press(&mut app);
-        assert!(matches!(
-            app.state.chats_mut(&session).into_iter().next().and_then(|chat| chat.port.queue.first()),
-            Some(super::super::port::PortRequest::RewindFiles(entry)) if entry == "u1"
-        ));
-    }
+    use super::*;
+    use yi_types::subagent::{ChildActivity, ChildId};
 
     /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened
     /// the list, while the `▸` still sat on a file; then with every blame error read as uncommitted.
@@ -914,53 +887,6 @@ mod tests {
             assert!(rows.iter().any(|drawn| drawn == row), "{row}\n{rows:#?}");
         }
     }
-
-    #[test]
-    fn a_red_gate_ranks_between_done_and_working() {
-        use crate::model::{SessionRow, SessionStatus};
-        use yi_types::lane::{JobState, Landing, LandingJob, PrNumber};
-        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
-        let mut app = App::new("/r".to_owned(), theme);
-        for (id, status, last_ms) in [
-            ("s-work", SessionStatus::Working, 30),
-            ("s-red", SessionStatus::Working, 10),
-            ("s-done", SessionStatus::DoneUnseen, 5),
-        ] {
-            app.state.upsert_row(SessionRow {
-                id: SessionId(id.to_owned()),
-                root: "/r".to_owned(),
-                status,
-                attached: true,
-                name: Some(id.to_owned()),
-                created_ms: 0,
-                last_ms,
-            });
-        }
-        let red = SessionId("s-red".to_owned());
-        let pane = app.state.focused_pane_id().expect("a pane");
-        let mut chat = app.make_chat(pane, &red);
-        chat.app
-            .reduce_agent(yi_types::event::AgentEvent::LandingState {
-                landing: Landing::Open {
-                    pr: PrNumber(612),
-                    jobs: vec![LandingJob {
-                        name: "gate (test)".to_owned(),
-                        state: JobState::Red,
-                    }],
-                    behind: 0,
-                },
-            });
-        app.state.parked.insert(red, chat);
-        let order: Vec<String> = app
-            .state
-            .visible_rows()
-            .into_iter()
-            .filter_map(|index| app.state.order.get(index).map(|id| id.0.clone()))
-            .collect();
-        assert_eq!(order, ["s-done", "s-red", "s-work"]);
-    }
-    use super::*;
-    use yi_types::subagent::{ChildActivity, ChildId};
 
     fn update(id: usize, status: ChildStatus) -> ChildUpdate {
         ChildUpdate {
@@ -1050,6 +976,74 @@ mod tests {
             "a reveal behind its text sleeps {:?}, past one {:?} frame",
             crate::chat_wake(&app),
             yi_tui::reveal::FRAME
+        );
+        Ok(())
+    }
+
+    /// Dies with the mark gone from every chat pane but the focused one, or with an unfocused
+    /// pane retransmitting its orb or waking the loop every frame: only the focused pane animates.
+    #[test]
+    fn every_drawn_chat_pane_places_its_own_mark() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        app.kitty = true;
+        let left = app.state.focused_pane_id().ok_or("a pane")?;
+        let right = app
+            .state
+            .split_focused(ratatui::layout::Direction::Horizontal)
+            .ok_or("no split")?;
+        for (pane, id) in [(left, "s-a"), (right, "s-b")] {
+            let session = SessionId(id.to_owned());
+            let chat = app.make_chat(pane, &session);
+            if let Some(slot) = app.state.panes.get_mut(&pane) {
+                slot.content = PaneContent::Session {
+                    session: Some(session),
+                    chat: Some(chat),
+                };
+            }
+        }
+        if let Some(tab) = app.state.tab_mut() {
+            tab.layout.focus_pane(left);
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
+        let mut out = Vec::new();
+        let mut owners = std::collections::HashMap::new();
+        crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
+        let written = String::from_utf8_lossy(&out);
+        for pane in [left, right] {
+            let placed = orb_ids(pane)
+                .iter()
+                .any(|id| written.contains(&format!("a=p,i={id},")));
+            assert!(placed, "pane {} has no mark: {written:?}", pane.raw());
+        }
+        let right_chat = app
+            .state
+            .chats_mut(&SessionId("s-b".to_owned()))
+            .into_iter()
+            .next()
+            .ok_or("no chat")?;
+        right_chat
+            .app
+            .reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        std::thread::sleep(yi_tui::orb::FRAME * 2);
+        out.clear();
+        crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
+        let written = String::from_utf8_lossy(&out);
+        for id in orb_ids(right) {
+            assert!(
+                !written.contains(&format!("a=t,i={id},")),
+                "the unfocused pane retransmitted its mark: {written:?}"
+            );
+            assert!(
+                !written.contains(&format!("a=p,i={id},")),
+                "the unfocused pane re-placed its mark: {written:?}"
+            );
+        }
+        assert!(
+            crate::chat_wake(&app) > yi_tui::orb::FRAME,
+            "an unfocused running pane wakes the loop in {:?}, inside one {:?} frame",
+            crate::chat_wake(&app),
+            yi_tui::orb::FRAME
         );
         Ok(())
     }

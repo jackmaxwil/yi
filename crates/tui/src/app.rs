@@ -181,6 +181,8 @@ pub struct App {
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
+    pub(crate) title_cover: bool,
+    pub(crate) orb_slot: Option<(u16, u16)>,
     /// Where the picker's first model row sits, set by the last paint; the logo slot column.
     pub(crate) logo_rows: Option<(u16, u16)>,
     pub(crate) orb_placement: Option<(u16, u16)>,
@@ -307,6 +309,8 @@ impl App {
             user_turns: 0,
             mode: TranscriptMode::default(),
             kitty: false,
+            title_cover: false,
+            orb_slot: None,
             logo_rows: None,
             orb_placement: None,
             orb_stale: false,
@@ -602,6 +606,11 @@ impl App {
     /// The source of transcript cell `index`, for rows a drag read before they scrolled away.
     pub fn cell_source(&self, index: usize) -> Option<&str> {
         self.history.source(index)
+    }
+
+    /// The transcript's prompts, answers and thoughts, oldest first; tool cells have no source.
+    pub fn sources(&self) -> impl Iterator<Item = &str> {
+        (0..self.history.len()).filter_map(|index| self.history.source(index))
     }
 
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {

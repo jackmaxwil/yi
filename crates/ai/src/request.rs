@@ -60,11 +60,9 @@ impl ProxyConfig {
             .map_err(|error| format!("invalid proxy {}: {error}", redacted(url)))?;
         Ok(Some(Self {
             proxy,
-            no_proxy: no_proxy
-                .unwrap_or_default()
-                .split(',')
-                .map(|entry| entry.trim().trim_start_matches('.').to_lowercase())
-                .filter(|entry| !entry.is_empty())
+            no_proxy: yi_types::settings::comma_list(no_proxy.unwrap_or_default())
+                .iter()
+                .map(|entry| entry.trim_start_matches('.').to_lowercase())
                 .collect(),
         }))
     }
@@ -532,6 +530,7 @@ pub struct Wire<'a> {
     /// A stored OAuth credential is on the wire (D191): a 401 then names the login
     /// verb instead of dumping the provider's body.
     pub oauth: bool,
+    pub settle: Option<&'a crate::settle::Settle>,
 }
 
 /// A 401 with a stored OAuth credential means the login was rejected or expired past
@@ -551,6 +550,7 @@ pub struct WireOwned {
     pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub extra: Vec<(String, String)>,
     pub oauth: bool,
+    pub settle: Option<crate::settle::Settle>,
 }
 
 /// The OpenAI-style stream shape, shared by the completions and responses paths: one
@@ -577,6 +577,7 @@ pub fn spawn_stream(
             stop: owned.stop.as_deref(),
             extra: &owned.extra,
             oauth: owned.oauth,
+            settle: owned.settle.as_ref(),
         };
         if let Err(message) = run(&model, &body, wire, sender) {
             let _ = sender.blocking_send(fail(&model, &message));

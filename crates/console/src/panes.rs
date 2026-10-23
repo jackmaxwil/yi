@@ -2,113 +2,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::colors::Theme;
 use yi_tui::diffview::{self, DiffBudget};
-use yi_types::status_mark::StatusMark;
-
-fn span_of(ms: u64) -> String {
-    match ms / 1000 {
-        secs @ 0..60 => format!("{secs}s"),
-        secs @ 60..3600 => format!("{}m", secs / 60),
-        secs => format!("{}h{}m", secs / 3600, secs / 60 % 60),
-    }
-}
-
-pub fn tape_view(
-    tape: Option<&yi_types::tape::Tape>,
-    cursor: usize,
-    width: usize,
-    theme: &Theme,
-) -> (String, Vec<Line<'static>>) {
-    use yi_types::tape::MarkKind;
-    let Some(tape) = tape.filter(|tape| tape.end > tape.start) else {
-        return (
-            "Tape".to_owned(),
-            vec![Line::styled(
-                "no turns on the ledger yet",
-                theme.dim_style(),
-            )],
-        );
-    };
-    let total = tape.end - tape.start;
-    let cols = width.saturating_sub(8).max(10);
-    let col_of = |at: u64| {
-        let offset = u128::from(at.saturating_sub(tape.start));
-        usize::try_from(offset * cols as u128 / u128::from(total))
-            .unwrap_or(cols)
-            .min(cols - 1)
-    };
-    let covered = |spans: &[[u64; 2]]| -> (String, u64) {
-        let mut fill = vec![0_u64; cols];
-        let mut sum = 0_u64;
-        for [from, to] in spans {
-            sum = sum.saturating_add(to.saturating_sub(*from));
-            for (col, cell) in fill.iter_mut().enumerate() {
-                let lo = tape.start + total * col as u64 / cols as u64;
-                let hi = tape.start + total * (col as u64 + 1) / cols as u64;
-                *cell += (*to).min(hi).saturating_sub((*from).max(lo));
-            }
-        }
-        let bar = fill
-            .iter()
-            .enumerate()
-            .map(|(col, ms)| {
-                let span = (total * (col as u64 + 1) / cols as u64)
-                    .saturating_sub(total * col as u64 / cols as u64)
-                    .max(1);
-                let level = usize::try_from(ms * 8 / span).unwrap_or(8).min(8);
-                [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][level]
-            })
-            .collect();
-        (bar, sum * 100 / total)
-    };
-    let (model, model_share) = covered(&tape.model);
-    let (tools, tools_share) = covered(&tape.tools);
-    let mut you = vec![' '; cols];
-    let mut marks = vec![' '; cols];
-    for mark in &tape.marks {
-        let col = col_of(mark.at);
-        match mark.kind {
-            MarkKind::User => you[col] = '┃',
-            MarkKind::Checkpoint => marks[col] = '◆',
-            MarkKind::Failed => marks[col] = StatusMark::Failed.symbol(),
-            MarkKind::Compaction => marks[col] = '⌇',
-            MarkKind::Other(_) => marks[col] = '·',
-        }
-    }
-    let track = |name: &str, body: String| {
-        Line::from(vec![
-            Span::styled(format!("{name:<6}▕"), theme.dim_style()),
-            Span::styled(body, Style::default().fg(theme.text)),
-            Span::styled("▏", theme.dim_style()),
-        ])
-    };
-    let mut lines = vec![
-        track("model", model),
-        track("tools", tools),
-        track("you", you.into_iter().collect()),
-        track("marks", marks.into_iter().collect()),
-    ];
-    if let Some(mark) = tape.marks.get(cursor) {
-        let pointer = format!("{}▲", " ".repeat(col_of(mark.at).saturating_add(7)));
-        lines.push(Line::styled(pointer, theme.accent_style()));
-        let then = span_of(mark.at.saturating_sub(tape.start));
-        lines.push(Line::styled(
-            format!("+{then} · {}", mark.label),
-            Style::default().fg(theme.text),
-        ));
-    }
-    lines.push(Line::styled(
-        format!(
-            "◆ checkpoint  {} failed  ⌇ compaction  ┃ you · ←/→ marks · enter rewinds to your turn · u u also restores its files",
-            StatusMark::Failed.glyph()
-        ),
-        theme.dim_style(),
-    ));
-    let title = format!(
-        "Tape · {} · model {model_share}% · tools {tools_share}%",
-        span_of(total)
-    );
-    (title, lines)
-}
 
 /// An edit's patch names its file absolutely, while git and a model's read may name it from
 /// the repository root: one file either way.
@@ -253,7 +146,7 @@ pub fn review_view(
     if let Some(title) = diff.and_then(|diff| diff.land_armed.as_deref()) {
         lines.push(Line::styled(
             format!("l again to /land {title} · any other key cancels"),
-            theme.accent_style(),
+            Style::default().fg(theme.warning),
         ));
     }
     let selected = diff.map_or(0, |diff| diff.selected.min(files.len().saturating_sub(1)));
@@ -478,9 +371,10 @@ pub fn notebook_lines(
             "stderr",
             theme,
         ));
+        let teal = Style::default().fg(theme.teal);
         if let Some(result) = &cell.result {
-            let lead = Span::styled("↳ ", theme.accent_style());
-            let bold = theme.accent_style().add_modifier(Modifier::BOLD);
+            let lead = Span::styled("↳ ", teal);
+            let bold = teal.add_modifier(Modifier::BOLD);
             out.extend(capped(
                 result,
                 lead,
@@ -501,12 +395,24 @@ pub fn notebook_lines(
                 theme,
             ));
         }
+        for size in &cell.dropped_image_bytes {
+            let what = format!("image {size} B base64 dropped");
+            let cap = format!("notebook cap {} B", crate::model::IMAGE_BYTES_MAX);
+            out.push(cap_row(&what, &cap, "the transcript holds it", theme));
+        }
+        if cell.images_past_limit > 0 {
+            let noun = if cell.images_past_limit == 1 {
+                "image"
+            } else {
+                "images"
+            };
+            let what = format!("{} older {noun} not shown", cell.images_past_limit);
+            let cap = format!("notebook keeps {} per cell", crate::model::IMAGES_PER_CELL);
+            out.push(cap_row(&what, &cap, "the transcript holds them", theme));
+        }
         for image in &cell.images {
             let kb = image.len().saturating_mul(3) / 4 / 1024;
-            out.push(Line::styled(
-                format!("  ▲ image · {kb} KB png"),
-                theme.accent_style(),
-            ));
+            out.push(Line::styled(format!("  ▲ image · {kb} KB png"), teal));
         }
         out.push(Line::default());
     }

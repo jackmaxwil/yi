@@ -6,8 +6,10 @@
 
 pub mod app;
 pub mod avatar;
+pub mod browser;
 mod chrome;
 pub mod client;
+mod header;
 pub mod keys;
 pub mod kitty;
 pub mod layout;
@@ -16,10 +18,13 @@ pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod panes;
+pub mod placed;
+pub mod pty;
 pub mod render;
 pub mod select;
 pub mod settings;
 pub mod sidebar;
+mod title;
 
 use std::io::Stdout;
 use std::path::PathBuf;
@@ -44,14 +49,20 @@ use crate::client::{ClientEvent, Outbound};
 use crate::layout::PaneId;
 use crate::model::{Link, SessionId, SessionStatus};
 
+pub use title::{TitleOptions, UnknownScene};
+use title::{title_playing, title_tick};
+
 pub struct ConsoleOptions {
     pub socket: PathBuf,
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub title: Option<TitleOptions>,
     pub open_apps: Vec<String>,
     pub sidebar: crate::model::SidebarMode,
     pub pace: u16,
+    pub browser: Option<PathBuf>,
+    pub chrome_pin: Option<crate::browser::Pinned>,
 }
 
 pub struct DriveOptions {
@@ -70,6 +81,7 @@ pub enum ConsoleStep {
     Tui(Step),
     Mouse(MouseKind, u16, u16),
     Cmd(yi_tui::keymap::SingleKey),
+    Paste(String),
 }
 
 /// The drive harness speaks crossterm, so a script runs the same button mapping a terminal does.
@@ -131,6 +143,10 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             steps.push(ConsoleStep::Cmd(key));
             continue;
         }
+        if let Some(rest) = line.strip_prefix("paste ") {
+            steps.push(ConsoleStep::Paste(rest.to_owned()));
+            continue;
+        }
         let parsed = yi_tui::drive::parse_script(line).map_err(error)?;
         if parsed
             .iter()
@@ -145,7 +161,7 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     }
     yi_tui::drive::refuse_repeated_snaps(steps.iter().filter_map(|step| match step {
         ConsoleStep::Tui(step) => Some(step),
-        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) => None,
+        ConsoleStep::Mouse(..) | ConsoleStep::Cmd(_) | ConsoleStep::Paste(_) => None,
     }))?;
     Ok(steps)
 }
@@ -203,6 +219,7 @@ fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<
     span.set("events", count);
     let _tick = yi_types::trace::span("console.tick");
     app.tick(outbound);
+    title_tick(app);
 }
 
 fn draw<B: Backend>(
@@ -216,7 +233,8 @@ fn draw<B: Backend>(
     app.dirty = false;
     if std::mem::take(&mut app.pending_clear) {
         terminal.clear()?;
-        app.notebook_image = None;
+        app.notebook_image.clear();
+        app.state.browser_placed.clear();
     }
     let _span = yi_types::trace::span("console.draw");
     terminal.draw(|frame| {
@@ -267,6 +285,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let (event_tx, events) = client::events();
     let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx.clone());
     app.kitty = crate::kitty::supported(
         std::env::var("TERM").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -426,6 +445,7 @@ fn present<B: Backend>(
     if app.kitty {
         place_avatars(app, out);
         place_notebook_image(app, out);
+        crate::browser::place(app, out);
         place_chat_orbs(app, orb_owners, out);
         app.avatars.animate(out);
     }
@@ -450,6 +470,7 @@ fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
+        .filter(|_| !title_playing(app))
         .map(|hits| crate::avatar::uncovered(hits.avatars.clone(), &hits.overlays))
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
@@ -459,24 +480,31 @@ fn place_avatars(app: &mut App, out: &mut impl std::io::Write) {
 /// or the idle poll woke the loop and drew at 28 fps in 2-row lurches.
 fn chat_wake(app: &App) -> Duration {
     use crate::model::PaneContent;
+    let focused = app.state.focused_pane_id();
     app.state
         .panes
-        .values()
-        .filter_map(|pane| match &pane.content {
+        .iter()
+        .filter_map(|(id, pane)| match &pane.content {
             PaneContent::Session {
                 chat: Some(chat), ..
             } => {
-                let orb = chat.app.orb_animating().then(|| chat.orb.wake());
+                let orb =
+                    (Some(*id) == focused && chat.app.orb_animating()).then(|| chat.orb.wake());
                 Some(chat.app.reveal_wake().min(orb.unwrap_or(Duration::MAX)))
             }
             _ => None,
         })
         .min()
         .unwrap_or(IDLE_POLL)
+        .min(if title_playing(app) {
+            yi_tui::title::FRAME
+        } else {
+            Duration::MAX
+        })
 }
 
-/// One orb per chat pane on its own image ids; only the focused pane animates. Incident: a
-/// closed or switched pane kept its orb, as the next chat's `Tick` deletes only what it placed.
+/// One orb per drawn chat pane on its own image ids; only the focused pane animates, the rest
+/// hold one placed frame. Incident: a closed or switched pane kept its orb.
 fn place_chat_orbs(
     app: &mut App,
     owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
@@ -503,13 +531,19 @@ fn place_chat_orbs(
         kept
     });
     let focused = app.state.focused_pane_id();
-    let covered = |id: PaneId| {
+    let shown = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
             let pane = hits.panes.iter().find(|(pane, _)| *pane == id);
-            pane.is_some_and(|(_, rect)| hits.overlays.iter().any(|cover| cover.intersects(*rect)))
+            pane.is_some_and(|(_, rect)| !hits.overlays.iter().any(|cover| cover.intersects(*rect)))
         })
     };
-    let shown = focused.filter(|id| !covered(*id));
+    let shown: Vec<PaneId> = app
+        .state
+        .panes
+        .keys()
+        .copied()
+        .filter(|id| shown(*id))
+        .collect();
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
             session,
@@ -519,11 +553,14 @@ fn place_chat_orbs(
             continue;
         };
         owners.entry(*id).or_insert_with(|| session.clone());
-        if Some(*id) == shown {
-            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
-            yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
+        if shown.contains(id) {
+            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
         } else {
             chat.orb.hide(out);
+        }
+        if shown.contains(id) && Some(*id) == focused {
+            yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
+        } else {
             yi_tui::logos::delete_all(out, &mut chat.logos);
         }
     }
@@ -533,55 +570,63 @@ fn place_chat_orbs(
 /// the top half of the pane; text placeholders stay for every other terminal.
 fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
-    let placed = &mut app.notebook_image;
-    let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
-        if placed.take().is_some() {
-            let _ = crate::kitty::delete(out);
-        }
-    };
-    let Some(pane_id) = app.state.focused_pane_id() else {
-        return clear(out, placed);
-    };
-    let Some(pane) = app.state.panes.get(&pane_id) else {
-        return clear(out, placed);
-    };
-    let PaneContent::Notebook { cells, .. } = &pane.content else {
-        return clear(out, placed);
-    };
-    let image = cells
-        .iter()
-        .rev()
-        .flat_map(|cell| cell.images.iter())
-        .next();
-    let Some(image) = image else {
-        return clear(out, placed);
-    };
-    let rect = app
-        .hits
-        .as_ref()
-        .and_then(|hits| hits.panes.iter().find(|(id, _)| *id == pane_id))
-        .map(|(_, rect)| *rect);
-    let Some(rect) = rect else {
-        return clear(out, placed);
-    };
-    let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
-    let half = ratatui::layout::Rect {
-        height: inner.height / 2,
-        ..inner
-    };
-    let covered = app
-        .hits
-        .as_ref()
-        .is_some_and(|hits| hits.overlays.iter().any(|cover| cover.intersects(half)));
-    if half.height < 3 || half.width < 8 || covered {
-        return clear(out, placed);
-    }
-    if *placed == Some((image.len(), half)) {
-        return;
-    }
-    if crate::kitty::place_png(out, image, half).is_ok() {
-        *placed = Some((image.len(), half));
-    }
+    let playing = title_playing(app);
+    let focused = app.state.focused_pane_id().filter(|_| !playing);
+    let want = focused
+        .and_then(|pane_id| app.state.panes.get(&pane_id))
+        .and_then(|pane| {
+            let PaneContent::Notebook { session, .. } = &pane.content else {
+                return None;
+            };
+            let cells = session
+                .as_ref()
+                .map(|session| crate::model::notebook_cells(&app.state.notebooks, session))
+                .unwrap_or(&[]);
+            cells
+                .iter()
+                .rev()
+                .flat_map(|cell| cell.images.iter())
+                .next()
+        })
+        .and_then(|image| {
+            let rect = app
+                .hits
+                .as_ref()
+                .and_then(|hits| {
+                    hits.panes
+                        .iter()
+                        .find(|(id, _)| focused.is_some_and(|pane| id == &pane))
+                        .map(|(_, rect)| {
+                            let inner = rect.inner(render::pane_margin(true));
+                            ratatui::layout::Rect {
+                                height: inner.height / 2,
+                                ..inner
+                            }
+                        })
+                })
+                .filter(|half| {
+                    half.height >= 3
+                        && half.width >= 8
+                        && !app.hits.as_ref().is_some_and(|hits| hits.covered(*half))
+                })?;
+            let pane_id = focused?;
+            Some((
+                pane_id,
+                (rect, u64::try_from(image.len()).unwrap_or(0), image),
+            ))
+        });
+    let out = std::cell::RefCell::new(out);
+    crate::placed::reconcile(
+        want,
+        &mut app.notebook_image,
+        &mut |_: PaneId, old| crate::kitty::next_notebook_id(old),
+        &mut |_: PaneId, rect: ratatui::layout::Rect, image: &&String, id: u32| {
+            crate::kitty::place_png(&mut *out.borrow_mut(), id, image.as_str(), rect).is_ok()
+        },
+        &mut |_: PaneId, id: u32| {
+            let _ = yi_tui::orb::kitty::delete_id(&mut *out.borrow_mut(), id);
+        },
+    );
 }
 
 fn restore_terminal() {
@@ -617,8 +662,9 @@ fn drive_idle(app: &App) -> bool {
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
     let (event_tx, events) = client::events();
-    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx);
+    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
+    app.wake = Some(event_tx);
     if drive
         .script
         .iter()
@@ -650,14 +696,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         return 1;
     }
 
-    let mut frame_index = 0_u32;
-    let mut last_frame = String::new();
+    let (mut frame_index, mut last_frame) = (0_u32, String::new());
     let mut steps = drive.script.into_iter();
     let mut current: Option<(ConsoleStep, Instant)> = None;
     let deadline = Deadline::new(drive.deadline_secs);
-    let mut exit_code = 0;
-    let mut type_ms = 0;
-    let mut pending_snap = None;
+    let (mut exit_code, mut type_ms, mut pending_snap) = (0, 0, None);
 
     while !app.state.quit {
         if deadline.passed() {
@@ -686,6 +729,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 event.modifiers |= ratatui::crossterm::event::KeyModifiers::SUPER;
                 app.handle_event(&outbound, CtEvent::Key(event));
             }
+            (ConsoleStep::Paste(text), _) => {
+                app.handle_event(&outbound, CtEvent::Paste(text.clone()));
+            }
             (ConsoleStep::Tui(Step::TypeMs(ms)), _) => type_ms = ms,
             (ConsoleStep::Tui(Step::Snap(name)), _) => pending_snap = Some(name),
             (ConsoleStep::Tui(Step::Tick(ms)), _) => tick(&mut app, &outbound, &events, ms),
@@ -707,11 +753,9 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     std::thread::sleep(Duration::from_millis(2));
                 }
             }
-            (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
+            step @ (ConsoleStep::Tui(Step::WaitIdle(ms)), started) => {
                 match poll_condition(!drive_idle(&app), started, ms, "wait-idle") {
-                    WaitPoll::Retry => {
-                        current = Some((ConsoleStep::Tui(Step::WaitIdle(ms)), started))
-                    }
+                    WaitPoll::Retry => current = Some(step),
                     WaitPoll::Failed(error) => {
                         eprintln!("error: {error}");
                         exit_code = 1;
@@ -767,9 +811,16 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
 fn configure(app: &mut App, options: &ConsoleOptions) {
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
+    app.state.title_start = app.clock.now();
+    app.state.title = options
+        .title
+        .as_ref()
+        .and_then(|title| yi_tui::title::pick(&title.weights, title.seed));
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
+    app.state.chrome =
+        crate::browser::Chrome::new(options.browser.clone(), options.chrome_pin.clone());
 }
 
 /// What the console wrote outside the grid (clipboard, title), kept beside the frames; the
@@ -792,25 +843,47 @@ fn keep_osc(dir: Option<&std::path::Path>, osc: &mut Vec<String>) -> Result<(), 
 mod tests {
     use super::*;
 
-    /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
-    /// while the cache still said placed, so the notebook image never came back.
-    #[test]
-    fn a_resize_places_the_notebook_image_again() -> Result<(), Box<dyn std::error::Error>> {
+    fn notebook_app(
+        image: &str,
+    ) -> Result<(App, Theme, Terminal<ratatui::backend::TestBackend>), Box<dyn std::error::Error>>
+    {
         let theme = Theme::new(ColorTier::TrueColor, true);
         let mut app = App::new("/repo".to_owned(), theme);
         let home = app.state.focused_pane_id().ok_or("a pane")?;
-        if let Some(pane) = app.state.panes.get_mut(&home) {
+        notebook_pane(&mut app, home, image);
+        let terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        Ok((app, theme, terminal))
+    }
+
+    fn stream(app: &mut App) -> String {
+        let mut out = Vec::new();
+        place_notebook_image(app, &mut out);
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn notebook_pane(app: &mut App, pane_id: crate::layout::PaneId, image: &str) {
+        let session = crate::model::SessionId(format!("s-nb-{}", app.state.notebooks.len()));
+        if let Some(pane) = app.state.panes.get_mut(&pane_id) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
-        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec![image.to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
+    }
+
+    /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
+    /// while the cache still said placed, so the notebook image never came back.
+    #[test]
+    fn a_resize_places_the_notebook_image_again() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, theme, mut terminal) = notebook_app("iVBORw0KGgo=")?;
         let placed = |app: &mut App| {
             let mut out = Vec::new();
             place_notebook_image(app, &mut out);
@@ -829,6 +902,72 @@ mod tests {
         Ok(())
     }
 
+    /// Round-9 review (#1386): a changed notebook image placed the new id and then
+    /// deleted it, so the image vanished after the first content change.
+    #[test]
+    fn a_changed_notebook_image_places_and_keeps_the_new_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, theme, mut terminal) = notebook_app("iVBORw0KGgo=")?;
+        draw(&mut app, &mut terminal, &theme)?;
+        let first = stream(&mut app);
+        assert!(first.contains("a=p,i=7701,"), "{first:?}");
+        let cells = (app.state.notebooks.values_mut().next()).ok_or("a notebook")?;
+        cells[0].images[0] =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAElFTkSuQmCC".to_owned();
+        app.dirty = true;
+        draw(&mut app, &mut terminal, &theme)?;
+        let second = stream(&mut app);
+        assert!(second.contains("a=p,i=7702,"), "{second:?}");
+        assert!(
+            !second.contains("a=d,d=I,i=7702"),
+            "the repaint deleted the id it just placed: {second:?}"
+        );
+        Ok(())
+    }
+
+    /// Round-11 review (#1386): the placement cache was keyed by one slot, so focus moving
+    /// between two notebook panes with equal-rect, equal-length images skipped the repaint
+    /// and the newly focused pane kept showing the other pane's image.
+    #[test]
+    fn a_focused_pane_places_its_own_image_and_deletes_the_other_pane_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, theme, mut terminal) = notebook_app("iVBORw0KGgo=")?;
+        let other = app
+            .state
+            .split_focused(ratatui::layout::Direction::Horizontal)
+            .ok_or("a split")?;
+        notebook_pane(&mut app, other, "AAAAAAAAAAA=");
+        let Some(tab) = app.state.tab_mut() else {
+            return Err("a tab".into());
+        };
+        tab.zoomed = true;
+        tab.layout.focus_direction(
+            crate::layout::NavDirection::Left,
+            ratatui::layout::Rect::new(0, 0, 200, 100),
+        );
+        app.dirty = true;
+        draw(&mut app, &mut terminal, &theme)?;
+        let first = stream(&mut app);
+        assert!(first.contains("m=0;iVBORw0KGgo="), "{first:?}");
+        let tab = app.state.tab_mut().ok_or("a tab")?;
+        tab.layout.focus_direction(
+            crate::layout::NavDirection::Right,
+            ratatui::layout::Rect::new(0, 0, 200, 100),
+        );
+        app.dirty = true;
+        draw(&mut app, &mut terminal, &theme)?;
+        let second = stream(&mut app);
+        assert!(
+            second.contains("m=0;AAAAAAAAAAA="),
+            "the focused pane placed its own image: {second:?}"
+        );
+        assert!(
+            second.contains("a=d,d=I,i=7701"),
+            "the unfocused pane's id was not deleted: {second:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn v_on_the_notebook_shows_the_code_rows_its_cap_cut() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -836,18 +975,22 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.state.zone = crate::model::Zone::Panes;
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    number: 1,
-                    code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                number: 1,
+                code: (1..=30).map(|n| format!("x{n} = {n}\n")).collect(),
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40))?;
         let screen = |terminal: &Terminal<ratatui::backend::TestBackend>| -> String {
             let cells = terminal.backend().buffer().content();
@@ -880,17 +1023,21 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.kitty = true;
         let home = app.state.focused_pane_id().ok_or("a pane")?;
+        let session = crate::model::SessionId("s-nb".to_owned());
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
-                session: None,
-                cells: vec![crate::model::NbCell {
-                    images: vec!["iVBORw0KGgo=".to_owned()],
-                    ..crate::model::NbCell::default()
-                }],
+                session: Some(session.clone()),
                 full: false,
                 drawn: None,
             };
         }
+        app.state.notebooks.insert(
+            session,
+            vec![crate::model::NbCell {
+                images: vec!["iVBORw0KGgo=".to_owned()],
+                ..crate::model::NbCell::default()
+            }],
+        );
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
         let mut out = Vec::new();
         present(
@@ -942,11 +1089,8 @@ mod tests {
         );
         assert!(out.contains("s=32,v=48,a=t,i=8000"), "{out:?}");
         assert!(out.contains("a=p,i=8000,p=1,q=2,C=1,c=4,r=3"), "{out:?}");
-        let gear = app
-            .hits
-            .as_ref()
-            .and_then(|hits| hits.gear)
-            .ok_or("no gear")?;
+        let hits = app.hits.as_ref();
+        let gear = hits.and_then(|hits| hits.gear).ok_or("no gear")?;
         assert_eq!(gear.height, 3);
         if let Some(hits) = app.hits.as_mut() {
             hits.overlays = vec![gear];
@@ -965,24 +1109,15 @@ mod tests {
         let mut app = App::new("/repo".to_owned(), theme);
         app.state.link = crate::model::Link::Connected;
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
-        let key_bg = |terminal: &Terminal<ratatui::backend::TestBackend>,
-                      at: ratatui::layout::Rect| {
-            let cell = terminal
-                .backend()
-                .buffer()
-                .cell((at.x.saturating_add(2), at.y));
+        let key_bg = |t: &Terminal<ratatui::backend::TestBackend>, at: ratatui::layout::Rect| {
+            let cell = t.backend().buffer().cell((at.x.saturating_add(2), at.y));
             cell.map(|cell| cell.bg)
         };
         draw(&mut app, &mut terminal, &theme)?;
-        let buttons = app
-            .hits
-            .as_ref()
-            .map(|hits| hits.hint_buttons.clone())
-            .unwrap_or_default();
-        let (first, second) = (
-            buttons.first().ok_or("no hint")?.0,
-            buttons.get(1).ok_or("one hint")?.0,
-        );
+        let hits = app.hits.as_ref();
+        let buttons = hits.map(|h| h.hint_buttons.clone()).unwrap_or_default();
+        let first = buttons.first().ok_or("no hint")?.0;
+        let second = buttons.get(1).ok_or("one hint")?.0;
         let rest = (key_bg(&terminal, first), key_bg(&terminal, second));
         assert_ne!(rest.0, rest.1, "each keycap wears its own colour");
         let (events, _received) = client::events();
@@ -1024,6 +1159,7 @@ mod tests {
             name: Some("Fix bug\u{7}\u{1b}]52;c;ZWNobyBwd25lZA==\u{7} now".to_owned()),
             created_ms: 0,
             last_ms: 0,
+            pinned: None,
         });
         let home = app.state.focused_pane_id().ok_or("a pane")?;
         if let Some(pane) = app.state.panes.get_mut(&home) {

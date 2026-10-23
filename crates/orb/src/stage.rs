@@ -5,7 +5,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::core::{Dot, OrbFrame, finalize_frame, radius_scale};
-use crate::states::{OrbState, Point, V, add, dot, exit_after, pose, rot_x, smooth, spec};
+use crate::states::{
+    MARK_SPAN, OrbState, Point, V, add, dot, exit_after, pose, rot_x, smooth, spec,
+};
 
 const CANVAS: f64 = 64.0;
 const RADIUS: f64 = CANVAS / 2.0 * 0.78;
@@ -67,6 +69,10 @@ impl Orb {
 
     pub fn at_rest(&self, want: Option<OrbState>) -> bool {
         self.now.is_none() && want.is_none() && self.next.is_none() && self.morph.is_none()
+    }
+
+    pub fn holding(&self, state: OrbState) -> bool {
+        self.now == Some(state) && self.next.is_none() && self.morph.is_none()
     }
 
     pub fn frame(&mut self, dt: Duration, want: Option<OrbState>) -> OrbFrame {
@@ -161,6 +167,16 @@ impl Orb {
             job,
         });
     }
+}
+
+/// Where a [`crate::states::MARK_STROKES`] point lands in the rendered image, as fractions of its
+/// width and height.
+pub fn mark_at(x: f64, y: f64) -> (f64, f64) {
+    let reach = |v: f64| v * MARK_SPAN * RADIUS;
+    (
+        (CANVAS / 2.0 + reach(x)) / CANVAS,
+        (CANVAS / 2.0 - reach(y)) / CANVAS,
+    )
 }
 
 pub fn render(points: &[Point]) -> OrbFrame {
