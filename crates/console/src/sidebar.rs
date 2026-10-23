@@ -1,4 +1,4 @@
-//! The rail and the full sidebar's inbox: rows by need, the root filter, the edge mark.
+//! The rail and the full sidebar: pinned sessions, then one foldable group per workspace.
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -9,7 +9,9 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::avatar::Placement;
+use crate::keys::{self, Action};
 use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Zone, now_ms};
+use crate::render::Hit;
 use crate::render::{NAME_WIDTH, status_style};
 use yi_tui::orb::OrbState;
 use yi_tui::port::SessionPort;
@@ -20,6 +22,7 @@ pub struct SidebarRow {
     pub index: Option<usize>,
     pub line: Line<'static>,
     pub avatar: Option<Placement>,
+    pub control: Option<Hit>,
 }
 
 impl SidebarRow {
@@ -28,6 +31,7 @@ impl SidebarRow {
             index,
             line,
             avatar: None,
+            control: None,
         }
     }
 }
@@ -126,10 +130,11 @@ const NAME_FLOOR: usize = 10;
 
 /// Incident: a fixed twenty-column name padded short names out to a gap wider than they are.
 fn name_cols(app: &App) -> usize {
-    let roots = app.state.roots().into_iter().map(|root| {
-        let label = root.rsplit('/').next().unwrap_or(&root);
-        drawn_width(label).saturating_sub(3)
-    });
+    let roots = app
+        .state
+        .roots()
+        .into_iter()
+        .map(|root| drawn_width(root.rsplit('/').next().unwrap_or(&root)));
     app.state
         .visible_rows()
         .into_iter()
@@ -152,11 +157,11 @@ fn name_cols(app: &App) -> usize {
 
 pub fn width(app: &mut App) -> u16 {
     match app.state.sidebar {
-        SidebarMode::Rail => 9,
+        SidebarMode::Rail => 8,
         SidebarMode::Full => {
             // Incident: narrowing as a turn's children cleared re-wrapped every pane mid-turn.
             app.state.sidebar_cols = name_cols(app);
-            u16::try_from(app.state.sidebar_cols.saturating_add(9)).unwrap_or(u16::MAX)
+            u16::try_from(app.state.sidebar_cols.saturating_add(8)).unwrap_or(u16::MAX)
         }
     }
 }
@@ -169,129 +174,146 @@ pub(crate) fn rail_style(app: &App, theme: &Theme) -> ratatui::style::Style {
     }
 }
 
+fn flush_right(left: &str, right: &str, width: usize) -> String {
+    let room = width.saturating_sub(drawn_width(right));
+    format!("{}{right}", pad_cells(left, room))
+}
+
+fn control_row(text: String, style: Style, control: Hit) -> SidebarRow {
+    SidebarRow {
+        control: Some(control),
+        ..SidebarRow::plain(None, Line::styled(text, style))
+    }
+}
+
+fn group_header(
+    app: &App,
+    root: &str,
+    rows: &[usize],
+    folded: bool,
+    width: usize,
+    theme: &Theme,
+) -> SidebarRow {
+    let label = root.rsplit('/').next().unwrap_or(root);
+    let mut tail = vec![Span::styled(
+        if folded { " ▸" } else { " ▾" }.to_owned(),
+        theme.dim_style(),
+    )];
+    // Invariant: a fold must not hide a session that needs you; a red gate ranks need 2, so
+    // the mark reads need_of, the same rank the group's sort uses.
+    let worst = rows
+        .iter()
+        .filter_map(|index| app.state.order.get(*index))
+        .filter_map(|id| app.state.sessions.get(id))
+        .map(|row| (app.state.need_of(row), row))
+        .min_by_key(|(need, _)| *need)
+        .filter(|(need, _)| folded && *need <= 2);
+    if let Some((_, worst)) = worst {
+        tail.push(Span::styled(
+            format!(" {}", worst.status.glyph()),
+            status_style(theme, worst.status),
+        ));
+    }
+    let tail_cols: usize = tail.iter().map(|span| drawn_width(&span.content)).sum();
+    let room = width.saturating_sub(tail_cols.saturating_add(4));
+    let name = pad_cells(label, drawn_width(label).min(room));
+    let pad = room.saturating_sub(drawn_width(&name));
+    let mut spans = vec![Span::styled(
+        format!(" {name}"),
+        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(tail);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled("  +".to_owned(), theme.dim_style()));
+    SidebarRow {
+        control: Some(Hit::Fold(root.to_owned())),
+        ..SidebarRow::plain(None, Line::from(spans))
+    }
+}
+
+/// Invariant: the `+` is the header's last span, so the hit column is read back from the
+/// drawn line and cannot drift from the glyph the row paints.
+pub(crate) fn plus_split(line: &Line<'_>) -> (usize, usize) {
+    let total: usize = line
+        .spans
+        .iter()
+        .map(|span| drawn_width(&span.content))
+        .sum();
+    let plus = line
+        .spans
+        .last()
+        .map_or(0, |span| drawn_width(&span.content));
+    (total.saturating_sub(plus), plus)
+}
+
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
     let mut beyond = 0_usize;
-    let mut current_section: Option<&str> = None;
     let focused = app.state.focused_session();
     let now = now_ms();
     let mut slot = 0_usize;
     let cols = name_cols(app);
-    for index in app.state.visible_rows() {
-        let Some(id) = app.state.order.get(index) else {
-            continue;
-        };
-        let Some(row) = app.state.sessions.get(id) else {
-            continue;
-        };
-        let need = app.state.need_of(row);
-        let section = if need <= 2 {
-            "needs you"
-        } else {
-            row.status.section()
-        };
-        if !rail && current_section != Some(section) {
-            current_section = Some(section);
-            let style = if need <= 2 {
-                status_style(theme, SessionStatus::Blocked).add_modifier(Modifier::BOLD)
-            } else {
-                theme.dim_style()
-            };
-            rows.push(SidebarRow::plain(
-                None,
-                Line::styled(format!("  {section}"), style),
-            ));
-        }
-        let is_focused = focused.as_ref() == Some(id);
-        let is_cursor = index == app.state.selected && app.state.zone == Zone::Sidebar;
-        slot = slot.saturating_add(1);
-        if rail && slot > RAIL_CAP {
-            beyond = beyond.saturating_add(1);
-            continue;
-        }
-        let label = row.label();
-        let row_bg = if is_cursor {
-            Some(theme.selection_bg())
-        } else if is_focused && !rail {
-            Some(theme.active_row_bg())
-        } else {
-            None
-        };
-        let on_row = |style: Style| row_bg.map_or(style, |bg| style.bg(bg));
-        let number = if is_cursor {
-            theme.muted_style()
-        } else if is_focused {
-            Style::default().fg(theme.text)
-        } else {
-            theme.dim_style()
-        };
-        let slot_text = if slot <= 9 {
-            format!("{slot:<2}")
-        } else {
-            "  ".to_owned()
-        };
-        let hue = app.accent_of(&id.0, row.seed());
+    let width = cols.saturating_add(8);
+    if !rail {
+        let chord = |action| keys::chord_for(action, app.cmd_hints);
+        let text = Style::default().fg(theme.text);
+        let new = flush_right(" + New session", chord(Action::NewSession), width);
+        rows.push(control_row(new, text, Hit::New(None)));
+        let search = flush_right(" ⌕ Search", chord(Action::Navigator), width);
+        rows.push(control_row(search, text, Hit::Search));
+    }
+    for group in app.state.groups() {
         if rail {
-            rows.push(SidebarRow {
-                index: Some(index),
-                line: Line::from(vec![
-                    Span::styled(slot_text, on_row(number)),
-                    tile_span(app, name_tile(row.seed()), hue),
-                    Span::styled("   ".to_owned(), on_row(Style::default())),
-                    Span::styled(
-                        row.status.glyph().to_owned(),
-                        on_row(status_style(theme, row.status)),
-                    ),
-                ]),
-                avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
-            });
-            rows.push(SidebarRow::plain(
-                Some(index),
-                Line::from(Span::styled(" ".repeat(8), on_row(Style::default()))),
-            ));
-            rows.extend(child_rows(app, id, theme, true, cols));
+            if group.rows.is_empty() || slot >= RAIL_CAP {
+                beyond = beyond.saturating_add(group.rows.len());
+                continue;
+            }
+            if slot > 0 {
+                rows.push(SidebarRow::plain(None, Line::raw("")));
+            }
+        } else {
+            match &group.root {
+                None if group.rows.is_empty() => continue,
+                None => rows.push(SidebarRow::plain(
+                    None,
+                    Line::styled(" PINNED", theme.dim_style().add_modifier(Modifier::BOLD)),
+                )),
+                Some(root) => rows.push(group_header(
+                    app,
+                    root,
+                    &group.rows,
+                    group.folded,
+                    width,
+                    theme,
+                )),
+            }
+        }
+        if group.folded {
             continue;
         }
-        let mut spans = vec![
-            Span::styled(slot_text, on_row(number)),
-            tile_span(app, name_tile(row.seed()), hue),
-            Span::styled(" ".to_owned(), on_row(Style::default())),
-            Span::styled(
-                row.status.glyph().to_owned(),
-                on_row(status_style(theme, row.status)),
-            ),
-        ];
-        let name_style = if is_focused {
-            theme.accent_style().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text)
-        };
-        let tail = if row.attached { "·" } else { " " };
-        let icon = spans.pop();
-        spans.pop();
-        spans.push(Span::styled("   ".to_owned(), on_row(Style::default())));
-        spans.push(Span::styled(pad_cells(&label, cols), on_row(name_style)));
-        spans.push(Span::styled(" ".to_owned(), on_row(Style::default())));
-        spans.extend(icon);
-        spans.push(Span::styled(tail.to_owned(), on_row(theme.dim_style())));
-        rows.push(SidebarRow {
-            index: Some(index),
-            line: Line::from(spans),
-            avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
-        });
-        let text: String = detail(app, id, row, now)
-            .chars()
-            .take(cols.saturating_add(3))
-            .collect();
-        rows.push(SidebarRow::plain(
-            Some(index),
-            Line::from(vec![
-                Span::styled(" ".repeat(6), on_row(Style::default())),
-                Span::styled(text, on_row(theme.dim_style())),
-            ]),
-        ));
-        rows.extend(child_rows(app, id, theme, false, cols));
+        for index in group.rows {
+            let Some(id) = app.state.order.get(index) else {
+                continue;
+            };
+            let Some(row) = app.state.sessions.get(id) else {
+                continue;
+            };
+            let is_focused = focused.as_ref() == Some(id);
+            let is_cursor = index == app.state.selected && app.state.zone == Zone::Sidebar;
+            slot = slot.saturating_add(1);
+            if rail && slot > RAIL_CAP {
+                beyond = beyond.saturating_add(1);
+                continue;
+            }
+            rows.extend(session_rows(
+                app,
+                theme,
+                (index, id, row),
+                (is_focused, is_cursor),
+                (slot, cols, now),
+            ));
+        }
     }
     if beyond > 0 {
         rows.push(SidebarRow::plain(
@@ -300,6 +322,102 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         ));
     }
     window_rows(rows, height, app.state.selected, theme)
+}
+
+fn session_rows(
+    app: &App,
+    theme: &Theme,
+    (index, id, row): (usize, &SessionId, &SessionRow),
+    (is_focused, is_cursor): (bool, bool),
+    (slot, cols, now): (usize, usize, u64),
+) -> Vec<SidebarRow> {
+    let rail = app.state.sidebar == SidebarMode::Rail;
+    let mut rows = Vec::new();
+    let label = row.label();
+    let row_bg = if is_cursor {
+        Some(theme.selection_bg())
+    } else if is_focused && !rail {
+        Some(theme.active_row_bg())
+    } else {
+        None
+    };
+    let on_row = |style: Style| row_bg.map_or(style, |bg| style.bg(bg));
+    let number = if is_cursor {
+        theme.muted_style()
+    } else if is_focused {
+        Style::default().fg(theme.text)
+    } else {
+        theme.dim_style()
+    };
+    let slot_text = if slot <= 9 {
+        format!("{slot:<2}")
+    } else {
+        "  ".to_owned()
+    };
+    let hue = app.accent_of(&id.0, row.seed());
+    if rail {
+        rows.push(SidebarRow {
+            index: Some(index),
+            line: Line::from(vec![
+                Span::styled(slot_text, on_row(number)),
+                tile_span(app, name_tile(row.seed()), hue),
+                Span::styled("  ".to_owned(), on_row(Style::default())),
+                Span::styled(
+                    row.status.glyph().to_owned(),
+                    on_row(status_style(theme, row.status)),
+                ),
+            ]),
+            avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
+            control: None,
+        });
+        rows.push(SidebarRow::plain(
+            Some(index),
+            Line::from(Span::styled(" ".repeat(7), on_row(Style::default()))),
+        ));
+        rows.extend(child_rows(app, id, theme, true, cols));
+        return rows;
+    }
+    let mut spans = vec![
+        Span::styled(slot_text, on_row(number)),
+        tile_span(app, name_tile(row.seed()), hue),
+        Span::styled(" ".to_owned(), on_row(Style::default())),
+        Span::styled(
+            row.status.glyph().to_owned(),
+            on_row(status_style(theme, row.status)),
+        ),
+    ];
+    let name_style = if is_focused {
+        theme.accent_style().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text)
+    };
+    let tail = if row.attached { "·" } else { " " };
+    let icon = spans.pop();
+    spans.pop();
+    spans.push(Span::styled("  ".to_owned(), on_row(Style::default())));
+    spans.push(Span::styled(pad_cells(&label, cols), on_row(name_style)));
+    spans.push(Span::styled(" ".to_owned(), on_row(Style::default())));
+    spans.extend(icon);
+    spans.push(Span::styled(tail.to_owned(), on_row(theme.dim_style())));
+    rows.push(SidebarRow {
+        index: Some(index),
+        line: Line::from(spans),
+        avatar: avatar_at(2, (4, 2), &id.0, hue, motion_of(app, id, row)),
+        control: None,
+    });
+    let text: String = detail(app, id, row, now)
+        .chars()
+        .take(cols.saturating_add(2))
+        .collect();
+    rows.push(SidebarRow::plain(
+        Some(index),
+        Line::from(vec![
+            Span::styled(" ".repeat(6), on_row(Style::default())),
+            Span::styled(text, on_row(theme.dim_style())),
+        ]),
+    ));
+    rows.extend(child_rows(app, id, theme, false, cols));
+    rows
 }
 
 /// The cells `text` takes once its control characters are dropped, as `pad_cells` draws it.
@@ -369,7 +487,7 @@ fn shown_children<'a>(app: &'a App, id: &SessionId) -> (Vec<&'a ChildUpdate>, us
 const CHILD_ROWS: usize = 3;
 
 /// Children hang off their session on `├`/`└` at column 2, the glyph in the session glyph
-/// column (7 on the rail, `cols + 8` in full); past three, the last row counts the rest.
+/// column (6 on the rail, `cols + 7` in full); past three, the last row counts the rest.
 fn child_rows(
     app: &App,
     id: &SessionId,
@@ -391,7 +509,7 @@ fn child_rows(
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
             tile_span(app, name_tile(&child.name), hue),
-            Span::raw("  "),
+            Span::raw(" "),
         ];
         if !rail {
             spans.push(Span::styled(
@@ -408,6 +526,7 @@ fn child_rows(
             index: None,
             line: Line::from(spans),
             avatar: avatar_at(3, (2, 1), child.id.as_str(), hue, None),
+            control: None,
         });
     }
     if more > 0 {
@@ -461,64 +580,9 @@ fn window_rows(
     window
 }
 
-pub(crate) fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let mut lines = vec![Line::styled(
-        " workspaces",
-        theme.accent_style().add_modifier(Modifier::BOLD),
-    )];
-    for root in app.state.roots() {
-        let worst = app
-            .state
-            .sessions
-            .values()
-            .filter(|row| row.root == root)
-            .map(|row| row.status)
-            .min_by_key(|status| *status as u8)
-            .unwrap_or(SessionStatus::Unknown);
-        let count = app
-            .state
-            .sessions
-            .values()
-            .filter(|row| row.root == root)
-            .count();
-        let marker = if app.state.root_filter.as_deref() == Some(root.as_str()) {
-            "▸"
-        } else {
-            " "
-        };
-        let label: String = root
-            .rsplit('/')
-            .next()
-            .unwrap_or(&root)
-            .chars()
-            .take(usize::from(area.width).saturating_sub(6))
-            .collect();
-        lines.push(Line::from(vec![
-            Span::styled(marker.to_owned(), theme.accent_style()),
-            Span::styled(format!("{} ", worst.glyph()), status_style(theme, worst)),
-            Span::styled(label, Style::default().fg(theme.text)),
-            Span::styled(format!(" {count}"), theme.dim_style()),
-        ]));
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
 pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let rows = sidebar_lines(app, theme, area.height);
-    let mut lines: Vec<Line<'static>> = rows.iter().map(|row| row.line.clone()).collect();
-    if lines.is_empty() && app.state.sidebar == SidebarMode::Full {
-        let label = app
-            .state
-            .root
-            .rsplit('/')
-            .next()
-            .unwrap_or(app.state.root.as_str());
-        lines.push(Line::styled(
-            format!(" {label}"),
-            theme.accent_style().add_modifier(Modifier::BOLD),
-        ));
-        lines.push(Line::styled(" no sessions yet", theme.dim_style()));
-    }
+    let lines: Vec<Line<'static>> = rows.iter().map(|row| row.line.clone()).collect();
     frame.render_widget(Paragraph::new(lines), area);
     if app.state.sidebar == SidebarMode::Rail {
         let style = rail_style(app, theme);
