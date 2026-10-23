@@ -790,6 +790,7 @@ fn run_request(
         stop,
         extra,
         oauth,
+        settle: _,
     } = wire;
     let url = format!("{}/v1/messages", model.base_url);
     let base = if oauth {
@@ -859,6 +860,7 @@ pub fn stream(
                 stop: stop.as_deref(),
                 extra: &extra_headers,
                 oauth,
+                settle: None,
             },
             &sender,
         ) else {

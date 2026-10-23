@@ -1048,6 +1048,7 @@ pub fn stream(
             stop: options.stop.clone(),
             extra: options.extra_headers.clone(),
             oauth: options.oauth,
+            settle: None,
         },
         run_request,
     )

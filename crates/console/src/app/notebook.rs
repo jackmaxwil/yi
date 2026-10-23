@@ -1,6 +1,25 @@
 use serde_json::Value;
 use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolCallUpdate, AcpToolContent};
 
+const TEXT_CAP: usize = 8 * 1024;
+const RESULT_CAP: usize = 2 * 1024;
+use crate::model::{IMAGE_BYTES_MAX, IMAGES_PER_CELL};
+
+fn clamp_bytes(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_owned();
+    }
+    let head = text
+        .get(..text.floor_char_boundary(cap))
+        .unwrap_or_default();
+    format!(
+        "{head}\n[… {} of {} bytes kept · notebook cap {} KiB · the transcript holds all of it]",
+        head.len(),
+        text.len(),
+        cap / 1024
+    )
+}
+
 /// Kernel cells out of the tool-call stream: the start carries the code,
 /// the end carries streams and attachments in the details record.
 pub(super) fn apply_notebook(
@@ -47,18 +66,18 @@ pub(super) fn apply_notebook(
                 cell.stdout = details
                     .get("stdout")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
+                    .map(|text| clamp_bytes(text, TEXT_CAP))
+                    .unwrap_or_default();
                 cell.result = details
                     .get("result")
                     .and_then(Value::as_str)
                     .filter(|text| !text.is_empty())
-                    .map(str::to_owned);
+                    .map(|text| clamp_bytes(text, RESULT_CAP));
                 cell.stderr = details
                     .get("stderr")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
+                    .map(|text| clamp_bytes(text, TEXT_CAP))
+                    .unwrap_or_default();
                 cell.duration_ms = details.get("durationMs").and_then(Value::as_u64);
                 cell.error =
                     Some(yi_tui::pycell::traceback_of(details)).filter(|text| !text.is_empty());
@@ -84,9 +103,20 @@ pub(super) fn apply_notebook(
                     }
                     _ => None,
                 });
-                cell.images = legacy
-                    .chain(current)
-                    .filter_map(Value::as_str)
+                let all: Vec<&str> = legacy.chain(current).filter_map(Value::as_str).collect();
+                cell.dropped_image_bytes = all
+                    .iter()
+                    .filter(|data| data.len() > IMAGE_BYTES_MAX)
+                    .map(|data| data.len())
+                    .collect();
+                let kept: Vec<&str> = all
+                    .into_iter()
+                    .filter(|data| data.len() <= IMAGE_BYTES_MAX)
+                    .collect();
+                cell.images_past_limit = kept.len().saturating_sub(IMAGES_PER_CELL);
+                cell.images = kept
+                    .into_iter()
+                    .skip(cell.images_past_limit)
                     .map(str::to_owned)
                     .collect();
             }
@@ -349,7 +379,6 @@ mod tests {
         if let Some(pane) = app.state.panes.get_mut(&home) {
             pane.content = crate::model::PaneContent::Notebook {
                 session: Some(session.clone()),
-                cells: Vec::new(),
                 full: false,
                 drawn: None,
             };
@@ -459,6 +488,77 @@ mod tests {
                 "{noun} full lost {gone}"
             );
         }
+        Ok(())
+    }
+    fn media(sizes: &[usize]) -> Value {
+        let items: Vec<Value> = sizes
+            .iter()
+            .map(|n| json!({"mime_type": "image/png", "data": "a".repeat(*n)}))
+            .collect();
+        json!({"attachmentMedia": items})
+    }
+
+    fn one_cell(details: Value) -> Vec<NbCell> {
+        let mut cells = Vec::new();
+        apply_notebook(&mut cells, &start("c1", json!({"code": "1"})));
+        apply_notebook(&mut cells, &end("c1", details));
+        cells
+    }
+
+    #[test]
+    fn a_cells_text_is_capped_and_says_where() -> TestResult {
+        let cells = one_cell(json!({
+            "stdout": "x".repeat(8193),
+            "stderr": "€".repeat(4000),
+            "result": "y".repeat(2049),
+        }));
+        let cell = cells.first().ok_or("no cell")?;
+        for (text, kept, total, cap) in [
+            (cell.stdout.as_str(), 8192, 8193, 8),
+            (cell.result.as_deref().unwrap_or_default(), 2048, 2049, 2),
+            (cell.stderr.as_str(), 8190, 12000, 8),
+        ] {
+            let said = format!("[… {kept} of {total} bytes kept · notebook cap {cap} KiB");
+            assert!(text.contains(&said), "{said:?} not in {text:?}");
+        }
+        assert_eq!(
+            one_cell(json!({"stdout": "x".repeat(8192)}))[0].stdout,
+            "x".repeat(8192),
+            "a cap-sized stream is not cut"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dropped_images_are_recorded_by_the_cap_that_dropped_them() -> TestResult {
+        let cells = one_cell(media(&[524289, 6, 6, 6, 6, 6, 6]));
+        let cell = cells.first().ok_or("no cell")?;
+        assert_eq!(cell.dropped_image_bytes, vec![524289], "over the size cap");
+        assert_eq!(cell.images_past_limit, 2, "past the four-image limit");
+        assert_eq!(cell.images.len(), 4);
+        let at_limit = one_cell(media(&[524288, 6, 6, 6]));
+        assert_eq!(at_limit[0].images.len(), 4, "the limit itself is kept");
+        assert!(at_limit[0].dropped_image_bytes.is_empty());
+        assert_eq!(at_limit[0].images_past_limit, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn each_dropped_image_notice_names_its_own_cap() -> TestResult {
+        let cells = one_cell(media(&[524289, 6, 6, 6, 6, 6, 6]));
+        let said = rows(&cells, 80, false);
+        assert!(
+            said.iter().any(
+                |row| row.contains("[…] image 524289 B base64 dropped · notebook cap 524288 B")
+            ),
+            "{said:#?}"
+        );
+        assert!(
+            said.iter().any(|row| {
+                row.contains("[…] 2 older images not shown · notebook keeps 4 per cell")
+            }),
+            "{said:#?}"
+        );
         Ok(())
     }
 }

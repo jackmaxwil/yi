@@ -11,6 +11,7 @@ fn row(status: SessionStatus) -> SessionRow {
         name: None,
         created_ms: 0,
         last_ms: 0,
+        pinned: None,
     }
 }
 
@@ -127,5 +128,179 @@ fn a_titled_session_name_reaches_a_pane() -> Result<(), String> {
         Decoded::Name(name) => assert_eq!(name, "Fix the context gauge"),
         _ => return Err("name decoded as something else".to_owned()),
     }
+    Ok(())
+}
+
+/// Pins head the sidebar in pin order, out of their groups; a group ranks need, then recency,
+/// and folded keeps its header, marked when a session in it needs you.
+#[test]
+fn the_sidebar_lists_pins_then_each_workspace_need_first() -> Result<(), String> {
+    use yi_console::app::App;
+    use yi_console::model::SidebarMode;
+    use yi_console::render::Hit;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Full;
+    let rows = [
+        ("old-idle", "/w/yi", SessionStatus::Idle, 100, None),
+        ("new-idle", "/w/yi", SessionStatus::Idle, 900, None),
+        ("asks", "/w/yi", SessionStatus::Blocked, 50, None),
+        (
+            "pin-late",
+            "/w/legios",
+            SessionStatus::Idle,
+            10,
+            Some(2_000),
+        ),
+        (
+            "pin-early",
+            "/w/buildhost",
+            SessionStatus::Working,
+            10,
+            Some(1_000),
+        ),
+        (
+            "legios-asks",
+            "/w/legios",
+            SessionStatus::Blocked,
+            300,
+            None,
+        ),
+        ("buildhost-idle", "/w/buildhost", SessionStatus::Idle, 400, None),
+        ("solo-pin", "/w/solo", SessionStatus::Idle, 20, Some(3_000)),
+    ];
+    for (id, root, status, last_ms, pinned) in rows {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: root.to_owned(),
+            status,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms,
+            pinned,
+        });
+    }
+    let drawn = |app: &App| -> Vec<String> {
+        let mut last = None;
+        sidebar_lines(app, &theme, 60)
+            .into_iter()
+            .filter_map(|row| match (row.control, row.index) {
+                (Some(Hit::Fold(_)), _) => {
+                    let words: Vec<String> = row
+                        .line
+                        .to_string()
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect();
+                    Some(words.join(" "))
+                }
+                (Some(Hit::New(_)), _) => Some("new".to_owned()),
+                (Some(Hit::Search), _) => Some("search".to_owned()),
+                (None, Some(index)) if last != Some(index) => {
+                    last = Some(index);
+                    let id = app.state.order.get(index)?;
+                    app.state.sessions.get(id)?.name.clone()
+                }
+                (None, None) if row.line.to_string().trim() == "PINNED" => {
+                    Some("PINNED".to_owned())
+                }
+                (Some(other), _) => Some(format!("{other:?}")),
+                (None, _) => None,
+            })
+            .collect()
+    };
+    let want = [
+        "new",
+        "search",
+        "PINNED",
+        "pin-early",
+        "pin-late",
+        "solo-pin",
+        "yi ▾ +",
+        "asks",
+        "new-idle",
+        "old-idle",
+        "legios ▾ +",
+        "legios-asks",
+        "buildhost ▾ +",
+        "buildhost-idle",
+        "solo ▾ +",
+    ];
+    assert_eq!(drawn(&app), want);
+    let asks = app
+        .state
+        .order
+        .iter()
+        .position(|id| id.0 == "legios-asks")
+        .ok_or("legios-asks has a row")?;
+    app.state.selected = asks;
+    app.state.toggle_fold("/w/legios");
+    let landed = app.state.selected;
+    let name = |index: usize| app.state.order.get(index).map(|id| id.0.as_str());
+    assert!(
+        app.state.visible_rows().contains(&landed) && name(landed) != Some("legios-asks"),
+        "the fold moved the cursor off the hidden row: {:?}",
+        name(landed)
+    );
+    let folded: Vec<String> = want
+        .iter()
+        .filter(|row| **row != "legios-asks")
+        .map(|row| {
+            row.replace(
+                "legios ▾ +",
+                &format!("legios ▸ {} +", SessionStatus::Blocked.glyph()),
+            )
+        })
+        .collect();
+    assert_eq!(drawn(&app), folded);
+    Ok(())
+}
+
+/// Dies with the rail mixing workspaces, dropping the pin to its group, or running two
+/// workspaces together with no blank row between them.
+#[test]
+fn the_rail_lists_the_pin_first_and_parts_workspaces_with_a_blank_row() -> Result<(), String> {
+    use yi_console::app::App;
+    use yi_console::model::SidebarMode;
+    use yi_console::sidebar::sidebar_lines;
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::Ansi16, true);
+    let mut app = App::new("/w/yi".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Rail;
+    let rows = [
+        ("legios-new", "/w/legios", 900, None),
+        ("yi-old", "/w/yi", 100, None),
+        ("legios-pin", "/w/legios", 10, Some(1_000)),
+        ("yi-new", "/w/yi", 500, None),
+    ];
+    for (id, root, last_ms, pinned) in rows {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: root.to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 0,
+            last_ms,
+            pinned,
+        });
+    }
+    let mut last = None;
+    let drawn: Vec<String> = sidebar_lines(&app, &theme, 60)
+        .into_iter()
+        .filter_map(|row| match row.index {
+            Some(index) if last != Some(index) => {
+                last = Some(index);
+                Some(app.state.order.get(index)?.0.clone())
+            }
+            Some(_) => None,
+            None => row.line.to_string().trim().is_empty().then(String::new),
+        })
+        .collect();
+    let want = ["legios-pin", "", "yi-new", "yi-old", "", "legios-new"];
+    assert_eq!(drawn, want);
     Ok(())
 }
