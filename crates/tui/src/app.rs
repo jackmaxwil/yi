@@ -26,7 +26,6 @@ use crate::term;
 use crate::transcript::{arg_summary, intent_of, result_preview, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
 use yi_orb::OrbState;
-
 pub enum UiEvent {
     Agent(AgentEvent),
     Child { child_id: String, event: AgentEvent },
@@ -35,7 +34,6 @@ pub enum UiEvent {
     Ask(AskRequest),
     Reply(crate::port::Reply),
 }
-
 pub enum Command {
     Prompt(String),
     Steer(String),
@@ -53,22 +51,19 @@ pub enum Command {
     Abort,
     Shutdown,
 }
-
 pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
+    Question(crate::question::QuestionView),
     Command(ListPopup),
     File(ListPopup),
     Agents(crate::agents::AgentsPopup),
     Model(Box<crate::model::ModelPopup>),
 }
-
 pub type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
 pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
-
 pub fn command_channel() -> (CommandSender, CommandReceiver) {
     tokio::sync::mpsc::unbounded_channel()
 }
-
 pub struct TuiOptions {
     pub model: yi_types::model::Model,
     pub session_name: String,
@@ -107,6 +102,7 @@ pub struct App {
     pub(crate) scheduler: FrameScheduler,
     pub(crate) composer: Composer,
     pub(crate) bottom: Option<Bottom>,
+    pub(crate) asked: Vec<crate::question::Question>,
     pub(crate) tree: Option<TreeView>,
     pub(crate) plan_tree: Option<crate::plantree::PlanTreeView>,
     pub(crate) plan_progress: Option<crate::hud::PlanProgress>,
@@ -185,6 +181,7 @@ pub struct App {
     pub(crate) orb_slot: Option<(u16, u16)>,
     /// Where the picker's first model row sits, set by the last paint; the logo slot column.
     pub(crate) logo_rows: Option<(u16, u16)>,
+    pub(crate) card_at: Option<(u16, u16)>,
     pub(crate) orb_placement: Option<(u16, u16)>,
     /// Incident: a resize reflows the text a kitty placement scrolls with, but
     /// [`crate::terminal::Terminal::resize_viewport`] reports only viewport-rect moves.
@@ -226,14 +223,13 @@ pub struct App {
     pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
 
-pub use crate::frame::next_spinner_wake;
-
 mod asks;
 mod bridge;
 mod children;
 mod clock;
 mod stream;
 
+pub use crate::frame::next_spinner_wake;
 pub(crate) use asks::mail_source;
 pub use bridge::forward;
 pub(crate) use bridge::spawn_runtime_bridge;
@@ -301,6 +297,7 @@ impl App {
             ctrl_c_at: None,
             focused: None,
             reply_bound: None,
+            asked: Vec::new(),
             hud_hidden: false,
             seen_turn: false,
             submitted_turns: 0,
@@ -311,6 +308,7 @@ impl App {
             title_cover: false,
             orb_slot: None,
             logo_rows: None,
+            card_at: None,
             orb_placement: None,
             orb_stale: false,
             pending_title: Some("Yi".to_owned()),
@@ -649,7 +647,10 @@ impl App {
     }
 
     pub fn orb_state(&self) -> Option<OrbState> {
-        if matches!(self.bottom, Some(Bottom::Approval(..))) {
+        if matches!(
+            self.bottom,
+            Some(Bottom::Approval(..) | Bottom::Question(..))
+        ) {
             return Some(OrbState::Listening);
         }
         if !self.running {
@@ -739,6 +740,7 @@ impl App {
                 self.flush_explored();
                 self.commit_finished_tasks();
                 self.commit_turn_footer();
+                self.open_questions();
                 self.scheduler.request();
             }
             AgentEvent::MessageStart { message } => {
@@ -818,6 +820,7 @@ impl App {
                 args,
             } => {
                 self.intent = intent_of(&args);
+                self.note_question(&tool_name, &args);
                 self.tool_started
                     .insert(tool_call_id.clone(), self.clock.now());
                 self.live_tools.push(ToolCell {

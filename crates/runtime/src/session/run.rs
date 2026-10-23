@@ -8,7 +8,7 @@ use yi_types::message::{AgentMessage, Attribution, StopReason};
 
 use super::{
     RunParts, SessionError, Shared, Status, dispatch_ext, extensions_of, hooks, persist_message,
-    record_store_error, store_of,
+    record_store_error, store_of, take_ended,
 };
 
 const TURN_CAP_WORD: &str = "[turns] No more tool calls: answer now from what you have, and name what is missing if it does not decide the question.";
@@ -498,6 +498,16 @@ fn emit_event(
     let failed = Arc::clone(failed);
     move |event: AgentEvent| {
         shared.time_turn(&event);
+        if let AgentEvent::ToolExecutionEnd {
+            tool_call_id,
+            result,
+            ..
+        } = &event
+            && result.terminate == Some(true)
+            && let Ok(mut ended) = shared.ended.lock()
+        {
+            ended.push(tool_call_id.clone());
+        }
         if let AgentEvent::MessageEnd { message } = &event {
             if let AgentMessage::Assistant {
                 stop_reason: StopReason::Error,
@@ -519,8 +529,12 @@ fn emit_event(
                     },
                 );
             }
+            let terminate = match message {
+                AgentMessage::ToolResult { tool_call_id, .. } => take_ended(&shared, tool_call_id),
+                _ => None,
+            };
             let _span = yi_types::trace::span("turn.persist");
-            persist_message(&shared, message);
+            persist_message(&shared, message, terminate);
         }
         if let Some(telemetry) = shared.telemetry.lock().ok().and_then(|slot| slot.clone()) {
             telemetry.on_event(&event);
