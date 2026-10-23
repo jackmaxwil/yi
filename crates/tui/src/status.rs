@@ -1,4 +1,4 @@
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -16,6 +16,8 @@ pub struct StatusInput {
     /// `repo ⎇ lane N`: shown instead of `path@branch` when the session is on a lane.
     pub lane: Option<String>,
     pub branch: Option<String>,
+    /// Paths changed or untracked in the work tree; 0 shows nothing beside the branch.
+    pub dirty: u32,
     pub landing: Option<String>,
     pub cost: Option<String>,
     /// The session's `N% cached`, on a route that reads a cache.
@@ -142,16 +144,26 @@ pub(crate) fn fmt_tokens(tokens: u64) -> String {
     }
 }
 
-fn fmt_exact(tokens: u64) -> String {
-    let digits = tokens.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
+/// Context load at which the meter turns from calm to a warning, and to an alarm, in permille.
+const CTX_WARN: u64 = 600;
+const CTX_FULL: u64 = 850;
+
+/// `pct / window`, hued by how near the window is to full.
+fn context_segment(used: u64, window: u64, theme: &Theme) -> (String, Color) {
+    let permille = used.saturating_mul(1000) / window.max(1);
+    let pct = if permille < 100 {
+        format!("{}.{}", permille / 10, permille % 10)
+    } else {
+        (permille / 10).to_string()
+    };
+    let hue = if permille < CTX_WARN {
+        theme.accent
+    } else if permille < CTX_FULL {
+        theme.warning
+    } else {
+        theme.error
+    };
+    (format!("{pct}% / {}", fmt_tokens(window)), hue)
 }
 
 fn effort_style(level: &str, theme: &Theme) -> Style {
@@ -239,6 +251,19 @@ fn seg_style(input: &StatusInput, theme: &Theme) -> Style {
     }
 }
 
+/// A role's hue; a focused child's row stays one dim colour so it reads as borrowed.
+fn hue(input: &StatusInput, theme: &Theme, color: Color) -> Style {
+    if input.focused_child.is_some() {
+        theme.dim_style()
+    } else {
+        Style::default().fg(color)
+    }
+}
+
+fn chevron(theme: &Theme) -> Span<'static> {
+    Span::styled(" › ", theme.dim_style())
+}
+
 /// What and where: the model and how it runs, then the place and its landing.
 fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     let input = &fit.input;
@@ -261,26 +286,46 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     }
     spans.push(Span::styled(" ", model_style));
     if let Some(level) = &input.thinking {
-        spans.push(Span::styled("· ", theme.dim_style()));
+        spans.push(Span::styled("› ", theme.dim_style()));
         spans.push(Span::styled(
             format!("◉ {level} "),
             effort_style(level, theme),
         ));
     }
-    let place = fit.place.then(|| match &input.lane {
-        Some(lane) => lane.clone(),
-        None => {
-            let mut path = shrink_left(&input.cwd, fit.path_max);
-            if let Some(branch) = &input.branch {
-                path.push_str(&format!("@{}", shrink_left(branch, fit.path_max)));
+    let mut segs: Vec<(String, Style)> = Vec::new();
+    segs.extend(
+        input
+            .mode
+            .as_ref()
+            .map(|mode| (format!("◉ {mode}"), hue(input, theme, theme.blue5))),
+    );
+    if fit.place {
+        match &input.lane {
+            Some(lane) => segs.push((lane.clone(), hue(input, theme, theme.cyan))),
+            None => {
+                segs.push((
+                    shrink_left(&input.cwd, fit.path_max),
+                    hue(input, theme, theme.cyan),
+                ));
+                if let Some(branch) = &input.branch {
+                    let mut label = format!("⎇ {}", shrink_left(branch, fit.path_max));
+                    if input.dirty > 0 {
+                        label.push_str(&format!(" +{}", input.dirty));
+                    }
+                    segs.push((label, hue(input, theme, theme.orange)));
+                }
             }
-            path
         }
-    });
-    let mode = input.mode.as_ref().map(|mode| format!("◉ {mode}"));
-    for seg in mode.into_iter().chain(place).chain(input.landing.clone()) {
-        spans.push(Span::styled(" · ", theme.dim_style()));
-        spans.push(Span::styled(format!(" {seg} "), seg_style));
+    }
+    segs.extend(
+        input
+            .landing
+            .clone()
+            .map(|seg| (seg, hue(input, theme, theme.purple))),
+    );
+    for (seg, style) in segs {
+        spans.push(chevron(theme));
+        spans.push(Span::styled(format!("{seg} "), style));
     }
     spans
 }
@@ -289,29 +334,41 @@ fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
 fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     let input = &fit.input;
     let seg_style = seg_style(input, theme);
-    let mut segs: Vec<String> = Vec::new();
+    let mut segs: Vec<(String, Style)> = Vec::new();
     if input.subagents > 0 {
-        segs.push(format!("👥 {}", input.subagents));
-    }
-    segs.extend(input.cost.clone());
-    segs.extend(input.cache.clone());
-    if input.context_window > 0 {
-        segs.push(format!(
-            "{} / {}",
-            fmt_exact(input.context_used),
-            fmt_tokens(input.context_window)
+        segs.push((
+            format!("👥 {}", input.subagents),
+            hue(input, theme, theme.magenta),
         ));
     }
+    segs.extend(
+        input
+            .cost
+            .clone()
+            .map(|cost| (cost, hue(input, theme, theme.success))),
+    );
+    segs.extend(
+        input
+            .cache
+            .clone()
+            .map(|cache| (cache, hue(input, theme, theme.teal))),
+    );
+    if input.context_window > 0 {
+        let (text, color) = context_segment(input.context_used, input.context_window, theme);
+        segs.push((text, hue(input, theme, color)));
+    }
     let mut spans: Vec<Span<'static>> = Vec::new();
-    for seg in segs {
-        if !spans.is_empty() {
-            spans.push(Span::styled(" · ", theme.dim_style()));
+    for (seg, style) in segs {
+        if spans.is_empty() {
+            spans.push(Span::styled(" ", style));
+        } else {
+            spans.push(chevron(theme));
         }
-        spans.push(Span::styled(format!(" {seg} "), seg_style));
+        spans.push(Span::styled(format!("{seg} "), style));
     }
     if !input.session_name.is_empty() {
         if !spans.is_empty() {
-            spans.push(Span::styled(" · ", theme.dim_style()));
+            spans.push(chevron(theme));
         }
         let display: String = if input.session_name.chars().count() > 16 {
             input.session_name.chars().take(8).collect()
@@ -355,6 +412,23 @@ fn spans_width(spans: &[Span<'_>]) -> usize {
 /// Identity anchored left and meters right, so a number gaining a digit never shifts the
 /// model; [`CUTS`] apply until the rendered spans fit with one column free.
 pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static> {
+    render_with(input, width, theme, None)
+}
+
+/// The same row as the title of a box's top border: `rule` draws the line through the gap
+/// and the cells either end, so the row is exactly `width` cells and reads as part of the box.
+pub fn render_rule(input: &StatusInput, width: usize, theme: &Theme, rule: Style) -> Line<'static> {
+    render_with(input, width, theme, Some(rule))
+}
+
+fn render_with(
+    input: &StatusInput,
+    width: usize,
+    theme: &Theme,
+    rule: Option<Style>,
+) -> Line<'static> {
+    // A plain row keeps its last column free; a rule row ends on the box's corner instead.
+    let free = usize::from(rule.is_none());
     let mut fit = Fit {
         input: input.clone(),
         path_max: 24,
@@ -366,18 +440,26 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
         let (left, right) = (left_spans(&fit, theme), right_spans(&fit, theme));
         let gap = if right.is_empty() { 0 } else { GAP_MIN };
         match cuts.next() {
-            Some(cut) if spans_width(&left) + gap + spans_width(&right) >= width => cut(&mut fit),
+            Some(cut) if spans_width(&left) + gap + spans_width(&right) + free > width => {
+                cut(&mut fit)
+            }
             _ => break (left, right),
         }
     };
     // Every cut spent and still too wide: the model loses its tail at a cell boundary.
-    let over = (spans_width(&spans) + spans_width(&right) + 1).saturating_sub(width);
+    let over = (spans_width(&spans) + spans_width(&right) + free).saturating_sub(width);
     if over > 0 {
         fit.input.model = clip_cells(&fit.input.model, over);
         spans = left_spans(&fit, theme);
     }
-    let gap = width.saturating_sub(spans_width(&spans) + spans_width(&right) + 1);
-    spans.push(Span::raw(" ".repeat(gap)));
+    let gap = width.saturating_sub(spans_width(&spans) + spans_width(&right) + free);
+    match rule {
+        Some(rule) => {
+            spans.splice(..1, [Span::styled("─", rule)]);
+            spans.push(Span::styled("─".repeat(gap), rule));
+        }
+        None => spans.push(Span::raw(" ".repeat(gap))),
+    }
     spans.extend(right);
     Line::from(spans)
 }

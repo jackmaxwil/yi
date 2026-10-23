@@ -98,6 +98,34 @@ pub(crate) fn git_branch(cwd: &str) -> Option<String> {
         .map(|head| head.label())
 }
 
+/// The work tree's changed-path count, read by a short-lived thread so the render thread
+/// never waits on git. One read at a time; a read that finds none in flight starts the next.
+#[derive(Default)]
+pub(crate) struct Dirty {
+    count: std::sync::atomic::AtomicU32,
+    busy: std::sync::atomic::AtomicBool,
+}
+
+impl Dirty {
+    pub(crate) fn get(&self) -> u32 {
+        self.count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// An unanswered read leaves the badge off rather than claiming a clean tree.
+    pub(crate) fn refresh(self: &Arc<Self>, cwd: &str) {
+        use std::sync::atomic::Ordering::{AcqRel, Relaxed, Release};
+        if self.busy.swap(true, AcqRel) {
+            return;
+        }
+        let (cell, cwd) = (Arc::clone(self), std::path::PathBuf::from(cwd));
+        std::thread::spawn(move || {
+            let count = yi_runtime::lane::dirty(&cwd).unwrap_or(0);
+            cell.count.store(count, Relaxed);
+            cell.busy.store(false, Release);
+        });
+    }
+}
+
 pub(crate) fn child_of(
     host: &yi_runtime::SubagentHost,
     child_id: &str,
@@ -620,6 +648,7 @@ impl crate::app::App {
             return;
         }
         self.branch = git_branch(&cwd);
+        self.dirty.refresh(&cwd);
         self.options.cwd = cwd;
         self.options.lane = lane;
         self.scheduler.request();

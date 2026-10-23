@@ -539,7 +539,7 @@ pub fn run_headless(
             return 1;
         }
     };
-    let mut terminal = match crate::terminal::Terminal::new(backend, 4.min(height - 1)) {
+    let mut terminal = match crate::terminal::Terminal::new(backend, 3.min(height - 1)) {
         Ok(terminal) => terminal,
         Err(error) => {
             eprintln!("error: headless terminal: {error}");

@@ -2472,3 +2472,16 @@ fn a_stale_fetch_does_not_hold_the_claim() -> TestResult {
     drop(lane);
     Ok(())
 }
+
+/// Dies with a status badge that counts nothing: a changed path and an untracked one both
+/// count, and a directory outside any repo answers none instead of a clean tree.
+#[test]
+fn dirty_counts_changed_and_untracked_paths_and_none_outside_a_repo() -> TestResult {
+    let rig = Rig::new("dirty")?;
+    assert_eq!(yi_runtime::lane::dirty(&rig.repo), Some(0));
+    std::fs::write(rig.repo.join("README.md"), "edited\n")?;
+    std::fs::write(rig.repo.join("new.txt"), "new\n")?;
+    assert_eq!(yi_runtime::lane::dirty(&rig.repo), Some(2));
+    assert_eq!(yi_runtime::lane::dirty(&rig.home), None);
+    Ok(())
+}
