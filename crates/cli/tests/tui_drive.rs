@@ -1566,6 +1566,7 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
             &dir.join("sessions").display().to_string(),
             "--keys",
             &keys.display().to_string(),
+            "run a long command",
             "--frames",
             &frames.display().to_string(),
         ])
@@ -1581,5 +1582,60 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
     let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
     let row = last.lines().next().ok_or("an empty frame")?;
     assert_eq!(row.trim_matches(['"', ',', ' ']), "/treex[31mredy\u{2588}");
+    Ok(())
+}
+
+/// A long bash call backgrounds at the unattended default in the drive: the turn ends
+/// while the command still runs, and the "still running after" announcement is on screen.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_long_bash_call_backgrounds_in_the_tui_drive_at_the_default() -> TestResult {
+    let dir = Scratch::new("yi-tui-background")?;
+    let home = dir.home()?;
+    let calls = [("bash", serde_json::json!({ "command": "sleep 65" }))];
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, cassette_lines(&calls, "done"))?;
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 5000 faux-1\ntype run a long command\nkey enter\nwait-frame 90000 still running\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--deadline",
+            "300",
+            "--model",
+            "faux/faux-1",
+            "--yolo",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+        ])
+        .args(["--faux", &cassette.display().to_string()])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        all_frames.contains("still running after"),
+        "no backgrounding announcement in any frame: the bash call ran in the turn instead"
+    );
     Ok(())
 }
