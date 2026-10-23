@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use yi_orb::smooth;
+use yi_orb::{V, add, dot, norm, rot_y, smooth};
 
 use crate::app::App;
 use crate::colors::Theme;
@@ -174,14 +174,8 @@ fn landed(area: Rect, landing: Option<Rect>, leave: f64) -> (Strokes, f64) {
 }
 
 fn echo(d: f64, t: f64) -> f64 {
-    ring_field(d, RING_FREQ, (t % RING_SECS) / RING_SECS, 2, 0.9)
-}
-
-/// Cosine rings of distance `freq` to the wavelength, drifting by `phase` a second, sharpened
-/// by `power` and faded exponentially at `decay` per unit of distance.
-fn ring_field(d: f64, freq: f64, phase: f64, power: i32, decay: f64) -> f64 {
-    let ring = 0.5 + 0.5 * (TAU * (d.max(0.0) * freq - phase)).cos();
-    ring.powi(power) * (-decay * d.max(0.0)).exp()
+    let ring = 0.5 + 0.5 * (TAU * (d.max(0.0) * RING_FREQ - (t % RING_SECS) / RING_SECS)).cos();
+    ring * ring * (-0.9 * d.max(0.0)).exp()
 }
 
 fn fold(mut x: f64, mut y: f64, cx: f64, cy: f64) -> f64 {
@@ -252,12 +246,10 @@ impl KaliFrame {
     }
 }
 
-/// One coordinate hash for the module: an integer pair to a stable `f64` in `0.0..1.0`, so a
-/// correction reaches both the clouds' lattice and the reveal's dissolve.
-fn hash01(x: i32, y: i32) -> f64 {
+fn lattice(x: i32, y: i32) -> f64 {
     let n = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
     let n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
-    f64::from((n ^ (n >> 16)) & 0xFFFF) / 65_536.0
+    f64::from((n ^ (n >> 16)) & 0xFFFF) / 65_535.0
 }
 
 /// Value noise, smoothly interpolated between lattice points.
@@ -266,8 +258,8 @@ fn noise(x: f64, y: f64) -> f64 {
     let (fx, fy) = (x - ix, y - iy);
     let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
     let (ix, iy) = (ix as i32, iy as i32);
-    let top = hash01(ix, iy) + (hash01(ix + 1, iy) - hash01(ix, iy)) * sx;
-    let bottom = hash01(ix, iy + 1) + (hash01(ix + 1, iy + 1) - hash01(ix, iy + 1)) * sx;
+    let top = lattice(ix, iy) + (lattice(ix + 1, iy) - lattice(ix, iy)) * sx;
+    let bottom = lattice(ix, iy + 1) + (lattice(ix + 1, iy + 1) - lattice(ix, iy + 1)) * sx;
     top + (bottom - top) * sy
 }
 
@@ -308,7 +300,9 @@ fn mobius(u: f64, v: f64, lam: (f64, f64)) -> (f64, f64) {
 
 /// Rings of distance that drift outward, solid inside the name: the vortex's own texture.
 fn rings(d: f64, t: f64) -> f64 {
-    ring_field(d, 5.0, 0.3 * t, 4, 1.3)
+    let d = d.max(0.0);
+    let ring = 0.5 + 0.5 * (TAU * (d * 5.0 - 0.3 * t)).cos();
+    ring.powi(4) * (-1.3 * d).exp()
 }
 
 /// Cells farther than this from every stroke cannot see the extruded name.
@@ -322,31 +316,22 @@ fn solid(strokes: &Strokes, thick: f64, (u, v): (f64, f64), t: f64, leave: f64) 
         return None;
     }
     let fat = 0.05 * (1.0 - leave);
-    let (sin, cos) = (0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave)).sin_cos();
-    let f =
-        |x: f64, y: f64, z: f64| (distance_to(strokes, thick, x, y) - fat).max(z.abs() - half_z);
-    let eye = [-3.0 * sin, 0.0, -3.0 * cos];
-    let aim = [u * cos + 3.0 * sin, v, -u * sin + 3.0 * cos];
-    let len = (aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]).sqrt();
-    let dir = aim.map(|c| c / len);
+    let swing = 0.55 * (PI * t / HOLD_SECS).sin() * (1.0 - leave);
+    let f = |p: V| (distance_to(strokes, thick, p[0], p[1]) - fat).max(p[2].abs() - half_z);
+    let eye = rot_y([0.0, 0.0, -3.0], swing);
+    let dir = norm(rot_y([u, v, 3.0], swing));
     let mut at = 0.0;
     for _ in 0..40 {
-        let p = [
-            eye[0] + dir[0] * at,
-            eye[1] + dir[1] * at,
-            eye[2] + dir[2] * at,
-        ];
-        let d = f(p[0], p[1], p[2]);
+        let p = add(eye, dir, at);
+        let d = f(p);
         if d < 0.006 {
-            let e = 0.012;
-            let n = [
-                f(p[0] + e, p[1], p[2]) - f(p[0] - e, p[1], p[2]),
-                f(p[0], p[1] + e, p[2]) - f(p[0], p[1] - e, p[2]),
-                f(p[0], p[1], p[2] + e) - f(p[0], p[1], p[2] - e),
-            ];
-            let size = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
-            let lum = (n[0] * -0.45 + n[1] * 0.65 + n[2] * -0.6) / size;
-            return Some(0.30 + 0.70 * lum.max(0.0));
+            let probe = |axis: V| f(add(p, axis, 0.012)) - f(add(p, axis, -0.012));
+            let n = norm([
+                probe([1.0, 0.0, 0.0]),
+                probe([0.0, 1.0, 0.0]),
+                probe([0.0, 0.0, 1.0]),
+            ]);
+            return Some(0.30 + 0.70 * dot(n, [-0.45, 0.65, -0.6]).max(0.0));
         }
         at += d * 0.9;
         if at > 6.0 {
@@ -384,7 +369,9 @@ fn style(step: usize, theme: &Theme) -> Style {
 
 /// A cell's seed in `0.0..1.0`, fixed per place: which cells give the screen back first.
 fn dissolve(x: u16, y: u16) -> f64 {
-    hash01(i32::from(x), i32::from(y))
+    let h = (u32::from(x).wrapping_mul(73_856_093) ^ u32::from(y).wrapping_mul(19_349_663))
+        .wrapping_mul(2_654_435_761);
+    f64::from(h >> 8) / 16_777_216.0
 }
 
 /// Cover every cell of `area` with `scene` until [`OVER`]. From [`HOLD_SECS`] the name shrinks onto
