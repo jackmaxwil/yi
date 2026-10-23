@@ -466,4 +466,224 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |child: &Usage| attribute_to_shared(&shared, child))
     }
+
+    /// A turn's usage settled after it ended is a `settled` main-lane row with its upstream;
+    /// a child's also bills its parent, as its entries do.
+    pub(crate) fn settle_hook(
+        &self,
+        parent: Option<Arc<crate::subagent::AttributeFn>>,
+    ) -> yi_ai::settle::Settle {
+        let shared = Arc::clone(&self.shared);
+        yi_ai::settle::Settle(Arc::new(move |usage: Usage, upstream: Option<String>| {
+            if let Some(store) = store_of(&shared) {
+                let details = upstream.map(|name| serde_json::json!({"provider": name}));
+                let booked = crate::spend::append_main_usage(
+                    &store,
+                    "settled".to_owned(),
+                    usage.clone(),
+                    details,
+                );
+                if let Err(error) = booked {
+                    record_store_error(&shared, &error);
+                }
+            }
+            if let Some(attribute) = &parent {
+                attribute(&usage);
+            }
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use yi_types::message::Usage;
+    use yi_types::model::Effort;
+    use yi_types::record::LaneRecord;
+
+    fn settle_test_config() -> crate::session::SessionConfig {
+        crate::session::SessionConfig {
+            system_prompt: String::new(),
+            model: crate::plan::dispatch::tests::faux_model(),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        }
+    }
+
+    fn store(id: &str) -> yi_session::SharedSession {
+        Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
+            yi_session::SessionMetadata {
+                id: id.to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+                name: None,
+            },
+        )))
+    }
+
+    fn wiring(
+        provider: &Arc<crate::provider::ProviderStream>,
+        root: &std::path::Path,
+        parent_link: Option<crate::ParentLink>,
+    ) -> crate::RuntimeWiring {
+        crate::RuntimeWiring {
+            provider: Arc::clone(provider),
+            system_prompt: String::new(),
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+            cwd: root.join("cwd"),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(Vec::new),
+            depth: u8::from(parent_link.is_some()),
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link,
+            wall: crate::wall::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: crate::fetch::KernelServiceMap::new(),
+        }
+    }
+
+    /// Dies with the hook unwired: a child's cut turn settled after it ended reached neither its
+    /// own ledger nor the parent's bill.
+    #[test]
+    fn a_settled_usage_lands_on_the_ledger_and_bills_the_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let session = super::AgentSession::new(settle_test_config(), provider);
+        let store = store("settled");
+        session.attach_store(Arc::clone(&store))?;
+        let billed = Arc::new(Mutex::new(Vec::new()));
+        let bill = Arc::clone(&billed);
+        let parent: Arc<crate::subagent::AttributeFn> = Arc::new(move |usage: &Usage| {
+            if let Ok(mut seen) = bill.lock() {
+                seen.push(usage.clone());
+            }
+        });
+        let mut usage = Usage::zero();
+        usage.output = 3089;
+        (session.settle_hook(Some(parent)).0)(usage.clone(), Some("Z.AI".to_owned()));
+        let records = yi_session::lock_session(&store).find_records(&Default::default())?;
+        let booked = records.iter().find_map(|record| match record {
+            LaneRecord::Usage {
+                cause,
+                usage,
+                details,
+                ..
+            } if cause == "settled" => Some((usage.output, details.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            booked,
+            Some((3089, Some(serde_json::json!({"provider": "Z.AI"}))))
+        );
+        let seen = billed.lock().map_err(|_| "poisoned")?;
+        assert_eq!(
+            seen.iter().map(|usage| usage.output).collect::<Vec<_>>(),
+            [3089]
+        );
+        Ok(())
+    }
+
+    /// A reader or worker child never reaches attach_runtime, so `new` itself must wire the
+    /// hook: unwired, its cut OpenRouter turn settles inline and stalls the child.
+    #[test]
+    fn a_session_built_without_attach_runtime_still_carries_a_settle_hook() {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        super::AgentSession::new(settle_test_config(), Arc::clone(&provider));
+        assert!(provider.settle_wired_for_test().is_some());
+    }
+
+    /// Dies with the parent bill wired only in attach_runtime: a reader or worker child never
+    /// reaches it, so its settled cost booked on its own ledger and the parent's total missed it.
+    #[test]
+    fn every_child_bills_its_settled_usage_to_its_parent() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let _reactor = runtime.enter();
+        let dir = std::env::temp_dir().join(format!("yi-settle-rewire-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("cwd"))?;
+        std::fs::create_dir_all(dir.join("home"))?;
+        let root_stream = Arc::new(crate::provider::ProviderStream::new(None));
+        let mut root = super::AgentSession::new(settle_test_config(), Arc::clone(&root_stream));
+        let ledger = store("root");
+        root.attach_store(Arc::clone(&ledger))?;
+        let host = crate::attach_runtime(&mut root, wiring(&root_stream, &dir, None));
+        let lease = yi_types::lease::Lease {
+            holder: String::new(),
+            parent: String::new(),
+            deadline_ms: None,
+            tokens: None,
+            granted_at: 0,
+            revoked: None,
+        };
+        for (output, role) in [(1, "root"), (2, "reader"), (3, "worker")] {
+            let kwargs = serde_json::json!({ "role": role });
+            let reader = crate::subagent::reader::parse(kwargs.as_object().ok_or("kwargs")?)?;
+            let model = settle_test_config().model;
+            let cast = (model, Effort::Low, crate::wall::Wall::default(), reader);
+            let child = host.build(cast, role, &dir.join(role), None, &lease, None)?;
+            let hook = child.provider().settle_wired_for_test().ok_or("no hook")?;
+            let mut usage = Usage::zero();
+            usage.output = output;
+            (hook.0)(usage, None);
+        }
+        let records = yi_session::lock_session(&ledger).find_records(&Default::default())?;
+        let mut billed: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                LaneRecord::Usage { cause, usage, .. }
+                    if cause == yi_context::attribution::CHILD_USAGE_CAUSE =>
+                {
+                    Some(usage.output)
+                }
+                _ => None,
+            })
+            .collect();
+        billed.sort_unstable();
+        let _cleanup = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            billed,
+            [1, 2, 3],
+            "a child's settled usage missed the parent"
+        );
+        Ok(())
+    }
+
+    /// Dies with the hook overwritten: an auto-review session built on the root's stream took
+    /// the slot, and with no store of its own it dropped the root's settled cost.
+    #[test]
+    fn a_side_session_on_the_root_stream_keeps_the_root_hook()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
+        let root = super::AgentSession::new(settle_test_config(), Arc::clone(&provider));
+        let store = store("root");
+        root.attach_store(Arc::clone(&store))?;
+        let _reviewer = super::AgentSession::new(settle_test_config(), Arc::clone(&provider));
+        let hook = provider.settle_wired_for_test().ok_or("no hook wired")?;
+        let mut usage = Usage::zero();
+        usage.output = 3089;
+        (hook.0)(usage, None);
+        let records = yi_session::lock_session(&store).find_records(&Default::default())?;
+        let settled = records.iter().any(|record| {
+            matches!(record, LaneRecord::Usage { cause, usage, .. }
+                if cause == "settled" && usage.output == 3089)
+        });
+        assert!(settled, "the root's settled usage was dropped");
+        Ok(())
+    }
 }

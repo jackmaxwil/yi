@@ -6,13 +6,9 @@ use std::error::Error;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
-#[path = "support/daemon.rs"]
-mod daemon;
-use daemon::spawn_daemon;
+use crate::daemon::spawn_daemon;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

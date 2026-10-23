@@ -44,7 +44,8 @@ pub enum RequestKind {
     Initialize,
     ListWorker,
     ListDaemon,
-    NewSession(PaneId),
+    NewSession(PaneId, String),
+    Pin(SessionId),
     Resume(SessionId),
     Prompt,
     Cancel,
@@ -81,9 +82,9 @@ pub struct App {
     /// Incident: a W1→W2→W1 flip inside one frame left ratatui's size unchanged, so it drew
     /// no clear over a screen the terminal had reflowed; every resize event now asks for one.
     pub pending_clear: bool,
-    /// (payload length, rect) of the placed notebook image; unchanged frames skip the
-    /// retransmit, and a drawn clear empties it, since the clear took the image with it.
-    pub notebook_image: Option<(usize, ratatui::layout::Rect)>,
+    /// (rect, payload length, kitty id) of the placed notebook image; unchanged frames skip
+    /// the retransmit, and a drawn clear empties it, since the clear took the image with it.
+    pub notebook_image: std::collections::BTreeMap<PaneId, crate::placed::Placed>,
     animations: Vec<Anim>,
     pub animate: bool,
     pub cmd_hints: bool,
@@ -151,7 +152,7 @@ impl App {
             next_list_poll: Instant::now() + LIST_POLL,
             dirty: true,
             pending_clear: false,
-            notebook_image: None,
+            notebook_image: Default::default(),
             animations: Vec::new(),
             cmd_hints: false,
             autostart: false,
@@ -285,6 +286,7 @@ impl App {
         self.check_editors(now);
         self.poll_terminals();
         self.pump_chats(outbound);
+        self.pump_browsers();
         if self
             .shutdown_at
             .is_some_and(|at| now.saturating_duration_since(at) > Duration::from_secs(2))
@@ -547,10 +549,9 @@ impl App {
                     })
                 });
             }
-            RequestKind::NewSession(pane_id) => {
+            RequestKind::NewSession(pane_id, root) => {
                 if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
                     let session = SessionId(session_id.to_owned());
-                    let root = self.state.root.clone();
                     self.state.upsert_row(SessionRow {
                         id: session.clone(),
                         root,
@@ -559,6 +560,7 @@ impl App {
                         name: None,
                         created_ms: now_ms(),
                         last_ms: 0,
+                        pinned: None,
                     });
                     self.bind_pane(pane_id, &session);
                     self.absorb_result(&session, &result);
@@ -587,6 +589,7 @@ impl App {
             RequestKind::Prompt => {
                 self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
             }
+            RequestKind::Pin(session) => self.absorb_pin(&session, &result),
             RequestKind::Cancel | RequestKind::Seen => {}
         }
         self.dirty = true;
@@ -625,6 +628,7 @@ impl App {
                     .and_then(Value::as_u64)
                     .unwrap_or(0),
                 last_ms: 0,
+                pinned: None,
             });
         }
     }
@@ -633,11 +637,24 @@ impl App {
         let Some(sessions) = result.get("sessions").and_then(Value::as_array) else {
             return;
         };
+        let listed: std::collections::HashSet<&str> = sessions
+            .iter()
+            .filter_map(|entry| entry.get("sessionId").and_then(Value::as_str))
+            .collect();
+        for (id, row) in &mut self.state.sessions {
+            if !listed.contains(id.0.as_str()) {
+                row.pinned = None;
+            }
+        }
         for entry in sessions {
             let Some(id) = entry.get("sessionId").and_then(Value::as_str) else {
                 continue;
             };
             let id = SessionId(id.to_owned());
+            let pinned = entry.pointer("/_meta/yi/pinnedMs").and_then(Value::as_u64);
+            if let Some(row) = self.state.sessions.get_mut(&id) {
+                row.pinned = pinned;
+            }
             let name = entry
                 .get("title")
                 .and_then(Value::as_str)
@@ -682,6 +699,7 @@ impl App {
                 name,
                 created_ms: 0,
                 last_ms,
+                pinned,
             });
         }
     }
@@ -732,17 +750,18 @@ impl App {
         }
         self.absorb_edit(outbound, &id, &update);
         self.absorb_kernel(&id, &update);
-        for (pane_id, pane) in &mut self.state.panes {
-            if pane.session() != Some(&id) {
-                continue;
-            }
-            if let PaneContent::Notebook { cells, drawn, .. } = &mut pane.content
-                && apply_notebook(cells, &update)
-            {
-                *drawn = None;
-                pane.scroll_from_bottom = 0;
-                if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
-                    *seen = Instant::now();
+        if matches!(update, AcpSessionUpdate::ToolCallUpdate(_))
+            && apply_notebook(self.state.notebooks.entry(id.clone()).or_default(), &update)
+        {
+            for (pane_id, pane) in &mut self.state.panes {
+                if pane.session() == Some(&id)
+                    && let PaneContent::Notebook { drawn, .. } = &mut pane.content
+                {
+                    *drawn = None;
+                    pane.scroll_from_bottom = 0;
+                    if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
+                        *seen = Instant::now();
+                    }
                 }
             }
         }
@@ -807,22 +826,22 @@ impl App {
 
     fn new_session(&mut self, outbound: &Outbound) {
         if let Some(pane_id) = self.state.focused_pane_id() {
-            self.new_session_into(outbound, pane_id);
+            self.new_session_into(outbound, pane_id, self.state.root.clone());
         }
     }
 
-    pub(crate) fn new_session_into(&mut self, outbound: &Outbound, pane_id: PaneId) {
+    pub(crate) fn new_session_into(&mut self, outbound: &Outbound, pane_id: PaneId, root: String) {
         if !self.connected() {
             self.note("not connected");
             return;
         }
         self.state.zone = Zone::Panes;
-        let root = self.state.root.clone();
+        let params = json!({"cwd": root});
         self.send_request(
             outbound,
-            RequestKind::NewSession(pane_id),
+            RequestKind::NewSession(pane_id, root),
             "session/new",
-            json!({"cwd": root}),
+            params,
         );
     }
 
@@ -902,10 +921,12 @@ impl App {
             Action::Settings => self.open_settings(outbound, crate::settings::SESSION),
             Action::Menu => self.open_menu_for_focus(),
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
+            Action::Pin => self.pin_focus(outbound),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::OpenTerminal => self.open_terminal(),
             Action::OpenEditor => self.open_navigator("e "),
+            Action::OpenBrowser => self.open_browser(),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
                 if !self.editor_action(action) {
@@ -1034,7 +1055,7 @@ impl App {
             self.dirty = true;
             return;
         }
-        if self.state.zone == Zone::Panes && self.terminal_key(&key) {
+        if self.state.zone == Zone::Panes && (self.browser_key(&key) || self.terminal_key(&key)) {
             return;
         }
         let on_chat = self.state.zone == Zone::Panes && self.on_chat();
@@ -1088,17 +1109,6 @@ impl App {
                     self.state.cursor_moved = true;
                     self.dirty = true;
                 }
-                KeyCode::Left | KeyCode::Right => {
-                    self.state.cycle_root_filter(key.code == KeyCode::Right);
-                    let text = match self.state.root_filter.as_deref() {
-                        Some(root) => format!(
-                            "showing {} only · ←/→ walks workspaces",
-                            root.rsplit('/').next().unwrap_or(root)
-                        ),
-                        None => "showing every workspace".to_owned(),
-                    };
-                    self.note(&text);
-                }
                 KeyCode::Enter => self.open_selected(outbound),
                 _ => {}
             },
@@ -1120,6 +1130,7 @@ impl App {
     }
 }
 
+mod browser;
 mod chat;
 mod diffs;
 mod editor;
@@ -1129,6 +1140,8 @@ mod navigator;
 mod notebook;
 pub mod port;
 mod review;
+#[cfg(test)]
+mod rows;
 mod settings;
 mod terminal;
 
