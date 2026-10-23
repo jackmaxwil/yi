@@ -127,11 +127,20 @@ impl SessionStore {
         lane: &str,
         message: AgentMessage,
     ) -> Result<String, SessionError> {
+        self.append_message_with_terminate(lane, message, None)
+    }
+
+    pub fn append_message_with_terminate(
+        &mut self,
+        lane: &str,
+        message: AgentMessage,
+        terminate: Option<bool>,
+    ) -> Result<String, SessionError> {
         let id = self.ids.next_id();
         let entry = Entry::Message {
             id: id.clone(),
             message,
-            terminate: None,
+            terminate,
             parent_id: None,
             seq: 0,
             timestamp: 0,

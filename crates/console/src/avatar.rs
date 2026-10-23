@@ -148,9 +148,7 @@ fn gear_distance(x: f64, y: f64) -> f64 {
     let theta = y.atan2(x);
     let off = theta - (theta / step).round() * step;
     let (round, half) = (0.05, (0.16, 0.15));
-    let qx = (r * off.cos() - 0.82).abs() - half.0 + round;
-    let qy = (r * off.sin()).abs() - half.1 + round;
-    let tooth = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round;
+    let tooth = yi_tui::chrome::rounded_box((r * off.cos() - 0.82, r * off.sin()), half, round);
     (r - 0.7).min(tooth)
 }
 
@@ -172,11 +170,6 @@ pub fn gear_rgba(fg: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
     out
 }
 
-fn rounded_box((x, y): (f64, f64), (half_w, half_h): (f64, f64), round: f64) -> f64 {
-    let (qx, qy) = (x.abs() - half_w + round, y.abs() - half_h + round);
-    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round
-}
-
 /// One rounded end of a pill whose body is cell background, so the far side runs off the image.
 pub fn cap_rgba(fill: (u8, u8, u8), width: usize, height: usize, left: bool) -> Vec<u8> {
     let (w, h) = (width as f64, height as f64);
@@ -185,7 +178,7 @@ pub fn cap_rgba(fill: (u8, u8, u8), width: usize, height: usize, left: bool) -> 
     for py in 0..height {
         for px in 0..width {
             let at = (px as f64 + 0.5 - centre, py as f64 + 0.5 - h / 2.0);
-            let edge = rounded_box(at, (1.5 * w, h / 2.0), (h * 0.32).min(w));
+            let edge = yi_tui::chrome::rounded_box(at, (1.5 * w, h / 2.0), (h * 0.32).min(w));
             let alpha = ((0.5 - edge).clamp(0.0, 1.0) * 255.0).round() as u8;
             out.extend_from_slice(&[fill.0, fill.1, fill.2, alpha]);
         }
@@ -206,7 +199,8 @@ pub fn closer_rgba(fill: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
     for py in 0..height {
         for px in 0..width {
             let (x, y) = (px as f64 + 0.5 - w / 2.0, py as f64 + 0.5 - h / 2.0);
-            let chip = (0.5 - rounded_box((x, y), (w / 2.0, h / 2.0), round)).clamp(0.0, 1.0);
+            let chip = (0.5 - yi_tui::chrome::rounded_box((x, y), (w / 2.0, h / 2.0), round))
+                .clamp(0.0, 1.0);
             let cross = segment((x, y), arm).min(segment((x, -y), arm));
             let cut = (stroke - cross + 0.5).clamp(0.0, 1.0);
             let alpha = (chip * (1.0 - cut) * 255.0).round() as u8;

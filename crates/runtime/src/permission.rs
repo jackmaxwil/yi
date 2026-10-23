@@ -89,6 +89,8 @@ pub struct PermissionBroker {
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
     /// A walled holder's retry never leaves the sandbox for a protected dir (D345).
     walled: bool,
+    /// Nobody is attached to answer a question, so a root's `ask_user` cannot end the run.
+    unattended: bool,
 }
 
 pub struct CallOutcome {
@@ -224,6 +226,7 @@ impl PermissionBroker {
             approver: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
             walled: false,
+            unattended: false,
         }
     }
 
@@ -277,6 +280,15 @@ impl PermissionBroker {
     /// The sandbox that makes containment real. Without one, a contained
     /// decision degrades to a question.
     #[must_use]
+    pub fn with_unattended(mut self, unattended: bool) -> Self {
+        self.unattended = unattended;
+        self
+    }
+
+    pub fn unattended(&self) -> bool {
+        self.unattended
+    }
+
     pub fn with_sandbox(mut self, sandbox: Option<yi_tools::Sandbox>) -> Self {
         self.sandbox = sandbox;
         self

@@ -1,5 +1,6 @@
 //! A session resumed into a pane reads as it did live: the same cards, the same context figure.
 use crate::common;
+use crate::common::flat;
 
 use std::error::Error;
 
@@ -65,14 +66,6 @@ fn result(id: &str, tool: &str, text: &str) -> Result<AgentMessage, Box<dyn Erro
         "content": [{"type": "text", "text": text}], "timestamp": 0,
     }))?)
 }
-
-fn flat(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
-        .collect()
-}
-
 fn status_row(app: &mut App) -> Result<String, Box<dyn Error>> {
     let area = Rect::new(0, 0, 80, 12);
     let mut buffer = Buffer::empty(area);
