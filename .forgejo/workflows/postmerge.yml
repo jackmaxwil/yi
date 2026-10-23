@@ -30,13 +30,28 @@ jobs:
         with:
           shared-key: test
           cache-on-failure: true
-      # The live ripwire journey reads the plugin the table pins; the cache keeps
-      # the download off GitHub until the table changes, and a failed add fails here.
+      # The live ripwire journey and the browser journey read the plugins the table pins; the
+      # cache keeps the downloads off the network until the table changes, and a failed add fails here.
       - uses: actions/cache@v4
         with:
           path: ~/.yi/plugins
           key: yi-plugins-${{ hashFiles('crates/tools/src/plugin.rs') }}
       - run: cargo build -p yi-cli && target/debug/yi plugin add --all
+      # The browser journey runs the pinned chrome-headless-shell, which links libraries the
+      # image lacks. The list is the 155.0.8059.39 linux64 archive's own `deb.deps`, less what a
+      # headless shell never loads (gtk, curl, vulkan, wget, xdg-utils); ldd names any still missing.
+      - name: system libraries for the pinned headless Chrome
+        run: |
+          set -euo pipefail
+          shell=$(ls ~/.yi/plugins/chrome/*/chrome-headless-shell-linux64/chrome-headless-shell)
+          if ! ldd "$shell" | grep 'not found' >/dev/null; then exit 0; fi
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+            libcups2 libdbus-1-3 libexpat1 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \
+            libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
+            libxkbcommon0 libxrandr2 >/dev/null
+          if ldd "$shell" | grep 'not found'; then exit 1; fi
       # The image carries just and the uv the kernel journey boots, so the
       # install steps the GitHub file needs are both gone.
       - run: just postmerge
