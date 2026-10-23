@@ -81,11 +81,11 @@ struct Rig {
     delivered: Arc<Mutex<Vec<String>>>,
 }
 
-fn rig(url: String, threshold: Option<f64>) -> Result<Rig, Box<dyn Error>> {
+fn rig(url: String, threshold: f64) -> Result<Rig, Box<dyn Error>> {
     rig_with(url, threshold, RuleGap::Once)
 }
 
-fn rig_with(url: String, threshold: Option<f64>, gap: RuleGap) -> Result<Rig, Box<dyn Error>> {
+fn rig_with(url: String, threshold: f64, gap: RuleGap) -> Result<Rig, Box<dyn Error>> {
     let mut land = skill("land", "open a pull request");
     land.gap = gap;
     let engine = RuleEngine::new(vec![land, skill("gate", "cargo nextest")]);
@@ -152,12 +152,12 @@ fn delivered(rig: &Rig) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// With no threshold the classifier only records: a paraphrase no trigger word matches is
+/// Below the threshold the classifier only records: a paraphrase no trigger word matches is
 /// journaled with its answer, and nothing points.
 #[tokio::test(flavor = "multi_thread")]
-async fn in_shadow_a_decision_is_recorded_and_nothing_fires() -> TestResult {
+async fn below_the_threshold_a_decision_is_recorded_and_nothing_fires() -> TestResult {
     let (port, served) = sidecar(vec![LAND])?;
-    let rig = rig(format!("http://127.0.0.1:{port}"), None)?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 0.95)?;
     assert!(
         rig.engine
             .observe_user(&typed("land this branch once it is green"))
@@ -206,7 +206,7 @@ fn a_message_id_matches_the_labelling_tool() {
 #[tokio::test(flavor = "multi_thread")]
 async fn at_the_threshold_it_points_and_never_twice() -> TestResult {
     let (port, _served) = sidecar(vec![LAND, LAND])?;
-    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 0.7)?;
     assert!(
         rig.engine
             .observe_user(&typed("land this branch once it is green"))
@@ -241,7 +241,7 @@ async fn at_the_threshold_it_points_and_never_twice() -> TestResult {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
-    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 0.7)?;
     let named = format!("127.0.0.1:{port}");
     for turn in 0..3 {
         rig.engine.observe_user(&typed("land this branch"));
@@ -284,7 +284,7 @@ async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_the_user_did_not_type_is_never_classified() -> TestResult {
     let (port, _served) = sidecar(vec![LAND])?;
-    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 0.7)?;
     let delegated = AgentMessage::task("land this branch", 7);
     assert!(rig.engine.observe_user(&delegated).is_empty());
     assert!(next(&rig, Duration::from_millis(500)).await.is_none());
@@ -294,7 +294,7 @@ async fn a_message_the_user_did_not_type_is_never_classified() -> TestResult {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_skill_a_trigger_word_pointed_at_is_not_pointed_at_again() -> TestResult {
     let (port, _served) = sidecar(vec![LAND, LAND])?;
-    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 0.7)?;
     assert_eq!(
         rig.engine.observe_user(&typed("open a pull request")).len(),
         1
@@ -317,7 +317,7 @@ async fn a_skill_a_trigger_word_pointed_at_is_not_pointed_at_again() -> TestResu
 #[tokio::test(flavor = "multi_thread")]
 async fn a_trigger_word_ahead_of_the_classifiers_answer_wins() -> TestResult {
     let (port, _served) = sidecar(vec![LAND, LAND])?;
-    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 0.7)?;
     assert!(
         rig.engine
             .observe_user(&typed("land this branch once it is green"))
@@ -342,7 +342,7 @@ async fn a_trigger_word_ahead_of_the_classifiers_answer_wins() -> TestResult {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_typed_name_is_not_pointed_at_again_by_the_classifier() -> TestResult {
     let (port, _served) = sidecar(vec![LAND, LAND])?;
-    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), 0.7)?;
     assert_eq!(rig.engine.observe_user(&typed("$land please")).len(), 1);
     let _first = next(&rig, Duration::from_secs(5)).await;
     assert!(
@@ -365,7 +365,7 @@ async fn a_trigger_words_gap_holds_with_a_classifier_attached() -> TestResult {
     let (port, _served) = sidecar(vec![LAND, LAND])?;
     let rig = rig_with(
         format!("http://127.0.0.1:{port}"),
-        None,
+        0.95,
         RuleGap::AfterTurns(1),
     )?;
     assert_eq!(
@@ -451,7 +451,7 @@ fn gate_in(
         key: Some("k".to_owned()),
         model: "english".to_owned(),
         timeout: Duration::from_secs(2),
-        threshold: None,
+        threshold: 0.9,
     };
     let thresholds = Thresholds {
         allow_at: 0.9,
@@ -747,7 +747,7 @@ fn an_instant_ask_the_classifier_was_unsure_about_waits_for_the_person() -> Test
         key: Some("k".to_owned()),
         model: "english".to_owned(),
         timeout: Duration::from_secs(2),
-        threshold: None,
+        threshold: 0.9,
     };
     let thresholds = Thresholds {
         allow_at: 0.9,
@@ -817,7 +817,7 @@ fn a_prompt_that_cannot_close_is_never_timed_out() -> TestResult {
         key: Some("k".to_owned()),
         model: "english".to_owned(),
         timeout: Duration::from_secs(2),
-        threshold: None,
+        threshold: 0.9,
     };
     let thresholds = Thresholds {
         allow_at: 0.9,
@@ -944,6 +944,20 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
         provider.faux.lock().map(|faux| faux.call_count).ok(),
         Some(0),
         "the reviewer was not consulted"
+    );
+    Ok(())
+}
+
+/// A config naming the classifier and no threshold points at 0.9, so turning it on is enough.
+#[test]
+fn the_skill_threshold_is_0_9_unless_the_config_says_otherwise() -> TestResult {
+    use yi_runtime::classifier::threshold;
+    use yi_types::config::ClassifierConfig;
+    let read = |json: serde_json::Value| serde_json::from_value::<ClassifierConfig>(json);
+    assert_eq!(threshold(&read(serde_json::json!({}))?), 0.9);
+    assert_eq!(
+        threshold(&read(serde_json::json!({"threshold": 0.5}))?),
+        0.5
     );
     Ok(())
 }
