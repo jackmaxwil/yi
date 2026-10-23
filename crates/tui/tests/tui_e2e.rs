@@ -361,6 +361,16 @@ fn streamed(body: &str) -> yi_types::event::AgentEvent {
     }
 }
 
+/// The status rides the composer's top border: with a one-row composer, the third row from the
+/// bottom, and the last row is that composer's bottom border.
+fn ends_on_status(rows: &[String]) -> bool {
+    rows.len()
+        .checked_sub(3)
+        .and_then(|at| rows.get(at))
+        .is_some_and(|row| row.contains("faux-1"))
+        && rows.last().is_some_and(|row| row.contains('╰'))
+}
+
 /// Streams paragraphs of `sentences`, one sentence a draw, on an 80-column screen `rows` high and
 /// pre-scrolled to its last row, calling `frame` after every draw with the bytes it wrote.
 fn stream_paragraphs(
@@ -371,7 +381,7 @@ fn stream_paragraphs(
     use std::io::Write;
     let mut backend = VT100Backend::with_scrollback(80, rows, 400);
     backend.write_all(&b"\n".repeat(usize::from(rows - 1)))?;
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_rows(usize::from(rows));
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -401,11 +411,11 @@ fn a_paragraph_that_commits_on_screen_moves_nothing() -> TestResult {
     let (mut held, mut was) = (0, None);
     stream_paragraphs(24, (12, 3), |screen, written, p| {
         let now = status(screen);
-        if was == Some(23) {
+        if was == Some(21) {
             held += 1;
             assert_eq!(
                 now,
-                Some(23),
+                Some(21),
                 "the composer left the bottom row at paragraph {p}"
             );
             assert!(
@@ -501,20 +511,19 @@ fn viewport_height_follows_the_live_region_and_stays_bottom_anchored() -> TestRe
         // inline viewport must anchor there, not at row 0.
         backend.write_all(&b"\n".repeat(23))?;
     }
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
 
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let idle_height = terminal.viewport_area().height;
     assert_eq!(
-        idle_height, 4,
-        "idle live region is a one-row composer box + status"
+        idle_height, 3,
+        "idle live region is a one-row composer box, the status on its top border"
     );
     assert!(
-        terminal.backend().row_text(23).contains("faux-1"),
-        "the status row must sit on the last screen row when idle, not {} rows above it: {:?}",
-        23 - terminal.viewport_area().bottom().saturating_sub(1),
-        terminal.backend().row_text(23)
+        terminal.backend().row_text(21).contains("faux-1"),
+        "the status rides the composer's top border, two rows above the last:\n{}",
+        terminal.backend().contents()
     );
 
     for id in ["a", "b", "c", "d", "e"] {
@@ -531,9 +540,9 @@ fn viewport_height_follows_the_live_region_and_stays_bottom_anchored() -> TestRe
         "growth scrolls the rows above up; the viewport stays on the bottom row"
     );
     assert!(
-        terminal.backend().row_text(23).contains("faux-1"),
+        terminal.backend().row_text(21).contains("faux-1"),
         "status row after growth: {:?}",
-        terminal.backend().row_text(23)
+        terminal.backend().row_text(21)
     );
     Ok(())
 }
@@ -548,7 +557,7 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
         use std::io::Write;
         backend.write_all(&b"\n".repeat(23))?;
     }
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_rows(24);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -632,7 +641,7 @@ fn a_long_streamed_reply_reaches_scrollback_whole() -> TestResult {
         use std::io::Write;
         backend.write_all(&b"\n".repeat(23))?;
     }
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_rows(24);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -683,7 +692,7 @@ fn a_short_screen_keeps_its_floor_through_a_growth() -> TestResult {
         use std::io::Write;
         backend.write_all(&b"\n".repeat(5))?;
     }
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = App::new(
         options(),
         Theme::new(ColorTier::TrueColor, true),
@@ -720,7 +729,7 @@ fn resizing_the_window_leaves_one_composer_border() -> TestResult {
             use std::io::Write;
             backend.write_all(&b"\n".repeat(65))?;
         }
-        let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
         let mut app = app();
         app.set_width(122);
         app.commit_cell(&yi_tui::cell::Cell::User {
@@ -835,7 +844,7 @@ fn each_kind_of_work_puts_its_own_state_on_the_orb() -> TestResult {
 #[test]
 fn reasoning_stays_on_screen_once_the_prose_starts() -> TestResult {
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
 
@@ -885,7 +894,7 @@ fn reasoning_stays_on_screen_once_the_prose_starts() -> TestResult {
 #[test]
 fn the_mark_trails_the_streaming_tail_instead_of_splitting_the_answer() -> TestResult {
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
 
@@ -926,7 +935,7 @@ fn the_mark_trails_the_streaming_tail_instead_of_splitting_the_answer() -> TestR
 fn a_short_screen_keeps_the_composer_and_status_under_a_long_tail() -> TestResult {
     for height in [8u16, 10, 14, 24] {
         let backend = VT100Backend::with_scrollback(80, height, 200);
-        let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
         let mut app = app();
         app.set_rows(usize::from(height));
         app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -943,7 +952,7 @@ fn a_short_screen_keeps_the_composer_and_status_under_a_long_tail() -> TestResul
             "the composer must survive a {height}-row screen:\n{contents}"
         );
         assert!(
-            contents.contains("0 / 128K"),
+            contents.contains("0.0% / 128K"),
             "the status line must survive a {height}-row screen:\n{contents}"
         );
     }
@@ -1112,7 +1121,7 @@ fn a_resize_forces_the_mark_to_be_placed_again() -> TestResult {
 #[test]
 fn a_settled_resize_rebuilds_the_transcript_at_the_new_width() -> TestResult {
     let backend = VT100Backend::with_scrollback(100, 20, 400);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_rows(20);
     app.set_width(100);
@@ -1680,7 +1689,7 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
 #[test]
 fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResult {
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     while app.mode() != yi_tui::cell::TranscriptMode::Normal {
         app.cycle_mode();
@@ -1718,7 +1727,7 @@ fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResul
 #[test]
 fn a_thought_paragraph_keeps_its_live_width_when_it_commits() -> TestResult {
     let backend = VT100Backend::with_scrollback(200, 40, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_width(200);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -1777,7 +1786,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     let code = "h = await rlm.run('trace')\nr = await h.result()";
@@ -1945,10 +1954,7 @@ fn a_pane_that_collapses_its_seam_still_ends_on_the_status_row() -> TestResult {
         rows.iter().any(|r| r.contains("Reading the pane code")),
         "{rows:#?}"
     );
-    assert!(
-        rows.last().is_some_and(|r| r.contains("faux-1")),
-        "{rows:#?}"
-    );
+    assert!(ends_on_status(&rows), "{rows:#?}");
     Ok(())
 }
 
@@ -1975,7 +1981,7 @@ fn a_pane_ending_on_a_run_of_boxes_still_ends_on_the_status_row() -> TestResult 
             "the view stays scrolled where it was put: {rows:#?}"
         );
         assert!(
-            rows.last().is_some_and(|r| r.contains("faux-1")),
+            ends_on_status(&rows),
             "{boxes} boxes, scrolled {scroll}: {rows:#?}"
         );
         if scroll > 0 {
@@ -2006,10 +2012,7 @@ fn a_pane_keeps_one_blank_between_a_finished_box_and_its_running_sibling() -> Te
     app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 1));
     let rows = pane_rows(&mut app, 30);
     assert_eq!(gaps_between_boxes(rows.clone()), vec![1], "{rows:#?}");
-    assert!(
-        rows.last().is_some_and(|r| r.contains("faux-1")),
-        "{rows:#?}"
-    );
+    assert!(ends_on_status(&rows), "{rows:#?}");
     Ok(())
 }
 
@@ -2021,7 +2024,7 @@ fn a_reader_that_finishes_first_stays_one_blank_above_its_running_sibling() -> T
     use yi_runtime::ChildStatus;
     const ROWS: u16 = 30;
     let backend = VT100Backend::with_scrollback(80, ROWS, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     let ids = ["reader-g1", "reader-g2"];
@@ -2094,7 +2097,7 @@ fn eight_running_readers_stack_one_blank_apart_with_their_previous_step() -> Tes
         ("crates/tui/src/cell.rs", "fn boxed"),
     ];
     let backend = VT100Backend::with_scrollback(80, ROWS, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_rows(usize::from(ROWS));
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -2156,7 +2159,7 @@ fn a_committed_box_keeps_one_blank_row_above_a_one_row_cell() -> TestResult {
             pane_rows(&mut app, 30)
         } else {
             let backend = VT100Backend::with_scrollback(80, 30, 200);
-            let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+            let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
             yi_tui::render::draw(&mut app, &mut terminal, None);
             (0..30)
                 .map(|row| terminal.backend().row_text(row))
@@ -2225,7 +2228,7 @@ fn placement_row(written: &str) -> Option<u16> {
 #[test]
 fn the_working_orb_is_ten_by_five_with_the_label_on_its_middle_row() -> TestResult {
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_kitty(true);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -2268,7 +2271,7 @@ fn an_orb_moved_by_a_commit_is_placed_in_the_frame_that_moved_it() -> TestResult
     use std::io::Write;
     let mut backend = VT100Backend::with_scrollback(80, 24, 200);
     backend.write_all(b"$ yi\r\n")?;
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_kitty(true);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -2314,7 +2317,7 @@ fn an_orb_moved_by_a_commit_is_placed_in_the_frame_that_moved_it() -> TestResult
 #[test]
 fn a_step_that_draws_no_text_still_advances_the_orb_inside_its_own_update() -> TestResult {
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.set_kitty(true);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
@@ -2351,7 +2354,7 @@ fn a_step_that_draws_no_text_still_advances_the_orb_inside_its_own_update() -> T
 fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
     use yi_types::message::{AgentMessage, UserContent};
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     let mut app = app();
     app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
         message: AgentMessage::user_input(UserContent::Text("hello".to_owned()), 0),
@@ -2807,10 +2810,10 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
             .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
             .collect()
     };
-    let last = row(rect.y + rect.height - 1);
+    let top = row(rect.y + rect.height - 3);
     assert!(
-        last.contains("faux-1"),
-        "the status row is the rect's last row: {last:?}"
+        top.contains("faux-1"),
+        "the status rides the composer's top border, two rows above the rect's last: {top:?}"
     );
     for y in 0..24 {
         for x in 0..80 {
@@ -3069,7 +3072,7 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
     let mut app = app();
     app.sync_children(&roster);
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
     assert!(
@@ -3205,7 +3208,7 @@ fn a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card() -> TestResult {
         "and carries the cause: {committed:?}"
     );
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 3)?;
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let live = terminal.backend().contents();
     assert!(!live.contains("Trace sub"), "no card is left live:\n{live}");
@@ -3244,4 +3247,56 @@ fn solo_session_verbs_answer_as_the_console_does() -> TestResult {
         "/undo: this session has taken no turn yet — `yi undo` restores an earlier session"
     );
     Ok(())
+}
+
+fn painted(app: &mut App) -> ratatui::buffer::Buffer {
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let layout = yi_tui::render::layout_chat(app, None, None, area.height);
+    let used = layout.rows().min(area.height);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    let at = ratatui::layout::Rect::new(0, area.height - used, area.width, used);
+    yi_tui::render::paint_chat(app, &layout, &mut buffer, at);
+    buffer
+}
+
+fn text_of(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+    (0..80)
+        .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+        .collect()
+}
+
+/// Dies with the old white block: the composer's cursor cell is the theme's accent, reversed,
+/// so it reads as a block in the colour the rest of the chrome uses.
+#[test]
+fn the_composer_cursor_is_an_accent_block() {
+    let mut app = app();
+    let accent = Theme::new(ColorTier::TrueColor, true).accent;
+    let buffer = painted(&mut app);
+    let block = buffer.content().iter().find(|cell| {
+        cell.modifier.contains(ratatui::style::Modifier::REVERSED) && cell.fg == accent
+    });
+    assert!(block.is_some(), "no accent block cursor in the composer");
+}
+
+/// Dies with the status painted over a search title or lost: while reverse-i-search holds the
+/// border, the status keeps a row of its own below the box.
+#[test]
+fn a_search_title_sends_the_status_back_to_its_own_row() {
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctrl_r = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    yi_tui::input::handle_terminal_event(&mut app, &tx, ctrl_r);
+    let buffer = painted(&mut app);
+    assert!(
+        text_of(&buffer, 20).contains("reverse-i-search"),
+        "{}",
+        text_of(&buffer, 20)
+    );
+    assert!(!text_of(&buffer, 20).contains("faux-1"));
+    assert!(
+        text_of(&buffer, 23).contains("faux-1"),
+        "{}",
+        text_of(&buffer, 23)
+    );
 }

@@ -409,10 +409,8 @@ fn count(text: &str) -> Option<u32> {
     text.trim().parse::<u32>().ok()
 }
 
-fn tree_state(path: &Path, base: Option<&Sha>, deadline: std::time::Instant) -> TreeState {
-    let Ok(status) = probe_git(path, &["status", "--porcelain"], deadline) else {
-        return TreeState::Unread { step: "status" };
-    };
+/// `(modified, untracked)` path counts from `git status --porcelain` output.
+fn tally(status: &str) -> (u32, u32) {
     let (mut modified, mut untracked) = (0_u32, 0_u32);
     for line in status.lines() {
         if line.starts_with("??") {
@@ -421,6 +419,22 @@ fn tree_state(path: &Path, base: Option<&Sha>, deadline: std::time::Instant) -> 
             modified = modified.saturating_add(1);
         }
     }
+    (modified, untracked)
+}
+
+/// Paths changed or untracked in `cwd`; `None` when git is absent or misses [`LIST_BUDGET`].
+pub fn dirty(cwd: &Path) -> Option<u32> {
+    let deadline = std::time::Instant::now() + LIST_BUDGET;
+    let status = probe_git(cwd, &["status", "--porcelain"], deadline).ok()?;
+    let (modified, untracked) = tally(&status);
+    Some(modified.saturating_add(untracked))
+}
+
+fn tree_state(path: &Path, base: Option<&Sha>, deadline: std::time::Instant) -> TreeState {
+    let Ok(status) = probe_git(path, &["status", "--porcelain"], deadline) else {
+        return TreeState::Unread { step: "status" };
+    };
+    let (modified, untracked) = tally(&status);
     let Some(base) = base else {
         return TreeState::Unread { step: "main" };
     };

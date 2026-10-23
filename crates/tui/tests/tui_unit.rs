@@ -332,7 +332,7 @@ fn status_keeps_the_model_under_a_long_path_and_branch() -> TestResult {
     assert_eq!(input.branch.as_deref().map(str::len), Some(51));
     let text = flat(&yi_tui::status::render(&input, 80, &theme()));
     assert!(text.contains("faux-1"), "model survives: {text}");
-    assert!(text.contains("@…"), "branch shrinks from the left: {text}");
+    assert!(text.contains("⎇ …"), "branch shrinks from the left: {text}");
     assert!(text.contains("01a06f8d"), "session id survives: {text}");
     Ok(())
 }
@@ -366,19 +366,19 @@ fn the_status_row_fits_its_width_and_drops_whole_fields_in_one_order() {
         "via openrouter",
         "dogfood",
         "◉ high",
-        "154,491 / 1M",
+        "15% / 1M",
         "≥$17.03",
-        "@",
+        "⎇",
     ];
     let left = [
         "claude-opus-5",
         "via openrouter",
         "◉ high",
         "◉ verbose",
-        "@",
+        "⎇",
         "PR #962",
     ];
-    let right = ["👥 2", "≥$17.03", "0% cached", "154,491 / 1M", "dogfood"];
+    let right = ["👥 2", "≥$17.03", "0% cached", "15% / 1M", "dogfood"];
     for width in 20..=260 {
         let row = yi_tui::status::render(&input, width, &theme());
         let text = flat(&row);
@@ -410,7 +410,7 @@ fn the_status_row_fits_its_width_and_drops_whole_fields_in_one_order() {
     }
     let narrow = yi_tui::status::render(&input, 20, &theme());
     assert!(
-        !flat(&narrow).contains('@'),
+        !flat(&narrow).contains('⎇'),
         "the place goes last: {}",
         flat(&narrow)
     );
@@ -490,7 +490,7 @@ fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
         "the hash stays off the row: {text}"
     );
     assert!(
-        !text.contains("@yi/"),
+        !text.contains("⎇ yi/"),
         "the branch repeats the session id: {text}"
     );
     Ok(())
@@ -532,7 +532,7 @@ fn status_context_segment_is_compact() -> TestResult {
     let row = yi_tui::status::render(&input, 80, &theme());
     let text = flat(&row);
     assert!(
-        text.contains("64,000 / 128K"),
+        text.contains("50% / 128K"),
         "compact context segment: {text}"
     );
     let wide = StatusInput {
@@ -541,11 +541,84 @@ fn status_context_segment_is_compact() -> TestResult {
     };
     let text = flat(&yi_tui::status::render(&wide, 80, &theme()));
     assert!(
-        text.contains("/ 1M"),
-        "megatoken windows collapse to 1M: {text}"
+        text.contains("6.1% / 1M"),
+        "megatoken windows collapse to 1M, and a light load keeps its decimal: {text}"
     );
     assert!(!text.contains('┃'), "the gauge bar is gone: {text}");
     Ok(())
+}
+
+/// The meter's hue is the only warning of a window running out: calm below 60%, a warning
+/// from 60%, an alarm from 85%; a focused child's row keeps its one dim colour instead.
+#[test]
+fn the_context_meter_changes_hue_as_the_window_fills() {
+    let theme = theme();
+    let meter_hue = |used: u64, focused: Option<&str>| {
+        let input = StatusInput {
+            model: "m".to_owned(),
+            context_used: used,
+            context_window: 1000,
+            focused_child: focused.map(str::to_owned),
+            ..StatusInput::default()
+        };
+        let row = yi_tui::status::render(&input, 80, &theme);
+        row.spans
+            .iter()
+            .find(|span| span.content.contains("% / 1K"))
+            .and_then(|span| span.style.fg)
+    };
+    assert_eq!(meter_hue(599, None), Some(theme.accent));
+    assert_eq!(meter_hue(600, None), Some(theme.warning));
+    assert_eq!(meter_hue(849, None), Some(theme.warning));
+    assert_eq!(meter_hue(850, None), Some(theme.error));
+    assert_eq!(meter_hue(850, Some("reader")), Some(theme.dim));
+}
+
+#[test]
+fn the_branch_carries_its_changed_path_count_only_when_there_is_one() {
+    let theme = theme();
+    let row = |dirty: u32| {
+        let input = StatusInput {
+            model: "m".to_owned(),
+            cwd: "/p".to_owned(),
+            branch: Some("main".to_owned()),
+            dirty,
+            ..StatusInput::default()
+        };
+        flat(&yi_tui::status::render(&input, 80, &theme))
+    };
+    assert!(row(2).contains("⎇ main +2"), "{}", row(2));
+    assert!(row(0).contains("⎇ main "), "{}", row(0));
+    assert!(!row(0).contains('+'), "{}", row(0));
+}
+
+/// Dies with a title row a cell wider or narrower than the box's top border, which breaks the
+/// corner: the rule row is exactly its width at every width, and still keeps the model.
+#[test]
+fn the_rule_row_fills_its_width_exactly_and_keeps_the_model() {
+    let theme = theme();
+    let input = StatusInput {
+        model: "claude-opus-5".to_owned(),
+        thinking: Some("high".to_owned()),
+        cwd: "/Users/someone/Development/yi".to_owned(),
+        branch: Some("jack/h3-status-row".to_owned()),
+        dirty: 3,
+        cost: Some("$1.20".to_owned()),
+        session_name: "dogfood".to_owned(),
+        context_used: 154_491,
+        context_window: 1_000_000,
+        ..StatusInput::default()
+    };
+    for width in 16..=200 {
+        let row = yi_tui::status::render_rule(&input, width, &theme, Style::default());
+        let text = flat(&row);
+        assert_eq!(row.width(), width, "{width}: {text}");
+        assert!(text.starts_with('─'), "{width}: {text}");
+        assert!(
+            text.contains("claude-opus-5") || text.contains('…'),
+            "{width}: {text}"
+        );
+    }
 }
 
 #[test]
