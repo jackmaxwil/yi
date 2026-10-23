@@ -14,9 +14,7 @@ use yi_types::plan::doc::{
 use yi_types::plan::op::TodoSpec;
 use yi_types::url::Url;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

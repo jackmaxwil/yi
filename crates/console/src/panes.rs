@@ -146,7 +146,7 @@ pub fn review_view(
     if let Some(title) = diff.and_then(|diff| diff.land_armed.as_deref()) {
         lines.push(Line::styled(
             format!("l again to /land {title} · any other key cancels"),
-            theme.accent_style(),
+            Style::default().fg(theme.warning),
         ));
     }
     let selected = diff.map_or(0, |diff| diff.selected.min(files.len().saturating_sub(1)));
@@ -371,9 +371,10 @@ pub fn notebook_lines(
             "stderr",
             theme,
         ));
+        let teal = Style::default().fg(theme.teal);
         if let Some(result) = &cell.result {
-            let lead = Span::styled("↳ ", theme.accent_style());
-            let bold = theme.accent_style().add_modifier(Modifier::BOLD);
+            let lead = Span::styled("↳ ", teal);
+            let bold = teal.add_modifier(Modifier::BOLD);
             out.extend(capped(
                 result,
                 lead,
@@ -394,12 +395,24 @@ pub fn notebook_lines(
                 theme,
             ));
         }
+        for size in &cell.dropped_image_bytes {
+            let what = format!("image {size} B base64 dropped");
+            let cap = format!("notebook cap {} B", crate::model::IMAGE_BYTES_MAX);
+            out.push(cap_row(&what, &cap, "the transcript holds it", theme));
+        }
+        if cell.images_past_limit > 0 {
+            let noun = if cell.images_past_limit == 1 {
+                "image"
+            } else {
+                "images"
+            };
+            let what = format!("{} older {noun} not shown", cell.images_past_limit);
+            let cap = format!("notebook keeps {} per cell", crate::model::IMAGES_PER_CELL);
+            out.push(cap_row(&what, &cap, "the transcript holds them", theme));
+        }
         for image in &cell.images {
             let kb = image.len().saturating_mul(3) / 4 / 1024;
-            out.push(Line::styled(
-                format!("  ▲ image · {kb} KB png"),
-                theme.accent_style(),
-            ));
+            out.push(Line::styled(format!("  ▲ image · {kb} KB png"), teal));
         }
         out.push(Line::default());
     }

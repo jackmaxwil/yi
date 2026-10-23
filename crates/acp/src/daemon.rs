@@ -61,6 +61,7 @@ struct SessionEntry {
     last_state: Option<String>,
     last_event_ms: u64,
     name: Option<String>,
+    pinned_ms: Option<u64>,
     /// Invariant: true only for a row the pre-attach path invented so a resume's replay
     /// could route. The worker's result confirms it; an unconfirmed row dies with its client.
     provisional: bool,
@@ -82,6 +83,7 @@ impl SessionEntry {
             last_state: None,
             last_event_ms: 0,
             name: None,
+            pinned_ms: None,
             provisional: false,
         }
     }
@@ -94,6 +96,7 @@ impl SessionEntry {
             unseen: stored.unseen,
             last_event_ms: stored.last_event_ms,
             name: stored.name,
+            pinned_ms: stored.pinned_ms,
             ..Self::new(stored.cwd, None)
         }
     }
@@ -105,6 +108,7 @@ impl SessionEntry {
             last_state: self.last_state.clone(),
             last_event_ms: self.last_event_ms,
             name: self.name.clone(),
+            pinned_ms: self.pinned_ms,
             extra: BTreeMap::new(),
         }
     }
@@ -247,6 +251,31 @@ impl Supervisor {
             }
             None => self.send_client(client, error_frame(id, -32602, "unknown sessionId")),
         }
+    }
+
+    /// A session only the worker listed has no entry yet, so a pin's `cwd` makes one.
+    fn pin(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
+        let Some(id) = id else { return };
+        let param = |key: &str| frame.pointer(&format!("/params/{key}"));
+        let session_id = param("sessionId").and_then(Value::as_str);
+        let (Some(session_id), Some(pinned)) =
+            (session_id, param("pinned").and_then(Value::as_bool))
+        else {
+            let refused = error_frame(id, -32602, "_yi/pin takes a sessionId and a bool pinned");
+            return self.send_client(client, refused);
+        };
+        if pinned && let Some(cwd) = param("cwd").and_then(Value::as_str) {
+            self.sessions
+                .entry(session_id.to_owned())
+                .or_insert_with(|| SessionEntry::new(cwd.to_owned(), None));
+        }
+        let Some(entry) = self.sessions.get_mut(session_id) else {
+            return self.send_client(client, error_frame(id, -32602, "unknown sessionId"));
+        };
+        entry.pinned_ms = pinned.then(|| entry.pinned_ms.unwrap_or_else(now_ms));
+        let reply = json!({"pinnedMs": entry.pinned_ms});
+        self.persist();
+        self.send_client(client, result_frame(id, reply));
     }
 
     async fn worker_for(&mut self, root: &str) -> Result<(), String> {
@@ -437,6 +466,7 @@ impl Supervisor {
                                 "unseen": entry.unseen,
                                 "lastState": entry.last_state,
                                 "lastEventMs": entry.last_event_ms,
+                                "pinnedMs": entry.pinned_ms,
                             }},
                         })
                     })
@@ -450,6 +480,7 @@ impl Supervisor {
                 let _ = self.input.send(Input::Shutdown);
             }
             "_yi/seen" => self.mark_seen(client, id, &frame),
+            "_yi/pin" => self.pin(client, id, &frame),
             "_yi/settings" | "_yi/set_default" => self.settings(client, id, &method, &frame),
             "_yi/open" => self.open(client, id, &frame),
             _ => {
@@ -663,9 +694,15 @@ impl Supervisor {
                 self.send_client(request.client, exited);
             }
         }
-        self.sessions.retain(|_, entry| entry.root != root);
+        // Invariant: a pin outlives its worker, or the next persist writes the ledger without it.
+        self.sessions
+            .retain(|_, entry| entry.root != root || entry.pinned_ms.is_some());
+        for entry in self.sessions.values_mut().filter(|e| e.root == root) {
+            entry.attached.clear();
+            entry.last_state = entry.last_state.take().map(|_| "idle".to_owned());
+        }
         self.parked
-            .retain(|session_id, _| self.sessions.contains_key(session_id));
+            .retain(|id, _| self.sessions.get(id).is_some_and(|e| e.root != root));
     }
 
     /// The daemon answers for the config, not a worker: a worker holds the copy it started on.
@@ -922,6 +959,7 @@ mod tests {
                 last_state: None,
                 last_event_ms: 0,
                 name: None,
+                pinned_ms: None,
                 extra: BTreeMap::new(),
             };
             let sessions = std::iter::once(("s1".to_owned(), entry)).collect();
@@ -943,6 +981,71 @@ mod tests {
             "the temp file was renamed"
         );
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// A supervisor with no worker, its pinned and unpinned `/repo` rows mid-turn for client 7.
+    fn supervisor_with_rows() -> Supervisor {
+        let (ledger, _stored) = std::sync::mpsc::channel();
+        let (input, _inputs) = mpsc::unbounded_channel();
+        let mut supervisor = Supervisor {
+            options: DaemonOptions {
+                socket: PathBuf::new(),
+                worker_args: Vec::new(),
+                agent_version: String::new(),
+                home: PathBuf::new(),
+            },
+            ledger,
+            workers: HashMap::new(),
+            clients: HashMap::new(),
+            sessions: HashMap::new(),
+            requests: HashMap::new(),
+            worker_requests: HashMap::new(),
+            parked: HashMap::new(),
+            next_request: 0,
+            input,
+        };
+        for (id, pinned_ms) in [("pinned", Some(1)), ("loose", None)] {
+            let mut entry = SessionEntry::new("/repo".to_owned(), Some(7));
+            (entry.last_state, entry.pinned_ms) = (Some("running".to_owned()), pinned_ms);
+            supervisor.sessions.insert(id.to_owned(), entry);
+        }
+        supervisor
+    }
+
+    /// Dies with a dead worker's pinned row still attached or still running, which lists a
+    /// session nothing serves as Working forever; the root's unpinned row goes with the worker.
+    #[test]
+    fn a_dead_workers_pinned_row_stays_listed_idle_and_unattached() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        supervisor.handle_worker_closed("/repo".to_owned());
+        assert!(!supervisor.sessions.contains_key("loose"));
+        let row = supervisor
+            .sessions
+            .get("pinned")
+            .ok_or("the pinned row goes")?;
+        assert!(row.attached.is_empty(), "{:?}", row.attached);
+        assert_eq!(row.last_state.as_deref(), Some("idle"));
+        Ok(())
+    }
+
+    /// Dies with a pin whose `pinned` is missing or not a bool read as an unpin.
+    #[test]
+    fn a_pin_without_a_bool_is_refused_and_keeps_the_pin() -> Result<(), String> {
+        let mut supervisor = supervisor_with_rows();
+        let (sink, mut replies) = mpsc::channel(4);
+        supervisor.clients.insert(7, sink);
+        for pinned in [json!(null), json!("false")] {
+            let frame = json!({"params": {"sessionId": "pinned", "pinned": pinned}});
+            supervisor.pin(7, Some(json!(1)), &frame);
+            let reply = replies.try_recv().map_err(|error| error.to_string())?;
+            assert!(reply.contains("-32602"), "{reply}");
+        }
+        let row = supervisor
+            .sessions
+            .get("pinned")
+            .ok_or("the pinned row goes")?;
+        assert_eq!(row.pinned_ms, Some(1));
         Ok(())
     }
 
