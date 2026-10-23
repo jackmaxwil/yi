@@ -282,7 +282,7 @@ pub struct EditConfig {
     pub freeform_grammar: Option<bool>,
 }
 
-/// `bash.autoBackgroundMs`, off unless the user sets it.
+/// `bash.autoBackgroundMs`: unset is 60 s, or off for a run that exits once idle; `0` is off.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BashConfig {
