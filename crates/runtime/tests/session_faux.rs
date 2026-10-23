@@ -1752,47 +1752,6 @@ async fn a_cut_bash_output_carries_the_lines_the_selector_named() -> Result<(), 
     Ok(())
 }
 
-/// A one-shot classifier sidecar: each body answers one POST in order, and the joined handle
-/// returns the requests it saw.
-fn classifier_sidecar(
-    bodies: Vec<&'static str>,
-) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let handle = std::thread::spawn(move || {
-        let mut seen = Vec::new();
-        for body in bodies {
-            let Ok((stream, _)) = listener.accept() else {
-                break;
-            };
-            use std::io::Write;
-            let mut reader = std::io::BufReader::new(stream);
-            let mut length = 0usize;
-            loop {
-                let mut line = String::new();
-                if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0
-                    || line == "\r\n"
-                {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut sent = vec![0; length];
-            let _ = std::io::Read::read_exact(&mut reader, &mut sent);
-            seen.push(String::from_utf8_lossy(&sent).into_owned());
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = reader.get_mut().write_all(reply.as_bytes());
-        }
-        seen
-    });
-    Ok((port, handle))
-}
-
 /// The PR's central change, driven where it is consumed: a config that names the classifier and
 /// no threshold points at 0.9 through `classifier::attach`, and an answer under it stays
 /// record-only.
@@ -1813,7 +1772,7 @@ async fn an_unset_classifier_threshold_points_at_0_9_through_attach() -> Result<
             "---\nname: land\ndescription: how to open a pull request\ntrigger: pull request\n---\nbody\n",
         )?;
     }
-    let (port, served) = classifier_sidecar(vec![LAND, BELOW])?;
+    let (port, served) = crate::classifier_e2e::sidecar(vec![LAND, BELOW])?;
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
         ["one", "two"]

@@ -947,8 +947,8 @@ async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
     );
     Ok(())
 }
-/// A sidecar saturated at exactly 1.0 cannot point at threshold 1: the confidence is clamped
-/// just under 1, so threshold 1 stays the record-only setting.
+/// A sidecar saturated at exactly 1.0 cannot point at threshold 1: the firing condition skips
+/// thresholds of 1 or more, so it stays the record-only setting.
 #[tokio::test(flavor = "multi_thread")]
 async fn at_threshold_one_a_saturated_answer_never_points() -> TestResult {
     const SATURATED: &str = r#"{"answers":{"skill":{"choice":"land","answer_confidence":1.0}},"routing":{"model":"english"}}"#;
@@ -964,7 +964,7 @@ async fn at_threshold_one_a_saturated_answer_never_points() -> TestResult {
         .ok_or("no decision recorded")?;
     assert_eq!(
         (record.answer.as_deref(), record.confidence, record.fired),
-        (Some("land"), Some(1.0 - f64::EPSILON), false)
+        (Some("land"), Some(1.0), false)
     );
     assert_eq!(served.join().map_err(|_| "sidecar thread")?.len(), 1);
     Ok(())
