@@ -27,12 +27,29 @@ struct Row {
     trim: fn(&Path) -> bool,
 }
 
-const ROWS: [Row; 1] = [Row {
-    store: "checkpoints",
-    root: crate::checkpoint::checkpoint_root,
-    judge: checkpoint_fate,
-    trim: trim_checkpoint,
-}];
+const ROWS: [Row; 2] = [
+    Row {
+        store: "checkpoints",
+        root: crate::checkpoint::checkpoint_root,
+        judge: checkpoint_fate,
+        trim: trim_checkpoint,
+    },
+    Row {
+        store: "browser profiles",
+        root: yi_browser::profile_root,
+        judge: profile_fate,
+        trim: |_| false,
+    },
+];
+
+/// A profile whose process is gone and that sat an hour: a shared home can be read through
+/// another pid namespace, where a live browser's pid looks dead.
+fn profile_fate(dir: &Path, idle: Duration) -> Fate {
+    match idle > SWEEP_EVERY && yi_browser::profile_orphaned(dir) {
+        true => Fate::Remove,
+        false => Fate::Keep,
+    }
+}
 
 /// Invariant: every capture rewrites the shadow index through `index.lock`, so the shadow
 /// dir's mtime is its last capture. A live repo is trimmed once idle an hour, never removed.

@@ -2260,6 +2260,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "yi-browser"
+version = "0.2.0"
+dependencies = [
+ "rustix 0.38.44",
+ "serde_json",
+ "yi-types",
+]
+
+[[package]]
 name = "yi-cli"
 version = "0.2.0"
 dependencies = [
@@ -2269,6 +2278,7 @@ dependencies = [
  "tokio",
  "ureq",
  "yi-acp",
+ "yi-browser",
  "yi-console",
  "yi-mcp-cli",
  "yi-runtime",
@@ -2287,6 +2297,7 @@ dependencies = [
  "tui-textarea",
  "unicode-width 0.2.0",
  "vt100",
+ "yi-browser",
  "yi-tui",
  "yi-types",
 ]
@@ -2379,6 +2390,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "yi-ai",
+ "yi-browser",
  "yi-context",
  "yi-kernel",
  "yi-loop",
