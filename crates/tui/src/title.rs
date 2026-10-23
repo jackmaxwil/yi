@@ -13,6 +13,10 @@ use yi_orb::{V, add, dot, norm, rot_y, smooth};
 use crate::app::App;
 use crate::colors::Theme;
 
+mod sim;
+
+pub use sim::Cache;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scene {
     Kali,
@@ -20,15 +24,17 @@ pub enum Scene {
     Solid,
     Mobius,
     Clouds,
+    Growth,
 }
 
 impl Scene {
-    pub const ALL: [(&'static str, Scene); 5] = [
+    pub const ALL: [(&'static str, Scene); 6] = [
         ("kali", Scene::Kali),
         ("echo", Scene::Echo),
         ("solid", Scene::Solid),
         ("mobius", Scene::Mobius),
         ("clouds", Scene::Clouds),
+        ("growth", Scene::Growth),
     ];
 
     pub fn named(name: &str) -> Option<Scene> {
@@ -40,12 +46,13 @@ impl Scene {
 }
 
 /// Used when the config names no weights: the Kali fold 8, every other scene 2.
-pub const DEFAULT_WEIGHTS: [(Scene, u32); 5] = [
+pub const DEFAULT_WEIGHTS: [(Scene, u32); 6] = [
     (Scene::Kali, 8),
     (Scene::Echo, 2),
     (Scene::Solid, 2),
     (Scene::Mobius, 2),
     (Scene::Clouds, 2),
+    (Scene::Growth, 2),
 ];
 
 /// One weighted draw; the same seed picks the same scene, and no weight at all picks none.
@@ -375,6 +382,7 @@ pub fn cover(
     (scene, elapsed): (Scene, Duration),
     landing: Option<Rect>,
     theme: &Theme,
+    cache: &mut Cache,
 ) {
     if elapsed >= OVER {
         return;
@@ -386,7 +394,9 @@ pub fn cover(
     let lam = vortex(t);
     let drift = (TAU * t / 6.0).sin_cos();
     let rise = match scene {
-        Scene::Kali | Scene::Clouds => smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM)),
+        Scene::Kali | Scene::Clouds | Scene::Growth => {
+            smooth((t - NAME_FROM) / (NAME_TO - NAME_FROM))
+        }
         Scene::Echo | Scene::Mobius => 1.0,
         Scene::Solid => 0.0,
     };
@@ -394,6 +404,8 @@ pub fn cover(
     let fade = 1.0 - smooth(leave * 1.25);
     let reveal = smooth((leave - 0.1) / 0.9);
     let (strokes, thick) = landed(area, landing, leave);
+    let coral =
+        (scene == Scene::Growth && fade > 0.0).then(|| cache.growth((area.width, area.height), t));
     for y in 0..area.height {
         for x in 0..area.width {
             let (u, v) = at(x, y, area.width, area.height);
@@ -420,6 +432,7 @@ pub fn cover(
                 Scene::Solid => echo(d.max(0.1), t) * fade * 0.6,
                 Scene::Mobius => rings(d, t) * fade,
                 Scene::Clouds => clouds(u, v, drift, turn.fade) * fade,
+                Scene::Growth => coral.map_or(0.0, |coral| coral.at(u, v)) * fade,
             };
             let value = match solid_hit {
                 Some(lit) => lit,
