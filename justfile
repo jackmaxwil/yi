@@ -15,11 +15,11 @@ clippy:
 # runs the suite. Many tests set HOME or poke the process's own registries and say
 # "nextest runs each test in its own process"; plain `cargo test` threads them into
 # one, and 15 of them failed by racing, so the fallback runs one test at a time.
-# `cargo test` runs the 101 test binaries one after another
+# `cargo test` runs the test binaries one after another
 # and five of them are 96 % of the wall clock; nextest pools every test from
 # every binary, and .config/nextest.toml's slow-timeout kills a hang in 60s
-# instead of letting it hold a runner. nextest cannot run doctests, so those
-# stay a second cargo invocation rather than quietly leaving the gate.
+# instead of letting it hold a runner. nextest cannot run doctests and the workspace
+# has none: `cargo test --doc` was 15 rustdoc spawns and 0 tests, 2.5-8 s a run.
 test:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -27,14 +27,21 @@ test:
     # 2026-10-07. The suite's HOME is the worktree's target/yi-home, deleted with the worktree.
     [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test
     if command -v cargo-nextest >/dev/null; then
-      cargo nextest run --workspace
-      cargo test --workspace --doc
+      # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
+      profile=local
+      [ -z "${CI:-}" ] || profile=default
+      cargo nextest run --workspace --profile "$profile"
     else
       cargo test --workspace -- --test-threads=1
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
-    cargo test -p yi-cli -p yi-tui -p yi-tools --test integration --test tools linked_tables
+    cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
+
+# Frees what an edit loop leaves behind in target/: artifacts of superseded units and
+# incremental caches beyond the newest each live unit needs. Builds the gate resolutions first, so run it idle.
+sweep:
+    python3 scripts/sweep_target.py
 
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy
@@ -199,7 +206,6 @@ dist-suite:
     # tests, each racing another through HOME; the suite's runner is one process per test.
     if command -v cargo-nextest >/dev/null; then
       cargo nextest run --workspace --cargo-profile dist
-      cargo test --workspace --doc --profile dist
     else
       cargo test --workspace --profile dist -- --test-threads=1
     fi
