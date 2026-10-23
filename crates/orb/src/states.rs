@@ -129,7 +129,7 @@ pub fn pose(state: Option<OrbState>, t: f64) -> Vec<Point> {
     pad(points)
 }
 
-pub(crate) fn add(a: V, b: V, s: f64) -> V {
+pub fn add(a: V, b: V, s: f64) -> V {
     [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]
 }
 
@@ -137,7 +137,7 @@ pub(crate) fn scale(a: V, s: f64) -> V {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
-pub(crate) fn dot(a: V, b: V) -> f64 {
+pub fn dot(a: V, b: V) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
@@ -145,7 +145,7 @@ pub(crate) fn len(a: V) -> f64 {
     dot(a, a).sqrt()
 }
 
-fn norm(a: V) -> V {
+pub fn norm(a: V) -> V {
     scale(a, 1.0 / len(a).max(1e-9))
 }
 
@@ -162,12 +162,12 @@ pub(crate) fn rot_x(v: V, a: f64) -> V {
     [v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c]
 }
 
-fn rot_y(v: V, a: f64) -> V {
+pub fn rot_y(v: V, a: f64) -> V {
     let (s, c) = a.sin_cos();
     [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
 }
 
-pub(crate) fn smooth(x: f64) -> f64 {
+pub fn smooth(x: f64) -> f64 {
     let x = x.clamp(0.0, 1.0);
     x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
 }
@@ -235,19 +235,24 @@ fn on_band(u: V, v: V, a: f64, off: f64) -> V {
     norm(add(add(scale(u, a.cos()), v, a.sin()), cross(u, v), off))
 }
 
+pub(crate) const MARK_SPAN: f64 = 0.40 / 0.39;
+
+/// The `Yi` mark as five segments `((x1, y1), (x2, y2))`: the arms and stem of the Y, the stem
+/// of the i and its dot. The title field measures its distance to these same segments.
+pub const MARK_STROKES: [((f64, f64), (f64, f64)); 5] = [
+    ((-0.62, 0.62), (-0.28, 0.06)),
+    ((0.06, 0.62), (-0.28, 0.06)),
+    ((-0.28, 0.06), (-0.28, -0.62)),
+    ((0.46, 0.30), (0.46, -0.62)),
+    ((0.46, 0.60), (0.46, 0.56)),
+];
+
 fn mark() -> Vec<Point> {
-    const STROKES: [((f64, f64), (f64, f64)); 5] = [
-        ((-0.62, 0.62), (-0.28, 0.06)),
-        ((0.06, 0.62), (-0.28, 0.06)),
-        ((-0.28, 0.06), (-0.28, -0.62)),
-        ((0.46, 0.30), (0.46, -0.62)),
-        ((0.46, 0.60), (0.46, 0.56)),
-    ];
-    let span = 0.40 / 0.39;
-    let lengths = STROKES.map(|((x1, y1), (x2, y2))| (x2 - x1).hypot(y2 - y1).max(0.02));
+    let span = MARK_SPAN;
+    let lengths = MARK_STROKES.map(|((x1, y1), (x2, y2))| (x2 - x1).hypot(y2 - y1).max(0.02));
     let total: f64 = lengths.iter().sum();
     let mut out = Vec::with_capacity(POINTS);
-    for (((x1, y1), (x2, y2)), length) in STROKES.iter().zip(lengths) {
+    for (((x1, y1), (x2, y2)), length) in MARK_STROKES.iter().zip(lengths) {
         let count = ((length / total) * 132.0).round().max(2.0) as usize;
         for step in 0..count {
             let f = step as f64 / (count - 1) as f64;

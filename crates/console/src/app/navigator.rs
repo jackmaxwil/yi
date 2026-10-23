@@ -114,7 +114,6 @@ impl App {
                 let session = pane.session().cloned();
                 pane.content = PaneContent::Notebook {
                     session,
-                    cells: Vec::new(),
                     full: false,
                     drawn: None,
                 };
