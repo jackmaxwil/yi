@@ -713,6 +713,17 @@ fn the_ripwire_card_attaches_only_when_ripwire_is_found() -> TestResult {
         std::fs::create_dir_all(ripwire.dir(&home))?;
         std::fs::write(ripwire.dir(&home).join("ripwire"), "#!/bin/sh\n")?;
         assert!(card(&home), "yi's pinned copy turns the card on");
+        let before = started(&dir, &home).system_prompt();
+        let chrome = yi_tools::plugin::Plugin::named("chrome").ok_or("no chrome row")?;
+        if let Some(program) = chrome.program(&home) {
+            std::fs::create_dir_all(program.parent().ok_or("no parent")?)?;
+            std::fs::write(program, "#!/bin/sh\n")?;
+        }
+        assert_eq!(
+            started(&dir, &home).system_prompt(),
+            before,
+            "the console's Chrome is not the model's to read about"
+        );
         return Ok(());
     }
     for present in [false, true] {

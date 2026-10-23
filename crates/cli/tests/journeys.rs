@@ -9,9 +9,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
-#[path = "support/session_files.rs"]
-mod session_files;
-use session_files::session_files;
+use crate::session_files::session_files;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

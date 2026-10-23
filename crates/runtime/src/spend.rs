@@ -16,6 +16,7 @@ pub(crate) fn append_main_usage(
     store: &yi_session::SharedSession,
     cause: String,
     usage: Usage,
+    details: Option<serde_json::Value>,
 ) -> Result<(), yi_session::SessionError> {
     let mut session = yi_session::lock_session(store);
     let id = session.next_id();
@@ -29,11 +30,17 @@ pub(crate) fn append_main_usage(
         attempt: None,
         stop_reason: None,
         tool_call_id: None,
-        details: None,
+        details,
         seq: 0,
         timestamp: 0,
     })?;
     Ok(())
+}
+
+/// One-shot runs call this before they exit: the settled cost of a cut turn lands seconds after
+/// the turn, and a process that leaves first never books it.
+pub fn drain_settled(deadline: Option<std::time::Instant>) {
+    yi_ai::settle::drain(deadline);
 }
 
 /// Invariant: a side call that reports spend leaves one [`yi_types::record::LaneRecord::Usage`]
@@ -46,7 +53,7 @@ pub(crate) fn book_side_call(
     if usage == Usage::zero() {
         return Ok(());
     }
-    append_main_usage(store, cause.to_owned(), usage)
+    append_main_usage(store, cause.to_owned(), usage, None)
 }
 
 pub const SPEND_ALERT_TYPE: &str = "spend_alert";
