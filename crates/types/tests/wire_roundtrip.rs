@@ -114,6 +114,23 @@ fn daemon_ledger_fixture_round_trips_with_unknown_fields() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// Written by `yi serve` after one `_yi/pin`: only the pinned row carries `pinnedMs`, byte for byte.
+#[test]
+fn daemon_ledger_with_a_pin_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/daemon-ledger-pinned.json");
+    let stored = fs::read_to_string(path)?;
+    let ledger: yi_types::acp::DaemonLedger = serde_json::from_str(&stored)?;
+    let pins: Vec<Option<u64>> = ledger
+        .sessions
+        .values()
+        .map(|entry| entry.pinned_ms)
+        .collect();
+    assert_eq!(pins, [Some(1_791_874_130_106), None]);
+    assert_eq!(serde_json::to_string(&ledger)?, stored.trim_end());
+    Ok(())
+}
+
 #[test]
 fn task_without_a_check_still_deserializes_and_reserializes_clean()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -366,7 +366,7 @@ fn the_small_mark_waits_for_the_big_one_to_land() {
         let mut scroll = 0;
         yi_tui::render::paint_pane(&mut app, None, &mut buffer, area, &mut scroll);
         let mut out = Vec::new();
-        yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default());
+        yi_tui::orb::tick(&mut app, &mut out, &mut yi_tui::orb::Tick::default(), true);
         (
             String::from_utf8_lossy(&out).contains("a=p"),
             app.orb_rect(),
