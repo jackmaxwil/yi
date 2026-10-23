@@ -9,18 +9,12 @@ const GROWTH_COLS: usize = 80;
 const GROWTH_ROWS: usize = 32;
 const SPIRAL_STATES: u8 = 12;
 const SPIRAL_STEPS_PER_SEC: f64 = 55.0;
-/// The most steps one call may advance, so a late frame or a fresh size catches up over the
-/// next frames instead of replaying the whole run inside one draw.
-const GROWTH_CATCH_UP: u32 = 800;
-const SPIRAL_CATCH_UP: u32 = 55;
-/// What the stateful scenes keep between frames; one per console, empty until a scene asks. The
-/// `work` counter holds every step the cache has advanced, so a test can tell a kept run from a
-/// re-run from nothing.
+
+/// What the stateful scenes keep between frames; one per console, empty until a scene asks.
 #[derive(Default)]
 pub struct Cache {
     growth: Option<Growth>,
     spirals: Option<Spirals>,
-    work: u64,
 }
 
 /// Gray–Scott coral seeded on the strokes, with the feed and kill rates the lab settled on.
@@ -77,6 +71,7 @@ impl Sim for Growth {
         (self.size, self.steps)
     }
 
+    /// The coral's concentration at plane point `(u, v)`, in `0.0..=1.0`.
     fn at(&self, u: f64, v: f64) -> f64 {
         grid_cell(self.size, (GROWTH_COLS, GROWTH_ROWS), u, v)
             .map_or(0.0, |at| f64::from((self.v[at] * 3.2).clamp(0.0, 1.0)))
@@ -162,23 +157,14 @@ pub(super) trait Sim {
 }
 
 /// Invariant: a kept run is only continued forwards on the size it was made for, so it always
-/// equals a fresh run to the same step and a frozen clock replays any frame; a call advances at
-/// most `catch_up` steps, so a late frame never replays the whole run in one draw.
-fn advance<'a, S: Sim>(
-    slot: &'a mut Option<S>,
-    work: &mut u64,
-    size: (u16, u16),
-    want: u32,
-    catch_up: u32,
-) -> &'a S {
+/// equals a fresh run to the same step and a frozen clock replays any frame.
+fn advance<S: Sim>(slot: &mut Option<S>, size: (u16, u16), want: u32) -> &S {
     let fresh = slot
         .take()
         .filter(|sim| sim.kept().0 == size && sim.kept().1 <= want);
     let sim = slot.insert(fresh.unwrap_or_else(|| S::new(size)));
-    let target = want.min(sim.kept().1.saturating_add(catch_up));
-    while sim.kept().1 < target {
+    while sim.kept().1 < want {
         sim.step();
-        *work += 1;
     }
     sim
 }
@@ -194,24 +180,15 @@ impl Cache {
         match scene {
             super::Scene::Growth => Some(advance::<Growth>(
                 &mut self.growth,
-                &mut self.work,
                 size,
                 (t * GROWTH_STEPS_PER_SEC) as u32,
-                GROWTH_CATCH_UP,
             )),
             super::Scene::Spirals => Some(advance::<Spirals>(
                 &mut self.spirals,
-                &mut self.work,
                 size,
                 (t * SPIRAL_STEPS_PER_SEC) as u32,
-                SPIRAL_CATCH_UP,
             )),
             _ => None,
         }
-    }
-
-    /// Every step the cache has advanced its simulations across its life.
-    pub fn work(&self) -> u64 {
-        self.work
     }
 }
