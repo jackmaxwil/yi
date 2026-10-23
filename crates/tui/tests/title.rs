@@ -199,6 +199,7 @@ fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
         Scene::Mobius,
         Scene::Clouds,
         Scene::Growth,
+        Scene::Spirals,
     ] {
         let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
         let held = at(2.1);
@@ -324,6 +325,7 @@ fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("mobius"), Some(Scene::Mobius));
     assert_eq!(Scene::named("clouds"), Some(Scene::Clouds));
     assert_eq!(Scene::named("growth"), Some(Scene::Growth));
+    assert_eq!(Scene::named("spirals"), Some(Scene::Spirals));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
@@ -480,6 +482,47 @@ fn the_growth_spreads_and_a_kept_cache_agrees_with_a_fresh_one() {
     assert_eq!(
         draw(&mut cache, (120, 30), 1.0),
         fresh((120, 30), 1.0),
+        "a new size starts over"
+    );
+}
+
+/// The cyclic automaton starts as noise and the cache steps it at 55 a second: the screen
+/// changes while it runs, a kept run equals a fresh one, and a second that runs back starts over.
+#[test]
+fn the_spirals_turn_and_a_kept_cache_agrees_with_a_fresh_one() {
+    let area = Rect::new(0, 0, 80, 24);
+    let draw = |cache: &mut title::Cache, secs: f64| {
+        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
+        let at = (Scene::Spirals, Duration::from_secs_f64(secs));
+        title::cover(&mut buffer, area, at, None, &theme(), cache);
+        rows(&buffer, area)
+    };
+    let mut cache = title::Cache::default();
+    let early = draw(&mut cache, 0.4);
+    let late = draw(&mut cache, 1.0);
+    let moved = early
+        .iter()
+        .flatten()
+        .zip(late.iter().flatten())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(moved > 500, "the spirals moved only {moved} cells in 0.6 s");
+    assert_eq!(
+        late,
+        draw(&mut title::Cache::default(), 1.0),
+        "a kept run equals a fresh one"
+    );
+    assert_eq!(draw(&mut cache, 0.4), early, "back in time starts over");
+    let wide = |cache: &mut title::Cache| {
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
+        let at = (Scene::Spirals, Duration::from_secs_f64(1.0));
+        title::cover(&mut buffer, area, at, None, &theme(), cache);
+        rows(&buffer, area)
+    };
+    assert_eq!(
+        wide(&mut cache),
+        wide(&mut title::Cache::default()),
         "a new size starts over"
     );
 }
