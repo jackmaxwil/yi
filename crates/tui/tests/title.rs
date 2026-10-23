@@ -41,7 +41,15 @@ fn screen(
     let area = Rect::new(0, 0, width, height);
     let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
     let elapsed = Duration::from_secs_f64(secs);
-    title::cover(&mut buffer, area, (which, elapsed), landing, &theme());
+    let cache = &mut title::Cache::default();
+    title::cover(
+        &mut buffer,
+        area,
+        (which, elapsed),
+        landing,
+        &theme(),
+        cache,
+    );
     rows(&buffer, area)
 }
 
@@ -185,33 +193,87 @@ fn a_screen_with_no_room_draws_nothing_and_does_not_panic() {
 #[test]
 fn the_name_lands_on_the_small_mark_and_the_screen_comes_back() {
     let landing = Rect::new(2, 1, 10, 5);
-    let at = |secs: f64| screen(Scene::Kali, (80, 24), secs, Some(landing));
-    let held = at(2.1);
+    for which in [
+        Scene::Kali,
+        Scene::Solid,
+        Scene::Mobius,
+        Scene::Clouds,
+        Scene::Growth,
+        Scene::Spirals,
+        Scene::Attractor,
+        Scene::Streamlines,
+    ] {
+        let at = |secs: f64| screen(which, (80, 24), secs, Some(landing));
+        let held = at(2.1);
+        assert_eq!(
+            count(&held, |g| g == 'X'),
+            0,
+            "{which:?}: covered whole until the landing"
+        );
+        assert!(
+            !" .:".contains(held[14][35]),
+            "{which:?}: the name is in the middle"
+        );
+
+        let landed = at(2.99);
+        assert!(
+            !" .:X".contains(landed[4][5]),
+            "{which:?}: the stem's foot is on the small mark"
+        );
+        let strays = landed
+            .iter()
+            .enumerate()
+            .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
+            .filter(|(x, y, g)| *g != 'X' && !((1..=12).contains(x) && (0..=6).contains(y)))
+            .count();
+        assert_eq!(
+            strays, 0,
+            "{which:?}: the TUI is back but for the name, on the small mark"
+        );
+
+        let over = at(3.0);
+        assert_eq!(
+            count(&over, |g| g != 'X'),
+            0,
+            "{which:?}: and then it is over"
+        );
+    }
+}
+
+/// The solid name is sphere-traced: it is absent before it has any thickness, lit once it has,
+/// and the camera swing alone moves its lit cells. The echo under it never reaches `*`, so the
+/// lit glyphs are the solid's; at 1.3 s and 2.1 s its thickness is whole and only the swing differs.
+#[test]
+fn the_solid_name_rises_swings_and_shows_a_lit_side() {
+    let at = |secs: f64| screen(Scene::Solid, (80, 24), secs, None);
+    let flat = at(0.1);
+    assert_eq!(
+        count(&flat, |g| g == '@' || g == '%'),
+        0,
+        "no solid yet at the first instant"
+    );
+    let held = at(1.8);
     assert_eq!(
         count(&held, |g| g == 'X'),
         0,
-        "covered whole until the landing starts"
+        "it covers the screen like the others"
     );
-    assert_eq!(held[14][35], '@', "the name is in the middle");
-
-    let landed = at(2.99);
-    assert_eq!(
-        landed[4][5], '@',
-        "the stem's foot is on the small mark's stem"
-    );
-    let strays = landed
+    let lit = held
         .iter()
-        .enumerate()
-        .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
-        .filter(|(x, y, glyph)| *glyph != 'X' && !((1..=12).contains(x) && (0..=6).contains(y)))
+        .flatten()
+        .filter(|g| matches!(**g, '*' | '#' | '%' | '@'))
         .count();
-    assert_eq!(
-        strays, 0,
-        "the TUI is back everywhere but the name, on the small mark"
-    );
-
-    let over = at(3.0);
-    assert_eq!(count(&over, |g| g != 'X'), 0, "and then it is over");
+    assert!(lit > 150, "only {lit} cells are on its lit side");
+    let lit_cells = |frame: &[Vec<char>]| -> Vec<bool> {
+        frame
+            .iter()
+            .flatten()
+            .map(|g| matches!(*g, '*' | '#' | '%' | '@'))
+            .collect()
+    };
+    let (swung, settled) = (lit_cells(&at(1.3)), lit_cells(&at(2.1)));
+    let moved = swung.iter().zip(&settled).filter(|(a, b)| a != b).count();
+    assert!(moved > 60, "the swing moved only {moved} lit cells");
 }
 
 #[test]
@@ -242,10 +304,32 @@ fn the_draw_follows_the_weights_and_the_seed() {
     assert!((0..200).all(|seed| title::pick(&only, seed) == Some(Scene::Echo)));
 }
 
+/// Invariant: every scene in [`title::Scene::ALL`] is in the draw a config without weights gets,
+/// Kali at 8 and each other scene at 2, so a scene added without its weight fails here by name.
+#[test]
+fn every_scene_is_in_the_default_draw_and_kali_leads() {
+    for (name, scene) in Scene::ALL {
+        let weight = title::DEFAULT_WEIGHTS
+            .iter()
+            .find(|(s, _)| *s == scene)
+            .map(|(_, w)| *w);
+        let want = if scene == Scene::Kali { 8 } else { 2 };
+        assert_eq!(weight, Some(want), "{name}");
+    }
+    assert_eq!(title::DEFAULT_WEIGHTS.len(), Scene::ALL.len());
+}
+
 #[test]
 fn a_scene_is_found_by_its_name_and_by_no_other() {
     assert_eq!(Scene::named("kali"), Some(Scene::Kali));
     assert_eq!(Scene::named("echo"), Some(Scene::Echo));
+    assert_eq!(Scene::named("solid"), Some(Scene::Solid));
+    assert_eq!(Scene::named("mobius"), Some(Scene::Mobius));
+    assert_eq!(Scene::named("clouds"), Some(Scene::Clouds));
+    assert_eq!(Scene::named("growth"), Some(Scene::Growth));
+    assert_eq!(Scene::named("spirals"), Some(Scene::Spirals));
+    assert_eq!(Scene::named("attractor"), Some(Scene::Attractor));
+    assert_eq!(Scene::named("streamlines"), Some(Scene::Streamlines));
     assert_eq!(Scene::named("Kali"), None);
     assert_eq!(Scene::named(""), None);
 }
@@ -306,4 +390,195 @@ fn the_first_message_makes_the_session_not_idle() {
         text: "hello".to_owned(),
     });
     assert!(!app.title_idle());
+}
+
+/// The vortex is the name sampled through a flow that is gone by 2 s. The cells inside the
+/// unwarped strokes (by [`title::distance`]) are all solid at the hold, and most are not at 0.1 s.
+#[test]
+fn the_mobius_name_comes_out_of_a_vortex_and_settles() {
+    let at = |secs: f64| screen(Scene::Mobius, (80, 24), secs, None);
+    let (first, held) = (at(0.1), at(2.1));
+    assert_eq!(
+        count(&first, |g| g == 'X'),
+        0,
+        "the vortex covers the screen too"
+    );
+    let inside: Vec<(usize, usize)> = (0..24)
+        .flat_map(|y| (0..80).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let u = (x as f64 + 0.5 - 40.0) / 24.0;
+            let v = (24.0 - 2.0 * y as f64 - 1.0) / 24.0;
+            title::distance(u, v) < -0.02
+        })
+        .collect();
+    let solid = |frame: &[Vec<char>]| inside.iter().filter(|&&(x, y)| frame[y][x] == '@').count();
+    assert!(inside.len() > 20, "{} stroke cells", inside.len());
+    assert_eq!(
+        solid(&held),
+        inside.len(),
+        "the name is where the others put it"
+    );
+    assert!(
+        solid(&first) * 2 < inside.len(),
+        "the vortex left {} of {} stroke cells in place",
+        solid(&first),
+        inside.len()
+    );
+}
+
+/// The weather fades up from nothing, drifts, and the name rises through it as in the fold.
+#[test]
+fn the_clouds_fade_up_drift_and_let_the_name_through() {
+    let at = |secs: f64| screen(Scene::Clouds, (80, 24), secs, None);
+    assert_eq!(
+        count(&at(0.0), |g| g != ' '),
+        0,
+        "nothing at the first instant"
+    );
+    let (a, b) = (at(0.4), at(0.9));
+    assert!(
+        count(&a, |g| g != ' ') > 500,
+        "the weather fills the screen"
+    );
+    let moved = a
+        .iter()
+        .flatten()
+        .zip(b.iter().flatten())
+        .filter(|(x, y)| x != y)
+        .count();
+    assert!(
+        moved > 200,
+        "the drift moved only {moved} cells in half a second before the name rises"
+    );
+    assert_eq!(at(2.1)[14][35], '@', "and the Y stem is solid through it");
+}
+
+/// The coral is a simulation the cache advances to the second asked for: it grows out of the
+/// strokes, and a kept run agrees with a fresh one after a later second, an earlier one and a
+/// resize, so a frozen clock replays any frame.
+#[test]
+fn the_growth_spreads_and_a_kept_cache_agrees_with_a_fresh_one() {
+    let draw = |cache: &mut title::Cache, (w, h): (u16, u16), secs: f64| {
+        let area = Rect::new(0, 0, w, h);
+        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
+        let at = (Scene::Growth, Duration::from_secs_f64(secs));
+        title::cover(&mut buffer, area, at, None, &theme(), cache);
+        rows(&buffer, area)
+    };
+    let fresh = |size, secs| draw(&mut title::Cache::default(), size, secs);
+    let mut cache = title::Cache::default();
+    let early = count(&draw(&mut cache, (80, 24), 0.4), |g| g != ' ');
+    let late = count(&draw(&mut cache, (80, 24), 1.6), |g| g != ' ');
+    assert!(
+        late > early + 200,
+        "the coral did not spread: {early} then {late}"
+    );
+    assert_eq!(
+        draw(&mut cache, (80, 24), 1.6),
+        fresh((80, 24), 1.6),
+        "a kept run equals a fresh one"
+    );
+    assert_eq!(
+        draw(&mut cache, (80, 24), 0.4),
+        fresh((80, 24), 0.4),
+        "back in time starts over"
+    );
+    assert_eq!(
+        draw(&mut cache, (120, 30), 1.0),
+        fresh((120, 30), 1.0),
+        "a new size starts over"
+    );
+}
+
+/// The cyclic automaton starts as noise and the cache steps it at 55 a second: the screen
+/// changes while it runs, a kept run equals a fresh one, and a second that runs back starts over.
+#[test]
+fn the_spirals_turn_and_a_kept_cache_agrees_with_a_fresh_one() {
+    let area = Rect::new(0, 0, 80, 24);
+    let draw = |cache: &mut title::Cache, secs: f64| {
+        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
+        let at = (Scene::Spirals, Duration::from_secs_f64(secs));
+        title::cover(&mut buffer, area, at, None, &theme(), cache);
+        rows(&buffer, area)
+    };
+    let mut cache = title::Cache::default();
+    let early = draw(&mut cache, 0.4);
+    let late = draw(&mut cache, 1.0);
+    let moved = early
+        .iter()
+        .flatten()
+        .zip(late.iter().flatten())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(moved > 500, "the spirals moved only {moved} cells in 0.6 s");
+    assert_eq!(
+        late,
+        draw(&mut title::Cache::default(), 1.0),
+        "a kept run equals a fresh one"
+    );
+    assert_eq!(draw(&mut cache, 0.4), early, "back in time starts over");
+    let wide = |cache: &mut title::Cache| {
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buffer = Buffer::filled(area, ratatui::buffer::Cell::new("X"));
+        let at = (Scene::Spirals, Duration::from_secs_f64(1.0));
+        title::cover(&mut buffer, area, at, None, &theme(), cache);
+        rows(&buffer, area)
+    };
+    assert_eq!(
+        wide(&mut cache),
+        wide(&mut title::Cache::default()),
+        "a new size starts over"
+    );
+}
+
+/// The Clifford orbit with `c = 1`, `d = 0.7` cannot leave |x| < 2, |y| < 1.7, and the screen maps
+/// that box to its middle 95%: the outer 2.5% (row 0, row 39, columns 0 to 2) never holds a point
+/// at any time, however `a` and `b` have drifted, and the shape itself moves.
+#[test]
+fn the_attractor_stays_inside_its_box_and_drifts() {
+    let (width, height) = (120_u16, 40_u16);
+    let frame = |secs: f64| screen(Scene::Attractor, (width, height), secs, None);
+    for secs in [0.1, 0.9, 1.1] {
+        let glyphs = frame(secs);
+        assert!(
+            count(&glyphs, |g| g != ' ') > 300,
+            "t {secs}: nothing drawn"
+        );
+        let edge = |x: usize, y: usize| {
+            y == 0 || y == usize::from(height) - 1 || x < 3 || x >= usize::from(width) - 3
+        };
+        let strays = glyphs
+            .iter()
+            .enumerate()
+            .flat_map(|(y, line)| line.iter().enumerate().map(move |(x, g)| (x, y, *g)))
+            .filter(|(x, y, g)| *g != ' ' && edge(*x, *y))
+            .count();
+        assert_eq!(strays, 0, "t {secs}: the orbit left its box");
+    }
+    let (first, later) = (frame(0.1), frame(1.1));
+    let moved = first
+        .iter()
+        .flatten()
+        .zip(later.iter().flatten())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(moved > 200, "a second of drift moved only {moved} cells");
+}
+
+/// The lines stand still and the light rides them: no cell comes or goes between two frames, and
+/// the glyphs of many of them change.
+#[test]
+fn the_streamlines_stand_still_while_the_light_moves() {
+    let frame = |secs: f64| screen(Scene::Streamlines, (120, 40), secs, None);
+    let (first, later) = (frame(0.1), frame(0.7));
+    let drawn = |a: &[Vec<char>]| a.iter().flatten().map(|g| *g != ' ').collect::<Vec<bool>>();
+    assert!(count(&first, |g| g != ' ') > 400, "too few lines to see");
+    assert_eq!(drawn(&first), drawn(&later), "a line came or went");
+    let changed = first
+        .iter()
+        .flatten()
+        .zip(later.iter().flatten())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(changed > 150, "the light moved only {changed} cells");
 }
