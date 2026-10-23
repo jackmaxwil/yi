@@ -95,6 +95,7 @@ struct Shared {
     runs: std::sync::atomic::AtomicU64,
     job_owner: yi_tools::jobs::JobOwner,
     retired: std::sync::atomic::AtomicBool,
+    ended: Mutex<Vec<String>>,
 }
 
 pub type PromptChoiceFn =
@@ -117,17 +118,33 @@ pub type TurnHook = dyn Fn() + Send + Sync;
 
 pub type EnvironmentFn = dyn Fn() -> Option<String> + Send + Sync;
 
-fn persist_message(shared: &Shared, message: &AgentMessage) {
+fn persist_message(shared: &Shared, message: &AgentMessage, terminate: Option<bool>) {
     let store = shared
         .store
         .lock()
         .map(|handle| handle.clone())
         .unwrap_or_default();
     if let Some(store) = store
-        && let Err(error) = yi_session::lock_session(&store).append_message("main", message.clone())
+        && let Err(error) = yi_session::lock_session(&store).append_message_with_terminate(
+            "main",
+            message.clone(),
+            terminate,
+        )
     {
         record_store_error(shared, &error);
     }
+}
+
+fn take_ended(shared: &Shared, tool_call_id: &str) -> Option<bool> {
+    shared
+        .ended
+        .lock()
+        .ok()
+        .and_then(|mut ended| {
+            let pos = ended.iter().position(|id| id == tool_call_id)?;
+            Some(ended.remove(pos))
+        })
+        .map(|_| true)
 }
 
 fn record_store_error(shared: &Shared, error: &yi_session::SessionError) {
@@ -217,6 +234,7 @@ impl AgentSession {
                 runs: 0.into(),
                 job_owner: yi_tools::jobs::JobOwner::mint(),
                 retired: false.into(),
+                ended: Mutex::new(Vec::new()),
             }),
             config,
             provider,

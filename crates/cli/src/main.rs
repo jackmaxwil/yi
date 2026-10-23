@@ -445,7 +445,8 @@ fn build_session(
             session.events_sender(),
         )
         .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
-        .with_session_store(&default_session_dir(args)),
+        .with_session_store(&default_session_dir(args))
+        .with_unattended(unattended),
     );
     if prompts_close {
         broker.prompts_close_on_settle();
