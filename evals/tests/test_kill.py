@@ -19,7 +19,7 @@ def note(**row):
     with open(log, "a") as sink:
         sink.write(json.dumps(row) + "\n")
 if argv[:2] == ["doctor", "--fix"]:
-    (home / ".yi" / "kernel-venv-fake").mkdir(parents=True)
+    (home / ".yi" / ("kernel-venv-fake" if not os.environ.get("FAKE_NO_VENV") else "no-venv")).mkdir(parents=True)
     note(build="doctor")
     print("[]")
 elif argv[:3] == ["catalog", "usage", "kimi"]:
@@ -34,6 +34,7 @@ elif argv[:1] == ["ask"]:
     note(ask=os.getcwd(), home=str(home), venvs=venvs, git=Path(".git").is_dir(),
          token=json.loads(token.read_text()) if token.exists() else None,
          mode=oct(token.stat().st_mode & 0o777) if token.exists() else None)
+    sys.stderr.write("fake stderr: " + "x" * 3000 + " the tail\n")
     streams = os.environ["FAKE_STREAMS"].split(os.pathsep)
     for line in open(streams[min(asked, len(streams) - 1)]):
         sys.stdout.write(line)
@@ -51,7 +52,8 @@ FAMILIES = {families!r}
 PREDICTED_USD = {predicted!r}
 STEP = {step}
 def runs():
-    return [{{"id": "one", "prompt": "Summarize the number two.", "deadline": 60, "repo": {repo!r}}}]
+    return [{{"id": f"r{{n}}", "prompt": "Summarize the number two.", "deadline": 60, "repo": {repo!r}}}
+            for n in range({count})]
 def verdict(rows):
     return "KEEP" if all(row["status"] == "ok" for row in rows) else "KILL"
 '''
@@ -79,7 +81,8 @@ class Rig:
 
     def __init__(self, tmp):
         self.tmp = Path(tmp).resolve()
-        self.saved = (kill.PROVIDERS, kill.KILL_DIR, kill.TRIALS, kill.clock, kill.sleep, dict(os.environ))
+        self.saved = (kill.PROVIDERS, kill.KILL_DIR, kill.TRIALS, kill.clock, kill.sleep, kill.GRACE_SEC,
+                      dict(os.environ))
         self.root = self.tmp / "yi-runs"
         os.environ["EVAL_KILL_ROOT"] = str(self.root)
         kill.PROVIDERS = self.tmp / "providers.json"
@@ -98,9 +101,13 @@ class Rig:
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
                         "--allow-empty", "-m", "seed"], check=True)
         self.spec = {"id": "one", "prompt": "Summarize the number two.", "deadline": 60, "repo": str(self.repo)}
+        self.catalog = kill.kimi_home() / ".yi" / "catalog"
+        self.catalog.mkdir(parents=True)
+        (self.catalog / "openrouter.json").write_text('{"models": [{"id": "z-ai/glm-5.3-flash"}]}')
+        (self.catalog / "kimi.json").write_text('{"models": [{"id": "k3.1"}]}')
 
     def restore(self):
-        kill.PROVIDERS, kill.KILL_DIR, kill.TRIALS, kill.clock, kill.sleep, environ = self.saved
+        kill.PROVIDERS, kill.KILL_DIR, kill.TRIALS, kill.clock, kill.sleep, kill.GRACE_SEC, environ = self.saved
         os.environ.clear()
         os.environ.update(environ)
 
@@ -108,9 +115,9 @@ class Rig:
         os.environ["FAKE_STREAMS"] = os.pathsep.join(map(str, paths))
         os.environ["FAKE_PACE"] = str(pace)
 
-    def module(self, name, families, predicted, step=1):
+    def module(self, name, families, predicted, step=1, count=1):
         (kill.KILL_DIR / f"{name}.py").write_text(MODULE.format(families=families, predicted=predicted, step=step,
-                                                                repo=str(self.repo)))
+                                                                repo=str(self.repo), count=count))
 
     def notes(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
@@ -165,7 +172,7 @@ class Ledger(unittest.TestCase):
     def test_twelve_threads_and_another_process_never_reserve_past_the_cap(self):
         with rig() as r:
             path = r.root / "next-shape" / "ledger.jsonl"
-            path.parent.mkdir(parents=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             held = r.tmp / "held"
             holder = subprocess.Popen([sys.executable, "-c", (
                 "import fcntl, json, sys, time, pathlib\n"
@@ -207,6 +214,20 @@ class Ledger(unittest.TestCase):
             self.assertAlmostEqual(row["measuredUsd"], 0.30, places=6)
             self.assertAlmostEqual(row["chargedUsd"], 0.30, places=6)
 
+    def test_runs_after_a_budget_kill_are_written_unrun_and_the_command_says_so(self):
+        with rig() as r:
+            r.streams(costed(r.tmp / "s.jsonl", 6, 0.10), pace=0.02)
+            r.module("two", ["flash"], {"flash": 0.25}, count=2)
+            code, out = quiet(["run", "two", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (1, "two flash: 1 runs, $0.3000, 1 not run, needs $0.12: no reserve left"))
+
+    def test_unpriced_runs_are_charged_their_share_so_the_rest_still_run(self):
+        with rig() as r:
+            r.streams(costed(r.tmp / "s.jsonl", 1, 0.0, unknown=True))
+            r.module("four", ["flash"], {"flash": 1.0}, count=4)
+            code, out = quiet(["run", "four", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (0, "four flash: 4 runs, $1.0000"), "a quarter of $1 per unpriced run")
+
     def test_an_unpriced_stream_is_charged_its_ceiling_never_zero(self):
         with rig() as r:
             r.streams(costed(r.tmp / "s.jsonl", 1, 0.0, unknown=True))
@@ -221,6 +242,56 @@ class Ledger(unittest.TestCase):
             self.assertEqual(code, 2, out)
             self.assertIn("route dark (openrouter/deepseek/nope) is not confirmed", out)
             self.assertEqual(r.ledger(), [], "a dry run writes nothing")
+
+    def test_dry_plans_both_families_and_refuses_a_slug_the_central_catalog_lacks(self):
+        with rig() as r:
+            r.module("pair", ["kimi", "flash"], {"kimi": 0.5, "flash": 0.2})
+            code, out = quiet(["run", "pair", "--binary", str(r.yi), "--dry"])
+            self.assertEqual((code, [json.loads(line)["family"] for line in out.splitlines()]), (0, ["kimi", "flash"]), out)
+            (r.catalog / "openrouter.json").write_text('{"models": []}')
+            code, out = quiet(["run", "pair", "--binary", str(r.yi), "--dry"])
+            self.assertEqual(code, 2, out)
+            self.assertIn("yi catalog refresh openrouter", out)
+
+    def test_a_paid_family_waits_for_the_kimi_route_unless_overridden(self):
+        with rig() as r:
+            table = json.loads(kill.PROVIDERS.read_text())
+            table["routes"]["kimi"]["confirmed"] = False
+            kill.PROVIDERS.write_text(json.dumps(table))
+            r.module("paid", ["flash"], {"flash": 0.2})
+            code, out = quiet(["run", "paid", "--binary", str(r.yi), "--dry"])
+            self.assertEqual(code, 2, out)
+            self.assertIn("a paid run waits for the Kimi route", out)
+            self.assertEqual(quiet(["run", "paid", "--binary", str(r.yi), "--dry", "--without-kimi"])[0], 0)
+
+    def test_a_later_ladder_step_waits_behind_an_earlier_test_module(self):
+        with rig() as r:
+            r.spend(20.0)
+            r.module("first", ["flash"], {"flash": 6.0}, step=1)
+            r.module("second", ["flash"], {"flash": 5.0}, step=2)
+            code, out = quiet(["run", "second", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (1, "second flash: unrun, needs $5.00"), "20 + 6 waiting + 5 passes 30")
+
+    def test_kimi_runs_when_the_dollar_ladder_is_full(self):
+        with rig() as r:
+            r.kimi_login(expires_in=10 ** 9)
+            r.streams(EVENTS)
+            r.spend(25.0)
+            r.module("early", ["flash"], {"flash": 10.0}, step=1)
+            r.module("late", ["kimi"], {"kimi": 0.5}, step=2)
+            code, out = quiet(["run", "late", "--binary", str(r.yi)])
+            self.assertEqual((code, len([n for n in r.notes() if "ask" in n])), (0, 1), out)
+
+    def test_a_crashed_kimi_family_is_not_settled_so_the_paid_family_stays_refused(self):
+        with rig() as r:
+            r.module("crash", ["kimi", "flash"], {"kimi": 0.5, "flash": 0.2})
+            code, out = quiet(["run", "crash", "--binary", str(r.yi), "--family", "kimi"])
+            self.assertEqual(code, 1, out)
+            self.assertIn("crash kimi: 0 runs, $0.0000, 1 not run, needs $0.50: FileNotFoundError", out)
+            code, out = quiet(["run", "crash", "--binary", str(r.yi), "--family", "flash"])
+            self.assertEqual(code, 2, out)
+            self.assertIn("refused: crash runs kimi before flash", out)
+            self.assertEqual([n for n in r.notes() if "ask" in n], [], "no paid run before Kimi ran")
 
 
 class Quota(unittest.TestCase):
@@ -262,6 +333,19 @@ class Quota(unittest.TestCase):
             row = kill.ask("t", "kimi", r.spec, str(r.yi), float("inf"), until=self.NOW + 1800, estimate_usd=0.5)
             self.assertEqual((row["status"], row["needsUsd"]), ("unrun", 0.5), row)
             self.assertEqual(len([n for n in r.notes() if "ask" in n]), 1, "the exhausted route must not be asked again")
+
+    def test_a_family_parked_past_its_deadline_exits_nonzero_and_reports_unrun(self):
+        with rig() as r:
+            self.virtual()
+            r.kimi_login(expires_in=10 ** 9)
+            r.streams(QUOTA, EVENTS)
+            self.usage(self.NOW + 3600)
+            r.module("parked", ["kimi"], {"kimi": 0.5})
+            until = datetime.datetime.fromtimestamp(self.NOW + 1800, datetime.timezone.utc).isoformat()
+            code, out = quiet(["run", "parked", "--binary", str(r.yi), "--until", until])
+            self.assertEqual(code, 1, out)
+            self.assertIn("parked kimi: 0 runs, $0.0000, 1 not run, needs $0.50", out)
+            self.assertEqual(quiet(["report"])[1].strip(), "parked: unrun: needs $0.50")
 
 
 class Isolation(unittest.TestCase):
@@ -313,6 +397,40 @@ class Isolation(unittest.TestCase):
                 self.assertEqual(central["refresh"], "rotated", "the rotated refresh token stays central")
         finally:
             server.shutdown()
+            server.server_close()
+
+
+class Runs(unittest.TestCase):
+    def test_an_empty_seed_boots_its_own_venv_and_the_row_says_so_with_the_stderr_tail(self):
+        with rig() as r:
+            os.environ["FAKE_NO_VENV"] = "1"
+            r.streams(EVENTS)
+            row = kill.ask("t", "flash", r.spec, str(r.yi), 1.0)
+            self.assertTrue(row["venvRebuilt"] is True, row)
+            self.assertEqual((len(row["stderr"]), row["stderr"][-9:]), (2000, "the tail\n"), row)
+
+    def test_a_run_past_its_deadline_is_killed_as_a_timeout(self):
+        with rig() as r:
+            kill.GRACE_SEC = 0.3
+            r.streams(EVENTS, pace=0.2)
+            row = kill.ask("t", "flash", {**r.spec, "deadline": 0}, str(r.yi), 1.0)
+            self.assertEqual(row["status"], "timeout", row)
+            self.assertLess(row["wallSec"], 5, row)
+
+    def test_a_harbor_sweep_gets_the_reserve_as_its_cap_and_is_charged_its_filed_rows(self):
+        with rig() as r:
+            kill.TRIALS.mkdir()
+            sweep = [sys.executable, "-c", (
+                "import json, os, sys\n"
+                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP']}\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'w').write(json.dumps(row))\n"),
+                str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            filed = json.loads((kill.TRIALS / "ns-tb-flash-one.jsonl").read_text())
+            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"]), ("ok", 0.12, "1.00"), row)
+            silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
+            self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
+            self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
 
 
 class Report(unittest.TestCase):
@@ -321,13 +439,20 @@ class Report(unittest.TestCase):
             r.module("ran", ["flash"], {"flash": 0.2}, step=1)
             r.module("blocked", ["flash"], {"flash": 0.3}, step=2)
             r.module("never", ["flash"], {"flash": 0.4}, step=3)
+            r.module("half", ["kimi", "flash"], {"kimi": 1.0, "flash": 2.0}, step=4)
+            r.module("parked", ["kimi"], {"kimi": 0.5}, step=5)
             with kill.ledger() as (_, write):
                 write({"kind": "settle", "key": "k", "test": "ran", "family": "flash", "usd": 0.1,
                        "rows": [{"status": "ok"}]})
                 write({"kind": "unrun", "test": "blocked", "family": "flash", "needsUsd": 0.3, "why": "x"})
+                write({"kind": "settle", "key": "h", "test": "half", "family": "kimi", "usd": 0, "rows": [{"status": "ok"}]})
+                write({"kind": "unrun", "test": "half", "family": "flash", "needsUsd": 2.0, "why": "x"})
+                write({"kind": "settle", "key": "p", "test": "parked", "family": "kimi", "usd": 0,
+                       "rows": [{"status": "unrun", "needsUsd": 0.5, "why": "x"}]})
             code, out = quiet(["report"])
             self.assertEqual(code, 0, out)
-            self.assertEqual(out.splitlines(), ["ran: KEEP", "blocked: unrun: needs $0.30", "never: unrun: needs $0.40"])
+            self.assertEqual(out.splitlines(), ["ran: KEEP", "blocked: unrun: needs $0.30", "never: unrun: needs $0.40",
+                                                "half: KEEP (unrun: flash needs $2.00)", "parked: unrun: needs $0.50"])
 
 
 if __name__ == "__main__":
