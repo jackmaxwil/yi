@@ -351,7 +351,7 @@ fn wire_schedule(
                     .unwrap_or(&wiring.rlm_dir)
                     .join("channels"),
             )
-            .with_gate(crate::tools::heartbeat_gate(
+            .with_gate(crate::tools::host_gate(
                 wiring,
                 session.rules_handle(),
                 wiring.own_paths(session),
@@ -983,6 +983,8 @@ fn subagent_host(
     }));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
+    let gate = crate::tools::host_gate(wiring, session.rules_handle(), wiring.own_paths(session));
+    host.check_gate.get_or_init(|| gate);
     let counted = Arc::downgrade(&host);
     session.set_waits(Arc::new(move || {
         let host = counted.upgrade();

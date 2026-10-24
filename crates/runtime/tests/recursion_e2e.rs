@@ -3121,6 +3121,180 @@ async fn a_checked_childs_check_runs_in_the_session_cwd() -> TestResult {
     Ok(())
 }
 
+const PROTOCOL_ANSWER: &str = "{\"value\": 1, \"discoveries\": []}";
+
+/// A root wired the way `yi` wires one: rules read from `root/home`, a yolo broker with no
+/// sandbox, so the host gate alone stands between a spawn's check and the host.
+fn wired_root(root: &std::path::Path) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
+    let provider = Arc::new(ProviderStream::new(None));
+    // Every turn of the family, the parent's woken one too, answers the result object.
+    provider.queue_faux(vec![child_reply(PROTOCOL_ANSWER); 8]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    let broker = yi_runtime::PermissionBroker::new(
+        yi_permission::PermissionMode::Yolo,
+        root.join("project"),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    );
+    let host = yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider: Arc::clone(&provider),
+            system_prompt: String::new(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.join("project"),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: Some(Arc::new(broker)),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    (session, provider, host)
+}
+
+fn gate_rule_root(label: &str, rule: Option<&str>) -> Result<Scratch, Box<dyn Error>> {
+    let root = Scratch::new(label)?;
+    std::fs::create_dir_all(root.join("project"))?;
+    std::fs::create_dir_all(root.join("home/.yi/rules"))?;
+    if let Some(rule) = rule {
+        std::fs::write(root.join("home/.yi/rules/no-denied.md"), rule)?;
+    }
+    Ok(root)
+}
+
+const DENY_MARKER: &str =
+    "---\ntrigger: denied-marker\nscope: tool:bash\nmode: gate\n---\nNever run denied-marker.\n";
+
+/// #1055: a spawn's check runs `sh -c` on the host at `rlm.result`, outside the sandbox, and it
+/// met no gate; a user's gate rule naming it now refuses the spawn, and the check never runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_rule_refuses_a_spawn_check_it_names() -> TestResult {
+    let root = gate_rule_root("yi-check-gate", Some(DENY_MARKER))?;
+    let (_session, _provider, host) = wired_root(&root);
+    let marker = root.join("project/denied-marker");
+    let check = json!(format!("touch {}; true", marker.display()));
+    let spawned = host.spawn(
+        "land the fix".to_owned(),
+        protocol_kwargs("gated", &[("check", check)]),
+    );
+    let refusal = spawned
+        .err()
+        .ok_or("a check the rule names must not spawn")?;
+    assert!(
+        refusal.contains("refused before it runs on the host")
+            && refusal.contains("Denied by rule `no-denied`")
+            && refusal.contains("Never run denied-marker."),
+        "the refusal names the rule and its words: {refusal}"
+    );
+    let listed = host.list()["subagents"].as_array().map_or(0, Vec::len);
+    assert_eq!(listed, 0, "nothing was admitted");
+    assert!(!marker.exists(), "the denied check never ran");
+    Ok(())
+}
+
+/// #1055: judged at spawn alone, a check ran at `rlm.result` past a gate rule promoted after the
+/// spawn; `result` judges it again before it runs, holds the result back, and the check never runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rule_promoted_after_the_spawn_still_stops_the_check_at_result() -> TestResult {
+    let root = gate_rule_root("yi-check-regate", None)?;
+    let (session, _provider, host) = wired_root(&root);
+    let marker = root.join("project/denied-marker");
+    let check = json!(format!("touch {}; true", marker.display()));
+    let reply = host
+        .spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs("gated", &[("check", check)]),
+        )
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let engine = session
+        .rules_engine()
+        .ok_or("the wiring attaches a rule engine")?;
+    engine.insert(yi_runtime::rules::RuleDoc {
+        name: "no-denied".to_owned(),
+        body: "Never run denied-marker.".to_owned(),
+        path: root.join("home/.yi/rules/no-denied.md"),
+        needles: vec!["denied-marker".to_owned()],
+        scope: yi_runtime::rules::RuleScope::Tool("bash".to_owned()),
+        gap: yi_runtime::rules::RuleGap::Once,
+        mode: yi_runtime::rules::RuleMode::Gate,
+        paths: Vec::new(),
+        after: 1,
+    });
+    let refusal = host
+        .result("gated", None)
+        .err()
+        .ok_or("a check the rule now names must not run")?;
+    assert!(
+        refusal.contains("result held back; its check is refused")
+            && refusal.contains("Denied by rule `no-denied`"),
+        "the refusal names the rule: {refusal}"
+    );
+    assert!(!marker.exists(), "the denied check never ran");
+    Ok(())
+}
+
+/// The gate passes a check no rule names: it runs at `rlm.result` in the session's cwd, and a
+/// red one still holds the result back with its own evidence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gated_host_still_runs_an_allowed_check_and_holds_a_red_one() -> TestResult {
+    let root = gate_rule_root("yi-check-allowed", Some(DENY_MARKER))?;
+    let (_session, _provider, host) = wired_root(&root);
+    let mut children = Vec::new();
+    for (name, check) in [("allowed", "touch ran-marker"), ("red", "exit 3")] {
+        let reply = host
+            .spawn(
+                "land the fix".to_owned(),
+                protocol_kwargs(name, &[("check", json!(check))]),
+            )
+            .map_err(|error| error.to_string())?;
+        let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+        children.push(child_id.to_owned());
+    }
+    for child_id in &children {
+        assert!(wait_for_status(&host, child_id, "completed").await);
+    }
+    let reply = host.result("allowed", None)?;
+    assert_eq!(reply.get("value"), Some(&json!(1)), "{reply:?}");
+    assert!(root.join("project/ran-marker").exists(), "the check ran");
+    let error = host
+        .result("red", None)
+        .err()
+        .ok_or("a red check must hold the result back")?;
+    assert!(
+        error.contains("check is red") && error.contains("exited 3"),
+        "the refusal carries the check's own evidence: {error}"
+    );
+    Ok(())
+}
+
 /// Dies with no `rlm.receive`: in the `mbx-siblings` trial beta, told to wait for alpha's
 /// number, polled the filesystem and read alpha's kernel, and alpha's mail came after its answer.
 #[tokio::test]

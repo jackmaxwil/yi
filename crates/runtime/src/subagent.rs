@@ -239,6 +239,9 @@ pub struct SubagentHost {
     pub(crate) mailboxes: std::sync::OnceLock<PathBuf>,
     pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
     pub(crate) leads: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
+    /// Invariant: a `check` runs `sh -c` on the host at `rlm.result`, so the wiring's host gate
+    /// judges it at spawn and again before it runs; a rule can arrive between the two.
+    pub(crate) check_gate: std::sync::OnceLock<Arc<crate::schedule::GateFn>>,
 }
 
 impl SubagentHost {
@@ -479,6 +482,7 @@ impl SubagentHost {
             mailboxes: std::sync::OnceLock::new(),
             partitions: Mutex::default(),
             leads: Mutex::default(),
+            check_gate: std::sync::OnceLock::new(),
         }
     }
 
@@ -676,6 +680,11 @@ impl SubagentHost {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
                 self.options.depth, self.options.max_depth
+            ));
+        }
+        if let Some(refused) = (check.as_deref()).and_then(|check| self.check_gate.get()?(check)) {
+            return Err(format!(
+                "the check is refused before it runs on the host: {refused}"
             ));
         }
         let mut cast = self.cast(&kwargs)?;
