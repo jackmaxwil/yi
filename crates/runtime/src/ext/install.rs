@@ -54,6 +54,12 @@ pub fn install(options: ExtOptions) -> Host {
         Slot::new(Rank::Doctrine, "doctrine"),
         crate::doctrine_fragment().to_owned(),
     );
+    if can_delegate {
+        host.attach(
+            Slot::new(Rank::Doctrine, "delegation"),
+            crate::delegation_fragment().to_owned(),
+        );
+    }
     host.attach(
         Slot::new(Rank::Mode, "permission"),
         yi_permission::mode_fragment(mode).to_owned(),

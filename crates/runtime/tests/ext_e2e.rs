@@ -649,6 +649,7 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
         include_str!("../src/prompts/orchestrate.md"),
         include_str!("../src/prompts/identity.md"),
         include_str!("../src/prompts/doctrine.md"),
+        include_str!("../src/prompts/delegation.md"),
     ] {
         assert_eq!(
             unknown(fragment),
