@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier, name_accent};
-use yi_tui::composer::{Composer, sanitize_paste};
+use yi_tui::composer::Composer;
 use yi_tui::frame::FrameScheduler;
 use yi_tui::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey, default_keymap};
 use yi_tui::status::StatusInput;
@@ -135,10 +135,16 @@ fn paste_expansion_is_single_pass_and_longest_label_first() -> TestResult {
     Ok(())
 }
 
+/// Dies with a paste rewritten before the model reads it: the tab became three spaces and the
+/// escape was dropped, so a Makefile recipe or a terminal capture reached the prompt as other text.
 #[test]
-fn sanitize_paste_strips_control_keeps_newlines() -> TestResult {
-    let out = sanitize_paste("a\r\nb\x1b[31mc\td");
-    assert_eq!(out, "a\nb[31mc   d");
+fn a_paste_is_kept_byte_for_byte_but_for_its_carriage_returns() -> TestResult {
+    let mut composer = Composer::default();
+    composer.handle_paste("all:\r\n\tcc -o app\x1b[31m main.c\r\t./app\x07");
+    assert_eq!(
+        composer.take_submission().as_deref(),
+        Some("all:\n\tcc -o app\x1b[31m main.c\n\t./app\x07")
+    );
     Ok(())
 }
 

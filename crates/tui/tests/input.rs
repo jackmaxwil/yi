@@ -59,6 +59,7 @@ fn sent(rx: &mut UnboundedReceiver<Command>) -> Vec<String> {
     let mut out = Vec::new();
     while let Ok(command) = rx.try_recv() {
         out.push(match command {
+            Command::Prompt(text) => format!("prompt {text}"),
             Command::Steer(text) => format!("steer {text}"),
             Command::Abort => "abort".to_owned(),
             _ => "other".to_owned(),
@@ -243,5 +244,54 @@ fn the_picker_over_this_checkouts_crates_reaches_a_file_deep_in_the_tree() -> Te
         .canonicalize()?;
     let at = crates.display().to_string();
     assert_eq!(picked(&at, "tui/src/input.rs"), "tui/src/input.rs ");
+    Ok(())
+}
+
+fn paste(app: &mut App, tx: &UnboundedSender<Command>, text: &str) {
+    yi_tui::input::handle_terminal_event(app, tx, Event::Paste(text.to_owned()));
+}
+
+/// Dies with a pasted Makefile recipe reaching the model with its tabs turned into three spaces
+/// (and a terminal capture with its escapes dropped): `make` then refuses the recipe it was shown.
+#[test]
+fn a_pasted_makefile_recipe_reaches_the_prompt_with_its_tabs() -> TestResult {
+    let mut app = app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    paste(
+        &mut app,
+        &tx,
+        "build:\r\n\tcc -o app main.c\r\n\t./app --check\x1b[0m",
+    );
+    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        sent(&mut rx),
+        ["prompt build:\n\tcc -o app main.c\n\t./app --check\x1b[0m"]
+    );
+    Ok(())
+}
+
+/// The box draws what the model will read: a tab as four cells and an escape as its picture, so
+/// no control byte reaches the terminal and the row still ends where the text does.
+#[test]
+fn a_pasted_tab_and_escape_are_drawn_as_cells_not_sent_to_the_terminal() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    paste(&mut app, &tx, "a\tb\x1b[31mc");
+    let rows = common::live_rows(&mut app)?;
+    assert!(has_row(&rows, "a    b\u{241b}[31mc"), "{rows:#?}");
+    Ok(())
+}
+
+/// Dies with a paste into an open `/` popup landing in the composer hidden behind it: the popup
+/// kept an empty query and the text sent with the next prompt.
+#[test]
+fn a_paste_with_a_popup_open_fills_the_popup_not_the_composer() -> TestResult {
+    let mut app = app();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/");
+    paste(&mut app, &tx, "mod\nel");
+    assert_eq!(app.composer_text(), "");
+    let rows = common::live_rows(&mut app)?;
+    assert!(has_row(&rows, " /mod el"), "{rows:#?}");
     Ok(())
 }

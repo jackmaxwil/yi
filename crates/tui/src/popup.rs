@@ -15,6 +15,19 @@ pub enum PopupResult {
 pub trait BottomView {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>>;
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult;
+    /// A view with a text field takes a paste there; one without swallows it, so a paste never
+    /// lands in the composer hidden behind the view.
+    fn paste(&mut self, _text: &str) {}
+}
+
+pub(crate) fn one_line(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            c if c.is_whitespace() => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
 }
 
 pub struct ListPopup {
@@ -91,6 +104,11 @@ impl BottomView for ListPopup {
             out.push(Line::from(Span::styled(note, theme.dim_style())));
         }
         out
+    }
+
+    fn paste(&mut self, text: &str) {
+        self.query.push_str(&one_line(text));
+        self.selected = 0;
     }
 
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult {
