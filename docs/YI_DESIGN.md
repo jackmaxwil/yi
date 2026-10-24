@@ -1057,7 +1057,8 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   it changed, reads that changed nothing are counted, the header carries the claims and the
   landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
   worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal. A resumed
-  session's replay fills Review's edits and reads, and the notebook's cells, as live frames do.
+  session's replay fills Review's edits and reads, and the notebook's cells, as live frames do; a
+  replay from entry 0 counts the turns itself and restarts the notebook.
 - ⌘Y (⌥y) opens a terminal pane beside the focused one, running `$SHELL` in the focused
   session's working directory (its lane worktree once `_yi/workdir` names one), else the
   console's root. The PTY is the console's own: no daemon state, nothing on the socket. The

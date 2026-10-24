@@ -4787,6 +4787,80 @@ fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
     Ok(())
 }
 
+/// `count` kernel calls: the recording's first call and result, each under its own ids and as a
+/// one-line cell, then a last reply `tail`.
+fn cell_entries(count: usize, tail: &str) -> Vec<Value> {
+    let entries = recorded(KERNEL_SESSION);
+    let result = (entries.iter()).find(|e| e["message"]["toolName"] == "ipython");
+    let call = result.and_then(|r| {
+        (entries.iter()).find(|e| e["message"]["content"][0]["id"] == r["message"]["toolCallId"])
+    });
+    let mut out: Vec<Value> = (0..count)
+        .filter_map(|n| {
+            let (mut call, mut result) = (call.cloned()?, result.cloned()?);
+            let id = json!(format!("call_{n}"));
+            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
+            call["message"]["content"][0]["id"] = id.clone();
+            result["message"]["details"]["stdout"] = json!(format!("{n}\n"));
+            result["message"]["toolCallId"] = id;
+            Some([call, result])
+        })
+        .flatten()
+        .collect();
+    out.push(entry("e-tail", None, 9999, &assistant(tail)));
+    out
+}
+
+fn header_numbers(frame: &str) -> Vec<usize> {
+    (frame.lines())
+        .filter_map(|row| row.split_once("● [")?.1.split_once(']')?.0.parse().ok())
+        .collect()
+}
+
+/// A reconnect's replay of `N` kernel calls, past the notebook's 50 kept: the calls it dropped are
+/// gone from the pane, so the replay finds none of them and must not number them again.
+fn notebook_replayed_twice<const N: usize>() -> TestResult {
+    let mut fixture = replayed_session(|frame| resume_with(frame, &cell_entries(N, "all in")));
+    fixture.extend([
+        Step::Close,
+        Step::Accept,
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/resume", |frame| {
+            resume_with(frame, &cell_entries(N, "back again"))
+        }),
+    ]);
+    let frame = run_frames_sized(
+        "replay-notebook-cap",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 all in\ncmd-i\n\
+         wait-frame 8000 back again\nquit\n",
+        SidebarMode::Full,
+        (180, 240),
+    )?;
+    let dropped = N.saturating_sub(yi_console::model::KEPT_CELLS);
+    let first = dropped.saturating_add(1);
+    assert_eq!(header_numbers(&frame), (first..=N).collect::<Vec<_>>());
+    let noun = if dropped == 1 { "cell" } else { "cells" };
+    assert_eq!(
+        frame.contains(&format!("{dropped} older {noun} not shown")),
+        dropped > 0,
+        "{frame}"
+    );
+    Ok(())
+}
+
+/// Dies with cells numbered 53 to 102 after a reconnect, and a row saying 52 older cells were
+/// dropped when one was: the second replay opened a cell for every call again.
+#[test]
+fn a_second_replay_of_a_notebook_past_its_cap_keeps_the_numbering() -> TestResult {
+    notebook_replayed_twice::<{ yi_console::model::KEPT_CELLS + 1 }>()
+}
+
+#[test]
+fn a_second_replay_of_a_notebook_at_its_cap_keeps_the_numbering() -> TestResult {
+    notebook_replayed_twice::<{ yi_console::model::KEPT_CELLS }>()
+}
+
 /// Dies with "nothing changed in this scope" for a session that edited a file: Review filled from
 /// live edits only.
 #[test]
@@ -4824,6 +4898,105 @@ fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
         row_holding(&frame, "read only")?,
         format!("○ {reads} file read only")
     );
+    Ok(())
+}
+
+/// The recording's edit as the worker streamed it live: a running todo, turn one editing, then a
+/// second turn that edits nothing.
+fn live_edit_then_an_empty_turn() -> Vec<Value> {
+    let edit = recorded(EDIT_SESSION)
+        .into_iter()
+        .find(|e| e["message"]["toolName"] == "edit");
+    let details = edit.map_or(Value::Null, |e| e["message"]["details"].clone());
+    let state = |state: &str| {
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": state}),
+        )
+    };
+    let mut frames = todo_update();
+    frames.extend([
+        state("running"),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "e1", "title": "edit",
+                   "kind": "edit", "status": "completed", "rawOutput": details}),
+        ),
+        state("idle"),
+        state("running"),
+        state("idle"),
+    ]);
+    frames
+}
+
+/// What a reconnect replays of that work: the recording, then the second prompt.
+fn resume_both_turns(frame: &Value) -> Vec<Value> {
+    let mut entries = recorded(EDIT_SESSION);
+    entries.push(entry("e-turn2", None, 99, &user_message("and again")));
+    resume_with(frame, &entries)
+}
+
+/// Review after a live edit and a reconnect's full replay, then `keys` pressed on its pane.
+fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Error>> {
+    let mut fixture = session_fixture();
+    fixture.extend([
+        Step::Push(live_edit_then_an_empty_turn),
+        Step::Expect("_yi/tracked", tracked_yes),
+        Step::Close,
+        Step::Accept,
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/resume", resume_both_turns),
+    ]);
+    run_frames(
+        name,
+        fixture,
+        &format!(
+            "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Review · session · 1 file\n\
+             wait-frame 8000 and again\nkey alt-right\n{keys}quit\n"
+        ),
+    )
+}
+
+/// Dies with `Review · turn · 1 file` after a reconnect: the full replay stamped the edit with the
+/// turn the console was in, and the second turn edited nothing.
+#[test]
+fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestResult {
+    let frame = review_after_a_reconnect(
+        "replay-turn-scope",
+        "key s\nwait-frame 3000 Review · turn\n",
+    )?;
+    let row = row_holding(&frame, "Review · turn")?;
+    assert!(row.contains("Review · turn · 0 files +0 −0"), "{row}");
+    Ok(())
+}
+
+/// Dies with the replayed edit labelled `· write the plan`: the todo running now, not the one that
+/// was running when the edit was made, which a replay cannot know.
+#[test]
+fn a_reconnects_replay_does_not_label_an_edit_with_the_todo_running_now() -> TestResult {
+    let frame =
+        review_after_a_reconnect("replay-todo-label", "wait-frame 3000 Review · session\n")?;
+    let row = row_holding(&frame, "▸ ")?;
+    let file = row.split("▸ ").nth(1).ok_or("no file row")?;
+    assert!(
+        file.contains("+2 −2") && !file.contains("write the plan"),
+        "{row}"
+    );
+    Ok(())
+}
+
+/// Dies with `Review · turn · 0 files`: a console started after the work never saw a turn begin,
+/// so its turn count stood at zero while the replayed edit sat in turn one.
+#[test]
+fn a_resumed_sessions_last_edit_is_in_its_turn_scope() -> TestResult {
+    let frame = run_frames(
+        "replay-review-turn",
+        replayed_session(resume_edit_session),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 greet takes one\nkey alt-g\n\
+         wait-frame 3000 Review\nkey s\nwait-frame 3000 Review · turn\nquit\n",
+    )?;
+    let row = row_holding(&frame, "Review · turn")?;
+    assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
     Ok(())
 }
 
