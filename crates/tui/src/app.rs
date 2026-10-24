@@ -159,6 +159,9 @@ pub struct App {
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
     pub(crate) committed_tasks: HashSet<String>,
+    /// Cards dropped by a reset or the finished-card cap; the roster brings one back only running.
+    pub(crate) retired_tasks: HashSet<String>,
+    pub(crate) dropped_tasks: usize,
     pub(crate) steering: Vec<String>,
     pub(crate) running: bool,
     pub(crate) esc_armed_at: Option<Instant>,
@@ -287,6 +290,8 @@ impl App {
             tasks: HashMap::new(),
             task_order: Vec::new(),
             committed_tasks: HashSet::new(),
+            retired_tasks: HashSet::new(),
+            dropped_tasks: 0,
             steering: Vec::new(),
             running: false,
             esc_armed_at: None,
@@ -599,14 +604,6 @@ impl App {
         self.history
             .lines(self.content_width(), &self.theme, self.mode, rows)
             .0
-    }
-
-    pub(crate) fn reset_transcript(&mut self) {
-        self.history.clear();
-        self.pending_commit.clear();
-        self.reset_live();
-        self.live_tools.clear();
-        self.user_turns = 0;
     }
 
     pub fn take_title(&mut self) -> Option<String> {
