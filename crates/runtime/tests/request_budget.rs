@@ -679,9 +679,9 @@ fn report_the_prefix_size() -> TestResult {
         .build()?;
     let (bare, lane, main) = runtime.block_on(async {
         tokio::join!(
-            role_bodies(Workspace::Bare),
-            role_bodies(Workspace::Lane),
-            role_bodies(Workspace::Main)
+            role_bodies(Workspace::Bare, 1),
+            role_bodies(Workspace::Lane, 1),
+            role_bodies(Workspace::Main, 1)
         )
     });
     let claude = match checkout().join("CLAUDE.md").is_file() {
@@ -746,7 +746,10 @@ fn checkout() -> std::path::PathBuf {
 
 /// Each role's first request body, from a root wired as yi wires one and children spawned
 /// through its host, so a child's prefix is the one its production factory builds.
-async fn role_bodies(workspace: Workspace) -> Result<Vec<(&'static str, Value)>, Box<dyn Error>> {
+async fn role_bodies(
+    workspace: Workspace,
+    max_depth: u8,
+) -> Result<Vec<(&'static str, Value)>, Box<dyn Error>> {
     let scratch = Scratch::new("yi-role-prefix")?;
     let ws = scratch.join("ws");
     std::fs::create_dir_all(&ws)?;
@@ -774,8 +777,16 @@ async fn role_bodies(workspace: Workspace) -> Result<Vec<(&'static str, Value)>,
     std::fs::create_dir_all(ripwire.parent().ok_or("ripwire has no dir")?)?;
     std::fs::write(&ripwire, "")?;
     let tools = recorded_tools(&home);
-    let (session, host) =
-        upstream::root_with(&scratch, model, port, false, Some(broker), true, tools)?;
+    let provider = upstream::stream(&model, port, false)?;
+    let (session, host) = upstream::root_at(
+        &scratch,
+        model,
+        provider,
+        Some(broker),
+        true,
+        tools,
+        max_depth,
+    )?;
     if !matches!(workspace, Workspace::Bare) {
         std::fs::copy(checkout().join("AGENTS.md"), ws.join("AGENTS.md"))?;
         std::fs::write(ws.join("Cargo.toml"), "[workspace]\n")?;
@@ -824,16 +835,18 @@ fn lines_of(fragment: &str, text: &str, all: bool) -> bool {
     }
 }
 
+fn role_text(rows: &[(&str, Value)], role: &str) -> Result<String, Box<dyn Error>> {
+    let (_, body) = rows
+        .iter()
+        .find(|(name, _)| *name == role)
+        .ok_or(format!("no {role} row"))?;
+    Ok(system_text(body))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestResult {
-    let rows = role_bodies(Workspace::Bare).await?;
-    let text = |role: &str| -> Result<String, Box<dyn Error>> {
-        let (_, body) = rows
-            .iter()
-            .find(|(name, _)| *name == role)
-            .ok_or(format!("no {role} row"))?;
-        Ok(system_text(body))
-    };
+    let rows = role_bodies(Workspace::Bare, 1).await?;
+    let text = |role: &str| role_text(&rows, role);
     let doctrine = yi_runtime::doctrine_fragment();
     let orchestrate = include_str!("../src/prompts/orchestrate.md");
     let reader = text("reader")?;
@@ -866,6 +879,31 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
             "{role} cannot spawn at max_depth 1, so it reads no delegation teaching"
         );
     }
+    Ok(())
+}
+
+/// One level deeper than the default, a root child can still spawn, so it reads what a leaf does
+/// not: every delegation line, and the protocol once its brief trips the trigger.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_child_that_can_still_spawn_is_sent_the_protocol_and_the_delegation_teaching()
+-> TestResult {
+    let rows = role_bodies(Workspace::Bare, 2).await?;
+    let orchestrate = include_str!("../src/prompts/orchestrate.md");
+    let delegation = yi_runtime::delegation_fragment();
+    for role in ["leaf", "leaf_orchestrate"] {
+        assert!(
+            lines_of(delegation, &role_text(&rows, role)?, true),
+            "{role} can spawn at max_depth 2, so it reads the delegation teaching"
+        );
+    }
+    assert!(
+        lines_of(orchestrate, &role_text(&rows, "leaf_orchestrate")?, true),
+        "a triggered child that can spawn reads the orchestrate protocol"
+    );
+    assert!(
+        !lines_of(orchestrate, &role_text(&rows, "leaf")?, false),
+        "no trigger, no protocol"
+    );
     Ok(())
 }
 
