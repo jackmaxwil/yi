@@ -592,11 +592,7 @@ impl ChunkMapper {
         if let Some(upstream) = chunk.get("provider").and_then(Value::as_str) {
             crate::request::note_upstream(&mut self.output, upstream);
         }
-        // Moonshot puts the usage in the first choice and none at the top.
-        if let Some(usage_value) = ["/usage", "/choices/0/usage"]
-            .into_iter()
-            .find_map(|at| chunk.pointer(at).filter(|value| !value.is_null()))
-        {
+        if let Some(usage_value) = chunk.get("usage").filter(|value| !value.is_null()) {
             let usage = parse_chunk_usage(usage_value, &self.model);
             if let AgentMessage::Assistant {
                 usage: output_usage,

@@ -292,3 +292,23 @@ fn a_login_that_fails_writes_no_catalog() -> TestResult {
     assert_eq!(listed, 0);
     Ok(())
 }
+
+/// `yi login --list kimi` lists profiles and logs nothing in, so it fetches no model list and says
+/// no "logged in" over a stored token it never touched.
+#[test]
+fn listing_profiles_refreshes_nothing() -> TestResult {
+    let (port, seen) = fake_kimi(false)?;
+    let account = Account::new("list", port)?;
+    let tokens = account.home.join(".yi/providers/tokens");
+    std::fs::create_dir_all(&tokens)?;
+    std::fs::write(
+        tokens.join("kimi.json"),
+        r#"{"version":1,"kind":"oauth","access":"stored-access","expires_ms":0}"#,
+    )?;
+    let listing = account.yi(&["login", "--list", "kimi"])?;
+    assert_eq!(listing.status.code(), Some(0), "{}", text(&listing));
+    assert!(!text(&listing).contains("logged in"), "{}", text(&listing));
+    assert!(!account.home.join(".yi/catalog/kimi.json").exists());
+    assert_eq!(seen.lock().map_err(|_| "fake lock")?.len(), 0);
+    Ok(())
+}

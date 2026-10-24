@@ -1314,6 +1314,12 @@ fn catalog_usage_without_a_kimi_login_names_the_login_verb() -> TestResult {
         complaint.trim(),
         "error: no credential for provider kimi (run: yi login kimi)"
     );
+    let other = workspace.yi(&["catalog", "usage", "openai"])?;
+    assert_eq!(other.status.code(), Some(2), "{}", stdout(&other));
+    assert_eq!(
+        String::from_utf8_lossy(&other.stderr).trim(),
+        r#"usage: yi catalog usage kimi (not "openai")"#
+    );
     Ok(())
 }
 

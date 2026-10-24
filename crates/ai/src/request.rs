@@ -234,7 +234,7 @@ pub fn send_with_retry(
                     .header("retry-after")
                     .and_then(|value| value.parse::<f64>().ok());
                 let text = response.into_string().unwrap_or_default();
-                if quota_exhausted(status, &text) {
+                if quota_exhausted(status, &text, url) {
                     return Err(format!("HTTP {status} quota exhausted: {text}"));
                 }
                 let retryable = is_retryable_status(status)

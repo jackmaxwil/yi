@@ -50,12 +50,15 @@ pub(crate) fn replays_reasoning_content(model: &Model) -> bool {
 /// Moonshot's own API, by host or by the `kimi` provider whose base the login profile names: it
 /// reads effort from a `thinking` field, caches by `prompt_cache_key` and checks thinking per turn.
 pub(crate) fn moonshot(model: &Model) -> bool {
-    let host = crate::request::host_of(&model.base_url);
-    model.provider == "kimi"
-        || ["kimi.com", "kimi.ai", "moonshot.ai"].iter().any(|domain| {
-            host.strip_suffix(domain)
-                .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
-        })
+    model.provider == "kimi" || moonshot_url(&model.base_url)
+}
+
+pub(crate) fn moonshot_url(url: &str) -> bool {
+    let host = crate::request::host_of(url);
+    ["kimi.com", "kimi.ai", "moonshot.ai"].iter().any(|domain| {
+        host.strip_suffix(domain)
+            .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+    })
 }
 
 /// Strict tool decoding where the route enforces it: OpenAI's own API, and Anthropic's for a

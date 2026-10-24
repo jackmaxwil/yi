@@ -84,23 +84,44 @@ fn a_quota_429_is_final_and_a_rate_limit_429_still_retries() -> TestResult {
     Ok(())
 }
 
-/// The degenerate pair: a gateway that flattens the body keeps only the billing words, and a
-/// per-minute throttle says "quota" without meaning the balance.
+/// The degenerate pair: a gateway that flattens Moonshot's body keeps only the billing words, and
+/// a per-minute throttle says "quota" without meaning the balance. Gemini's throttle text is
+/// Google's published RESOURCE_EXHAUSTED message, typed, not recorded.
 #[test]
-fn billing_wording_without_a_code_is_final_and_token_quota_per_minute_is_not() {
+fn billing_wording_without_a_code_is_final_on_moonshot_and_a_throttle_is_not() {
+    const KIMI: &str = "https://api.kimi.ai/coding/v1/chat/completions";
+    const GEMINI: &str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    const OPENROUTER: &str = "https://openrouter.ai/api/v1/chat/completions";
     let suspended = "Your account org-x is suspended due to insufficient balance, please recharge your account or check your plan and billing details";
-    assert!(quota_exhausted(429, suspended));
+    assert!(quota_exhausted(429, suspended, KIMI));
     assert!(quota_exhausted(
         429,
-        "You exceeded your current token quota: ..."
+        "You exceeded your current token quota: ...",
+        KIMI
     ));
     assert!(!quota_exhausted(
         429,
-        "Rate limit reached: token quota per minute exceeded"
+        "Rate limit reached: token quota per minute exceeded",
+        KIMI
     ));
-    assert!(!quota_exhausted(429, THROTTLE));
+    assert!(!quota_exhausted(429, THROTTLE, KIMI));
+    let gemini = r#"{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. Please retry in 7.06s.","status":"RESOURCE_EXHAUSTED"}}"#;
     assert!(
-        !quota_exhausted(500, MOONSHOT_QUOTA),
+        !quota_exhausted(429, gemini, GEMINI),
+        "gemini RPM throttle final"
+    );
+    let relayed = json!({"error": {"code": 429, "message": "Provider returned error",
+        "metadata": {"raw": gemini, "provider_name": "Google AI Studio"}}});
+    assert!(
+        !quota_exhausted(429, &relayed.to_string(), OPENROUTER),
+        "relayed throttle final"
+    );
+    assert!(
+        quota_exhausted(429, OPENAI_QUOTA, GEMINI),
+        "a quota code is final on any route"
+    );
+    assert!(
+        !quota_exhausted(500, MOONSHOT_QUOTA, KIMI),
         "only a 429 is a quota refusal"
     );
 }
