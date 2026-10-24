@@ -174,11 +174,26 @@ pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<Sha
     shared
 }
 
+pub(crate) fn held(store: &Arc<JobStore>) -> Option<Arc<SharedSchedule>> {
+    let map = intern_map()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.values()
+        .find(|shared| Arc::ptr_eq(&shared.store, store))
+        .map(Arc::clone)
+}
+
+/// Invariant: a timer goes only once no lane is bound and nothing holds it, a wired session about
+/// to bind included; a halt or poke mid-walk keeps it, a leak and never a stopped lane.
 pub(crate) fn release(store: &Arc<JobStore>) {
     intern_map()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|_, shared| !Arc::ptr_eq(&shared.store, store) || shared.hub.lane_count() > 0);
+        .retain(|_, shared| {
+            !Arc::ptr_eq(&shared.store, store)
+                || shared.hub.lane_count() > 0
+                || Arc::strong_count(shared) > 1
+        });
 }
 
 #[cfg(test)]
@@ -404,6 +419,84 @@ mod tests {
             state.dispatches.is_empty(),
             "a dead session's job was claimed"
         );
+        Ok(())
+    }
+
+    fn wired(path: &std::path::Path, lane: Arc<DeliverFn>) -> Service {
+        let shared = intern(path.to_path_buf(), |_| {});
+        Service::new(Arc::clone(&shared.store), "/tmp")
+            .with_lane(Arc::clone(&shared.hub), lane)
+            .interned()
+    }
+
+    fn ran() -> Arc<DeliverFn> {
+        Arc::new(|_, _| Ok(RunOutcome::Ran))
+    }
+
+    #[tokio::test]
+    async fn a_departed_child_leaves_the_interned_timer_nothing_to_hold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-departed")?;
+        let path = dir.join("scheduled-jobs.json");
+        let (a, b) = (wired(&path, ran()), wired(&path, ran()));
+        a.bind_session("a".to_owned());
+        b.bind_session("b".to_owned());
+        let store = Arc::downgrade(&a.store());
+
+        drop((a, b));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.upgrade().is_some() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            store.upgrade().is_none(),
+            "two departed children left their store and timer interned"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_sibling_still_bound_keeps_the_timer_and_it_still_delivers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-sibling")?;
+        let path = dir.join("scheduled-jobs.json");
+        let (sent, mut delivered) = tokio::sync::mpsc::unbounded_channel();
+        let lane = |sent: tokio::sync::mpsc::UnboundedSender<String>| -> Arc<DeliverFn> {
+            Arc::new(move |job, _| {
+                let _ = sent.send(job.session_id.clone());
+                Ok(RunOutcome::Ran)
+            })
+        };
+        let (a, b) = (wired(&path, ran()), wired(&path, lane(sent.clone())));
+        a.bind_session("a".to_owned());
+        b.bind_session("b".to_owned());
+        let set = crate::schedule::parse_heartbeat_command("/heartbeat every 10s watch it")?;
+        let due = |service: &Service| -> Result<(), String> {
+            service.apply(&set, yi_session::now_ms())?;
+            service.store().mutate(|state| {
+                for job in &mut state.jobs {
+                    job.next_run_at = Some(1);
+                }
+            });
+            Ok(())
+        };
+
+        drop(a);
+        due(&b)?;
+        let first = tokio::time::timeout(Duration::from_secs(5), delivered.recv())
+            .await
+            .map_err(|_| "a leaving stopped the timer b is still bound to")?;
+        assert_eq!(first.as_deref(), Some("b"));
+
+        let c = wired(&path, lane(sent));
+        drop(b);
+        c.bind_session("c".to_owned());
+        due(&c)?;
+        let next = tokio::time::timeout(Duration::from_secs(5), delivered.recv())
+            .await
+            .map_err(|_| "the last lane leaving stopped the timer c was wired to")?;
+        assert_eq!(next.as_deref(), Some("c"));
         Ok(())
     }
 
