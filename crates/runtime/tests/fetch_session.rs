@@ -657,8 +657,8 @@ async fn both_history_verbs_name_the_snippet_cap_and_the_address_that_reads_the_
     Ok(())
 }
 
-/// The same hit under `deny_url: ["history://"]`: its address is refused, so the notice must not
-/// name `rlm.fetch(hit["url"])` as the call that reads the rest.
+/// The same hit walled two ways: `history://` refuses its address, so the notice must not name
+/// `rlm.fetch(hit["url"])`; `history://main` walls only the parent, so the notice still must.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reader_walled_from_history_is_not_told_to_fetch_a_cut_hit() -> TestResult {
     use yi_kernel::client::HostHandlers;
@@ -672,36 +672,42 @@ async fn a_reader_walled_from_history_is_not_told_to_fetch_a_cut_hit() -> TestRe
         yi_types::message::StopReason::Stop,
     );
     yi_session::lock_session(&own).append_message("main", said)?;
-    let wall = Wall {
-        deny_url: vec!["history://".to_owned()],
-        ..Wall::default()
-    };
-    let mut registry = yi_runtime::HostRegistry::default();
-    let handle = own.clone();
-    let held = Arc::new(move || Some(handle.clone()));
-    yi_runtime::history::register_grep(&mut registry, held, &wall);
-    let payload = serde_json::json!({ "pattern": "WELL-GOVERNED" });
-    let call = registry.dispatch(
-        "history.grep",
-        payload.as_object().cloned().unwrap_or_default(),
-    );
-    let reply = call.ok_or("the verb is not registered")?.await?;
-    let notice = reply["notice"]
-        .as_str()
-        .ok_or("a cut snippet carries a notice")?;
-    assert!(
-        notice.contains("1 of 1 snippets cut to 160 chars (SNIPPET_CHARS)")
-            && !notice.contains("rlm.fetch"),
-        "{notice}"
-    );
-    let url: Url = reply["hits"][0]["url"].as_str().ok_or("no url")?.parse()?;
-    let walled = Resolver::new(here, wall).with_session("main", own);
-    let refused = walled.fetch(&url);
-    assert!(
-        matches!(refused, Err(FetchError::Denied { .. })),
-        "the wall lets the address through: {:?}",
-        refused.map(|fetched| fetched.text)
-    );
+    for (deny, refused) in [("history://", true), ("history://main", false)] {
+        let wall = Wall {
+            deny_url: vec![deny.to_owned()],
+            ..Wall::default()
+        };
+        let mut registry = yi_runtime::HostRegistry::default();
+        let handle = own.clone();
+        let held = Arc::new(move || Some(handle.clone()));
+        yi_runtime::history::register_grep(&mut registry, held, &wall);
+        let payload = serde_json::json!({ "pattern": "WELL-GOVERNED" });
+        let call = registry.dispatch(
+            "history.grep",
+            payload.as_object().cloned().unwrap_or_default(),
+        );
+        let reply = call.ok_or("the verb is not registered")?.await?;
+        let notice = reply["notice"]
+            .as_str()
+            .ok_or("a cut snippet carries a notice")?;
+        assert!(
+            notice.contains("1 of 1 snippets cut to 160 chars (SNIPPET_CHARS)")
+                && notice.contains("rlm.fetch") != refused,
+            "{deny}: {notice}"
+        );
+        let url: Url = reply["hits"][0]["url"].as_str().ok_or("no url")?.parse()?;
+        let reader = Resolver::new(here.clone(), wall).with_session("reader-1", own.clone());
+        let fetched = reader.fetch(&url);
+        assert!(
+            match fetched {
+                Err(FetchError::Denied { .. }) => refused,
+                Ok(ref whole) => !refused && whole.text.contains(&line),
+                Err(_) => false,
+            },
+            "{deny}: {:?}",
+            fetched.map(|fetched| fetched.text)
+        );
+    }
     Ok(())
 }
 
