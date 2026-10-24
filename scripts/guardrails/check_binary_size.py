@@ -11,9 +11,9 @@ from _common import BASE, DIST_BIN, fail, fork, no_fork
 import check_changes
 
 HARD_CAP_BYTES = 9_437_184  # 9 MiB: D249 set 8, raised for the console workbench (#1354)
-# Incident: 71 of 150 ratchet commits moved the baseline by 256 bytes or less; the linker grows
-# the file a 16 KiB page at a time, so growth inside one page is alignment, not a ratchet.
-PAGE = 16_384
+# Incident: 71 of 150 ratchet commits moved the baseline by 256 bytes or less, build-to-build
+# jitter rather than growth, so a fixed 16 KiB allowance past the baseline is not a ratchet.
+JITTER = 16_384
 CAP = re.compile(r"^HARD_CAP_BYTES = ([\d_]+)", re.M)
 SELF = "scripts/guardrails/check_binary_size.py"
 
@@ -30,8 +30,8 @@ def problems(size, budget, hard_cap=HARD_CAP_BYTES, name="binary_size_budget.jso
         errs.append(f"{name} max_bytes {budget} > hard cap {hard_cap} bytes (9 MiB)")
     if size > hard_cap:
         errs.append(f"dist binary {size} > hard cap {hard_cap} bytes (9 MiB)")
-    elif size > budget + PAGE:
-        errs.append(f"dist binary {size} > {budget} + {PAGE} bytes ({name})")
+    elif size > budget + JITTER:
+        errs.append(f"dist binary {size} > {budget} + {JITTER} bytes ({name})")
     return errs
 
 
@@ -53,22 +53,27 @@ def scratch_cases():
     run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True, text=True, env=env)
     git_ = lambda *a: run("git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
     gate = tmp / SELF
-    verdict = lambda: run(sys.executable, SELF)
+    host = f"import platform, runpy, sys; sys.argv = [{SELF!r}]; platform.system = lambda: %r; runpy.run_path({SELF!r}, run_name='__main__')"
+    verdict = lambda system="Linux": run(sys.executable, "-c", host % system)
     bad = []
     try:
         shutil.copytree(pathlib.Path(__file__).parent, gate.parent, ignore=shutil.ignore_patterns("baselines", "__pycache__"))
         (gate.parent / "baselines").mkdir()
-        for name in ("binary_size_budget.json", "binary_size_budget_linux.json"):
-            (gate.parent / "baselines" / name).write_text('{"max_bytes": 1000}\n')
+        # The macOS baseline sits more than the allowance under the binary, so only Linux reads green.
+        for name, size in (("binary_size_budget.json", 1_000), ("binary_size_budget_linux.json", 20_000)):
+            (gate.parent / "baselines" / name).write_text(f'{{"max_bytes": {size}}}\n')
         (tmp / "target/dist").mkdir(parents=True)
-        (tmp / "target/dist/yi").write_bytes(b"\0" * 500)
+        (tmp / "target/dist/yi").write_bytes(b"\0" * 20_000)
         git_("init", "-q", "-b", "main")
         git_("add", "-A")
         git_("commit", "-q", "-m", "seed")
         git_("checkout", "-q", "-b", "topic")
         out = verdict()
-        if out.returncode != 0:
-            bad.append(f"an unmoved cap read red: {out.stdout.strip()}")
+        if out.returncode != 0 or "binary_size_budget_linux.json 20000" not in out.stdout:
+            bad.append(f"an unmoved cap on Linux read: {out.stdout.strip()}")
+        out = verdict("Darwin")
+        if out.returncode != 1 or "> 1000 + 16384 bytes (binary_size_budget.json)" not in out.stdout:
+            bad.append(f"a binary over the macOS baseline on macOS read {out.returncode}: {out.stdout.strip()}")
         gate.write_text(gate.read_text().replace("HARD_CAP_BYTES = 9_437_184", "HARD_CAP_BYTES = 10_485_760", 1))
         out = verdict()
         if out.returncode != 1 or "HARD_CAP_BYTES 9437184 -> 10485760" not in out.stdout:
@@ -97,10 +102,10 @@ def selfcheck():
     assert errs == ["dist binary 900000 > 800000 + 16384 bytes (binary_size_budget.json)"], errs
     # a compliant size and baseline is clean
     assert problems(700_000, 800_000, hard_cap=cap) == []
-    # growth inside one linker page passes, at the page itself too; one byte past it fails
+    # growth inside the jitter allowance passes, at the allowance too; one byte past it fails
     assert problems(800_016, 800_000, hard_cap=cap) == []
-    assert problems(800_000 + PAGE, 800_000, hard_cap=cap) == []
-    errs = problems(800_001 + PAGE, 800_000, hard_cap=cap, name="binary_size_budget_linux.json")
+    assert problems(800_000 + JITTER, 800_000, hard_cap=cap) == []
+    errs = problems(800_001 + JITTER, 800_000, hard_cap=cap, name="binary_size_budget_linux.json")
     assert errs == ["dist binary 816385 > 800000 + 16384 bytes (binary_size_budget_linux.json)"], errs
     # the shipped cap is 9 MiB: a baseline one byte past it fails, one at it does not
     assert HARD_CAP_BYTES == 9 * 1_048_576
@@ -128,7 +133,7 @@ def main(argv):
     path = baseline()
     budget = json.loads(path.read_text())["max_bytes"]
     errs += problems(size, budget, name=path.name)
-    fail(errs, f"binary_size ({size} bytes; {path.name} {budget} + {PAGE}, cap {HARD_CAP_BYTES})")
+    fail(errs, f"binary_size ({size} bytes; {path.name} {budget} + {JITTER}, cap {HARD_CAP_BYTES})")
     return 0
 
 
