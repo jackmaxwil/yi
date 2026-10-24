@@ -53,6 +53,7 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
     for root_only in [
         yi_runtime::identity_fragment(),
         yi_runtime::doctrine_fragment(),
+        yi_runtime::delegation_fragment(),
     ] {
         for line in root_only.lines().filter(|line| line.len() > 40) {
             assert!(!text.contains(line), "{line} reached the worker: {text}");

@@ -210,8 +210,9 @@ fn surface_lines() -> Result<Vec<String>, Box<dyn Error>> {
 /// depend on what the runner has installed.
 fn system_prompt() -> String {
     format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         identity_fragment(),
+        yi_runtime::delegation_fragment(),
         yi_runtime::doctrine_fragment(),
         mode_fragment(PermissionMode::Ask)
     )
@@ -850,10 +851,19 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
             "{role} reads the doctrine"
         );
     }
+    let delegation = yi_runtime::delegation_fragment();
+    assert!(
+        lines_of(delegation, &text("root")?, true),
+        "the root reads the delegation teaching"
+    );
     for role in ["leaf", "leaf_orchestrate"] {
         assert!(
             !lines_of(orchestrate, &text(role)?, false),
             "{role} cannot spawn at max_depth 1, so no trigger attaches the protocol"
+        );
+        assert!(
+            !lines_of(delegation, &text(role)?, false),
+            "{role} cannot spawn at max_depth 1, so it reads no delegation teaching"
         );
     }
     Ok(())
