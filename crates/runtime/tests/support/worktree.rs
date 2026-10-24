@@ -192,6 +192,16 @@ pub fn bench(
 }
 
 impl Bench {
+    /// The same bench under a session that ends at `at`.
+    pub fn until(self, at: std::time::Instant) -> Self {
+        Self {
+            engine: self
+                .engine
+                .with_verifier(Verifier::new(60_000).with_deadline(at)),
+            ..self
+        }
+    }
+
     fn apply(&self, actor: Actor, op: Op) -> Result<Outcome, PlanOpError> {
         self.engine.apply(OpRequest {
             plan: Some(self.plan.clone()),

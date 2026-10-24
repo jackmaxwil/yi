@@ -280,8 +280,10 @@ impl PlanEngine {
             return Ok(());
         };
         let alive = yi_kernel::bootstrap::process_is_running(claim.pid).unwrap_or(true);
-        let young = self.store.now_ms().saturating_sub(claim.at)
-            <= self.verifier.timeout_ms().saturating_add(CLAIM_GRACE_MS);
+        // ponytail: young spans a lane wait and a run; a longer session deadline reads as overrun.
+        let window = self.verifier.timeout_ms().saturating_mul(2);
+        let young =
+            self.store.now_ms().saturating_sub(claim.at) <= window.saturating_add(CLAIM_GRACE_MS);
         // ponytail: an adopted effect is not re-claimed, so two adopters of one dead claim can
         // both run the checker; step 5's replay guard still charges one refusal.
         if alive && young {

@@ -11,21 +11,25 @@ use crate::worktree::{Shape, bench};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Every check marks itself running, sleeps, then logs how many checks were running as it ends.
-fn overlap_check(dir: &std::path::Path, sleep: u32) -> String {
-    let (runs, peak) = (dir.join("runs"), dir.join("peak.log"));
-    let (runs, peak) = (runs.display(), peak.display());
+/// Every check marks itself running and waits, for at most ten seconds, until a peer is running
+/// too or it is the third to start, then logs how many checks were running.
+fn overlap_check(dir: &std::path::Path) -> String {
+    let (runs, started, peak) = (dir.join("runs"), dir.join("started"), dir.join("peak.log"));
+    let (runs, started, peak) = (runs.display(), started.display(), peak.display());
     format!(
-        "mkdir -p {runs}; touch {runs}/run.$$; sleep {sleep}; ls {runs} | grep -c '^run\\.' >> {peak}; rm {runs}/run.$$"
+        "mkdir -p {runs}; touch {runs}/run.$$; echo $$ >> {started}; n=0; \
+         while [ $(ls {runs} | grep -c '^run\\.') -lt 2 ] && [ $(wc -l < {started}) -lt 3 ] \
+         && [ $n -lt 50 ]; do sleep 0.2; n=$((n+1)); done; \
+         ls {runs} | grep -c '^run\\.' >> {peak}; rm {runs}/run.$$"
     )
 }
 
-/// Dies with one verification lane per pool: a pool of eight verifies two acceptances at once,
-/// the third waits its turn, and none is bounced. With a share of one no two checks overlap.
+/// Dies with one verification lane per pool: a pool of eight verifies two submits at once, the
+/// third waits its turn, and none is bounced. With a share of one no two checks overlap.
 #[test]
 fn two_acceptances_verify_at_once_and_a_third_waits() -> TestResult {
     let scratch = crate::scratch::Scratch::new("yi-plan-capacity-overlap")?;
-    let check = overlap_check(&scratch, 2);
+    let check = overlap_check(&scratch);
     let labels = ["first", "second", "third"];
     let bench = bench("overlap", &labels, 8, &check, Shape::Unmoved)?;
     let ran: Vec<Result<(), String>> = std::thread::scope(|scope| {
@@ -36,11 +40,8 @@ fn two_acceptances_verify_at_once_and_a_third_waits() -> TestResult {
                 scope.spawn(move || {
                     bench
                         .submit(label)
-                        .map_err(|e| format!("submit {label}: {e}"))?;
-                    bench
-                        .done(label)
-                        .map_err(|e| format!("done {label}: {e}"))?;
-                    Ok(())
+                        .map(drop)
+                        .map_err(|e| format!("submit {label}: {e}"))
                 })
             })
             .collect();
@@ -50,6 +51,7 @@ fn two_acceptances_verify_at_once_and_a_third_waits() -> TestResult {
     });
     for (label, outcome) in labels.iter().zip(&ran) {
         assert_eq!(outcome, &Ok(()), "{label}");
+        bench.done(label)?;
         assert!(
             matches!(bench.state(label)?, TodoState::Done { .. }),
             "{label}"
@@ -99,5 +101,29 @@ fn an_acceptance_waits_out_a_check_longer_than_thirty_seconds() -> TestResult {
     let accepted = accepted.map_err(|_| "the acceptance panicked")?;
     assert!(accepted.is_ok(), "{accepted:?}");
     assert!(matches!(bench.state("only")?, TodoState::Done { .. }));
+    Ok(())
+}
+
+/// Dies with the session's deadline ignored by the wait: a submit under a session three seconds
+/// from its end waited out the verifier's whole minute for a lane nobody would release.
+#[test]
+fn a_full_share_refuses_at_the_session_deadline() -> TestResult {
+    let left = Duration::from_secs(3);
+    let bench = bench("deadline", &["only"], 2, "true", Shape::Unmoved)?
+        .until(std::time::Instant::now() + left);
+    let _held = bench.engine.capacity().reserve(Purpose::Verification)?;
+    let started = std::time::Instant::now();
+    let refusal = bench
+        .submit("only")
+        .err()
+        .ok_or("submitted past a held lane")?;
+    let waited = started.elapsed();
+    let refusal = refusal.to_string();
+    assert!(
+        refusal.contains("verification capacity is full: 1 of 1 held"),
+        "{refusal}"
+    );
+    assert!(waited >= left - Duration::from_millis(500), "{waited:?}");
+    assert!(waited < Duration::from_secs(20), "{waited:?}");
     Ok(())
 }
