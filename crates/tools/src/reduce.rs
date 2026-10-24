@@ -155,12 +155,25 @@ pub fn view(
     let pointer = (reduced.recovery.clone())
         .or_else(|| kept.map(str::to_owned))
         .or_else(|| tee_dir.and_then(|dir| tee(dir, &raw)));
-    let rerun = |command: &str| format!("({command}) > view.log 2>&1, then read view.log");
+    let rerun = |how: &str, command: &str| {
+        let command = command.trim_end();
+        let first = command.lines().next().unwrap_or_default();
+        match crate::tool::clip(first, LINE_CLIP) {
+            (line, false) if !command.contains('\n') => {
+                format!("{how} ({line}) > view.log 2>&1, then read view.log")
+            }
+            (line, _) => format!(
+                "{how} the command that began {line}, its output sent to view.log, then read view.log"
+            ),
+        }
+    };
     let next = match (pointer.as_deref(), producer) {
         (Some(note), _) => format!("read {}", spill_path(note).map_or(note, |(_, path)| path)),
-        (None, Traceback) => format!("an ipython cell running {LAST_TRACEBACK}"),
-        (None, ShellCell(command)) => format!("a %%bash cell running {}", rerun(command)),
-        (None, Job(command) | Check(command)) => format!("bash {}", rerun(command)),
+        (None, Traceback) => format!(
+            "an ipython cell running {LAST_TRACEBACK}, which prints this exception again in Python's own format"
+        ),
+        (None, ShellCell(command)) => rerun("a %%bash cell running", command),
+        (None, Job(command) | Check(command)) => rerun("bash", command),
     };
     let mut text = ceiling(body, reduced.raw_bytes, room(pointer.as_deref()), &next);
     if let Some(note) = &pointer {

@@ -7,8 +7,7 @@
 # under crates/runtime/tests/fixtures/documents, which a converter wrote (RTF's `\pard`).
 # The framed incident dataset is a hex dump of generated frames, so its ASCII column is
 # payload bytes rather than prose: a byte after a word reads as a misspelling of it.
-# `regraded` is what the archive's incident reviews do to a severity. `shouldnt` is the owner's
-# own spelling in a decision line that quotes him verbatim.
+# `regraded` is what the archive's incident reviews do to a severity.
 [codespell]
 skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./runs,./evals/arc/runs,./crates/tui/tests/fixtures/sessions,./scripts/proof/tui_see/*.jsonl,./crates/runtime/tests/fixtures/documents,./evals/fixtures/tasks/fleet-forensics/environment/app/incidents/framed
-ignore-words-list = ratatui,advices,unparseable,disjointness,modle,iterm,regraded,shouldnt
+ignore-words-list = ratatui,advices,unparseable,disjointness,modle,iterm,regraded
