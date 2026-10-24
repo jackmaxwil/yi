@@ -422,6 +422,17 @@ impl JobStore {
         result
     }
 
+    /// Invariant: an idle channel tick re-arms in memory only; the next real write carries it,
+    /// and a restart re-derives it, so the worst a crash costs is one idle tick fired again.
+    fn rearm_idle(&self, now: u64, busy: &HashSet<String>) {
+        let mut state = lock_or_poisoned(&self.state);
+        for job in &mut state.jobs {
+            if is_due_job(job, now) && !busy.contains(&job.session_id) && channel::idle(job) {
+                job.next_run_at = next_run_at_for_schedule(&job.schedule, now).ok().flatten();
+            }
+        }
+    }
+
     fn persist(&self, state: &ScheduleState) {
         let Ok(text) = serde_json::to_string_pretty(state) else {
             return;
