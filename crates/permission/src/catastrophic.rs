@@ -719,9 +719,15 @@ const WRAPPERS: [&str; 11] = [
     "xargs",
 ];
 
-/// Reading past a wrapper, flag, assignment or number only widens what the belt and wall see.
+/// Shell words a command runs behind: `then rm -rf .git` runs `rm`.
+const OPENERS: [&str; 9] = [
+    "!", "do", "elif", "else", "if", "then", "until", "while", "{",
+];
+
+/// Reading past a wrapper, opener, flag, assignment or number widens what the belt and wall see.
 pub fn wraps(word: &str) -> bool {
     WRAPPERS.contains(&word.rsplit('/').next().unwrap_or(word))
+        || OPENERS.contains(&word)
         || word.starts_with('-')
         || word.contains('=')
         || word.chars().all(|character| character.is_ascii_digit())
@@ -736,18 +742,19 @@ fn runs_destructive(segment: &str) -> bool {
         })
 }
 
-/// A destructive verb in any segment sends every path-shaped token of that segment through the
-/// denylist. No shell-parsing cleverness (D15): split where a shell may start another command.
+/// A destructive verb in any segment sends every path-shaped token of the whole command through
+/// the denylist, since a quoted `;` may cut a segment short. No shell parsing (D15).
 pub fn command_targets_catastrophic(
     command: &str,
     context: &CatastrophicContext,
 ) -> Option<String> {
-    let segments = command.split([';', '&', '|', '\n', '(', ')', '`']);
-    for token in segments
-        .filter(|segment| runs_destructive(segment))
-        .flat_map(|segment| segment.split_whitespace().skip(1))
-    {
-        if token.starts_with('-') {
+    let separator = [';', '&', '|', '\n', '(', ')', '`'];
+    if !command.split(separator).any(runs_destructive) {
+        return None;
+    }
+    for token in command.split(|c: char| c.is_whitespace() || separator.contains(&c)) {
+        let token = token.trim_matches(['"', '\'']);
+        if token.is_empty() || token.starts_with('-') {
             continue;
         }
         // Incident: `rm -rf /` trimmed to an empty path that expanded to the working dir and

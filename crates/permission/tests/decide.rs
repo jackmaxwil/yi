@@ -128,6 +128,12 @@ fn a_catastrophic_target_in_any_segment_is_denied_in_yolo() -> TestResult {
         "true; rm -rf .git",
         "echo done && rm -rf ~",
         "ls | xargs nice rm -rf $HOME",
+        "rm -rf \"x (1)\" ~/.ssh",
+        "rm -rf 'a;b' ~",
+        "rm -rf \"$HOME\"",
+        "if true; then rm -rf .git; fi",
+        "{ rm -rf ~; }",
+        "! rm -rf ~",
     ] {
         let decision = yolo(command);
         assert!(
@@ -145,7 +151,14 @@ fn a_catastrophic_target_in_any_segment_is_denied_in_yolo() -> TestResult {
 #[test]
 fn a_case_folded_spelling_of_a_protected_path_is_denied_on_macos() -> TestResult {
     let session = SessionRules::new();
-    for command in ["rm -rf ~/.SSH", "rm -rf ~/documents", "rm -rf /ETC"] {
+    for command in [
+        "rm -rf ~/.SSH",
+        "rm -rf ~/documents",
+        "rm -rf /ETC",
+        "rm -rf /APPLICATIONS",
+        "rm -rf /library",
+        "rm -rf /system/x",
+    ] {
         let call = bash_call(command, "c");
         let decision = decide(&call, PermissionMode::Yolo, &[], &session, &[], &context());
         assert!(
