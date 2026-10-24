@@ -1,5 +1,5 @@
-# The paid weekly live runs, apart from tracking-hygiene.yml: that file only reads the forge and
-# finishes in minutes; this one spends provider money for up to 40.
+# The paid weekly live runs, apart from tracking-hygiene.yml: that file's job spends no provider
+# money and finishes in minutes; this one spends it for up to 40.
 name: live-weekly
 
 on:
