@@ -166,3 +166,47 @@ pub fn refresh(
     crate::refresh::write_atomic(&crate::refresh::cache_path(dir, "kimi"), &written)?;
     Ok(loaded)
 }
+
+const USAGE_WINDOWS: [(&str, &str); 4] = [
+    ("limit_5h", "5h"),
+    ("limit_7d", "7d"),
+    ("limit_month_total", "month_total"),
+    ("limit_month_code", "month_code"),
+];
+
+/// `GET /usages` as one line: each window's used ratio and reset time; a window the account does
+/// not report, or reports with no readable ratio, is left out.
+pub fn usage_line(payload: &Value) -> Value {
+    let mut line = Map::new();
+    for (key, name) in USAGE_WINDOWS {
+        let Some(window) = payload.get("usages").and_then(|usages| usages.get(key)) else {
+            continue;
+        };
+        let used = window.get("used_ratio").and_then(|ratio| {
+            ratio
+                .as_f64()
+                .or_else(|| ratio.as_str()?.parse().ok())
+                .filter(|ratio| ratio.is_finite())
+        });
+        let Some(used) = used else {
+            continue;
+        };
+        let mut entry = json!({ "used": used });
+        if let Some(reset) = window.get("reset_time").and_then(Value::as_str) {
+            entry["reset"] = json!(reset);
+        }
+        line.insert(name.to_owned(), entry);
+    }
+    Value::Object(line)
+}
+
+pub fn usages(key: &str, proxy: Option<&ProxyConfig>) -> Result<Value, String> {
+    let base = api_base().ok_or("kimi: the login profile names no api_base")?;
+    let payload = get_json(
+        &format!("{base}/usages"),
+        &[("authorization", format!("Bearer {key}"))],
+        proxy,
+        crate::refresh::CAP_BYTES,
+    )?;
+    Ok(usage_line(&payload))
+}

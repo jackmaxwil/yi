@@ -121,8 +121,26 @@ pub(crate) fn run(args: &Args) -> i32 {
             }
             code
         }
+        Some("usage") if words.next() == Some("kimi") => {
+            let Some(key) = yi_ai_key("kimi") else {
+                eprintln!("error: {}", yi_runtime::auth::missing_message("kimi"));
+                return 1;
+            };
+            match proxy_from_env()
+                .and_then(|proxy| yi_runtime::kimi_usages(key.expose(), proxy.as_ref()))
+            {
+                Ok(line) => {
+                    println!("{line}");
+                    0
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    1
+                }
+            }
+        }
         Some(other) => {
-            eprintln!("usage: yi catalog [refresh [provider]] (not {other:?})");
+            eprintln!("usage: yi catalog [refresh [provider] | usage kimi] (not {other:?})");
             2
         }
     }
