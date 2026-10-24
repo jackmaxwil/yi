@@ -39,6 +39,7 @@ pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
     trail: Option<PathBuf>,
+    spawned_by: Option<String>,
     pub(crate) worktree: Option<crate::lane::Lane>,
     /// The worker share of the lane pool this child's checkout was taken from; dropped with
     /// the lane, so a settled child stops holding a slot nobody is standing in.
@@ -161,6 +162,8 @@ impl std::ops::DerefMut for Children {
 pub struct ChildView {
     pub update: ChildUpdate,
     pub session: ChildFeed,
+    /// The tool call id of the kernel cell that spawned the child, when one did.
+    pub spawned_by: Option<String>,
 }
 
 pub struct ChildBuild<'a> {
@@ -239,6 +242,7 @@ pub struct SubagentHost {
     pub(crate) mailboxes: std::sync::OnceLock<PathBuf>,
     pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
     pub(crate) leads: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
+    kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
 }
 
 impl SubagentHost {
@@ -479,6 +483,7 @@ impl SubagentHost {
             mailboxes: std::sync::OnceLock::new(),
             partitions: Mutex::default(),
             leads: Mutex::default(),
+            kernel: std::sync::OnceLock::new(),
         }
     }
 
@@ -519,6 +524,7 @@ impl SubagentHost {
                     .map(|(id, record)| ChildView {
                         update: crate::family::flagged(record.update(id), &states),
                         session: ChildFeed::of(Arc::clone(&record.session)),
+                        spawned_by: record.spawned_by.clone(),
                     })
                     .collect();
                 view.sort_by(|left, right| left.update.id.cmp(&right.update.id));
@@ -736,6 +742,7 @@ impl SubagentHost {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
                     trail,
+                    spawned_by: self.spawning_cell(),
                     worktree,
                     lane_permit,
                     _container: container,

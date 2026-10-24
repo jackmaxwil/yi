@@ -42,7 +42,8 @@ impl App {
     /// that the roster no longer lists ends as `gone`, which heals every lost update.
     pub fn sync_children(&mut self, children: &[yi_runtime::ChildView]) {
         for child in children {
-            self.adopt(&child.update, Some(child.session.clone()));
+            let spawned_by = child.spawned_by.as_deref();
+            self.adopt(&child.update, Some(child.session.clone()), spawned_by);
             let Some(state) = self.tasks.get_mut(child.update.id.as_str()) else {
                 continue;
             };
@@ -81,9 +82,16 @@ impl App {
     }
 
     /// A child seen for the first time gets its task cell; every sighting updates it.
-    pub fn adopt(&mut self, update: &ChildUpdate, session: Option<ChildFeed>) {
+    /// `spawned_by` is the spawning cell's call id when the host recorded one.
+    pub fn adopt(
+        &mut self,
+        update: &ChildUpdate,
+        session: Option<ChildFeed>,
+        spawned_by: Option<&str>,
+    ) {
         let id = update.id.as_str().to_owned();
         if !self.tasks.contains_key(&id) {
+            let (spawn, born_under) = self.spawned_under(spawned_by);
             self.task_order.push(id.clone());
             self.tasks.insert(
                 id.clone(),
@@ -99,7 +107,7 @@ impl App {
                         tokens: 0,
                         elapsed_ms: 0,
                         error: None,
-                        spawn: self.spawning_cell(),
+                        spawn,
                         answer: None,
                         answer_dropped: 0,
                         activity: update.activity,
@@ -107,7 +115,7 @@ impl App {
                     },
                     started: self.clock.now(),
                     finished: None,
-                    born_under: self.spawning_call(),
+                    born_under,
                     session,
                 },
             );
