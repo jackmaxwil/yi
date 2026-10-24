@@ -27,9 +27,8 @@ fn identity_names_every_tool_the_session_registers() -> TestResult {
     Ok(())
 }
 
-/// Delegation is taught to a session that can act on it. A leaf root child (`can_delegate`
-/// false) keeps the kernel-or-bash teaching and Planning's conduct, and loses the working model's
-/// delegation rules and Planning's lift rule; the root reads all four.
+/// A leaf root child keeps the kernel-or-bash teaching and Planning's conduct and loses the
+/// delegation rules and the lift rule; the root reads all four.
 #[test]
 fn a_leaf_is_taught_no_delegation_and_the_root_all_of_it() -> TestResult {
     let dir = crate::scratch::Scratch::new("yi-leaf-doctrine")?;

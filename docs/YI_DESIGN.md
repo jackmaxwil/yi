@@ -285,8 +285,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `unattended` (Mode rank): nobody answers, hidden checks grade the task text, a check per
   requirement, one verifier cell before stopping. Then it registers `project-resources` (skills catalog), `pack`
   (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate` (only when `ExtOptions::can_delegate`, which a
-  child gets as `depth + 1 < max_depth`; one the depth cap stops from spawning is never sent the
-  protocol), `plugins` (the card of each plugin found,
+  child gets while its own depth is below `max_depth`; one the depth cap stops from spawning is
+  never sent the protocol), `plugins` (the card of each plugin found,
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
@@ -616,9 +616,10 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
   `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A `root` child the
-  depth cap leaves unable to spawn (`depth + 1 >= max_depth`, so every one at the default depth of
-  1) is a leaf: no `orchestrate` protocol, and no `delegation` fragment, which holds the working
-  model's delegation rules, Planning's lift rule and the RLM children bullet. A reader is a
+  depth cap leaves unable to spawn (its own depth has reached `max_depth`, so every one at the
+  default `rlm.maxDepth` of 1) is a leaf: no `orchestrate` protocol, and no `delegation` fragment,
+  which holds the working model's delegation rules, Planning's lift rule and the RLM children
+  bullet. A reader is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
