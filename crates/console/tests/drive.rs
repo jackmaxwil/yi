@@ -37,6 +37,11 @@ pub(crate) enum Step {
     Outcome(&'static str),
 }
 
+/// The HOME a drive run expands `~` from; nextest gives each test its own process.
+fn drive_home() -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-home-{}", std::process::id()))
+}
+
 fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
     let dir = Scratch::new(&format!("yi-console-test-{name}"))?;
     let socket = dir.join("sock");
@@ -455,6 +460,7 @@ fn run_console(
             pace: 0,
             browser: None,
             chrome_pin: None,
+            home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
             script: steps,
@@ -497,6 +503,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             pace: 0,
             browser: None,
             chrome_pin: None,
+            home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
             script: steps,
@@ -720,6 +727,74 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
          wait-frame 3000 !⎇ lane\n\
          quit\n",
     )
+}
+
+fn lane_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-lane-{}", std::process::id()))
+}
+
+fn resume_alpha_in_a_lane_dir(frame: &Value) -> Vec<Value> {
+    let mut frames = resume_alpha(frame);
+    let cwd = lane_dir().display().to_string();
+    let workdir = json!({"sessionUpdate": "_yi/workdir", "cwd": cwd, "lane": "yi"});
+    frames.insert(0, update("s-alpha", workdir));
+    frames
+}
+
+fn agent_rewrites_the_lane_file() -> Vec<Value> {
+    let path = lane_dir().join("a.txt");
+    let _write = std::fs::write(&path, "rewritten in the lane\n");
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e11", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": format!("--- a/{0}\n+++ b/{0}\n@@ -1,1 +1,1 @@\n-lane copy\n+rewritten in the lane\n", path.display()),
+                      "added": 1, "removed": 1}}),
+    )]
+}
+
+/// Dies with `e a.txt` opening the main checkout's copy while the agent edits the lane's, so
+/// the agent's patch, which names the lane's file, never refreshed the open editor either.
+#[test]
+fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
+    let lane = lane_dir();
+    std::fs::create_dir_all(&lane)?;
+    std::fs::write(lane.join("a.txt"), "lane copy\n")?;
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("_yi/seen", seen_ok),
+        Step::Expect("session/list", empty_list),
+        Step::Push(agent_rewrites_the_lane_file),
+        Step::Expect("_yi/tracked", tracked_no_then_answer),
+    ];
+    let ran = run(
+        "lane-editor",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy\n\
+         wait-frame 9000 1 rewritten in the lane\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&lane);
+    ran
+}
+
+/// Dies with `e ~/x.txt` reported as no such file: the path was joined to the root verbatim.
+#[test]
+fn e_opens_a_path_under_home() -> TestResult {
+    let home = drive_home();
+    std::fs::create_dir_all(&home)?;
+    std::fs::write(home.join("x.txt"), "from home\n")?;
+    let ran = run(
+        "home-editor",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e ~/x.txt\nkey enter\nwait-frame 3000 1 from home\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&home);
+    ran
 }
 
 #[test]

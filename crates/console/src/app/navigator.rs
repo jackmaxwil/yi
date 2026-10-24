@@ -101,13 +101,11 @@ impl App {
     /// `md <path>` / `diff <path>` open viewer panes, `nb` swaps the pane
     /// to the notebook view of its session. True when handled.
     pub(super) fn run_navigator_command(&mut self, query: &str) -> bool {
-        let root = self.state.root.clone();
-        let resolve = |path: &str| {
-            if path.starts_with('/') {
-                path.to_owned()
-            } else {
-                format!("{root}/{path}")
-            }
+        let (dir, home) = (self.session_dir(), self.state.home.clone());
+        let resolve = |path: &str| match (path.strip_prefix("~/"), home.as_deref()) {
+            (Some(rest), Some(home)) => format!("{home}/{rest}"),
+            _ if path.starts_with('/') => path.to_owned(),
+            _ => format!("{dir}/{path}"),
         };
         if query.trim() == "nb" {
             if let Some(pane) = self.state.focused_pane_mut() {

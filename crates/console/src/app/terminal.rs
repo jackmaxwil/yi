@@ -28,7 +28,7 @@ impl App {
         }
     }
 
-    fn terminal_cwd(&self) -> String {
+    pub(super) fn session_dir(&self) -> String {
         let session = self.state.focused_session();
         let workdir = session
             .as_ref()
@@ -46,7 +46,7 @@ impl App {
     }
 
     pub(super) fn open_terminal(&mut self) {
-        let cwd = self.terminal_cwd();
+        let cwd = self.session_dir();
         let spawned = std::env::current_exe()
             .and_then(|exe| Pty::spawn(&exe, &shell(), &cwd, self.wake.clone()));
         let pty = match spawned {
