@@ -1,3 +1,5 @@
+use yi_tools::Cut;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Bytes(pub usize);
 
@@ -28,8 +30,8 @@ pub struct Truncated {
     pub truncated: bool,
 }
 
-/// Head-truncates a source to its byte budget with an explicit marker — a
-/// silently clipped source reads as complete to the model.
+/// Head-truncates a source to its byte budget and ends it in a [`Cut`] row: a silently clipped
+/// source reads as complete to the model. The fence above the text names the source to read.
 pub fn fit(source: &str, budget: Bytes) -> Truncated {
     if source.len() <= budget.0 {
         return Truncated {
@@ -37,16 +39,17 @@ pub fn fit(source: &str, budget: Bytes) -> Truncated {
             truncated: false,
         };
     }
-    let mut end = budget.0;
-    while end > 0 && !source.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    let dropped = source.len().saturating_sub(end);
+    let kept = source.floor_char_boundary(budget.0);
+    let row = Cut {
+        kept,
+        total: source.len(),
+        what: "bytes kept",
+        cap: "source budget",
+        limit: budget.0,
+        next: "read the source in full",
+    };
     Truncated {
-        text: format!(
-            "{}\n[... truncated: {dropped} bytes over budget ...]",
-            &source[..end]
-        ),
+        text: format!("{}\n{row}", source.get(..kept).unwrap_or_default()),
         truncated: true,
     }
 }
