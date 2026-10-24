@@ -3212,6 +3212,126 @@ fn a_card_lands_under_the_cell_its_record_names() -> TestResult {
     Ok(())
 }
 
+const CHILDREN_CORPUS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/sessions/01a13357.jsonl"
+);
+
+/// The child the recorded session spawned, read off its trail line: its name and its id.
+fn recorded_child() -> Result<(String, String), Box<dyn Error>> {
+    for line in std::fs::read_to_string(CHILDREN_CORPUS)?.lines() {
+        let row: serde_json::Value = serde_json::from_str(line)?;
+        let data = &row["data"];
+        if row["customType"] == "child" && data["event"] == "spawned" {
+            let field = |key: &str| data[key].as_str().map(str::to_owned).ok_or("no field");
+            return Ok((field("name")?, field("id")?));
+        }
+    }
+    Err("the session has no spawn line".into())
+}
+
+/// The recorded session replayed, then a roster of its child under `n` ids, the last `done` done.
+fn family(n: usize, done: usize) -> Result<(App, Vec<yi_runtime::ChildView>), Box<dyn Error>> {
+    let (name, id) = recorded_child()?;
+    let mut app = app();
+    common::replay_stream(&mut app, std::path::Path::new(CHILDREN_CORPUS))?;
+    let roster = (0..n)
+        .map(|i| {
+            let status = if i >= n - done {
+                yi_runtime::ChildStatus::Completed
+            } else {
+                yi_runtime::ChildStatus::Running
+            };
+            yi_runtime::ChildView {
+                update: yi_runtime::ChildUpdate {
+                    name: name.clone(),
+                    ..reader(&format!("{id}{i:02}"), status, 1)
+                },
+                session: yi_runtime::ChildFeed::of(Arc::new(faux_session("scouted"))),
+                spawned_by: None,
+            }
+        })
+        .collect();
+    Ok((app, roster))
+}
+
+/// The `/agents` popup's child rows and its cap row, read off a screen tall enough for all.
+fn agents_rows(app: &mut App) -> Result<(Vec<String>, Option<String>), Box<dyn Error>> {
+    app.open_agents();
+    let rows = common::rows_sized(app, 140, 80)?;
+    let children = rows
+        .iter()
+        .filter(|row| row.starts_with(" ├─ ") || row.starts_with(" └─ "))
+        .cloned()
+        .collect();
+    Ok((
+        children,
+        rows.into_iter().find(|row| row.starts_with("[…] agents")),
+    ))
+}
+
+/// Dies with the cards kept across `/new` and a rewind: `/agents`, the focus cycle and every
+/// child's session feed stayed with the old transcript's children.
+#[test]
+fn a_new_session_and_a_rewind_drop_the_old_cards() -> TestResult {
+    for fresh in [true, false] {
+        let (mut app, roster) = family(2, 1)?;
+        app.sync_children(&roster);
+        let done = roster.last().map(|c| c.update.id.as_str().to_owned());
+        app.set_focus(done.clone());
+        app.apply(if fresh {
+            yi_tui::port::Reply::Fresh {
+                name: "fresh".to_owned(),
+            }
+        } else {
+            yi_tui::port::Reply::Rewound {
+                entries: Vec::new(),
+                unsent: None,
+                abandoned: None,
+            }
+        });
+        assert_eq!(app.focused(), None, "focus left the dropped card");
+        let (rows, _) = agents_rows(&mut app)?;
+        assert!(rows.is_empty(), "no card outlives the reset: {rows:?}");
+        app.sync_children(&roster);
+        let (rows, _) = agents_rows(&mut app)?;
+        assert_eq!(rows.len(), 1, "only the running child comes back: {rows:?}");
+        assert!(rows.iter().all(|row| row.contains('◐')), "{rows:?}");
+    }
+    Ok(())
+}
+
+/// Dies with no cap on finished cards: each kept its child's whole session alive and every
+/// child update walked them all. At the cap nothing is said; one past it, the oldest goes.
+#[test]
+fn the_thirty_third_finished_card_drops_the_oldest_and_says_so() -> TestResult {
+    let (mut app, roster) = family(34, 32)?;
+    app.sync_children(&roster);
+    let (rows, cap) = agents_rows(&mut app)?;
+    assert_eq!((rows.len(), cap), (34, None), "{rows:?}");
+    let (mut app, roster) = family(34, 33)?;
+    app.sync_children(&roster);
+    let (rows, cap) = agents_rows(&mut app)?;
+    assert_eq!(rows.len(), 33, "the oldest finished card went: {rows:?}");
+    assert!(
+        rows.iter().filter(|row| row.contains('◐')).count() == 1,
+        "{rows:?}"
+    );
+    assert_eq!(
+        cap.as_deref().map(str::trim_end),
+        Some(
+            "[…] agents: 32 of 33 finished shown · cap 32 finished children · older cards are in the transcript"
+        )
+    );
+    app.sync_children(&roster);
+    assert_eq!(
+        agents_rows(&mut app)?.0.len(),
+        33,
+        "the roster does not revive it"
+    );
+    Ok(())
+}
+
 /// Guards the roster rule: a child deleted before its first event left a card at `Running`
 /// that nothing would ever finish, one per `rlm.delete_subagent` call.
 #[test]
