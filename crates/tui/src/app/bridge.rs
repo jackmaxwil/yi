@@ -121,7 +121,7 @@ pub(crate) fn spawn_runtime_bridge(
                     match command {
                         Command::Prompt(text) => {
                             if let Some(notice) = submit(&driver_session, &text) {
-                                let _ = reply_tx.send(UiEvent::Reply(Reply::Steered(notice)));
+                                let _ = reply_tx.send(UiEvent::Reply(Reply::Notice(notice)));
                             }
                         }
                         Command::Steer(text) => driver_session.steer_message(user_input(&text)),

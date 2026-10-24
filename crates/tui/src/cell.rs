@@ -659,8 +659,8 @@ impl ToolCell {
         if failed {
             return first().map(|line| crate::transcript::show_controls(strip_hashline(line)));
         }
-        // Invariant: the typed `details` decide the digest; the text is read only where none
-        // exists, so rewording what the model reads moves nothing here.
+        // Invariant: a typed detail decides the digest wherever the result carries one; the text
+        // is read only where none exists, so rewording it moves only those rows.
         let count = |key: &str| {
             let n = details.get(key)?.as_u64()?;
             Some(usize::try_from(n).unwrap_or(usize::MAX))
@@ -682,12 +682,14 @@ impl ToolCell {
                 _ if numbered() == 0 && entries() > 0 => count_label(entries(), "entry"),
                 _ => count_label(numbered(), "line"),
             },
-            // `[path#TAG]` then `updated; first change at line N` — the verb
-            // and the anchor the model just earned, in the tool's own words.
-            "edit" => match first_change(details) {
-                Some(line) => format!("updated; first change at line {line}"),
-                None => text.lines().nth(1)?.trim().to_owned(),
-            },
+            // The tool's own first-change line is no typed detail, and an insert-after
+            // reports its anchor, one above the patch's first row: read the verdict row.
+            "edit" => text
+                .lines()
+                .map(str::trim)
+                .find(|row| is_verdict(row))
+                .or_else(|| text.lines().nth(1))?
+                .to_owned(),
             "grep" => match count("hits") {
                 Some(hits) => count_label(hits, "hit"),
                 None => count_label(
@@ -702,27 +704,11 @@ impl ToolCell {
     }
 }
 
-/// None for a delete or a move, which the patch cannot tell from an update: the text then decides.
-fn first_change(details: &Value) -> Option<u64> {
-    let ops = details.get("ops")?;
-    let ops = |kind: &str| ops.get(kind).and_then(Value::as_u64).unwrap_or(0);
-    if ops("updated") == 0 || ops("deleted") > 0 || ops("moved") > 0 {
-        return None;
-    }
-    let mut rows = details
-        .get("patch")?
-        .as_str()?
-        .lines()
-        .skip_while(|row| !row.starts_with("@@"));
-    let start: u64 = rows
-        .next()?
-        .split('+')
-        .nth(1)?
-        .split([',', ' '])
-        .next()?
-        .parse()
-        .ok()?;
-    start.checked_add(u64::try_from(rows.take_while(|row| row.starts_with(' ')).count()).ok()?)
+fn is_verdict(row: &str) -> bool {
+    ["updated", "deleted", "unchanged"].iter().any(|verb| {
+        row.strip_prefix(verb)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(';'))
+    })
 }
 
 pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
@@ -1052,7 +1038,7 @@ fn callout(
             Some("advisory") => strip_tags(row),
             _ => row.trim().to_owned(),
         };
-        if row.is_empty() || row.starts_with("<agent_message") || row == "</agent_message>" {
+        if row.is_empty() || is_element_row(&row) {
             continue;
         }
         let line = Line::from(vec![
@@ -1066,6 +1052,13 @@ fn callout(
         }
     }
     out
+}
+
+/// The wrapper a producer puts round a body (`agent_message`, `reaped_child`) is one element.
+fn is_element_row(row: &str) -> bool {
+    row.strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|inner| !inner.contains(['<', '>']))
 }
 
 const EXPLORED_CAP: usize = 32;
