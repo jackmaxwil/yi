@@ -918,9 +918,11 @@ fn run_sessions(args: &Args) -> i32 {
 }
 
 fn run_stats(args: &Args) -> i32 {
+    let cwd = effective_cwd(args);
     let options = stats::Options {
         session_dir: default_session_dir(args),
-        cwd: effective_cwd(args).display().to_string(),
+        plans_dir: configured_plans_dir(&cwd),
+        cwd: cwd.display().to_string(),
         json: args.json,
         query: args.stats.clone(),
     };
