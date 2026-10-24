@@ -31,6 +31,10 @@ enum Step {
     Close,
     /// Wait for the client to reconnect.
     Accept,
+    /// Drop the connection and the socket file, so every re-dial fails and the link stays down.
+    Gone,
+    /// Wait for the console's answer to a worker request; its outcome must be this one.
+    Outcome(&'static str),
 }
 
 fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
@@ -273,6 +277,36 @@ fn fixture_loop(listener: &UnixListener, script: Vec<Step>) -> Result<(), String
             }
             Step::Accept => {
                 (stream, reader) = accept(listener)?;
+            }
+            Step::Outcome(want) => loop {
+                let Some(frame) = read_request(&mut reader) else {
+                    return Err(format!(
+                        "connection ended before the console answered {want}"
+                    ));
+                };
+                if frame.get("method").is_some() {
+                    if let Some(reply) = generic_reply(&frame) {
+                        write_frame(&mut stream, &reply)?;
+                    }
+                    continue;
+                }
+                let got = frame
+                    .pointer("/result/outcome/outcome")
+                    .and_then(Value::as_str);
+                if got == Some(want) {
+                    break;
+                }
+                return Err(format!("the console answered {got:?}, wanted {want}"));
+            },
+            Step::Gone => {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if let Some(path) = listener
+                    .local_addr()
+                    .ok()
+                    .and_then(|a| a.as_pathname().map(PathBuf::from))
+                {
+                    let _ = std::fs::remove_file(path);
+                }
             }
         }
     }
@@ -4448,5 +4482,136 @@ fn a_pasted_control_character_is_dropped_from_a_submitted_console_message() -> T
          type x\u{7}y\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\nquit\n",
     )?;
     assert_eq!(row_holding(&frame, "┃   xy")?, "┃   xy");
+    Ok(())
+}
+
+/// The worker's side of a refused ask: it declines the tool and the turn ends, so the session
+/// leaves `?`. Any other answer, or none, leaves it blocked.
+fn denial_ends_the_turn(frame: &Value) -> Vec<Value> {
+    let cancelled = frame
+        .pointer("/result/outcome/outcome")
+        .and_then(Value::as_str)
+        == Some("cancelled");
+    let idle = json!({"sessionUpdate": "state_update", "state": "idle"});
+    cancelled
+        .then(|| update("s-alpha", idle))
+        .into_iter()
+        .collect()
+}
+
+/// Dies with the worker blocked on an approval nobody could answer: closing the pane dropped the
+/// chat that held the ask, so the session sat at `?` until the daemon was stopped.
+#[test]
+fn closing_the_pane_that_holds_an_approval_cancels_it() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Expect("<response>", denial_ends_the_turn));
+    let frame = run_frames(
+        "close-cancels-ask",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 rm -rf target\n\
+         key alt-v\n\
+         key alt-left\n\
+         key alt-x\n\
+         wait-frame 5000 !rm -rf target\n\
+         wait-frame 5000 !needs your a\n\
+         quit\n",
+    )?;
+    let row = row_holding(&frame, "s-alpha")?;
+    assert!(row.ends_with('●'), "the session is done and unseen: {row}");
+    Ok(())
+}
+
+/// Dies with the worker waiting on a console that left: quitting dropped every chat with its ask.
+#[test]
+fn quitting_cancels_the_approval_a_pane_holds() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Outcome("cancelled"));
+    run(
+        "quit-cancels-ask",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 rm -rf target\n\
+         key alt-q\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+/// Dies with `request timed out: Cancel` ten seconds after the keypress: the writer queue took
+/// the frame while the link was down, and nothing was ever sent.
+#[test]
+fn an_abort_with_the_link_down_is_refused_at_once() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(|| {
+        vec![
+            update(
+                "s-alpha",
+                json!({"sessionUpdate": "state_update", "state": "running"}),
+            ),
+            event("s-alpha", 10, &AgentEvent::AgentStart),
+        ]
+    }));
+    fixture.push(Step::Gone);
+    let frame = run_frames(
+        "abort-link-down",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 disconnected\n\
+         key esc\n\
+         key esc\n\
+         wait-frame 3000 not connected\n\
+         quit\n",
+    )?;
+    let row = row_holding(&frame, "not connected")?;
+    assert!(
+        row.contains("not connected — session/cancel not sent"),
+        "{row}"
+    );
+    Ok(())
+}
+
+/// Dies with the pasted path gone: the palette took keys only, so a paste landed nowhere.
+#[test]
+fn a_paste_into_the_palette_lands_in_its_query() -> TestResult {
+    let frame = run_frames(
+        "paste-into-palette",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-e\npaste docs/Yi's Next\u{7} Shape.md\n\
+         wait-frame 3000 Shape.md\nquit\n",
+    )?;
+    let row = row_holding(&frame, "› e docs")?;
+    assert_eq!(row, "› e docs/Yi's Next Shape.md▌");
+    Ok(())
+}
+
+/// Dies with the "not connected" row still on screen after the link came up: only binding a
+/// session cleared it.
+#[test]
+fn the_banner_that_says_not_connected_clears_when_the_link_comes_up() -> TestResult {
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+    let mut app = yi_console::app::App::new("/repo".to_owned(), theme);
+    let (events, _received) = yi_console::client::events();
+    let (outbound, _threads) = yi_console::client::spawn(
+        std::env::temp_dir().join("yi-banner-no-daemon.sock"),
+        events,
+    );
+    app.handle_event(
+        &outbound,
+        ratatui::crossterm::event::Event::Key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('n'),
+            ratatui::crossterm::event::KeyModifiers::ALT,
+        )),
+    );
+    assert_eq!(app.state.banner.as_deref(), Some("not connected"));
+    app.reduce_client(&outbound, yi_console::client::ClientEvent::Connected);
+    assert_eq!(app.state.banner, None);
+    outbound.shutdown();
     Ok(())
 }

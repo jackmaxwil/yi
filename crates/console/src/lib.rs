@@ -333,6 +333,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     let input = client::spawn_input(event_tx, std::sync::Arc::clone(&stop_input));
     drop(setup);
     let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme, control);
+    app.cancel_asks(&outbound);
     stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = input.join();
     restore_terminal();
@@ -807,6 +808,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         }
     }
 
+    app.cancel_asks(&outbound);
     outbound.shutdown();
     drop(events);
     join_with_deadline(threads);

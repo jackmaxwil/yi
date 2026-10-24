@@ -189,6 +189,9 @@ impl App {
         method: &str,
         params: Value,
     ) {
+        if !self.connected() {
+            return self.note(&format!("not connected — {method} not sent"));
+        }
         self.next_request = self.next_request.wrapping_add(1);
         let id = self.next_request;
         if outbound.send(&frame(Some(id), method, params)) {
@@ -365,6 +368,7 @@ impl App {
         match event {
             ClientEvent::Connected => {
                 self.state.link = Link::Connected;
+                self.state.banner = None;
                 self.pending.clear();
                 self.send_request(
                     outbound,
@@ -860,11 +864,14 @@ impl App {
         match action {
             Action::SplitRight => self.split_with_anim(Direction::Horizontal),
             Action::SplitDown => self.split_with_anim(Direction::Vertical),
-            Action::ClosePane => {
-                if self.state.close_focused_pane().is_none() {
-                    self.note("last pane — alt+q quits");
+            Action::ClosePane => match self.state.close_focused_pane() {
+                None => self.note("last pane — alt+q quits"),
+                Some(mut pane) => {
+                    if let Some(ask) = pane.take_ask() {
+                        self.cancel_ask(outbound, ask.request_id);
+                    }
                 }
-            }
+            },
             Action::Zoom => {
                 if let Some(tab) = self.state.tab_mut() {
                     tab.zoomed = !tab.zoomed;
@@ -1023,11 +1030,17 @@ impl App {
                 self.dirty = true;
             }
             CtEvent::Mouse(mouse) => self.mouse_event(outbound, mouse),
-            CtEvent::Paste(text) => {
-                if self.state.zone == Zone::Panes && matches!(self.state.mode, Mode::Normal) {
+            CtEvent::Paste(text) => match &mut self.state.mode {
+                Mode::Navigator { query, selected } => {
+                    query.extend(text.chars().filter(|c| !c.is_control()));
+                    *selected = 0;
+                    self.dirty = true;
+                }
+                Mode::Normal if self.state.zone == Zone::Panes => {
                     self.chat_event(CtEvent::Paste(text));
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }

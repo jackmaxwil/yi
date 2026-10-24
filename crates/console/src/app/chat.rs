@@ -471,11 +471,24 @@ impl App {
     fn answer_ask(&mut self, outbound: &Outbound, ask: PendingAsk, choice: Option<AskChoice>) {
         // A popup that closed without a verdict is a rejection, never a hung worker.
         let option = option_for(choice.unwrap_or(AskChoice::Reject), &ask.options);
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": ask.request_id,
-            "result": {"outcome": {"outcome": "selected", "optionId": option}},
-        });
+        let outcome = json!({"outcome": "selected", "optionId": option});
+        self.reply_ask(outbound, ask.request_id, outcome);
+    }
+
+    /// Incident: an ask lived only in its pane's chat, so a closed pane or a quit left the
+    /// worker blocked on an answer nobody could give; the worker reads `cancelled` as a refusal.
+    pub(super) fn cancel_ask(&mut self, outbound: &Outbound, request_id: String) {
+        self.reply_ask(outbound, request_id, json!({"outcome": "cancelled"}));
+    }
+
+    pub fn cancel_asks(&mut self, outbound: &Outbound) {
+        for request_id in self.state.take_asks() {
+            self.cancel_ask(outbound, request_id);
+        }
+    }
+
+    fn reply_ask(&mut self, outbound: &Outbound, request_id: String, outcome: Value) {
+        let response = json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}});
         if !outbound.send(&response) {
             self.note("send failed: permission answer not delivered");
         }

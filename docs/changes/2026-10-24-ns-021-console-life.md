@@ -1,0 +1,5 @@
+---
+issue: Closes #1461, Refs #1442
+raise: tests +165, comments +2, crate console +43
+---
+A console no longer leaves a worker blocked on an approval nobody can answer (HB-console-life). A permission ask lived only in the chat of the pane it landed in, so closing that pane, or quitting the console, dropped it and the session stayed at `?` until the daemon was stopped. Closing the pane and quitting now answer each ask they hold, in a pane, in a parked chat or still waiting for a pane, as `cancelled`, which the worker takes as a refusal, so its turn ends (YI_DESIGN.md §17.2). Every request the console makes now checks the link first: with the daemon gone an abort keypress shows `not connected — session/cancel not sent` at once, where it was queued behind a dead writer and its pending entry was cleared by the next disconnect, so it never said anything. A paste into the palette, which opens on `e ` for a file, now lands in its query with control characters dropped, and the banner that says the console is not connected clears when the link comes up. Unit HB-console-life.
