@@ -575,14 +575,21 @@ impl PlanEngine {
                 .head
                 .branch()
                 .map(|branch| branch.as_str().to_owned());
-            // A parent unmoved since the candidate was cut merges to the candidate's own tree,
-            // so the candidate's verdict is this tree's and its checks do not run again.
+            // Invariant: an unmoved parent merges to the candidate's own tree, and a reproducible
+            // verdict there over the same contract and output bytes is this tree's verdict.
             let reused = same_tree(&self.cwd, &candidate.commit, &staging.integrated)
                 .then(|| {
                     self.last_verdict(&txn.records, id, &label, attempt, KIND_CANDIDATE_VERIFIED)
                 })
                 .flatten()
-                .filter(|verdict| candidate.token.as_ref() == Some(&verdict.token))
+                .filter(|verdict| {
+                    let rebased = VerificationToken {
+                        snapshot: token.snapshot.clone(),
+                        integration: token.integration,
+                        ..verdict.token.clone()
+                    };
+                    verdict.reproducible && rebased == token
+                })
                 .map(|verdict| Verdict {
                     token: token.clone(),
                     ..verdict

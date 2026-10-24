@@ -7,7 +7,7 @@ use std::time::Duration;
 use yi_runtime::plan::capacity::{Capacity, Purpose};
 use yi_types::plan::doc::TodoState;
 
-use crate::worktree::bench;
+use crate::worktree::{Shape, bench};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -27,7 +27,7 @@ fn two_acceptances_verify_at_once_and_a_third_waits() -> TestResult {
     let scratch = crate::scratch::Scratch::new("yi-plan-capacity-overlap")?;
     let check = overlap_check(&scratch, 2);
     let labels = ["first", "second", "third"];
-    let bench = bench("overlap", &labels, 8, &check, false)?;
+    let bench = bench("overlap", &labels, 8, &check, Shape::Unmoved)?;
     let ran: Vec<Result<(), String>> = std::thread::scope(|scope| {
         let runs: Vec<_> = labels
             .iter()
@@ -84,7 +84,7 @@ fn the_share_is_a_quarter_of_the_pool_from_one_to_four() {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn an_acceptance_waits_out_a_check_longer_than_thirty_seconds() -> TestResult {
-    let bench = bench("long-wait", &["only"], 2, "true", false)?;
+    let bench = bench("long-wait", &["only"], 2, "true", Shape::Unmoved)?;
     let capacity = bench.engine.capacity();
     let held = capacity.reserve(Purpose::Verification)?;
     let accepted = std::thread::scope(|scope| {

@@ -5,14 +5,14 @@ use std::error::Error;
 
 use yi_types::plan::doc::TodoState;
 
-use crate::worktree::bench;
+use crate::worktree::{Shape, bench};
 
 /// How many times the contract's check ran for one child's submit and done.
-fn runs(name: &str, moved: bool) -> Result<usize, Box<dyn Error>> {
+fn runs(name: &str, shape: Shape) -> Result<usize, Box<dyn Error>> {
     let scratch = crate::scratch::Scratch::new(&format!("yi-plan-worktree-{name}"))?;
     let log = scratch.join("runs.log");
     let check = format!("echo run >> {}", log.display());
-    let bench = bench(name, &["only"], 4, &check, moved)?;
+    let bench = bench(name, &["only"], 4, &check, shape)?;
     bench.submit("only")?;
     bench.done("only")?;
     assert!(matches!(bench.state("only")?, TodoState::Done { .. }));
@@ -23,7 +23,7 @@ fn runs(name: &str, moved: bool) -> Result<usize, Box<dyn Error>> {
 /// the candidate's own tree, and its check ran a second time on the same bytes.
 #[test]
 fn an_unmoved_parent_takes_the_candidates_verdict() -> Result<(), Box<dyn Error>> {
-    assert_eq!(runs("unmoved", false)?, 1);
+    assert_eq!(runs("unmoved", Shape::Unmoved)?, 1);
     Ok(())
 }
 
@@ -31,6 +31,22 @@ fn an_unmoved_parent_takes_the_candidates_verdict() -> Result<(), Box<dyn Error>
 /// merges to a tree no check has seen, so the integration is checked.
 #[test]
 fn a_moved_parent_checks_the_merged_tree() -> Result<(), Box<dyn Error>> {
-    assert_eq!(runs("moved", true)?, 2);
+    assert_eq!(runs("moved", Shape::Moved)?, 2);
+    Ok(())
+}
+
+/// Dies with the reuse blind to reproducibility: a checker that reads outside the snapshot is
+/// no function of the tree, so the same tree is checked again at integration.
+#[test]
+fn a_check_reading_outside_the_snapshot_runs_again() -> Result<(), Box<dyn Error>> {
+    assert_eq!(runs("outside", Shape::ReadsOutside)?, 2);
+    Ok(())
+}
+
+/// Dies with the reuse blind to the product: the candidate read its output in its own checkout
+/// and a parent serving none reads no product, so the integration's verdict is its own.
+#[test]
+fn an_integration_reading_another_product_runs_again() -> Result<(), Box<dyn Error>> {
+    assert_eq!(runs("unserved", Shape::Unserved)?, 2);
     Ok(())
 }
