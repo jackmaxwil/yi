@@ -38,6 +38,7 @@ import merge_baseline  # noqa: E402
 from check_pr_metadata import DRAFT  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
+BINARY = {"binary_size_budget": "dist binary", "binary_size_budget_linux": "Linux dist binary"}
 SUBJECT_LIMIT = 72
 POLL = 20
 WEB = "https://git.example.invalid"
@@ -205,8 +206,8 @@ def cmd_ratchet(args):
     for path in changed:
         was, now = before.get(path, {}), read_json(path)
         stem = pathlib.Path(path).stem
-        if stem == "binary_size_budget":
-            parts.append(f"dist binary {was.get('max_bytes', '?')} -> {now.get('max_bytes', '?')}")
+        if stem in BINARY:
+            parts.append(f"{BINARY[stem]} {was.get('max_bytes', '?')} -> {now.get('max_bytes', '?')}")
         elif stem == "request_budget":
             for key in ("system", "tools", "total"):
                 if was.get(key) != now.get(key):
@@ -244,6 +245,14 @@ def cmd_commit(args):
     return binary_ratchet(args.topic)
 
 
+def overrun(text):
+    """(baseline stem, budget, size) of a lone budget overrun; the hard cap, a missing binary or a
+    crash is None and stops the lane."""
+    failures = [line.strip() for line in text.splitlines() if line.startswith("  ")]
+    grown = re.fullmatch(r"dist binary (\d+) > (\d+) \+ \d+ bytes \((\w+)\.json\)", failures[0]) if len(failures) == 1 else None
+    return (grown.group(3), int(grown.group(2)), int(grown.group(1))) if grown and grown.group(3) in BINARY else None
+
+
 def binary_ratchet(topic):
     """Built here, after the code commit: check_binary_size.py only stats target/dist/yi,
     so without a build it measures the previous landing (said ok while the lane grew)."""
@@ -264,15 +273,14 @@ def binary_ratchet(topic):
     print(f"binary: {verdict.strip() or 'no measurement'}")
     if out.returncode == 0:
         return 0
-    # Only a lone budget overrun ratchets; the hard cap, a missing binary or a crash stops the lane.
-    failures = [line.strip() for line in text.splitlines() if line.startswith("  ")]
-    grown = re.fullmatch(r"dist binary (\d+) > (\d+) bytes", failures[0]) if len(failures) == 1 else None
+    grown = overrun(text)
     if not grown:
         print(text.strip())
         return 1
-    path = BASELINES / "binary_size_budget.json"
-    path.write_text(merge_baseline.layout({"max_bytes": int(grown.group(1))}))
-    subject = ratchet_subject([f"dist binary {grown.group(2)} -> {grown.group(1)}"], topic)
+    stem, was, size = grown
+    path = BASELINES / f"{stem}.json"
+    path.write_text(merge_baseline.layout({"max_bytes": size}))
+    subject = ratchet_subject([f"{BINARY[stem]} {was} -> {size}"], topic)
     git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
     print(f"ratchet: {subject}")
     return 0
@@ -676,6 +684,20 @@ def selfcheck():
     finally:
         subprocess.run = real_run
     assert stopped == 1, "a hard-cap breach stops the push lane"
+    # A size inside one page over the baseline reads green, so the push writes and commits nothing.
+    page = check_binary_size.PAGE
+    assert overrun(f"FAIL binary_size\n  {check_binary_size.problems(800_001 + page, 800_000, name='binary_size_budget_linux.json')[0]}\n") == (
+        "binary_size_budget_linux", 800_000, 800_001 + page)
+    assert check_binary_size.problems(800_000 + page, 800_000) == []
+    real_git, written = globals()["git"], []
+    globals()["git"] = lambda *a, **kw: written.append(a) or ""
+    subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "ok   binary_size (816384 bytes)\n", "")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            inside = binary_ratchet("")
+    finally:
+        subprocess.run, globals()["git"] = real_run, real_git
+    assert inside == 0 and written == [], "growth inside one page commits no baseline"
     import pr_review
 
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
