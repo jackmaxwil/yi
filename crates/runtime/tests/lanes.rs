@@ -783,6 +783,30 @@ fn a_quit_over_new_files_keeps_them_under_a_quiet_status_config() -> TestResult 
     Ok(())
 }
 
+/// Incident: the same quiet config read a child's new files as no work, so its candidate
+/// was the base commit and the files were cleaned when the slot was handed back.
+#[test]
+fn a_candidate_commits_new_files_under_a_quiet_status_config() -> TestResult {
+    let rig = Rig::new("quiet-candidate")?;
+    git(&rig.repo, &["config", "status.showUntrackedFiles", "no"])?;
+    let lane = rig.pool(1)?.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("notes-é.txt"), "brouillon\n")?;
+    let candidate = lane.candidate(&quiet(), None)?;
+    let files = git(
+        lane.path(),
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--name-only",
+            "--format=",
+            candidate.commit.as_str(),
+        ],
+    )?;
+    assert_eq!(files, "notes-é.txt");
+    Ok(())
+}
+
 /// Incident: a resume claimed a free slot and `-B` reset its own unmerged branch to `main`.
 #[test]
 fn a_resumed_session_after_a_clean_quit_keeps_its_commits() -> TestResult {
