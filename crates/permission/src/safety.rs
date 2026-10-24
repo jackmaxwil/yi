@@ -273,13 +273,13 @@ fn flags(argv: &[String]) -> Vec<&str> {
 }
 
 /// Invariant: getopt reads `-fdx` as `-f -d -x` and `--out` as `--output`, so a short flag
-/// counts anywhere in a cluster and a long one by any prefix, or as a prefix of a longer flag.
+/// counts anywhere in a cluster and a long one by any prefix.
 fn given(argv: &[String], flag: &str) -> bool {
     argv.iter().any(
         |token| match (flag.strip_prefix("--"), token.strip_prefix("--")) {
             (Some(name), Some(said)) => {
                 let said = said.split('=').next().unwrap_or(said);
-                !said.is_empty() && (name.starts_with(said) || said.starts_with(name))
+                !said.is_empty() && name.starts_with(said)
             }
             (None, None) => (token.strip_prefix('-'))
                 .zip(flag.chars().nth(1))
@@ -292,13 +292,15 @@ fn given(argv: &[String], flag: &str) -> bool {
 /// Flags that make a read run a program (destructive, as `find -exec` is; a git `-c` value can
 /// name one) or write a file.
 #[rustfmt::skip]
-const ACTING: [(&str, &str, Class); 14] = [
+const ACTING: [(&str, &str, Class); 19] = [
     ("fd", "-x", Class::Destructive), ("fd", "-X", Class::Destructive),
-    ("fd", "--exec", Class::Destructive), ("rg", "--pre", Class::Destructive),
-    ("rg", "--hostname-bin", Class::Destructive), ("sort", "--compress-program", Class::Destructive),
-    ("sort", "-o", Class::Unknown), ("sort", "--output", Class::Unknown), ("tree", "-o", Class::Unknown),
-    ("awk", "-f", Class::Unknown), ("awk", "--file", Class::Unknown), ("git", "--output", Class::Unknown),
-    ("git", "-c", Class::Unknown), ("git", "--config-env", Class::Unknown),
+    ("fd", "--exec", Class::Destructive), ("fd", "--exec-batch", Class::Destructive),
+    ("rg", "--pre", Class::Destructive), ("rg", "--hostname-bin", Class::Destructive),
+    ("sort", "--compress-program", Class::Destructive), ("sort", "-o", Class::Unknown),
+    ("sort", "--output", Class::Unknown), ("tree", "-o", Class::Unknown), ("git", "--output", Class::Unknown),
+    ("awk", "-f", Class::Unknown), ("awk", "--file", Class::Unknown), ("awk", "-E", Class::Unknown),
+    ("awk", "--exec", Class::Unknown), ("awk", "-i", Class::Unknown), ("awk", "--include", Class::Unknown),
+    ("awk", "-l", Class::Unknown), ("awk", "--load", Class::Unknown),
 ];
 
 fn acting(name: &str, argv: &[String]) -> Class {
@@ -369,6 +371,11 @@ fn git_class(argv: &[String]) -> Class {
     }
     if git_network(argv) {
         return Class::Egress;
+    }
+    // Invariant: git reads `-c` (a pager, an fsmonitor) only before the subcommand, unclustered.
+    let mut globals = (argv.iter()).take_while(|word| word.as_str() != subcommand);
+    if globals.any(|word| word == "-c" || word.starts_with("--config-env")) {
+        return Class::Unknown;
     }
     if GIT_READ.binary_search(&subcommand).is_ok() {
         return Class::Safe;
@@ -520,14 +527,14 @@ fn worst_reading(rest: &[String]) -> Class {
         .fold(Class::Unknown, Class::max)
 }
 
-/// `-i` edits in place and `-f`/`-l` take a value, and no long flag is read; the scripts are
-/// the `-e` values, else the first operand.
+/// `-i` (BSD `-I`) edits in place and `-f`/`-l` take a value, and no long flag is read; the
+/// scripts are the `-e` values, else the first operand.
 fn sed_class(argv: &[String]) -> Class {
     let (mut scripts, mut first) = (Vec::new(), None);
     let mut words = argv.iter().skip(1).map(String::as_str);
     while let Some(word) = words.next() {
         match word.strip_prefix('-') {
-            Some(cluster) if cluster.contains(['-', 'i', 'f', 'l']) => return Class::Unknown,
+            Some(cluster) if cluster.contains(['-', 'i', 'I', 'f', 'l']) => return Class::Unknown,
             Some(cluster) if cluster.ends_with('e') => scripts.extend(words.next()),
             Some(cluster) if cluster.contains('e') => return Class::Unknown,
             Some(_) => {}
@@ -543,29 +550,45 @@ fn sed_class(argv: &[String]) -> Class {
     }
 }
 
-/// Whether a sed script may write (`w`, `W`) or run (`e`) as a command or an `s` flag; a
-/// backslash leaves the reading unsure, and unsure counts as acting.
+/// Whether a sed script may write (`w`, `W`) or run (`e`) as a command or an `s` flag. An `s`
+/// or `y` is read by its own delimiter; a backslash or an unread flag is unsure, which acts.
 fn sed_script_acts(script: &str) -> bool {
-    let acts = |mut command: &str| {
-        loop {
-            command =
-                command.trim_start_matches(|c: char| c.is_ascii_digit() || " \t$,!~+".contains(c));
-            match command.strip_prefix('/') {
-                Some(regex) => command = regex.split_once('/').map_or("", |(_, rest)| rest),
-                None => break,
+    let mut rest = script;
+    if script.contains('\\') {
+        return true;
+    }
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_ascii_digit() || " \t\n;{}$,!~+".contains(c));
+        if let Some(regex) = rest.strip_prefix('/') {
+            let Some((_, after)) = regex.split_once('/') else {
+                return true;
+            };
+            rest = after.trim_start_matches(['I', 'M']);
+            continue;
+        }
+        let mut chars = rest.chars();
+        rest = match chars.next() {
+            None => return false,
+            Some('w' | 'W' | 'e') => return true,
+            Some('s' | 'y') => {
+                let delimiter = chars.next().unwrap_or('/');
+                let Some(tail) = chars.as_str().splitn(3, delimiter).nth(2) else {
+                    return true;
+                };
+                let (flags, after) = tail.split_once([';', '\n', '}']).unwrap_or((tail, ""));
+                if flags
+                    .trim()
+                    .contains(|c: char| !"gpiImM0123456789".contains(c))
+                {
+                    return true;
+                }
+                after
             }
-        }
-        let mut chars = command.chars();
-        match chars.next() {
-            Some('w' | 'W' | 'e') => true,
-            Some('s') => (chars.next()).is_some_and(|delimiter| {
-                (command.splitn(4, delimiter).nth(3))
-                    .is_some_and(|flags| flags.contains(['w', 'e']))
-            }),
-            _ => false,
-        }
-    };
-    script.contains('\\') || script.split([';', '\n', '{', '}']).any(acts)
+            Some(_) => rest
+                .split_once([';', '\n', '}'])
+                .map_or("", |(_, after)| after),
+        };
+    }
 }
 
 /// The ladder: any destructive segment asks, any unknown segment is contained,
@@ -578,8 +601,8 @@ pub fn verdict(command: &str) -> Verdict {
     };
     let mut unknown: Option<String> = None;
     for argv in &segments {
-        let shown = (argv.iter())
-            .find(|word| !word.contains('='))
+        let shown = (argv.iter().find(|word| !word.contains('=')))
+            .or(argv.first())
             .map_or("", String::as_str);
         match classify(argv) {
             Class::Destructive => {
@@ -593,7 +616,9 @@ pub fn verdict(command: &str) -> Verdict {
                 return Verdict::Ask {
                     reason: format!(
                         "`git {}` needs the network; a contained run has none",
-                        git_subcommand(argv).unwrap_or_default()
+                        (argv.iter().position(|word| program(word) == "git"))
+                            .and_then(|at| git_subcommand(argv.get(at..)?))
+                            .unwrap_or_default()
                     ),
                 };
             }

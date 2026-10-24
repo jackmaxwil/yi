@@ -531,7 +531,7 @@ fn verdict_name(command: &str) -> &'static str {
 
 /// Each spelling with the verdict the auto prompt promises: a flag or script that runs a program
 /// asks or is contained, one that writes is contained, and a short flag counts inside a cluster.
-const FLAG_SPELLINGS: [(&str, &str); 48] = [
+const FLAG_SPELLINGS: [(&str, &str); 57] = [
     ("awk 'BEGIN{system(\"rm -rf x\")}'", "contain"),
     ("awk '{print > \"out.txt\"}' data.txt", "contain"),
     ("awk '{print | \"sh\"}' data.txt", "contain"),
@@ -544,17 +544,26 @@ const FLAG_SPELLINGS: [(&str, &str); 48] = [
     ("sed 's/x/date/e' f", "contain"),
     ("sed '1e date' f", "contain"),
     ("sed -n -e 'p;w out.txt' f", "contain"),
+    ("sed -n 'W out.txt' f", "contain"),
+    ("sed -n 's/a;b/c/w out.txt' f", "contain"),
+    ("sed -n '/x/Iw out.txt' f", "contain"),
+    ("sed -n '/x/M,/y/w out.txt' f", "contain"),
+    ("sed -I '' 's/a/b/' f", "contain"),
+    ("awk -i inplace '{print}' f", "contain"),
+    ("awk -E prog.awk f", "contain"),
     ("find . -fprint out.txt", "ask"),
     ("find . -fprint0 out.txt", "ask"),
     ("find . -okdir rm \\;", "ask"),
     ("fd -x rm", "ask"),
     ("fd -X rm", "ask"),
     ("fd --exec rm", "ask"),
+    ("fd --exec-batch rm", "ask"),
     ("rg --pre ./decode pattern", "ask"),
     ("rg --pre=./decode pattern", "ask"),
     ("sort -o out.txt in.txt", "contain"),
     ("sort -uo out.txt in.txt", "contain"),
     ("sort --output=out.txt in.txt", "contain"),
+    ("sort --out=out.txt in.txt", "contain"),
     ("tree -o out.txt", "contain"),
     ("uniq in.txt out.txt", "contain"),
     ("git diff --output=out.txt", "contain"),
@@ -593,6 +602,10 @@ fn a_flag_that_runs_or_writes_is_not_read_only() -> TestResult {
         Verdict::Ask { reason } => assert!(reason.starts_with("`rm` is destructive"), "{reason}"),
         other => return Err(format!("FOO=1 rm must ask, got {other:?}").into()),
     }
+    match verdict("FOO=1 git pull") {
+        Verdict::Ask { reason } => assert!(reason.starts_with("`git pull` needs"), "{reason}"),
+        other => return Err(format!("FOO=1 git pull must ask, got {other:?}").into()),
+    }
     Ok(())
 }
 
@@ -603,6 +616,10 @@ fn a_read_spelled_with_flags_stays_a_read() {
         ("sed -n 1p f", "allow"),
         ("sed -n '1,5p;$p' f", "allow"),
         ("sed -e 's/hello/world/g' f", "allow"),
+        ("sed -n '/x/Ip;s/a/b/gp' f", "allow"),
+        ("git ls-files -co --exclude-standard", "allow"),
+        ("git log -c", "allow"),
+        ("git diff --output-indicator-new=+", "allow"),
         ("awk '{print $1}' f", "allow"),
         ("sort -u -k2 f", "allow"),
         ("uniq -c f", "allow"),
