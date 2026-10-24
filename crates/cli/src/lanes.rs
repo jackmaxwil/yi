@@ -1,6 +1,6 @@
 //! `yi lanes`, and the root session's claim and release (D119).
 
-use crate::{Args, Resume, config, default_session_dir, effective_cwd, sessions};
+use crate::{Args, Resume, config, effective_cwd, sessions};
 
 pub(crate) fn configured_lanes() -> yi_types::lane::LanesConfig {
     config().lanes.clone().unwrap_or_default()
@@ -16,13 +16,7 @@ fn resume_id(args: &Args) -> Option<String> {
     match &args.resume {
         Resume::Fresh => None,
         Resume::Named(id) => Some(id.clone()),
-        Resume::Leaf => {
-            let mut repo = yi_runtime::session_store::JsonlRepo::new(
-                default_session_dir(args),
-                effective_cwd(args).display().to_string(),
-            );
-            sessions::latest_id(&mut repo)
-        }
+        Resume::Leaf => sessions::latest_id(&mut crate::session_repo(args)),
     }
 }
 
