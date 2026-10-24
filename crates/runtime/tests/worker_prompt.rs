@@ -1,8 +1,9 @@
 //! A worker's request carries its role's text and the project's rules, and nothing else of the
 //! root's prompt: no identity, no doctrine, no skill catalog.
 
-use crate::family_cache::{body_asking, root, root_with, route, stand_in};
+use crate::family_cache::{root, route};
 use crate::scratch::Scratch;
+use crate::upstream::{body_asking, git, root_with, stand_in};
 
 use std::error::Error;
 use std::sync::Arc;
@@ -52,6 +53,7 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
     for root_only in [
         yi_runtime::identity_fragment(),
         yi_runtime::doctrine_fragment(),
+        yi_runtime::delegation_fragment(),
     ] {
         for line in root_only.lines().filter(|line| line.len() > 40) {
             assert!(!text.contains(line), "{line} reached the worker: {text}");
@@ -73,19 +75,6 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
     Ok(())
 }
 
-fn git(dir: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
-    let status = yi_tools::command("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
-        .arg(dir)
-        .args(args)
-        .output()?
-        .status;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| format!("git {args:?}").into())
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_rust_pack()
 -> TestResult {
@@ -104,7 +93,15 @@ async fn a_worker_in_its_own_lane_is_told_the_committed_rules_its_mode_and_the_r
         None,
         tokio::sync::broadcast::channel(8).0,
     ));
-    let (_session, host) = root_with(&scratch, model, port, false, Some(broker))?;
+    let (_session, host) = root_with(
+        &scratch,
+        model,
+        port,
+        false,
+        Some(broker),
+        false,
+        Arc::new(yi_tools::builtin_tools),
+    )?;
     let ws = scratch.join("ws");
     std::fs::write(ws.join("AGENTS.md"), "Indent with tabs, never spaces.\n")?;
     std::fs::write(ws.join("Cargo.toml"), "[package]\nname = \"probe\"\n")?;
