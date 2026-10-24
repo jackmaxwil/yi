@@ -47,6 +47,7 @@ import test_mutate  # noqa: E402
 import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_kill  # noqa: E402
+import test_stops_on_fail  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
 
@@ -1172,8 +1173,18 @@ def check_kill():
     assert result.testsRun >= 10 and result.wasSuccessful(), report.getvalue()
 
 
+def check_stops_on_fail():
+    """EXP-B3c's counter: a stop over a last cell that printed FAIL, over sessions the real binary
+    wrote under faux/faux-1, and the verdict at two tasks a family and at one."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_stops_on_fail)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
+
+
 CHECKS = (
     check_kill,
+    check_stops_on_fail,
     check_surface,
     check_surface_compare,
     check_judge_replay,
