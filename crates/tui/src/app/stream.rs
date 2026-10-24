@@ -783,7 +783,7 @@ impl App {
         } else {
             ToolStatus::Done
         };
-        cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
+        cell.digest = ToolCell::digest_of(&cell.name, text, &details, is_error);
         cell.preview = result_preview(text, &details);
         if cell.name == "ask_user" && !is_error && terminate {
             cell.digest = None;

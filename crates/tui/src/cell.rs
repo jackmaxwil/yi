@@ -650,7 +650,7 @@ impl ToolCell {
 
     /// Yi showed no result lines, so a finished call left no trace of its
     /// outcome unless the reader had switched to verbose before it ran.
-    pub fn digest_of(name: &str, text: &str, failed: bool) -> Option<String> {
+    pub fn digest_of(name: &str, text: &str, details: &Value, failed: bool) -> Option<String> {
         let first = || {
             text.lines()
                 .map(str::trim_end)
@@ -659,6 +659,12 @@ impl ToolCell {
         if failed {
             return first().map(|line| crate::transcript::show_controls(strip_hashline(line)));
         }
+        // Invariant: the typed `details` decide the digest; the text is read only where none
+        // exists, so rewording what the model reads moves nothing here.
+        let count = |key: &str| {
+            let n = details.get(key)?.as_u64()?;
+            Some(usize::try_from(n).unwrap_or(usize::MAX))
+        };
         let numbered = || {
             text.lines()
                 .filter(|line| !line.starts_with('[') && strip_hashline(line) != *line)
@@ -670,20 +676,53 @@ impl ToolCell {
                 .count()
         };
         let digest = match name {
-            "read" if numbered() == 0 && entries() > 0 => count_label(entries(), "entry"),
-            "read" => count_label(numbered(), "line"),
+            "read" => match (count("shownLines"), count("dirs"), count("files")) {
+                (Some(lines), ..) => count_label(lines, "line"),
+                (None, Some(dirs), Some(files)) => count_label(dirs.saturating_add(files), "entry"),
+                _ if numbered() == 0 && entries() > 0 => count_label(entries(), "entry"),
+                _ => count_label(numbered(), "line"),
+            },
             // `[path#TAG]` then `updated; first change at line N` — the verb
             // and the anchor the model just earned, in the tool's own words.
-            "edit" => text.lines().nth(1)?.trim().to_owned(),
-            "grep" => count_label(
-                text.lines().filter(|l| grep_row(l).is_some()).count(),
-                "hit",
-            ),
+            "edit" => match first_change(details) {
+                Some(line) => format!("updated; first change at line {line}"),
+                None => text.lines().nth(1)?.trim().to_owned(),
+            },
+            "grep" => match count("hits") {
+                Some(hits) => count_label(hits, "hit"),
+                None => count_label(
+                    text.lines().filter(|l| grep_row(l).is_some()).count(),
+                    "hit",
+                ),
+            },
             _ => first()?.to_owned(),
         };
         let digest = crate::transcript::show_controls(digest.trim());
         (!digest.is_empty()).then_some(digest)
     }
+}
+
+/// None for a delete or a move, which the patch cannot tell from an update: the text then decides.
+fn first_change(details: &Value) -> Option<u64> {
+    let ops = details.get("ops")?;
+    let ops = |kind: &str| ops.get(kind).and_then(Value::as_u64).unwrap_or(0);
+    if ops("updated") == 0 || ops("deleted") > 0 || ops("moved") > 0 {
+        return None;
+    }
+    let mut rows = details
+        .get("patch")?
+        .as_str()?
+        .lines()
+        .skip_while(|row| !row.starts_with("@@"));
+    let start: u64 = rows
+        .next()?
+        .split('+')
+        .nth(1)?
+        .split([',', ' '])
+        .next()?
+        .parse()
+        .ok()?;
+    start.checked_add(u64::try_from(rows.take_while(|row| row.starts_with(' ')).count()).ok()?)
 }
 
 pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
