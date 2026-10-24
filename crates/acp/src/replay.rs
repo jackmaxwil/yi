@@ -54,14 +54,21 @@ pub(crate) fn prompt_text(params: &Value) -> String {
                 }
                 text.push_str(uri);
             }
-            (kind, _, _) => dropped.push((index.saturating_add(1), kind.unwrap_or("untyped"))),
+            (Some("text"), None, _) => dropped.push((index, "text", "it has no text field")),
+            (Some("resource_link"), _, None) => {
+                dropped.push((index, "resource_link", "it has no uri field"));
+            }
+            (kind, _, _) => dropped.push((
+                index,
+                kind.unwrap_or("untyped"),
+                "this agent reads text and resource_link blocks; send the file as a resource_link",
+            )),
         }
     }
-    for (position, kind) in dropped {
-        let total = blocks.len();
+    for (index, kind, reason) in dropped {
+        let (position, total) = (index.saturating_add(1), blocks.len());
         text.push_str(&format!(
-            "\n[…] prompt block {position} of {total} ({kind}) was dropped: this agent reads \
-             text and resource_link blocks; send the file as a resource_link"
+            "\n[…] prompt block {position} of {total} ({kind}) was dropped: {reason}"
         ));
     }
     text
@@ -79,7 +86,7 @@ impl AcpState {
         }
         let text = format!(
             "[…] 0 of {asked} mcpServers attached: this agent does not take MCP servers over \
-             ACP; list them in .mcp.json or ~/.yi/mcp.json"
+             ACP; set mcp.enabled in ~/.yi/config.json and list them in ~/.yi/mcp.json"
         );
         let update = extension("_yi/notice", [("text", Value::String(text))]);
         (self.sink)(&update_notification(session_id, update));
