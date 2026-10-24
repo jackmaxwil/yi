@@ -17,7 +17,7 @@ use yi_types::url::Url;
 pub use yi_types::plan::acceptance::{Conflict, Disposition, Published, Quiescence};
 
 use super::capacity::{Capacity, Permit, Purpose};
-use super::done::Prepared;
+use super::done::{Prepared, Requests};
 use super::ops::{Actor, Delta, Op, Outcome, PlanEngine, PlanOpError, Txn};
 use super::state::{Decided, root_of};
 use super::store::draft;
@@ -568,7 +568,8 @@ impl PlanEngine {
             )?;
             let integrated = staging.integrated.as_str();
             let token = self.token(&txn, id, &label, &contracted, integrated, Some(generation))?;
-            let effect = self.request_verification(&mut txn, id, &label, &token)?;
+            let effect =
+                self.request_verification(&mut txn, id, &label, &token, Requests::PerEffect)?;
             self.store.checkpoint_family(&txn.state)?;
             let parent_branch = parent
                 .head

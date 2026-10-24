@@ -16,7 +16,7 @@ use super::acceptance::{
     KIND_DISPOSITION, KIND_INTEGRATION_INTENT, KIND_INTEGRATION_PREPARED, Submitted, Verified,
     last_generation, own, pin_of, verification,
 };
-use super::done::{Flight, Prepared};
+use super::done::{Flight, Prepared, Requests};
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Txn};
 use super::output::OutputResolve;
 use super::state::{Decided, root_of};
@@ -312,7 +312,8 @@ impl PlanEngine {
                     }),
                     None,
                 )?;
-                let effect = self.request_verification(&mut txn, &id, label, &token)?;
+                let effect =
+                    self.request_verification(&mut txn, &id, label, &token, Requests::PerEffect)?;
                 self.store.checkpoint_family(&txn.state)?;
                 effect
             }
