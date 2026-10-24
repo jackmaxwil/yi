@@ -1,9 +1,10 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ordered by severity, so the worst of several readings of one argv is the greatest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Class {
     Safe,
-    Destructive,
-    Egress,
     Unknown,
+    Egress,
+    Destructive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +272,41 @@ fn flags(argv: &[String]) -> Vec<&str> {
         .collect()
 }
 
+/// Invariant: getopt reads `-fdx` as `-f -d -x` and `--out` as `--output`, so a short flag
+/// counts anywhere in a cluster and a long one by any prefix, or as a prefix of a longer flag.
+fn given(argv: &[String], flag: &str) -> bool {
+    argv.iter().any(
+        |token| match (flag.strip_prefix("--"), token.strip_prefix("--")) {
+            (Some(name), Some(said)) => {
+                let said = said.split('=').next().unwrap_or(said);
+                !said.is_empty() && (name.starts_with(said) || said.starts_with(name))
+            }
+            (None, None) => (token.strip_prefix('-'))
+                .zip(flag.chars().nth(1))
+                .is_some_and(|(cluster, letter)| cluster.contains(letter)),
+            _ => false,
+        },
+    )
+}
+
+/// Flags that make a read run a program (destructive, as `find -exec` is; a git `-c` value can
+/// name one) or write a file.
+#[rustfmt::skip]
+const ACTING: [(&str, &str, Class); 14] = [
+    ("fd", "-x", Class::Destructive), ("fd", "-X", Class::Destructive),
+    ("fd", "--exec", Class::Destructive), ("rg", "--pre", Class::Destructive),
+    ("rg", "--hostname-bin", Class::Destructive), ("sort", "--compress-program", Class::Destructive),
+    ("sort", "-o", Class::Unknown), ("sort", "--output", Class::Unknown), ("tree", "-o", Class::Unknown),
+    ("awk", "-f", Class::Unknown), ("awk", "--file", Class::Unknown), ("git", "--output", Class::Unknown),
+    ("git", "-c", Class::Unknown), ("git", "--config-env", Class::Unknown),
+];
+
+fn acting(name: &str, argv: &[String]) -> Class {
+    (ACTING.iter())
+        .filter(|(program, flag, _)| *program == name && given(argv, flag))
+        .fold(Class::Safe, |worst, (_, _, class)| worst.max(*class))
+}
+
 fn subcommand(argv: &[String]) -> Option<&str> {
     argv.iter()
         .skip(1)
@@ -307,16 +343,21 @@ fn git_class(argv: &[String]) -> Class {
     let has = |flag: &str| flags.contains(&flag);
     let destructive = match subcommand {
         "reset" => has("--hard") || has("--merge") || has("--keep"),
-        "clean" => has("-f") || has("-d") || has("-x") || has("-fd") || has("-fdx"),
-        "checkout" | "switch" => argv.iter().any(|token| token == "--") || has("--force"),
+        "clean" => given(argv, "-f") || given(argv, "-d") || given(argv, "-x") || has("--force"),
+        "checkout" | "switch" => {
+            (argv.iter()).any(|token| token == "--" || token == "." || token.starts_with("./"))
+                || given(argv, "-f")
+                || has("--force")
+                || has("--discard-changes")
+        }
         "restore" | "rebase" | "filter-branch" | "reflog" | "gc" | "prune" => true,
         "push" => {
             flags.iter().any(|flag| flag.starts_with("--force"))
-                || has("-f")
+                || given(argv, "-f")
                 || has("--delete")
                 || has("--prune")
         }
-        "branch" | "tag" => has("-D") || has("-d") || has("--delete"),
+        "branch" | "tag" => given(argv, "-D") || given(argv, "-d") || has("--delete"),
         "stash" => matches!(
             subcommand_after(argv, "stash"),
             Some("drop" | "clear" | "pop")
@@ -370,17 +411,14 @@ fn cargo_class(argv: &[String]) -> Class {
     }
 }
 
+const FIND_ACTS: [&str; 9] = [
+    "-delete", "-exec", "-execdir", "-fls", "-fprint", "-fprint0", "-fprintf", "-ok", "-okdir",
+];
+
 fn find_class(argv: &[String]) -> Class {
-    let destructive = argv.iter().any(|token| {
-        matches!(
-            token.as_str(),
-            "-delete" | "-exec" | "-execdir" | "-ok" | "-fprintf" | "-fls"
-        )
-    });
-    if destructive {
-        Class::Destructive
-    } else {
-        Class::Safe
+    match argv.iter().any(|token| FIND_ACTS.contains(&token.as_str())) {
+        true => Class::Destructive,
+        false => Class::Safe,
     }
 }
 
@@ -418,12 +456,17 @@ pub fn classify(argv: &[String]) -> Class {
     if argv0.starts_with('\u{0}') {
         return Class::Unknown;
     }
-    let name = program(argv0);
-    if PASSTHROUGH.binary_search(&name).is_ok() {
-        return classify(&argv[1..]);
+    let assigned = argv.iter().take_while(|word| word.contains('=')).count();
+    if assigned > 0 {
+        return classify(argv.get(assigned..).unwrap_or_default()).max(Class::Unknown);
     }
-    if name == "timeout" {
-        return classify(argv.get(2..).unwrap_or_default());
+    let name = program(argv0);
+    if wrapper(name) {
+        let skip = if name == "timeout" { 2 } else { 1 };
+        return match argv.get(1).is_some_and(|next| !next.starts_with('-')) {
+            true => classify(argv.get(skip..).unwrap_or_default()),
+            false => worst_reading(argv.get(1..).unwrap_or_default()),
+        };
     }
     if LAUNDERING.binary_search(&name).is_ok() {
         return Class::Destructive;
@@ -431,7 +474,7 @@ pub fn classify(argv: &[String]) -> Class {
     if DESTRUCTIVE.binary_search(&name).is_ok() {
         return Class::Destructive;
     }
-    match name {
+    let class = match name {
         "git" => git_class(argv),
         "cargo" => cargo_class(argv),
         "find" => find_class(argv),
@@ -441,13 +484,11 @@ pub fn classify(argv: &[String]) -> Class {
             Class::Safe
         }
         "curl" | "wget" | "http" => network_class(argv),
-        "sed" => {
-            if flags(argv).iter().any(|flag| flag.starts_with("-i")) {
-                Class::Unknown
-            } else {
-                Class::Safe
-            }
+        "sed" => sed_class(argv),
+        "awk" if (argv.iter()).any(|word| word.contains("system") || word.contains(['|', '>'])) => {
+            Class::Unknown
         }
+        "uniq" if argv.iter().filter(|word| !word.starts_with('-')).count() > 2 => Class::Unknown,
         "grep" | "awk" => Class::Safe,
         "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "brew" | "gem" => match subcommand(argv) {
             Some("install" | "uninstall" | "remove" | "add" | "publish" | "link") => {
@@ -457,7 +498,74 @@ pub fn classify(argv: &[String]) -> Class {
         },
         name if SAFE.binary_search(&name).is_ok() => Class::Safe,
         _ => Class::Unknown,
+    };
+    class.max(acting(name, argv))
+}
+
+fn wrapper(name: &str) -> bool {
+    PASSTHROUGH.binary_search(&name).is_ok() || name == "timeout"
+}
+
+/// A wrapper's flags may take values (`timeout -s KILL 5`), so each later word is read as the
+/// program it runs, the worst reading wins, and nothing behind such flags is proven Safe.
+fn worst_reading(rest: &[String]) -> Class {
+    (0..rest.len())
+        .filter_map(|at| rest.get(at..))
+        .filter(|argv| {
+            argv.first().is_some_and(|word| {
+                !word.starts_with('-') && !word.contains('=') && !wrapper(program(word))
+            })
+        })
+        .map(classify)
+        .fold(Class::Unknown, Class::max)
+}
+
+/// `-i` edits in place and `-f`/`-l` take a value, and no long flag is read; the scripts are
+/// the `-e` values, else the first operand.
+fn sed_class(argv: &[String]) -> Class {
+    let (mut scripts, mut first) = (Vec::new(), None);
+    let mut words = argv.iter().skip(1).map(String::as_str);
+    while let Some(word) = words.next() {
+        match word.strip_prefix('-') {
+            Some(cluster) if cluster.contains(['-', 'i', 'f', 'l']) => return Class::Unknown,
+            Some(cluster) if cluster.ends_with('e') => scripts.extend(words.next()),
+            Some(cluster) if cluster.contains('e') => return Class::Unknown,
+            Some(_) => {}
+            None => first = first.or(Some(word)),
+        }
     }
+    if scripts.is_empty() {
+        scripts.extend(first);
+    }
+    match scripts.iter().any(|script| sed_script_acts(script)) {
+        true => Class::Unknown,
+        false => Class::Safe,
+    }
+}
+
+/// Whether a sed script may write (`w`, `W`) or run (`e`) as a command or an `s` flag; a
+/// backslash leaves the reading unsure, and unsure counts as acting.
+fn sed_script_acts(script: &str) -> bool {
+    let acts = |mut command: &str| {
+        loop {
+            command =
+                command.trim_start_matches(|c: char| c.is_ascii_digit() || " \t$,!~+".contains(c));
+            match command.strip_prefix('/') {
+                Some(regex) => command = regex.split_once('/').map_or("", |(_, rest)| rest),
+                None => break,
+            }
+        }
+        let mut chars = command.chars();
+        match chars.next() {
+            Some('w' | 'W' | 'e') => true,
+            Some('s') => (chars.next()).is_some_and(|delimiter| {
+                (command.splitn(4, delimiter).nth(3))
+                    .is_some_and(|flags| flags.contains(['w', 'e']))
+            }),
+            _ => false,
+        }
+    };
+    script.contains('\\') || script.split([';', '\n', '{', '}']).any(acts)
 }
 
 /// The ladder: any destructive segment asks, any unknown segment is contained,
@@ -470,12 +578,14 @@ pub fn verdict(command: &str) -> Verdict {
     };
     let mut unknown: Option<String> = None;
     for argv in &segments {
+        let shown = (argv.iter())
+            .find(|word| !word.contains('='))
+            .map_or("", String::as_str);
         match classify(argv) {
             Class::Destructive => {
                 return Verdict::Ask {
                     reason: format!(
-                        "`{}` is destructive; it cannot be undone by a checkpoint",
-                        argv.first().map_or("", String::as_str)
+                        "`{shown}` is destructive; it cannot be undone by a checkpoint"
                     ),
                 };
             }
@@ -489,10 +599,7 @@ pub fn verdict(command: &str) -> Verdict {
             }
             Class::Unknown => {
                 if unknown.is_none() {
-                    unknown = Some(format!(
-                        "`{}` is not in the known-safe set",
-                        argv.first().map_or("", String::as_str)
-                    ));
+                    unknown = Some(format!("`{shown}` is not in the known-safe set"));
                 }
             }
             Class::Safe => {}
