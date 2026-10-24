@@ -115,6 +115,47 @@ fn catastrophic_command_targets_are_denied_even_in_yolo() -> TestResult {
     Ok(())
 }
 
+/// The yolo fragment promises catastrophic targets are always denied, whichever segment names one.
+#[test]
+fn a_catastrophic_target_in_any_segment_is_denied_in_yolo() -> TestResult {
+    let session = SessionRules::new();
+    let yolo = |command: &str| {
+        let call = bash_call(command, "c");
+        decide(&call, PermissionMode::Yolo, &[], &session, &[], &context())
+    };
+    for command in [
+        "cd build && rm -rf ~/.ssh",
+        "true; rm -rf .git",
+        "echo done && rm -rf ~",
+        "ls | xargs nice rm -rf $HOME",
+    ] {
+        let decision = yolo(command);
+        assert!(
+            matches!(decision, Decision::Deny { .. }),
+            "{command:?}: {decision:?}"
+        );
+    }
+    let decision = yolo("cd build && rm -rf target");
+    assert!(matches!(decision, Decision::Allow { .. }), "{decision:?}");
+    Ok(())
+}
+
+/// A default macOS volume folds letter case, so `~/.SSH` is the key store itself.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_case_folded_spelling_of_a_protected_path_is_denied_on_macos() -> TestResult {
+    let session = SessionRules::new();
+    for command in ["rm -rf ~/.SSH", "rm -rf ~/documents", "rm -rf /ETC"] {
+        let call = bash_call(command, "c");
+        let decision = decide(&call, PermissionMode::Yolo, &[], &session, &[], &context());
+        assert!(
+            matches!(decision, Decision::Deny { .. }),
+            "{command:?}: {decision:?}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn configured_deny_beats_session_allow() -> TestResult {
     let context = context();
