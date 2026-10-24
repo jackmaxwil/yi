@@ -539,6 +539,68 @@ Real-model rollouts are budgeted, deliberate, and ledgered.
   collected session directory. One extractor owns that schema; the adapters
   emit harness fields only.
 
+## Kill tests: one spend ledger
+
+`evals/kill.py` runs a named kill test against a built yi. Every paid run of the
+next-shape stack goes through it (owner, 2026-10-23: "you can use my entire kimi
+subscription. then $30 openrouter cap").
+
+```
+python3 evals/kill.py run <test> --binary <yi> [--family F] [--until ISO] [--dry]
+python3 evals/kill.py budget
+python3 evals/kill.py report
+```
+
+- **A test is a module.** `evals/kill/<test>.py` exposes `THRESHOLD` (the pre-registered
+  text), `FAMILIES` (routes, run in order, Kimi first), `PREDICTED_USD` (`{family: dollars}`,
+  the reserve), `STEP` (its place on the ladder), an optional `DEADLINE`, `runs()` and
+  `verdict(rows)`. There is no shared registry, so the units that own tests never collide.
+  `verdict()` sees only rows that ran; a row with status `unrun` or `crash` never reaches it.
+- **Routes** live in `evals/kill/providers.json`. A route is refused by name, `--dry` included,
+  when it is disabled, when its slug was never confirmed, or when its slug is missing from the
+  central catalog that every run HOME copies. The OpenRouter Kimi route ships disabled. The
+  Kimi subscription route stays unconfirmed until the Kimi login's live checks name the K3.1
+  id, and until then every paid family is refused too. `--without-kimi` overrides that and the
+  Kimi-first order, for the owner to run a paid family when Kimi cannot run.
+- **The ledger** is `~/Development/yi-runs/next-shape/ledger.jsonl`. It is flock'd, shared by
+  every worktree, and holds reserve, settle and unrun rows. A family starts only if these stay
+  within $30: dollars spent, every open reserve, the reserves of earlier ladder steps not yet
+  settled, and its own reserve. Otherwise it is written unrun, naming the dollars it needed. A
+  paid family runs only after the families listed before it have settled with at least one
+  row that did not crash. The Kimi subscription has a $0 reserve and is never refused by the
+  dollar cap.
+- **One budgeted `ask()`.** Each run gets a fresh HOME and a fresh `git clone --shared` under
+  `~/Development/yi-runs/<test>/<run>`, never `/tmp`, because the checkpointer git-adds the cwd.
+  The HOME is seeded with an APFS clone of one prebuilt kernel venv per binary (`yi doctor
+  --fix` builds it once). It gets the Kimi access token without its refresh token. The HOME
+  and the clone are deleted once the row is written; the sessions and the event stream stay.
+- **Charges.** The stream is read live, and the process group is killed when its summed
+  `usage.cost.total` crosses what is left of the reserve. A run with an unpriced turn is
+  charged its share of the reserve (the reserve over the number of runs), or what it measured
+  if that is more, never $0. Subscription runs are charged $0. A run that raises (no login, a
+  failed refresh, a bad clone) is a `crash` row with the error, charged its share on a paid
+  family. Each row keeps the last 2,000 characters of yi's stderr.
+- **Quota.** A 429 naming an exhausted quota parks every Kimi run until the reset that
+  `yi catalog usage kimi` reports. A reset past the test's deadline writes the run unrun with
+  its estimated OpenRouter cost.
+- **Owner setup, once,** with `K=~/Development/yi-runs/next-shape/kimi-home`. Yi ships no
+  Kimi client id, so copy the OAuth profile first: `mkdir -p $K/.yi/oauth && cp
+  ~/.yi/oauth/kimi.json $K/.yi/oauth/`. Then `HOME=$K yi login kimi --no-browser`, `HOME=$K
+  yi login openrouter` (every run HOME gets the key tokens from here), and `HOME=$K yi catalog
+  refresh openrouter` and `HOME=$K yi catalog refresh kimi`, because the bundled catalog lacks
+  DeepSeek V4.1 and K3.1. The runner refreshes the Kimi credential under yi's own refresh lock
+  whenever it would expire inside a run's deadline plus ten minutes.
+- **Command output.** `run` prints one line per family. A family with any row that did not run
+  adds `N not run, needs $X: <why>` and the command exits 1. `report` prints the verdict and
+  names every family whose latest record did not run: `half: KEEP (unrun: flash needs $2.00)`.
+- **Harbor tests** must call `tbv4_sweep.sh --runner`: only that mode files the rows they are
+  charged. The runner hands down `TBV4_HARD_CAP` as what is left of the reserve, and the sweep
+  takes the lower of that and its own stage and week caps. A sweep that filed no rows is
+  charged the whole cap. A subscription family's harbor spec is written unrun, because the
+  sweep spends OpenRouter on its own model.
+- Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
+  `selftest.check_kill` pins all of this against a fake yi that replays recorded streams.
+
 ## Fixtures
 
 `fixtures/ask_events.jsonl` is a real `yi ask --json` transcript recorded
@@ -553,6 +615,12 @@ Faux reports zero usage, so the camelCase usage contract is pinned instead by
 golden session (`crates/types/tests/fixtures/v4-golden.jsonl`) whose assistant
 entry carries real non-zero `input`/`cacheRead`/`cacheWrite` and whose
 compaction entry exercises `summarization_count`.
+
+`fixtures/ask_quota_429.jsonl` is this tree's own debug binary answering
+`yi ask --json` against a 127.0.0.1 fake that returns Moonshot's quota body
+(`exceeded_current_quota_error`, the billing wording kimi-code's error map quotes)
+on every request, with message deltas dropped. The binary retried three times,
+the loop retried the stream once, and the run ended on the error turn.
 
 `fixtures/session-record/` feeds the recorder.
 
