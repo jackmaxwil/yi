@@ -4166,18 +4166,68 @@ fn the_view_ceiling_cuts_one_byte_past_it_and_names_the_rest() -> TestResult {
     assert_eq!(recovered(&cut.text, "VIEW_CEILING")?, over);
     let pointer = cut.recovery.as_deref().unwrap_or_default();
     assert!(cut.text.starts_with("row 000 é") && cut.text.ends_with(&format!("y\n{pointer}")));
-    // With no dir to keep the rest, the row names a rerun into a file, and the rerun returns it.
+    // With no dir to keep the rest, the row names a rerun into a file, and the rerun returns it:
+    // a `%%bash` cell runs its body in bash, so the bash tool runs what either row names.
     fs::write(dir.join("out.txt"), &over)?;
-    let rerun = yi_tools::view(job, &over, "", 0, None, None);
-    let next = (rerun.text.lines().find_map(parse_cut))
-        .ok_or(rerun.text.clone())?
-        .5;
-    let shell =
-        (next.strip_prefix("bash ")).and_then(|call| call.strip_suffix(", then read view.log"));
-    let command = args(&[("command", json!(shell.ok_or(next.to_owned())?))]);
-    let ran = BashTool::default().execute(command, &ToolContext::new(dir.to_path_buf()));
-    assert!(!ran.is_error, "{}", output_text(&ran));
-    assert_eq!(fs::read_to_string(dir.join("view.log"))?, over);
+    let cell = yi_tools::Involuntary::ShellCell("cat out.txt");
+    for (producer, how) in [(job, "bash "), (cell, "a %%bash cell running ")] {
+        fs::write(dir.join("view.log"), "")?;
+        let rerun = yi_tools::view(producer, &over, "", 0, None, None);
+        let next = (rerun.text.lines().find_map(parse_cut))
+            .ok_or(rerun.text.clone())?
+            .5;
+        let shell =
+            (next.strip_prefix(how)).and_then(|call| call.strip_suffix(", then read view.log"));
+        let command = args(&[("command", json!(shell.ok_or(next.to_owned())?))]);
+        let ran = BashTool::default().execute(command, &ToolContext::new(dir.to_path_buf()));
+        assert!(!ran.is_error, "{}", output_text(&ran));
+        assert_eq!(fs::read_to_string(dir.join("view.log"))?, over, "{how}");
+    }
+    Ok(())
+}
+
+/// A rerun row echoed the whole command: a 20,000-char command passed the ceiling and a
+/// `%%bash` heredoc made the row hundreds of lines. It names the first line, clipped.
+#[test]
+fn a_rerun_row_names_a_long_command_on_one_line() -> TestResult {
+    use yi_tools::Involuntary::{Job, ShellCell};
+    let raw: String = (0..400)
+        .map(|n| format!("record {n:04} {}\n", "x".repeat(60)))
+        .collect();
+    let long = "x".repeat(20_000);
+    let heredoc = format!("cat <<'EOF'\n{}EOF", "line\n".repeat(970));
+    for (name, producer) in [("long", Job(&long)), ("heredoc", ShellCell(&heredoc))] {
+        let viewed = yi_tools::view(producer, &raw, "", 0, None, None);
+        let bytes = viewed.text.len();
+        assert!(bytes <= yi_tools::VIEW_CEILING, "{name}: {bytes} B");
+        let row = viewed.text.lines().find_map(parse_cut);
+        let next = row
+            .ok_or_else(|| format!("no one-line row: {}", viewed.text))?
+            .5;
+        assert!(next.contains("the command that began "), "{next}");
+        assert!(next.ends_with(", then read view.log"), "{next}");
+    }
+    Ok(())
+}
+
+/// A cut landing inside a two-byte char moves to the char's edge: one line of `é` with no
+/// newline, padded so each end's cut falls on an odd and an even byte, keeps a head and a tail.
+#[test]
+fn a_cut_inside_a_two_byte_char_keeps_both_ends() -> TestResult {
+    for (pre, post) in [("", ""), ("a", ""), ("", "a")] {
+        let pad = (pre, post);
+        let raw = format!("{pre}{}{post}", "\u{e9}".repeat(20_000));
+        let job = yi_tools::Involuntary::Job("python3 dump.py");
+        let viewed = yi_tools::view(job, &raw, "", 0, None, None);
+        let lines: Vec<&str> = viewed.text.lines().collect();
+        let &[head, row, tail] = lines.as_slice() else {
+            return Err(format!("{pad:?}: {} lines", lines.len()).into());
+        };
+        assert!(viewed.text.len() <= yi_tools::VIEW_CEILING, "{pad:?}");
+        assert!(parse_cut(row).is_some(), "{row}");
+        assert!(head.len() > 4_096 && raw.starts_with(head), "{pad:?} head");
+        assert!(tail.len() > 2_048 && raw.ends_with(tail), "{pad:?} tail");
+    }
     Ok(())
 }
 
