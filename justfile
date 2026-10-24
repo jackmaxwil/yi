@@ -121,7 +121,7 @@ lane name:
 prerelease version:
     #!/usr/bin/env bash
     set -euo pipefail
-    declared=$(sed -n 's/^version:[[:space:]]*\([^[:space:]]*\).*/\1/p' docs/ARCHITECTURE.md | head -1)
+    declared=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import forge_tracking; print(forge_tracking.version())')
     if [ "{{version}}" != "$declared" ]; then
       echo "tag {{version}} disagrees with docs/ARCHITECTURE.md $declared"
       exit 1
