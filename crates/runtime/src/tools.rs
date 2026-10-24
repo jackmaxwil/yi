@@ -131,9 +131,9 @@ async fn gate_armed(
         .unwrap_or_else(|join_error| Some(format!("permission check failed: {join_error}")))
 }
 
-/// The gate of a heartbeat's `exec://` source: it runs on the host, so it meets what an armed
-/// todo command does. The spares are read per call: a child's store attaches after its wiring.
-pub(crate) fn heartbeat_gate(
+/// The gate of a heartbeat's `exec://` source and a spawn's `check`: each runs later on the host,
+/// so it meets what an armed todo command does. Spares are read per call: a store attaches late.
+pub(crate) fn host_gate(
     wiring: &crate::wiring::RuntimeWiring,
     rules: Arc<dyn Fn() -> Option<Arc<crate::rules::RuleEngine>> + Send + Sync>,
     own: Option<crate::wiring::OwnPathsFn>,
@@ -235,12 +235,12 @@ pub fn refuse_armed(
 ) -> Option<String> {
     if in_container {
         return Some(format!(
-            "an exec:// source runs `{command}` on the host, and this session's commands run in a container"
+            "`{command}` runs later on the host, and this session's commands run in a container"
         ));
     }
     if broker.is_some_and(PermissionBroker::confines_walled) {
         return Some(crate::gate::walled_host_refusal(
-            "an exec:// source runs on the host",
+            "it runs later on the host",
         ));
     }
     let outcome = broker?.decide_call(
@@ -257,7 +257,7 @@ pub fn refuse_armed(
             gate_allowed: false,
             ..
         } => Some(format!(
-            "an exec:// source runs `{command}` outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
+            "`{command}` runs later outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
         )),
         Containment::Contained { .. } | Containment::Uncontained => None,
     }
