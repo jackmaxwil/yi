@@ -39,6 +39,7 @@ _yi() {
         '--system[extra system prompt]:text:'
         '--thinking[off, minimal, low, medium, high, xhigh, max]:level:(off minimal low medium high xhigh max)'
         '--json[print JSON lines (the event stream, for ask)]'
+        '--no-deltas[with ask --json: drop the per-token message_update lines]'
         '--yolo[run without permission prompts]'
         '--auto[let the policy judge each call (the default)]'
         '--confirm[ask before every write or command]'
