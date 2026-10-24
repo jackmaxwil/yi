@@ -24,6 +24,8 @@ fn commented_file(rows: usize) -> Editor {
         primed: None,
         last_cursor: (0, 0),
         lang: Some("rs".to_owned()),
+        crlf: false,
+        final_newline: true,
     }
 }
 

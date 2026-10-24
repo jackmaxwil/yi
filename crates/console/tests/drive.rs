@@ -21,7 +21,7 @@ use crate::scratch::Scratch;
 type TestResult = Result<(), Box<dyn Error>>;
 type Responder = fn(&Value) -> Vec<Value>;
 
-enum Step {
+pub(crate) enum Step {
     /// Wait for a request whose method matches; reply with the responder's
     /// frames. Non-matching requests get a generic empty reply.
     Expect(&'static str, Responder),
@@ -340,7 +340,7 @@ fn init_reply(frame: &Value) -> Vec<Value> {
     )]
 }
 
-fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
+pub(crate) fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
     run_with(name, fixture, script, false)
 }
 
@@ -1927,7 +1927,7 @@ fn seed_editor_file(name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
-fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
+pub(crate) fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
     editor_script(path, "", rest)
 }
 
@@ -2031,7 +2031,7 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
     Ok(())
 }
 
-fn session_fixture() -> Vec<Step> {
+pub(crate) fn session_fixture() -> Vec<Step> {
     vec![
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),

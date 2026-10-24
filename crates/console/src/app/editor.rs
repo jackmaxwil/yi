@@ -46,13 +46,18 @@ pub(super) fn load(path: &str) -> Result<Editor, String> {
         lang: Path::new(path)
             .extension()
             .map(|ext| ext.to_string_lossy().into_owned()),
+        crlf: source.contains("\r\n"),
+        final_newline: source.ends_with('\n'),
     })
 }
 
 impl Editor {
     fn contents(&self) -> String {
-        let mut out = self.text.lines().join("\n");
-        out.push('\n');
+        let eol = if self.crlf { "\r\n" } else { "\n" };
+        let mut out = self.text.lines().join(eol);
+        if self.final_newline {
+            out.push_str(eol);
+        }
         out
     }
 
@@ -65,19 +70,24 @@ impl Editor {
             self.stale = true;
             return Err(STALE.to_owned());
         }
-        let tmp = format!("{}.yi-tmp", self.path);
-        let written = std::fs::File::create(&tmp).and_then(|mut file| {
+        let fail = |error: std::io::Error| format!("save {}: {error}", short(&self.path));
+        let target = std::fs::canonicalize(&self.path).map_err(fail)?;
+        let mut tmp = target.clone().into_os_string();
+        tmp.push(".yi-tmp");
+        let written = std::fs::metadata(&target).and_then(|meta| {
+            let mut file = std::fs::File::create(&tmp)?;
             file.write_all(self.contents().as_bytes())?;
+            file.set_permissions(meta.permissions())?;
             file.sync_all()?;
-            std::fs::rename(&tmp, &self.path)
+            std::fs::rename(&tmp, &target)
         });
         if let Err(error) = written {
             let _leftover = std::fs::remove_file(&tmp);
-            return Err(format!("save {}: {error}", short(&self.path)));
+            return Err(fail(error));
         }
         self.dirty = false;
         self.mtime = mtime_of(&self.path);
-        Ok(format!("saved {} · CRLF written as LF", short(&self.path)))
+        Ok(format!("saved {}", short(&self.path)))
     }
 
     fn reload(&mut self) -> Result<(), String> {

@@ -245,6 +245,8 @@ pub struct Editor {
     pub lang: Option<String>,
     pub primed: Option<(usize, yi_tui::highlight::Lang)>,
     pub last_cursor: (usize, usize),
+    pub crlf: bool,
+    pub final_newline: bool,
 }
 
 impl Editor {
