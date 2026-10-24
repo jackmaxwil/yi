@@ -283,7 +283,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `crates/runtime/src/prompts/`); a headless ask (`yi ask` or bare prompt words) with no terminal on stdin also attaches
   `unattended` (Mode rank): nobody answers, hidden checks grade the task text, a check per
   requirement, one verifier cell before stopping. Then it registers `project-resources` (skills catalog), `pack`
-  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `plugins` (the card of each plugin found,
+  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate` (only when `ExtOptions::can_delegate`, which a
+  child gets as `depth + 1 < max_depth`; one the depth cap stops from spawning is never sent the
+  protocol), `plugins` (the card of each plugin found,
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.

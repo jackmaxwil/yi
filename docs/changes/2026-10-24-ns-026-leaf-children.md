@@ -1,0 +1,10 @@
+---
+issue: Closes #1465, Refs #1442
+raise: tests +45, comments +2, crate cli +1, crate runtime +7
+decision: a root child spawned where it cannot spawn (can_delegate = depth + 1 < max_depth is false) is never registered for the orchestrate protocol, and a fork=all child gets no exemption | it cannot delegate (the depth refusal in SubagentHost::spawn stops it), so 11,491 request bytes on a triggered prompt are dead weight, and a fork's request prefix is not its parent's anyway: measured, the fork's tool table is 15,181 B against the parent's 17,673 B | pass can_delegate: true for every child in child_factory
+---
+A root child that cannot spawn is no longer registered for the orchestrate protocol. `ExtOptions` gains `can_delegate`; `ext::install` registers the `orchestrate` extension only when it is true. The root (`session_extensions` in the CLI) passes true, and `child_factory` passes `depth + 1 < max_depth`, which mirrors the depth refusal in `SubagentHost::spawn`. At the default `max_depth` of 1 every root child is a leaf, so a brief that tripped the trigger (the word "orchestrate", or a prompt the router scores Complex) used to attach the 11,222-byte protocol to a session that could never spawn. A leaf's bare first request falls from 57,052 B to 45,561 B when its brief triggers the protocol, a drop of 11,491 B; an untriggered leaf was already 45,561 B and is unchanged. The router's `route` record for a leaf's prompt is no longer written, because the extension that wrote it is not registered.
+
+A fork gets no exemption. The strategy kept the protocol for a `fork=all` child only if its request prefix were its parent's, which would let the fork share the parent's cache. Measured at this head with a `yi ask` root and a `fork=all` root child: the system blocks differ (32,803 B against 30,709 B, first difference at byte 29,739, where the root's unattended fragment sits) and the tool tables differ (17,673 B against 15,181 B), and the tool table comes first in a request, so the fork shares no prefix with its parent whether or not the protocol is registered.
+
+Members: B1-leaf-orchestrate, B1-leaf-doctrine.

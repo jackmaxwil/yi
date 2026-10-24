@@ -72,6 +72,7 @@ pub(crate) fn root_with(
             schema_instruction: None,
             context_window,
             global_skills: Vec::new(),
+            can_delegate: true,
         });
         let slot = yi_runtime::ext::Slot::new(yi_runtime::ext::Rank::Mode, "unattended");
         host.attach(slot, yi_runtime::unattended_fragment().to_owned());

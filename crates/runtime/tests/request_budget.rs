@@ -523,6 +523,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     });
     host.start(None, false);
     Ok(host
@@ -641,6 +642,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            can_delegate: true,
         });
         host.start(None, false);
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -848,11 +850,12 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
             "{role} reads the doctrine"
         );
     }
-    assert!(lines_of(orchestrate, &text("leaf_orchestrate")?, true));
-    assert!(
-        !lines_of(orchestrate, &text("leaf")?, false),
-        "only a trigger attaches the protocol"
-    );
+    for role in ["leaf", "leaf_orchestrate"] {
+        assert!(
+            !lines_of(orchestrate, &text(role)?, false),
+            "{role} cannot spawn at max_depth 1, so no trigger attaches the protocol"
+        );
+    }
     Ok(())
 }
 
