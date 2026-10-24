@@ -22,6 +22,7 @@ mod openai_mapper;
 mod openai_responses;
 mod openrouter;
 mod proxy;
+mod quota;
 mod refresh;
 mod resend;
 mod strict_tools;

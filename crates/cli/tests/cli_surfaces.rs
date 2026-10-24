@@ -1302,6 +1302,21 @@ fn refreshing_kimi_without_a_login_is_a_skip_not_a_failure() -> TestResult {
     Ok(())
 }
 
+/// The quota windows are read with the account's login; without one the error names the verb
+/// that makes one, not a usage error.
+#[test]
+fn catalog_usage_without_a_kimi_login_names_the_login_verb() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-usage")?;
+    let refused = workspace.yi(&["catalog", "usage", "kimi"])?;
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(
+        complaint.trim(),
+        "error: no credential for provider kimi (run: yi login kimi)"
+    );
+    Ok(())
+}
+
 /// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
 #[test]
 fn a_relative_home_is_refused_at_boot() -> TestResult {
