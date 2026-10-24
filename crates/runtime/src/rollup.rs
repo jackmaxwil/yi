@@ -6,12 +6,14 @@ use std::path::{Path, PathBuf};
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
+use yi_types::plan::canonical::sorted;
 use yi_types::plan::doc::OWNER_AGENT;
 use yi_types::plan::ledger::{JournalRecord, PLAN_OP_ENTRY_TYPE, PlanOpRecord};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
 use crate::plan::ops::ENGINE_AGENT;
+use crate::plan::state::{KIND_DONE_REFUSED, KIND_VERIFICATION_STALE};
 use crate::plan::store::JOURNAL_NAME;
 use crate::schedule::Zone;
 
@@ -84,23 +86,24 @@ pub struct Scan {
     pub unreadable: usize,
     /// Lines naming an assistant or a plan op that did not parse.
     pub bad_lines: usize,
-    /// Applied plan ops by (op, who applied it); a refusal's op reads `<op> (refused)`.
+    /// Applied plan ops by (op, who applied it); an op the table rejected reads `<op> (rejected)`.
     pub plan_ops: BTreeMap<(String, ActorClass), u64>,
     pub journals: usize,
     plan_seen: HashSet<String>,
 }
 
 impl Scan {
-    /// Invariant: a record read from a journal, its session mirror or a fork's copy is the same
-    /// text and counts once; the mirror lacks `spawn_intent`, `spawn_result` and refusals.
+    /// Invariant: a journal record, its session mirror and a fork's copy are one op and count once,
+    /// though the journal sorts a record's keys and the mirror keeps the order it was stamped in.
     fn add_plan_op(&mut self, record: &PlanOpRecord, since_ms: u64) {
-        let fresh = serde_json::to_string(record).is_ok_and(|text| self.plan_seen.insert(text));
+        let fresh = serde_json::to_value(record)
+            .is_ok_and(|value| self.plan_seen.insert(sorted(&value).to_string()));
         if record.at < since_ms || !fresh {
             return;
         }
-        let op = match record.extra.contains_key("refusal") {
-            true => format!("{} (refused)", record.op),
-            false => record.op.clone(),
+        let op = match (record.extra.contains_key("refusal"), record.op.as_str()) {
+            (true, KIND_DONE_REFUSED | KIND_VERIFICATION_STALE) | (false, _) => record.op.clone(),
+            (true, rejected) => format!("{rejected} (rejected)"),
         };
         let count = self
             .plan_ops
@@ -257,8 +260,8 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
     scan
 }
 
-/// Adds the plan journals under `plans` (`<plans>/<root>/ops.jsonl`) to `scan.plan_ops`: a
-/// session file mirrors only the ops its own engine emitted, so delegations and refusals live here.
+/// Adds the plan journals under `plans` (`<plans>/<root>/ops.jsonl`) to `scan.plan_ops`: a session
+/// file mirrors only the ops its own engine emitted, so delegations and rejected ops live here.
 pub fn fold_journals(scan: &mut Scan, plans: &Path, since_ms: u64) {
     let mut files = Vec::new();
     jsonl_files(plans, since_ms, &mut files);
