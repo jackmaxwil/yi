@@ -708,12 +708,10 @@ impl AcpState {
             }
             "session/set_config_option" => self.set_config_option(params),
             "_yi/fork" => self.fork(params),
-            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff"
-            | "_yi/kernel_execute" | "_yi/kernel_cancel" | "_yi/slash" => {
-                self.handle_extension(method, params)
-            }
             "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
             | "_yi/child_abort" | "_yi/child_answer" => self.handle_control(method, params),
+            // Incident: a hand-kept list here missed `_yi/why`, so every review chain was refused.
+            other if other.starts_with("_yi/") => self.handle_extension(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -802,21 +800,25 @@ impl AcpState {
         }
     }
 
-    /// `_yi/*` extension methods (§17.2): the heartbeat and goal surfaces.
+    /// `_yi/*` extension methods (§17.2). The session resolves per arm, so a method nothing
+    /// handles answers METHOD_NOT_FOUND whatever its params name.
     fn handle_extension(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
-        let (handle, session_id) = self.session(params)?;
+        let found = self
+            .session(params)
+            .map(|(handle, id)| (Arc::clone(&handle.session), id));
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
         match method {
             "_yi/kernel_execute" => {
+                let (session, session_id) = found?;
                 let code = crate::cells::cell_code(params)?;
-                let service = handle
-                    .session
+                let service = session
                     .kernel_service()
                     .ok_or((INTERNAL_ERROR, "no kernel is attached".to_owned()))?;
-                let events = handle.session.events_sender();
+                let events = session.events_sender();
                 self.spawn_user_cell(session_id, service, events, code)
             }
             "_yi/kernel_cancel" => {
+                let (_, session_id) = found?;
                 let call = text("callId");
                 if self.user_cells.cancel(&session_id, call) {
                     return Ok(json!({}));
@@ -841,19 +843,24 @@ impl AcpState {
                 let root = std::path::Path::new(text("root"));
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
             }
-            "_yi/why" => Ok(crate::review::why(&handle.session, &self.cwd, params)),
+            "_yi/why" => {
+                let (session, _) = found?;
+                Ok(crate::review::why(&session, &self.cwd, params))
+            }
             "_yi/branch_diff" => {
-                let root = crate::review::root(&handle.session, &self.cwd);
+                let (session, _) = found?;
+                let root = crate::review::root(&session, &self.cwd);
                 let value = serde_json::to_value(yi_runtime::environment::branch_diff(&root));
                 Ok(value.unwrap_or(Value::Null))
             }
             "_yi/slash" => {
+                let (session, session_id) = found?;
                 let line = text("line").trim();
                 let (command, args) = yi_runtime::slash::split(line);
-                let before = (handle.session.model().id, handle.session.effort());
+                let before = (session.model().id, session.effort());
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
-                    "undo" => yi_runtime::slash::undo(&handle.session, &self.cwd),
+                    "undo" => yi_runtime::slash::undo(&session, &self.cwd),
                     // Routed through `_yi/heartbeat`, not `slash::run`, so the client keeps `_yi/heartbeat_changed` (C9).
                     "heartbeat" => {
                         return self.handle_extension(
@@ -861,7 +868,7 @@ impl AcpState {
                             &json!({"sessionId": session_id, "command": args}),
                         );
                     }
-                    other => yi_runtime::slash::run(&handle.session, other, args)
+                    other => yi_runtime::slash::run(&session, other, args)
                         .ok_or((INVALID_PARAMS, format!("unknown command: /{other}")))?,
                 };
                 let after = self
@@ -874,8 +881,8 @@ impl AcpState {
                 Ok(json!({"text": reply}))
             }
             "_yi/heartbeat" => {
-                let service = handle
-                    .session
+                let (session, session_id) = found?;
+                let service = session
                     .heartbeat_service()
                     .ok_or((INTERNAL_ERROR, "no scheduler is attached".to_owned()))?;
                 match service.run(text("command")) {
@@ -887,8 +894,8 @@ impl AcpState {
                 }
             }
             "_yi/goal" => {
-                let service = handle
-                    .session
+                let (session, session_id) = found?;
+                let service = session
                     .goal_service()
                     .ok_or((INTERNAL_ERROR, "no goal service is attached".to_owned()))?;
                 // Blocks dispatch up to the check timeout — same class as
