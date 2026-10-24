@@ -3123,9 +3123,13 @@ async fn a_checked_childs_check_runs_in_the_session_cwd() -> TestResult {
 
 const PROTOCOL_ANSWER: &str = "{\"value\": 1, \"discoveries\": []}";
 
-/// A root wired the way `yi` wires one: rules read from `root/home`, a yolo broker with no
-/// sandbox, so the host gate alone stands between a spawn's check and the host.
-fn wired_root(root: &std::path::Path) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
+/// A root wired the way `yi` wires one: rules read from `root/home`, and a yolo broker with no
+/// sandbox, or an auto one over `sandbox`, so the host gate alone stands between a check and the host.
+fn wired_root(
+    root: &std::path::Path,
+    wall: yi_runtime::Wall,
+    sandbox: Option<yi_tools::Sandbox>,
+) -> (AgentSession, Arc<ProviderStream>, Arc<SubagentHost>) {
     let provider = Arc::new(ProviderStream::new(None));
     // Every turn of the family, the parent's woken one too, answers the result object.
     provider.queue_faux(vec![child_reply(PROTOCOL_ANSWER); 8]);
@@ -3138,13 +3142,18 @@ fn wired_root(root: &std::path::Path) -> (AgentSession, Arc<ProviderStream>, Arc
         },
         Arc::clone(&provider),
     );
+    let mode = match sandbox {
+        Some(_) => yi_permission::PermissionMode::Auto,
+        None => yi_permission::PermissionMode::Yolo,
+    };
     let broker = yi_runtime::PermissionBroker::new(
-        yi_permission::PermissionMode::Yolo,
+        mode,
         root.join("project"),
         Vec::new(),
         None,
         session.events_sender(),
-    );
+    )
+    .with_sandbox(sandbox);
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
@@ -3166,7 +3175,7 @@ fn wired_root(root: &std::path::Path) -> (AgentSession, Arc<ProviderStream>, Arc
             plan_stale_turns: None,
             plans_dir: Some(root.join("plans")),
             parent_link: None,
-            wall: yi_runtime::Wall::default(),
+            wall,
             auto_background: None,
             deadline: None,
             kernel_prewarm: false,
@@ -3196,7 +3205,7 @@ const DENY_MARKER: &str =
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_user_rule_refuses_a_spawn_check_it_names() -> TestResult {
     let root = gate_rule_root("yi-check-gate", Some(DENY_MARKER))?;
-    let (_session, _provider, host) = wired_root(&root);
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
     let marker = root.join("project/denied-marker");
     let check = json!(format!("touch {}; true", marker.display()));
     let spawned = host.spawn(
@@ -3223,7 +3232,7 @@ async fn a_user_rule_refuses_a_spawn_check_it_names() -> TestResult {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rule_promoted_after_the_spawn_still_stops_the_check_at_result() -> TestResult {
     let root = gate_rule_root("yi-check-regate", None)?;
-    let (session, _provider, host) = wired_root(&root);
+    let (session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
     let marker = root.join("project/denied-marker");
     let check = json!(format!("touch {}; true", marker.display()));
     let reply = host
@@ -3261,12 +3270,98 @@ async fn a_rule_promoted_after_the_spawn_still_stops_the_check_at_result() -> Te
     Ok(())
 }
 
+/// A rule's `after: 2` counts attempts, and the recheck at `rlm.result` counted the spawned check
+/// a second time, so the first use of its trigger passed the spawn and was refused after the run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_after_gate_counts_a_spawned_check_once() -> TestResult {
+    let rule = DENY_MARKER.replace("mode: gate\n", "mode: gate\nafter: 2\n");
+    let root = gate_rule_root("yi-check-after", Some(&rule))?;
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
+    let marker = root.join("project/denied-marker");
+    let check = json!(format!("touch {}; true", marker.display()));
+    let kwargs = |name| protocol_kwargs(name, &[("check", check.clone())]);
+    let reply = (host.spawn("land the fix".to_owned(), kwargs("first")))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let reply = host.result("first", None)?;
+    assert_eq!(reply.get("value"), Some(&json!(1)), "{reply:?}");
+    assert!(marker.exists(), "the first attempt's check ran");
+    let second = host.spawn("land the fix".to_owned(), kwargs("second"));
+    let refusal = second.err().ok_or("the second attempt meets the gate")?;
+    assert!(refusal.contains("Denied by rule `no-denied`"), "{refusal}");
+    Ok(())
+}
+
+/// The wall's verdict on a check's text holds at every spawn, unlike a gate rule's single
+/// informed refusal: a check reading a denied path is refused the second time as the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_walled_check_is_refused_at_every_spawn() -> TestResult {
+    let root = gate_rule_root("yi-check-walled", None)?;
+    let secret = root.join("project/secret");
+    std::fs::create_dir_all(&secret)?;
+    let wall = yi_runtime::Wall {
+        deny_write: Vec::new(),
+        deny_read: vec![secret.clone()],
+        deny_url: Vec::new(),
+        container: None,
+    };
+    let (_session, _provider, host) = wired_root(&root, wall, None);
+    let check = json!(format!("cat {}/key.txt", secret.display()));
+    for attempt in ["first", "second"] {
+        let spawned = host.spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs(attempt, &[("check", check.clone())]),
+        );
+        let refusal = spawned.err().ok_or("a walled check must not spawn")?;
+        assert!(
+            refusal.contains("refused before it runs on the host"),
+            "{attempt}: {refusal}"
+        );
+    }
+    let listed = host.list()["subagents"].as_array().map_or(0, Vec::len);
+    assert_eq!(listed, 0, "nothing was admitted");
+    Ok(())
+}
+
+/// A sandboxed auto session runs a command it would only contain inside the sandbox, and a check
+/// runs on the host, so the broker's leg of the gate refuses it at spawn and names the way out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sandboxed_session_refuses_a_check_it_would_only_contain() -> TestResult {
+    let root = gate_rule_root("yi-check-sandboxed", None)?;
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![root.join("project")],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
+    let marker = root.join("project/contained-marker");
+    let check = json!(format!("touch {}", marker.display()));
+    let spawned = host.spawn(
+        "land the fix".to_owned(),
+        protocol_kwargs("contained", &[("check", check)]),
+    );
+    let refusal = spawned
+        .err()
+        .ok_or("a check the sandbox only contains must not spawn")?;
+    assert!(
+        refusal.contains("refused before it runs on the host")
+            && refusal.contains("runs later outside the sandbox, which allows it only contained")
+            && refusal.contains("run it yourself with bash, or allow it by a permission rule"),
+        "the refusal names the containment and the way out: {refusal}"
+    );
+    assert!(!marker.exists(), "the refused check never ran");
+    Ok(())
+}
+
 /// The gate passes a check no rule names: it runs at `rlm.result` in the session's cwd, and a
 /// red one still holds the result back with its own evidence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_gated_host_still_runs_an_allowed_check_and_holds_a_red_one() -> TestResult {
     let root = gate_rule_root("yi-check-allowed", Some(DENY_MARKER))?;
-    let (_session, _provider, host) = wired_root(&root);
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), None);
     let mut children = Vec::new();
     for (name, check) in [("allowed", "touch ran-marker"), ("red", "exit 3")] {
         let reply = host

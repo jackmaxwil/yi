@@ -712,7 +712,7 @@ impl SubagentHost {
             let cwd = self
                 .cwd_of(&name)
                 .unwrap_or_else(|| self.options.cwd.clone());
-            if let Some(refused) = self.check_gate.get().and_then(|gate| gate(&check)) {
+            if let Some(refused) = self.check_gate.get().and_then(|gates| gates.1(&check)) {
                 return Err(format!(
                     "child \"{target}\" result held back; its check is refused: {refused}"
                 ));
