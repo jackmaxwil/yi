@@ -32,10 +32,11 @@ drain() {
 }
 # The two dist gates run after drain, on a quiet tree, so they print through here instead.
 after() {
+  [ "$QUIET" = 1 ] || { "$@"; return; }
   local out rc
   out=$("$@" 2>&1)
   rc=$?
-  [ "$QUIET" = 1 ] && [ "$rc" = 0 ] || printf '%s\n' "$out"
+  [ "$rc" = 0 ] || printf '%s\n' "$out"
   return "$rc"
 }
 
