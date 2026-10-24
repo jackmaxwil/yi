@@ -98,18 +98,16 @@ pub fn handle_terminal_event(
     }
 }
 
-const PICKER_CAP: usize = 100;
-const PICKER_COUNT_CAP: usize = 5_000;
+const PICKER_CAP: usize = 5_000;
 
 fn file_picker(cwd: &str) -> ListPopup {
-    let mut files = walk_files(std::path::Path::new(cwd), PICKER_COUNT_CAP);
-    let found = files.len();
+    let mut files = walk_files(std::path::Path::new(cwd), PICKER_CAP + 1);
+    let more = files.len() > PICKER_CAP;
     files.truncate(PICKER_CAP);
     let mut popup = ListPopup::new('@', files);
-    if found > PICKER_CAP {
-        let plus = if found >= PICKER_COUNT_CAP { "+" } else { "" };
+    if more {
         popup.note = Some(format!(
-            "[…] {PICKER_CAP} of {found}{plus} files · picker cap {PICKER_CAP} · type a path for the rest"
+            "[…] {PICKER_CAP} of {PICKER_CAP}+ files · picker cap {PICKER_CAP} · Esc, then type the path"
         ));
     }
     popup

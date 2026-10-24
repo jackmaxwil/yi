@@ -116,17 +116,14 @@ fn each_hunk_is_asked_why_at_its_first_changed_line_and_the_chain_shows_under_it
     assert!(b.is_some() && chain == b.map(|b| b + 1), "{rows:#?}");
 }
 
-fn review_rows(diff: &SessionDiff) -> Vec<String> {
+fn dropped_row_in(diff: &SessionDiff, scope: ReviewScope) -> Option<String> {
     let theme = Theme::new(ColorTier::TrueColor, true);
-    let (_, lines) =
-        yi_console::render::review_view(Some(diff), ReviewScope::Session, "", 80, &theme);
-    text(&lines)
+    let (_, lines) = yi_console::render::review_view(Some(diff), scope, "", 80, &theme);
+    text(&lines).into_iter().find(|row| row.contains("[…]"))
 }
 
 fn dropped_row(diff: &SessionDiff) -> Option<String> {
-    review_rows(diff)
-        .into_iter()
-        .find(|row| row.contains("[…]"))
+    dropped_row_in(diff, ReviewScope::Session)
 }
 
 fn patch_of(path: &str, bytes: usize) -> (String, FileDiff) {
@@ -181,7 +178,49 @@ fn a_dropped_file_edited_again_is_no_longer_counted() {
     }
     let (path, file) = edit("src/f0.rs", 0, None);
     diff.insert(path, file);
-    assert!(diff.dropped.contains("src/f1.rs") && !diff.dropped.contains("src/f0.rs"));
+    assert!(
+        diff.dropped_at_turn.contains_key("src/f1.rs")
+            && !diff.dropped_at_turn.contains_key("src/f0.rs")
+    );
     let row = dropped_row(&diff).unwrap_or_default();
     assert!(row.contains("1 older file not shown"), "{row}");
+}
+
+/// Dies with the turn view claiming files missing under "the last turn's edits" that an older
+/// turn lost: the cap evicts the oldest files first, so those are almost never this turn's.
+#[test]
+fn a_turns_review_counts_only_the_files_its_own_turn_lost() {
+    let mut diff = SessionDiff {
+        turn: 2,
+        ..SessionDiff::default()
+    };
+    for n in 0..=MAX_DIFF_FILES {
+        let (path, file) = edit(&format!("src/old{n}.rs"), 1, None);
+        diff.insert(path, file);
+    }
+    let (path, file) = edit("src/new.rs", 2, None);
+    diff.insert(path, file);
+    assert_eq!(
+        dropped_row_in(&diff, ReviewScope::Turn),
+        None,
+        "two turn-1 files left the list and turn 2 lost none"
+    );
+    assert!(
+        dropped_row(&diff).is_some_and(|row| row.contains("2 older files not shown")),
+        "the session lost both"
+    );
+    for n in 0..MAX_DIFF_FILES {
+        let (path, file) = edit(&format!("src/new{n}.rs"), 2, None);
+        diff.insert(path, file);
+    }
+    assert_eq!(
+        dropped_row_in(&diff, ReviewScope::Turn).as_deref(),
+        Some("  […] 1 older file not shown · review keeps 512 files, 4 MiB · git diff lists them"),
+        "only src/new.rs is turn 2's"
+    );
+    assert!(
+        dropped_row(&diff).is_some_and(|row| row.contains("514 older files not shown")),
+        "{:?}",
+        dropped_row(&diff)
+    );
 }

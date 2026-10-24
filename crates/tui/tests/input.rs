@@ -169,15 +169,29 @@ fn an_injected_message_leaves_one_of_two_identical_queued_rows() -> TestResult {
     Ok(())
 }
 
-/// The `[…]` row an `@` picker draws over `cwd`, if it draws one.
-fn picker_note(cwd: &str) -> Result<Option<String>, Box<dyn Error>> {
+/// Opens an `@` picker over `cwd` and types `typed` into it.
+fn picker_over(cwd: &str, typed: &str) -> App {
     let mut app = app_in(cwd);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    type_text(&mut app, &tx, "@");
+    type_text(&mut app, &tx, &format!("@{typed}"));
+    app
+}
+
+/// The `[…]` row an `@` picker draws over `cwd`, if it draws one.
+fn picker_note(cwd: &str) -> Result<Option<String>, Box<dyn Error>> {
+    let mut app = picker_over(cwd, "");
     Ok(common::live_rows(&mut app)?
         .into_iter()
         .find(|row| row.contains("[…]"))
         .map(|row| row.trim().to_owned()))
+}
+
+/// Picks what `typed` leaves selected in an `@` picker over `cwd`: what the composer then holds.
+fn picked(cwd: &str, typed: &str) -> String {
+    let mut app = picker_over(cwd, typed);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    app.composer_text()
 }
 
 fn files_in(dir: &Scratch, numbers: std::ops::Range<usize>) -> TestResult {
@@ -187,36 +201,35 @@ fn files_in(dir: &Scratch, numbers: std::ops::Range<usize>) -> TestResult {
     Ok(())
 }
 
-/// Dies with an `@` picker that listed a hundred names as if they were the project: the walk
-/// stopped at its cap, so file 101 could not be found and nothing on screen said it existed.
+/// Dies with a picker whose row said "type a path for the rest" while typing a path found
+/// nothing: only the first hundred names were searchable, a root `justfile` sorted behind a busy
+/// directory fell out of them, and Enter on no match threw the typed text away.
 #[test]
-fn the_file_picker_says_how_many_files_its_hundred_are_out_of() -> TestResult {
+fn a_name_typed_into_the_picker_reaches_a_file_past_its_first_hundred() -> TestResult {
     let dir = Scratch::new("yi-picker")?;
-    files_in(&dir, 0..100)?;
+    std::fs::File::create(dir.join("justfile"))?;
+    std::fs::create_dir(dir.join("alpha"))?;
+    for n in 0..150 {
+        std::fs::File::create(dir.join(format!("alpha/a{n:03}.txt")))?;
+    }
     let at = dir.display().to_string();
-    assert_eq!(picker_note(&at)?, None, "a hundred files are all of them");
-    files_in(&dir, 100..101)?;
-    assert_eq!(
-        picker_note(&at)?.as_deref(),
-        Some("[…] 100 of 101 files · picker cap 100 · type a path for the rest")
-    );
+    assert_eq!(picked(&at, "justfile"), "justfile ");
+    assert_eq!(picked(&at, "a149"), "alpha/a149.txt ");
+    assert_eq!(picker_note(&at)?, None, "151 files are all of them");
     Ok(())
 }
 
-/// The count walk is bounded too, and says so: past five thousand names the total is a floor.
+/// The walk is bounded, and says so: 5,000 names are all of them, 5,001 are a floor.
 #[test]
-fn a_picker_over_five_thousand_files_counts_a_floor() -> TestResult {
+fn a_picker_names_its_cap_one_file_past_five_thousand() -> TestResult {
     let dir = Scratch::new("yi-picker-big")?;
-    files_in(&dir, 0..4_999)?;
+    files_in(&dir, 0..5_000)?;
     let at = dir.display().to_string();
+    assert_eq!(picker_note(&at)?, None, "5000 files are all of them");
+    files_in(&dir, 5_000..5_001)?;
     assert_eq!(
         picker_note(&at)?.as_deref(),
-        Some("[…] 100 of 4999 files · picker cap 100 · type a path for the rest")
-    );
-    files_in(&dir, 4_999..5_000)?;
-    assert_eq!(
-        picker_note(&at)?.as_deref(),
-        Some("[…] 100 of 5000+ files · picker cap 100 · type a path for the rest")
+        Some("[…] 5000 of 5000+ files · picker cap 5000 · Esc, then type the path")
     );
     Ok(())
 }
@@ -224,12 +237,11 @@ fn a_picker_over_five_thousand_files_counts_a_floor() -> TestResult {
 /// The crates tree of this checkout is the life-sized one: hundreds of tracked files, ignored
 /// ones skipped. (The checkout root holds the test HOME, which the walk refuses to enter.)
 #[test]
-fn the_picker_over_this_checkouts_crates_names_its_cap() -> TestResult {
+fn the_picker_over_this_checkouts_crates_reaches_a_file_deep_in_the_tree() -> TestResult {
     let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .canonicalize()?;
-    let note = picker_note(&crates.display().to_string())?
-        .ok_or("the crates tree holds more than a hundred files")?;
-    assert!(note.starts_with("[…] 100 of "), "{note}");
+    let at = crates.display().to_string();
+    assert_eq!(picked(&at, "tui/src/input.rs"), "tui/src/input.rs ");
     Ok(())
 }

@@ -180,7 +180,12 @@ pub fn review_view(
     }
     let dropped = diff
         .filter(|_| scope != ReviewScope::Branch)
-        .map_or(0, |diff| diff.dropped.len());
+        .map_or(0, |diff| {
+            let turn_only = scope == ReviewScope::Turn;
+            (diff.dropped_at_turn.values())
+                .filter(|turn| !turn_only || **turn == diff.turn)
+                .count()
+        });
     if dropped > 0 {
         let noun = if dropped == 1 { "file" } else { "files" };
         let cap = format!(

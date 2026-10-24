@@ -11,9 +11,9 @@ use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::highlight::Token;
 use yi_tui::keymap::default_keymap;
 use yi_tui::tree::{TreeFilter, TreeView};
-use yi_types::event::{AgentEvent, ToolResult};
+use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage};
-use yi_types::subagent::ChildActivity;
+use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -375,6 +375,65 @@ fn a_multibyte_answer_is_cut_on_a_character_and_counted_in_bytes() -> TestResult
     assert_eq!(cell.answer_dropped, 3);
     let row = dropped_head_row(&cell).ok_or("no row")?;
     assert!(row.contains("kept the last 16383 of 16386 B"), "{row}");
+    Ok(())
+}
+
+fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpdate {
+    ChildUpdate {
+        id: ChildId("sub-writer".to_owned()),
+        name: "writer".to_owned(),
+        status,
+        activity: ChildActivity::Waiting,
+        tool_use_count: 1,
+        token_count: 40,
+        cost: None,
+        answer_preview,
+        error: None,
+        exit: None,
+        flag: None,
+    }
+}
+
+/// Dies with a console card, which has no session feed, showing the record's 240-character head
+/// where the last 16 KiB should be and naming no cut: a tail whose head the card dropped can never
+/// contain the preview, so the preview check threw the tail away. The text is a numbered report,
+/// not a repeated run, so its head cannot reappear in its tail.
+#[test]
+fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> TestResult {
+    let mut app = app();
+    app.adopt(&child_update(ChildStatus::Running, None), None);
+    let text: String = (0..3_000)
+        .map(|n| format!("line {n} of a long report\n"))
+        .collect();
+    let empty = yi_runtime::faux::faux_assistant_message(
+        vec![yi_runtime::faux::faux_text("")],
+        StopReason::Stop,
+    );
+    app.reduce_child("sub-writer", AgentEvent::MessageStart { message: empty });
+    for chunk in text.as_bytes().chunks(8 * 1024) {
+        app.reduce_child(
+            "sub-writer",
+            AgentEvent::MessageUpdate {
+                assistant_message_event: AssistantMessageEvent::TextDelta {
+                    content_index: 0,
+                    delta: String::from_utf8_lossy(chunk).into_owned(),
+                },
+            },
+        );
+    }
+    let preview = format!("{}…", text.chars().take(240).collect::<String>());
+    app.reduce_child_update(&child_update(ChildStatus::Completed, Some(preview)));
+    let rows = flat(&app.take_commits());
+    let row = rows
+        .iter()
+        .find(|row| row.contains("[…] kept the last"))
+        .ok_or_else(|| format!("the card named no cut: {rows:#?}"))?;
+    assert!(row.contains(&format!("of {} B", text.len())), "{row}");
+    assert!(
+        rows.iter()
+            .all(|row| !row.contains("line 0 of a long report")),
+        "{rows:#?}"
+    );
     Ok(())
 }
 
