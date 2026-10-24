@@ -1960,3 +1960,64 @@ fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
     );
     client.finish()
 }
+
+/// The committed entry is found by walking back from the leaf to the message it holds, so a
+/// long branch still names the entry the turn just saved, not an older one.
+#[test]
+fn a_five_thousand_message_session_names_each_committed_entry() -> TestResult {
+    use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
+    let dir = temp_dir("committed-long")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    client.request("3", "session/close", json!({"sessionId": session_id}))?;
+    let recorded: Vec<yi_types::message::AgentMessage> =
+        include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl")
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| serde_json::from_value(line["message"].clone()).ok())
+            .collect();
+    let open = || {
+        let mut repo = JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
+        repo.open(&session_id)
+    };
+    {
+        let store = open()?;
+        let mut session = lock_session(&store);
+        for message in recorded.iter().cycle().take(5_000) {
+            session.append_message("main", message.clone())?;
+        }
+    }
+    client.request(
+        "4",
+        "session/resume",
+        json!({"sessionId": session_id, "replayFrom": 0, "_meta": {"yi": {"replayUpdates": false}}}),
+    )?;
+    let frames = prompt_until_idle(&mut client, "5", &session_id, "edit a.py")?;
+    let named: Vec<String> = committed(&frames)?
+        .iter()
+        .map(|entry| entry.id().to_owned())
+        .collect();
+    client.finish()?;
+    let store = open()?;
+    let session = lock_session(&store);
+    let saved: Vec<String> = session
+        .find_entries(&yi_runtime::session_store::EntryQuery {
+            order: yi_runtime::session_store::EntryOrder::OldestFirst,
+            ..Default::default()
+        })?
+        .iter()
+        .filter(|entry| matches!(entry, yi_types::entry::Entry::Message { .. }))
+        .map(|entry| entry.id().to_owned())
+        .collect();
+    assert!(
+        saved.len() > 5_000,
+        "the history was written: {}",
+        saved.len()
+    );
+    assert_eq!(
+        named,
+        saved[saved.len() - 2..],
+        "the turn's prompt and reply, the newest two messages saved"
+    );
+    Ok(())
+}
