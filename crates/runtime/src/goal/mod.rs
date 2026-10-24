@@ -1,5 +1,3 @@
-pub mod template;
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -167,10 +165,21 @@ fn budget_values(goal: &Goal) -> [(&'static str, String); 3] {
     ]
 }
 
-pub fn continuation_text(
-    goal: &Goal,
-    plan: Option<&yi_types::plan::doc::Plan>,
-) -> Result<String, template::TemplateError> {
+/// Invariant: the objective is user text and is filled last, so a `{{ token_budget }}`
+/// typed into it stays literal instead of being rewritten by a later pass.
+fn fill(template: &str, goal: &Goal, extra: Vec<(&'static str, String)>) -> String {
+    let mut values = budget_values(goal).to_vec();
+    values.push(("time_used_seconds", goal.time_used_seconds.to_string()));
+    values.extend(extra);
+    values.push(("objective", goal.objective.clone()));
+    values
+        .into_iter()
+        .fold(template.to_owned(), |text, (name, value)| {
+            text.replace(&format!("{{{{ {name} }}}}"), &value)
+        })
+}
+
+pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) -> String {
     let check_status = goal
         .check_failure
         .as_ref()
@@ -185,32 +194,19 @@ pub fn continuation_text(
             format!("Plan state:\n{text}\n")
         }
     });
-    let mut values = vec![
-        ("objective", goal.objective.clone()),
+    let extra = vec![
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    values.extend(budget_values(goal));
-    template::render(CONTINUATION_TEMPLATE, values)
+    fill(CONTINUATION_TEMPLATE, goal, extra)
 }
 
-pub fn budget_limit_text(goal: &Goal) -> Result<String, template::TemplateError> {
-    let [used, budget, _remaining] = budget_values(goal);
-    template::render(
-        BUDGET_LIMIT_TEMPLATE,
-        vec![
-            ("objective", goal.objective.clone()),
-            ("time_used_seconds", goal.time_used_seconds.to_string()),
-            used,
-            budget,
-        ],
-    )
+pub fn budget_limit_text(goal: &Goal) -> String {
+    fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
 }
 
-pub fn objective_updated_text(goal: &Goal) -> Result<String, template::TemplateError> {
-    let mut values = vec![("objective", goal.objective.clone())];
-    values.extend(budget_values(goal));
-    template::render(OBJECTIVE_UPDATED_TEMPLATE, values)
+pub fn objective_updated_text(goal: &Goal) -> String {
+    fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
 }
 
 fn goal_prompt_message(text: String) -> AgentMessage {
@@ -460,9 +456,10 @@ impl GoalService {
         goal.check_failure = None;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
-        if let Ok(text) = objective_updated_text(&goal) {
-            (self.deliver)(goal_prompt_message(text), DeliveryMode::Steer);
-        }
+        (self.deliver)(
+            goal_prompt_message(objective_updated_text(&goal)),
+            DeliveryMode::Steer,
+        );
         if let Ok(mut deferred) = self.deferred.lock() {
             *deferred = false;
         }
@@ -546,8 +543,11 @@ impl GoalService {
         }
         // One-shot by construction: the Active→BudgetLimited transition
         // happens exactly once per goal.
-        if crossed && let Ok(text) = budget_limit_text(&goal) {
-            (self.deliver)(goal_prompt_message(text), DeliveryMode::Steer);
+        if crossed {
+            (self.deliver)(
+                goal_prompt_message(budget_limit_text(&goal)),
+                DeliveryMode::Steer,
+            );
         }
     }
 
@@ -575,9 +575,7 @@ impl GoalService {
         if !goal.status.is_active() {
             return;
         }
-        let Ok(text) = continuation_text(&goal, self.read_plan().ok().as_ref()) else {
-            return;
-        };
+        let text = continuation_text(&goal, self.read_plan().ok().as_ref());
         Self::set_flag(&self.pending, true);
         (self.deliver)(goal_prompt_message(text), DeliveryMode::FollowUp);
     }
