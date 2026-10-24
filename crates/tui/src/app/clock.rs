@@ -53,6 +53,10 @@ impl App {
         self.submitted_turns > self.started_turns
     }
 
+    pub(crate) fn note_steered(&mut self) {
+        self.submitted_turns = self.submitted_turns.saturating_sub(1);
+    }
+
     pub fn turn_idle(&self) -> bool {
         self.seen_turn && !self.running && !self.awaiting_turn()
     }

@@ -59,6 +59,8 @@ pub enum Reply {
         entries: Vec<Entry>,
     },
     Notice(String),
+    /// A prompt the runtime took as a steer, so no turn of its own starts for it.
+    Steered(String),
 }
 
 pub trait SessionPort {
@@ -465,6 +467,10 @@ impl App {
                 }
             }
             Reply::Notice(text) => self.notice(text),
+            Reply::Steered(text) => {
+                self.note_steered();
+                self.notice(text);
+            }
         }
         self.scheduler.request();
     }

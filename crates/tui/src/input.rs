@@ -234,11 +234,13 @@ pub(crate) fn handle_action(
                 return;
             }
             if let Some(text) = app.composer.take_submission() {
-                // A typed line is a command only when its first word is one (a `/usr/...` path still prompts).
-                if let Some(command) = slash_line(&text) {
-                    handle_slash(app, &command);
-                    return;
-                }
+                let text = match slash_line(text) {
+                    Slash::Command(command) => {
+                        handle_slash(app, &command);
+                        return;
+                    }
+                    Slash::Prompt(text) => text,
+                };
                 if let Some(bound) = app.reply_bound.take() {
                     let (child_id, question) = (bound.child_id, bound.question);
                     let _ = cmd_tx.send(Command::Answer {
@@ -290,13 +292,26 @@ pub(crate) fn handle_action(
     }
 }
 
-fn slash_line(text: &str) -> Option<String> {
-    let line = text.trim();
-    let rest = line.strip_prefix('/')?;
-    let head = rest.split_whitespace().next()?;
-    SLASH_COMMANDS
-        .contains(&head)
-        .then(|| rest.trim().to_owned())
+enum Slash {
+    Command(String),
+    Prompt(String),
+}
+
+/// Invariant: `/word` is a command, a typo'd one included, and `//word` sends `/word` as a
+/// prompt. A `/usr/...` path or a `/*` comment is no word, so it still prompts.
+fn slash_line(text: String) -> Slash {
+    let word = |rest: &str| {
+        let head = rest.split(char::is_whitespace).next().unwrap_or_default();
+        !head.is_empty()
+            && head
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+    };
+    match text.trim().strip_prefix('/') {
+        Some(rest) if word(rest) => Slash::Command(rest.trim().to_owned()),
+        Some(rest) if rest.strip_prefix('/').is_some_and(word) => Slash::Prompt(rest.to_owned()),
+        _ => Slash::Prompt(text),
+    }
 }
 
 pub(crate) fn handle_slash(app: &mut App, line: &str) {
@@ -322,7 +337,9 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
             app.pending_slash = Some(line.trim().to_owned());
         }
         _ => app.commit_cell(&Cell::Notice {
-            text: format!("unknown command: /{command}"),
+            text: format!(
+                "unknown command: /{command} · start the line with // to send it as a prompt"
+            ),
         }),
     }
     app.scheduler.request();

@@ -98,6 +98,19 @@ fn keymap_round_trips_and_overrides() -> TestResult {
     Ok(())
 }
 
+/// Dies with a space-separated binding accepted and never fired: nothing resolved a chord, so
+/// `ctrl-x ctrl-e` sat in the map doing nothing and the config said it was bound.
+#[test]
+fn a_chord_in_the_keys_config_is_refused_naming_it() -> TestResult {
+    let mut map = default_keymap();
+    let refused = map
+        .apply_overrides(vec![("ctrl-x ctrl-e", "external-editor")])
+        .err()
+        .ok_or("the chord was accepted")?;
+    assert!(refused.contains("ctrl-x ctrl-e"), "{refused}");
+    Ok(())
+}
+
 #[test]
 fn paste_atoms_collapse_and_expand_exactly() -> TestResult {
     let mut composer = Composer::default();

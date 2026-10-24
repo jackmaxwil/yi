@@ -295,3 +295,75 @@ fn a_paste_with_a_popup_open_fills_the_popup_not_the_composer() -> TestResult {
     assert!(has_row(&rows, " /mod el"), "{rows:#?}");
     Ok(())
 }
+
+fn submitted(app: &mut App, tx: &UnboundedSender<Command>, line: &str) {
+    paste(app, tx, line);
+    press(app, tx, KeyCode::Enter, KeyModifiers::NONE);
+}
+
+/// The transcript's rows as the person reads them, one string.
+fn transcript(app: &App) -> String {
+    app.reflowed(200)
+        .iter()
+        .map(|row| row.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Dies with `/plna` reaching the model as a prompt: a typo'd command cost a turn and was
+/// answered as prose, where a typo should be told so for nothing.
+#[test]
+fn a_slash_line_naming_no_command_answers_locally_and_names_the_escape() -> TestResult {
+    let mut app = app();
+    app.set_width(120);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    submitted(&mut app, &tx, "/plna now");
+    assert_eq!(sent(&mut rx), Vec::<String>::new(), "a model turn started");
+    let rows = transcript(&app);
+    assert!(
+        rows.contains("unknown command: /plna · start the line with // to send it as a prompt"),
+        "{rows}"
+    );
+    Ok(())
+}
+
+/// The popup is where a typo is typed: Enter on a name nothing matches threw the line away
+/// without a word.
+#[test]
+fn a_typo_entered_in_the_slash_popup_gets_the_same_notice() -> TestResult {
+    let mut app = app();
+    app.set_width(120);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "/plna");
+    press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!app.bottom_open());
+    assert_eq!(sent(&mut rx), Vec::<String>::new());
+    assert!(transcript(&app).contains("unknown command: /plna"));
+    Ok(())
+}
+
+/// `//word` is the escape, and anything that is no word (a path, a code comment) is a prompt as
+/// typed: neither may be taken for a command.
+#[test]
+fn a_double_slash_and_a_slash_path_are_prompts() -> TestResult {
+    let mut app = app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    for line in [
+        "//plna is a word",
+        "/usr/local/bin is on my PATH",
+        "// a comment",
+        "/* a block comment */",
+    ] {
+        submitted(&mut app, &tx, line);
+    }
+    assert_eq!(
+        sent(&mut rx),
+        [
+            "prompt /plna is a word",
+            "prompt /usr/local/bin is on my PATH",
+            "prompt // a comment",
+            "prompt /* a block comment */",
+        ]
+    );
+    Ok(())
+}
