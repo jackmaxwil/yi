@@ -118,6 +118,7 @@ impl Scheduler {
                 let mut woken = std::pin::pin!(changed.notified());
                 let _ = woken.as_mut().enable();
                 let now = yi_session::now_ms();
+                store.rearm_idle(now, &busy);
                 let next = next_claimable_run_at(&store.snapshot(), &busy);
                 if next.is_some_and(|at| at <= now) {
                     let claimed = store

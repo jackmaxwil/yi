@@ -1831,3 +1831,66 @@ fn resume_after_a_halt_lifts_the_halt_and_leaves_a_paused_job_paused() -> TestRe
     );
     Ok(())
 }
+
+/// Dies with an idle mailbox claiming and recording every tick: two fsynced rewrites of the
+/// ledger per cadence per durable root, with nothing to deliver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_mailbox_tick_writes_no_ledger_file() -> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let root = Scratch::new("yi-idle-mail")?;
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-idle-mail".to_owned());
+    let id = "idle-mail-1";
+    let session = wired_root(&root, "unused")?;
+    session.attach_store(repo.create(CreateOptions {
+        id: Some(id.to_owned()),
+        ..CreateOptions::default()
+    })?)?;
+    let store = session.heartbeat_service().ok_or("no clock wired")?.store();
+    let (tick, start) = (200, yi_session::now_ms());
+    store.mutate(|state| {
+        for job in state.jobs.iter_mut().filter(|job| job.channel.is_some()) {
+            job.schedule.interval_ms = Some(tick);
+            job.next_run_at = Some(start);
+        }
+    });
+    let path = root
+        .join("sessions/schedules")
+        .join(id)
+        .join("scheduled-jobs.json");
+    let stamp = |path: &std::path::Path| {
+        std::fs::metadata(path).map(|meta| (meta.ino(), meta.mtime(), meta.mtime_nsec()))
+    };
+    let mut seen = HashSet::from([stamp(&path)?]);
+    let five_ticks = start.saturating_add(tick * 5);
+    let armed = |store: &JobStore| {
+        let jobs = store.snapshot().jobs;
+        let mut mail = jobs.iter().filter(|job| job.channel.is_some());
+        match (mail.next(), mail.next()) {
+            (Some(job), None) => job.next_run_at,
+            _ => None,
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while armed(&store).is_none_or(|at| at < five_ticks) && std::time::Instant::now() < deadline {
+        seen.insert(stamp(&path)?);
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    seen.insert(stamp(&path)?);
+
+    assert!(
+        armed(&store).is_some_and(|at| at >= five_ticks),
+        "the mailbox never ticked five times: {:?}",
+        store.snapshot().jobs
+    );
+    assert_eq!(
+        seen.len(),
+        1,
+        "five idle mailbox ticks rewrote the ledger: {seen:?}"
+    );
+    assert!(
+        store.snapshot().dispatches.is_empty(),
+        "an idle tick left a claim"
+    );
+    Ok(())
+}

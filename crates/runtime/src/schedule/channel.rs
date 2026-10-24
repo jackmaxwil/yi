@@ -354,6 +354,21 @@ fn stamp(item: &Todo) -> Option<ChannelStamp> {
     serde_json::from_value(item.extra.get(CHANNEL_KEY)?.clone()).ok()
 }
 
+/// A channel no adapter feeds, holding nothing past the job's ack: its tick would deliver
+/// nothing, so the timer re-arms it without a claim or a ledger write.
+pub(super) fn idle(job: &Job) -> bool {
+    let Some(sub) = &job.channel else {
+        return false;
+    };
+    let channel = Channel::at(&sub.path);
+    let Ok(meta) = channel.meta() else {
+        return false;
+    };
+    let acked = meta.acks.get(&job.id).copied().unwrap_or(0);
+    meta.source.starts_with(CHANNEL_SCHEME)
+        && channel.last().is_none_or(|last| last.offset <= acked)
+}
+
 /// A channel tick: the batch past the job's ack, filtered, delivered to its target, then acked,
 /// so a crash between the two redelivers and the stamp's ids keep it from creating twice.
 pub fn fire(todos: &TodoStore, job: &Job, sub: &ChannelSub) -> Result<Fired, String> {
