@@ -62,6 +62,10 @@ pub struct Frozen {
     pub criteria_digest: Digest,
 }
 
+pub fn session_has(name: &str) -> bool {
+    std::env::var_os(name).is_some()
+}
+
 /// # Errors
 /// The contract fails validation or names a criterion the store cannot serve as declared.
 pub fn freeze(artifacts: &Artifacts, contract: &Contract) -> Result<Frozen, String> {
@@ -83,12 +87,18 @@ pub fn freeze(artifacts: &Artifacts, contract: &Contract) -> Result<Frozen, Stri
         }
         match &item.decider {
             Decider::Cmd { checker, .. } => {
-                CheckerManifest::parse(&artifacts.get(&checker.digest).map_err(|e| e.to_string())?)
-                    .map_err(|error| format!("item {}: {error}", item.id))?;
+                CheckerManifest::parse(
+                    &artifacts.get(&checker.digest).map_err(|e| e.to_string())?,
+                    session_has,
+                )
+                .map_err(|error| format!("item {}: {error}", item.id))?;
             }
             Decider::Example { cases, runner, .. } => {
-                CheckerManifest::parse(&artifacts.get(&runner.digest).map_err(|e| e.to_string())?)
-                    .map_err(|error| format!("item {}: runner {error}", item.id))?;
+                CheckerManifest::parse(
+                    &artifacts.get(&runner.digest).map_err(|e| e.to_string())?,
+                    session_has,
+                )
+                .map_err(|error| format!("item {}: runner {error}", item.id))?;
                 read_cases(artifacts, cases)
                     .map_err(|error| format!("item {}: {error}", item.id))?;
             }
@@ -320,7 +330,7 @@ impl Verifier {
                     .artifacts
                     .get(&checker.digest)
                     .map_err(|e| e.to_string())
-                    .and_then(|bytes| CheckerManifest::parse(&bytes))
+                    .and_then(|bytes| CheckerManifest::parse(&bytes, session_has))
                 {
                     Ok(manifest) => manifest,
                     Err(reason) => return abstain(reason),
@@ -347,7 +357,7 @@ impl Verifier {
                     .artifacts
                     .get(&runner.digest)
                     .map_err(|e| e.to_string())
-                    .and_then(|bytes| CheckerManifest::parse(&bytes))
+                    .and_then(|bytes| CheckerManifest::parse(&bytes, session_has))
                 {
                     Ok(manifest) => manifest,
                     Err(reason) => return abstain(reason),

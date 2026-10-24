@@ -1,0 +1,6 @@
+---
+issue: Closes #1458, Refs #1442
+raise: tests +69, comments +2, crate cli +41, crate runtime +10
+decision: yi-types keeps the trace span API and a sink hook; the file sink and the YI_TRACE read live in yi-cli | haul DTOIO: the DTO wall did file IO and env reads against docs/YI_DESIGN.md section 2 (types-8) | reversible via moving trace_sink.rs back into trace.rs
+---
+docs/YI_DESIGN.md section 2 says yi-types does no filesystem work, but two places in it did. The trace module opened `<dir>/<pid>.jsonl` itself, read `YI_TRACE`, took the process id and read the wall clock. `CheckerManifest::parse` read `std::env::var_os` to decide whether the session holds each env name a checker asks for. The span API stays in yi-types (`init`, `span`, `instant`, `complete`, `enabled`, `now_us`), so no call site in any crate moves, and it now writes through a one-method `TraceSink` that the binary installs once. The file sink, the `YI_TRACE` read, the pid and the wall-clock anchor now live in crates/cli/src/trace_sink.rs, and `main` installs it right before `trace::init`. A process that never installs a sink traces nothing, the same as running with `YI_TRACE` unset. `CheckerManifest::parse` takes the lookup as an argument. yi-runtime passes `plan::verify::session_has`, which reads the process environment as before, so a plan run sees no change.
