@@ -7,6 +7,7 @@ measured number. Prints to stdout — piping is the caller's business.
 """
 import hashlib
 import pathlib
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -104,18 +105,25 @@ def surface_entry(text):
     return {"hash": hashlib.sha256(text.encode()).hexdigest(), "text": text}
 
 
+def sentences(text):
+    return re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
+
+
 def trimmed(was, now):
-    """A pure cut: shorter, and every word of the new text is the old text's, in order.
-    A lock written before the text was kept (a bare hash) cannot show one."""
+    """A pure cut: shorter, and every sentence of the new text is one of the old text's, in
+    order. Cutting inside a sentence is a rewrite: `does not carry over` minus `not` is shorter
+    and made of the old words, and says the opposite. A lock written before the text was kept
+    (a bare hash) cannot show a cut."""
     if "text" not in was or "text" not in now:
         return False
-    old = iter(was["text"].split())
-    return len(now["text"].encode()) < len(was["text"].encode()) and all(word in old for word in now["text"].split())
+    old = iter(sentences(was["text"]))
+    return len(now["text"].encode()) < len(was["text"].encode()) and all(s in old for s in sentences(now["text"]))
 
 
 def surface_diff(was, now):
-    """(added, grew, trimmed) lock keys between two surfaces. A removal makes no new
-    claim and asks nothing, so removed keys are not reported."""
+    """(added, reworded, trimmed) lock keys between two surfaces: reworded is any moved key
+    that is not a pure cut, a growth included. A removal makes no new claim and asks nothing,
+    so removed keys are not reported."""
     entry = lambda value: value if isinstance(value, dict) else {"hash": value}
     added = sorted(key for key in now if key not in was)
     moved = [key for key in sorted(now) if key in was and entry(was[key])["hash"] != entry(now[key])["hash"]]
@@ -124,7 +132,7 @@ def surface_diff(was, now):
 
 
 def surface_delta(base):
-    """(added, grew) keys in the tool-surface lock between the merge base and the
+    """(added, reworded) keys in the tool-surface lock between the merge base and the
     working tree; a trimmed key owes nothing. A lock missing at base is being
     seeded and asks nothing."""
     import json
@@ -135,8 +143,8 @@ def surface_delta(base):
     now_path = ROOT / SURFACE_LOCK
     if not now_path.exists():
         raise SystemExit(LOCK_MISSING)
-    added, grew, _ = surface_diff(json.loads(before.stdout), json.loads(now_path.read_text()))
-    return added, grew
+    added, reworded, _ = surface_diff(json.loads(before.stdout), json.loads(now_path.read_text()))
+    return added, reworded
 
 
 def surface_skeletons(added, changed):
@@ -208,6 +216,9 @@ def selfcheck():
     assert surface_diff({"tool:read": "a"}, {"tool:read": "a"}) == ([], [], [])
     assert surface_diff({"tool:read": "a"}, {"tool:read": "a", "tool:foo": "b"}) == (["tool:foo"], [], [])
     assert surface_diff({"tool:read": "a"}, {"tool:read": "z"}) == ([], ["tool:read"], [])
+    cut = {"tool:read": surface_entry("One. Two is not three.")}
+    assert surface_diff(cut, {"tool:read": surface_entry("Two is not three.")}) == ([], [], ["tool:read"]), "a sentence cut"
+    assert surface_diff(cut, {"tool:read": surface_entry("One. Two is three.")}) == ([], ["tool:read"], []), "a cut inside a sentence"
     assert surface_diff({"tool:read": "a", "tool:gone": "b"}, {"tool:read": "a"}) == ([], [], [])
     # A lock still holding bare hashes reads the same as its rewrite with the text kept.
     assert surface_diff({"tool:read": surface_entry("a b")["hash"]}, {"tool:read": surface_entry("a b")}) == ([], [], [])

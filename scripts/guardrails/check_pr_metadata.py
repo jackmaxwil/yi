@@ -453,11 +453,22 @@ def selfcheck():
     assert surface_entry(before)["hash"].startswith("3828fd8e") and surface_entry(after)["hash"].startswith("0b27e496")
 
     def owed(old, new):
-        added, grew, _ = surface_diff({"prompt:identity": old}, {"prompt:identity": new})
-        return surface_problems("", added, grew)
+        added, reworded, _ = surface_diff({"prompt:identity": old}, {"prompt:identity": new})
+        return surface_problems("", added, reworded)
 
     assert owed(surface_entry(before), surface_entry(after)) == [], "a real trim owes no ledger"
     assert len(owed(surface_entry(after), surface_entry(before))) == 1, "the same pair reversed grew the text"
+    # Deleting a negation is shorter and made of the old words. The sentences are the real tool:bash
+    # and tool:read ones; the last case cuts a whole sentence, which says nothing new.
+    bash = ("Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. "
+            "Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call.")
+    read = ("A capped read ends with the file's skeleton. Do not re-read a file you just edited: "
+            "the edit result carries the new anchors, and a failed edit says so.")
+    for name, old in {"bash": bash, "read": read}.items():
+        new = old.replace(" not ", " ", 1)
+        assert new != old and len(new) < len(old), f"{name}: the negation is gone from the real text"
+        assert len(owed(surface_entry(old), surface_entry(new))) == 1, f"{name}: a deleted negation still owes the ledger"
+    assert owed(surface_entry(bash), surface_entry(bash.split(". ", 1)[0] + ".")) == [], "a whole sentence cut owes nothing"
     for name, text in {
         "swapped words, fewer bytes": after.replace("your instructions,", "your orders,"),
         "reordered words, fewer bytes": after.replace("Rule talk: your", "your Rule talk:").replace(" unless the user asks about them.", ""),
