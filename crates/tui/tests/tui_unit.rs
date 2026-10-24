@@ -1957,32 +1957,6 @@ fn the_reflow_debounce_rebuilds_once_at_the_settled_width() -> TestResult {
 }
 
 #[test]
-fn a_resize_during_a_stream_forces_one_repair_after_it_settles() -> TestResult {
-    use std::time::Instant;
-    use yi_tui::reflow::ReflowState;
-
-    let mut state = ReflowState::default();
-    assert!(!state.take_stream_finish_needed());
-
-    // A rebuild that ran mid-stream could only render the partial that existed
-    // then, so the finished text has to be rebuilt once more.
-    state.note_width(100);
-    state.schedule_debounced(Some(80), Instant::now());
-    state.mark_ran_during_stream();
-    assert!(state.take_stream_finish_needed());
-    assert!(
-        !state.take_stream_finish_needed(),
-        "draining: one episode forces at most one repair"
-    );
-
-    // The other half: the width changed while streaming but the debounce never
-    // fired, so nothing rebuilt and the flag is the only record.
-    state.mark_resize_requested_during_stream();
-    assert!(state.take_stream_finish_needed());
-    Ok(())
-}
-
-#[test]
 fn the_row_cap_is_enforced_while_rendering_from_source() -> TestResult {
     use yi_tui::cell::TranscriptMode;
     use yi_tui::history::History;

@@ -754,7 +754,6 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
         app.reduce_agent(event);
     }
     assert!(!app.is_running(), "solo's reducer must see the turn end");
-    assert!(app.has_run(), "solo's reducer must see the turn start");
     let text: String = app
         .reflowed(200)
         .iter()

@@ -1139,7 +1139,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `rustix` | `fs`, `std`, `stdio`; `pty`, `termios`, `process` in console; `process` in browser (`geteuid`, `test_kill_process`) | permission, browser, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
-Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
+Dev: `vt100`, `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
 `macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
