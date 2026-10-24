@@ -118,8 +118,6 @@ lane name:
     fi
 
 # Tier 3, every version tag: check the tag against the version of record, then the artifact.
-# The record is the `version:` line of docs/ARCHITECTURE.md, the line `yi --version` reads;
-# the workspace Cargo.toml version is a placeholder that never moves.
 prerelease version:
     #!/usr/bin/env bash
     set -euo pipefail

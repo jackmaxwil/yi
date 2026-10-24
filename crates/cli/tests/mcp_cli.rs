@@ -155,6 +155,19 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
 }
 
 #[test]
+fn the_server_is_told_the_version_yi_reports() -> TestResult {
+    let home = mcp_home()?;
+    let reported = yi(&home, &["--version"])?;
+    assert_eq!(reported.code, 0, "stderr: {}", reported.stderr);
+    yi_mcp(&home, &["connect", "fixture", "@s"])?;
+    let seen = yi_mcp(&home, &["@s", "tools-call", "client_info", "--json"])?;
+    assert_eq!(seen.code, 0, "stderr: {}", seen.stderr);
+    let result: serde_json::Value = serde_json::from_str(seen.stdout.trim())?;
+    assert_eq!(result["content"][0]["text"], reported.stdout.trim());
+    Ok(())
+}
+
+#[test]
 fn schema_snapshot_flags_breaking_changes() -> TestResult {
     let home = mcp_home()?;
     yi_mcp(&home, &["connect", "fixture", "@s"])?;
