@@ -84,13 +84,9 @@ pub fn install(options: ExtOptions) -> Host {
     host
 }
 
-pub fn narrow(cwd: &Path, home: &Path, identity: &str, mode: PermissionMode) -> Host {
+pub fn narrow(cwd: &Path, home: &Path, identity: &str) -> Host {
     let mut host = Host::new(cwd.to_path_buf());
     host.attach(Slot::new(Rank::Identity, "identity"), identity.to_owned());
-    host.attach(
-        Slot::new(Rank::Mode, "permission"),
-        yi_permission::mode_fragment(mode).to_owned(),
-    );
     host.register(Box::new(
         ProjectResources::new(cwd.to_path_buf(), home.to_path_buf()).without_catalogs(),
     ));
