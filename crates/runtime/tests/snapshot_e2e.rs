@@ -303,14 +303,23 @@ async fn a_second_process_on_one_session_leaves_its_snapshot_alone() -> TestResu
     let owner = service(&dir, &notices);
     cell(&owner, "owner = 1").await?;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    assert!(index_names(&dir, "owner")?);
+    let held = index_text(&dir)?;
+    assert!(
+        held.contains("owner"),
+        "the owner's snapshot index never named it: {held}"
+    );
 
     let second = service(&dir, &notices);
     let outcome = cell(&second, "intruder = 2\nprint('owner' in globals())").await?;
     second.kill().await;
+    let after = index_text(&dir)?;
     assert!(
-        index_names(&dir, "owner")? && !index_names(&dir, "intruder")?,
-        "the second process rewrote the owner's snapshot"
+        after.contains("owner"),
+        "the second process rewrote the owner's snapshot, index now: {after}"
+    );
+    assert!(
+        !after.contains("intruder"),
+        "the second process wrote its own name into the owner's snapshot: {after}"
     );
     assert!(
         outcome.result.stdout.contains("False"),
@@ -353,20 +362,32 @@ async fn a_prewarmed_kernel_owns_the_snapshot_its_bootstrap_writes() -> TestResu
     cell(&first, "owner = 1").await?;
     first.dispose().await;
     second.dispose().await;
+    let saved = index_text(&dir)?;
     assert!(
-        index_names(&dir, "owner")? && !index_names(&dir, "intruder")?,
-        "the prewarmed process lost its snapshot to a later one"
+        saved.contains("owner"),
+        "the prewarmed process lost its snapshot to a later one, index now: {saved}"
+    );
+    assert!(
+        !saved.contains("intruder"),
+        "a later process wrote its name into the prewarmed snapshot: {saved}"
     );
     Ok(())
 }
 
-/// Whether the snapshot index names `name`. The index is a pickled map of name to blob digest,
-/// so a saved name sits in it as plain bytes.
-fn index_names(dir: &Path, name: &str) -> Result<bool, Box<dyn Error>> {
+/// The snapshot index with every non-printable byte shown as `.`. The index is a pickled map of
+/// name to blob digest, so a saved name sits in it as plain text.
+fn index_text(dir: &Path) -> Result<String, Box<dyn Error>> {
     let index = std::fs::read(dir.join("kernel-state.dill"))?;
     Ok(index
-        .windows(name.len())
-        .any(|window| window == name.as_bytes()))
+        .iter()
+        .map(|&byte| {
+            if byte.is_ascii_graphic() {
+                char::from(byte)
+            } else {
+                '.'
+            }
+        })
+        .collect())
 }
 
 fn blobs_in(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
