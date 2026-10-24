@@ -156,6 +156,7 @@ pub fn parse(id: &str, value: &Value) -> Result<Kind> {
             "extra_authorize",
         ],
         "oauth-code" => &["device_authorization"],
+        "api-key" => &["device_authorization", "api_base"],
         _ => &[],
     };
     let set: Vec<&str> = unread
