@@ -46,7 +46,6 @@ impl ListPopup {
             .items
             .iter()
             .filter(|item| item.to_lowercase().contains(&query))
-            .take(100)
             .collect();
         if let Some(exact) = found.iter().position(|item| item.to_lowercase() == query) {
             let hit = found.remove(exact);

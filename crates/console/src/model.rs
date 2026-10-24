@@ -324,7 +324,7 @@ pub struct SessionDiff {
     pub why_due: Option<(String, Vec<u32>)>,
     /// The title a second `l` lands under; any other key clears it.
     pub land_armed: Option<String>,
-    pub dropped: std::collections::BTreeSet<String>,
+    pub dropped_at_turn: BTreeMap<String, u64>,
 }
 
 pub const MAX_DIFF_FILES: usize = 512;
@@ -332,15 +332,15 @@ pub const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 impl SessionDiff {
     pub fn insert(&mut self, path: String, file: FileDiff) {
-        self.dropped.remove(&path);
+        self.dropped_at_turn.remove(&path);
         self.files.retain(|(existing, _)| *existing != path);
         self.files.push((path, file));
         while self.files.len() > MAX_DIFF_FILES || self.bytes() > MAX_DIFF_BYTES {
             if self.files.len() <= 1 {
                 break;
             }
-            let (gone, _) = self.files.remove(0);
-            self.dropped.insert(gone);
+            let (gone, file) = self.files.remove(0);
+            self.dropped_at_turn.insert(gone, file.turn);
         }
     }
 
