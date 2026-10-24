@@ -1,8 +1,11 @@
 ---
 issue: Closes #1459, Closes #137, Refs #1442
-raise: tests +179, comments +4, crate runtime +27
+raise: tests +227, comments +8, crate runtime +105
 decision: A channel subscription with no adapter is peeked before it is claimed, and an idle one re-arms in memory with no claim record and no write (amends the section 15.2 'every mutation persists' contract) | an idle mailbox cost two fsynced ledger rewrites a minute per durable root; nothing is delivered on an idle tick, so claim-before-deliver still holds where it matters | route every tick through claim_due_in_state again
+decision: A ledger write failure and an aborted lane reach the owning sessions as one notice host note, deduplicated until a write succeeds | eprintln! under a raw-mode UI tears the screen and reaches no model | restore the two eprintln! calls
 ---
 A due channel job whose channel no adapter feeds (every mailbox, any `channel://` source) is peeked before the timer claims it: when the channel holds nothing past the job's ack, the job re-arms its next run in memory, with no claim and no write of `scheduled-jobs.json`. An idle mailbox used to claim, find nothing, and record the result, two fsynced rewrites of the ledger per cadence for every durable root. A letter, and every tick of a subscription with an adapter behind it, which must keep its adapter running, still claims before it delivers. The persisted `next_run_at` of an idle job is now a hint the next real write or a restart re-derives, so a crash costs one idle tick fired again. YI_DESIGN.md section 15.2 says so in its channel-job line.
 
-Member units: H42-idle-poll.
+A heartbeat ledger that cannot be written is now told to the sessions on it, once, as a notice in the next turn: `[heartbeat ledger <path> not written: <error>; schedule changes hold in memory only and a restart loses them]`. The same error is not repeated until a write succeeds, and a different error is told again. A delivery lane that does not finish (a panicked or cancelled delivery) tells its own session the same way. Both used to be `eprintln!` lines, which a raw-mode terminal UI paints over its screen and no model reads. Each session's notice hook rides its lane in the ledger's delivery hub, registered and withdrawn with the lane. YI_DESIGN.md section 15.2 says so beside the claim rules.
+
+Member units: H42-idle-poll, H42-schedule-notices.
