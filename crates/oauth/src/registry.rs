@@ -21,19 +21,33 @@ pub struct OauthCode {
     pub id: String,
     pub client_id: String,
     pub client_secret: Option<String>,
-    pub authorize: String,
     pub token: String,
     pub scopes: String,
-    pub callback_port: u16,
-    pub callback_path: String,
-    pub redirect_host: String,
-    pub port_fallback: bool,
     pub json_token: bool,
-    pub extra_authorize: Vec<(String, String)>,
     /// Sent on every streamed request for this provider. The profile's author owns
     /// these values; nothing here is compiled into the binary.
     pub stream_headers: Vec<(String, String)>,
     pub refresh_headers: Vec<(String, String)>,
+    /// Kept for the Kimi provider, which sends its requests to this base, not the catalog's.
+    pub api_base: Option<String>,
+    pub login: Login,
+}
+
+/// How the first token is obtained; refresh is the same grant for both.
+#[derive(Debug, Clone)]
+pub enum Login {
+    Code(CodeLogin),
+    Device { device_authorization: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeLogin {
+    pub authorize: String,
+    pub callback_port: u16,
+    pub callback_path: String,
+    pub redirect_host: String,
+    pub port_fallback: bool,
+    pub extra_authorize: Vec<(String, String)>,
 }
 
 /// Providers whose login is a pasted key: no endpoints, no identity, nothing to supply.
@@ -79,29 +93,40 @@ fn oauth_code(id: &str, file: ProfileFile) -> Result<Kind> {
     let need = |field: Option<String>, key: &str| -> Result<String> {
         field.ok_or_else(|| format!("{id}: profile needs `{key}`").into())
     };
-    let redirect_host = file.redirect_host.unwrap_or_else(|| "localhost".to_owned());
-    if !matches!(redirect_host.as_str(), "localhost" | "127.0.0.1") {
-        return Err(
-            format!("{id}: `redirect_host` must be a loopback host, not {redirect_host}").into(),
-        );
-    }
+    let login = if file.kind == "device-code" {
+        Login::Device {
+            device_authorization: need(file.device_authorization, "device_authorization")?,
+        }
+    } else {
+        let redirect_host = file.redirect_host.unwrap_or_else(|| "localhost".to_owned());
+        if !matches!(redirect_host.as_str(), "localhost" | "127.0.0.1") {
+            return Err(format!(
+                "{id}: `redirect_host` must be a loopback host, not {redirect_host}"
+            )
+            .into());
+        }
+        Login::Code(CodeLogin {
+            authorize: need(file.authorize, "authorize")?,
+            callback_port: file
+                .callback_port
+                .ok_or_else(|| format!("{id}: profile needs `callback_port`"))?,
+            callback_path: file.callback_path.unwrap_or_else(|| "/callback".to_owned()),
+            redirect_host,
+            port_fallback: file.port_fallback,
+            extra_authorize: pairs(&file.extra_authorize),
+        })
+    };
     Ok(Kind::OauthCode(Box::new(OauthCode {
         id: id.to_owned(),
         client_id: need(file.client_id, "client_id")?,
         client_secret: file.client_secret,
-        authorize: need(file.authorize, "authorize")?,
         token: need(file.token, "token")?,
         scopes: file.scopes.unwrap_or_default(),
-        callback_port: file
-            .callback_port
-            .ok_or_else(|| format!("{id}: profile needs `callback_port`"))?,
-        callback_path: file.callback_path.unwrap_or_else(|| "/callback".to_owned()),
-        redirect_host,
-        port_fallback: file.port_fallback,
         json_token: file.json_token,
-        extra_authorize: pairs(&file.extra_authorize),
         stream_headers: pairs(&file.stream_headers),
         refresh_headers: pairs(&file.refresh_headers),
+        api_base: file.api_base,
+        login,
     })))
 }
 
@@ -119,8 +144,35 @@ pub fn parse(id: &str, value: &Value) -> Result<Kind> {
         )
         .into());
     }
+    let unread: &[&str] = match file.kind.as_str() {
+        "device-code" => &[
+            "client_secret",
+            "json_token",
+            "authorize",
+            "callback_port",
+            "callback_path",
+            "redirect_host",
+            "port_fallback",
+            "extra_authorize",
+        ],
+        "oauth-code" => &["device_authorization"],
+        _ => &[],
+    };
+    let set: Vec<&str> = unread
+        .iter()
+        .copied()
+        .filter(|key| value.get(key).is_some())
+        .collect();
+    if !set.is_empty() {
+        return Err(format!(
+            "{id}: a profile of kind {} reads no {}",
+            file.kind,
+            set.join(", ")
+        )
+        .into());
+    }
     match file.kind.as_str() {
-        "oauth-code" => oauth_code(id, file),
+        "oauth-code" | "device-code" => oauth_code(id, file),
         "api-key" => Ok(Kind::ApiKey),
         other => Err(format!("{id}: unknown profile kind {other}").into()),
     }
