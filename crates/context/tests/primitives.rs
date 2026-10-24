@@ -2,10 +2,11 @@ use std::error::Error;
 
 use serde_json::json;
 use yi_context::{
-    Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, Settings, Tokens, Window,
-    attribute_child_usage, compile_view, compose_summary, context_tokens, convert_to_llm,
-    drop_internal, estimate_context, fit, internal_source, prepare_compaction, project,
-    retain_floor, select_cut, serialize_conversation, should_compact, user_key, wrap_internal,
+    Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, OUTSTANDING_CAP, Settings,
+    Tokens, Window, attribute_child_usage, compile_view, compose_summary, context_tokens,
+    convert_to_llm, drop_internal, estimate_context, fit, internal_source, prepare_compaction,
+    project, retain_floor, select_cut, serialize_conversation, should_compact, user_key,
+    wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -572,13 +573,35 @@ fn window_chain_advances_ids() -> TestResult {
     Ok(())
 }
 
+/// Dies with a cut inside a multi-byte char, or a marker that names no budget.
 #[test]
-fn source_budget_fit_marks_truncation() -> TestResult {
-    let fitted = fit("abcdef", Bytes(3));
-    assert!(fitted.truncated);
-    assert!(fitted.text.starts_with("abc"));
-    assert!(fitted.text.contains("truncated"));
-    assert!(!fit("abc", Bytes(3)).truncated);
+fn a_source_past_its_budget_is_cut_on_a_char_and_names_the_budget() -> TestResult {
+    let source = format!("a{}", "\u{e9}".repeat(4));
+    let (at, past) = (fit(&source, Bytes(9)), fit(&source, Bytes(8)));
+    assert!(!at.truncated && at.text == source && past.truncated);
+    assert_eq!(
+        past.text,
+        "a\u{e9}\u{e9}\u{e9}\n[\u{2026} 7 of 9 bytes kept (source budget 8); the rest: read the source in full]"
+    );
+    Ok(())
+}
+
+/// docs/YI_DESIGN.md at the fork: 106,740 B of non-ASCII prose, the shape of an instruction file
+/// over the 49,152 B project budget.
+#[test]
+fn a_project_instruction_file_over_its_budget_names_what_it_kept() -> TestResult {
+    let source = include_str!("../../../docs/YI_DESIGN.md");
+    let budget = yi_context::SourceBudgets::default().project_instructions;
+    let fitted = fit(source, budget).text;
+    let (kept, row) = fitted.rsplit_once('\n').ok_or("no row")?;
+    assert!(source.starts_with(kept) && kept.len() <= budget.0 && kept.len() + 4 > budget.0);
+    let said = format!(
+        "{} of {} bytes kept (source budget {})",
+        kept.len(),
+        source.len(),
+        budget.0
+    );
+    assert!(row.contains(&said), "{row}");
     Ok(())
 }
 
@@ -652,6 +675,36 @@ fn compile_view_rolls_previous_brief_and_caps_at_120() -> TestResult {
     assert!(
         lines.iter().any(|line| line.contains("(#n29)")),
         "the newest summarized tool turn must survive the cap"
+    );
+    Ok(())
+}
+
+/// Dies with the twelve-error cap dropping older errors without a word.
+#[test]
+fn outstanding_errors_past_their_cap_keep_the_newest_and_count_the_rest() -> TestResult {
+    let outstanding = |count: usize| {
+        let failed = |n: usize| {
+            let mut message =
+                tool_result(&format!("error[E0382]: borrow of moved value: `cfg{n}`"));
+            if let AgentMessage::ToolResult { is_error, .. } = &mut message {
+                *is_error = true;
+            }
+            att(&format!("e{n}"), message)
+        };
+        compile_view(&(1..=count).map(failed).collect::<Vec<_>>(), None).outstanding
+    };
+    assert!(
+        outstanding(OUTSTANDING_CAP)
+            .iter()
+            .all(|row| !row.starts_with("[\u{2026} "))
+    );
+    let past = outstanding(OUTSTANDING_CAP + 1);
+    let row = "[\u{2026} 12 of 13 errors, the newest (OUTSTANDING_CAP 12); the rest: read history://self]";
+    assert_eq!(past.first().map(String::as_str), Some(row));
+    assert_eq!(past.len(), OUTSTANDING_CAP + 1);
+    assert!(
+        past[1].contains("`cfg2`") && past[OUTSTANDING_CAP].contains("`cfg13`"),
+        "{past:?}"
     );
     Ok(())
 }

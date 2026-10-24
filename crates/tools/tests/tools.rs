@@ -1859,6 +1859,38 @@ fn read_footers_name_the_next_offset() -> TestResult {
     Ok(())
 }
 
+/// Dies with the 2,000-line default window cutting a file at a row that never says why. A window
+/// the model asked for stays plain.
+#[test]
+fn a_default_read_window_names_its_cap_and_an_asked_one_does_not() -> TestResult {
+    let dir = temp_dir("read-default-cap")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let rows = |count: usize| {
+        (1..=count)
+            .map(|n| format!("row {n}\n"))
+            .collect::<String>()
+    };
+    let page = |path: &str, extra: &[(&str, Value)]| {
+        let pairs = [&[("path", json!(path))], extra].concat();
+        output_text(&read_tool().execute(args(&pairs), &context))
+    };
+    fs::write(dir.join("at.txt"), rows(2_000))?;
+    assert!(!page("at.txt", &[]).contains("[showing lines"));
+    fs::write(dir.join("past.txt"), rows(2_001))?;
+    let default = page("past.txt", &[]);
+    let cut =
+        "[showing lines 1-2000 of 2001 (READ_LINE_CAP 2000) \u{2014} continue with offset=2001]";
+    assert!(
+        default.ends_with(cut),
+        "{}",
+        default.lines().last().unwrap_or_default()
+    );
+    assert!(page("past.txt", &[("offset", json!(2_001))]).contains("row 2001"));
+    let asked = page("past.txt", &[("limit", json!(1_000))]);
+    assert!(asked.ends_with("[showing lines 1-1000 of 2001 \u{2014} continue with offset=1001]"));
+    Ok(())
+}
+
 /// P3: hits that exactly fill the collection cap are not a truncation, and an
 /// offset past the end names what it ran off — matches, or files in
 /// `files_with_matches` mode.
