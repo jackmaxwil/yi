@@ -4570,6 +4570,40 @@ mod contracts {
         Ok(())
     }
 
+    // Dies with the done path's verification request named per effect: the effect id's length
+    // comes off the longest request id a client may send, and a done at the old limit fails.
+    #[test]
+    fn a_done_request_id_at_the_limit_is_verified() -> TestResult {
+        use yi_types::plan::ledger::{ID_MAX_BYTES, RequestId};
+        let rig = rig("yi-done-request-limit", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "true", "writer")?;
+        init(&rig.engine, vec![contracted("check it", contract)?])?;
+        start(&rig.engine, &plan, "check it")?;
+        let done_as = |bytes: usize| -> Result<Outcome, Box<dyn Error>> {
+            let op = Op::Done {
+                label: TodoLabel::new("check it")?,
+                output: None,
+            };
+            Ok(rig.engine.apply(OpRequest {
+                request_id: Some(RequestId::new("r".repeat(bytes))?),
+                ..at(&plan, op)
+            })?)
+        };
+        let limit = ID_MAX_BYTES - "/verify".len();
+        assert!(done_as(limit + 1).is_err(), "a derived id past the cap");
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "check it")?.state,
+            TodoState::Running { .. }
+        ));
+        done_as(limit)?;
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "check it")?.state,
+            TodoState::Done { .. }
+        ));
+        Ok(())
+    }
+
     // Dies with `Purpose::Verification` being its own counter (capacity.rs): charge the
     // candidate check against the worker share and the workers a parent retains own every lane
     // their own verification needs, so the plan stops with every todo running. The engine

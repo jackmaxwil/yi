@@ -65,6 +65,13 @@ const LEASE_POLL: Duration = Duration::from_millis(20);
 /// The grace past the verifier's own deadline before another process's claim counts as dead.
 const CLAIM_GRACE_MS: u64 = 5_000;
 
+/// Incident: a per-effect suffix on every request shortened the longest id a client may send.
+#[derive(Clone, Copy)]
+pub(super) enum Requests {
+    Once,
+    PerEffect,
+}
+
 /// What step 1 established under the lease and step 4 runs against.
 pub(super) struct Prepared {
     pub(super) id: PlanId,
@@ -242,7 +249,8 @@ impl PlanEngine {
                     let flight = self.flight_for(&token)?;
                     return Ok(Phase1::Run(prepared(effect, convened), flight));
                 }
-                let effect = self.request_verification(&mut txn, &id, label, &token)?;
+                let effect =
+                    self.request_verification(&mut txn, &id, label, &token, Requests::Once)?;
                 self.store.checkpoint_family(&txn.state)?;
                 // Invariant: the flight is registered before the lease drops, so no caller can
                 // see the committed effect with nothing in this process behind it.
@@ -399,6 +407,7 @@ impl PlanEngine {
         id: &PlanId,
         label: &TodoLabel,
         token: &VerificationToken,
+        requests: Requests,
     ) -> Result<EffectId, PlanOpError> {
         let effect = EffectId::new(format!("e-{}", self.store.request_nonce()))
             .map_err(|error| verification(label, error.to_string()))?;
@@ -413,7 +422,10 @@ impl PlanEngine {
             self.store.now_ms(),
             todo_count(txn, id)?,
             json!({"label": label, "token": token, "effect_id": effect, "claim": claim.to_value()}),
-            txn.derived(&format!("verify-{}", effect))?,
+            txn.derived(&match requests {
+                Requests::Once => "verify".to_owned(),
+                Requests::PerEffect => format!("verify-{effect}"),
+            })?,
             txn.expected,
             Some(token.attempt),
         );
