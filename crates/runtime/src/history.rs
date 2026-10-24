@@ -347,9 +347,8 @@ pub fn search_reply(
         .map(|unit| {
             let (text, cut) = yi_session::snippet(&unit.text, words.iter().map(String::as_str));
             let url = format!("history://{}/{}", unit.session, unit.entry);
-            let mut row = hit(&unit.entry, unit.kind, (text.replace('\n', " "), cut), url);
-            row["session"] = Value::from(unit.session.as_str());
-            row
+            let snippet = (text.replace('\n', " "), cut);
+            hit(Some(&unit.session), (&unit.entry, unit.kind), snippet, url)
         })
         .collect();
     let unsearched = (skipped > 0).then(|| {
@@ -358,16 +357,28 @@ pub fn search_reply(
         )
     });
     let call = ("compact.search", query);
-    paged_reply(rows, ranked.len(), (offset, limit), call, unsearched)
+    paged_reply(rows, ranked.len(), (offset, limit), call, unsearched, false)
 }
 
-fn hit(entry: &str, kind: &str, (snippet, cut): (String, bool), url: String) -> Value {
-    let mut row =
-        serde_json::json!({"entryId": entry, "type": kind, "snippet": snippet, "url": url});
+fn hit(
+    session: Option<&str>,
+    (entry, kind): (&str, &str),
+    (snippet, cut): (String, bool),
+    url: String,
+) -> Value {
+    let head = session.map(|session| ("session", session));
+    let rest = [
+        ("entryId", entry),
+        ("type", kind),
+        ("snippet", &snippet),
+        ("url", &url),
+    ];
+    let keyed = head.into_iter().chain(rest);
+    let mut row: Map<String, Value> = keyed.map(|(key, text)| (key.into(), text.into())).collect();
     if cut {
-        row["cut"] = Value::Bool(true);
+        row.insert("cut".to_owned(), Value::Bool(true));
     }
-    row
+    Value::Object(row)
 }
 
 fn paged_reply(
@@ -376,6 +387,7 @@ fn paged_reply(
     (offset, limit): (usize, usize),
     (verb, query): (&str, &str),
     tail: Option<String>,
+    walled: bool,
 ) -> Map<String, Value> {
     let (kept, cap) = (rows.len(), limit.clamp(1, PAGE_MAX));
     let after = offset.saturating_add(kept);
@@ -386,7 +398,11 @@ fn paged_reply(
             format!("[{kept} of {total} hits · limit {cap} (at most {PAGE_MAX}) · {verb}({quoted}, limit={cap}, offset={after}) for the next]")
         }),
         (cut > 0).then(|| {
-            format!("[{cut} of {kept} snippets cut to {SNIPPET_CHARS} chars (SNIPPET_CHARS) · rlm.fetch(hit[\"url\"]) reads a cut hit whole]")
+            let rest = match walled {
+                true => "this reader's wall denies history://, so the rest of a cut hit is out of reach",
+                false => "rlm.fetch(hit[\"url\"]) reads a cut hit whole",
+            };
+            format!("[{cut} of {kept} snippets cut to {SNIPPET_CHARS} chars (SNIPPET_CHARS) · {rest}]")
         }),
         tail,
     ]
@@ -415,23 +431,25 @@ fn grep_reply(
     pattern: &str,
     offset: usize,
     limit: usize,
+    walled: bool,
 ) -> Map<String, Value> {
     let rows = (hits.iter())
         .map(|found| {
             let url = format!("history://{}/{}", crate::fetch::SELF, found.entry_id);
-            hit(
-                &found.entry_id,
-                &found.entry_type,
-                (found.snippet.clone(), found.cut),
-                url,
-            )
+            let snippet = (found.snippet.clone(), found.cut);
+            hit(None, (&found.entry_id, &found.entry_type), snippet, url)
         })
         .collect();
     let call = ("compact.recall", pattern);
-    paged_reply(rows, total, (offset, limit), call, None)
+    paged_reply(rows, total, (offset, limit), call, None, walled)
 }
 
-pub fn register_grep(registry: &mut crate::kernel::HostRegistry, handle: crate::goal::StoreHandle) {
+pub fn register_grep(
+    registry: &mut crate::kernel::HostRegistry,
+    handle: crate::goal::StoreHandle,
+    wall: &crate::wall::Wall,
+) {
+    let walled = wall.denies_history();
     registry.register("history.grep", move |payload| {
         let handle = Arc::clone(&handle);
         Box::pin(async move {
@@ -451,7 +469,7 @@ pub fn register_grep(registry: &mut crate::kernel::HostRegistry, handle: crate::
             .await
             .map_err(|error| format!("history.grep task failed: {error}"))??;
             let ((hits, total), pattern) = page;
-            Ok(grep_reply(&hits, total, &pattern, offset, limit))
+            Ok(grep_reply(&hits, total, &pattern, offset, limit, walled))
         })
     });
 }
@@ -579,6 +597,9 @@ mod tests {
         let entry = reply["hits"][0]["entryId"].as_str().unwrap().to_owned();
         assert_eq!(reply["hits"][0]["url"], format!("history://s-lane/{entry}"));
         assert_eq!(reply["total"], 2, "{reply:?}");
+        let row = reply["hits"][0].as_object().into_iter();
+        let keys: Vec<&str> = row.flat_map(|row| row.keys().map(String::as_str)).collect();
+        assert_eq!(keys, ["session", "entryId", "type", "snippet", "url"]);
         assert_eq!(
             reply["notice"],
             "[1 session directories were not searched: their checkout is gone, so their repository is unknown]"
@@ -646,18 +667,18 @@ mod tests {
             )?;
         }
         let (hits, total) = store.grep_page("Needle", 0, 8);
-        let reply = grep_reply(&hits, total, "Needle", 0, 8);
+        let reply = grep_reply(&hits, total, "Needle", 0, 8, false);
         assert_eq!(reply["total"], 10);
         assert_eq!(
             reply["notice"],
             "[8 of 10 hits · limit 8 (at most 32) · compact.recall(\"Needle\", limit=8, offset=8) for the next]"
         );
         let (rest, total) = store.grep_page("Needle", 8, 8);
-        let last = grep_reply(&rest, total, "Needle", 8, 8);
+        let last = grep_reply(&rest, total, "Needle", 8, 8, false);
         assert_eq!(last["hits"].as_array().map(Vec::len), Some(2));
         assert!(last.get("notice").is_none(), "{last:?}");
         let (clamped, total) = store.grep_page("needle", 0, 500);
-        let wide = grep_reply(&clamped, total, "needle", 0, 500);
+        let wide = grep_reply(&clamped, total, "needle", 0, 500, false);
         assert_eq!(wide["hits"].as_array().map(Vec::len), Some(10));
         assert!(wide.get("notice").is_none());
         Ok(())
@@ -681,7 +702,10 @@ mod tests {
             let (hits, total) = yi_session::load_session(&file)?.grep_page("limit", 0, PAGE_MAX);
             for (reply, call) in [
                 (found, "search"),
-                (grep_reply(&hits, total, "limit", 0, PAGE_MAX), "recall"),
+                (
+                    grep_reply(&hits, total, "limit", 0, PAGE_MAX, false),
+                    "recall",
+                ),
             ] {
                 let next = format!("compact.{call}(\"limit\", limit=32, offset=32)");
                 let want = more.then(|| {

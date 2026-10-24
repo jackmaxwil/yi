@@ -435,15 +435,15 @@ pub fn snippet<'a>(text: &str, needles: impl IntoIterator<Item = &'a str>) -> (S
     }
     let lowered = text.to_lowercase();
     let first = (needles.into_iter())
-        .filter_map(|needle| lowered.find(needle))
+        .filter_map(|needle| lowered.find(&needle.to_lowercase()))
         .min()
         .unwrap_or(0);
     // Invariant: lowercasing resizes some chars ('İ' becomes two), so `first` is a byte of
     // `lowered`; count the chars of `text` whose lowercase ends at or before it.
-    let mut bytes = 0;
+    let mut bytes = 0usize;
     let at = (text.chars())
         .take_while(|c| {
-            bytes += c.to_lowercase().map(char::len_utf8).sum::<usize>();
+            bytes = bytes.saturating_add(c.to_lowercase().map(char::len_utf8).sum::<usize>());
             bytes <= first
         })
         .count();

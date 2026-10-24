@@ -465,7 +465,7 @@ fn wire_fetch(
             Ok(fetched.into_reply(page.is_some()))
         })
     });
-    crate::history::register_grep(registry, session.store_handle());
+    crate::history::register_grep(registry, session.store_handle(), &wiring.wall);
     if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {
         crate::history::register(registry, dir, wiring.cwd.clone());
     }
