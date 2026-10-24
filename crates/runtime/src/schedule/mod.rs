@@ -646,7 +646,7 @@ impl HeartbeatService {
             return;
         }
         if self.durable.is_some() {
-            // Its own file keeps the jobs Active for the next process; only its timer stops.
+            // Its own file keeps the jobs Active for the next process; `end` stops its timer.
             return;
         }
         // Incident: an unconditional mutate persists, so every session that
