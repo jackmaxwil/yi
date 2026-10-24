@@ -251,7 +251,14 @@ impl PlanEngine {
             token: None,
             _phase: PhantomData,
         };
-        let token = self.token(&txn, &id, label, &contracted, &candidate.commit, None)?;
+        let token = self.token(
+            &txn,
+            &id,
+            label,
+            &contracted,
+            candidate.commit.as_str(),
+            None,
+        )?;
         // A second submit of the token returns or awaits the same verification: a settled
         // refusal replays uncharged, a flight is joined, a dead claim is adopted (6.3 step 2).
         if let Some(verdict) = txn
@@ -339,20 +346,11 @@ impl PlanEngine {
         let _lease = self.lease_waiting()?;
         let mut txn = self.begin(&run.root, actor, request.clone(), expected, false)?;
         if verdict.outcome != ContractOutcome::Pass {
-            let prepared = Prepared {
-                id: run.id.clone(),
-                root: run.root.clone(),
-                label: label.clone(),
-                token: run.token.clone(),
-                contract: run.contracted.contract.clone(),
-                product: run.contracted.product.clone(),
-                effect: run.effect.clone(),
-                jury: (0, None),
-            };
-            return match self.refuse(&mut txn, &prepared, op, verdict.clone()) {
-                Ok(_) => Err(verification(label, "a refusal returned an outcome")),
-                Err(error) => Err(error),
-            };
+            let (token, effect) = (run.token.clone(), run.effect.clone());
+            let prepared = Prepared::unjuried(&run.id, &run.root, token, &run.contracted, effect);
+            return self
+                .refuse(&mut txn, &prepared, op, verdict.clone())
+                .map(|never| match never {});
         }
         self.record(
             &mut txn,
