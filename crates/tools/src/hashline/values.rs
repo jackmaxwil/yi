@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::tool::Fuse;
 use serde_json::{Value, json};
-use yi_types::tool_value::{PROGRAM_FUSE_BYTES, PROGRAM_FUSE_ITEMS};
 
 use super::patcher::{PatchSectionResult, SectionOp};
 
@@ -11,6 +11,7 @@ pub(super) fn program_lines(
     lines: &[&str],
     to_end: bool,
     windows: &[(usize, usize)],
+    fuse: Fuse,
 ) -> (Vec<yi_types::tool_value::Line>, Option<String>) {
     let first = windows.first().map_or(1, |window| window.0);
     let open = [(first, lines.len())];
@@ -23,10 +24,10 @@ pub(super) fn program_lines(
             };
             bytes = bytes.saturating_add(text.len());
             let n = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
-            let fuse = if kept.len() >= PROGRAM_FUSE_ITEMS {
-                format!("{PROGRAM_FUSE_ITEMS} lines")
-            } else if bytes > PROGRAM_FUSE_BYTES {
-                format!("{} MiB", PROGRAM_FUSE_BYTES >> 20)
+            let fuse = if kept.len() >= fuse.items {
+                format!("{} lines", fuse.items)
+            } else if bytes > fuse.bytes {
+                format!("{} MiB", fuse.bytes >> 20)
             } else {
                 kept.push(yi_types::tool_value::Line {
                     n,
@@ -87,6 +88,7 @@ pub(super) fn program_glob(
     matches: &[PathBuf],
     root: &Path,
     notices: &[String],
+    fuse: usize,
 ) -> crate::ToolOutput {
     let shown = |path: &PathBuf| {
         path.strip_prefix(root)
@@ -94,13 +96,13 @@ pub(super) fn program_glob(
             .to_string_lossy()
             .into_owned()
     };
-    let paths: Vec<String> = matches.iter().take(PROGRAM_FUSE_ITEMS).map(shown).collect();
+    let paths: Vec<String> = matches.iter().take(fuse).map(shown).collect();
     let mut cut = notices.to_vec();
     let mut rows = vec![format!("[{} files match {pattern}]", paths.len())];
-    if matches.len() > PROGRAM_FUSE_ITEMS {
+    if matches.len() > fuse {
         rows.clear();
         cut.push(format!(
-            "[kept the first {PROGRAM_FUSE_ITEMS} files matching {pattern}: the walk stopped at the program fuse of {PROGRAM_FUSE_ITEMS} files; narrow the glob for the rest]"
+            "[kept the first {fuse} files matching {pattern}: the walk stopped at the program fuse of {fuse} files; narrow the glob for the rest]"
         ));
     }
     rows.extend(cut.iter().cloned());
