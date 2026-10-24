@@ -2900,3 +2900,108 @@ fn a_stale_fetch_does_not_hold_the_claim() -> TestResult {
     drop(lane);
     Ok(())
 }
+
+/// The `git` of `args` in `cwd`, success or not, as its exit status and both streams.
+fn git_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String), Box<dyn Error>> {
+    let out = yi_tools::command("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()?;
+    let text = [&out.stdout[..], &out.stderr[..]].concat();
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&text).into_owned(),
+    ))
+}
+
+/// Dies with a ref-only hand-back that replies `merged` and nothing more: the user's edit to a
+/// file the child changed stays on disk without the child's change, so the next commit undoes it.
+#[tokio::test]
+async fn a_ref_only_hand_back_lists_the_edits_it_kept() -> TestResult {
+    let rig = Rig::new("kept-yours")?;
+    let hold = "printf 'child\\n' >> README.md; printf 'c\\n' > café.txt; echo x > draft.txt";
+    let family = writer(&rig, hold).await?;
+    assert!(family.reaches("writer", "finished").await);
+    for (path, text) in [
+        ("README.md", "base\nmine\n"),
+        ("café.txt", "mine\n"),
+        ("elsewhere.txt", "mine\n"),
+    ] {
+        std::fs::write(rig.repo.join(path), text)?;
+    }
+    let reply = family.host.merge_worktree("writer")?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    assert_eq!(reply["published"], "ref_only", "{reply:?}");
+    let mut kept: Vec<&str> = reply
+        .get("kept_yours")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("no kept_yours: {reply:?}"))?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    kept.sort_unstable();
+    assert_eq!(kept, ["README.md", "café.txt"], "{reply:?}");
+    let next = reply
+        .get("next")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("no next sentence: {reply:?}"))?;
+    assert!(
+        next.contains("git diff HEAD") && next.contains("git show HEAD:"),
+        "{next}"
+    );
+    let (_, diff) = git_raw(&rig.repo, &["diff", "HEAD", "--", "README.md"])?;
+    assert!(diff.contains("-child") && diff.contains("+mine"), "{diff}");
+    assert_eq!(git(&rig.repo, &["show", "HEAD:README.md"])?, "base\nchild");
+    Ok(())
+}
+
+/// Dies with a fast-forward reply that carries `kept_yours`: nothing was kept, and a list that
+/// is sometimes empty and sometimes absent makes the model test for both.
+#[tokio::test]
+async fn a_fast_forward_hand_back_keeps_nothing_and_says_so_by_omission() -> TestResult {
+    let rig = Rig::new("kept-none")?;
+    let family = writer(&rig, "printf 'child\\n' >> README.md; echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let reply = family.host.merge_worktree("writer")?;
+    assert_eq!(reply["published"], "fast_forward", "{reply:?}");
+    assert!(
+        !reply.contains_key("kept_yours") && !reply.contains_key("next"),
+        "{reply:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a conflict reply that stops at `merged: false`: the child's lane is released, so
+/// only the branch it names and a git call that merges or drops it lead anywhere.
+#[tokio::test]
+async fn a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it() -> TestResult {
+    let rig = Rig::new("conflict-next")?;
+    let family = writer(&rig, "printf 'child\\n' > README.md; echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    std::fs::write(rig.repo.join("README.md"), "parent\n")?;
+    git(&rig.repo, &["commit", "-qam", "parent moved"])?;
+    let before = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    let reply = family.host.merge_worktree("writer")?;
+    assert_eq!(reply["merged"], false, "{reply:?}");
+    let branch = reply["branch"].as_str().ok_or("no branch")?;
+    let next = reply
+        .get("next")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("no next sentence: {reply:?}"))?;
+    assert!(next.contains(&format!("git merge {branch}")), "{next}");
+    assert!(next.contains(&format!("git branch -D {branch}")), "{next}");
+    assert_eq!(git(&rig.repo, &["rev-parse", "HEAD"])?, before);
+    let (merged, said) = git_raw(&rig.repo, &["merge", "--no-edit", branch])?;
+    assert!(!merged && said.contains("CONFLICT"), "{said}");
+    let unmerged = git(&rig.repo, &["diff", "--name-only", "--diff-filter=U"])?;
+    assert_eq!(
+        unmerged,
+        reply["conflict_provenance"][0]["path"]
+            .as_str()
+            .ok_or("no path")?
+    );
+    git(&rig.repo, &["merge", "--abort"])?;
+    git(&rig.repo, &["branch", "-D", branch])?;
+    assert!(!git_raw(&rig.repo, &["rev-parse", "--verify", "-q", branch])?.0);
+    Ok(())
+}

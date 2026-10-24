@@ -140,6 +140,8 @@ const UNTRACKED_NOISE: [&str; 3] = [
     ":(exclude,glob)**/.pytest_cache/**",
 ];
 
+const KEPT_YOURS: &str = "Your uncommitted edits to the kept_yours paths stay in the working copy without the child's change to them, so `git diff HEAD` shows that change as removed and committing them would undo it; `git show HEAD:<path>` is the merged version to fold them into.";
+
 /// Incident: uncommitted child work merged as nothing, so it is committed first. Free of the
 /// `Lane`, so a host reads it with the path cloned and no lock held across the git calls.
 pub fn candidate_of(
@@ -468,8 +470,15 @@ pub fn prepare(
 /// What publishing found: the parent at the prepared generation, or moved past it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Publish {
-    Published { at: Sha, how: Published },
-    Moved { expected: Sha, found: Sha },
+    Published {
+        at: Sha,
+        how: Published,
+        kept: Vec<String>,
+    },
+    Moved {
+        expected: Sha,
+        found: Sha,
+    },
 }
 
 /// Publish `integrated` onto the parent while its HEAD still names `expected`, else `Moved`. A
@@ -510,6 +519,7 @@ pub fn publish(
         return Ok(Publish::Published {
             at: integrated.clone(),
             how: Published::FastForward,
+            kept: Vec::new(),
         });
     };
     let again = generation_of(parent, deadline)?;
@@ -563,11 +573,9 @@ pub fn publish(
     )?;
     // The checkout follows the ref on every path the user did not touch: the tree first, while
     // the old index names the deleted paths; then the index. ponytail: argv, ARG_MAX ceiling.
-    let untouched: Vec<&str> = changed
-        .iter()
-        .filter(|path| !dirty.contains(path))
-        .map(String::as_str)
-        .collect();
+    let (kept, untouched): (Vec<&String>, Vec<&String>) =
+        changed.iter().partition(|path| dirty.contains(path));
+    let untouched: Vec<&str> = untouched.into_iter().map(String::as_str).collect();
     if !untouched.is_empty() {
         let source = format!("--source={}", integrated.as_str());
         let mut args = vec!["restore", "-q", &source, "--worktree", "--"];
@@ -587,6 +595,7 @@ pub fn publish(
     Ok(Publish::Published {
         at: integrated.clone(),
         how: Published::RefOnly,
+        kept: kept.into_iter().cloned().collect(),
     })
 }
 
@@ -812,6 +821,15 @@ impl SubagentHost {
                         "conflict_provenance".to_owned(),
                         serde_json::to_value(conflicts).map_err(|error| error.to_string())?,
                     );
+                    // Invariant: the lane is already off the record, so `rlm.discard_worktree` would
+                    // answer "no worktree"; the branch is dropped with git.
+                    let kept = settled.candidate.branch.as_str();
+                    reply.insert(
+                        "next".to_owned(),
+                        json!(format!(
+                            "This checkout is unchanged and the child's lane is released; its work is kept on branch {kept}. `git merge {kept}` here stops at the conflicts listed, to resolve and commit, and `git branch -D {kept}` drops the work."
+                        )),
+                    );
                     return Ok(reply);
                 }
                 Prepared::Merged(staging) => staging,
@@ -827,7 +845,7 @@ impl SubagentHost {
             .map_err(|error| error.to_string())?;
             staging.release().map_err(|error| error.to_string())?;
             match published {
-                Publish::Published { at, how } => {
+                Publish::Published { at, how, kept } => {
                     reply.insert("merged".to_owned(), Value::Bool(true));
                     reply.insert(
                         "integrated".to_owned(),
@@ -837,6 +855,10 @@ impl SubagentHost {
                         "published".to_owned(),
                         serde_json::to_value(how).map_err(|error| error.to_string())?,
                     );
+                    if how == Published::RefOnly {
+                        reply.insert("kept_yours".to_owned(), json!(kept));
+                        reply.insert("next".to_owned(), json!(KEPT_YOURS));
+                    }
                     let _merged_branch_goes_with_the_slot = git_by(
                         pool.repo(),
                         &["branch", "-q", "-d", settled.candidate.branch.as_str()],
