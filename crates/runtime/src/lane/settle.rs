@@ -274,7 +274,7 @@ impl Staging {
 
     pub fn release(mut self) -> Result<(), LaneError> {
         match self.lane.take() {
-            Some(lane) => lane.discard(),
+            Some(lane) => lane.discard().map(drop),
             None => Ok(()),
         }
     }

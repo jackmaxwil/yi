@@ -638,6 +638,16 @@ impl Pool {
                     holder: holder(session),
                     path,
                 },
+                (None, None)
+                    if probe_git(&path, &["status", "--porcelain"], deadline)
+                        .is_ok_and(|status| !status.trim().is_empty()) =>
+                {
+                    SlotView::Orphan {
+                        slot,
+                        holder: holder(String::new()),
+                        path,
+                    }
+                }
                 (None, None) => SlotView::Idle {
                     slot,
                     path,
@@ -777,6 +787,8 @@ impl Pool {
                     break;
                 }
                 Some(_) => orphans = orphans.saturating_add(1),
+                // Invariant: a dirty tree with no session is an older binary's quit, never free.
+                None if self.dirty_paths(slot) > 0 => orphans = orphans.saturating_add(1),
                 None => {
                     free = Some((slot, Some(guard), false));
                     break;
@@ -799,28 +811,31 @@ impl Pool {
         let path = self.slot_path(slot);
         let reason = format!("session:{session}");
         let text = path.to_string_lossy().into_owned();
-        if fresh {
+        // Exit 1 is a branch `sha` lacks: a quit session's commits, which `-B` would reset.
+        let kept = matches!(
             git(
                 &self.repo,
-                &[
-                    "worktree",
-                    "add",
-                    "-q",
-                    "--lock",
-                    "--reason",
-                    &reason,
-                    "-B",
-                    branch.as_str(),
-                    &text,
-                    &sha,
-                ],
-            )?;
+                &["merge-base", "--is-ancestor", branch.as_str(), &sha]
+            ),
+            Err(LaneError::Git {
+                exit_code: Some(1),
+                ..
+            })
+        );
+        let mut add = vec!["worktree", "add", "-q", "--lock", "--reason", &reason];
+        let mut checkout = vec!["checkout", "-q", "-f"];
+        if kept {
+            add.extend([text.as_str(), branch.as_str()]);
+            checkout.push(branch.as_str());
+        } else {
+            add.extend(["-B", branch.as_str(), &text, &sha]);
+            checkout.extend(["-B", branch.as_str(), &sha]);
+        }
+        if fresh {
+            git(&self.repo, &add)?;
         } else {
             self.stop_warmer(slot)?;
-            git(
-                &path,
-                &["checkout", "-q", "-f", "-B", branch.as_str(), &sha],
-            )?;
+            git(&path, &checkout)?;
             git(&path, &["clean", "-qfd"])?;
             let _ = git(
                 &self.repo,
@@ -905,7 +920,7 @@ impl Pool {
     /// An orphan with a clean tree and a branch `main` already contains has nothing to lose.
     fn abandoned(&self, slot: SlotIndex) -> Result<bool, LaneError> {
         let path = self.slot_path(slot);
-        if !git(&path, &["status", "--porcelain"])?.trim().is_empty() {
+        if self.dirty_paths(slot) > 0 {
             return Ok(false);
         }
         // Invariant: an unreadable HEAD is not a free slot; only a detached one is.
@@ -948,15 +963,37 @@ impl Pool {
         }
         let branch = self.branch_of(slot);
         let kept = self.detach(slot, branch.as_deref())?;
+        let lost = discarded(self.wipe(slot)?);
         let mut state = self.read_state(slot)?;
         state.session = None;
         self.write_state(slot, &state)?;
         drop(guard);
         Ok(match (branch, kept) {
-            (Some(branch), true) => format!("lane {slot} freed; branch {branch} kept (unmerged)"),
-            (Some(branch), false) => format!("lane {slot} freed; branch {branch} deleted (merged)"),
-            (None, _) => format!("lane {slot} freed"),
+            (Some(branch), true) => {
+                format!("lane {slot} freed{lost}; branch {branch} kept (unmerged)")
+            }
+            (Some(branch), false) => {
+                format!("lane {slot} freed{lost}; branch {branch} deleted (merged)")
+            }
+            (None, _) => format!("lane {slot} freed{lost}"),
         })
+    }
+
+    /// Paths `git status` names in a slot's tree; an unreadable status counts as dirty.
+    fn dirty_paths(&self, slot: SlotIndex) -> usize {
+        git(&self.slot_path(slot), &["status", "--porcelain"])
+            .map_or(1, |status| status.lines().count())
+    }
+
+    /// Invariant: the one tree wipe; only a reap or a discard reaches it, never a quit (D130).
+    fn wipe(&self, slot: SlotIndex) -> Result<usize, LaneError> {
+        let path = self.slot_path(slot);
+        let dropped = self.dirty_paths(slot);
+        if dropped > 0 {
+            git(&path, &["checkout", "-q", "-f"])?;
+            git(&path, &["clean", "-qfd"])?;
+        }
+        Ok(dropped)
     }
 
     fn detach(&self, slot: SlotIndex, branch: Option<&str>) -> Result<bool, LaneError> {
@@ -973,6 +1010,14 @@ impl Pool {
             git(&self.repo, &["branch", "-q", "-D", branch])?;
         }
         Ok(!merged)
+    }
+}
+
+pub(crate) fn discarded(paths: usize) -> String {
+    match paths {
+        0 => String::new(),
+        1 => "; 1 uncommitted path discarded".to_owned(),
+        n => format!("; {n} uncommitted paths discarded"),
     }
 }
 
@@ -994,7 +1039,7 @@ pub struct Lane {
     _held: File,
 }
 
-/// Invariant: a dropped lane is handed back detached; only the explicit release warms.
+/// Invariant: a dropped clean lane is handed back detached, a dirty one kept; only release warms.
 impl Drop for Lane {
     fn drop(&mut self) {
         if self.released {
@@ -1002,6 +1047,9 @@ impl Drop for Lane {
         }
         self.released = true;
         let _ = self.pool.lock().and_then(|_pool| {
+            if self.pool.dirty_paths(self.slot) > 0 {
+                return Ok(());
+            }
             self.pool.detach(self.slot, Some(self.branch.as_str()))?;
             let mut state = self.pool.read_state(self.slot)?;
             state.session = None;
@@ -1060,36 +1108,37 @@ impl Lane {
         Ok(())
     }
 
-    pub fn discard(self) -> Result<(), LaneError> {
+    pub fn discard(self) -> Result<usize, LaneError> {
         let branch = self.branch.as_str().to_owned();
-        let pool = self.pool.clone();
-        let slot = self.slot;
-        self.release_inner(false)?;
-        let _ = git(&pool.repo, &["branch", "-q", "-D", &branch]);
-        let mut state = pool.read_state(slot)?;
-        state.session = None;
-        pool.write_state(slot, &state)
+        let repo = self.pool.repo.clone();
+        let dropped = self.release_inner(false)?;
+        let _ = git(&repo, &["branch", "-q", "-D", &branch]);
+        Ok(dropped)
     }
 
     pub fn release(self) -> Result<(), LaneError> {
-        self.release_inner(true)
+        self.release_inner(true).map(drop)
     }
 
-    fn release_inner(mut self, warm: bool) -> Result<(), LaneError> {
+    fn release_inner(mut self, quit: bool) -> Result<usize, LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
+        if quit && self.pool.dirty_paths(self.slot) > 0 {
+            return Ok(0);
+        }
         self.pool.detach(self.slot, Some(self.branch.as_str()))?;
+        let dropped = if quit { 0 } else { self.pool.wipe(self.slot)? };
         let mut state = self.pool.read_state(self.slot)?;
         state.session = None;
         self.pool.write_state(self.slot, &state)?;
-        if warm {
+        if quit {
             // Invariant: an unseen lockfile stays cold; that is not a failure.
             match toolchain::warm(&self.pool, self.slot) {
                 Ok(()) | Err(LaneError::LockfileUnseen { .. }) => {}
                 Err(error) => return Err(error),
             }
         }
-        Ok(())
+        Ok(dropped)
     }
 
     pub fn sync(&self) -> Result<Option<String>, LaneError> {

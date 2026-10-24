@@ -619,9 +619,9 @@ impl LaneHandle {
             .take()
             .ok_or_else(|| LaneError::Forge("no lane to discard".to_owned()))?;
         let branch = lane.branch().to_string();
-        lane.discard()?;
+        let lost = super::discarded(lane.discard()?);
         self.set_landing(Landing::Unlanded);
-        Ok(format!("discarded {branch}; the transcript is kept"))
+        Ok(format!("discarded {branch}{lost}; the transcript is kept"))
     }
 
     /// Incident: `process::exit` skips destructors, so the CLI calls this first.
@@ -698,6 +698,7 @@ fn who(holder: &Holder, ledger: Option<&DaemonLedger>) -> String {
                 tilde(Path::new(&entry.cwd))
             )
         }
+        None if holder.session.is_empty() => "no session".to_owned(),
         None => holder.session.clone(),
     }
 }
