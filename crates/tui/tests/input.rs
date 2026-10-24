@@ -3,6 +3,7 @@ use crate::common;
 
 use std::error::Error;
 
+use crate::scratch::Scratch;
 use common::test_model;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -16,10 +17,14 @@ use yi_types::message::{AgentMessage, UserContent};
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn app() -> App {
+    app_in("/tmp")
+}
+
+fn app_in(cwd: &str) -> App {
     let options = TuiOptions {
         model: test_model("faux-1"),
         session_name: "input".to_owned(),
-        cwd: "/tmp".to_owned(),
+        cwd: cwd.to_owned(),
         lane: None,
         context_window: 128_000,
         session_dir: String::new(),
@@ -161,5 +166,70 @@ fn an_injected_message_leaves_one_of_two_identical_queued_rows() -> TestResult {
     });
     let rows = common::live_rows(&mut app)?;
     assert!(!has_row(&rows, "Steering"), "{rows:#?}");
+    Ok(())
+}
+
+/// The `[…]` row an `@` picker draws over `cwd`, if it draws one.
+fn picker_note(cwd: &str) -> Result<Option<String>, Box<dyn Error>> {
+    let mut app = app_in(cwd);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    type_text(&mut app, &tx, "@");
+    Ok(common::live_rows(&mut app)?
+        .into_iter()
+        .find(|row| row.contains("[…]"))
+        .map(|row| row.trim().to_owned()))
+}
+
+fn files_in(dir: &Scratch, numbers: std::ops::Range<usize>) -> TestResult {
+    for n in numbers {
+        std::fs::File::create(dir.join(format!("f{n:04}.txt")))?;
+    }
+    Ok(())
+}
+
+/// Dies with an `@` picker that listed a hundred names as if they were the project: the walk
+/// stopped at its cap, so file 101 could not be found and nothing on screen said it existed.
+#[test]
+fn the_file_picker_says_how_many_files_its_hundred_are_out_of() -> TestResult {
+    let dir = Scratch::new("yi-picker")?;
+    files_in(&dir, 0..100)?;
+    let at = dir.display().to_string();
+    assert_eq!(picker_note(&at)?, None, "a hundred files are all of them");
+    files_in(&dir, 100..101)?;
+    assert_eq!(
+        picker_note(&at)?.as_deref(),
+        Some("[…] 100 of 101 files · picker cap 100 · type a path for the rest")
+    );
+    Ok(())
+}
+
+/// The count walk is bounded too, and says so: past five thousand names the total is a floor.
+#[test]
+fn a_picker_over_five_thousand_files_counts_a_floor() -> TestResult {
+    let dir = Scratch::new("yi-picker-big")?;
+    files_in(&dir, 0..4_999)?;
+    let at = dir.display().to_string();
+    assert_eq!(
+        picker_note(&at)?.as_deref(),
+        Some("[…] 100 of 4999 files · picker cap 100 · type a path for the rest")
+    );
+    files_in(&dir, 4_999..5_000)?;
+    assert_eq!(
+        picker_note(&at)?.as_deref(),
+        Some("[…] 100 of 5000+ files · picker cap 100 · type a path for the rest")
+    );
+    Ok(())
+}
+
+/// The crates tree of this checkout is the life-sized one: hundreds of tracked files, ignored
+/// ones skipped. (The checkout root holds the test HOME, which the walk refuses to enter.)
+#[test]
+fn the_picker_over_this_checkouts_crates_names_its_cap() -> TestResult {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()?;
+    let note = picker_note(&crates.display().to_string())?
+        .ok_or("the crates tree holds more than a hundred files")?;
+    assert!(note.starts_with("[…] 100 of "), "{note}");
     Ok(())
 }

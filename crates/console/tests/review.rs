@@ -1,6 +1,6 @@
 //! The Review pane: what a lane's branch would land, and what a turn or a session changed.
 
-use yi_console::model::{FileDiff, ReviewScope, SessionDiff};
+use yi_console::model::{FileDiff, MAX_DIFF_FILES, ReviewScope, SessionDiff};
 use yi_tui::colors::{ColorTier, Theme};
 
 fn text(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
@@ -114,4 +114,74 @@ fn each_hunk_is_asked_why_at_its_first_changed_line_and_the_chain_shows_under_it
     let (b, chain) = (at("▸ src/b.rs"), at("↳ L2 1a2b3c4d5e6f"));
     assert!(at("● src/a.rs").is_some(), "{rows:#?}");
     assert!(b.is_some() && chain == b.map(|b| b + 1), "{rows:#?}");
+}
+
+fn review_rows(diff: &SessionDiff) -> Vec<String> {
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let (_, lines) =
+        yi_console::render::review_view(Some(diff), ReviewScope::Session, "", 80, &theme);
+    text(&lines)
+}
+
+fn dropped_row(diff: &SessionDiff) -> Option<String> {
+    review_rows(diff)
+        .into_iter()
+        .find(|row| row.contains("[…]"))
+}
+
+fn patch_of(path: &str, bytes: usize) -> (String, FileDiff) {
+    let (path, mut file) = edit(path, 0, None);
+    file.patch = "x".repeat(bytes);
+    (path, file)
+}
+
+/// Dies with a review that lost its oldest edits without a word: file 513 pushed file 1 out of
+/// the pane and the list read as every file the session touched.
+#[test]
+fn the_review_names_the_files_its_file_cap_dropped() {
+    let mut diff = SessionDiff::default();
+    for n in 0..MAX_DIFF_FILES {
+        let (path, file) = edit(&format!("src/f{n}.rs"), 0, None);
+        diff.insert(path, file);
+    }
+    assert_eq!(dropped_row(&diff), None, "512 files are all of them");
+    let (path, file) = edit("src/f512.rs", 0, None);
+    diff.insert(path, file);
+    assert_eq!(
+        dropped_row(&diff).as_deref(),
+        Some("  […] 1 older file not shown · review keeps 512 files, 4 MiB · git diff lists them")
+    );
+}
+
+/// The byte cap is the second way a file leaves: four MiB of patches fit, one byte more does not.
+#[test]
+fn the_review_names_the_files_its_byte_cap_dropped() {
+    let mib = 1024 * 1024;
+    let mut diff = SessionDiff::default();
+    for n in 0..4 {
+        let (path, file) = patch_of(&format!("big{n}.rs"), mib);
+        diff.insert(path, file);
+    }
+    assert_eq!(dropped_row(&diff), None, "exactly 4 MiB fits");
+    let (path, file) = patch_of("tiny.rs", 1);
+    diff.insert(path, file);
+    assert_eq!(
+        dropped_row(&diff).as_deref(),
+        Some("  […] 1 older file not shown · review keeps 512 files, 4 MiB · git diff lists them")
+    );
+}
+
+/// An edit that brings a dropped file back un-drops it, so the count is files not shown.
+#[test]
+fn a_dropped_file_edited_again_is_no_longer_counted() {
+    let mut diff = SessionDiff::default();
+    for n in 0..=MAX_DIFF_FILES {
+        let (path, file) = edit(&format!("src/f{n}.rs"), 0, None);
+        diff.insert(path, file);
+    }
+    let (path, file) = edit("src/f0.rs", 0, None);
+    diff.insert(path, file);
+    assert!(diff.dropped.contains("src/f1.rs") && !diff.dropped.contains("src/f0.rs"));
+    let row = dropped_row(&diff).unwrap_or_default();
+    assert!(row.contains("1 older file not shown"), "{row}");
 }

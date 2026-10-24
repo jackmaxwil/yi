@@ -6,7 +6,7 @@ use std::error::Error;
 use ratatui::style::Modifier;
 use serde_json::json;
 use yi_tui::app::{App, TuiOptions};
-use yi_tui::cell::{Cell, TaskCell, TaskStatus, TranscriptMode, tail_bounded};
+use yi_tui::cell::{Cell, TaskCell, TaskStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::highlight::Token;
 use yi_tui::keymap::default_keymap;
@@ -85,6 +85,7 @@ fn task(status: TaskStatus, answer: &str) -> TaskCell {
         error: None,
         spawn: None,
         answer: Some(answer.to_owned()),
+        answer_dropped: 0,
         activity: ChildActivity::Writing,
         flag: None,
     }
@@ -304,14 +305,85 @@ fn a_running_child_card_fades_toward_its_top() -> TestResult {
     Ok(())
 }
 
+/// The longest assistant text a scrubbed real session holds, repeated to `bytes` exactly: the
+/// shape of a child's final report, not a run of one letter.
+fn report(bytes: usize) -> Result<String, Box<dyn Error>> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sessions/01a0d6e4.jsonl"
+    );
+    let mut best = String::new();
+    for line in std::fs::read_to_string(path)?.lines() {
+        let entry: serde_json::Value = serde_json::from_str(line)?;
+        for block in entry["message"]["content"].as_array().into_iter().flatten() {
+            let text = block["text"].as_str().unwrap_or_default();
+            if entry["message"]["role"] == "assistant" && text.len() > best.len() {
+                best = text.to_owned();
+            }
+        }
+    }
+    let mut out = String::new();
+    while out.len() < bytes {
+        out.push_str(&best);
+        out.push_str("\n\n");
+    }
+    let end = (0..=bytes)
+        .rev()
+        .find(|at| out.is_char_boundary(*at))
+        .unwrap_or(0);
+    let mut out = out.get(..end).unwrap_or_default().to_owned();
+    out.push_str(&"x".repeat(bytes - out.len()));
+    Ok(out)
+}
+
+fn dropped_head_row(cell: &TaskCell) -> Option<String> {
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let rows = cell.lines(120, &theme, TranscriptMode::Normal, 0);
+    flat(&rows).into_iter().find(|row| row.contains("[…]"))
+}
+
+/// Dies with a card that cut the head off a long answer and said nothing: sixteen KiB plus one
+/// byte lost its first bytes and the card read as the whole report.
 #[test]
-fn a_child_answer_is_bounded_to_sixteen_kilobytes() -> TestResult {
-    let text = format!("{}tail", "x".repeat(20 * 1024));
-    let kept = tail_bounded(text);
-    assert!(kept.len() <= 16 * 1024, "{}", kept.len());
-    assert!(kept.ends_with("tail"));
-    assert_eq!(tail_bounded("short".to_owned()), "short");
+fn a_child_answer_past_sixteen_kilobytes_names_the_head_it_dropped() -> TestResult {
+    let mut cell = task(TaskStatus::Done, "");
+    cell.keep_answer(report(16 * 1024)?);
+    assert_eq!(cell.answer_dropped, 0);
+    assert_eq!(dropped_head_row(&cell), None, "at the limit nothing is cut");
+
+    let whole = report(16 * 1024 + 1)?;
+    cell.keep_answer(whole.clone());
+    let kept = cell.answer.as_deref().unwrap_or_default();
+    assert!(whole.ends_with(kept), "the tail is what stays");
+    assert_eq!(kept.len() + cell.answer_dropped, whole.len());
+    let row = dropped_head_row(&cell).ok_or("one byte past the limit drew no row")?;
+    let said = format!(
+        "[…] kept the last {} of 16385 B · card cap 16 KiB · alt-↓ opens the child",
+        kept.len()
+    );
+    assert!(row.contains(&said), "{row}");
     Ok(())
+}
+
+/// A cut inside a three-byte character moves to the next boundary, and the row counts the bytes
+/// actually dropped.
+#[test]
+fn a_multibyte_answer_is_cut_on_a_character_and_counted_in_bytes() -> TestResult {
+    let mut cell = task(TaskStatus::Done, "");
+    cell.keep_answer("€".repeat(5462));
+    assert_eq!(cell.answer.as_deref().map(str::len), Some(16_383));
+    assert_eq!(cell.answer_dropped, 3);
+    let row = dropped_head_row(&cell).ok_or("no row")?;
+    assert!(row.contains("kept the last 16383 of 16386 B"), "{row}");
+    Ok(())
+}
+
+/// A running card shows the newest rows, so the dropped head is the finished card's to name.
+#[test]
+fn a_running_card_draws_no_dropped_head_row() {
+    let mut cell = task(TaskStatus::Running, "");
+    cell.keep_answer("y".repeat(16 * 1024 + 1));
+    assert_eq!(dropped_head_row(&cell), None);
 }
 
 #[test]

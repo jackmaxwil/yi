@@ -22,6 +22,7 @@ pub struct ListPopup {
     pub query: String,
     pub items: Vec<String>,
     pub selected: usize,
+    pub note: Option<String>,
 }
 
 const MAX_VISIBLE: usize = 8;
@@ -33,6 +34,7 @@ impl ListPopup {
             query: String::new(),
             items,
             selected: 0,
+            note: None,
         }
     }
 
@@ -84,6 +86,10 @@ impl BottomView for ListPopup {
                 format!("   … {} more", filtered.len() - MAX_VISIBLE),
                 theme.dim_style(),
             )));
+        }
+        if let Some(note) = &self.note {
+            let note: String = format!("   {note}").chars().take(width).collect();
+            out.push(Line::from(Span::styled(note, theme.dim_style())));
         }
         out
     }

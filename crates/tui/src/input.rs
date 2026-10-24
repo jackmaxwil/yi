@@ -81,8 +81,7 @@ pub fn handle_terminal_event(
                             SLASH_COMMANDS.iter().map(|s| (*s).to_owned()).collect(),
                         )));
                     } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
-                        let files = walk_files(std::path::Path::new(&app.options.cwd), 100);
-                        app.bottom = Some(Bottom::File(ListPopup::new('@', files)));
+                        app.bottom = Some(Bottom::File(file_picker(&app.options.cwd)));
                     } else if key.code == KeyCodeValue::Backspace
                         && !key.ctrl
                         && !key.alt
@@ -97,6 +96,23 @@ pub fn handle_terminal_event(
         }
         _ => {}
     }
+}
+
+const PICKER_CAP: usize = 100;
+const PICKER_COUNT_CAP: usize = 5_000;
+
+fn file_picker(cwd: &str) -> ListPopup {
+    let mut files = walk_files(std::path::Path::new(cwd), PICKER_COUNT_CAP);
+    let found = files.len();
+    files.truncate(PICKER_CAP);
+    let mut popup = ListPopup::new('@', files);
+    if found > PICKER_CAP {
+        let plus = if found >= PICKER_COUNT_CAP { "+" } else { "" };
+        popup.note = Some(format!(
+            "[…] {PICKER_CAP} of {found}{plus} files · picker cap {PICKER_CAP} · type a path for the rest"
+        ));
+    }
+    popup
 }
 
 pub(crate) fn handle_tree_key(app: &mut App, key: &SingleKey) {
