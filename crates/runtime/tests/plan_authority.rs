@@ -2,6 +2,7 @@
 //! user saw it: however late the answer comes, and never once the plan moved under the question.
 
 use std::error::Error;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +39,23 @@ fn owner(engine: &PlanEngine, plan: Option<PlanId>, op: Op) -> Result<(), PlanOp
         .map(drop)
 }
 
+/// The process owning the prompt in `ws`, its session under `dir`; every ask goes to `asker`.
+pub(crate) fn confirmer(dir: &Path, ws: &Path, asker: Asker) -> Result<Confirmer, Box<dyn Error>> {
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions)?;
+    let mut repo = JsonlRepo::new(sessions, ws.to_string_lossy().into_owned());
+    let store = repo.create(CreateOptions::default())?;
+    let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
+    let broker = Arc::new(PermissionBroker::new(
+        PermissionMode::Ask,
+        ws.to_path_buf(),
+        Vec::new(),
+        Some(asker),
+        events,
+    ));
+    Ok(Confirmer { broker, store })
+}
+
 /// A `fuse_reset` confirmed by a person who runs `meanwhile` before answering yes.
 fn confirm_after(
     name: &str,
@@ -56,26 +74,12 @@ fn confirm_after(
             todos: vec![todo("first")?],
         },
     )?;
-    std::fs::create_dir_all(temp.join("sessions"))?;
-    let mut repo = JsonlRepo::new(temp.join("sessions"), temp.to_string_lossy().into_owned());
-    let session = repo.create(CreateOptions::default())?;
     let (asking, at) = (Arc::clone(&engine), plan.clone());
     let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| {
         meanwhile(&asking, &at);
         AskOutcome::AllowOnce
     });
-    let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
-    let broker = PermissionBroker::new(
-        PermissionMode::Ask,
-        temp.to_path_buf(),
-        Vec::new(),
-        Some(asker),
-        events,
-    );
-    let confirmer = Confirmer {
-        broker: Arc::new(broker),
-        store: session,
-    };
+    let confirmer = confirmer(&temp, &temp, asker)?;
     let mut args = Map::new();
     args.insert("op".to_owned(), "fuse_reset".into());
     let submission = Submission {
