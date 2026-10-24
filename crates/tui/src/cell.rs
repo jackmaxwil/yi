@@ -69,7 +69,6 @@ pub struct ToolCell {
     /// The runtime's handle for this call: what a permission event names, and
     /// the only exact way to pair a result with the cell that started it.
     pub call_id: String,
-    pub intent: Option<String>,
     pub status: ToolStatus,
     pub summary: String,
     pub digest: Option<String>,
@@ -258,11 +257,14 @@ const PREVIEW_ROWS: usize = 3;
 fn glyph(tool: &str) -> char {
     match tool {
         "bash" => '$',
-        "read" => '→',
+        "read" | "get_context" => '→',
         "edit" | "write" => '←',
-        "grep" | "glob" | "find" => '✱',
-        "fetch" | "web_search" => '%',
+        "grep" => '✱',
         "ipython" => '⊙',
+        "todo" | "plan" => '≡',
+        "answer" => '»',
+        "ask_user" => '?',
+        "annotate" => '#',
         _ => '⚙',
     }
 }
@@ -337,8 +339,7 @@ fn counted(digest: &str) -> Option<(&str, &str)> {
 fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<Span<'static>> {
     let plain = style.fg == Some(theme.text);
     let hue = match tool {
-        "grep" | "glob" | "find" if plain => Some(theme.orange),
-        "fetch" | "web_search" if plain => Some(theme.blue5),
+        "grep" if plain => Some(theme.orange),
         _ => None,
     };
     if let Some(hue) = hue {
@@ -362,7 +363,6 @@ pub fn explore_verb(tool: &str) -> Option<&'static str> {
     match tool {
         "read" => Some("Read"),
         "grep" => Some("Search"),
-        "glob" | "find" => Some("List"),
         _ => None,
     }
 }
@@ -481,11 +481,6 @@ impl ToolCell {
                 theme.muted_style(),
             ));
         }
-        if let Some(intent) = &self.intent
-            && self.status == ToolStatus::Running
-        {
-            chips.push(Chip::new(intent.clone(), "", theme.muted_style()));
-        }
         let mut prose = None;
         if let Some(digest) = &self.digest {
             match counted(digest) {
@@ -572,7 +567,7 @@ impl ToolCell {
         let text = Style::default().fg(theme.text);
         let mut out = Vec::new();
         let mut last_path: Option<String> = None;
-        let searchy = matches!(self.name.as_str(), "grep" | "glob" | "find");
+        let searchy = self.name == "grep";
         let anchored = matches!(self.name.as_str(), "read" | "edit");
         // A patch routes to `diffview`, which colours from its own header; this is the plain
         // numbered dump a read prints, its path in the summary since `details` lacks it.
@@ -683,10 +678,6 @@ impl ToolCell {
             "grep" => count_label(
                 text.lines().filter(|l| grep_row(l).is_some()).count(),
                 "hit",
-            ),
-            "glob" => count_label(
-                text.lines().filter(|line| !line.starts_with('[')).count(),
-                "file",
             ),
             _ => first()?.to_owned(),
         };
@@ -1018,12 +1009,11 @@ fn callout(
     }
     let mut out = Vec::new();
     for row in text.lines() {
-        let row = if source.is_some() {
-            strip_tags(row)
-        } else {
-            row.trim().to_owned()
+        let row = match source {
+            Some("advisory") => strip_tags(row),
+            _ => row.trim().to_owned(),
         };
-        if row.is_empty() {
+        if row.is_empty() || row.starts_with("<agent_message") || row == "</agent_message>" {
             continue;
         }
         let line = Line::from(vec![

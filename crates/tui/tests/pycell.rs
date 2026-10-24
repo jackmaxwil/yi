@@ -16,7 +16,6 @@ fn cell(details: serde_json::Value, status: ToolStatus) -> ToolCell {
     ToolCell {
         name: "ipython".to_owned(),
         call_id: String::new(),
-        intent: None,
         status,
         summary: ToolCell::summary_of("ipython", ""),
         digest: None,

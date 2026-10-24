@@ -1456,7 +1456,6 @@ fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
     ToolCell {
         name: name.to_owned(),
         call_id: String::new(),
-        intent: None,
         status: if failed {
             ToolStatus::Failed
         } else {
@@ -1494,7 +1493,6 @@ fn a_finished_tool_states_its_outcome_without_switching_modes() -> TestResult {
             "src/a.rs:3:hit\nsrc/a.rs-4-ctx\nsrc/b.rs:9:hit",
             "2 hits",
         ),
-        ("glob", "src/a.rs\nsrc/b.rs", "2 files"),
         (
             "write",
             "Wrote 36 bytes to /tmp/x",
@@ -2573,7 +2571,6 @@ fn a_call_head_splits_its_path_into_context_and_name() -> TestResult {
     let cell = ToolCell {
         name: "read".to_owned(),
         call_id: "t1".to_owned(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("read", "crates/tui/src/app.rs"),
         digest: None,
@@ -2683,32 +2680,6 @@ fn prose_marks_a_path_split_across_text_events_whole() -> TestResult {
             .any(|s| s.content.contains("Node.js") && s.style.fg == Some(theme.cyan)),
         "{spans:?}"
     );
-    Ok(())
-}
-
-/// A URL always holds a slash, so the path split shadowed the fetch hue.
-#[test]
-fn a_fetch_head_colours_its_url_whole() -> TestResult {
-    let theme = theme();
-    let cell = ToolCell {
-        name: "fetch".to_owned(),
-        call_id: "t1".to_owned(),
-        intent: None,
-        status: ToolStatus::Done,
-        summary: ToolCell::summary_of("fetch", "https://docs.rs/syntect/latest"),
-        digest: None,
-        preview: Vec::new(),
-        elapsed_ms: 0,
-        calls: 1,
-        details: serde_json::Value::Null,
-    };
-    let lines = cell.lines(80, &theme, TranscriptMode::Thinking, 0);
-    let url = lines
-        .iter()
-        .flat_map(|l| &l.spans)
-        .find(|s| s.content.as_ref() == "https://docs.rs/syntect/latest")
-        .ok_or(format!("{lines:?}"))?;
-    assert_eq!(url.style.fg, Some(theme.blue5));
     Ok(())
 }
 
