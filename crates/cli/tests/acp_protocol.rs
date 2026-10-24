@@ -890,6 +890,76 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     client.finish()
 }
 
+/// Dies with the history replaced under a turn: a `_yi/rewind` without `files` reached the
+/// session while its bash call ran, and only the `files` form answered `still running`.
+#[test]
+fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
+    let dir = temp_dir("rewind-running")?;
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"text": "first answer"}),
+            json!({"tool": "bash", "args": {"command": wait}}),
+            json!({"text": "done"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "first",
+        &session_id,
+        json!([{"type": "text", "text": "first turn"}]),
+    )?;
+    let first = read_allowing(&mut client, is_idle)?;
+    let asked = committed(&first)?
+        .first()
+        .map(|entry| entry.id().to_owned())
+        .ok_or("no committed entry")?;
+    prompt(
+        &mut client,
+        "second",
+        &session_id,
+        json!([{"type": "text", "text": "wait for it"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
+            && frame["params"]["update"]["status"] == "in_progress"
+    })?;
+
+    for (id, files) in [("plain", false), ("files", true)] {
+        let params = json!({"sessionId": session_id, "entryId": asked, "files": files});
+        let frames = client.request(id, "_yi/rewind", params)?;
+        let answer = frames.last().ok_or("no rewind response")?;
+        assert_eq!(answer["error"]["code"], -32602, "{id}: {answer}");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("still running")),
+            "{id}: {answer}"
+        );
+    }
+
+    std::fs::write(&go, "")?;
+    read_allowing(&mut client, is_idle)?;
+    let rewound = client.request(
+        "after",
+        "_yi/rewind",
+        json!({"sessionId": session_id, "entryId": asked}),
+    )?;
+    let answer = rewound.last().ok_or("no rewind response")?;
+    assert_eq!(
+        answer["result"]["unsent"], "first turn",
+        "the turn ended, so the rewind lands: {answer}"
+    );
+    client.finish()
+}
+
 /// A resumed session's status row starts from the ledger, not $0: the replay carries the
 /// stored totals, a reply's cost and a finished child's usage record alike.
 #[test]
