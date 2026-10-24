@@ -274,6 +274,7 @@ async fn a_rewind_while_a_turn_streams_is_refused_until_it_ends() -> TestResult 
     }
     assert!(seeded.provider.faux_hold.reached(), "the stream never held");
     let live = seeded.session.messages();
+    let lane = yi_session::lock_session(&seeded.store).leaf_id("main")?;
 
     let refused = yi_runtime::rewind_to(&seeded.session, &target);
     assert_eq!(
@@ -281,12 +282,9 @@ async fn a_rewind_while_a_turn_streams_is_refused_until_it_ends() -> TestResult 
         Some("the current turn is still running")
     );
     assert_eq!(seeded.session.messages(), live, "the live history stands");
-    let tip = entries(&seeded.store)
-        .last()
-        .map(|entry| entry.id().to_owned());
     assert_eq!(
         yi_session::lock_session(&seeded.store).leaf_id("main")?,
-        tip,
+        lane,
         "the lane did not move"
     );
 

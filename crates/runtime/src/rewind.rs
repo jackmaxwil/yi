@@ -25,7 +25,7 @@ pub struct Rewound {
 }
 
 /// Invariant: a rewind re-attaches the store, replacing the history a running turn is writing, so
-/// it waits for the turn to end. A caller that touches files first asks here before it does.
+/// it is refused until the turn ends. A caller that touches files first asks here before it does.
 pub fn ensure_idle(session: &AgentSession) -> Result<(), String> {
     if session.status() == Status::Running {
         return Err("the current turn is still running".to_owned());
