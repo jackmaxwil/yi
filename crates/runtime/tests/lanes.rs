@@ -2376,23 +2376,28 @@ mod accept {
     }
 }
 
-/// A child named `writer` in a worktree of the rig's repository, run on `hold`, once its
-/// `draft.txt` is on disk.
-async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dyn Error>> {
-    let store = support::memory_store("lanes-writer");
-    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, Some(hold));
+/// A worktree child `name` of `family`, run on its hold, once its `draft.txt` is on disk.
+async fn spawn_writer(family: &support::Family, name: &str) -> TestResult {
     let mut asked = serde_json::Map::new();
-    asked.insert("name".to_owned(), "writer".into());
+    asked.insert("name".to_owned(), name.into());
     asked.insert("role".to_owned(), "root".into());
     asked.insert("isolation".to_owned(), "worktree".into());
     family.host.spawn("write a draft".to_owned(), asked)?;
-    let tree = family.host.cwd_of("writer").ok_or("no worktree")?;
+    let tree = family.host.cwd_of(name).ok_or("no worktree")?;
     for _ in 0..400 {
         if tree.join("draft.txt").exists() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
+    Ok(())
+}
+
+/// A child named `writer` in a worktree of the rig's repository, run on `hold`.
+async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dyn Error>> {
+    let store = support::memory_store("lanes-writer");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, Some(hold));
+    spawn_writer(&family, "writer").await?;
     Ok(family)
 }
 
@@ -2445,11 +2450,17 @@ async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
     for (method, hook) in [
         ("rlm.merge_worktree", "post-merge"),
         ("rlm.discard_worktree", "pre-commit"),
+        ("rlm.delete_subagent", "pre-commit"),
     ] {
         let rig = Rig::new(hook)?;
         slow_hook(&rig, hook)?;
         let family = writer(&rig, "echo unsaved > draft.txt").await?;
         assert!(family.reaches("writer", "finished").await);
+        if method == "rlm.delete_subagent" {
+            family
+                .host
+                .mark_disposed("writer", yi_types::plan::op::Choice::Retained)?;
+        }
         let mut registry = yi_runtime::HostRegistry::default();
         family.host.register(&mut registry);
         let target = serde_json::json!({"target": "writer"});
@@ -2457,12 +2468,17 @@ async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
         let handing = registry.dispatch(method, asked).ok_or(method)?;
         let reply = served_while(&family, handing).await??;
         assert!(rig.root.join("hook-ran").exists(), "{method}: {reply:?}");
-        assert_eq!(reply["merged"], method == "rlm.merge_worktree");
+        if method == "rlm.delete_subagent" {
+            assert!(reply.contains_key("disposition"), "{reply:?}");
+        } else {
+            assert_eq!(reply["merged"], method == "rlm.merge_worktree");
+        }
     }
     Ok(())
 }
 
-/// Incident: the same, for a repossession's lane settle at lease expiry.
+/// Incident: a lease expiry settled the repossessed lane's git inside the expire task, so a
+/// slow hook held the session's one-thread runtime and every host call behind it.
 #[tokio::test]
 async fn a_lease_expiry_leaves_the_executor_free() -> TestResult {
     let rig = Rig::new("expiry")?;
@@ -2473,6 +2489,38 @@ async fn a_lease_expiry_leaves_the_executor_free() -> TestResult {
     let expired = served_while(&family, async move { host.expire().await }).await?;
     assert_eq!(expired, ["writer"]);
     assert!(rig.root.join("hook-ran").exists());
+    Ok(())
+}
+
+/// Incident: once the hand-back hopped to the blocking pool, concurrent `rlm.merge_worktree`
+/// calls published against one parent checkout at once, and the third lost the generation
+/// check twice and returned an error with its lane already released.
+#[tokio::test]
+async fn gathered_hand_backs_all_merge() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let rig = Rig::new("gathered")?;
+    let store = support::memory_store("lanes-gathered");
+    let hold = "echo unsaved > draft.txt; : > \"own-$$\"";
+    let root = rig.root.to_path_buf();
+    let family = support::family_with_slots(root, rig.repo.clone(), store, Some(hold), 6);
+    let names = ["first", "second", "third"];
+    for name in names {
+        spawn_writer(&family, name).await?;
+        assert!(family.reaches(name, "finished").await);
+    }
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let mut merges = Vec::new();
+    for name in names {
+        let target = serde_json::json!({"target": name});
+        let asked = target.as_object().cloned().unwrap_or_default();
+        let merge = registry.dispatch("rlm.merge_worktree", asked);
+        merges.push(tokio::spawn(merge.ok_or("rlm.merge_worktree")?));
+    }
+    for merge in merges {
+        let reply = merge.await??;
+        assert_eq!(reply["merged"], true, "{reply:?}");
+    }
     Ok(())
 }
 
