@@ -500,6 +500,33 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn a_durable_bind_releases_the_ledger_it_left() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = Scratch::new("yi-hub-durable")?;
+        let (wiring_path, root) = (dir.join("scheduled-jobs.json"), dir.join("schedules"));
+        let root_session = wired(&wiring_path, ran()).durable(root.clone());
+        let wired_to = root_session.store();
+        root_session.bind_session("a".to_owned());
+        assert!(
+            held(&wired_to).is_none(),
+            "a durable root kept the ledger it was wired to"
+        );
+        let first = root_session.store();
+        root_session.bind_session("b".to_owned());
+        assert!(held(&first).is_none(), "a rebind kept the ledger it left");
+
+        let pending = wired(&wiring_path, ran());
+        wired(&wiring_path, ran())
+            .durable(root)
+            .bind_session("c".to_owned());
+        assert!(
+            held(&pending.store()).is_some(),
+            "a durable bind stopped the timer a wired sibling is about to join"
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_heartbeat_before_attach_is_refused_not_stamped_empty()
     -> Result<(), Box<dyn std::error::Error>> {
