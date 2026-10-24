@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-shaped","object":"chat.completion.chunk","created":1761264000,"model":"k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-shaped","object":"chat.completion.chunk","created":1761264000,"model":"k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"The user wants the readme."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-shaped","object":"chat.completion.chunk","created":1761264000,"model":"k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":" Read it first."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-shaped","object":"chat.completion.chunk","created":1761264000,"model":"k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"read:0","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-shaped","object":"chat.completion.chunk","created":1761264000,"model":"k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\": \"README.md\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-shaped","object":"chat.completion.chunk","created":1761264000,"model":"k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls","usage":{"prompt_tokens":5000,"completion_tokens":64,"total_tokens":5064,"cached_tokens":3800}}]}
+
+data: [DONE]
+

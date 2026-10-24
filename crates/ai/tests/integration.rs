@@ -14,6 +14,7 @@ mod effort_catalog;
 mod faux_events;
 mod images;
 mod kimi_catalog;
+mod kimi_wire;
 mod leak;
 mod model_headers;
 mod oauth;

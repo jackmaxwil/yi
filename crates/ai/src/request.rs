@@ -100,6 +100,7 @@ pub fn host_of(url: &str) -> &str {
 
 fn agent(url: &str, proxy: Option<&ProxyConfig>) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_secs(20));
     if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
@@ -170,6 +171,7 @@ static POOLED: std::sync::Mutex<Option<(ureq::Agent, std::time::Instant)>> =
 // ponytail: a proxied request pools nothing; key the pool by proxy if that path matters.
 fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     let builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(30))
         .timeout_read(std::time::Duration::from_secs(60));
     if let Some(proxy) = proxy {
