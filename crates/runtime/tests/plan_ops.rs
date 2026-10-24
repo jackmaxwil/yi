@@ -2142,7 +2142,6 @@ mod contracts {
     use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::tool::PlanTool;
     use yi_runtime::plan::verify::Verifier;
-    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
     use yi_runtime::subagent::DEFAULT_MAX_CHILDREN;
     use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
     use yi_tools::Tool;
@@ -3412,20 +3411,8 @@ mod contracts {
 
     /// The process that owns the prompt, answering `answer` to every ask.
     fn confirmer(rig: &Rig, answer: AskOutcome) -> Result<Confirmer, Box<dyn Error>> {
-        let sessions = rig._temp.join("sessions");
-        std::fs::create_dir_all(&sessions)?;
-        let mut repo = JsonlRepo::new(sessions, rig.ws.to_string_lossy().into_owned());
-        let store = repo.create(CreateOptions::default())?;
         let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| answer);
-        let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
-        let broker = Arc::new(PermissionBroker::new(
-            PermissionMode::Ask,
-            rig.ws.clone(),
-            Vec::new(),
-            Some(asker),
-            events,
-        ));
-        Ok(Confirmer { broker, store })
+        crate::plan_authority::confirmer(&rig._temp, &rig.ws, asker)
     }
 
     /// Each prompt's description, in the order the person was asked.
