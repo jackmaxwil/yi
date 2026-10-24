@@ -751,15 +751,17 @@ async fn stream_assistant_response<S: StreamFn>(
         }
     }
     let cut = match cut {
-        Some(chars) => {
-            let settled = drain_to_done(&mut receiver, signal).await;
-            let source = settled
-                .as_ref()
-                .or_else(|| added_partial.then(|| context.messages.last()).flatten());
-            let tail = source.map(crate::reasoning::tail).unwrap_or_default();
-            final_message = Some(cut_message(source, model, chars));
-            Some(Cut { chars, tail })
-        }
+        Some(chars) => match drain_to_done(&mut receiver, signal).await {
+            None if signal.is_fired() => None,
+            settled => {
+                let source = settled
+                    .as_ref()
+                    .or_else(|| added_partial.then(|| context.messages.last()).flatten());
+                let tail = source.map(crate::reasoning::tail).unwrap_or_default();
+                final_message = Some(cut_message(source, model, chars));
+                Some(Cut { chars, tail })
+            }
+        },
         None => None,
     };
     let mut final_message = final_message.unwrap_or_else(|| {

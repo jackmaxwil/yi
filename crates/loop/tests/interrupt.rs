@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_ai::faux::{FAUX_API, FAUX_MODEL_ID, FAUX_PROVIDER, faux_assistant_message};
 use yi_loop::interrupt::InterruptSignal;
-use yi_loop::{LoopConfig, LoopContext, REASONING_CHAR_CAP, run_loop};
+use yi_loop::{LENGTH_REDRIVE_CUSTOM_TYPE, LoopConfig, LoopContext, REASONING_CHAR_CAP, run_loop};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model};
@@ -57,7 +57,6 @@ async fn an_abort_during_the_cut_drain_returns_at_once() {
     );
     let config = LoopConfig::new(model);
     let signal = InterruptSignal::default();
-    let cut = signal.cut_flag();
     let mut context = LoopContext {
         system_prompt: String::new(),
         messages: Vec::new(),
@@ -67,7 +66,7 @@ async fn an_abort_during_the_cut_drain_returns_at_once() {
     let stream = NeverSettles::default();
     let mut fired_at = None;
     let fire = async {
-        while !cut.load(Ordering::SeqCst) {
+        while !signal.cut_flag().load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
         fired_at = Some(tokio::time::Instant::now());
@@ -82,12 +81,25 @@ async fn an_abort_during_the_cut_drain_returns_at_once() {
         &mut emit,
         &stream,
     );
-    let (_collected, ()) = tokio::join!(run, fire);
+    let (collected, ()) = tokio::join!(run, fire);
     let waited = fired_at.map(|at| at.elapsed());
     assert!(
         waited.is_some_and(|waited| waited < std::time::Duration::from_millis(100)),
         "the loop returned {waited:?} after the abort"
     );
+    let turns: Vec<String> = (collected.iter())
+        .map(|message| match message {
+            AgentMessage::Assistant { stop_reason, .. } => format!("{stop_reason:?}"),
+            AgentMessage::Custom { custom_type, .. } => custom_type.clone(),
+            _ => "other".to_owned(),
+        })
+        .collect();
+    assert_eq!(
+        turns.last().map(String::as_str),
+        Some("Aborted"),
+        "an abort during the drain is recorded as aborted, with no length redrive: {turns:?}"
+    );
+    assert!(!turns.iter().any(|turn| turn == LENGTH_REDRIVE_CUSTOM_TYPE));
 }
 
 /// Each round snapshots the epoch, then a reset and a fire start together on two spinning
@@ -95,7 +107,7 @@ async fn an_abort_during_the_cut_drain_returns_at_once() {
 /// survive whichever side wins.
 #[test]
 fn a_fire_racing_a_reset_is_never_lost() {
-    const ROUNDS: usize = 10_000;
+    const ROUNDS: usize = 100_000;
     let signal = Arc::new(InterruptSignal::default());
     let (round, done) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let epoch = Arc::new(AtomicU64::new(0));
@@ -118,7 +130,7 @@ fn a_fire_racing_a_reset_is_never_lost() {
     };
     let firer = worker(|signal, _, _| signal.fire());
     let resetter = worker(|signal, epoch, at| {
-        for _ in 0..at % 64 {
+        for _ in 0..at % 24 {
             std::hint::spin_loop();
         }
         signal.reset_if_epoch(epoch);

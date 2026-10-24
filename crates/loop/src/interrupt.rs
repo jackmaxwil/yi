@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::Notify;
 
@@ -8,8 +8,9 @@ pub struct InterruptSignal {
     fired: Arc<AtomicBool>,
     epoch: AtomicU64,
     wake: Notify,
-    /// The loop's own cut of one request (D163): the provider pump reads it between events.
-    cut: Arc<AtomicBool>,
+    /// Invariant: a fresh flag per request, so a later request never clears an earlier one's cut.
+    /// The loop (D163) or a fire sets it; the provider pump reads it between events.
+    cut: Mutex<Arc<AtomicBool>>,
 }
 
 impl Default for InterruptSignal {
@@ -18,22 +19,22 @@ impl Default for InterruptSignal {
             fired: Arc::new(AtomicBool::new(false)),
             epoch: AtomicU64::new(0),
             wake: Notify::new(),
-            cut: Arc::new(AtomicBool::new(false)),
+            cut: Mutex::default(),
         }
     }
 }
 
 impl InterruptSignal {
     pub fn cut(&self) {
-        self.cut.store(true, Ordering::SeqCst);
+        self.cut_flag().store(true, Ordering::SeqCst);
     }
 
     pub fn clear_cut(&self) {
-        self.cut.store(false, Ordering::SeqCst);
+        *self.cut.lock().unwrap_or_else(PoisonError::into_inner) = Arc::default();
     }
 
     pub fn cut_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.cut)
+        Arc::clone(&self.cut.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     pub fn fired_flag(&self) -> Arc<AtomicBool> {
