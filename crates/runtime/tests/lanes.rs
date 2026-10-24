@@ -611,7 +611,7 @@ fn assert_kept_from_the_next_claim(pool: &Pool, readme: &Path, note: &Path) -> T
 fn a_clean_quit_keeps_uncommitted_work_from_the_next_claim() -> TestResult {
     let rig = Rig::new("quit-dirty")?;
     let (pool, lane, readme, note) = dirty_lane(&rig)?;
-    lane.release()?;
+    assert_eq!(lane.release()?.to_string(), "2 uncommitted paths");
     assert_kept_from_the_next_claim(&pool, &readme, &note)?;
     let views = pool.list()?;
     assert!(
@@ -712,7 +712,7 @@ fn a_reap_past_the_status_cap_says_at_least() -> TestResult {
                 assert!((1_490..1_500).contains(&floor), "{message}");
                 assert!(
                     message.contains(
-                        " uncommitted paths discarded (status read 30000 of 30001 bytes, OUTPUT_CAP 30000); branch"
+                        " uncommitted paths (status read 30000 of 30001 bytes, OUTPUT_CAP 30000) discarded; branch"
                     ),
                     "{message}"
                 );
@@ -757,7 +757,7 @@ fn a_discard_says_what_it_dropped_and_frees_the_slot() -> TestResult {
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-one", ClaimBase::Main)?;
     std::fs::write(lane.path().join("draft-é.txt"), "unsaved\n")?;
-    assert_eq!(lane.discard()?, "; 1 uncommitted path discarded");
+    assert_eq!(lane.discard()?.to_string(), "1 uncommitted path");
     let next = pool.claim("s-two", ClaimBase::Main)?;
     assert_eq!(git(next.path(), &["status", "--porcelain"])?, "");
     Ok(())
@@ -949,6 +949,42 @@ fn handle_for(
             let _ = tx.send(format!("{message:?}"));
         });
     (LaneHandle::new(lane, None, land_command, events, steer), rx)
+}
+
+/// The `/discard` reply names the branch and how many uncommitted paths went with it.
+#[test]
+fn a_discard_reply_counts_the_paths_it_dropped() -> TestResult {
+    let rig = Rig::new("discard-reply")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    dirty(lane.path())?;
+    let (handle, _steers) = handle_for(Some(lane), None);
+    assert_eq!(
+        handle.discard()?,
+        "discarded yi/s-one; 2 uncommitted paths discarded; the transcript is kept"
+    );
+    Ok(())
+}
+
+/// A quit over a dirty tree prints where the work stayed and the one call that discards it;
+/// a clean quit prints nothing.
+#[test]
+fn a_quit_over_a_dirty_tree_says_where_the_work_stays() -> TestResult {
+    let rig = Rig::new("quit-reply")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let path = yi_runtime::lane::land::tilde(lane.path());
+    dirty(lane.path())?;
+    let (handle, _steers) = handle_for(Some(lane), None);
+    assert_eq!(
+        handle.release()?,
+        Some(format!(
+            "lane 0 kept: 2 uncommitted paths in {path}; `yi lanes reap 0` discards them"
+        ))
+    );
+    let (clean, _steers) = handle_for(Some(pool.claim("s-two", ClaimBase::Main)?), None);
+    assert_eq!(clean.release()?, None);
+    Ok(())
 }
 
 /// The status row's lane label is the repo's name alone: the slot number the console's `_yi/workdir`

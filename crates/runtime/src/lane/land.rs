@@ -619,22 +619,26 @@ impl LaneHandle {
             .take()
             .ok_or_else(|| LaneError::Forge("no lane to discard".to_owned()))?;
         let branch = lane.branch().to_string();
-        let lost = lane.discard()?;
+        let lost = lane.discard()?.discarded();
         self.set_landing(Landing::Unlanded);
         Ok(format!("discarded {branch}{lost}; the transcript is kept"))
     }
 
     /// Incident: `process::exit` skips destructors, so the CLI calls this first.
-    pub fn release(&self) -> Result<(), LaneError> {
+    pub fn release(&self) -> Result<Option<String>, LaneError> {
         let lane = self
             .lane
             .lock()
             .map_err(|_| LaneError::Forge("lane state poisoned".to_owned()))?
             .take();
-        match lane {
-            Some(lane) => lane.release(),
-            None => Ok(()),
-        }
+        let Some(lane) = lane else {
+            return Ok(None);
+        };
+        let (slot, path) = (lane.slot(), tilde(lane.path()));
+        let kept = lane.release()?;
+        Ok((!kept.is_empty()).then(|| {
+            format!("lane {slot} kept: {kept} in {path}; `yi lanes reap {slot}` discards them")
+        }))
     }
 
     pub fn bind_session(&self, session: &str) -> Result<(), LaneError> {
