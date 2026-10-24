@@ -1860,13 +1860,12 @@ fn recorded_result(bytes: usize) -> Result<yi_types::message::AgentMessage, Box<
     Ok(serde_json::from_value(result)?)
 }
 
-type ReplayLine = (usize, u64, u64);
+type ReplayLine = (usize, u64, u64, Option<String>);
 
-/// Appends `count` copies of `message` to a closed session, resumes it, and returns the entries
-/// held before and each `_yi/replay` line's length, `from` and `replayedTo`.
+/// Appends `messages` to a closed session, resumes it, and returns the entries held before and
+/// each `_yi/replay` line's length, `from`, `replayedTo` and session name.
 fn replay_lines(
-    count: usize,
-    message: &yi_types::message::AgentMessage,
+    messages: &[yi_types::message::AgentMessage],
 ) -> Result<(u64, Vec<ReplayLine>), Box<dyn Error>> {
     use yi_runtime::session_store::{EntryQuery, JsonlRepo, SessionRepo, lock_session};
     let dir = temp_dir("replay-bytes")?;
@@ -1878,7 +1877,7 @@ fn replay_lines(
         let store = repo.open(&session_id)?;
         let mut session = lock_session(&store);
         let held = session.find_entries(&EntryQuery::default())?.len() as u64;
-        for _ in 0..count {
+        for message in messages {
             session.append_message("main", message.clone())?;
         }
         held
@@ -1898,7 +1897,8 @@ fn replay_lines(
         let update = &frame["params"]["update"];
         if update["sessionUpdate"] == "_yi/replay" {
             let at = |key: &str| update[key].as_u64().ok_or(format!("no {key}"));
-            frames.push((line.len(), at("from")?, at("replayedTo")?));
+            let name = update["name"].as_str().map(str::to_owned);
+            frames.push((line.len(), at("from")?, at("replayedTo")?, name));
         }
     }
     client.finish()?;
@@ -1911,14 +1911,52 @@ fn replay_lines(
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_session_of_large_tool_results_replays_in_frames_a_reader_can_hold() -> TestResult {
     const READER_CAP: usize = 32 * 1024 * 1024;
-    let (held, frames) = replay_lines(512, &recorded_result(64 * 1024)?)?;
+    let results: Vec<_> = std::iter::repeat_n(recorded_result(64 * 1024)?, 512).collect();
+    let (held, frames) = replay_lines(&results)?;
     let mut next = 0;
-    for (bytes, from, to) in frames {
+    for (bytes, from, to, _) in frames {
         assert!(bytes < READER_CAP, "a {bytes}-byte replay frame");
         assert_eq!(from, next, "frames are contiguous");
         next = to;
     }
     assert_eq!(next, held + 512, "every entry arrives");
+    Ok(())
+}
+
+fn user_text(text: &str) -> yi_types::message::AgentMessage {
+    use yi_types::message::{AgentMessage, Content, UserContent};
+    let text = text.to_owned();
+    let block = Content::Text {
+        text,
+        text_signature: None,
+    };
+    AgentMessage::user_input(UserContent::Blocks(vec![block]), 1)
+}
+
+/// Resume cuts past 8 MiB as well as past 512 entries: 144 recorded 64 KiB results, about
+/// 9 MiB, arrive in frames under the budget, each naming the session by its first ask.
+#[test]
+fn a_resume_past_the_byte_budget_replays_in_frames_under_it() -> TestResult {
+    use yi_acp::replay::REPLAY_BYTES;
+    let mut messages = vec![user_text("first ask"), user_text("second ask")];
+    messages.extend(std::iter::repeat_n(recorded_result(64 * 1024)?, 144));
+    let (held, frames) = replay_lines(&messages)?;
+    assert!(frames.len() >= 2, "{} replay frames", frames.len());
+    let mut next = 0;
+    for (bytes, from, to, name) in frames {
+        assert!(
+            bytes < REPLAY_BYTES + 64 * 1024,
+            "a {bytes}-byte replay frame"
+        );
+        assert_eq!(from, next, "frames are contiguous");
+        assert_eq!(
+            name.as_deref(),
+            Some("first ask"),
+            "named by the oldest ask"
+        );
+        next = to;
+    }
+    assert_eq!(next, held + messages.len() as u64, "every entry arrives");
     Ok(())
 }
 
@@ -1933,17 +1971,18 @@ fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
     let new = client.request(
         "2",
         "session/new",
-        json!({"cwd": dir.display().to_string(), "mcpServers": servers}),
+        json!({"cwd": dir.display().to_string(), "mcpServers": servers.clone()}),
     )?;
+    let unread = json!(
+        "[…] 0 of 1 mcpServers attached: this agent does not take MCP servers over ACP; set \
+         mcp.enabled in ~/.yi/config.json and list them in ~/.yi/mcp.json"
+    );
     let notice = updates_of(&new, "_yi/notice");
     assert_eq!(
         notice
             .first()
             .map(|frame| &frame["params"]["update"]["text"]),
-        Some(&json!(
-            "[…] 0 of 1 mcpServers attached: this agent does not take MCP servers \
-                     over ACP; list them in .mcp.json or ~/.yi/mcp.json"
-        )),
+        Some(&unread),
         "{new:?}"
     );
     let session_id = new
@@ -1958,6 +1997,8 @@ fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
         json!([
             {"type": "text", "text": "what is in this screenshot?"},
             {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="},
+            {"type": "text"},
+            {"type": "resource_link", "name": "a.py"},
         ]),
     )?;
     let frames = read_allowing(&mut client, is_idle)?;
@@ -1967,11 +2008,25 @@ fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
             .first()
             .map(|frame| &frame["params"]["update"]["content"][0]["text"]),
         Some(&json!(
-            "what is in this screenshot?\n[…] prompt block 2 of 2 (image) was \
+            "what is in this screenshot?\n[…] prompt block 2 of 4 (image) was \
                      dropped: this agent reads text and resource_link blocks; send the file \
-                     as a resource_link"
+                     as a resource_link\n[…] prompt block 3 of 4 (text) was dropped: it has \
+                     no text field\n[…] prompt block 4 of 4 (resource_link) was dropped: it \
+                     has no uri field"
         )),
         "{frames:?}"
+    );
+    let resumed = client.request(
+        "4",
+        "session/resume",
+        json!({"sessionId": session_id, "mcpServers": servers}),
+    )?;
+    let notices = updates_of(&resumed, "_yi/notice");
+    assert!(
+        notices
+            .iter()
+            .any(|frame| frame["params"]["update"]["text"] == unread),
+        "a resume names its mcpServers too: {resumed:?}"
     );
     client.finish()
 }
