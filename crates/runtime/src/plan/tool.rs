@@ -800,12 +800,7 @@ impl Tool for PlanTool {
     }
 
     fn arms(&self, input: &Map<String, Value>) -> Vec<String> {
-        input
-            .get("on")
-            .and_then(|on| serde_json::from_value::<BlockedOn>(on.clone()).ok())
-            .and_then(|on| crate::schedule::clock::armed_command(&on))
-            .into_iter()
-            .collect()
+        super::request::armed(input)
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {

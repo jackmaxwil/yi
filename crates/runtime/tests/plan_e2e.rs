@@ -427,6 +427,7 @@ async fn a_child_may_submit_only_for_its_own_attempt() -> TestResult {
     yi_runtime::plan::request::register(
         Arc::clone(&engine),
         Actor::Child(yi_types::plan::doc::AgentId::new("cut")?),
+        None,
         &mut registry,
     );
     let submit = |request: &str, label: &str, attempt: u32| {
@@ -503,6 +504,7 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
     yi_runtime::plan::request::register(
         Arc::clone(&engine),
         Actor::Child(yi_types::plan::doc::AgentId::new("cut")?),
+        None,
         &mut registry,
     );
     let product = "{\"passed\":12}";
@@ -600,7 +602,12 @@ async fn a_child_named_main_is_not_the_owner_of_an_inline_todo() -> TestResult {
     let id = PlanId::slug("ship the seam end to end")?;
     let mut registry = HostRegistry::default();
     let main = yi_types::plan::doc::AgentId::new("main")?;
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Child(main), &mut registry);
+    yi_runtime::plan::request::register(
+        Arc::clone(&engine),
+        Actor::Child(main),
+        None,
+        &mut registry,
+    );
     let product = "{\"forged\":true}";
     let digest = yi_types::plan::canonical::Digest::of(product.as_bytes());
     let url = format!("plan://{id}/artifacts/{}", digest.hex());
@@ -648,6 +655,7 @@ async fn a_child_kernels_plan_op_is_refused_beyond_view() -> TestResult {
     yi_runtime::plan::request::register(
         engine,
         Actor::Child(yi_types::plan::doc::AgentId::new("helper")?),
+        None,
         &mut registry,
     );
     let viewed = plan_op(
@@ -753,7 +761,7 @@ async fn a_reused_request_id_is_refused_by_the_journal_and_a_bad_one_by_the_pars
         Arc::new(NoChildren),
     ));
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(engine, Actor::Owner, None, &mut registry);
     let first = plan_op(
         &registry,
         serde_json::json!({"request_id": "dup", "op": "append", "args": {"todos": [{"label": "one"}]}}),
@@ -808,7 +816,7 @@ async fn expected_revision_is_compared_on_the_plan_the_op_names() -> TestResult 
         Arc::new(NoChildren),
     ));
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(engine, Actor::Owner, None, &mut registry);
     let append = serde_json::json!({"plan": "beta", "todos": [{"label": "cut"}]});
     let stale = plan_op(
         &registry,
@@ -853,7 +861,7 @@ async fn a_shape_cannot_retry_a_done_or_drop_a_running_todo() -> TestResult {
             .with_width(std::num::NonZeroUsize::MIN.saturating_add(1)),
     );
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
     let op = |request: &str, op: &str, label: &str| serde_json::json!({"request_id": request, "op": op, "args": {"label": label}});
     let init = serde_json::json!({"request_id": "i", "op": "init", "args": {
         "goal": "fork and join", "todos": [{"label": "finished"}, {"label": "busy"}]}});

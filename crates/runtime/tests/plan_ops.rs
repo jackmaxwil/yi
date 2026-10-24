@@ -2470,7 +2470,12 @@ mod contracts {
         assert_eq!(verdict.outcome, VerdictOutcome::Fail);
         // 2. plan.op: a set asking for done is refused by the same validator.
         let mut registry = HostRegistry::default();
-        yi_runtime::plan::request::register(Arc::clone(&rig.engine), Actor::Owner, &mut registry);
+        yi_runtime::plan::request::register(
+            Arc::clone(&rig.engine),
+            Actor::Owner,
+            None,
+            &mut registry,
+        );
         let mut payload = Map::new();
         payload.insert(
             "request_id".to_owned(),
