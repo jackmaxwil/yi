@@ -501,7 +501,8 @@ pub struct HeartbeatService {
     gate: Option<std::sync::Arc<GateFn>>,
     /// Bound to a store every session of this process shares, so a halt reaches them all.
     interned: bool,
-    /// Invariant: held from wiring until the lane is in, so a sibling leaving cannot stop the timer.
+    /// Invariant: held from wiring, and across a rebind, until the lane is in, so a sibling
+    /// leaving cannot stop the timer.
     wiring: std::sync::Mutex<Option<std::sync::Arc<shared::SharedSchedule>>>,
 }
 
@@ -599,6 +600,9 @@ impl HeartbeatService {
             .session_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hold = lock_or_poisoned(&self.wiring)
+            .take()
+            .or_else(|| shared::held(&self.store()));
         if *bound != session_id {
             self.withdraw(bound.as_str());
         }
@@ -620,7 +624,7 @@ impl HeartbeatService {
                 None
             }
         };
-        lock_or_poisoned(&self.wiring).take();
+        drop(hold);
         left.iter().for_each(shared::release);
         *bound = session_id;
     }

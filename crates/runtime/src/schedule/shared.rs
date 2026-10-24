@@ -457,6 +457,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_wired_session_that_never_binds_still_releases_the_timer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-unbound-wired")?;
+        let a = wired(&dir.join("scheduled-jobs.json"), ran());
+        let store = Arc::downgrade(&a.store());
+
+        drop(a);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.upgrade().is_some() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            store.upgrade().is_none(),
+            "a session whose attach failed after wiring left its timer interned"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_sibling_still_bound_keeps_the_timer_and_it_still_delivers()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = Scratch::new("yi-hub-sibling")?;
