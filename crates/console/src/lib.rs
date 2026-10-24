@@ -63,6 +63,7 @@ pub struct ConsoleOptions {
     pub pace: u16,
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
+    pub home: Option<String>,
 }
 
 pub struct DriveOptions {
@@ -832,6 +833,7 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
+    app.state.home.clone_from(&options.home);
     app.state.chrome =
         crate::browser::Chrome::new(options.browser.clone(), options.chrome_pin.clone());
 }

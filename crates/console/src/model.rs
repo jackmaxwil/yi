@@ -449,6 +449,7 @@ pub struct ConsoleState {
     pub parked: BTreeMap<SessionId, Box<Chat>>,
     pub chrome: crate::browser::Chrome,
     pub browser_placed: BTreeMap<PaneId, crate::placed::Placed>,
+    pub home: Option<String>,
 }
 
 impl ConsoleState {
@@ -494,6 +495,7 @@ impl ConsoleState {
             parked: BTreeMap::new(),
             chrome: crate::browser::Chrome::default(),
             browser_placed: BTreeMap::new(),
+            home: None,
             quit: false,
         }
     }
