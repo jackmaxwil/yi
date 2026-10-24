@@ -118,6 +118,16 @@ fn ledger_path(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("ledger.json")
 }
 
+/// Workers write stderr here, beside the socket, where /dev/null kept a worker's dying words.
+fn worker_log(socket: &std::path::Path) -> Stdio {
+    let path = socket.with_extension("worker.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path);
+    log.map_or_else(|_| Stdio::null(), Stdio::from)
+}
+
 /// Invariant: the ledger is written whole through a rename (D118), so a reader sees one
 /// version or none; the read is bounded because the file is a peer's to grow.
 const LEDGER_MAX_BYTES: u64 = 1 << 20;
@@ -292,7 +302,7 @@ impl Supervisor {
             .args(&self.options.worker_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(worker_log(&self.options.socket));
         let mut child = command.spawn().map_err(|error| error.to_string())?;
         let stdin = child.stdin.take().ok_or("worker has no stdin")?;
         let stdout = child.stdout.take().ok_or("worker has no stdout")?;

@@ -6,6 +6,7 @@ pub mod cells;
 pub mod daemon;
 mod fork;
 mod forward;
+pub mod replay;
 pub mod review;
 pub mod update;
 
@@ -18,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use tokio::task::{JoinHandle, JoinSet};
 use yi_runtime::session_store::{
-    CreateOptions, EntryOrder, EntryQuery, JsonlRepo, SessionRepo, SharedSession, lock_session,
+    CreateOptions, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
 use yi_runtime::{AgentSession, AskOutcome, Asker, SubagentHost, available_models, resolve_model};
 use yi_types::acp::{
@@ -33,10 +34,7 @@ use yi_types::permission::{choices, chosen};
 use yi_types::subagent::ChildId;
 
 use crate::forward::{Forward, Parent, forward_parent, session_name};
-use crate::update::{
-    IdMap, PendingPrompt, PendingPrompts, ReplayFrame, extension, replay_update, replay_updates,
-    update_notification,
-};
+use crate::update::{IdMap, PendingPrompt, PendingPrompts, extension, update_notification};
 
 pub const PROTOCOL_VERSION: u16 = 2;
 pub const VERSION_MISMATCH_ERROR: &str =
@@ -53,8 +51,6 @@ pub type SessionBuilder = Arc<
         + Send
         + Sync,
 >;
-
-const REPLAY_CHUNK: usize = 512;
 
 /// Line sink for outgoing frames; injectable so the permission bridge and
 /// mappers are testable without a real stdout.
@@ -288,31 +284,6 @@ fn options_for(
     ]
 }
 
-fn prompt_text(params: &Value) -> String {
-    let blocks = params.get("prompt").and_then(Value::as_array);
-    blocks
-        .into_iter()
-        .flatten()
-        .fold(String::new(), |mut text, block| {
-            let field = |key| block.get(key).and_then(Value::as_str);
-            match (
-                block.get("type").and_then(Value::as_str),
-                field("text"),
-                field("uri"),
-            ) {
-                (Some("text"), Some(part), _) => text.push_str(part),
-                (Some("resource_link"), _, Some(uri)) => {
-                    if !text.is_empty() && !text.ends_with(char::is_whitespace) {
-                        text.push(' ');
-                    }
-                    text.push_str(uri);
-                }
-                _ => {}
-            }
-            text
-        })
-}
-
 impl AcpState {
     fn attach(&mut self, store: &SharedSession) -> Result<String, String> {
         let session_id = lock_session(store).metadata().id.clone();
@@ -476,7 +447,7 @@ impl AcpState {
             Ok(found) => found,
             Err(refused) => return Some(Err(refused)),
         };
-        let text = prompt_text(params);
+        let text = crate::replay::prompt_text(params);
         crate::update::queued(&handle.prompts).push(PendingPrompt {
             text: text.clone(),
             message_id,
@@ -609,6 +580,7 @@ impl AcpState {
                     let session_id = self
                         .attach(&store)
                         .map_err(|error| (INTERNAL_ERROR, error))?;
+                    self.emit_servers_notice(&session_id, params);
                     return Ok(json!(self.session_result(&session_id)));
                 };
                 let options = options_for(
@@ -617,6 +589,7 @@ impl AcpState {
                     mode_value(Some(defaults.mode)),
                 );
                 let session_id = self.attach_later(&store);
+                self.emit_servers_notice(&session_id, params);
                 let mut result = self.session_result(&session_id);
                 result.config_options = options;
                 Ok(json!(result))
@@ -666,6 +639,7 @@ impl AcpState {
                         store
                     }
                 };
+                self.emit_servers_notice(&id, params);
                 let mut result = self.session_result(&id);
                 result.session_id = None;
                 // v2 clients send `{"type": "start"}`; a bare number is the
@@ -941,118 +915,6 @@ impl AcpState {
             .map(|handle| handle.session.model().context_window)
             .or_else(|| (self.defaults)().map(|defaults| defaults.model.context_window))
             .unwrap_or(0)
-    }
-
-    fn emit_replay(
-        &self,
-        session_id: &str,
-        from: u64,
-        child: Option<&ChildId>,
-    ) -> Result<(), (i64, String)> {
-        let Some(handle) = self.sessions.get(session_id) else {
-            return Ok(());
-        };
-        let Some(store) = handle.session.store() else {
-            return Ok(());
-        };
-        let context_window = handle.session.model().context_window;
-        self.emit_replay_from(session_id, &store, from, context_window, child)
-            .map(|_| ())
-    }
-
-    fn emit_replay_from(
-        &self,
-        session_id: &str,
-        store: &SharedSession,
-        from: u64,
-        context_window: u64,
-        child: Option<&ChildId>,
-    ) -> Result<u64, (i64, String)> {
-        let mut span = yi_types::trace::span("acp.emit_replay");
-        let (entries, leaf, goal, stats) = {
-            let session = lock_session(store);
-            let entries = session
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
-            let leaf = session.leaf_id("main").ok().flatten();
-            (entries, leaf, session.goal(), session.stats())
-        };
-        let stats = child.is_none().then_some(&stats);
-        let todos = yi_runtime::todo::latest_record(store).map(|record| record.list);
-        let name = session_name(store);
-        let total = u64::try_from(entries.len()).unwrap_or(u64::MAX);
-        let skip = usize::try_from(from.min(total)).unwrap_or(usize::MAX);
-        let tail = entries.get(skip..).unwrap_or_default();
-        let mut sent = from.min(total);
-        span.set("entries", tail.len());
-        let mut chunks = tail.chunks(REPLAY_CHUNK).peekable();
-        while let Some(chunk) = chunks.next() {
-            let chunk_from = sent;
-            sent = sent.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            let last = chunks.peek().is_none();
-            let frame = ReplayFrame {
-                entries: chunk,
-                from: chunk_from,
-                replayed_to: sent,
-                leaf: if last { leaf.as_deref() } else { None },
-                name: name.as_deref(),
-                goal: goal.as_ref(),
-                todos: todos.as_ref(),
-                context_window,
-                child,
-                stats: stats.filter(|_| last),
-            };
-            (self.sink)(&update_notification(session_id, replay_update(&frame)));
-        }
-        if tail.is_empty() {
-            let frame = ReplayFrame {
-                entries: &[],
-                from: sent,
-                replayed_to: total,
-                leaf: leaf.as_deref(),
-                name: name.as_deref(),
-                goal: goal.as_ref(),
-                todos: todos.as_ref(),
-                context_window,
-                child,
-                stats,
-            };
-            (self.sink)(&update_notification(session_id, replay_update(&frame)));
-        }
-        Ok(total)
-    }
-
-    /// Design §17.2: the stored branch replayed as `session/update`s. `from` skips entries the
-    /// client holds (valid only if it saw nothing since); returns the next `replayedTo`.
-    fn replay(
-        &self,
-        session_id: &str,
-        store: &SharedSession,
-        from: u64,
-        context_window: u64,
-    ) -> Result<u64, (i64, String)> {
-        let mut span = yi_types::trace::span("acp.replay_updates");
-        let entries = lock_session(store)
-            .find_entries(&EntryQuery {
-                order: EntryOrder::OldestFirst,
-                ..EntryQuery::default()
-            })
-            .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
-        let total = u64::try_from(entries.len()).unwrap_or(u64::MAX);
-        let skip = usize::try_from(from.min(total)).unwrap_or(usize::MAX);
-        let tail = entries.get(skip..).unwrap_or_default();
-        let mut ids = IdMap::new(context_window);
-        let mut frames = 0_u64;
-        for updated in replay_updates(tail, &mut ids) {
-            frames = frames.saturating_add(1);
-            (self.sink)(&update_notification(session_id, updated));
-        }
-        span.set("entries", tail.len());
-        span.set("frames", frames);
-        Ok(total)
     }
 }
 
