@@ -1844,3 +1844,119 @@ fn why_answers_for_a_committed_edit_and_an_unknown_extension_is_not_found() -> T
     );
     client.finish()
 }
+
+/// The console reads at most 32 MiB a line and re-dials past it, so a long session's replay
+/// must arrive in frames under that cap; checked at the 512-entry limit and one entry past it.
+#[test]
+fn a_session_of_large_tool_results_replays_in_frames_a_reader_can_hold() -> TestResult {
+    const READER_CAP: usize = 32 * 1024 * 1024;
+    let dir = temp_dir("replay-bytes")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    client.request("3", "session/close", json!({"sessionId": session_id}))?;
+    let line = include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl")
+        .lines()
+        .find(|line| line.contains("\"role\":\"toolResult\""))
+        .ok_or("the fixture lost its tool result")?;
+    let mut result = serde_json::from_str::<Value>(line)?["message"].take();
+    let text = result["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    result["content"][0]["text"] = Value::String(text.repeat(64 * 1024 / text.len() + 1));
+    let result: yi_types::message::AgentMessage = serde_json::from_value(result)?;
+    let append = |count: u64| -> TestResult {
+        use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
+        let mut repo = JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
+        let store = repo.open(&session_id)?;
+        let mut session = lock_session(&store);
+        for _ in 0..count {
+            session.append_message("main", result.clone())?;
+        }
+        Ok(())
+    };
+    let mut held = None;
+    for (id, added) in ["4", "5", "6"].into_iter().zip([0, 512, 1]) {
+        append(added)?;
+        let frames = client.request(
+            id,
+            "session/resume",
+            json!({"sessionId": session_id, "replayFrom": 0, "_meta": {"yi": {"replayUpdates": false}}}),
+        )?;
+        let mut next = 0;
+        for frame in updates_of(&frames, "_yi/replay") {
+            let bytes = serde_json::to_vec(frame)?.len();
+            assert!(
+                bytes < READER_CAP,
+                "a {bytes}-byte replay frame after {added} more entries"
+            );
+            let update = &frame["params"]["update"];
+            assert_eq!(update["from"], next, "frames are contiguous");
+            next = update["replayedTo"].as_u64().ok_or("no replayedTo")?;
+        }
+        if let Some(held) = held {
+            assert_eq!(next, held + added, "every entry arrives");
+        }
+        held = Some(next);
+        client.request(
+            &format!("{id}c"),
+            "session/close",
+            json!({"sessionId": session_id}),
+        )?;
+    }
+    client.finish()
+}
+
+/// What the request carried that this agent does not read is named where the user and the
+/// model see it: an image block as a row in the prompt, MCP servers in the first notice.
+#[test]
+fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
+    let dir = temp_dir("dropped")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let servers = json!([{"name": "fs", "command": "mcp-fs", "args": [], "env": []}]);
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string(), "mcpServers": servers}),
+    )?;
+    let notice = updates_of(&new, "_yi/notice");
+    assert_eq!(
+        notice
+            .first()
+            .map(|frame| &frame["params"]["update"]["text"]),
+        Some(&json!(
+            "[…] 0 of 1 mcpServers attached: this agent does not take MCP servers \
+                     over ACP; list them in .mcp.json or ~/.yi/mcp.json"
+        )),
+        "{new:?}"
+    );
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    prompt(
+        &mut client,
+        "3",
+        &session_id,
+        json!([
+            {"type": "text", "text": "what is in this screenshot?"},
+            {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="},
+        ]),
+    )?;
+    let frames = read_allowing(&mut client, is_idle)?;
+    let inserted = updates_of(&frames, "user_message");
+    assert_eq!(
+        inserted
+            .first()
+            .map(|frame| &frame["params"]["update"]["content"][0]["text"]),
+        Some(&json!(
+            "what is in this screenshot?\n[…] prompt block 2 of 2 (image) was \
+                     dropped: this agent reads text and resource_link blocks; send the file \
+                     as a resource_link"
+        )),
+        "{frames:?}"
+    );
+    client.finish()
+}
