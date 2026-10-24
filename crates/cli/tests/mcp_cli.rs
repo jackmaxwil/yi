@@ -154,6 +154,66 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
     Ok(())
 }
 
+/// Dies with `connect` printing the server's whole tool catalog, schemas and all, to a model that
+/// only asked to connect: the row now names the call that lists them, and that call works.
+#[test]
+fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestResult {
+    let home = mcp_home()?;
+    let connect = yi_mcp(&home, &["connect", "fixture", "@s"])?;
+    assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
+    assert_eq!(
+        connect.stdout.trim(),
+        "@s live · yi-fixture\n[…] 2 tools not printed · list them: yi mcp @s tools-list"
+    );
+    let call = connect.stdout.trim().rsplit_once("list them: yi mcp ");
+    let args: Vec<&str> = call.ok_or("no call named")?.1.split_whitespace().collect();
+    let listed = yi_mcp(&home, &args)?;
+    assert_eq!(listed.code, 0, "stderr: {}", listed.stderr);
+    for needle in ["\"echo\"", "\"add\"", "inputSchema"] {
+        assert!(
+            listed.stdout.contains(needle),
+            "{needle}: {}",
+            listed.stdout
+        );
+    }
+    let kernel = yi_mcp(&home, &["connect", "fixture", "@k", "--json"])?;
+    let document: serde_json::Value = serde_json::from_str(kernel.stdout.trim())?;
+    assert_eq!(
+        document["server"]["tools"].as_array().map(Vec::len),
+        Some(2)
+    );
+    Ok(())
+}
+
+/// Dies with a one-word mistake printing 1,521 bytes of help: the error stays one line and names
+/// the call that prints the rest.
+#[test]
+fn a_bad_flag_prints_one_line_and_the_named_help_call_prints_the_help() -> TestResult {
+    let home = mcp_home()?;
+    let bad = yi_mcp(&home, &["connect", "fixture", "--bogus"])?;
+    assert_eq!(bad.code, 2);
+    assert_eq!(
+        bad.stderr.trim(),
+        "error: unknown option --bogus · run: yi mcp help"
+    );
+    assert!(
+        bad.stderr.len() < 200,
+        "{} B: {}",
+        bad.stderr.len(),
+        bad.stderr
+    );
+    assert!(bad.stdout.is_empty(), "{}", bad.stdout);
+    let help = yi_mcp(&home, &["help"])?;
+    assert_eq!(help.code, 0);
+    assert!(
+        help.stdout
+            .contains("Exit codes: 0 ok, 1 grep-no-match, 2 usage, 3 server failure"),
+        "{}",
+        help.stdout
+    );
+    Ok(())
+}
+
 #[test]
 fn schema_snapshot_flags_breaking_changes() -> TestResult {
     let home = mcp_home()?;
