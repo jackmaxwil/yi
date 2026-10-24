@@ -2376,14 +2376,11 @@ mod accept {
     }
 }
 
-/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
-/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
-#[tokio::test]
-async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
-    let rig = Rig::new("repossess")?;
-    let store = support::memory_store("lanes-repossess");
-    let hold = Some("echo unsaved > draft.txt; sleep 30");
-    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, hold);
+/// A child named `writer` in a worktree of the rig's repository, run on `hold`, once its
+/// `draft.txt` is on disk.
+async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dyn Error>> {
+    let store = support::memory_store("lanes-writer");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, Some(hold));
     let mut asked = serde_json::Map::new();
     asked.insert("name".to_owned(), "writer".into());
     asked.insert("role".to_owned(), "root".into());
@@ -2396,6 +2393,95 @@ async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
         }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
+    Ok(family)
+}
+
+/// A `name` hook in the rig's repository that sleeps two seconds the first time git runs it
+/// and leaves `hook-ran` behind.
+fn slow_hook(rig: &Rig, name: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let mark = rig.root.join("hook-ran");
+    let hook = rig.repo.join(".git/hooks").join(name);
+    let script = format!(
+        "#!/bin/sh\n[ -e '{0}' ] && exit 0\n: > '{0}'\nsleep 2\n",
+        mark.display()
+    );
+    std::fs::write(&hook, script)?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// Runs `work` on this current-thread runtime and asks `rlm.status` every 20 ms meanwhile:
+/// the executor must keep answering, where a git inside the handler holds it for seconds.
+async fn served_while<T: Send + 'static>(
+    family: &support::Family,
+    work: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, Box<dyn Error>> {
+    use yi_kernel::client::HostHandlers;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let job = tokio::spawn(work);
+    let (mut polls, mut slowest) = (0, std::time::Duration::ZERO);
+    while !job.is_finished() {
+        let asked = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let status = registry.dispatch("rlm.status", serde_json::Map::new());
+        status.ok_or("rlm.status")?.await?;
+        slowest = slowest.max(asked.elapsed());
+        polls += 1;
+    }
+    assert!(
+        polls >= 10 && slowest < std::time::Duration::from_millis(200),
+        "{polls} status polls ran while the git worked, the slowest after {slowest:?}"
+    );
+    Ok(job.await?)
+}
+
+/// Incident: the hand-back's git ran inside the async handler, so one slow hook held the
+/// session's one-thread runtime and every other host call waited behind it.
+#[tokio::test]
+async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    for (method, hook) in [
+        ("rlm.merge_worktree", "post-merge"),
+        ("rlm.discard_worktree", "pre-commit"),
+    ] {
+        let rig = Rig::new(hook)?;
+        slow_hook(&rig, hook)?;
+        let family = writer(&rig, "echo unsaved > draft.txt").await?;
+        assert!(family.reaches("writer", "finished").await);
+        let mut registry = yi_runtime::HostRegistry::default();
+        family.host.register(&mut registry);
+        let target = serde_json::json!({"target": "writer"});
+        let asked = target.as_object().cloned().unwrap_or_default();
+        let handing = registry.dispatch(method, asked).ok_or(method)?;
+        let reply = served_while(&family, handing).await??;
+        assert!(rig.root.join("hook-ran").exists(), "{method}: {reply:?}");
+        assert_eq!(reply["merged"], method == "rlm.merge_worktree");
+    }
+    Ok(())
+}
+
+/// Incident: the same, for a repossession's lane settle at lease expiry.
+#[tokio::test]
+async fn a_lease_expiry_leaves_the_executor_free() -> TestResult {
+    let rig = Rig::new("expiry")?;
+    slow_hook(&rig, "pre-commit")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
+    family.host.revoke("writer", 0, "scope changed")?;
+    let host = std::sync::Arc::clone(&family.host);
+    let expired = served_while(&family, async move { host.expire().await }).await?;
+    assert_eq!(expired, ["writer"]);
+    assert!(rig.root.join("hook-ran").exists());
+    Ok(())
+}
+
+/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
+/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
+#[tokio::test]
+async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
+    let rig = Rig::new("repossess")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
     family.host.revoke("writer", 0, "scope changed")?;
     assert_eq!(family.host.expire().await, ["writer"]);
     let journal = family.journal();
