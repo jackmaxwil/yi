@@ -1451,6 +1451,121 @@ fn version_prints_the_architecture_version() -> TestResult {
     Ok(())
 }
 
+/// The verbs and flags `yi --help` prints: two-space rows under `verbs:` and `flags:`.
+fn help_table(help: &str) -> (Vec<String>, Vec<String>) {
+    let (verbs, flags) = help.split_once("\nflags:\n").unwrap_or((help, ""));
+    let first = |rows: &str| -> Vec<String> {
+        rows.lines()
+            .filter_map(|row| row.strip_prefix("  "))
+            .filter_map(|row| row.split_whitespace().next())
+            .map(str::to_owned)
+            .collect()
+    };
+    (
+        first(verbs.split_once("verbs:\n").map_or("", |(_, rows)| rows)),
+        first(flags),
+    )
+}
+
+#[test]
+fn help_prints_the_command_table_and_an_unknown_flag_still_exits_two() -> TestResult {
+    let workspace = Workspace::new("help")?;
+    let help = workspace.yi(&["--help"])?;
+    assert_eq!(
+        help.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    for spelling in ["-h", "help"] {
+        let again = workspace.yi(&[spelling])?;
+        assert_eq!(again.status.code(), Some(0));
+        assert_eq!(stdout(&again), stdout(&help), "{spelling}");
+    }
+    let (verbs, flags) = help_table(&stdout(&help));
+    for named in [
+        "ask", "sessions", "undo", "doctor", "update", "login", "mcp",
+    ] {
+        assert!(
+            verbs.iter().any(|verb| verb == named),
+            "{named} in {verbs:?}"
+        );
+    }
+    assert!(flags.iter().any(|flag| flag == "--help"), "{flags:?}");
+    let asked = workspace.yi(&["--model", "faux/faux-1", "help", "me", "debug"])?;
+    assert_eq!(stdout(&asked).trim(), "faux: help me debug");
+    let bogus = workspace.yi(&["--bogus"])?;
+    assert_eq!(bogus.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&bogus.stderr).trim(),
+        "error: invalid option '--bogus'"
+    );
+    Ok(())
+}
+
+/// The packaged completion files are written by hand; `yi --help` is the table dispatch reads.
+#[test]
+fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult {
+    use std::collections::BTreeSet;
+    let workspace = Workspace::new("completions")?;
+    let (verbs, flags) = help_table(&stdout(&workspace.yi(&["--help"])?));
+    let want: (BTreeSet<String>, BTreeSet<String>) =
+        (verbs.into_iter().collect(), flags.into_iter().collect());
+    let read = |name: &str| {
+        std::fs::read_to_string(format!(
+            "{}/../../completions/yi.{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+    };
+    let quoted = |text: &str, key: &str| -> BTreeSet<String> {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix(key))
+            .and_then(|rest| rest.strip_prefix("='"))
+            .and_then(|rest| rest.strip_suffix('\''))
+            .map(|words| words.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default()
+    };
+    let bash = read("bash")?;
+    let bash = (
+        quoted(&bash, "local commands"),
+        quoted(&bash, "local flags"),
+    );
+    let zsh = read("zsh")?;
+    let block = |open: &str| -> BTreeSet<String> {
+        zsh.split_once(open)
+            .and_then(|(_, rest)| rest.split_once("\n    )"))
+            .map(|(rows, _)| {
+                rows.lines()
+                    .filter_map(|row| row.trim().strip_prefix('\''))
+                    .filter_map(|row| row.split([':', '[', '\'']).next())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let zsh = (block("commands=(\n"), block("flags=(\n"));
+    let fish = read("fish")?;
+    let after = |key: &str| -> BTreeSet<String> {
+        fish.lines()
+            .filter_map(|line| line.split_once(key))
+            .filter_map(|(_, rest)| rest.split_whitespace().next())
+            .map(str::to_owned)
+            .collect()
+    };
+    let fish = (
+        after("__fish_use_subcommand -a "),
+        after("complete -c yi -l ")
+            .into_iter()
+            .map(|flag| format!("--{flag}"))
+            .collect(),
+    );
+    for (shell, offered) in [("bash", bash), ("zsh", zsh), ("fish", fish)] {
+        assert_eq!(offered.0, want.0, "{shell} verbs");
+        assert_eq!(offered.1, want.1, "{shell} flags");
+    }
+    Ok(())
+}
+
 /// A headless drive is a harness: it claims no lane in a repository unless told `--lanes`,
 /// so a run its harness kills leaves no orphan behind.
 #[test]

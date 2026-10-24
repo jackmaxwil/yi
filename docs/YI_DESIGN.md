@@ -915,7 +915,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 
 ## 17. Surfaces
 ### 17.1 CLI
-`yi` is the binary of `yi-cli`. Arguments are hand-parsed with `lexopt`; there is no `--help`.
+`yi` is the binary of `yi-cli`. Arguments are hand-parsed with `lexopt` against one table of verbs and flags ([`commands.rs`](../crates/cli/src/commands.rs)): dispatch routes by it, the parser refuses a flag it lacks, `yi --help`, `-h` and a bare `yi help` print it and exit 0, and the shipped completions are checked against it.
 
 | Verb | What |
 |---|---|

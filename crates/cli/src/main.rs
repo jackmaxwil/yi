@@ -4,6 +4,7 @@
 mod args;
 mod ask;
 mod catalog;
+mod commands;
 mod debug;
 mod doctor;
 mod fetch;
@@ -28,7 +29,7 @@ use std::sync::Arc;
 use yi_types::config::{DEFAULT_MAX_DEPTH, RlmConfig};
 
 use args::{Args, Resume, parse_args};
-use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
+use lanes::{claim_lane, configured_lanes, release_lane};
 use user_config::{
     config, configured_auto_background, configured_roles, home, load_config, refreshed,
     reload_config,
@@ -405,13 +406,14 @@ fn run_yi_mcp(args: &[&str]) -> Result<String, String> {
 }
 
 /// A preview unless `--fix`, as `yi doctor` is: deleting is the act the user asks for.
-fn run_gc(fix: bool) {
-    if !fix {
+fn run_gc(args: &Args) -> i32 {
+    if !args.fix {
         println!("preview: `yi gc --fix` removes and trims what these lines count");
     }
-    for report in yi_runtime::retention::sweep(home(), !fix) {
+    for report in yi_runtime::retention::sweep(home(), !args.fix) {
         println!("{report}");
     }
+    0
 }
 
 fn run_why(args: &Args) -> i32 {
@@ -793,137 +795,132 @@ fn main() {
             std::process::exit(2);
         }
     };
-    dispatch(args);
+    std::process::exit(dispatch(args));
 }
 
-fn dispatch(args: Args) {
-    let version = env!("ARCHITECTURE_VERSION");
-    match args.command.as_str() {
-        "version" => println!("yi {version}"),
-        "ask" => {
-            if args.prompt.is_empty() {
-                eprintln!(
-                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->"
-                );
-                std::process::exit(2);
-            }
-            std::process::exit(ask::run(&args));
-        }
-        "rpc" => {
-            let runtime = match current_thread() {
-                Ok(runtime) => runtime,
-                Err(code) => std::process::exit(code),
-            };
-            let session = {
-                let _guard = runtime.enter();
-                match build_session(&args, None, None, false, false) {
-                    Ok((session, _host)) => session,
-                    Err(refused) => std::process::exit(exit_refused(refused)),
-                }
-            };
-            let options = rpc::RpcOptions {
-                session_dir: default_session_dir(&args),
-                cwd: effective_cwd(&args),
-            };
-            let lane = session.lane();
-            let code = rpc::run_rpc(session, &options, runtime);
-            release_lane(lane.as_deref());
-            std::process::exit(code);
-        }
-        "acp" => {
-            let runtime = match current_thread() {
-                Ok(runtime) => runtime,
-                Err(code) => std::process::exit(code),
-            };
-            let build_args = args.clone();
-            let defaults_args = args.clone();
-            let build: yi_acp::SessionBuilder = {
-                let runtime_handle = runtime.handle().clone();
-                std::sync::Arc::new(move |asker, session| {
-                    let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker, session, false, false)
-                        .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
-                })
-            };
-            let options = yi_acp::AcpOptions {
-                session_dir: default_session_dir(&args),
-                cwd: effective_cwd(&args),
-                build,
-                agent_version: version.to_owned(),
-                defaults: std::sync::Arc::new(move || {
-                    reload_config();
-                    let args = refreshed(&defaults_args);
-                    resolve(&args.model).map(|model| yi_acp::SessionDefaults {
-                        model,
-                        effort: args.thinking.unwrap_or_default(),
-                        mode: args.mode,
-                    })
-                }),
-            };
-            std::process::exit(yi_acp::run_acp(options, runtime));
-        }
-        "undo" => std::process::exit(run_undo(&args)),
-        "lanes" => std::process::exit(run_lanes(&args)),
-        "trust" => std::process::exit(run_trust(&args)),
-        "gate" => std::process::exit(run_gate(&args)),
-        "fetch" => std::process::exit(fetch::run(&args)),
-        "catalog" => std::process::exit(catalog::run(&args)),
-        "doctor" => std::process::exit(doctor::run(&args)),
-        "gc" => run_gc(args.fix),
-        "debug" => std::process::exit(debug::run(&args)),
-        "why" => std::process::exit(run_why(&args)),
-        "plan" => std::process::exit(run_plan(&args)),
-        "todo" => std::process::exit(todo::run(&args)),
-        "memory" => std::process::exit(memory::run(&args)),
-        "sessions" => {
-            let options = sessions::Options {
-                session_dir: default_session_dir(&args),
-                cwd: effective_cwd(&args).display().to_string(),
-                json: args.json,
-            };
-            std::process::exit(sessions::run(&args.prompt, &options));
-        }
-        "stats" => {
-            let options = stats::Options {
-                session_dir: default_session_dir(&args),
-                cwd: effective_cwd(&args).display().to_string(),
-                json: args.json,
-                query: args.stats.clone(),
-            };
-            std::process::exit(stats::run(&args.prompt, &options));
-        }
-        "serve" => std::process::exit(run_serve_command(&args, version)),
-        "console" => std::process::exit(run_console_command(&args)),
-        "tui" => {
-            let prompt = (!args.prompt.is_empty()).then(|| args.prompt.clone());
-            std::process::exit(run_tui_command(&args, prompt));
-        }
-        "" => {
-            use std::io::IsTerminal;
-            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-                if args.solo {
-                    std::process::exit(run_tui_command(&args, None));
-                }
-                std::process::exit(run_console_command(&args));
-            }
-            println!(
-                "yi {version}: not a terminal; `yi ask <prompt>` answers once; `yi serve` / `yi rpc` / `yi acp` serve a program"
-            );
-        }
-        other => {
-            // §17.1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
-            use std::io::IsTerminal;
-            let mut full = other.to_owned();
-            if !args.prompt.is_empty() {
-                full.push(' ');
-                full.push_str(&args.prompt);
-            }
-            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-                std::process::exit(run_tui_command(&args, Some(full)));
-            }
-            let mut ask_args = args.clone();
-            ask_args.prompt = full;
-            std::process::exit(ask::run(&ask_args));
-        }
+fn dispatch(args: Args) -> i32 {
+    use std::io::IsTerminal;
+    if args.help || (args.command == "help" && args.prompt.is_empty()) {
+        print!("{}", commands::help());
+        return 0;
     }
+    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let word = match args.command.as_str() {
+        "" if !terminal => {
+            println!(
+                "yi {}: not a terminal; `yi ask <prompt>` answers once; `yi serve` / `yi rpc` / `yi acp` serve a program",
+                env!("ARCHITECTURE_VERSION")
+            );
+            return 0;
+        }
+        "" if args.solo => "tui",
+        "" => "console",
+        word => word,
+    };
+    if let Some(verb) = commands::find(word) {
+        return commands::run(verb, &args);
+    }
+    // §17.1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
+    let mut full = args.command.clone();
+    if !args.prompt.is_empty() {
+        full.push(' ');
+        full.push_str(&args.prompt);
+    }
+    if terminal {
+        return run_tui_command(&args, Some(full));
+    }
+    let mut ask_args = args.clone();
+    ask_args.prompt = full;
+    ask::run(&ask_args)
+}
+
+fn run_version(_: &Args) -> i32 {
+    println!("yi {}", env!("ARCHITECTURE_VERSION"));
+    0
+}
+
+fn run_ask(args: &Args) -> i32 {
+    if args.prompt.is_empty() {
+        eprintln!("usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->");
+        return 2;
+    }
+    ask::run(args)
+}
+
+fn run_rpc(args: &Args) -> i32 {
+    let runtime = match current_thread() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    let session = {
+        let _guard = runtime.enter();
+        match build_session(args, None, None, false, false) {
+            Ok((session, _host)) => session,
+            Err(refused) => return exit_refused(refused),
+        }
+    };
+    let options = rpc::RpcOptions {
+        session_dir: default_session_dir(args),
+        cwd: effective_cwd(args),
+    };
+    let lane = session.lane();
+    let code = rpc::run_rpc(session, &options, runtime);
+    release_lane(lane.as_deref());
+    code
+}
+
+fn run_acp(args: &Args) -> i32 {
+    let runtime = match current_thread() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    let build_args = args.clone();
+    let defaults_args = args.clone();
+    let build: yi_acp::SessionBuilder = {
+        let runtime_handle = runtime.handle().clone();
+        std::sync::Arc::new(move |asker, session| {
+            let _guard = runtime_handle.enter();
+            build_session(&build_args, asker, session, false, false)
+                .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
+        })
+    };
+    let options = yi_acp::AcpOptions {
+        session_dir: default_session_dir(args),
+        cwd: effective_cwd(args),
+        build,
+        agent_version: env!("ARCHITECTURE_VERSION").to_owned(),
+        defaults: std::sync::Arc::new(move || {
+            reload_config();
+            let args = refreshed(&defaults_args);
+            resolve(&args.model).map(|model| yi_acp::SessionDefaults {
+                model,
+                effort: args.thinking.unwrap_or_default(),
+                mode: args.mode,
+            })
+        }),
+    };
+    yi_acp::run_acp(options, runtime)
+}
+
+fn run_sessions(args: &Args) -> i32 {
+    let options = sessions::Options {
+        session_dir: default_session_dir(args),
+        cwd: effective_cwd(args).display().to_string(),
+        json: args.json,
+    };
+    sessions::run(&args.prompt, &options)
+}
+
+fn run_stats(args: &Args) -> i32 {
+    let options = stats::Options {
+        session_dir: default_session_dir(args),
+        cwd: effective_cwd(args).display().to_string(),
+        json: args.json,
+        query: args.stats.clone(),
+    };
+    stats::run(&args.prompt, &options)
+}
+
+fn run_tui(args: &Args) -> i32 {
+    run_tui_command(args, (!args.prompt.is_empty()).then(|| args.prompt.clone()))
 }

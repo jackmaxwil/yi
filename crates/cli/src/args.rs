@@ -5,6 +5,7 @@ use yi_types::model::{Effort, UnknownEffort};
 #[derive(Clone)]
 pub(crate) struct Args {
     pub(crate) command: String,
+    pub(crate) help: bool,
     pub(crate) model: String,
     pub(crate) system: String,
     pub(crate) thinking: Option<Effort>,
@@ -47,8 +48,15 @@ pub(crate) enum Resume {
 }
 
 pub(crate) fn parse_args() -> Result<Args, lexopt::Error> {
+    parse_from(std::env::args_os())
+}
+
+pub(super) fn parse_from(
+    argv: impl IntoIterator<Item = impl Into<std::ffi::OsString>>,
+) -> Result<Args, lexopt::Error> {
     use lexopt::prelude::*;
     let mut command = String::new();
+    let mut help = false;
     let mut model = None;
     let mut system = String::new();
     let mut thinking = None;
@@ -76,9 +84,15 @@ pub(crate) fn parse_args() -> Result<Args, lexopt::Error> {
     let mut schema = None;
     let mut stats_flags = stats::Flags::default();
     let mut prompt_parts: Vec<String> = Vec::new();
-    let mut parser = lexopt::Parser::from_env();
+    let mut parser = lexopt::Parser::from_iter(argv);
     while let Some(argument) = parser.next()? {
+        if let Long(name) = argument
+            && crate::commands::find_flag(name).is_none()
+        {
+            return Err(argument.unexpected());
+        }
         match argument {
+            Long("help") | Short('h') => help = true,
             Long("version") => command = "version".to_owned(),
             Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
@@ -128,33 +142,9 @@ pub(crate) fn parse_args() -> Result<Args, lexopt::Error> {
     // A drive is a harness: it claims no lane unless the scenario is about lanes.
     // A cassette run is a harness too: a claim would fetch origin (#943).
     let here = here || ((headless || faux.is_some()) && !lanes);
-    // Drive-only flags are silently inert outside the headless loop, which
-    // reads downstream as a capture that produced nothing.
-    if !headless
-        && let Some(flag) = [
-            ("--keys", keys.is_some()),
-            ("--frames", frames.is_some()),
-            ("--record", record.is_some()),
-            ("--snap", snap.is_some()),
-            ("--size", size.is_some()),
-        ]
-        .into_iter()
-        .find_map(|(name, present)| present.then_some(name))
-    {
-        return Err(lexopt::Error::Custom(
-            format!("{flag} needs --headless").into(),
-        ));
-    }
-    // The console, headless too, is a client of a daemon that never sees the cassette, and
-    // `yi serve` does not hand it to its workers (#943).
-    let daemon = matches!(command.as_str(), "console" | "serve") || (command.is_empty() && !solo);
-    if faux.is_some() && daemon {
-        return Err(lexopt::Error::Custom(
-            "--faux runs in-process only: use `yi tui`, `yi ask`, `yi rpc` or `yi --solo`".into(),
-        ));
-    }
-    Ok(Args {
+    let args = Args {
         command,
+        help,
         model_pinned: model.is_some(),
         model: model.or_else(configured_model).unwrap_or_default(),
         system,
@@ -187,7 +177,39 @@ pub(crate) fn parse_args() -> Result<Args, lexopt::Error> {
         schema,
         stats: stats_flags.typed()?,
         prompt: prompt_parts.join(" "),
-    })
+    };
+    inert_flags(&args)?;
+    Ok(args)
+}
+
+fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
+    // Drive-only flags are silently inert outside the headless loop, which
+    // reads downstream as a capture that produced nothing.
+    if !args.headless
+        && let Some(flag) = [
+            ("--keys", args.keys.is_some()),
+            ("--frames", args.frames.is_some()),
+            ("--record", args.record.is_some()),
+            ("--snap", args.snap.is_some()),
+            ("--size", args.size.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(name, present)| present.then_some(name))
+    {
+        return Err(lexopt::Error::Custom(
+            format!("{flag} needs --headless").into(),
+        ));
+    }
+    // The console, headless too, is a client of a daemon that never sees the cassette, and
+    // `yi serve` does not hand it to its workers (#943).
+    let daemon = matches!(args.command.as_str(), "console" | "serve")
+        || (args.command.is_empty() && !args.solo);
+    if args.faux.is_some() && daemon {
+        return Err(lexopt::Error::Custom(
+            "--faux runs in-process only: use `yi tui`, `yi ask`, `yi rpc` or `yi --solo`".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_effort(raw: &str) -> Result<Effort, lexopt::Error> {
