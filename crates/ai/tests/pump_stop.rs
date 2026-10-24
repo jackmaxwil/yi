@@ -15,6 +15,8 @@ fn an_abort_stops_the_provider_pump_at_the_next_event() -> Result<(), Box<dyn Er
         read += 1;
         if read == 3 {
             signal.fire();
+            // The next prompt opens a request while this pump is still blocked on its read.
+            signal.clear_cut();
         }
         Ok(true)
     })?;

@@ -526,6 +526,14 @@ fn a_mid_stream_error_chunk_names_the_upstream_and_the_code() -> TestResult {
 /// One HTTP/1.1 exchange on the loopback proxy: the request is read whole and `reply`
 /// answers it as a sized body.
 fn answer(listener: &TcpListener, content_type: &str, reply: &str) -> std::io::Result<()> {
+    write!(
+        accept_request(listener)?,
+        "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+        reply.len()
+    )
+}
+
+fn accept_request(listener: &TcpListener) -> std::io::Result<std::net::TcpStream> {
     let (stream, _) = listener.accept()?;
     let mut reader = BufReader::new(stream);
     let mut length = 0usize;
@@ -542,11 +550,7 @@ fn answer(listener: &TcpListener, content_type: &str, reply: &str) -> std::io::R
     }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body)?;
-    write!(
-        reader.into_inner(),
-        "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
-        reply.len()
-    )
+    Ok(reader.into_inner())
 }
 
 /// Binds a loopback stand-in and spawns a detached server thread answering the two-exchange
@@ -704,5 +708,52 @@ async fn a_drain_waits_for_the_settlement_and_it_names_the_upstream() -> TestRes
     let (usage, upstream) = settled.try_recv()?;
     assert_eq!((usage.input, usage.output), (5200, 900));
     assert_eq!(upstream.as_deref(), Some("Wafer"));
+    Ok(())
+}
+
+/// An abort cuts the stream before its usage chunk, so an OpenRouter turn is settled from the
+/// generation record like a reasoning cut; the stand-in holds its second chunk until the abort.
+#[tokio::test]
+async fn an_aborted_turn_is_settled_from_the_record() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || -> std::io::Result<()> {
+        let chunk =
+            json!({"id": "gen-4", "choices": [{"index": 0, "delta": {"reasoning": "hmm"}}]});
+        let mut stream = accept_request(&listener)?;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {chunk}\n\n"
+        )?;
+        stream.flush()?;
+        let _aborted = held.recv();
+        write!(stream, "data: {chunk}\n\n")?;
+        drop(stream);
+        let record = json!({"data": {"tokens_prompt": 5200, "tokens_completion": 900, "total_cost": 0.0004}});
+        answer(&listener, "application/json", &record.to_string())
+    });
+    let (booked, settled) = std::sync::mpsc::channel();
+    let hook = move |usage, _upstream| {
+        let _receiver_gone = booked.send(usage);
+    };
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let mut model = target_model()?;
+    model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
+    let options = OpenAiOptions {
+        proxy: ProxyConfig::from_values(Some(&format!("http://127.0.0.1:{port}")), None, None)?,
+        stop: Some(signal.cut_flag()),
+        settle: Some(yi_ai::settle::Settle(std::sync::Arc::new(hook))),
+        ..OpenAiOptions::default()
+    };
+    let mut events = yi_ai::openai::stream(&model, &history_context(), &options, "sk-test");
+    while let Some(event) = events.recv().await {
+        if matches!(event, AssistantMessageEvent::ThinkingDelta { .. }) && !signal.is_fired() {
+            signal.fire();
+            go.send(())?;
+        }
+    }
+    let usage = settled.recv_timeout(std::time::Duration::from_secs(20))?;
+    assert_eq!((usage.input, usage.output), (5200, 900));
     Ok(())
 }
