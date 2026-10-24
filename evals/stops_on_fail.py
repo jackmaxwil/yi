@@ -4,8 +4,8 @@
     python3 evals/stops_on_fail.py <session.jsonl or run dir>...
 
 One JSON line per root session (a child's file, whose header names a parent, is skipped):
-its task, `stops` and `stopsOnFail`. A stop ends a turn: an accepted `answer`, else the
-turn's final reply. A FAIL line is unattended.md's verifier shape, `FAIL <requirement>` at the
+its task, `stops` and `stopsOnFail`. A stop ends a turn: an accepted `answer`, else a reply
+that stopped with nothing after it but host notes. A FAIL line is unattended.md's verifier shape, `FAIL <requirement>` at the
 start of a line of the cell's stdout. Stdlib only.
 """
 import json, re, sys
@@ -27,8 +27,11 @@ def cell_stdout(message):
 
 
 def count(path):
-    """(stops, stops taken while the last cell so far printed FAIL) of one session file."""
-    last, stops, on_fail, ended = "", 0, 0, False
+    """(stops, stops taken while the last cell so far printed FAIL) of one session file.
+
+    A reply that stops stands only if the model does nothing more before the next typed message
+    or the end of the file: a stop the host sent back, as the todo intercept does, is not taken."""
+    last, stood, pending, ended = "", [], None, False
     for line in Path(path).read_text(errors="replace").splitlines():
         try:
             entry = json.loads(line)
@@ -38,15 +41,21 @@ def count(path):
         if not isinstance(message, dict):
             continue
         role, tool = message.get("role"), message.get("toolName")
-        if role == "user":
-            ended = False
-        elif role == "toolResult" and tool == "ipython":
+        if role == "user" and not isinstance(message.get("attribution"), dict):
+            stood += [] if pending is None else [pending]
+            pending, ended = None, False
+            continue
+        if role == "toolResult" and tool == "ipython":
             last = cell_stdout(message)
-        elif not ended and (role == "toolResult" and tool == "answer" and not message.get("isError")
-                            or role == "assistant" and message.get("stopReason") == "stop"):
-            ended, stops = True, stops + 1
-            on_fail += bool(FAIL_LINE.search(last))
-    return stops, on_fail
+        if ended or role not in ("assistant", "toolResult"):
+            continue
+        if role == "toolResult" and tool == "answer" and not message.get("isError"):
+            stood.append(bool(FAIL_LINE.search(last)))
+            pending, ended = None, True
+        else:
+            pending = bool(FAIL_LINE.search(last)) if message.get("stopReason") == "stop" else None
+    stood += [] if pending is None else [pending]
+    return len(stood), sum(stood)
 
 
 def is_root(path):

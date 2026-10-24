@@ -8,8 +8,9 @@ sys.path.insert(0, str(EVALS))
 import stops_on_fail  # noqa: E402
 
 # Two ipython cells, then a final reply: `fail` ends on `FAIL R2` after an all-PASS cell, `pass`
-# the reverse, so a counter reading any cell but the last inverts both.
-FAIL, PASS = (EVALS / "fixtures" / "stops_on_fail" / f"{name}.jsonl" for name in ("fail", "pass"))
+# the reverse, so a counter reading any cell but the last inverts both. `refused` stops over FAIL,
+# the todo intercept sends it back, and it stops again over all PASS.
+FAIL, PASS, REFUSED = (EVALS / "fixtures" / "stops_on_fail" / f"{name}.jsonl" for name in ("fail", "pass", "refused"))
 SPEC = importlib.util.spec_from_file_location("kill_x_b3c", EVALS / "kill" / "x-b3c.py")
 B3C = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(B3C)
@@ -28,6 +29,16 @@ class StopsOnFail(unittest.TestCase):
     def test_a_stop_after_a_last_cell_that_printed_fail_counts_and_one_after_all_pass_does_not(self):
         self.assertEqual(stops_on_fail.count(FAIL), (1, 1))
         self.assertEqual(stops_on_fail.count(PASS), (1, 0))
+
+    def test_a_stop_the_host_sent_back_is_not_taken_and_the_one_that_stood_is(self):
+        self.assertEqual(stops_on_fail.count(REFUSED), (1, 0))
+        lines = ['{"kind": "header", "version": 4}', entry("user"), cell("FAIL R1"), entry("assistant", stopReason="stop"),
+                 entry("user", attribution={"host": "job"}), entry("assistant", stopReason="stop"),
+                 entry("custom", customType="todo_intercept")]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "s.jsonl"
+            path.write_text("\n".join(lines) + "\n")
+            self.assertEqual(stops_on_fail.count(path), (1, 1))
 
     def test_an_accepted_answer_is_one_stop_and_a_held_one_is_none(self):
         lines = ['{"kind": "header", "version": 4}', entry("user"), cell("PASS R1\nFAILED to import is no verdict"),
@@ -58,9 +69,12 @@ class StopsOnFail(unittest.TestCase):
                     return {"family": name, "run": name}
                 self.assertEqual(B3C.verdict([run("kimi", 2), run("glm-flash", 2)]), "KEEP: kimi 2/12 tasks, glm-flash 2/12 tasks")
                 self.assertTrue(B3C.verdict([run("kimi", 2), run("glm-flash", 1)]).startswith("KILL: "))
+                refused = {"family": "glm-flash", "run": "refused-before-harbor", "status": "error"}
+                self.assertEqual(B3C.verdict([run("kimi", 2), refused]), "UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0 tasks")
                 self.assertTrue(B3C.verdict([run("kimi", 2)]).startswith("UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0"))
-                self.assertTrue(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 1)])
-                                .startswith("UNRESOLVED: kimi 2/11"))
+                self.assertEqual(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 2)]),
+                                 "UNRESOLVED: kimi 2/11 tasks, glm-flash 2/12 tasks")
+                self.assertTrue(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 1)]).startswith("KILL: "))
             finally:
                 os.environ.pop("TBV4_RUNS_ROOT") if saved is None else os.environ.update(TBV4_RUNS_ROOT=saved)
 
