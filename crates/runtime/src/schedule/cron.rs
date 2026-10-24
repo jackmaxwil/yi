@@ -124,8 +124,11 @@ pub fn parse_schedule_in(
             now_ms.saturating_add(interval_ms),
         ));
     }
-    if text.len() >= 3 && text[..3].eq_ignore_ascii_case("at ") {
-        let when = parse_iso_ms(text[3..].trim())
+    if text
+        .get(..3)
+        .is_some_and(|head| head.eq_ignore_ascii_case("at "))
+    {
+        let when = parse_iso_ms(text.get(3..).unwrap_or_default().trim())
             .ok_or_else(|| "Invalid one-shot schedule. Use: at <ISO date>".to_owned())?;
         if when <= now_ms {
             return Err("One-shot schedule must be in the future".to_owned());
@@ -182,6 +185,8 @@ pub(super) struct CronFields {
     day_of_month: HashSet<u64>,
     month: HashSet<u64>,
     day_of_week: HashSet<u64>,
+    /// Invariant: two restricted day fields match on either, as crontab(5) runs them.
+    either_day: bool,
 }
 
 fn parse_cron_number(value: &str, min: u64, max: u64) -> Result<u64, String> {
@@ -250,6 +255,7 @@ pub(super) fn parse_cron_expression(expression: &str) -> Result<CronFields, Stri
         day_of_month: parse_cron_field(parts[2], 1, 31)?,
         month: parse_cron_field(parts[3], 1, 12)?,
         day_of_week: parse_cron_field(parts[4], 0, 7)?,
+        either_day: !parts[2].starts_with('*') && !parts[4].starts_with('*'),
     })
 }
 
@@ -287,11 +293,16 @@ fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
 }
 
 fn matches_cron_fields(civil: &Civil, fields: &CronFields) -> bool {
-    let day_matches = fields.day_of_week.contains(&civil.weekday)
+    let weekday = fields.day_of_week.contains(&civil.weekday)
         || (civil.weekday == 0 && fields.day_of_week.contains(&7));
+    let month_day = fields.day_of_month.contains(&civil.day);
+    let day_matches = if fields.either_day {
+        weekday || month_day
+    } else {
+        weekday && month_day
+    };
     fields.minute.contains(&civil.minute)
         && fields.hour.contains(&civil.hour)
-        && fields.day_of_month.contains(&civil.day)
         && fields.month.contains(&civil.month)
         && day_matches
 }
