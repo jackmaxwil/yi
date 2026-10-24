@@ -191,8 +191,59 @@ pub fn missing_message(provider: &str) -> String {
     format!("no credential for provider {provider} (run: yi login {provider}{env})")
 }
 
+/// A provider whose model list is the account's own is refreshed on a login that worked, so the
+/// first `--model <provider>/<id>` after it resolves; the ids it lists are printed.
 pub fn login(args: &[String]) -> i32 {
-    yi_oauth::cli::run("login", args)
+    let code = yi_oauth::cli::run("login", args);
+    let mut words = args.iter();
+    let mut provider = None;
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--key" => {
+                words.next();
+            }
+            flag if flag.starts_with('-') => {}
+            name => provider = Some(name),
+        }
+    }
+    let (0, Some(provider), Some(dir)) = (code, provider, crate::catalog::Catalog::cache_dir())
+    else {
+        return code;
+    };
+    if !crate::refresh::needs_credential(provider) {
+        return code;
+    }
+    let var = |name: &str| std::env::var(name).ok();
+    let proxy = crate::request::ProxyConfig::from_values(
+        var("HTTPS_PROXY").as_deref(),
+        var("HTTP_PROXY").as_deref(),
+        var("NO_PROXY").as_deref(),
+    );
+    let key = api_key(provider);
+    let refreshed = proxy.and_then(|proxy| {
+        crate::refresh::refresh(
+            dir,
+            provider,
+            key.as_ref().map(Secret::expose),
+            proxy.as_ref(),
+        )
+    });
+    match refreshed {
+        Ok(_) => {
+            let catalog = crate::catalog::Catalog::bundled().with_cache(dir);
+            for model in catalog
+                .models()
+                .iter()
+                .filter(|model| model.provider == provider)
+            {
+                println!("{provider}/{}", model.id);
+            }
+        }
+        Err(error) => eprintln!(
+            "warning: logged in, but the {provider} model list did not refresh: {error}; run: yi catalog refresh {provider}"
+        ),
+    }
+    code
 }
 
 pub fn logout(args: &[String]) -> i32 {

@@ -174,3 +174,25 @@ fn no_limit_output_never_sends_a_zero_completion_cap() -> TestResult {
     assert_eq!(model(&catalog, "k-capped")?.max_tokens, 32_000);
     Ok(())
 }
+
+/// The owner's account list as it answered on 2026-10-24: every entry loads, none is rejected,
+/// and K3.1 carries its window and the low, high and max ladder it declares.
+#[test]
+fn the_recorded_account_list_loads_k3_1() -> TestResult {
+    let live: Value = serde_json::from_str(include_str!("fixtures/kimi-models-2026-10-24.json"))?;
+    let (_, count) = catalog(&live, "https://api.kimi.ai/coding/v1")?;
+    assert_eq!(count, live["data"].as_array().map_or(0, Vec::len));
+    let catalog = loaded(&live, "https://api.kimi.ai/coding/v1")?;
+    assert!(catalog.rejected().is_empty(), "{:?}", catalog.rejected());
+    let k3_1 = model(&catalog, "k3.1-pro")?;
+    assert_eq!(
+        (k3_1.name.as_str(), k3_1.context_window),
+        ("K3.1 Pro", 1_048_576)
+    );
+    assert_eq!(
+        k3_1.supported_efforts(),
+        [Effort::Low, Effort::High, Effort::Max]
+    );
+    assert_eq!(k3_1.input, ["text", "image"]);
+    Ok(())
+}
