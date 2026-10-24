@@ -201,6 +201,7 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
 
 pub struct Options {
     pub session_dir: std::path::PathBuf,
+    pub plans_dir: Option<std::path::PathBuf>,
     pub cwd: String,
     pub json: bool,
     pub query: Query,
@@ -215,7 +216,10 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
             );
             return 2;
         }
-        return rollup::run(&options.query, &options.session_dir, options.json);
+        let plans = options.plans_dir.clone().unwrap_or_else(|| {
+            std::path::Path::new(&options.cwd).join(yi_runtime::plan::PLANS_DIR)
+        });
+        return rollup::run(&options.query, &options.session_dir, &plans, options.json);
     }
     if let Some(dir) = id_arg.trim().strip_prefix("telemetry") {
         return telemetry_rollup(std::path::Path::new(dir.trim()), options.json);
