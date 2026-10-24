@@ -516,7 +516,7 @@ impl PlanEngine {
         // The same reserve the candidate check used and gave back, held until the staging lane
         // is released or its branch kept below (section 6.6).
         let _staging_slot = self.reserve_verification(&label)?;
-        let (contracted, token, effect, staging, parent_branch) = {
+        let (contracted, token, effect, staging, parent_branch, reused) = {
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let _lease = self.lease_waiting()?;
             let mut txn =
@@ -574,11 +574,24 @@ impl PlanEngine {
                 .head
                 .branch()
                 .map(|branch| branch.as_str().to_owned());
-            (contracted, token, effect, staging, parent_branch)
+            // A parent unmoved since the candidate was cut merges to the candidate's own tree,
+            // so the candidate's verdict is this tree's and its checks do not run again.
+            let reused = same_tree(&self.cwd, &candidate.commit, &staging.integrated)
+                .then(|| {
+                    self.last_verdict(&txn.records, id, &label, attempt, KIND_CANDIDATE_VERIFIED)
+                })
+                .flatten()
+                .filter(|verdict| candidate.token.as_ref() == Some(&verdict.token))
+                .map(|verdict| Verdict {
+                    token: token.clone(),
+                    ..verdict
+                });
+            (contracted, token, effect, staging, parent_branch, reused)
         };
         let artifacts = self.store.artifacts(id);
-        let verdict = match staging.path() {
-            Some(root_path) => self.verifier.run(
+        let verdict = match (reused, staging.path()) {
+            (Some(verdict), _) => verdict,
+            (None, Some(root_path)) => self.verifier.run(
                 &token,
                 &contracted.contract,
                 &Snapshot {
@@ -589,7 +602,7 @@ impl PlanEngine {
                     jury: None,
                 },
             ),
-            None => self.verifier.abstained(
+            (None, None) => self.verifier.abstained(
                 &token,
                 &contracted.contract,
                 "the staging lane was released early",
@@ -829,7 +842,8 @@ impl PlanEngine {
         // the acceptance record, a failed deletion naming the leaked branch.
         let pin = self.drop_pin(&integration);
         txn.resolution = Some(Resolution::VerifiedDone);
-        txn.verdict = self.last_verdict(&txn.records, id, label, attempt);
+        txn.verdict =
+            self.last_verdict(&txn.records, id, label, attempt, KIND_INTEGRATION_VERIFIED);
         // The acceptance record's body: what was published, from what, with which verdicts.
         txn.accepted = Some(json!({
             "candidate": integration.candidate.commit.as_str(),
@@ -852,19 +866,20 @@ impl PlanEngine {
         Ok(Ok(outcome))
     }
 
-    /// The integration's verdict, the one the acceptance record carries.
+    /// The attempt's last verdict of `kind`; the integration's is the one acceptance carries.
     fn last_verdict(
         &self,
         records: &[JournalRecord],
         id: &PlanId,
         label: &TodoLabel,
         attempt: AttemptId,
+        kind: &str,
     ) -> Option<Verdict> {
         records
             .iter()
             .rev()
             .filter(|record| own(record, id, label, attempt))
-            .find(|record| record.record.op == KIND_INTEGRATION_VERIFIED)
+            .find(|record| record.record.op == kind)
             .and_then(|record| record.verdict.clone())
             .and_then(|value| serde_json::from_value(value).ok())
     }
@@ -1024,6 +1039,13 @@ impl PlanEngine {
                 reason,
             })
     }
+}
+
+fn same_tree(cwd: &std::path::Path, one: &Sha, other: &Sha) -> bool {
+    let tree = |sha: &Sha| {
+        crate::lane::git(cwd, &["rev-parse", &format!("{}^{{tree}}", sha.as_str())]).ok()
+    };
+    tree(one).is_some_and(|tree_one| tree(other) == Some(tree_one))
 }
 
 /// What became of a staging pin, for the record that outlives it.
