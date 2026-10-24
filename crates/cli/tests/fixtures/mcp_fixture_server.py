@@ -8,6 +8,8 @@ Exits on stdin EOF.
 import json
 import sys
 
+CLIENT = {}
+
 TOOLS = [
     {
         "name": "echo",
@@ -32,6 +34,7 @@ TOOLS = [
 
 def result_for(method, params):
     if method == "initialize":
+        CLIENT.update(params.get("clientInfo") or {})
         return {
             "protocolVersion": params.get("protocolVersion", "2025-06-18"),
             "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
@@ -49,6 +52,9 @@ def result_for(method, params):
         if name == "add":
             total = arguments.get("a", 0) + arguments.get("b", 0)
             return {"content": [{"type": "text", "text": str(total)}], "isError": False}
+        if name == "client_info":  # unlisted on purpose: tools-list stays echo + add
+            text = f"{CLIENT.get('name')} {CLIENT.get('version')}"
+            return {"content": [{"type": "text", "text": text}], "isError": False}
         return {"content": [{"type": "text", "text": f"no such tool {name}"}], "isError": True}
     if method == "resources/list":
         return {"resources": [{"uri": "note://alpha", "name": "alpha"}]}
