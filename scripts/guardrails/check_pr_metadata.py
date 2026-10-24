@@ -33,7 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail  # noqa: E402
 from check_changes import DIR, pending  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
-from pr_body import base_commit, diff_stats, git, surface_delta, surface_diff, surface_entry, tally  # noqa: E402
+from pr_body import base_commit, diff_stats, git, sentences, surface_delta, surface_diff, surface_entry, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
 LEDGER = "Feature ledger"
@@ -462,8 +462,8 @@ def selfcheck():
     # and tool:read ones; the last case cuts a whole sentence, which says nothing new.
     bash = ("Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. "
             "Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call.")
-    read = ("A capped read ends with the file's skeleton. Do not re-read a file you just edited: "
-            "the edit result carries the new anchors, and a failed edit says so.")
+    read = ("A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. "
+            "Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so.")
     for name, old in {"bash": bash, "read": read}.items():
         new = old.replace(" not ", " ", 1)
         assert new != old and len(new) < len(old), f"{name}: the negation is gone from the real text"
@@ -471,7 +471,7 @@ def selfcheck():
     assert owed(surface_entry(bash), surface_entry(bash.split(". ", 1)[0] + ".")) == [], "a whole sentence cut owes nothing"
     for name, text in {
         "swapped words, fewer bytes": after.replace("your instructions,", "your orders,"),
-        "reordered words, fewer bytes": after.replace("Rule talk: your", "your Rule talk:").replace(" unless the user asks about them.", ""),
+        "reordered sentences, fewer bytes": " ".join(reversed(sentences(after)[:-1])),
         "the same words, wider spacing": after.replace(". ", ".  "),
     }.items():
         assert len(owed(surface_entry(after), surface_entry(text))) == 1, f"{name} still owes the ledger"
