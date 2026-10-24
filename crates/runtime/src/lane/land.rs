@@ -619,7 +619,7 @@ impl LaneHandle {
             .take()
             .ok_or_else(|| LaneError::Forge("no lane to discard".to_owned()))?;
         let branch = lane.branch().to_string();
-        let lost = super::discarded(lane.discard()?);
+        let lost = lane.discard()?;
         self.set_landing(Landing::Unlanded);
         Ok(format!("discarded {branch}{lost}; the transcript is kept"))
     }
@@ -738,8 +738,8 @@ fn tree_label(tree: &TreeState) -> String {
 }
 
 /// What a reap costs, said before anyone types it.
-fn verdict(tree: &TreeState) -> &'static str {
-    match tree {
+fn verdict(holder: &Holder) -> &'static str {
+    match &holder.tree {
         TreeState::Unread { .. } => "reap keeps the branch; the tree is unread",
         tree if tree.is_empty() => "the next claim takes it",
         TreeState::Known {
@@ -750,6 +750,7 @@ fn verdict(tree: &TreeState) -> &'static str {
         } => match (*ahead > 0, modified.saturating_add(*untracked) > 0) {
             (true, true) => "reap keeps the branch; the uncommitted paths are lost",
             (true, false) => "reap keeps the branch",
+            (false, true) if holder.branch.is_none() => "reap discards the uncommitted paths",
             (false, true) => "reap deletes the merged branch; the uncommitted paths are lost",
             (false, false) => "the next claim takes it",
         },
@@ -795,7 +796,7 @@ pub fn lane_line(view: &SlotView, ledger: Option<&DaemonLedger>) -> String {
             "lane {slot}: left by {} · {} — {}",
             holder_line(holder, ledger),
             tilde(path),
-            verdict(&holder.tree)
+            verdict(holder)
         ),
     }
 }

@@ -288,6 +288,10 @@ pub(crate) fn capture_named(
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
+    git_capture(cwd, args).map(|capture| capture.stdout)
+}
+
+fn git_capture(cwd: &Path, args: &[&str]) -> Result<yi_tools::CommandCapture, LaneError> {
     let _span = yi_types::trace::span("lane.git").arg("args", args.join(" "));
     let mut command = yi_tools::command("git");
     command.current_dir(cwd).args(args);
@@ -304,7 +308,7 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
         },
     )?;
     if capture.exit_code == Some(0) {
-        return Ok(capture.stdout);
+        return Ok(capture);
     }
     Err(LaneError::Git {
         args: owned,
@@ -393,6 +397,9 @@ impl SlotView {
     }
 }
 
+/// Incident: `status.showUntrackedFiles=no` in a user's config read a tree of new files as clean.
+pub(crate) const STATUS: [&str; 3] = ["status", "--porcelain", "--untracked-files=normal"];
+
 /// One deadline for a whole listing: every read past it is `Unread`, never a wait.
 const LIST_BUDGET: std::time::Duration = std::time::Duration::from_millis(3_000);
 
@@ -410,7 +417,7 @@ fn count(text: &str) -> Option<u32> {
 }
 
 fn tree_state(path: &Path, base: Option<&Sha>, deadline: std::time::Instant) -> TreeState {
-    let Ok(status) = probe_git(path, &["status", "--porcelain"], deadline) else {
+    let Ok(status) = probe_git(path, &STATUS, deadline) else {
         return TreeState::Unread { step: "status" };
     };
     let (mut modified, mut untracked) = (0_u32, 0_u32);
@@ -639,8 +646,8 @@ impl Pool {
                     path,
                 },
                 (None, None)
-                    if probe_git(&path, &["status", "--porcelain"], deadline)
-                        .is_ok_and(|status| !status.trim().is_empty()) =>
+                    if !probe_git(&path, &STATUS, deadline)
+                        .is_ok_and(|status| status.trim().is_empty()) =>
                 {
                     SlotView::Orphan {
                         slot,
@@ -746,11 +753,19 @@ impl Pool {
                 self.read_state(slot)
                     .is_ok_and(|state| state.session.as_deref() == Some(session))
             };
-            if self.slot_path(slot).is_dir() && self.repo_gone(slot) && own() {
+            if !self.slot_path(slot).is_dir() || !own() {
+                continue;
+            }
+            if self.repo_gone(slot) {
                 return Err(LaneError::RepoGone {
                     slot,
                     path: self.slot_path(slot),
                 });
+            }
+            // Invariant: a resume takes its own slot before a free one, where its branch cannot check
+            // out; the probe's flock is a temporary of the condition, so it drops before the reclaim.
+            if self.probe(slot)?.1.is_none() {
+                return self.reclaim(slot, session);
             }
         }
         for n in 0..self.slots {
@@ -773,11 +788,6 @@ impl Pool {
                 break;
             }
             match self.read_state(slot)?.session {
-                Some(left) if left == session => {
-                    // A resumed session gets its own slot and branch back, work intact.
-                    drop(guard);
-                    return self.reclaim(slot, session);
-                }
                 Some(_) if self.abandoned(slot)? => {
                     self.detach(slot, self.branch_of(slot).as_deref())?;
                     let mut state = self.read_state(slot)?;
@@ -788,7 +798,7 @@ impl Pool {
                 }
                 Some(_) => orphans = orphans.saturating_add(1),
                 // Invariant: a dirty tree with no session is an older binary's quit, never free.
-                None if self.dirty_paths(slot) > 0 => orphans = orphans.saturating_add(1),
+                None if self.dirty(slot) => orphans = orphans.saturating_add(1),
                 None => {
                     free = Some((slot, Some(guard), false));
                     break;
@@ -811,17 +821,11 @@ impl Pool {
         let path = self.slot_path(slot);
         let reason = format!("session:{session}");
         let text = path.to_string_lossy().into_owned();
-        // Exit 1 is a branch `sha` lacks: a quit session's commits, which `-B` would reset.
-        let kept = matches!(
-            git(
-                &self.repo,
-                &["merge-base", "--is-ancestor", branch.as_str(), &sha]
-            ),
-            Err(LaneError::Git {
-                exit_code: Some(1),
-                ..
-            })
-        );
+        // Invariant: `-B` runs only over no branch or a merged one; any unread answer refuses.
+        let local = format!("refs/heads/{}", branch.as_str());
+        let ancestor = ["merge-base", "--is-ancestor", branch.as_str(), &sha];
+        let kept = !no(git(&self.repo, &["rev-parse", "--verify", "-q", &local]))?
+            && no(git(&self.repo, &ancestor))?;
         let mut add = vec!["worktree", "add", "-q", "--lock", "--reason", &reason];
         let mut checkout = vec!["checkout", "-q", "-f"];
         if kept {
@@ -920,7 +924,7 @@ impl Pool {
     /// An orphan with a clean tree and a branch `main` already contains has nothing to lose.
     fn abandoned(&self, slot: SlotIndex) -> Result<bool, LaneError> {
         let path = self.slot_path(slot);
-        if self.dirty_paths(slot) > 0 {
+        if self.dirty(slot) {
             return Ok(false);
         }
         // Invariant: an unreadable HEAD is not a free slot; only a detached one is.
@@ -963,7 +967,7 @@ impl Pool {
         }
         let branch = self.branch_of(slot);
         let kept = self.detach(slot, branch.as_deref())?;
-        let lost = discarded(self.wipe(slot)?);
+        let lost = self.wipe(slot)?;
         let mut state = self.read_state(slot)?;
         state.session = None;
         self.write_state(slot, &state)?;
@@ -979,21 +983,31 @@ impl Pool {
         })
     }
 
-    /// Paths `git status` names in a slot's tree; an unreadable status counts as dirty.
-    fn dirty_paths(&self, slot: SlotIndex) -> usize {
-        git(&self.slot_path(slot), &["status", "--porcelain"])
-            .map_or(1, |status| status.lines().count())
+    /// Whether `git status` names a path in a slot's tree; an unreadable status counts as dirty.
+    fn dirty(&self, slot: SlotIndex) -> bool {
+        !git(&self.slot_path(slot), &STATUS).is_ok_and(|status| status.trim().is_empty())
     }
 
-    /// Invariant: the one tree wipe; only a reap or a discard reaches it, never a quit (D130).
-    fn wipe(&self, slot: SlotIndex) -> Result<usize, LaneError> {
+    /// Invariant: the only wipe of a session's work; a claim checks out only over a clean tree.
+    fn wipe(&self, slot: SlotIndex) -> Result<String, LaneError> {
         let path = self.slot_path(slot);
-        let dropped = self.dirty_paths(slot);
-        if dropped > 0 {
-            git(&path, &["checkout", "-q", "-f"])?;
-            git(&path, &["clean", "-qfd"])?;
+        let status = git_capture(&path, &STATUS)?;
+        let paths = status.stdout.lines().count();
+        if paths == 0 {
+            return Ok(String::new());
         }
-        Ok(dropped)
+        git(&path, &["checkout", "-q", "-f"])?;
+        git(&path, &["clean", "-qfd"])?;
+        // Invariant: a cut list is a head and a tail around a marker row; three lines may be no path.
+        Ok(match (status.cut, paths) {
+            (Some((kept, total)), n) => format!(
+                "; at least {} uncommitted paths discarded (status read {kept} of {total} bytes, OUTPUT_CAP {})",
+                n.saturating_sub(3),
+                yi_tools::OUTPUT_CAP
+            ),
+            (None, 1) => "; 1 uncommitted path discarded".to_owned(),
+            (None, n) => format!("; {n} uncommitted paths discarded"),
+        })
     }
 
     fn detach(&self, slot: SlotIndex, branch: Option<&str>) -> Result<bool, LaneError> {
@@ -1013,11 +1027,14 @@ impl Pool {
     }
 }
 
-pub(crate) fn discarded(paths: usize) -> String {
-    match paths {
-        0 => String::new(),
-        1 => "; 1 uncommitted path discarded".to_owned(),
-        n => format!("; {n} uncommitted paths discarded"),
+/// A git query's exit 1 is its answer no; any other failure is an error, never a no.
+fn no(answer: Result<String, LaneError>) -> Result<bool, LaneError> {
+    match answer {
+        Ok(_) => Ok(false),
+        Err(LaneError::Git {
+            exit_code: Some(1), ..
+        }) => Ok(true),
+        Err(error) => Err(error),
     }
 }
 
@@ -1047,7 +1064,7 @@ impl Drop for Lane {
         }
         self.released = true;
         let _ = self.pool.lock().and_then(|_pool| {
-            if self.pool.dirty_paths(self.slot) > 0 {
+            if self.pool.dirty(self.slot) {
                 return Ok(());
             }
             self.pool.detach(self.slot, Some(self.branch.as_str()))?;
@@ -1108,7 +1125,7 @@ impl Lane {
         Ok(())
     }
 
-    pub fn discard(self) -> Result<usize, LaneError> {
+    pub fn discard(self) -> Result<String, LaneError> {
         let branch = self.branch.as_str().to_owned();
         let repo = self.pool.repo.clone();
         let dropped = self.release_inner(false)?;
@@ -1120,14 +1137,14 @@ impl Lane {
         self.release_inner(true).map(drop)
     }
 
-    fn release_inner(mut self, quit: bool) -> Result<usize, LaneError> {
+    fn release_inner(mut self, quit: bool) -> Result<String, LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
-        if quit && self.pool.dirty_paths(self.slot) > 0 {
-            return Ok(0);
+        if quit && self.pool.dirty(self.slot) {
+            return Ok(String::new());
         }
         self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-        let dropped = if quit { 0 } else { self.pool.wipe(self.slot)? };
+        let dropped = (!quit).then(|| self.pool.wipe(self.slot)).transpose()?;
         let mut state = self.pool.read_state(self.slot)?;
         state.session = None;
         self.pool.write_state(self.slot, &state)?;
@@ -1138,7 +1155,7 @@ impl Lane {
                 Err(error) => return Err(error),
             }
         }
-        Ok(dropped)
+        Ok(dropped.unwrap_or_default())
     }
 
     pub fn sync(&self) -> Result<Option<String>, LaneError> {
