@@ -14,6 +14,9 @@ use yi_session::{
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "../../types/tests/support/recorded.rs"]
+mod recorded;
+use recorded::recorded_line;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -298,26 +301,11 @@ fn grep_skips_thinking_and_centers_long_snippets_on_the_needle() -> TestResult {
     })
 }
 
-/// A line the assistant said in the recorded session `01a0d6e4` (scrubbed by `evals/record.py`).
-fn recorded(phrase: &str) -> Result<String, Box<dyn Error>> {
-    for row in include_str!("../../tui/tests/fixtures/sessions/01a0d6e4.jsonl").lines() {
-        let row: Value = serde_json::from_str(row)?;
-        let blocks = row["message"]["content"].as_array().into_iter().flatten();
-        let lines = blocks
-            .filter_map(|block| block["text"].as_str())
-            .flat_map(str::lines);
-        if let Some(line) = lines.into_iter().find(|line| line.contains(phrase)) {
-            return Ok(line.to_owned());
-        }
-    }
-    Err("the recording lost its line".into())
-}
-
 #[test]
 fn a_hit_keeps_its_own_case_and_a_clipped_line_says_so() -> TestResult {
     let (short, long) = (
-        recorded("Nothing was left unfinished")?,
-        recorded("personal coding agent")?,
+        recorded_line("Nothing was left unfinished")?,
+        recorded_line("personal coding agent")?,
     );
     let edge = |name: &str, width: usize| format!("{:x<width$}", format!("{name} Mixed Case "));
     let folded = format!("{} Fold Needle {}", "\u{130}".repeat(100), "b".repeat(100));
@@ -349,6 +337,13 @@ fn a_hit_keeps_its_own_case_and_a_clipped_line_says_so() -> TestResult {
         assert!(hit.cut && hit.snippet.contains("Fold Needle"), "{hit:?}");
         Ok(())
     })
+}
+
+#[test]
+fn a_needle_in_any_case_centres_the_window_on_its_match() {
+    let line = format!("{} Late Needle {}", "a".repeat(300), "b".repeat(300));
+    let (snippet, cut) = yi_session::snippet(&line, ["LATE NEEDLE"]);
+    assert!(cut && snippet.contains("Late Needle"), "{snippet}");
 }
 
 #[test]
