@@ -10,6 +10,7 @@ use serde_json::json;
 use yi_runtime::lane::settle::{Candidate, Held, Quiescence};
 use yi_runtime::lane::{BranchName, Pool, Sha};
 use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
+use yi_runtime::plan::output::OutputResolve;
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::verify::Verifier;
 use yi_types::plan::contract::Contract;
@@ -35,8 +36,16 @@ pub fn git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
 }
 
 /// Each child is a fixture branch: no process, and a candidate the engine reads by agent id,
-/// its `local://` output read in the parent checkout.
+/// its `local://` output read in the parent checkout, as the parent's own resolver reads it.
 struct Children(HashMap<String, Candidate>, PathBuf);
+
+impl OutputResolve for Children {
+    fn resolve(&self, url: &Url) -> Result<Option<String>, String> {
+        std::fs::read_to_string(self.1.join(url.path().trim_start_matches('/')))
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+}
 
 impl Delegate for Children {
     fn spawn(&self, at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
@@ -73,14 +82,23 @@ pub struct Bench {
     _root: Scratch,
 }
 
-/// One worktree todo per label over a pool of `slots`, every contract the one `check`. With
-/// `moved`, the parent gains an unrelated commit after the children branch off it.
+/// What the fixture varies: the parent gains an unrelated commit after the children branch off
+/// it, the checker declares that it reads outside the snapshot, or the parent serves no output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Unmoved,
+    Moved,
+    ReadsOutside,
+    Unserved,
+}
+
+/// One worktree todo per label over a pool of `slots`, every contract the one `check`.
 pub fn bench(
     name: &str,
     labels: &[&str],
     slots: u8,
     check: &str,
-    moved: bool,
+    shape: Shape,
 ) -> Result<Bench, Box<dyn Error>> {
     let root = Scratch::new(&format!("yi-accept-{name}"))?;
     let parent = root.join("parent");
@@ -107,14 +125,15 @@ pub fn bench(
         };
         children.insert(format!("child-{label}"), candidate);
     }
-    if moved {
+    if shape == Shape::Moved {
         commit("NOTES.md", "an unrelated commit")?;
     }
     let store = PlanStore::open(root.join("plans"))?;
     let plan = PlanId::slug(GOAL)?;
     let manifest = json!({
         "manifest": 1, "command": check, "cwd": "snapshot_root", "cwd_subdir": null,
-        "protected": [], "timeout_ms": 60_000, "env": [], "reads_outside_snapshot": false
+        "protected": [], "timeout_ms": 60_000, "env": [],
+        "reads_outside_snapshot": shape == Shape::ReadsOutside
     });
     let checker = store.artifacts(&plan).put(
         &serde_json::to_vec(&manifest)?,
@@ -128,10 +147,14 @@ pub fn bench(
         "threshold": 1000, "min_coverage": 1000
     }))?;
     let pool = Pool::open(&root.join("home"), &parent, slots)?;
-    let engine = PlanEngine::new(store.clone(), Arc::new(Children(children, parent.clone())))
+    let children = Arc::new(Children(children, parent.clone()));
+    let mut engine = PlanEngine::new(store.clone(), children.clone())
         .with_cwd(parent.clone())
         .with_verifier(Verifier::new(60_000))
         .with_lanes(pool);
+    if shape != Shape::Unserved {
+        engine = engine.with_output_resolve(children);
+    }
     let todos = labels
         .iter()
         .map(|label| {
