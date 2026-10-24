@@ -22,7 +22,13 @@ pub fn handle_terminal_event(
     app.bind_reply();
     match ct_event {
         CtEvent::Paste(text) => {
-            if !app.composer.search_active() {
+            if let Some(tree) = app.tree.as_mut() {
+                tree.paste(&text);
+            } else if let Some(view) = app.plan_tree.as_mut() {
+                view.paste(&text);
+            } else if let Some(bottom) = app.bottom.as_mut() {
+                paste_into(bottom, &text);
+            } else if !app.composer.search_active() {
                 app.composer.handle_paste(&text);
             }
             app.scheduler.request();
@@ -95,6 +101,16 @@ pub fn handle_terminal_event(
             }
         }
         _ => {}
+    }
+}
+
+fn paste_into(bottom: &mut Bottom, text: &str) {
+    match bottom {
+        Bottom::Approval(view, _) => view.paste(text),
+        Bottom::Question(view) => view.paste(text),
+        Bottom::Command(popup) | Bottom::File(popup) => popup.paste(text),
+        Bottom::Agents(popup) => popup.paste(text),
+        Bottom::Model(popup) => popup.paste(text),
     }
 }
 
