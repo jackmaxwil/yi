@@ -90,7 +90,7 @@ pub struct TaskState {
     pub(crate) started: Instant,
     /// When the child reached a terminal state, so the strike can sweep.
     pub(crate) finished: Option<Instant>,
-    /// The call id of the kernel cell running when the child appeared, if one was.
+    /// The call id of the kernel cell that spawned the child, the one a finished card waits on.
     pub(crate) born_under: Option<String>,
     pub(crate) session: Option<yi_runtime::ChildFeed>,
 }

@@ -1,0 +1,6 @@
+---
+issue: Closes #1482, Refs #1442
+growth: +45 the spawning cell's id from the kernel slot to the TUI card; deleting the timing guess was weighed and kept for records older than the field
+raise: tests +89, comments +4, crate runtime +33, crate tools +3, crate tui +5, crate types +4
+---
+A child's card sits under the kernel cell that spawned it, by record and not by timing. The spawn line a parent journals on its own transcript (`ChildSpawned`) gains an optional `spawnedBy`, the tool call id of the cell that ran `rlm.run`; the field is additive, so an older line decodes with it absent. `KernelBridge::execute_cell` takes the call's id, the kernel service holds it while the cell runs (the loop runs an exec call alone, so one cell runs at a time), and the subagent host reads it when it admits a child, writing it to the trail line and to the roster's `ChildView`. The TUI adopts a child under the cell its record names; before, it took whichever `ipython` cell was running when the roster first listed the child, so a child the first cell spawned, first seen while the second ran, waited on the second and committed under it. A child update with no record behind it (the console's forwarded updates, a host older than the field) still uses the timing guess. `crates/runtime/src/kernel.rs` grows by two lines (1,188 to 1,190) for the slot.

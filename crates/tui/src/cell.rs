@@ -98,8 +98,7 @@ pub struct TaskCell {
     pub tokens: u64,
     pub elapsed_ms: u64,
     pub error: Option<String>,
-    // ponytail: the spawning cell's preview is observed, not plumbed — the `ipython` call
-    // running when a child appears made it, and a child born outside one carries None.
+    /// The spawning cell's code preview; None for a child born outside a drawn cell.
     pub spawn: Option<String>,
     pub answer: Option<String>,
     pub answer_dropped: usize,

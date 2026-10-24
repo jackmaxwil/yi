@@ -1569,6 +1569,7 @@ impl yi_tools::KernelBridge for OneCell {
     fn execute_cell(
         &self,
         _code: &str,
+        _call_id: &str,
         _cancelled: &yi_tools::CancelFlag,
         _recovery_dir: Option<&std::path::Path>,
     ) -> Result<yi_tools::KernelCellOutcome, String> {
@@ -1586,6 +1587,7 @@ impl yi_tools::KernelBridge for DeadKernel {
     fn execute_cell(
         &self,
         _code: &str,
+        _call_id: &str,
         _cancelled: &yi_tools::CancelFlag,
         _recovery_dir: Option<&std::path::Path>,
     ) -> Result<yi_tools::KernelCellOutcome, String> {

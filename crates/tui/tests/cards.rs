@@ -401,7 +401,7 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
 #[test]
 fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> TestResult {
     let mut app = app();
-    app.adopt(&child_update(ChildStatus::Running, None), None);
+    app.adopt(&child_update(ChildStatus::Running, None), None, None);
     let text: String = (0..3_000)
         .map(|n| format!("line {n} of a long report\n"))
         .collect();

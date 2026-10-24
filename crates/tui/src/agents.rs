@@ -245,24 +245,22 @@ impl crate::app::App {
         self.scheduler.request();
     }
 
-    /// The kernel cell a child was born under, if one is running.
-    pub(crate) fn spawning_cell(&self) -> Option<String> {
-        let tool = self
-            .live_tools
-            .iter()
-            .rev()
-            .find(|tool| tool.name == "ipython" && tool.status != ToolStatus::Done)?;
-        let code = tool.details.get("code")?.as_str()?;
-        Some(crate::pycell::preview(code)).filter(|line| !line.is_empty())
-    }
-
-    /// That cell's call id: the one cell a finished card waits on before it commits.
-    pub(crate) fn spawning_call(&self) -> Option<String> {
-        self.live_tools
-            .iter()
-            .rev()
-            .find(|tool| tool.name == "ipython" && tool.status != ToolStatus::Done)
-            .map(|tool| tool.call_id.clone())
+    /// The code preview and call id of the cell a child was born under: the call its record
+    /// names, else, for a host older than the record, the `ipython` cell running now.
+    pub(crate) fn spawned_under(&self, call: Option<&str>) -> (Option<String>, Option<String>) {
+        let tool = self.live_tools.iter().rev().find(|tool| match call {
+            Some(call) => tool.call_id == call,
+            None => tool.name == "ipython" && tool.status != ToolStatus::Done,
+        });
+        let code = tool.and_then(|tool| tool.details.get("code")?.as_str());
+        let preview = code
+            .map(crate::pycell::preview)
+            .filter(|line| !line.is_empty());
+        let call = call.map(str::to_owned);
+        (
+            preview,
+            call.or_else(|| tool.map(|tool| tool.call_id.clone())),
+        )
     }
 
     /// A stop is the host's `interrupt`, asked for through the driver: the App holds a

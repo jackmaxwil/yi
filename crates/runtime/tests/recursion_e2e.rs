@@ -2809,6 +2809,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         cell_ceiling: None,
     }));
 
+    harness.host.attach_kernel(&service);
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
     let spawn_cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);
@@ -2817,6 +2818,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "h = await rlm.run('greet the parent', name='helper')\nprint(h.rlm_child_id.startswith('sub-'), h.name, h.model)",
+                "call-spawn",
                 &cancelled,
                 None,
             )
@@ -2830,6 +2832,13 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         spawn_cell.result.stderr
     );
 
+    let spawned_by = harness
+        .host
+        .children_view()
+        .first()
+        .and_then(|c| c.spawned_by.clone());
+    assert_eq!(spawned_by.as_deref(), Some("call-spawn"));
+
     let list_cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);
         let cancelled = Arc::clone(&cancelled);
@@ -2837,6 +2846,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "import asyncio\nfor _ in range(100):\n    subs = await rlm.list_subagents()\n    if subs and subs[0].status == 'completed':\n        break\n    await asyncio.sleep(0.05)\nprint(subs[0].session_name, subs[0].status)",
+                "",
                 &cancelled,
                 None,
             )
@@ -2857,6 +2867,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\ntry:\n    await rlm.request('helper', 'ping?', timeout=1)\nexcept RuntimeError as error:\n    asked = 'no reply to parent-' in str(error)\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'], asked)",
+                "",
                 &cancelled,
                 None,
             )
@@ -2880,6 +2891,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "gone = await rlm.delete_subagent('helper')\nprint(gone.rlm_child_id.startswith('sub-'), len(await rlm.list_subagents()))",
+                "",
                 &cancelled,
                 None,
             )
@@ -2900,6 +2912,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "try:\n    await rlm.run('too deep', junk=1)\nexcept RuntimeError as e:\n    print(f'refused: {e}')",
+                "",
                 &cancelled,
                 None,
             )
@@ -2922,6 +2935,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "board = {'grid': [1, 2, 3]}\nsecret = 'never scoped'\nscoped = await rlm.run('use the board', name='scoped', context_keys=['board'])\ntry:\n    await rlm.run('and this', name='nope', context_keys=['absent'])\nexcept KeyError as e:\n    print(f'keyerror: {e}')\nprint([s.session_name for s in await rlm.list_subagents()])",
+                "",
                 &cancelled,
                 None,
             )
@@ -4051,6 +4065,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "h = await rlm.run('hold on', name='doomed')\nd = await rlm.delete_subagent(h)\nprint(d.session_name, d.status)",
+                "",
                 &cancelled,
                 None,
             )

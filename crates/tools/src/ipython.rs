@@ -26,6 +26,7 @@ pub trait KernelBridge: Send + Sync {
     fn execute_cell(
         &self,
         code: &str,
+        call_id: &str,
         cancelled: &CancelFlag,
         recovery_dir: Option<&Path>,
     ) -> Result<KernelCellOutcome, String>;
@@ -139,7 +140,9 @@ impl Tool for IpythonTool {
             Err(message) => return error_output(message),
         };
         let (cancelled, dir) = (&context.cancelled, context.recovery_dir.as_deref());
-        let outcome = self.bridge.execute_cell(code, cancelled, dir);
+        let outcome = self
+            .bridge
+            .execute_cell(code, &context.call_id, cancelled, dir);
         let (rows, dropped) = self
             .calls
             .as_ref()

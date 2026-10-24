@@ -35,6 +35,7 @@ impl KernelBridge for NoKernel {
     fn execute_cell(
         &self,
         _code: &str,
+        _call_id: &str,
         _cancelled: &CancelFlag,
         _recovery_dir: Option<&std::path::Path>,
     ) -> Result<KernelCellOutcome, String> {
