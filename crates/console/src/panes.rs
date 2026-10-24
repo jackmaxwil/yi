@@ -178,6 +178,23 @@ pub fn review_view(
             theme.dim_style(),
         ));
     }
+    let dropped = diff
+        .filter(|_| scope != ReviewScope::Branch)
+        .map_or(0, |diff| diff.dropped.len());
+    if dropped > 0 {
+        let noun = if dropped == 1 { "file" } else { "files" };
+        let cap = format!(
+            "review keeps {} files, {} MiB",
+            crate::model::MAX_DIFF_FILES,
+            crate::model::MAX_DIFF_BYTES / (1 << 20)
+        );
+        lines.push(cap_row(
+            &format!("{dropped} older {noun} not shown"),
+            &cap,
+            "git diff lists them",
+            theme,
+        ));
+    }
     if files.is_empty() {
         lines.push(Line::styled(
             "nothing changed in this scope",

@@ -101,6 +101,7 @@ impl App {
                         error: None,
                         spawn: self.spawning_cell(),
                         answer: None,
+                        answer_dropped: 0,
                         activity: update.activity,
                         flag: None,
                     },
@@ -138,6 +139,7 @@ impl App {
                 state.finished = None;
                 state.started = self.clock.now();
                 state.cell.answer = None;
+                state.cell.answer_dropped = 0;
                 self.committed_tasks.remove(id);
             }
             state.cell.flag = update.flag.clone();
@@ -154,6 +156,7 @@ impl App {
                 let head = preview.trim_end_matches('…');
                 if !folded.contains(head) {
                     state.cell.answer = Some(preview.clone());
+                    state.cell.answer_dropped = 0;
                 }
             }
             if status != TaskStatus::Running && state.finished.is_none() {
@@ -170,7 +173,7 @@ impl App {
                         _ => None,
                     });
                 if let Some(text) = answer.filter(|t| !t.trim().is_empty()) {
-                    state.cell.answer = Some(crate::cell::tail_bounded(text));
+                    state.cell.keep_answer(text);
                 }
             }
             self.scheduler.request();

@@ -130,6 +130,56 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     Ok(())
 }
 
+/// Dies with an `@` picker over 101 files that listed 100 of them as the whole project: the
+/// row the walk's cap owes was missing from the frame the person saw.
+#[test]
+fn the_at_picker_over_101_files_says_100_of_101() -> TestResult {
+    let dir = Scratch::new("yi-tui-picker")?;
+    let home = dir.home()?;
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree)?;
+    for n in 0..101 {
+        std::fs::write(tree.join(format!("f{n:03}.txt")), "x")?;
+    }
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\ntype @\n\
+         wait-frame 10000 [\u{2026}] 100 of 101 files \u{b7} picker cap 100 \u{b7} type a path for the rest\n\
+         quit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--cwd",
+            &tree.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "ping",
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "the frame never showed the picker's row: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 #[test]
 fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     let dir = Scratch::new("yi-tui-new")?;
