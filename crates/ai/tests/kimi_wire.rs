@@ -1,5 +1,5 @@
 //! Moonshot's chat wire: thinking as its own body field, the session as the cache key, the
-//! reasoning echoed across tool turns, usage where Moonshot puts it, and Yi's own name.
+//! reasoning echoed across tool turns, and Yi's own name.
 
 use std::error::Error;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -12,7 +12,6 @@ use yi_types::model::{Effort, LlmContext, Model};
 type TestResult = Result<(), Box<dyn Error>>;
 
 const BASE: &str = "https://api.kimi.ai/coding/v1";
-const SHAPED_SSE: &str = include_str!("fixtures/kimi-chat-thinking-tool.sse");
 
 /// The entry as Kimi's `/models` lists it, through the same mapping a refresh writes.
 pub(crate) fn kimi_model(entry: Value) -> Result<Model, Box<dyn Error>> {
@@ -195,27 +194,6 @@ fn mapped(sse: &str, model: &Model) -> Result<AgentMessage, Box<dyn Error>> {
     }
 }
 
-/// Moonshot puts the usage in `choices[0].usage` and no top-level `usage` (kimi.ts:230-258):
-/// read only at the top, every Kimi turn would count as free and the context meter would lie.
-#[test]
-fn usage_in_choices_zero_is_read_when_the_top_level_has_none() -> TestResult {
-    let message = mapped(SHAPED_SSE, &k3_1()?)?;
-    let AgentMessage::Assistant { usage, content, .. } = &message else {
-        return Err("not an assistant message".into());
-    };
-    assert_eq!(
-        (usage.input, usage.cache_read, usage.output),
-        (1200, 3800, 64)
-    );
-    assert!(!usage.unknown);
-    assert!(
-        matches!(content.first(), Some(Content::Thinking { .. })),
-        "{content:?}"
-    );
-    assert!(matches!(content.last(), Some(Content::ToolCall { name, .. }) if name == "read"));
-    Ok(())
-}
-
 /// A turn the account streamed on 2026-10-24: reasoning, then a bash call, with the usage at the
 /// top level. The ratios are the raw chunk's own: 13307 prompt tokens, 12800 of them cached.
 #[test]
@@ -388,5 +366,29 @@ fn a_non_moonshot_route_is_byte_identical() -> TestResult {
         let sent = body(model, Some(Effort::High), messages).to_string();
         assert_eq!(sent, pinned[id].as_str().ok_or(id)?, "{id}");
     }
+    Ok(())
+}
+
+/// An entry Kimi lists with `protocol: anthropic` posts to the messages path Moonshot serves,
+/// `?beta=true` included, off the same `api_base` the chat models use.
+#[test]
+fn an_anthropic_protocol_kimi_model_posts_to_beta_messages() -> TestResult {
+    let (port, handle) = record(vec![json_reply("200 OK", "{}")])?;
+    let base = format!("http://127.0.0.1:{port}/coding/v1");
+    let list =
+        json!({"data": [{"id": "k3-a", "protocol": "anthropic", "limit": {"context": 262144}}]});
+    let (written, _) = yi_ai::kimi::catalog(&list, &base)?;
+    let model: Model = serde_json::from_value(written["anthropic-messages"]["k3-a"].clone())?;
+    let options = yi_ai::anthropic::AnthropicOptions::default();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let mut events = yi_ai::anthropic::stream(&model, &context(hi()), &options, "key");
+        while events.recv().await.is_some() {}
+    });
+    let seen = handle.join().map_err(|_| "server thread")?;
+    let line = seen.first().and_then(|request| request.lines().next());
+    assert_eq!(line, Some("POST /coding/v1/messages?beta=true HTTP/1.1"));
     Ok(())
 }

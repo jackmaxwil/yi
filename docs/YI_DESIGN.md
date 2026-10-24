@@ -247,7 +247,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
 - Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
   `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
-  any other api is faux. Catalog:
+  `kimi` models take any of the first three by their listed `protocol`, Moonshot's wire rules
+  derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,

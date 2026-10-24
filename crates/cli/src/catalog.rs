@@ -121,7 +121,15 @@ pub(crate) fn run(args: &Args) -> i32 {
             }
             code
         }
-        Some("usage") if words.next() == Some("kimi") => {
+        Some("usage") => {
+            let only = words.next();
+            if only != Some("kimi") {
+                eprintln!(
+                    "usage: yi catalog usage kimi (not {:?})",
+                    only.unwrap_or("")
+                );
+                return 2;
+            }
             let Some(key) = yi_ai_key("kimi") else {
                 eprintln!("error: {}", yi_runtime::auth::missing_message("kimi"));
                 return 1;

@@ -18,9 +18,9 @@ impl Default for RetryPolicy {
     }
 }
 
-/// A 429 naming an exhausted quota or balance does not lift inside the retry wall; the wording is
-/// billing language only, never a bare "quota", which throttles say too (kimi-errors.ts:1-22).
-pub fn quota_exhausted(status: u16, body: &str) -> bool {
+/// A 429 coding an exhausted quota or balance is final; billing wording without a code counts on
+/// Moonshot's host only, since Gemini's per-minute throttle says it too (kimi-errors.ts:1-22).
+pub fn quota_exhausted(status: u16, body: &str, url: &str) -> bool {
     const CODES: [&str; 2] = ["exceeded_current_quota_error", "insufficient_quota"];
     const WORDING: [&str; 8] = [
         "exceeded your current quota",
@@ -41,7 +41,9 @@ pub fn quota_exhausted(status: u16, body: &str) -> bool {
                 .is_some_and(|code| CODES.contains(&code))
         });
     let lower = body.to_lowercase();
-    status == 429 && (coded || WORDING.iter().any(|words| lower.contains(words)))
+    let worded =
+        crate::compat::moonshot_url(url) && WORDING.iter().any(|words| lower.contains(words));
+    status == 429 && (coded || worded)
 }
 
 pub fn is_retryable_status(status: u16) -> bool {
