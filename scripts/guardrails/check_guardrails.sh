@@ -87,6 +87,8 @@ run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
 # target/dist/yi; only this flag proves the cap fires on its own reason (D249).
 run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
+# The prose windows scan zero hits today, so only this flag proves a planted copy still fails.
+run "$PY" scripts/guardrails/check_duplication.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck

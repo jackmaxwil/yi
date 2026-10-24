@@ -1221,7 +1221,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
 | `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json`, `startup_ms_budget.json` |
 | `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 lines; a function ≤ 150 lines, counted by braces; per-crate `src/` lines ≤ the fork point's plus `raise: crate <name> +N` | the fork point |
-| `check_duplication` | no 15-line normalized window repeated across production `.rs` | — |
+| `check_duplication` | no 15-line normalized window repeated across production `.rs`, and no 6-line one across `crates/*/src/**/*.md` and shipped `SKILL.md` files, `yi:schema` blocks skipped | — |
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
