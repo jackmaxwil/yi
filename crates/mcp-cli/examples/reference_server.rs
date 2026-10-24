@@ -36,11 +36,17 @@ impl ServerHandler for Echo {
         let Some(schema) = schema.as_object().cloned() else {
             return Err(McpError::internal_error("schema was not an object", None));
         };
-        Ok(ListToolsResult::with_all_items(vec![Tool::new(
-            "echo",
-            "returns its argument",
-            schema,
-        )]))
+        let Some(no_arguments) = serde_json::json!({"type": "object"}).as_object().cloned() else {
+            return Err(McpError::internal_error("schema was not an object", None));
+        };
+        Ok(ListToolsResult::with_all_items(vec![
+            Tool::new("echo", "returns its argument", schema),
+            Tool::new(
+                "client_info",
+                "returns the name and version its initialize request carried",
+                no_arguments,
+            ),
+        ]))
     }
 
     async fn read_resource(
@@ -60,8 +66,17 @@ impl ServerHandler for Echo {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        if request.name == "client_info" {
+            let initialize = context
+                .peer
+                .peer_info()
+                .ok_or_else(|| McpError::internal_error("no initialize request seen", None))?;
+            let client = &initialize.client_info;
+            let text = format!("{} {}", client.name, client.version);
+            return Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into());
+        }
         if request.name != "echo" {
             return Err(McpError::invalid_params("no such tool", None));
         }

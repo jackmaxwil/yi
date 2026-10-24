@@ -117,13 +117,15 @@ lane name:
       exit 1
     fi
 
-# Tier 3, every version tag: check the tag against Cargo.toml, then the artifact.
+# Tier 3, every version tag: check the tag against the version of record, then the artifact.
+# The record is the `version:` line of docs/ARCHITECTURE.md, the line `yi --version` reads;
+# the workspace Cargo.toml version is a placeholder that never moves.
 prerelease version:
     #!/usr/bin/env bash
     set -euo pipefail
-    declared=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+    declared=$(sed -n 's/^version:[[:space:]]*\([^[:space:]]*\).*/\1/p' docs/ARCHITECTURE.md | head -1)
     if [ "{{version}}" != "$declared" ]; then
-      echo "tag {{version}} disagrees with Cargo.toml $declared"
+      echo "tag {{version}} disagrees with docs/ARCHITECTURE.md $declared"
       exit 1
     fi
     just package "{{version}}"
