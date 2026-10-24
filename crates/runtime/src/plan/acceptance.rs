@@ -19,8 +19,7 @@ pub use yi_types::plan::acceptance::{Conflict, Disposition, Published, Quiescenc
 use super::capacity::{Capacity, Permit, Purpose, RESERVE_WAIT};
 use super::done::Prepared;
 use super::ops::{Actor, Delta, Op, Outcome, PlanEngine, PlanOpError, Txn};
-use super::output::check_output;
-use super::state::{Claim, Decided, KIND_VERIFICATION_REQUESTED, KIND_VERIFICATION_STALE, root_of};
+use super::state::{Decided, root_of};
 use super::store::draft;
 use super::table::{OpKind, check_plan_state, check_terminal, locate_step, op_name};
 use super::verify::Snapshot;
@@ -375,10 +374,6 @@ pub(super) fn verification(label: &TodoLabel, reason: impl Into<String>) -> Plan
     }
 }
 
-fn effect_id(nonce: &str, label: &TodoLabel) -> Result<EffectId, PlanOpError> {
-    EffectId::new(format!("e-{nonce}")).map_err(|error| verification(label, error.to_string()))
-}
-
 impl PlanEngine {
     /// The lane pool the staging and verification checkouts come from, and the split of it
     /// that keeps a slot for them (section 7.6).
@@ -467,83 +462,7 @@ impl PlanEngine {
             .ok_or_else(|| PlanOpError::AcceptanceUnavailable {
                 label: label.clone(),
             })?;
-        let frozen = todo.contract_hash.ok_or_else(|| PlanOpError::Contract {
-            label: label.clone(),
-            detail: "the contract was never frozen; start records it".to_owned(),
-        })?;
-        if contract.digest()? != frozen {
-            return Err(PlanOpError::ContractDrift {
-                label: label.clone(),
-            });
-        }
-        let product = check_output(resolve, plan, label, output)?;
-        Ok(Contracted {
-            contract,
-            frozen,
-            product,
-        })
-    }
-
-    pub(super) fn token(
-        &self,
-        txn: &Txn,
-        id: &PlanId,
-        label: &TodoLabel,
-        contracted: &Contracted,
-        snapshot: &Sha,
-        integration: Option<u64>,
-    ) -> Result<VerificationToken, PlanOpError> {
-        let plan = txn.state.plan(id)?;
-        let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
-            plan: id.clone(),
-            label: label.clone(),
-        })?;
-        Ok(VerificationToken {
-            plan: id.clone(),
-            version: plan.version,
-            todo: label.clone(),
-            attempt: todo.attempt,
-            contract_digest: contracted.frozen,
-            criteria_digest: contracted.contract.criteria_digest()?,
-            output_digest: Digest::of(contracted.product.as_deref().unwrap_or("").as_bytes()),
-            snapshot: snapshot.as_str().to_owned(),
-            integration,
-        })
-    }
-
-    /// Section 6.3 step 2 for a candidate or an integration tree: the effect committed under
-    /// the lease, so a dropped request leaves an intent recovery can see.
-    pub(super) fn request_verification(
-        &self,
-        txn: &mut Txn,
-        id: &PlanId,
-        label: &TodoLabel,
-        token: &VerificationToken,
-    ) -> Result<EffectId, PlanOpError> {
-        let effect = effect_id(&self.store.request_nonce(), label)?;
-        let claim = Claim {
-            pid: std::process::id(),
-            at: self.store.now_ms(),
-        };
-        let mut record = draft(
-            id,
-            KIND_VERIFICATION_REQUESTED,
-            txn.actor.clone(),
-            self.store.now_ms(),
-            self.todos(txn, id)?,
-            json!({"label": label, "token": token, "effect_id": effect, "claim": claim.to_value()}),
-            txn.derived(&format!("verify-{}", effect))?,
-            txn.expected,
-            Some(token.attempt),
-        );
-        record.record.todo = Some(label.clone());
-        let committed = self.commit(txn, record)?;
-        self.emit(&committed);
-        Ok(effect)
-    }
-
-    fn todos(&self, txn: &Txn, id: &PlanId) -> Result<u32, PlanOpError> {
-        Ok(u32::try_from(txn.state.plan(id)?.todos.len()).unwrap_or(u32::MAX))
+        self.contracted_with(txn, id, label, contract, output, resolve)
     }
 
     /// One journal record of the acceptance kinds, named by the todo and its attempt; a
@@ -563,7 +482,7 @@ impl PlanEngine {
             kind,
             txn.actor.clone(),
             self.store.now_ms(),
-            self.todos(txn, id)?,
+            super::done::todo_count(txn, id)?,
             args,
             txn.derived(&format!("{kind}-{}", self.store.nonce()))?,
             txn.expected,
@@ -649,14 +568,8 @@ impl PlanEngine {
                 }),
                 None,
             )?;
-            let token = self.token(
-                &txn,
-                id,
-                &label,
-                &contracted,
-                &staging.integrated,
-                Some(generation),
-            )?;
+            let integrated = staging.integrated.as_str();
+            let token = self.token(&txn, id, &label, &contracted, integrated, Some(generation))?;
             let effect = self.request_verification(&mut txn, id, &label, &token)?;
             self.store.checkpoint_family(&txn.state)?;
             let parent_branch = parent
@@ -690,20 +603,10 @@ impl PlanEngine {
             staging
                 .release()
                 .map_err(|error| verification(&label, format!("staging lane: {error}")))?;
-            let prepared = Prepared {
-                id: id.clone(),
-                root: root.clone(),
-                label: label.clone(),
-                token,
-                contract: contracted.contract,
-                product: contracted.product,
-                effect,
-                jury: (0, None),
-            };
-            return match self.refuse(&mut txn, &prepared, call.op, verdict) {
-                Ok(_) => Err(verification(&label, "a refusal returned an outcome")),
-                Err(error) => Err(error),
-            };
+            let prepared = Prepared::unjuried(id, root, token, &contracted, effect);
+            return self
+                .refuse(&mut txn, &prepared, call.op, verdict)
+                .map(|never| match never {});
         }
         self.record(
             &mut txn,
@@ -869,16 +772,18 @@ impl PlanEngine {
         // the submitted one, must be the token the integration verified; else stale, uncharged.
         let named = output.or(integration.candidate.outputs.first());
         let contracted = self.contracted(txn, id, label, named)?;
+        let integrated = integration.integrated.as_str();
         let now = self.token(
             txn,
             id,
             label,
             &contracted,
-            &integration.integrated,
+            integrated,
             Some(integration.generation),
         )?;
         if let Some(was) = integration.token.as_ref().filter(|was| **was != now) {
-            self.record_stale(txn, id, (label, attempt), was, &now)?;
+            let detail = super::done::stale_detail(was, &now);
+            self.record_stale(txn, id, was, detail, None)?;
             return Err(PlanOpError::Stale {
                 label: label.clone(),
                 token: Box::new(now),
@@ -947,39 +852,6 @@ impl PlanEngine {
         };
         let outcome = self.settle(txn, id, root, op)?;
         Ok(Ok(outcome))
-    }
-
-    /// The refusal of step 5: the token the integration verified is not the one the plan
-    /// computes now. It settles no effect and charges no refusal (section 6.3).
-    fn record_stale(
-        &self,
-        txn: &mut Txn,
-        id: &PlanId,
-        who: (&TodoLabel, AttemptId),
-        was: &VerificationToken,
-        now: &VerificationToken,
-    ) -> Result<(), PlanOpError> {
-        let (label, attempt) = who;
-        let mut record = draft(
-            id,
-            KIND_VERIFICATION_STALE,
-            txn.actor.clone(),
-            self.store.now_ms(),
-            self.todos(txn, id)?,
-            json!({"label": label, "token": was}),
-            txn.derived("stale")?,
-            txn.expected,
-            Some(attempt),
-        );
-        record.record.todo = Some(label.clone());
-        record.record.extra.insert(
-            "refusal".to_owned(),
-            json!({"code": "stale", "detail": super::done::stale_detail(was, now)}),
-        );
-        let committed = self.commit(txn, record)?;
-        self.store.checkpoint_family(&txn.state)?;
-        self.emit(&committed);
-        Ok(())
     }
 
     /// The integration's verdict, the one the acceptance record carries.
