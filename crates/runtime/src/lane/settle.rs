@@ -146,7 +146,7 @@ pub fn candidate_of(
     deadline: Option<Instant>,
 ) -> Result<Candidate, LaneError> {
     quiet(quiescence)?;
-    let status = git_by(path, &["status", "--porcelain"], deadline)?;
+    let status = git_by(path, &super::STATUS, deadline)?;
     if !status.trim().is_empty() {
         git_by(
             path,
@@ -287,7 +287,7 @@ impl Staging {
 
     pub fn release(mut self) -> Result<(), LaneError> {
         match self.lane.take() {
-            Some(lane) => lane.discard(),
+            Some(lane) => lane.discard().map(drop),
             None => Ok(()),
         }
     }
