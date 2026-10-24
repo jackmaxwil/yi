@@ -10,6 +10,8 @@ mod scratch;
 mod support;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/worktree.rs"]
+mod worktree;
 
 mod advisor_compaction;
 mod advisor_e2e;
@@ -50,6 +52,7 @@ mod lanes;
 mod levers;
 mod node;
 mod permission_scope;
+mod plan_capacity;
 mod plan_declare;
 mod plan_e2e;
 mod plan_fuzz;
