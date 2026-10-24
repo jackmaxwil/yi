@@ -1847,17 +1847,8 @@ fn why_answers_for_a_committed_edit_and_an_unknown_extension_is_not_found() -> T
 
 /// The `read` result recorded in tui fixture session 01a129b6, its text repeated past `bytes`.
 fn recorded_result(bytes: usize) -> Result<yi_types::message::AgentMessage, Box<dyn Error>> {
-    let line = include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl")
-        .lines()
-        .find(|line| line.contains("\"role\":\"toolResult\""))
-        .ok_or("the fixture lost its tool result")?;
-    let mut result = serde_json::from_str::<Value>(line)?["message"].take();
-    let text = result["content"][0]["text"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
-    result["content"][0]["text"] = Value::String(text.repeat(bytes / text.len() + 1));
-    Ok(serde_json::from_value(result)?)
+    let result = crate::recorded_read::recorded_read(|t| t.repeat(bytes / t.len().max(1) + 1));
+    Ok(serde_json::from_value(result?)?)
 }
 
 type ReplayLine = (usize, u64, u64, Option<String>);

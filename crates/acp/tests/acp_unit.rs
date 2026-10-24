@@ -1,3 +1,5 @@
+#[path = "../../types/tests/support/recorded_read.rs"]
+mod recorded_read;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 
@@ -808,17 +810,10 @@ fn why_names_an_uncommitted_line_the_real_error_and_the_lines_past_its_cap() -> 
     Ok(())
 }
 
-/// A tool result entry as tui fixture session 01a129b6 recorded its `read`, its text set to `text`.
 fn recorded_result(index: u64, text: &str) -> Result<Entry, Box<dyn Error>> {
-    let line = include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl")
-        .lines()
-        .find(|line| line.contains("\"role\":\"toolResult\""))
-        .ok_or("the fixture lost its tool result")?;
-    let mut message = serde_json::from_str::<Value>(line)?["message"].take();
-    message["content"][0]["text"] = Value::String(text.to_owned());
     Ok(Entry::Message {
         id: format!("e{index}"),
-        message: serde_json::from_value(message)?,
+        message: serde_json::from_value(recorded_read::recorded_read(|_| text.to_owned())?)?,
         terminate: None,
         parent_id: None,
         seq: index,
