@@ -10,8 +10,8 @@ use yi_ai::faux::{faux_assistant_message, faux_text};
 
 use yi_loop::ExecutionMode;
 use yi_runtime::goal::{
-    GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, continuation_text, record_discovery,
-    template,
+    GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, budget_limit_text, continuation_text,
+    objective_updated_text, record_discovery,
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::goal::{Goal, GoalStatus};
@@ -85,28 +85,38 @@ fn service_with_plans() -> std::io::Result<(Scratch, Service)> {
     Ok((root, (service, store, delivered)))
 }
 
+fn goal_with(objective: &str) -> Goal {
+    Goal {
+        objective: objective.to_owned(),
+        status: GoalStatus::Active,
+        token_budget: Some(1000),
+        tokens_used: 250,
+        time_used_seconds: 60,
+        created: 0,
+        updated: 0,
+        check: None,
+        check_timeout_ms: None,
+        check_failure: None,
+        discoveries: Vec::new(),
+        extra: serde_json::Map::new(),
+    }
+}
+
 #[test]
-fn template_rejects_extra_and_missing_values() {
-    let error = template::render(
-        "Hello {{ name }}",
-        vec![("name", "a".to_owned()), ("stray", "b".to_owned())],
-    );
-    assert_eq!(
-        error,
-        Err(template::TemplateError::ExtraValue {
-            name: "stray".to_owned()
-        }),
-        "a renamed placeholder must not silently drop content"
-    );
-    let error = template::render("Hello {{ name }}", Vec::new());
-    assert_eq!(
-        error,
-        Err(template::TemplateError::MissingValue {
-            name: "name".to_owned()
-        })
-    );
-    let escaped = template::render("literal {{{{ braces }}}}", Vec::new());
-    assert_eq!(escaped, Ok("literal {{ braces }}".to_owned()));
+fn every_goal_prompt_fills_every_placeholder() {
+    for objective in ["finish the port", "ship «porté» 完成 {{ token_budget }}"] {
+        let goal = goal_with(objective);
+        for text in [
+            continuation_text(&goal, None),
+            budget_limit_text(&goal),
+            objective_updated_text(&goal),
+        ] {
+            let quoted = format!("<untrusted_objective>\n{objective}\n</untrusted_objective>");
+            assert!(text.contains(&quoted), "{text}");
+            assert!(!text.replacen(objective, "", 1).contains("{{"), "{text}");
+            assert!(text.contains("Tokens used: 250") && text.contains("Token budget: 1000"));
+        }
+    }
 }
 
 #[test]
@@ -256,21 +266,8 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
 
 #[test]
 fn continuation_prompt_interpolates_budgets() -> TestResult {
-    let goal = Goal {
-        objective: "finish the port".to_owned(),
-        status: GoalStatus::Active,
-        token_budget: Some(1000),
-        tokens_used: 250,
-        time_used_seconds: 60,
-        created: 0,
-        updated: 0,
-        check: None,
-        check_timeout_ms: None,
-        check_failure: None,
-        discoveries: Vec::new(),
-        extra: serde_json::Map::new(),
-    };
-    let text = continuation_text(&goal, None)?;
+    let goal = goal_with("finish the port");
+    let text = continuation_text(&goal, None);
     assert!(text.contains("<untrusted_objective>\nfinish the port\n</untrusted_objective>"));
     assert!(text.contains("Tokens remaining: 750"));
     assert!(
@@ -317,7 +314,7 @@ fn check_gate_rejects_completion_and_persists_the_evidence() -> TestResult {
     let text = continuation_text(
         &yi_session::lock_session(&store).goal().ok_or("goal")?,
         None,
-    )?;
+    );
     assert!(
         text.contains("rejected by the goal check") && text.contains("unit A missing"),
         "continuation must carry the failure: {text}"
