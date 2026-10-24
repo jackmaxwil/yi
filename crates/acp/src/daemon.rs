@@ -118,12 +118,14 @@ fn ledger_path(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("ledger.json")
 }
 
-/// Workers write stderr here, beside the socket, where /dev/null kept a worker's dying words.
+/// Worker stderr lands here, owner-only beside the socket; /dev/null kept a worker's dying words.
 fn worker_log(socket: &std::path::Path) -> Stdio {
+    use std::os::unix::fs::OpenOptionsExt;
     let path = socket.with_extension("worker.log");
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(path);
     log.map_or_else(|_| Stdio::null(), Stdio::from)
 }
