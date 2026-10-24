@@ -4615,3 +4615,240 @@ fn the_banner_that_says_not_connected_clears_when_the_link_comes_up() -> TestRes
     outbound.shutdown();
     Ok(())
 }
+
+const KERNEL_SESSION: &str = include_str!("../../tui/tests/fixtures/sessions/01a0648f.jsonl");
+const EDIT_SESSION: &str = include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl");
+
+/// The entries of a session recorded by a real run, as the worker's `_yi/replay` sends them.
+fn recorded(jsonl: &str) -> Vec<Value> {
+    jsonl
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line["kind"] == "entry")
+        .collect()
+}
+
+fn resume_with(frame: &Value, entries: &[Value]) -> Vec<Value> {
+    vec![
+        replay("s-alpha", entries, 0, None),
+        session_result(frame, "s-alpha", None, json!({})),
+    ]
+}
+
+fn resume_edit_session(frame: &Value) -> Vec<Value> {
+    resume_with(frame, &recorded(EDIT_SESSION))
+}
+
+/// The recorded kernel session, its first result carrying a plot the way a matplotlib cell's does.
+fn kernel_entries() -> Vec<Value> {
+    let mut entries = recorded(KERNEL_SESSION);
+    let plot = json!({"type": "image", "data": "aWJvcnk=", "mimeType": "image/png"});
+    let first = entries
+        .iter_mut()
+        .find(|e| e["message"]["toolName"] == "ipython");
+    if let Some(content) = first.and_then(|e| e["message"]["content"].as_array_mut()) {
+        content.push(plot);
+    }
+    entries
+}
+
+fn resume_kernel_session(frame: &Value) -> Vec<Value> {
+    resume_with(frame, &kernel_entries())
+}
+
+/// A reconnect's full replay: the same branch, one reply longer.
+fn resume_kernel_session_again(frame: &Value) -> Vec<Value> {
+    let mut entries = kernel_entries();
+    entries.push(entry("e-tail", None, 99, &assistant("back again")));
+    resume_with(frame, &entries)
+}
+
+fn replayed_session(resume: Responder) -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+/// What the recording itself says each kernel cell ran, printed and raised, paired by call id:
+/// (first code line, first stdout line, error name).
+fn kernel_cells(jsonl: &str) -> Vec<(String, Option<String>, Option<String>)> {
+    let entries = recorded(jsonl);
+    let messages: Vec<&Value> = entries.iter().map(|e| &e["message"]).collect();
+    let blocks = messages
+        .iter()
+        .filter_map(|m| m["content"].as_array())
+        .flatten();
+    let first_line = |text: &Value| {
+        text.as_str()
+            .and_then(|t| t.lines().next())
+            .map(str::to_owned)
+    };
+    blocks
+        .filter(|b| b["type"] == "toolCall" && b["name"] == "ipython")
+        .map(|call| {
+            let result = messages.iter().find(|m| m["toolCallId"] == call["id"]);
+            let details = result.map_or(&Value::Null, |m| &m["details"]);
+            (
+                first_line(&call["arguments"]["code"]).unwrap_or_default(),
+                first_line(&details["stdout"]),
+                details["error"]["ename"].as_str().map(str::to_owned),
+            )
+        })
+        .collect()
+}
+
+fn is_header(row: &str) -> bool {
+    row.contains("● [") || row.contains("◐ [")
+}
+
+/// The rows of notebook cell `n`, from its `● [n]` header to the next one.
+fn cell_rows(frame: &str, n: usize) -> Result<Vec<&str>, String> {
+    let rows: Vec<&str> = frame.lines().collect();
+    let head = (rows.iter())
+        .position(|row| row.contains(&format!("● [{n}]")))
+        .ok_or_else(|| format!("no header for cell {n}:\n{frame}"))?;
+    let tail = rows.get(head + 1..).unwrap_or_default();
+    Ok(tail
+        .iter()
+        .copied()
+        .take_while(|row| !is_header(row))
+        .collect())
+}
+
+/// Dies with "no kernel cells yet" for a session that ran six: the Notebook filled from live
+/// frames only, so a console started after the work had nothing to show, plots included.
+#[test]
+fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
+    let frame = run_frames_sized(
+        "replay-notebook",
+        replayed_session(resume_kernel_session),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Tooling works\ncmd-i\n\
+         wait-frame 3000 ● [6]\nquit\n",
+        SidebarMode::Full,
+        (180, 100),
+    )?;
+    let cells = kernel_cells(KERNEL_SESSION);
+    assert_eq!(cells.len(), 6, "the recording holds six kernel calls");
+    for (index, (code, stdout, ename)) in cells.iter().enumerate() {
+        let rows = cell_rows(&frame, index + 1)?;
+        assert!(
+            rows.first().is_some_and(|row| row.contains(code)),
+            "{code}: {rows:?}"
+        );
+        if let Some(line) = stdout {
+            assert!(
+                rows.iter().any(|row| row.contains(line)),
+                "{line}: {rows:?}"
+            );
+        }
+        if let Some(name) = ename {
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains('✕') && row.contains(name)),
+                "{name}: {rows:?}"
+            );
+        }
+    }
+    let plotted = cell_rows(&frame, 1)?;
+    assert!(
+        plotted.iter().any(|row| row.contains("image · 0 KB png")),
+        "{plotted:?}"
+    );
+    Ok(())
+}
+
+/// A full replay after a reconnect finds the cells already there; it must not append them again.
+#[test]
+fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
+    let mut fixture = replayed_session(resume_kernel_session);
+    fixture.extend([
+        Step::Close,
+        Step::Accept,
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/resume", resume_kernel_session_again),
+    ]);
+    let frame = run_frames_sized(
+        "replay-notebook-twice",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Tooling works\ncmd-i\n\
+         wait-frame 8000 back again\nquit\n",
+        SidebarMode::Full,
+        (180, 100),
+    )?;
+    assert_eq!(
+        frame.lines().filter(|row| is_header(row)).count(),
+        6,
+        "{frame}"
+    );
+    Ok(())
+}
+
+/// Dies with "nothing changed in this scope" for a session that edited a file: Review filled from
+/// live edits only.
+#[test]
+fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
+    let frame = run_frames(
+        "replay-review",
+        replayed_session(resume_edit_session),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 greet takes one\nkey alt-g\n\
+         wait-frame 3000 Review\nquit\n",
+    )?;
+    let entries = recorded(EDIT_SESSION);
+    let results = |tool: &str| {
+        let named = entries
+            .iter()
+            .map(|e| &e["message"])
+            .filter(|m| m["toolName"] == tool);
+        named.cloned().collect::<Vec<Value>>()
+    };
+    let edit = results("edit");
+    let details = &edit.first().ok_or("the recording holds an edit")?["details"];
+    let patch = details["patch"]
+        .as_str()
+        .ok_or("the edit carries a patch")?;
+    let path = patch
+        .lines()
+        .find_map(|line| line.strip_prefix("+++ b/"))
+        .ok_or("no path")?;
+    let (added, removed) = (&details["added"], &details["removed"]);
+    assert_eq!(
+        row_holding(&frame, "▸ ")?,
+        format!("▸ {path}  +{added} −{removed}")
+    );
+    let reads = results("read").len();
+    assert_eq!(
+        row_holding(&frame, "read only")?,
+        format!("○ {reads} file read only")
+    );
+    Ok(())
+}
+
+/// A replay is history, not news: the worker calls its edit tracked, and Review stays shut until asked.
+#[test]
+fn a_resumed_sessions_tracked_edit_does_not_open_review_by_itself() -> TestResult {
+    let frame = run_frames(
+        "replay-review-shut",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_edit_session),
+            Step::Expect("_yi/tracked", |frame| {
+                vec![
+                    ok(frame, json!({"tracked": [true]})),
+                    update(
+                        "s-alpha",
+                        json!({"sessionUpdate": "_yi/name", "name": "tracked-answered"}),
+                    ),
+                ]
+            }),
+        ],
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 tracked-answered\nquit\n",
+    )?;
+    assert!(!frame.contains("Review"), "{frame}");
+    Ok(())
+}

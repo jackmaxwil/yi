@@ -215,7 +215,7 @@ impl App {
                 });
             }
             Decoded::Gap => self.heal(outbound, id),
-            Decoded::Replay(replay, entries) => self.absorb_replay(id, &replay, entries),
+            Decoded::Replay(replay, entries) => self.absorb_replay(outbound, id, &replay, entries),
             Decoded::Goal(goal) => {
                 for chat in self.state.chats_mut(id) {
                     chat.port.set_goal(goal.clone());
@@ -291,7 +291,13 @@ impl App {
         }
     }
 
-    fn absorb_replay(&mut self, id: &SessionId, replay: &Replay, entries: Vec<Entry>) {
+    fn absorb_replay(
+        &mut self,
+        outbound: &Outbound,
+        id: &SessionId,
+        replay: &Replay,
+        entries: Vec<Entry>,
+    ) {
         if replay.leaf.is_some() && yi_types::trace::enabled() {
             let mut args = serde_json::Map::new();
             args.insert("session".to_owned(), json!(id.0));
@@ -303,6 +309,9 @@ impl App {
         }
         self.seq.insert(id.clone(), None);
         self.replayed.insert(id.clone());
+        if replay.child.is_none() {
+            self.absorb_history(outbound, id, &entries);
+        }
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
             row.name = Some(name.clone());
         }
