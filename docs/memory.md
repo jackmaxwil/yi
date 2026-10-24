@@ -78,7 +78,8 @@ text turns and compaction summaries by the same BM25, across every root session 
 under the sessions dir ran in this repository: the header's `cwd` resolves to the same canonical
 repository (the git common dir), or sits inside it once its checkout is gone. Tool calls, their
 arguments and their results are never indexed. A hit carries `session`, `entryId`, `type`, a
-160-character `snippet` and `url`, `history://<session>/<entry>`, which `fetch` resolves across
+`snippet` in its text's own case (at most 160 characters; a cut one adds `cut: true` and a notice
+row naming the cap) and `url`, `history://<session>/<entry>`, which `fetch` resolves across
 lanes. A cut page names the call for the next one; a directory whose checkout is gone and whose
 repository is therefore unknown is counted in a second notice line, never searched. The parsed
 units are cached per file and re-read when a file's length changes. Root session only.
