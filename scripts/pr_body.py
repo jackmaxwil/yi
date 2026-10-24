@@ -5,6 +5,7 @@ The prose sections stay the author's; only the counted ones are filled, because
 a hand-typed net-LOC line is an estimate and the growth budget prices the
 measured number. Prints to stdout — piping is the caller's business.
 """
+import hashlib
 import pathlib
 import subprocess
 import sys
@@ -97,17 +98,35 @@ LOCK_MISSING = (f"{SURFACE_LOCK} is missing; `check_request_budget.py --update` 
                 " committed alone as a Ratchet")
 
 
+def surface_entry(text):
+    """A lock value: the text and its hash. A hash alone cannot tell a cut from a rewrite,
+    and the old text is in no git object but this lock."""
+    return {"hash": hashlib.sha256(text.encode()).hexdigest(), "text": text}
+
+
+def trimmed(was, now):
+    """A pure cut: shorter, and every word of the new text is the old text's, in order.
+    A lock written before the text was kept (a bare hash) cannot show one."""
+    if "text" not in was or "text" not in now:
+        return False
+    old = iter(was["text"].split())
+    return len(now["text"].encode()) < len(was["text"].encode()) and all(word in old for word in now["text"].split())
+
+
 def surface_diff(was, now):
-    """(added, changed) lock keys between two surfaces. A removal makes no new
+    """(added, grew, trimmed) lock keys between two surfaces. A removal makes no new
     claim and asks nothing, so removed keys are not reported."""
+    entry = lambda value: value if isinstance(value, dict) else {"hash": value}
     added = sorted(key for key in now if key not in was)
-    changed = sorted(key for key in now if key in was and was[key] != now[key])
-    return added, changed
+    moved = [key for key in sorted(now) if key in was and entry(was[key])["hash"] != entry(now[key])["hash"]]
+    cut = [key for key in moved if trimmed(entry(was[key]), entry(now[key]))]
+    return added, [key for key in moved if key not in cut], cut
 
 
 def surface_delta(base):
-    """(added, changed) keys in the tool-surface lock between the merge base and
-    the working tree. A lock missing at base is being seeded and asks nothing."""
+    """(added, grew) keys in the tool-surface lock between the merge base and the
+    working tree; a trimmed key owes nothing. A lock missing at base is being
+    seeded and asks nothing."""
     import json
 
     before = git("show", f"{base}:{SURFACE_LOCK}")
@@ -116,7 +135,8 @@ def surface_delta(base):
     now_path = ROOT / SURFACE_LOCK
     if not now_path.exists():
         raise SystemExit(LOCK_MISSING)
-    return surface_diff(json.loads(before.stdout), json.loads(now_path.read_text()))
+    added, grew, _ = surface_diff(json.loads(before.stdout), json.loads(now_path.read_text()))
+    return added, grew
 
 
 def surface_skeletons(added, changed):
@@ -185,10 +205,12 @@ def selfcheck():
     assert by_area["crates/runtime"] == [2, 240, 5], by_area["crates/runtime"]
     # The surface delta: a lock absent at base is the seeding commit asking
     # nothing (surface_delta's early return); a removal-only delta owes nothing.
-    assert surface_diff({"tool:read": "a"}, {"tool:read": "a"}) == ([], [])
-    assert surface_diff({"tool:read": "a"}, {"tool:read": "a", "tool:foo": "b"}) == (["tool:foo"], [])
-    assert surface_diff({"tool:read": "a"}, {"tool:read": "z"}) == ([], ["tool:read"])
-    assert surface_diff({"tool:read": "a", "tool:gone": "b"}, {"tool:read": "a"}) == ([], [])
+    assert surface_diff({"tool:read": "a"}, {"tool:read": "a"}) == ([], [], [])
+    assert surface_diff({"tool:read": "a"}, {"tool:read": "a", "tool:foo": "b"}) == (["tool:foo"], [], [])
+    assert surface_diff({"tool:read": "a"}, {"tool:read": "z"}) == ([], ["tool:read"], [])
+    assert surface_diff({"tool:read": "a", "tool:gone": "b"}, {"tool:read": "a"}) == ([], [], [])
+    # A lock still holding bare hashes reads the same as its rewrite with the text kept.
+    assert surface_diff({"tool:read": surface_entry("a b")["hash"]}, {"tool:read": surface_entry("a b")}) == ([], [], [])
     print("ok   pr_body selfcheck")
 
 

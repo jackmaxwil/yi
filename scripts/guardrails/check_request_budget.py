@@ -8,7 +8,6 @@ one a session registers, so the lock pins what a model call can name. Each
 role's first request in a bare workspace (root, leaf root child, reader,
 worker) is ratcheted too: the root's prompt alone let a child prefix grow
 unseen."""
-import hashlib
 import json
 import pathlib
 import re
@@ -18,7 +17,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, BASE, fail  # noqa: E402
-from pr_body import LOCK_MISSING, surface_diff  # noqa: E402
+from pr_body import LOCK_MISSING, surface_diff, surface_entry  # noqa: E402
 
 LOCK = BASE / "tool_surface.json"
 ROLES = BASE / "role_prefix.json"
@@ -44,7 +43,7 @@ def measure():
     for line in out.stdout.splitlines():
         if line.startswith("TOOL_SURFACE "):
             record = json.loads(line[len("TOOL_SURFACE "):])
-            surface[record["key"]] = hashlib.sha256(record["text"].encode()).hexdigest()
+            surface[record["key"]] = surface_entry(record["text"])
     if not surface:
         fail(["request_budget test printed no TOOL_SURFACE lines"], "request_budget")
     return (tuple(int(found.group(n)) for n in (1, 2, 3)), surface, role_rows(out.stdout))
@@ -71,11 +70,11 @@ def role_problems(budget, rows):
 
 def surface_delta(lock, surface):
     """(added, changed, removed) between the locked and the measured surface.
-    added/changed are pr_body's surface_diff, the one implementation; the lock
-    also reports removals, which a PR body owes nothing for."""
-    added, changed = surface_diff(lock, surface)
+    added/grew/trimmed are pr_body's surface_diff, the one implementation; the lock
+    moves for a trim too, though a PR body owes nothing for it, and also reports removals."""
+    added, grew, trimmed = surface_diff(lock, surface)
     removed = sorted(key for key in lock if key not in surface)
-    return added, changed, removed
+    return added, sorted(grew + trimmed), removed
 
 
 def surface_problems(lock, surface):
@@ -88,7 +87,7 @@ def surface_problems(lock, surface):
     return [
         f"tool surface changed: changed {show(changed)}; added {show(added)}; removed {show(removed)}",
         "  rerun check_request_budget.py --update in its own Ratchet commit;",
-        "  the PR body then owes the sections check_pr_metadata.py names",
+        "  the PR body then owes the sections check_pr_metadata.py names for what grew",
     ]
 
 
@@ -109,6 +108,12 @@ def selfcheck():
     assert "changed —" in problems[0] and "added tool:write" in problems[0], problems
     assert "removed tool:read" in problems[0], problems
     assert any("--update" in line for line in problems), "the error carries the fix"
+    kept = {"tool:edit": surface_entry("one two three")}
+    assert surface_problems(kept, {"tool:edit": surface_entry("one two three")}) == [], "a lock keeping text matches itself"
+    problems = surface_problems(kept, {"tool:edit": surface_entry("one three")})
+    assert "changed tool:edit" in problems[0], "a cut still moves the lock, though its PR body owes nothing"
+    bare = {"tool:edit": surface_entry("one two three")["hash"]}
+    assert surface_problems(bare, kept) == [], "a lock of bare hashes matches the same text kept, until its Ratchet"
     budget = dict.fromkeys(BARE_ROLES, 100)
     rows = {("bare", role): 100 for role in BARE_ROLES}
     assert role_problems(budget, rows) == []

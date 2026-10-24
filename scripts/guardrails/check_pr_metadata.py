@@ -33,7 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail  # noqa: E402
 from check_changes import DIR, pending  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
-from pr_body import base_commit, diff_stats, git, surface_delta, tally  # noqa: E402
+from pr_body import base_commit, diff_stats, git, surface_delta, surface_diff, surface_entry, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
 LEDGER = "Feature ledger"
@@ -228,9 +228,9 @@ def section_table_ok(body, title):
 
 
 def surface_problems(body, added, changed):
-    """A change to the surface a model reads owes its sections (D188): a changed
-    key owes the claims ledger, an added key owes the neighbour matrix and the
-    dogfood table beside it. A removal makes no new claim and asks nothing."""
+    """A change to the surface a model reads owes its sections (D188): a key that
+    grew or was reworded owes the claims ledger, an added key owes the neighbour matrix
+    and the dogfood table beside it. A removal or a pure cut makes no new claim and asks nothing."""
     owed = []
     if changed:
         owed.append(("Claims ledger", f"the PR changes {', '.join(changed)}, which the model reads"))
@@ -445,6 +445,27 @@ def selfcheck():
     errs = surface_problems("## Claims ledger\n\nno table\n## Dogfood\n\n" + table,
                             [], ["tool:ipython"])
     assert errs, "a table under the next section is not under this one"
+
+    # --- a cut owes no ledger. The fixtures are identity.md before and after the autofixer's
+    # trim in 2b77affff; their hashes are the tool_surface.json values either side of it.
+    fixtures = ROOT / "scripts/guardrails/fixtures"
+    before, after = ((fixtures / name).read_text() for name in ("identity-before.md", "identity-after.md"))
+    assert surface_entry(before)["hash"].startswith("3828fd8e") and surface_entry(after)["hash"].startswith("0b27e496")
+
+    def owed(old, new):
+        added, grew, _ = surface_diff({"prompt:identity": old}, {"prompt:identity": new})
+        return surface_problems("", added, grew)
+
+    assert owed(surface_entry(before), surface_entry(after)) == [], "a real trim owes no ledger"
+    assert len(owed(surface_entry(after), surface_entry(before))) == 1, "the same pair reversed grew the text"
+    for name, text in {
+        "swapped words, fewer bytes": after.replace("your instructions,", "your orders,"),
+        "reordered words, fewer bytes": after.replace("Rule talk: your", "your Rule talk:").replace(" unless the user asks about them.", ""),
+        "the same words, wider spacing": after.replace(". ", ".  "),
+    }.items():
+        assert len(owed(surface_entry(after), surface_entry(text))) == 1, f"{name} still owes the ledger"
+    # The lock before this change held a bare hash: it cannot show a cut, so the first one owes.
+    assert len(owed(surface_entry(before)["hash"], surface_entry(after))) == 1, "a bare-hash lock cannot show a cut"
     print("ok   pr_metadata selfcheck")
 
 
