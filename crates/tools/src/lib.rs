@@ -41,7 +41,7 @@ pub use process::{
     CommandCapture, OUTPUT_CAP, command, edit_file, git_root, keyless_command, run_captured,
     spill_path,
 };
-pub use reduce::{Reduced, reduce};
+pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, view};
 pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
     outcome_note, sandbox_refusal,
@@ -52,7 +52,7 @@ pub const SPILLS: &str = "spills";
 /// The dir beside it every session shared before spills were per session (D316).
 pub const FLAT_SPILLS: &str = "tool-output";
 pub use tool::{
-    CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output,
+    CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, cut, error_output,
     error_output_kind, glob_head, text_output,
 };
 
