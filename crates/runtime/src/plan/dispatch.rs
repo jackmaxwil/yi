@@ -790,8 +790,6 @@ pub(crate) mod tests {
         Err(format!("no notice with {needle:?}").into())
     }
 
-    /// Dies with the wall block in `kwargs_of`: drop it and a plan-dispatched reader spawns
-    /// with the parent's whole capability set (plan section 7.6).
     /// Incident: nine of twelve F0e "text, not JSON" refusals were a valid object inside a
     /// fenced block, and the parent had no road past them (#475).
     #[tokio::test]

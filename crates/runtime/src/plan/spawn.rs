@@ -178,6 +178,8 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with the wall block in `kwargs_of`: drop it and a plan-dispatched reader spawns
+    /// with the parent's whole capability set (plan section 7.6).
     #[test]
     fn kwargs_carry_the_wall() -> TestResult {
         let mut delegation = delegated("read the docs")?.delegation.ok_or("delegated")?;
