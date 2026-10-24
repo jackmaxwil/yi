@@ -1287,6 +1287,21 @@ fn refreshing_cursor_without_a_login_is_a_skip_not_a_failure() -> TestResult {
     Ok(())
 }
 
+/// Kimi's list is the account's own too, read at the login profile's base: with no login and
+/// no profile the row names the verb, not "bundled only", and the run stays green.
+#[test]
+fn refreshing_kimi_without_a_login_is_a_skip_not_a_failure() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-skip")?;
+    let skipped = workspace.yi(&["catalog", "refresh", "kimi"])?;
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    let row = stdout(&skipped)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(row, "kimi no credential (yi login kimi)");
+    Ok(())
+}
+
 /// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
 #[test]
 fn a_relative_home_is_refused_at_boot() -> TestResult {
