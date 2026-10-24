@@ -127,7 +127,8 @@ impl BottomView for ListPopup {
             }
             KeyCodeValue::Enter | KeyCodeValue::Tab => {
                 // Completing to the selected item would drop the arguments.
-                if self.prefix == '/' && self.query.contains(' ') {
+                let typo = key.code == KeyCodeValue::Enter && count == 0;
+                if self.prefix == '/' && (self.query.contains(' ') || typo) {
                     return PopupResult::Insert(format!("{}{}", self.prefix, self.query));
                 }
                 match self.filtered().get(self.selected) {

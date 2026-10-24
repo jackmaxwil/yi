@@ -231,8 +231,8 @@ mod stream;
 
 pub use crate::frame::next_spinner_wake;
 pub(crate) use asks::mail_source;
-pub use bridge::forward;
 pub(crate) use bridge::spawn_runtime_bridge;
+pub use bridge::{forward, submit};
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {

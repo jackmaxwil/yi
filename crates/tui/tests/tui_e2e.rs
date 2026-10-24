@@ -46,6 +46,64 @@ fn faux_model() -> Model {
     }
 }
 
+/// Dies with the second Enter of two quick ones vanishing: the UI had not seen `AgentStart`, so it
+/// sent a prompt, the runtime answered busy, and the bridge dropped the refusal.
+#[test]
+fn a_prompt_met_by_a_busy_session_steers_the_run_instead_of_vanishing() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let _guard = runtime.enter();
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        ["first answer", "second answer"]
+            .map(|reply| {
+                yi_runtime::faux::faux_assistant_message(
+                    vec![yi_runtime::faux::faux_text(reply)],
+                    StopReason::Stop,
+                )
+            })
+            .to_vec(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: yi_runtime::ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let hold = &session.provider().faux_hold;
+    hold.arm("text_delta", 1);
+    assert_eq!(yi_tui::app::submit(&session, "first"), None);
+    wait_for("the first run to reach its hold", || hold.reached())?;
+
+    let notice = yi_tui::app::submit(&session, "second");
+    assert_eq!(
+        notice.as_deref(),
+        Some("a turn was already running · your message steers it")
+    );
+    assert!(hold.release());
+    wait_for("the steered message to be answered", || {
+        let said = format!("{:?}", session.messages());
+        said.contains("first answer") && said.contains("second answer")
+    })?;
+    Ok(())
+}
+
+fn wait_for(what: &str, mut ready: impl FnMut() -> bool) -> TestResult {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ready() {
+        if Instant::now() > deadline {
+            return Err(format!("timed out waiting for {what}").into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    Ok(())
+}
+
 fn faux_session(reply: &str) -> AgentSession {
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![yi_runtime::faux::faux_assistant_message(
