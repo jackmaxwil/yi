@@ -211,7 +211,7 @@ fn a_plan_journal_folds_by_kind_and_actor_and_a_refusal_is_not_its_op() -> TestR
         tally,
         [
             ("block", ActorClass::Owner, 1),
-            ("done (refused)", ActorClass::Owner, 1),
+            ("done (rejected)", ActorClass::Owner, 1),
             ("init", ActorClass::Owner, 1),
             ("spawn_intent", ActorClass::Engine, 2),
             ("spawn_result", ActorClass::Engine, 2),
