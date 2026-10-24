@@ -366,8 +366,8 @@ impl ReadGate {
         self.open_after(path, walls, &mut || ())
     }
 
-    /// [`Self::open`], as [`Self::open_write_after`] and [`Self::remove_after`] are theirs, with
-    /// `held` run between the judgement and the act: the one window a racing process has.
+    /// A test seam: [`Self::open`] with `held` run between the judgement and the act, the one
+    /// window a racing process has, so a test forces the swap. Production calls [`Self::open`].
     pub fn open_after(
         &self,
         path: &Path,
@@ -384,6 +384,8 @@ impl ReadGate {
         self.open_write_after(path, walls, &mut || ())
     }
 
+    /// A test seam: [`Self::open_write`] with `held` run before each judged open, as in
+    /// [`Self::open_after`]. Production calls [`Self::open_write`].
     pub fn open_write_after(
         &self,
         path: &Path,
@@ -412,14 +414,16 @@ impl ReadGate {
     /// Unlinks `path`, the link itself when it is one, once judged as a write, inside the parent
     /// held open as judged, so a parent swapped to a link afterwards deletes nothing behind it.
     pub fn remove(&self, path: &Path, walls: &[PathBuf]) -> io::Result<()> {
-        self.remove_after(path, walls, || ())
+        self.remove_after(path, walls, &mut || ())
     }
 
+    /// A test seam: [`Self::remove`] with `held` run after the judgement and again once the
+    /// parent is held open, the two windows a racing process has. Production calls remove.
     pub fn remove_after(
         &self,
         path: &Path,
         walls: &[PathBuf],
-        held: impl FnOnce(),
+        held: &mut dyn FnMut(),
     ) -> io::Result<()> {
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -427,6 +431,7 @@ impl ReadGate {
         let parent = fs::canonicalize(parent)?;
         let real = parent.join(name);
         self.guard_resolved(&real, walls, true)?;
+        held();
         let dir = judged_dir(&parent, &real)?;
         held();
         Ok(unlinkat(&dir, name, AtFlags::empty())?)

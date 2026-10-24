@@ -24,7 +24,7 @@ pub(super) fn program_lines(
             };
             bytes = bytes.saturating_add(text.len());
             let n = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
-            let fuse = if kept.len() >= fuse.items {
+            let limit = if kept.len() >= fuse.items {
                 format!("{} lines", fuse.items)
             } else if bytes > fuse.bytes {
                 format!("{} MiB", fuse.bytes >> 20)
@@ -37,7 +37,7 @@ pub(super) fn program_lines(
             };
             if kept.is_empty() {
                 let cut = format!(
-                    "[line {n} alone is {} bytes, past the {fuse} program fuse; bash `sed -n {n}p` with `cut -c` reads it in parts]",
+                    "[line {n} alone is {} bytes, past the {limit} program fuse; bash `sed -n {n}p` with `cut -c` reads it in parts]",
                     text.len()
                 );
                 return (kept, Some(cut));
@@ -51,7 +51,7 @@ pub(super) fn program_lines(
                 false => format!("ranges=[{}]", rest.join(", ")),
             };
             let cut = format!(
-                "[kept {} lines, {first}-{} of {}: the program fuse is {fuse}; read with {resume} for the rest]",
+                "[kept {} lines, {first}-{} of {}: the program fuse is {limit}; read with {resume} for the rest]",
                 kept.len(),
                 n.saturating_sub(1),
                 lines.len()

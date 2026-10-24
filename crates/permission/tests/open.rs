@@ -37,13 +37,12 @@ impl Swap {
             workspace_git: Vec::new(),
             host_owned: Vec::new(),
         });
-        let (_scratch, swapped) = (scratch, None);
         Ok((
             Self {
-                _scratch,
+                _scratch: scratch,
                 store,
                 d,
-                swapped,
+                swapped: None,
             },
             gate,
         ))
@@ -64,7 +63,6 @@ impl Swap {
     }
 }
 
-/// A racing thread landed this swap a few times in 20,000 tries; here it lands every time.
 #[test]
 fn a_parent_swapped_after_the_judgement_reads_no_key() -> TestResult {
     let (mut swap, gate) = Swap::new("yi-gate-read")?;
@@ -111,13 +109,33 @@ fn a_parent_swapped_after_the_judgement_creates_nothing_in_the_store() -> TestRe
     Ok(())
 }
 
-/// The race found in review landed once in 100,000 tries: the delete must stay in the
-/// directory judged.
+/// A swap before the parent is opened is refused: the parent opened is the one judged.
+#[test]
+fn a_parent_swapped_before_it_is_opened_deletes_no_key() -> TestResult {
+    let (mut swap, gate) = Swap::new("yi-gate-unlink-open")?;
+    let (target, mut held) = (swap.d.join("id_rsa"), 0);
+    let removed = gate.remove_after(&target, &[], &mut || {
+        held += 1;
+        if held == 1 {
+            swap.swap();
+        }
+    });
+    assert_eq!(swap.key()?, KEY, "the remove deleted the key");
+    assert!(removed.is_err(), "the remove opened the swapped parent");
+    Ok(())
+}
+
+/// A swap once the parent is held open deletes in the directory judged, not behind the link.
 #[test]
 fn a_parent_swapped_after_the_judgement_deletes_in_the_judged_dir() -> TestResult {
     let (mut swap, gate) = Swap::new("yi-gate-unlink")?;
-    let target = swap.d.join("id_rsa");
-    let removed = gate.remove_after(&target, &[], || swap.swap());
+    let (target, mut held) = (swap.d.join("id_rsa"), 0);
+    let removed = gate.remove_after(&target, &[], &mut || {
+        held += 1;
+        if held == 2 {
+            swap.swap();
+        }
+    });
     assert_eq!(
         swap.key()?,
         KEY,
