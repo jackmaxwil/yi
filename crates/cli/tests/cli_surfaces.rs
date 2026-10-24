@@ -888,6 +888,17 @@ fn a_traced_ask_leaves_a_named_process_and_its_spans() -> TestResult {
         spans.iter().any(|span| span["process"] == process),
         "{summary}"
     );
+    let pid = process.trim_start_matches("ask [").trim_end_matches(']');
+    let events = std::fs::read_to_string(workspace.0.join("trace").join(format!("{pid}.jsonl")))?;
+    let main = events
+        .lines()
+        .find(|line| line.contains(r#""name":"process.main""#));
+    let main: Value = serde_json::from_str(main.ok_or("no process.main event")?)?;
+    let ts = main["ts"].as_u64().ok_or("process.main has no ts")?;
+    assert!(
+        ts > 1_600_000_000_000_000,
+        "ts {ts} is not on the wall clock"
+    );
     Ok(())
 }
 

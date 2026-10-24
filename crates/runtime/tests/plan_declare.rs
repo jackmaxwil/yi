@@ -142,8 +142,8 @@ fn a_plain_checker_command_is_frozen_and_the_engine_starts_the_todo() -> TestRes
     Ok(())
 }
 
-/// The session's lookup decides a checker's env names, never this process's environment: a
-/// criterion run for a child must not be judged by what the parent happens to hold.
+/// [`CheckerManifest::parse`] judges a checker's env names by the lookup it is handed, never
+/// by reading the process environment itself.
 #[test]
 fn a_frozen_manifest_asks_the_session_for_its_env_names() -> TestResult {
     let rig = rig("env")?;
