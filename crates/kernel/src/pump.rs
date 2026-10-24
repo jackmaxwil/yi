@@ -6,16 +6,11 @@ use tokio::sync::mpsc;
 use yi_types::kernel::{ConnectionInfo, JupyterMessage};
 use zeromq::{Socket, SocketRecv, SocketSend};
 
-use crate::client::{
-    ExecuteError, Inner, Lifecycle, dispatch_late_agent_message, frames_of, now_iso, trim_tail,
-    zmq_message,
-};
+use crate::client::{ExecuteError, Inner, Lifecycle, frames_of, now_iso, trim_tail, zmq_message};
 use crate::framing::{decode, encode};
 use crate::journal::record_orphan_process_state;
 use crate::reduce::{Reduction, StreamChunk, parent_msg_id, reduce};
-use crate::{
-    AGENT_MESSAGE_DISPLAY_MIME, HOST_COMM_TARGET, IOPUB_PROBE_RESEND_MS, READY_TIMEOUT_MS,
-};
+use crate::{HOST_COMM_TARGET, IOPUB_PROBE_RESEND_MS, READY_TIMEOUT_MS};
 
 pub(crate) struct ChildTasks {
     pub(crate) kill_tx: mpsc::UnboundedSender<()>,
@@ -283,60 +278,25 @@ pub(crate) fn spawn_shell_task(
 pub(crate) fn handle_execution_message(inner: &Arc<Inner>, message: &JupyterMessage) {
     let parent = parent_msg_id(message).map(str::to_owned);
     let mut done = false;
-    let mut late_payload = None;
-    if let Ok(mut active) = inner.active.lock() {
-        let matches = active
-            .as_ref()
-            .is_some_and(|current| parent.as_deref() == Some(current.cell.request_msg_id.as_str()));
-        if !matches {
-            if matches!(
-                message.header.msg_type.as_str(),
-                "display_data" | "update_display_data"
-            ) {
-                late_payload = message
-                    .content
-                    .get("data")
-                    .and_then(|data| data.get(AGENT_MESSAGE_DISPLAY_MIME))
-                    .cloned();
-            }
-        } else if let Some(current) = active.as_mut() {
-            if current.settled
-                && matches!(
-                    message.header.msg_type.as_str(),
-                    "display_data" | "update_display_data"
-                )
-            {
-                late_payload = message
-                    .content
-                    .get("data")
-                    .and_then(|data| data.get(AGENT_MESSAGE_DISPLAY_MIME))
-                    .cloned();
-            }
-            if late_payload.is_none() {
-                let mut stream_sink = current.on_stream.take();
-                let reduction = {
-                    let mut callback = stream_sink
-                        .as_mut()
-                        .map(|sink| move |chunk: StreamChunk<'_>| sink(chunk.name, chunk.text));
-                    reduce(
-                        &mut current.cell,
-                        message,
-                        callback
-                            .as_mut()
-                            .map(|callback| callback as &mut dyn FnMut(StreamChunk<'_>)),
-                    )
-                };
-                current.on_stream = stream_sink;
-                done = reduction == Reduction::Done;
-            }
-        }
-    }
-    if let Some(payload) = late_payload {
-        let dispatched =
-            dispatch_late_agent_message(&inner.late_handlers, parent.as_deref(), Some(&payload));
-        if dispatched {
-            return;
-        }
+    if let Ok(mut active) = inner.active.lock()
+        && let Some(current) = active.as_mut()
+        && parent.as_deref() == Some(current.cell.request_msg_id.as_str())
+    {
+        let mut stream_sink = current.on_stream.take();
+        let reduction = {
+            let mut callback = stream_sink
+                .as_mut()
+                .map(|sink| move |chunk: StreamChunk<'_>| sink(chunk.name, chunk.text));
+            reduce(
+                &mut current.cell,
+                message,
+                callback
+                    .as_mut()
+                    .map(|callback| callback as &mut dyn FnMut(StreamChunk<'_>)),
+            )
+        };
+        current.on_stream = stream_sink;
+        done = reduction == Reduction::Done;
     }
     if done {
         inner.resolve_active(parent.as_deref(), true, None);
