@@ -146,36 +146,24 @@ fn a_writing_call_closes_the_run_in_order() -> TestResult {
 fn a_call_held_at_the_permission_gate_says_so() -> TestResult {
     let mut app = app();
     started(&mut app, "t0", "bash", "rm -rf build");
+    let held = |app: &mut App| -> Result<bool, Box<dyn Error>> {
+        Ok(common::live_rows(app)?
+            .iter()
+            .any(|row| row.contains("rm -rf build") && row.contains('△')))
+    };
+    assert!(!held(&mut app)?, "a running call is not yet held");
     app.reduce_agent(AgentEvent::PermissionRequested {
         tool_call_id: "t0".to_owned(),
         title: "bash".to_owned(),
         description: "rm -rf build".to_owned(),
     });
-    assert_eq!(
-        app.live_tool_status("t0").ok_or("no live tool")?,
-        ToolStatus::Awaiting
-    );
-    let rendered = flat(
-        &Cell::Tool(ToolCell {
-            name: String::new(),
-            call_id: String::new(),
-            status: ToolStatus::Awaiting,
-            summary: ToolCell::summary_of("bash", "rm -rf build"),
-            digest: None,
-            preview: Vec::new(),
-            elapsed_ms: 0,
-            calls: 1,
-            details: json!({}),
-        })
-        .lines(80, &theme(), TranscriptMode::Normal, 0),
-    );
-    assert!(rendered.join("").contains('△'), "{rendered:?}");
+    assert!(held(&mut app)?, "{:#?}", common::live_rows(&mut app)?);
 
     app.reduce_agent(AgentEvent::PermissionResolved {
         tool_call_id: "t0".to_owned(),
         allowed: true,
     });
-    assert_eq!(app.live_tool_status("t0"), Some(ToolStatus::Running));
+    assert!(!held(&mut app)?, "{:#?}", common::live_rows(&mut app)?);
     Ok(())
 }
 

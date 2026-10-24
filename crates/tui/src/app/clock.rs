@@ -44,10 +44,6 @@ impl App {
         self.running
     }
 
-    pub fn has_run(&self) -> bool {
-        self.seen_turn
-    }
-
     /// A prompt has been submitted whose turn has not started yet.
     pub fn awaiting_turn(&self) -> bool {
         self.submitted_turns > self.started_turns
