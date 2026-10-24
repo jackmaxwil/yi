@@ -604,16 +604,16 @@ fn in_progress(top: &Path, deadline: Option<Instant>) -> Result<bool, LaneError>
 }
 
 /// Invariant: uncapped, since [`git_by`]'s 30 KB cut splices an omitted-bytes row into the list.
-/// A `{path, added, removed}` per file against the base, or the merge base with `HEAD`.
+/// A `{path, added, removed}` per file against the base, else the merge base with `parent` HEAD.
 fn changed_files(
-    repo: &Path,
+    parent: &Path,
     candidate: &Candidate,
     deadline: Option<Instant>,
 ) -> Result<Value, LaneError> {
     let from = candidate.base.as_ref().map_or("HEAD", Sha::as_str);
     let range = format!("{from}...{}", candidate.commit.as_str());
     let args = ["diff", "--numstat", "-z", "--no-renames", range.as_str()];
-    let numstat = git_capped(repo, &args, deadline, usize::MAX)?;
+    let numstat = git_capped(parent, &args, deadline, usize::MAX)?;
     let files = numstat.split('\0').filter_map(|record| {
         let mut parts = record.splitn(3, '\t');
         let added = parts.next()?.parse().unwrap_or(0u64);
@@ -779,10 +779,10 @@ impl SubagentHost {
             .settle(&quiescence, deadline)
             .map_err(|unsettled| unsettled.error().to_string())?;
         let mut reply = settled.candidate.as_reply();
-        let files = changed_files(pool.repo(), &settled.candidate, deadline)
+        let parent = self.options.cwd.clone();
+        let files = changed_files(&parent, &settled.candidate, deadline)
             .map_err(|error| error.to_string())?;
         reply.insert("files".to_owned(), files);
-        let parent = self.options.cwd.clone();
         let mut moved: Option<(Sha, Sha)> = None;
         for _attempt in 0..2 {
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;

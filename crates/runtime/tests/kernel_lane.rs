@@ -249,10 +249,12 @@ fn git(cwd: &Path, args: &[&str]) -> TestResult {
     Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into())
 }
 
-/// A repo holding `README.md` and `my notes.txt`, and a worktree child that ran `hold` in its lane and finished.
+/// A repo holding `README.md` and `my notes.txt`, and a worktree child that ran `hold` in its lane
+/// and finished; `in_lane` runs the parent in a linked worktree holding a commit of its own.
 async fn finished_child(
     label: &str,
     hold: &'static str,
+    in_lane: bool,
 ) -> Result<(Scratch, PathBuf, support::Family), Box<dyn Error>> {
     let root = Scratch::new(&format!("yi-merge-files-{label}"))?;
     let repo = root.join("repo");
@@ -268,9 +270,18 @@ async fn finished_child(
     std::fs::write(repo.join("my notes.txt"), "old\n")?;
     git(&repo, &["add", "."])?;
     git(&repo, &["commit", "-qm", "base"])?;
+    let mut parent = repo.clone();
+    if in_lane {
+        parent = root.join("parent-lane");
+        let at = parent.to_str().ok_or("a path is not utf-8")?;
+        git(&repo, &["worktree", "add", "-q", "-b", "parent-lane", at])?;
+        std::fs::write(parent.join("parent.txt"), "parent work\n")?;
+        git(&parent, &["add", "parent.txt"])?;
+        git(&parent, &["commit", "-qm", "parent work"])?;
+    }
     std::fs::create_dir_all(root.join("home"))?;
     let store = support::memory_store(label);
-    let family = support::family(root.to_path_buf(), repo.clone(), store, Some(hold));
+    let family = support::family(root.to_path_buf(), parent, store, Some(hold));
     let mut asked = serde_json::Map::new();
     asked.insert("name".to_owned(), "writer".into());
     asked.insert("role".to_owned(), "root".into());
@@ -300,11 +311,11 @@ fn files_of(
 }
 
 /// Dies with a reply that says a child's work landed and not which files; plain `--numstat`
-/// would quote the accented name as octal escapes.
+/// would quote the accented name as octal escapes, and a binary file's `-` counts drop its row.
 #[tokio::test]
 async fn a_merged_worktree_names_the_files_it_changed() -> TestResult {
-    let hold = "printf 'a\\nb\\n' >> README.md; printf 'new\\n' > 'my notes.txt'; printf '1\\n2\\n3\\n' > café.txt";
-    let (_root, repo, family) = finished_child("files", hold).await?;
+    let hold = "printf 'a\\nb\\n' >> README.md; printf 'new\\n' > 'my notes.txt'; printf '1\\n2\\n3\\n' > café.txt; printf '\\000\\001' > blob.bin";
+    let (_root, repo, family) = finished_child("files", hold, false).await?;
     let merged = family.host.merge_worktree("writer")?;
     assert_eq!(merged["merged"], true, "{merged:?}");
     let listed = |path: &str, added, removed| (path.to_owned(), added, removed);
@@ -312,6 +323,7 @@ async fn a_merged_worktree_names_the_files_it_changed() -> TestResult {
         files_of(&merged)?,
         [
             listed("README.md", 2, 0),
+            listed("blob.bin", 0, 0),
             listed("café.txt", 3, 0),
             listed("my notes.txt", 1, 1)
         ]
@@ -324,7 +336,8 @@ async fn a_merged_worktree_names_the_files_it_changed() -> TestResult {
 /// needs to say what the child touched.
 #[tokio::test]
 async fn a_conflicting_merge_names_the_files_too() -> TestResult {
-    let (_root, repo, family) = finished_child("conflict", "printf 'child\\n' > README.md").await?;
+    let (_root, repo, family) =
+        finished_child("conflict", "printf 'child\\n' > README.md", false).await?;
     std::fs::write(repo.join("README.md"), "parent\n")?;
     git(&repo, &["commit", "-qam", "parent moved"])?;
     let merged = family.host.merge_worktree("writer")?;
@@ -338,7 +351,7 @@ async fn a_conflicting_merge_names_the_files_too() -> TestResult {
 #[tokio::test]
 async fn a_list_past_the_capture_cap_is_whole() -> TestResult {
     let hold = "mkdir -p a-directory-name-long-enough-to-pad-each-path; for n in $(seq 1000 1700); do echo x > a-directory-name-long-enough-to-pad-each-path/file_$n.txt; done";
-    let (_root, _repo, family) = finished_child("big", hold).await?;
+    let (_root, _repo, family) = finished_child("big", hold, false).await?;
     let merged = family.host.merge_worktree("writer")?;
     let files = files_of(&merged)?;
     assert_eq!(files.len(), 701, "{merged:?}");
@@ -352,15 +365,25 @@ async fn a_list_past_the_capture_cap_is_whole() -> TestResult {
     Ok(())
 }
 
-/// Dies with a lane whose state file lost its base, which has the merge name no files or the
-/// wrong ones: with no base the list reads from the merge base with the parent's `HEAD`.
+/// Dies with a lane whose state file lost its base under a parent that is itself a lane: the
+/// fallback reads from the parent's `HEAD`, and the trunk's would list the parent's own commit.
 #[tokio::test]
 async fn a_worktree_with_no_recorded_base_still_names_its_files() -> TestResult {
-    let (root, _repo, family) = finished_child("nobase", "printf 'x\\n' >> README.md").await?;
+    let (root, _repo, family) =
+        finished_child("nobase", "printf 'x\\n' >> README.md", true).await?;
     for pool in std::fs::read_dir(root.join("home/.yi/lanes"))? {
         std::fs::remove_file(pool?.path().join("0.json"))?;
     }
     let merged = family.host.merge_worktree("writer")?;
     assert_eq!(files_of(&merged)?, [("README.md".to_owned(), 1, 0)]);
+    Ok(())
+}
+
+/// Dies with a child that changed nothing, whose reply must still carry `files` as an empty list.
+#[tokio::test]
+async fn a_child_that_changed_nothing_lists_no_files() -> TestResult {
+    let (_root, _repo, family) = finished_child("nothing", "true", false).await?;
+    let merged = family.host.merge_worktree("writer")?;
+    assert_eq!(files_of(&merged)?, []);
     Ok(())
 }
