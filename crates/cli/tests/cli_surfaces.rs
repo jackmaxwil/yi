@@ -665,11 +665,9 @@ fn resuming_the_tui_replays_the_transcript() -> TestResult {
     ])?;
     let first = std::fs::read_to_string(frames.join("0000.txt"))?;
     assert!(first.contains("remembered prompt"), "{first}");
-    assert!(
-        String::from_utf8_lossy(&resumed.stderr).contains(&format!("yi --session {id}")),
-        "{}",
-        String::from_utf8_lossy(&resumed.stderr)
-    );
+    let hint = format!("Resume this session with `yi --session {id}`");
+    let said = String::from_utf8_lossy(&resumed.stderr);
+    assert!(said.lines().any(|line| line == hint), "{said:?}");
     Ok(())
 }
 
