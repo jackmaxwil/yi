@@ -93,10 +93,13 @@ impl Zone {
         {
             return zone.clone();
         }
-        let zone = std::fs::read(&path)
+        // Invariant: only a parsed zone is cached, so a transient read error cannot pin UTC.
+        let Some(zone) = std::fs::read(&path)
             .ok()
             .and_then(|bytes| Self::from_tzif(&bytes))
-            .unwrap_or_default();
+        else {
+            return Self::default();
+        };
         *local = Some((path, stamp, zone.clone()));
         zone
     }

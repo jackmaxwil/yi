@@ -357,6 +357,11 @@ fn crontab_five_example_runs_on_the_first_and_fifteenth_and_every_friday() -> Re
     .map(|day| (day, 9 * 60))
     .collect();
     assert_eq!(runs_until("0 9 * * 1-5", october, november)?, weekdays);
+    // A stepped `*/2` opens with `*`, so both fields must match: odd days that are Fridays.
+    assert_eq!(
+        runs_until("0 0 */2 * 5", october, november)?,
+        [(9, 0), (23, 0)]
+    );
     Ok(())
 }
 
@@ -389,9 +394,29 @@ fn the_cached_zone_follows_a_changed_tz_and_a_replaced_file() -> Result<(), Box<
         Zone::from_tzif(&renamed).ok_or("renamed fixture")?,
     );
     assert_ne!(first, second);
+    let rewrite = |path: &std::path::Path, bytes: &[u8]| -> std::io::Result<()> {
+        let modified = std::fs::metadata(path)?.modified()?;
+        let mut file = std::fs::File::options().write(true).open(path)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.set_modified(modified)
+    };
+    let broken = dir.join("broken");
+    std::fs::write(&broken, vec![0; los_angeles.len()])?;
+    // SAFETY: nextest runs each test in a process of its own, so no other thread reads the env.
+    unsafe { std::env::set_var("TZ", format!(":{}", broken.display())) };
+    assert_eq!(Zone::local(), Zone::default(), "an unreadable zone is UTC");
+    rewrite(&broken, los_angeles)?;
+    assert_eq!(Zone::local(), first, "a failed parse was cached");
+    rewrite(&broken, &renamed)?;
+    assert_eq!(
+        Zone::local(),
+        first,
+        "an unchanged length, inode and mtime is a hit"
+    );
+
     let path = dir.join("zone");
     std::fs::write(&path, los_angeles)?;
-    // SAFETY: nextest runs each test in a process of its own, so no other thread reads the env.
+    // SAFETY: as above, this process's only thread.
     unsafe { std::env::set_var("TZ", format!(":{}", path.display())) };
     let threads: Vec<_> = (0..8).map(|_| std::thread::spawn(Zone::local)).collect();
     for thread in threads {
