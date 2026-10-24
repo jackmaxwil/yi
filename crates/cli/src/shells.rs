@@ -217,7 +217,7 @@ pub fn daemon_socket(args: &Args) -> std::path::PathBuf {
     )
 }
 
-pub fn run_serve_command(args: &Args, version: &str) -> i32 {
+pub fn run_serve_command(args: &Args) -> i32 {
     let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
         Err(code) => return code,
@@ -231,7 +231,7 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
         yi_acp::daemon::DaemonOptions {
             socket,
             worker_args,
-            agent_version: version.to_owned(),
+            agent_version: env!("ARCHITECTURE_VERSION").to_owned(),
             home: crate::home().to_path_buf(),
         },
         runtime,
