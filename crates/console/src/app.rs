@@ -50,7 +50,7 @@ pub enum RequestKind {
     Prompt,
     Cancel,
     Seen,
-    Tracked(SessionId, Vec<String>),
+    Tracked(SessionId, Vec<String>, bool),
     BranchDiff(SessionId),
     Why(SessionId),
     Slash(SessionId),
@@ -518,7 +518,9 @@ impl App {
                 self.merge_daemon_list(&result);
                 self.sync_chat_names();
             }
-            RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
+            RequestKind::Tracked(session, paths, open) => {
+                self.absorb_tracked(&session, &paths, &result, open)
+            }
             RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
             RequestKind::Why(session) => self.absorb_why(&session, &result),
             RequestKind::SetConfig(_)
@@ -754,21 +756,7 @@ impl App {
         }
         self.absorb_edit(outbound, &id, &update);
         self.absorb_kernel(&id, &update);
-        if matches!(update, AcpSessionUpdate::ToolCallUpdate(_))
-            && apply_notebook(self.state.notebooks.entry(id.clone()).or_default(), &update)
-        {
-            for (pane_id, pane) in &mut self.state.panes {
-                if pane.session() == Some(&id)
-                    && let PaneContent::Notebook { drawn, .. } = &mut pane.content
-                {
-                    *drawn = None;
-                    pane.scroll_from_bottom = 0;
-                    if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
-                        *seen = Instant::now();
-                    }
-                }
-            }
-        }
+        self.fill_notebook(&id, &update);
     }
 
     fn mark_seen(&mut self, outbound: &Outbound, session: &SessionId) {
@@ -1161,4 +1149,3 @@ mod terminal;
 pub(crate) use chat::{card_ids, orb_ids};
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;
-use notebook::apply_notebook;

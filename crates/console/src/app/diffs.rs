@@ -2,13 +2,16 @@ use std::time::{Duration, Instant};
 
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
-use yi_types::acp::{AcpSessionUpdate, AcpToolCallUpdate};
+use yi_types::acp::{AcpSessionUpdate, AcpToolCallStatus, AcpToolCallUpdate};
+use yi_types::entry::Entry;
+use yi_types::message::{AgentMessage, Content};
 
 use crate::client::Outbound;
 use crate::keys::Action;
 use crate::layout::PaneId;
 use crate::model::{FileDiff, PaneContent, SessionId};
 
+use super::notebook::apply_notebook;
 use super::{App, RequestKind};
 
 pub(crate) const NOTEBOOK_IDLE: Duration = Duration::from_secs(20);
@@ -24,6 +27,52 @@ pub(super) fn path_of_patch(patch: &str) -> Option<String> {
         .lines()
         .find_map(|line| line.strip_prefix("+++ b/"))
         .map(str::to_owned)
+}
+
+fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> {
+    match message {
+        AgentMessage::Assistant { content, .. } => content
+            .iter()
+            .filter_map(|block| match block {
+                Content::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } => Some(AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
+                    tool_call_id: id.clone(),
+                    title: Some(name.clone()),
+                    raw_input: Some(Value::Object(arguments.clone())),
+                    ..AcpToolCallUpdate::default()
+                })),
+                _ => None,
+            })
+            .collect(),
+        AgentMessage::ToolResult {
+            tool_call_id,
+            tool_name,
+            content,
+            details,
+            ..
+        } => {
+            let plots = (tool_name == "ipython").then(|| {
+                (content.iter())
+                    .filter(|block| matches!(block, Content::Image { .. }))
+                    .filter_map(|block| {
+                        serde_json::from_value(json!({"type": "content", "content": block})).ok()
+                    })
+                    .collect()
+            });
+            vec![AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
+                tool_call_id: tool_call_id.clone(),
+                status: Some(AcpToolCallStatus::Completed),
+                raw_output: details.clone(),
+                content: plots,
+                ..AcpToolCallUpdate::default()
+            })]
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn is_side(content: &PaneContent, session: &SessionId) -> bool {
@@ -44,19 +93,21 @@ impl App {
         session: &SessionId,
         update: &AcpSessionUpdate,
     ) {
+        if let Some(path) = self.record_edit(session, update) {
+            self.track(outbound, session, vec![path], true);
+        }
+    }
+
+    fn record_edit(&mut self, session: &SessionId, update: &AcpSessionUpdate) -> Option<String> {
         let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
             raw_output: Some(details),
             ..
         }) = update
         else {
-            return;
+            return None;
         };
-        let Some(patch) = details.get("patch").and_then(Value::as_str) else {
-            return;
-        };
-        let Some(path) = path_of_patch(patch) else {
-            return;
-        };
+        let patch = details.get("patch").and_then(Value::as_str)?;
+        let path = path_of_patch(patch)?;
         let count = |key: &str| details.get(key).and_then(Value::as_u64).unwrap_or(0);
         let file = FileDiff {
             patch: patch.to_owned(),
@@ -72,19 +123,53 @@ impl App {
             .or_default()
             .insert(path.clone(), file);
         self.editors_touched(Some(&path));
+        Some(path)
+    }
+
+    fn track(&mut self, outbound: &Outbound, session: &SessionId, paths: Vec<String>, open: bool) {
         let root = self.root_of(session);
         if self.connected() {
             self.send_request(
                 outbound,
-                RequestKind::Tracked(session.clone(), vec![path.clone()]),
+                RequestKind::Tracked(session.clone(), paths.clone(), open),
                 "_yi/tracked",
-                json!({"sessionId": session.0, "root": root, "paths": [path]}),
+                json!({"sessionId": session.0, "root": root, "paths": paths}),
             );
         }
         self.dirty = true;
     }
 
-    pub(super) fn absorb_tracked(&mut self, session: &SessionId, paths: &[String], result: &Value) {
+    /// Replay entries are whole messages, so they fill the Notebook and Review as live frames do;
+    /// a console started after the work ran has no other history.
+    pub(super) fn absorb_history(
+        &mut self,
+        outbound: &Outbound,
+        session: &SessionId,
+        entries: &[Entry],
+    ) {
+        let mut edited = std::collections::BTreeSet::new();
+        for entry in entries {
+            let Entry::Message { message, .. } = entry else {
+                continue;
+            };
+            for update in replayed_updates(message) {
+                self.absorb_review(session, &update);
+                edited.extend(self.record_edit(session, &update));
+                self.fill_notebook(session, &update);
+            }
+        }
+        if !edited.is_empty() {
+            self.track(outbound, session, edited.into_iter().collect(), false);
+        }
+    }
+
+    pub(super) fn absorb_tracked(
+        &mut self,
+        session: &SessionId,
+        paths: &[String],
+        result: &Value,
+        open: bool,
+    ) {
         let flags = result.get("tracked").and_then(Value::as_array);
         let mut any = false;
         if let Some(diff) = self.state.diffs.get_mut(session) {
@@ -99,7 +184,7 @@ impl App {
                 }
             }
         }
-        if any {
+        if any && open {
             self.maybe_open_side(session, SideKind::Diff);
         }
         self.dirty = true;
@@ -112,6 +197,27 @@ impl App {
             && title == "ipython"
         {
             self.maybe_open_side(session, SideKind::Notebook);
+        }
+    }
+
+    pub(super) fn fill_notebook(&mut self, session: &SessionId, update: &AcpSessionUpdate) {
+        if matches!(update, AcpSessionUpdate::ToolCallUpdate(_))
+            && apply_notebook(
+                self.state.notebooks.entry(session.clone()).or_default(),
+                update,
+            )
+        {
+            for (pane_id, pane) in &mut self.state.panes {
+                if pane.session() == Some(session)
+                    && let PaneContent::Notebook { drawn, .. } = &mut pane.content
+                {
+                    *drawn = None;
+                    pane.scroll_from_bottom = 0;
+                    if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
+                        *seen = Instant::now();
+                    }
+                }
+            }
         }
     }
 
