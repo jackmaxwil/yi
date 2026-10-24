@@ -20,7 +20,7 @@ pub(crate) fn clock() -> std::time::SystemTime {
 fn walled(provider: &str) -> Option<String> {
     let wall = yi_runtime::Wall::default();
     let workspace = std::env::current_dir().unwrap_or_default();
-    [yi_runtime::MODELS_DEV]
+    [yi_runtime::MODELS_DEV.to_owned()]
         .into_iter()
         .chain(yi_runtime::catalog_list_url(provider))
         .filter_map(|target| target.parse::<yi_types::url::Url>().ok())
@@ -90,7 +90,9 @@ pub(crate) fn run(args: &Args) -> i32 {
                 }
                 // A provider with no list adapter is bundled by design; there is
                 // nothing to fetch, and the run has not failed.
-                if yi_runtime::catalog_list_url(provider).is_none() {
+                if yi_runtime::catalog_list_url(provider).is_none()
+                    && !yi_runtime::catalog_needs_credential(provider)
+                {
                     println!("{provider:<width$} bundled only");
                     continue;
                 }
