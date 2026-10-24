@@ -521,57 +521,6 @@ fn two_clients_both_stream_one_session() -> TestResult {
     outcome
 }
 
-/// A client that declares `_meta.yi.events` reads `_yi/event` and is not sent the standard
-/// updates that repeat it; a spec client on the same session still gets every chunk.
-#[test]
-fn a_lean_client_gets_each_event_once_and_a_spec_client_every_chunk() -> TestResult {
-    let dir = Scratch::new("yi-lean")?;
-    let root = dir.join("repo");
-    std::fs::create_dir_all(&root)?;
-    let (mut daemon, socket) = spawn_daemon(&dir)?;
-    let outcome = (|| -> TestResult {
-        let mut lean = DaemonClient::connect(&socket)?;
-        let events = json!({"protocolVersion": 2, "_meta": {"yi": {"events": true}}});
-        lean.request("i1", "initialize", events)?;
-        let session_id = new_session(&mut lean, "n1", &root)?;
-        let mut spec = DaemonClient::connect(&socket)?;
-        spec.request("i2", "initialize", json!({"protocolVersion": 2}))?;
-        let resume = json!({"sessionId": session_id, "cwd": root.display().to_string()});
-        spec.request("r2", "session/resume", resume)?;
-        lean.send(
-            "p1",
-            "session/prompt",
-            json!({"sessionId": session_id, "prompt": [{"type": "text", "text": "once"}]}),
-        )?;
-        let idle = |frame: &Value| frame["params"]["update"]["state"] == "idle";
-        let kind = |frame: &Value| frame["params"]["update"]["sessionUpdate"].clone();
-        let notified = |frames: Vec<Value>| -> Vec<Value> {
-            frames
-                .into_iter()
-                .filter(|frame| frame["method"] == "session/update")
-                .collect()
-        };
-        let lean_frames = notified(lean.read_until(idle)?);
-        let spec_frames = notified(spec.read_until(idle)?);
-        let repeats = ["agent_message_chunk", "user_message"];
-        for repeat in repeats {
-            assert!(
-                spec_frames.iter().any(|frame| kind(frame) == repeat),
-                "spec: {repeat}"
-            );
-        }
-        let unrepeated: Vec<&Value> = spec_frames
-            .iter()
-            .filter(|frame| !repeats.contains(&kind(frame).as_str().unwrap_or("")))
-            .collect();
-        assert_eq!(lean_frames.iter().collect::<Vec<_>>(), unrepeated);
-        Ok(())
-    })();
-    let _ = daemon.kill();
-    let _ = daemon.wait();
-    outcome
-}
-
 fn mode_of(new: &Value) -> Option<&str> {
     new["result"]["configOptions"]
         .as_array()?

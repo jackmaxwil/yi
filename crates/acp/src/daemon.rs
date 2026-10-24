@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -214,20 +214,7 @@ struct Supervisor {
     parked: HashMap<String, Vec<Value>>,
     next_request: u64,
     input: mpsc::UnboundedSender<Input>,
-    /// Clients that declared `_meta.yi.events` at initialize: they read `_yi/event` instead.
-    lean: HashSet<ClientId>,
 }
-
-/// The standard updates `_yi/event` repeats; a client declaring `_meta.yi.events` is not sent them.
-const EVENT_REPEATS: [&str; 7] = [
-    "agent_message_chunk",
-    "agent_thought_chunk",
-    "agent_message",
-    "user_message",
-    "tool_call_content_chunk",
-    "terminal_update",
-    "terminal_output_chunk",
-];
 
 fn error_frame(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
@@ -401,8 +388,6 @@ impl Supervisor {
         }
         match method.as_str() {
             "initialize" => {
-                let lean = frame.pointer("/params/_meta/yi/events") == Some(&json!(true));
-                self.lean.extend(lean.then_some(client));
                 let Some(id) = id else { return };
                 let requested = frame
                     .pointer("/params/protocolVersion")
@@ -690,14 +675,8 @@ impl Supervisor {
         }
         // Fan out to every watcher; for a worker-originated request the first answer wins
         // and the stale ids of the rest fall out of `worker_requests` with it.
-        let kind = frame
-            .pointer("/params/update/sessionUpdate")
-            .and_then(Value::as_str);
-        let repeat = kind.is_some_and(|kind| EVENT_REPEATS.contains(&kind));
         for client in watchers {
-            if !(repeat && self.lean.contains(&client)) {
-                self.send_client(client, line.clone());
-            }
+            self.send_client(client, line.clone());
         }
     }
 
@@ -795,7 +774,6 @@ impl Supervisor {
 
     fn handle_client_closed(&mut self, client: ClientId) {
         self.clients.remove(&client);
-        self.lean.remove(&client);
         for entry in self.sessions.values_mut() {
             entry.attached.remove(&client);
         }
@@ -910,7 +888,6 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
             next_request: 0,
-            lean: HashSet::new(),
             input: input_tx.clone(),
         };
         let accept_input = input_tx.clone();
@@ -1036,7 +1013,6 @@ mod tests {
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
             next_request: 0,
-            lean: HashSet::new(),
             input,
         };
         for (id, pinned_ms) in [("pinned", Some(1)), ("loose", None)] {
