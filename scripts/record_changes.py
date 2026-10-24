@@ -21,6 +21,7 @@ from check_changes import DECISIONS, DIR, VERSION, parse, table
 ARCH, LOG, INDEX = "docs/ARCHITECTURE.md", "docs/CHANGELOG.md", "docs/solutions/README.md"
 LOG_HEADER = "| ver | date | change |"
 ROW_ID = re.compile(r"^\| D(\d+) \|")
+CAP, ALLOW = 512_000, "scripts/guardrails/baselines/blob_allowlist.txt"
 
 
 def git(root, *args):
@@ -77,20 +78,24 @@ def stamp(text, version, numbers):
     return head + text.removeprefix("---\n")
 
 
+def last_id(arch):
+    return max((int(m.group(1)) for row in table(arch, DECISIONS) if (m := ROW_ID.match(row))), default=0)
+
+
 def record(views, todo):
-    """(views, writes, plan) after recording `todo` in order. Pure: texts in, texts out."""
+    """(views, writes, plan, {number: who gets it}) after recording `todo` in order. Pure."""
     arch, log, index = views[ARCH], views[LOG], views[INDEX]
-    writes, plan = {}, []
+    writes, plan, given = {}, [], {}
     for name, text, date in todo:
         fields = parse(text)[0]
         major, minor, _ = VERSION.search(arch).group(1).split(".")
         version = f"{major}.{int(minor) + 1}.0"
         arch = re.sub(r"^(version:\s*)\S+", lambda m: m.group(1) + version, arch, count=1, flags=re.M)
-        last = max((int(m.group(1)) for row in table(arch, DECISIONS) if (m := ROW_ID.match(row))), default=0)
-        numbers = []
+        last, numbers = last_id(arch), []
         for offset, value in enumerate(fields["decision"], 1):
             number, cells = last + offset, [cell.strip() for cell in value.split("|")]
             numbers.append(f"D{number}")
+            given[number] = f"{name}: {adr.title_of(cells[0])}"
             arch = insert_row(arch, DECISIONS, f"| D{number} | {' | '.join(cells)} |")
             writes[f"docs/solutions/adr/d{number}.md"] = adr.render(number, *cells)
             index = adr.index_lines(index, number, adr.title_of(cells[0])) or index
@@ -100,7 +105,7 @@ def record(views, todo):
         log = insert_row(log, LOG_HEADER, f"| {version} | {date} | {prose} |")
         writes[f"{DIR}/{name}"] = stamp(text, version, numbers)
         plan.append(f"{name} -> {version}, {len(numbers)} decision(s){': ' + ', '.join(numbers) if numbers else ''}")
-    return {ARCH: arch, LOG: log, INDEX: index}, writes, plan
+    return {ARCH: arch, LOG: log, INDEX: index}, writes, plan, given
 
 
 def expected_at(root, rev):
@@ -109,11 +114,29 @@ def expected_at(root, rev):
     todo = pending(root, rev, changes)
     if not todo:
         return {}
-    views, writes, _ = record(views, todo)
+    views, writes, _, _ = record(views, todo)
     return {**views, **writes}
 
 
+def ahead(root, last, given):
+    """Incident: docs and comments hand-claimed D342 and up before any was numbered, and a backfill
+    gives those numbers to other decisions; each claim is named beside who this run gives it to."""
+    found = subprocess.run(("git", "-C", str(root), "grep", "-n", "-w", "-E", "D[0-9]+", "--", "docs/*.md", "crates/*.rs"),
+                           capture_output=True, text=True, check=False).stdout
+    sites = {}
+    for line in found.splitlines():
+        path, number, text = line.split(":", 2)
+        for m in re.finditer(r"\bD(\d+)\b", text):
+            if int(m.group(1)) > last:
+                sites.setdefault(int(m.group(1)), []).append(f"{path}:{number}")
+    return [f"record: D{n} is already cited at {', '.join(sorted(set(at)))}; this run gives it to "
+            f"{given.get(n, 'no decision')}" for n, at in sorted(sites.items())]
+
+
 def main(argv, root=ROOT):
+    if set(argv) - {"--dry-run", "--backfill"}:
+        print("usage: record_changes.py [--dry-run] [--backfill] | --selfcheck", file=sys.stderr)
+        return 2
     views, changes = state(root)
     todo = pending(root, "HEAD", changes)
     if not todo:
@@ -122,11 +145,21 @@ def main(argv, root=ROOT):
     if len(todo) == len(changes) and "--backfill" not in argv:
         print(f"record: no change file was ever recorded, so these {len(todo)} are a backlog; --backfill records them")
         return 1
-    views, writes, plan = record(views, todo)
+    new, writes, plan, given = record(views, todo)
     print("\n".join(plan))
+    for path in (ARCH, LOG, INDEX):
+        print(f"record: {path} {len(views[path].encode())} -> {len(new[path].encode())} bytes")
+    print("\n".join(ahead(root, last_id(views[ARCH]), given)) or "record: no D-number is cited ahead of the table")
+    allow = set((root / ALLOW).read_text().split()) if (root / ALLOW).is_file() else set()
+    over = [f"record: {p} would be {len(t.encode())} bytes, past blob_size's {CAP}; split it or allowlist it in a Ratchet commit first"
+            for p, t in {**new, **writes}.items() if len(t.encode()) > CAP and p not in allow]
+    if over:
+        print("\n".join(over) + "\nrecord: refused, nothing written")
+        return 1
     if "--dry-run" in argv:
         print(f"record: dry run, {len(todo)} file(s) planned, nothing written")
         return 0
+    views = new
     for path, text in {**views, **writes}.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text)
@@ -155,12 +188,21 @@ LATER = {"2026-10-03-unlink-through-judged-dir.md": ("0.536.0", ["D351"]),
 def verify(tmp, recorded, bad):
     """The stamps, the version, and both tables' top rows against `recorded`, newest first."""
     views = {p: (tmp / p).read_text() for p in (ARCH, LOG, INDEX)}
+    lines = views[LOG].splitlines()
+    if not lines[lines.index(LOG_HEADER) + 1].startswith("|---"):
+        bad.append(f"the changelog header is followed by {lines[lines.index(LOG_HEADER) + 1][:40]!r}, not its |---| line")
     for name, (version, numbers) in recorded.items():
         fields = parse((tmp / DIR / name).read_text())[0]
         if (fields.get("version"), fields.get("decisions")) != (version, ", ".join(numbers) or None):
             bad.append(f"{name} stamped {fields.get('version')} {fields.get('decisions')}, not {version} {numbers}")
+        row = next((line for line in lines if line.startswith(f"| {version} |")), "")
+        cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", row)][1:-1]
+        prose = cells[2].replace("\\|", "|") if len(cells) == 3 else ""
+        cites = f"({', '.join(numbers)}" if numbers else ""
+        if not prose.startswith(fields["body"]) or cites not in prose[len(fields["body"]):] or fields.get("issue", "") not in prose:
+            bad.append(f"{version}'s row is {len(cells)} cells, prose {prose[-60:]!r}: not {name}'s body citing {cites} {fields.get('issue')}")
     newest = sorted(recorded.values(), reverse=True)
-    rows = [line.split(" | ")[:2] for line in views[LOG].splitlines() if re.match(r"^\| \d+\.\d+\.\d+ \|", line)]
+    rows = [line.split(" | ")[:2] for line in lines if re.match(r"^\| \d+\.\d+\.\d+ \|", line)]
     if [v[2:] for v, _ in rows[:len(newest)]] != [v for v, _ in newest] or VERSION.search(views[ARCH]).group(1) != newest[0][0]:
         bad.append(f"version {VERSION.search(views[ARCH]).group(1)}, changelog rows {rows[:len(newest)]}: not {newest[0][0]} newest first")
     ids = [f"D{m.group(1)}" for row in table(views[ARCH], DECISIONS) if (m := ROW_ID.match(row))]
@@ -178,7 +220,8 @@ def selfcheck():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-"))
     bad = []
     run = lambda *a: subprocess.run((sys.executable,) + a, cwd=tmp, capture_output=True, text=True)
-    clean = lambda: git(tmp, "status", "--porcelain") == ""
+    status = lambda: git(tmp, "status", "--porcelain")
+    gate = lambda: run("scripts/guardrails/check_changes.py")
 
     def sh(*args, date="2026-09-30"):
         at = {"GIT_COMMITTER_DATE": f"{date}T12:00:00", "GIT_AUTHOR_DATE": f"{date}T12:00:00"}
@@ -191,8 +234,24 @@ def selfcheck():
             sh("add", f"{DIR}/{name}")
             sh("commit", "-q", "-m", name, date=real[name][1])
 
+    def judged(edits, want):
+        """Each edit on top of HEAD, alone: check_changes must exit `want`, and the tree is put back."""
+        for path, old, new, why in edits:
+            target = tmp / path
+            before = target.read_text() if target.exists() else None
+            target.write_text(new if before is None else before.replace(old, new, 1))
+            if before is None:
+                sh("add", "-N", path)
+            if gate().returncode != want:
+                bad.append(f"check_changes {'accepted' if want else 'refused'} {why}")
+            if before is None:
+                sh("rm", "-q", "--cached", path)
+            target.unlink() if before is None else target.write_text(before)
+
     try:
         shutil.copytree(ROOT / "scripts/guardrails", tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
+        (tmp / ALLOW).parent.mkdir()
+        shutil.copy(ROOT / ALLOW, tmp / ALLOW)
         for script in ("record_changes.py", "adr.py"):
             shutil.copy(ROOT / "scripts" / script, tmp / "scripts" / script)
         for path in (ARCH, LOG, INDEX):
@@ -204,11 +263,30 @@ def selfcheck():
         sh("commit", "-q", "-m", "seed")
         land(BACKLOG)
         refused = run("scripts/record_changes.py")
-        if refused.returncode != 1 or not clean():
-            bad.append(f"a backlog without --backfill exited {refused.returncode}, clean={clean()}")
+        if refused.returncode != 1 or status():
+            bad.append(f"a backlog without --backfill exited {refused.returncode}, status {status()!r}")
+        typo = run("scripts/record_changes.py", "--dryrun", "--backfill")
+        if typo.returncode != 2 or status():
+            bad.append(f"a mistyped --dry-run beside --backfill exited {typo.returncode}, status {status()[:80]!r}")
         dry = run("scripts/record_changes.py", "--dry-run", "--backfill")
-        if dry.returncode or not clean() or len(dry.stdout.splitlines()) != len(BACKLOG) + 1:
-            bad.append(f"--dry-run --backfill exited {dry.returncode}, clean={clean()}: {dry.stdout[-200:]}")
+        planned = [line for line in dry.stdout.splitlines() if " decision(s)" in line]
+        if dry.returncode or status() or len(planned) != len(BACKLOG):
+            bad.append(f"--dry-run --backfill exited {dry.returncode}, status {status()!r}: {dry.stdout[-200:]}")
+        claim = f"record: D344 is already cited at {DIR}/2026-10-01-family-caps-128.md:5; this run gives it to 2026-10-01-family-caps-128.md: "
+        if claim not in dry.stdout or "D343 is already" in dry.stdout:
+            bad.append(f"the dry run does not name the one hand-claimed D-number: {dry.stdout[-300:]}")
+        sized = re.search(rf"{LOG} \d+ -> (\d+) bytes", dry.stdout)
+        if not sized:
+            bad.append(f"the dry run printed no changelog size: {dry.stdout[-200:]}")
+        log, size = (tmp / LOG).read_text(), int(sized.group(1)) if sized else 0
+        for pad, want, args in ((CAP - size, 0, ("--dry-run", "--backfill")), (CAP - size + 1, 1, ("--backfill",))) if sized else ():
+            (tmp / LOG).write_text(log + "\n" * pad)
+            capped = run("scripts/record_changes.py", *args)
+            if capped.returncode != want or status() != f" M {LOG}\n" or (tmp / LOG).read_text() != log + "\n" * pad:
+                bad.append(f"a changelog recorded to {size + pad} bytes exited {capped.returncode}, status {status()!r}")
+            if want and f"{LOG} would be {CAP + 1} bytes, past blob_size's {CAP}" not in capped.stdout:
+                bad.append(f"the capped run does not name the cap: {capped.stdout[-200:]}")
+        (tmp / LOG).write_text(log)
         sh("checkout", "-q", "-b", "topic")
         run("scripts/record_changes.py", "--backfill")
         views, dates = verify(tmp, BACKLOG, bad)
@@ -225,31 +303,33 @@ def selfcheck():
         if "- [D347](adr/d347.md) - " not in views[INDEX]:
             bad.append("the ADR index lacks D347's line")
         sh("add", "-A")
-        accept = run("scripts/guardrails/check_changes.py")
-        if accept.returncode:
-            bad.append(f"check_changes refused the recorder's own diff: {accept.stdout.strip()}")
-        for path, old, new, why in (
+        sh("commit", "-q", "-m", "record")
+        if gate().returncode:
+            bad.append(f"check_changes refused the recorder's own diff: {gate().stdout.strip()}")
+        own = (f"{DIR}/2026-10-24-own.md", None, "---\nissue: Refs #1\n---\nMine.\n", "a new change file beside the recorder's diff")
+        judged([own], 0)
+        judged([
             (f"{DIR}/2026-10-01-autofix-review-rounds.md", "version: 0.535.0\n", "", "a version bumped with its file unstamped"),
             (ARCH, "version: 0.535.0", "version: 0.536.0", "a version past the recorder's"),
             (f"{DIR}/2026-10-24-own.md", None, "---\nversion: 0.536.0\n---\nMine.\n", "a branch stamping its own file"),
-        ):
-            target = tmp / path
-            before = target.read_text() if target.exists() else None
-            target.write_text(new if before is None else before.replace(old, new, 1))
-            if run("scripts/guardrails/check_changes.py").returncode != 1:
-                bad.append(f"check_changes accepted {why}")
-            if before is None:
-                target.unlink()
-            else:
-                target.write_text(before)
-        sh("commit", "-q", "-m", "record")
-        if run("scripts/record_changes.py").stdout.strip() != "record: nothing to record" or not clean():
+            ("docs/solutions/adr/d900.md", None, "# D900\n", "a hand-written ADR beside the recorder's diff"),
+        ], 1)
+        if run("scripts/record_changes.py").stdout.strip() != "record: nothing to record" or status():
             bad.append("a second run recorded again")
+        sh("checkout", "-q", "main")
+        sh("merge", "-q", "--ff-only", "topic")
         land(LATER)
+        sh("checkout", "-q", "-b", "later")
         again = run("scripts/record_changes.py")
         if again.returncode:
             bad.append(f"two files landed after the backlog exited {again.returncode}: {again.stdout.strip()}")
         verify(tmp, {**BACKLOG, **LATER}, bad)
+        sh("add", "-A")
+        sh("commit", "-q", "-m", "record later")
+        if gate().returncode:
+            bad.append(f"check_changes refused the second record: {gate().stdout.strip()}")
+        judged([own], 0)
+        judged([(f"{DIR}/2026-10-01-change-files.md", "\n---\n", "\n---\nEdited. ", "an edit to a stamped file main holds")], 1)
     finally:
         shutil.rmtree(tmp)
     if bad:
