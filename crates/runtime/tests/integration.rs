@@ -52,6 +52,7 @@ mod lanes;
 mod levers;
 mod node;
 mod permission_scope;
+mod plan_authority;
 mod plan_capacity;
 mod plan_declare;
 mod plan_e2e;
