@@ -16,7 +16,7 @@ use yi_types::url::Url;
 
 pub use yi_types::plan::acceptance::{Conflict, Disposition, Published, Quiescence};
 
-use super::capacity::{Capacity, Permit, Purpose, RESERVE_WAIT};
+use super::capacity::{Capacity, Permit, Purpose};
 use super::done::Prepared;
 use super::ops::{Actor, Delta, Op, Outcome, PlanEngine, PlanOpError, Txn};
 use super::state::{Decided, root_of};
@@ -392,15 +392,13 @@ impl PlanEngine {
         Self { capacity, ..self }
     }
 
-    /// Until when a reservation waits for the reserve: the verifier's deadline, or the bounded
-    /// backoff, whichever comes first.
+    /// Until when a reservation waits for the reserve: the session's deadline, else the
+    /// verifier's own timeout, which bounds how long any holder's check runs.
     fn reserve_until(&self) -> std::time::Instant {
-        let backoff = std::time::Instant::now()
-            .checked_add(RESERVE_WAIT)
-            .unwrap_or_else(std::time::Instant::now);
-        self.verifier
-            .deadline()
-            .map_or(backoff, |ends| ends.min(backoff))
+        let now = std::time::Instant::now();
+        let whole = std::time::Duration::from_millis(self.verifier.timeout_ms());
+        let whole = now.checked_add(whole).unwrap_or(now);
+        self.verifier.deadline().unwrap_or(whole)
     }
 
     /// The lane share this engine's verification and staging checkouts draw on.
@@ -516,7 +514,7 @@ impl PlanEngine {
         let attempt = candidate.attempt;
         let deadline = self.verifier.deadline();
         // The same reserve the candidate check used and gave back, held until the staging lane
-        // is released or its branch kept below: one candidate at a time (section 6.6).
+        // is released or its branch kept below (section 6.6).
         let _staging_slot = self.reserve_verification(&label)?;
         let (contracted, token, effect, staging, parent_branch) = {
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);

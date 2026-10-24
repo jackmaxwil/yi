@@ -4608,9 +4608,11 @@ mod contracts {
             usize::from(slots) - share,
             "the lanes the workers did not get are the verification's"
         );
-        // With every worker lane held, the verification a retained worker's own candidate
-        // needs still reserves, and a second one waits its turn: one candidate at a time.
-        let verifying = capacity.reserve(Purpose::Verification)?;
+        // With every worker lane held, the verifications retained workers' own candidates need
+        // still reserve, up to the share, and one past it waits its turn.
+        let verifying: Vec<_> = (0..capacity.cap(Purpose::Verification))
+            .map(|_| capacity.reserve(Purpose::Verification))
+            .collect::<Result<_, _>>()?;
         assert!(capacity.reserve(Purpose::Verification).is_err());
         drop(verifying);
         drop(held);
