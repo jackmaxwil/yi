@@ -8,7 +8,9 @@ use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::{compat_bool, developer_role, nested_reasoning, replays_reasoning_content};
+use crate::compat::{
+    compat_bool, developer_role, moonshot, nested_reasoning, replays_reasoning_content,
+};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::{system_text, transform_messages};
 
@@ -345,7 +347,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         params["store"] = json!(false);
     }
     if let Some(session_id) = &options.session_id {
-        if model.base_url.contains("api.openai.com") {
+        if model.base_url.contains("api.openai.com") || moonshot(model) {
             params["prompt_cache_key"] = json!(session_id);
         } else if model.base_url.contains("openrouter.ai") {
             params["session_id"] = json!(session_id);
@@ -428,6 +430,23 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
                     json!({"effort": off.and_then(Value::as_str).unwrap_or("none")});
             }
             None => {}
+        }
+    } else if moonshot(model) {
+        let can_stop = !matches!(
+            model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get("off")),
+            Some(Value::Null)
+        );
+        match options
+            .reasoning_effort
+            .map(|effort| mapped_effort(model, effort))
+        {
+            Some(Some("on")) => params["thinking"] = json!({"type": "enabled"}),
+            Some(Some(effort)) => params["thinking"] = json!({"type": "enabled", "effort": effort}),
+            None if can_stop => params["thinking"] = json!({"type": "disabled"}),
+            Some(None) | None => {}
         }
     } else if let Some(effort) = options.reasoning_effort
         && let Some(mapped) = mapped_effort(model, effort)
@@ -573,7 +592,11 @@ impl ChunkMapper {
         if let Some(upstream) = chunk.get("provider").and_then(Value::as_str) {
             crate::request::note_upstream(&mut self.output, upstream);
         }
-        if let Some(usage_value) = chunk.get("usage").filter(|value| !value.is_null()) {
+        // Moonshot puts the usage in the first choice and none at the top.
+        if let Some(usage_value) = ["/usage", "/choices/0/usage"]
+            .into_iter()
+            .find_map(|at| chunk.pointer(at).filter(|value| !value.is_null()))
+        {
             let usage = parse_chunk_usage(usage_value, &self.model);
             if let AgentMessage::Assistant {
                 usage: output_usage,
