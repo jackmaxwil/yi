@@ -332,7 +332,7 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `annotate`, `plan`, `todo`, and `ask_user`. `check_request_budget.py` prices system block plus tool
   table against a shrink-only baseline and locks each tool's text and sha256 in `tool_surface.json`;
-  a PR whose lock change only removes words from a key's old text owes no claims ledger.
+  a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
   (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves

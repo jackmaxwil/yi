@@ -70,11 +70,11 @@ def role_problems(budget, rows):
 
 def surface_delta(lock, surface):
     """(added, changed, removed) between the locked and the measured surface.
-    added/grew/trimmed are pr_body's surface_diff, the one implementation; the lock
+    added/reworded/trimmed are pr_body's surface_diff, the one implementation; the lock
     moves for a trim too, though a PR body owes nothing for it, and also reports removals."""
-    added, grew, trimmed = surface_diff(lock, surface)
+    added, reworded, trimmed = surface_diff(lock, surface)
     removed = sorted(key for key in lock if key not in surface)
-    return added, sorted(grew + trimmed), removed
+    return added, sorted(reworded + trimmed), removed
 
 
 def surface_problems(lock, surface):
@@ -87,7 +87,7 @@ def surface_problems(lock, surface):
     return [
         f"tool surface changed: changed {show(changed)}; added {show(added)}; removed {show(removed)}",
         "  rerun check_request_budget.py --update in its own Ratchet commit;",
-        "  the PR body then owes the sections check_pr_metadata.py names for what grew",
+        "  the PR body then owes the sections check_pr_metadata.py names for what was added or reworded",
     ]
 
 
