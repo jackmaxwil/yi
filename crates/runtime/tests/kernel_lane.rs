@@ -2,16 +2,22 @@
 //! kernel, and `KernelManager::execute` holds `execution_queue` across the whole cell —
 //! that lock, not anything above it, is why the second caller waits rather than landing
 //! in the busy-reuse path and interrupting work that is still running.
+//!
+//! The kernel's worktree verbs live here too: what `rlm.merge_worktree` replies with.
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
 use yi_tools::CancelFlag;
 
+use crate::scratch::Scratch;
+use crate::support;
+
 type TestResult = Result<(), Box<dyn Error>>;
+type Changed = (String, u64, u64);
 
 fn service() -> Arc<KernelService> {
     let mut registry = HostRegistry::default();
@@ -229,5 +235,132 @@ async fn the_first_cell_shows_the_rlm_table_once_and_the_state_names_the_surface
         text_of(&second)
     );
     assert!(!after.contains("help(rlm)"), "{after}");
+    Ok(())
+}
+
+fn git(cwd: &Path, args: &[&str]) -> TestResult {
+    let out = yi_tools::command("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into())
+}
+
+/// A repo holding `README.md` and `my notes.txt`, and a worktree child that ran `hold` in its lane and finished.
+async fn finished_child(
+    label: &str,
+    hold: &'static str,
+) -> Result<(Scratch, PathBuf, support::Family), Box<dyn Error>> {
+    let root = Scratch::new(&format!("yi-merge-files-{label}"))?;
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@t"][..],
+        &["config", "user.name", "t"][..],
+    ] {
+        git(&repo, args)?;
+    }
+    std::fs::write(repo.join("README.md"), "base\n")?;
+    std::fs::write(repo.join("my notes.txt"), "old\n")?;
+    git(&repo, &["add", "."])?;
+    git(&repo, &["commit", "-qm", "base"])?;
+    std::fs::create_dir_all(root.join("home"))?;
+    let store = support::memory_store(label);
+    let family = support::family(root.to_path_buf(), repo.clone(), store, Some(hold));
+    let mut asked = serde_json::Map::new();
+    asked.insert("name".to_owned(), "writer".into());
+    asked.insert("role".to_owned(), "root".into());
+    asked.insert("isolation".to_owned(), "worktree".into());
+    family.host.spawn("write".to_owned(), asked)?;
+    assert!(
+        family.reaches("writer", "finished").await,
+        "{:?}",
+        family.state_of("writer")
+    );
+    Ok((root, repo, family))
+}
+
+/// The reply's `files` as sorted `(path, added, removed)`; a reply without the key is an error.
+fn files_of(
+    reply: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<Changed>, Box<dyn Error>> {
+    let listed = reply.get("files").and_then(serde_json::Value::as_array);
+    let mut files = Vec::new();
+    for file in listed.ok_or_else(|| format!("no files key: {reply:?}"))? {
+        let count = |key: &str| file[key].as_u64().ok_or("a count is missing");
+        let path = file["path"].as_str().ok_or("a path is missing")?;
+        files.push((path.to_owned(), count("added")?, count("removed")?));
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Dies with a reply that says a child's work landed and not which files; plain `--numstat`
+/// would quote the accented name as octal escapes.
+#[tokio::test]
+async fn a_merged_worktree_names_the_files_it_changed() -> TestResult {
+    let hold = "printf 'a\\nb\\n' >> README.md; printf 'new\\n' > 'my notes.txt'; printf '1\\n2\\n3\\n' > café.txt";
+    let (_root, repo, family) = finished_child("files", hold).await?;
+    let merged = family.host.merge_worktree("writer")?;
+    assert_eq!(merged["merged"], true, "{merged:?}");
+    let listed = |path: &str, added, removed| (path.to_owned(), added, removed);
+    assert_eq!(
+        files_of(&merged)?,
+        [
+            listed("README.md", 2, 0),
+            listed("café.txt", 3, 0),
+            listed("my notes.txt", 1, 1)
+        ]
+    );
+    assert!(repo.join("café.txt").is_file());
+    Ok(())
+}
+
+/// Dies with `files` inserted on the published arm only: a conflict is the reply that most
+/// needs to say what the child touched.
+#[tokio::test]
+async fn a_conflicting_merge_names_the_files_too() -> TestResult {
+    let (_root, repo, family) = finished_child("conflict", "printf 'child\\n' > README.md").await?;
+    std::fs::write(repo.join("README.md"), "parent\n")?;
+    git(&repo, &["commit", "-qam", "parent moved"])?;
+    let merged = family.host.merge_worktree("writer")?;
+    assert_eq!(merged["merged"], false, "{merged:?}");
+    assert_eq!(files_of(&merged)?, [("README.md".to_owned(), 1, 1)]);
+    Ok(())
+}
+
+/// Dies with the list read through the 30 KB capture, whose cut splices an omitted-bytes row
+/// into the middle of it: a diff past that cap lists every file, whole.
+#[tokio::test]
+async fn a_list_past_the_capture_cap_is_whole() -> TestResult {
+    let hold = "mkdir -p a-directory-name-long-enough-to-pad-each-path; for n in $(seq 1000 1700); do echo x > a-directory-name-long-enough-to-pad-each-path/file_$n.txt; done";
+    let (_root, _repo, family) = finished_child("big", hold).await?;
+    let merged = family.host.merge_worktree("writer")?;
+    let files = files_of(&merged)?;
+    assert_eq!(files.len(), 701, "{merged:?}");
+    let bytes: usize = files.iter().map(|(path, ..)| path.len() + 6).sum();
+    assert!(bytes > yi_tools::OUTPUT_CAP, "{bytes} bytes fit the cap");
+    assert!(
+        files
+            .iter()
+            .all(|(path, added, _)| path.ends_with(".txt") && *added == 1)
+    );
+    Ok(())
+}
+
+/// Dies with a lane whose state file lost its base, which has the merge name no files or the
+/// wrong ones: with no base the list reads from the merge base with the parent's `HEAD`.
+#[tokio::test]
+async fn a_worktree_with_no_recorded_base_still_names_its_files() -> TestResult {
+    let (root, _repo, family) = finished_child("nobase", "printf 'x\\n' >> README.md").await?;
+    for pool in std::fs::read_dir(root.join("home/.yi/lanes"))? {
+        std::fs::remove_file(pool?.path().join("0.json"))?;
+    }
+    let merged = family.host.merge_worktree("writer")?;
+    assert_eq!(files_of(&merged)?, [("README.md".to_owned(), 1, 0)]);
     Ok(())
 }

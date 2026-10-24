@@ -4,12 +4,13 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
 use yi_types::plan::op::Choice;
 
 use super::{
-    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView, capture,
+    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView,
+    capture_named,
 };
 use crate::subagent::{ChildRecord, SubagentHost};
 
@@ -96,16 +97,28 @@ fn past(deadline: Option<Instant>) -> Result<(), LaneError> {
 /// `git` under the caller's deadline as well as the lane's own: a settle step cannot outlive
 /// the run it belongs to (D177).
 fn git_by(cwd: &Path, args: &[&str], deadline: Option<Instant>) -> Result<String, LaneError> {
+    git_capped(cwd, args, deadline, yi_tools::OUTPUT_CAP)
+}
+
+fn git_capped(
+    cwd: &Path,
+    args: &[&str],
+    deadline: Option<Instant>,
+    cap: usize,
+) -> Result<String, LaneError> {
     past(deadline)?;
     let own = Duration::from_millis(GIT_TIMEOUT_MS);
     let budget = deadline.map_or(own, |at| {
         own.min(at.saturating_duration_since(Instant::now()))
     });
-    capture(cwd, "git", args, budget).map_err(|output| LaneError::Git {
-        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-        exit_code: None,
-        output,
-    })
+    let label = format!("git {}", args.join(" "));
+    capture_named(cwd, &label, "git", args, budget, cap, None)
+        .map(|capture| capture.stdout)
+        .map_err(|output| LaneError::Git {
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            exit_code: None,
+            output,
+        })
 }
 
 fn sha_of(text: &str) -> Result<Sha, LaneError> {
@@ -590,6 +603,26 @@ fn in_progress(top: &Path, deadline: Option<Instant>) -> Result<bool, LaneError>
     .any(|name| git_dir.join(name).exists()))
 }
 
+/// Invariant: uncapped, since [`git_by`]'s 30 KB cut splices an omitted-bytes row into the list.
+/// A `{path, added, removed}` per file against the base, or the merge base with `HEAD`.
+fn changed_files(
+    repo: &Path,
+    candidate: &Candidate,
+    deadline: Option<Instant>,
+) -> Result<Value, LaneError> {
+    let from = candidate.base.as_ref().map_or("HEAD", Sha::as_str);
+    let range = format!("{from}...{}", candidate.commit.as_str());
+    let args = ["diff", "--numstat", "-z", "--no-renames", range.as_str()];
+    let numstat = git_capped(repo, &args, deadline, usize::MAX)?;
+    let files = numstat.split('\0').filter_map(|record| {
+        let mut parts = record.splitn(3, '\t');
+        let added = parts.next()?.parse().unwrap_or(0u64);
+        let removed = parts.next()?.parse().unwrap_or(0u64);
+        Some(json!({"path": parts.next()?, "added": added, "removed": removed}))
+    });
+    Ok(Value::Array(files.collect()))
+}
+
 fn nul_lines(text: &str) -> Vec<String> {
     text.split('\0')
         .filter(|line| !line.is_empty())
@@ -746,6 +779,9 @@ impl SubagentHost {
             .settle(&quiescence, deadline)
             .map_err(|unsettled| unsettled.error().to_string())?;
         let mut reply = settled.candidate.as_reply();
+        let files = changed_files(pool.repo(), &settled.candidate, deadline)
+            .map_err(|error| error.to_string())?;
+        reply.insert("files".to_owned(), files);
         let parent = self.options.cwd.clone();
         let mut moved: Option<(Sha, Sha)> = None;
         for _attempt in 0..2 {
