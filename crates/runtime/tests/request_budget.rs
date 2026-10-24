@@ -792,6 +792,18 @@ async fn role_bodies(workspace: Workspace) -> Result<Vec<(&'static str, Value)>,
             }
         }
     }
+    let plan = session
+        .tools()
+        .into_iter()
+        .find(|tool| tool.definition().name == "plan")
+        .ok_or("the root has no plan tool")?;
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let declared = plan
+        .execute("plan-reader", serde_json::from_str(PLAN_READER)?, &signal)
+        .await;
+    if declared.is_error {
+        return Err(format!("the plan refused its Reader: {:?}", declared.result.content).into());
+    }
     let mut bodies = Vec::new();
     let mut rows = Vec::new();
     for (role, brief, _) in ROLES {
@@ -800,8 +812,24 @@ async fn role_bodies(workspace: Workspace) -> Result<Vec<(&'static str, Value)>,
             upstream::body_asking(&mut bodies, &from, brief).await?,
         ));
     }
+    rows.push((
+        "plan_reader",
+        upstream::body_asking(&mut bodies, &from, "Which line names the sun?").await?,
+    ));
     Ok(rows)
 }
+
+/// A plan todo delegated as roles.py's `Reader(partition=["local://notes.txt"], note=...)`
+/// writes it, which the root's own engine spawns through its plan tool.
+const PLAN_READER: &str = r#"{"op": "init", "goal": "read the notes", "todos": [{
+    "label": "read-sun",
+    "delegation": {
+        "spec": {"role": "reader", "wall": {"deny_write": ["."]}},
+        "accept": {"stated": "the todo's contract decides"},
+        "context": ["local://notes.txt"],
+        "note": "Which line names the sun?"
+    }
+}]}"#;
 
 fn system_text(body: &Value) -> String {
     body["system"]
@@ -837,6 +865,11 @@ async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestRe
     assert!(
         reader.starts_with(include_str!("../src/prompts/reader.md")),
         "the reader is sent its own identity: {reader}"
+    );
+    assert_eq!(
+        text("plan_reader")?,
+        reader,
+        "a plan Reader is sent a reader's prefix"
     );
     assert!(
         !lines_of(doctrine, &text("worker")?, false),
