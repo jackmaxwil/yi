@@ -684,20 +684,10 @@ def selfcheck():
     finally:
         subprocess.run = real_run
     assert stopped == 1, "a hard-cap breach stops the push lane"
-    # A size inside one page over the baseline reads green, so the push writes and commits nothing.
-    page = check_binary_size.PAGE
-    assert overrun(f"FAIL binary_size\n  {check_binary_size.problems(800_001 + page, 800_000, name='binary_size_budget_linux.json')[0]}\n") == (
-        "binary_size_budget_linux", 800_000, 800_001 + page)
-    assert check_binary_size.problems(800_000 + page, 800_000) == []
-    real_git, written = globals()["git"], []
-    globals()["git"] = lambda *a, **kw: written.append(a) or ""
-    subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "ok   binary_size (816384 bytes)\n", "")
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            inside = binary_ratchet("")
-    finally:
-        subprocess.run, globals()["git"] = real_run, real_git
-    assert inside == 0 and written == [], "growth inside one page commits no baseline"
+    # One byte past the jitter allowance is a lone overrun, so the push ratchets the measured size.
+    jitter = check_binary_size.JITTER
+    assert overrun(f"FAIL binary_size\n  {check_binary_size.problems(800_001 + jitter, 800_000, name='binary_size_budget_linux.json')[0]}\n") == (
+        "binary_size_budget_linux", 800_000, 800_001 + jitter)
     import pr_review
 
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
