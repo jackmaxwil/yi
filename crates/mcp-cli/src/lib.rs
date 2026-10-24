@@ -169,9 +169,14 @@ fn do_connect(
                         .map(|text| format!("\n{label}: {text}"))
                 })
                 .collect::<String>();
-                Value::String(format!(
-                    "@{name} live{server}{facts}\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
-                ))
+                let cut = if tools > 0 {
+                    format!(
+                        "\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
+                    )
+                } else {
+                    String::new()
+                };
+                Value::String(format!("@{name} live{server}{facts}{cut}"))
             };
             output::emit(&shown, flags.json, flags.max_chars);
             0

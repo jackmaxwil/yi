@@ -190,6 +190,28 @@ fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestRes
     Ok(())
 }
 
+/// Dies with a server that has no tools told `[…] 0 tools not printed` and sent to a tools-list
+/// that lists nothing: no tool was cut, so the row names no cut.
+#[test]
+fn connect_to_a_server_without_tools_names_no_cut() -> TestResult {
+    let home = mcp_home()?;
+    let server = fixture_server_path().display().to_string();
+    std::fs::write(
+        home.home.join(".yi/mcp.json"),
+        serde_json::to_string(&serde_json::json!({
+            "mcpServers": {"bare": {"command": "python3", "args": [server, "--no-tools"]}}
+        }))?,
+    )?;
+    let connect = yi_mcp(&home, &["connect", "bare", "@b"])?;
+    assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
+    assert_eq!(
+        connect.stdout.trim(),
+        "@b live · yi-fixture\ncapabilities: resources\n\
+         instructions: Fixture server. The echo tool repeats input."
+    );
+    Ok(())
+}
+
 /// Dies with a one-word mistake printing 1,521 bytes of help: the error stays one line and names
 /// the call that prints the rest.
 #[test]
