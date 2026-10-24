@@ -93,12 +93,19 @@ impl App {
         session: &SessionId,
         update: &AcpSessionUpdate,
     ) {
-        if let Some(path) = self.record_edit(session, update) {
+        if let Some(path) = self.record_edit(session, update, None) {
             self.track(outbound, session, vec![path], true);
         }
     }
 
-    fn record_edit(&mut self, session: &SessionId, update: &AcpSessionUpdate) -> Option<String> {
+    /// `replayed` is the turn a replayed edit ran in; a live edit takes the console's own turn
+    /// and the todo running now.
+    fn record_edit(
+        &mut self,
+        session: &SessionId,
+        update: &AcpSessionUpdate,
+        replayed: Option<u64>,
+    ) -> Option<String> {
         let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
             raw_output: Some(details),
             ..
@@ -114,8 +121,9 @@ impl App {
             added: count("added"),
             removed: count("removed"),
             tracked: false,
-            serving: self.serving(session),
-            turn: self.state.diffs.get(session).map_or(0, |diff| diff.turn),
+            serving: replayed.map_or_else(|| self.serving(session), |_| None),
+            turn: replayed
+                .unwrap_or_else(|| self.state.diffs.get(session).map_or(0, |diff| diff.turn)),
         };
         self.state
             .diffs
@@ -140,23 +148,35 @@ impl App {
     }
 
     /// Replay entries are whole messages, so they fill the Notebook and Review as live frames do;
-    /// a console started after the work ran has no other history.
+    /// `full`, a replay from entry 0, is the branch as it stands and restarts the Notebook.
     pub(super) fn absorb_history(
         &mut self,
         outbound: &Outbound,
         session: &SessionId,
         entries: &[Entry],
+        full: bool,
     ) {
+        let kept = self.state.diffs.get(session).filter(|_| !full);
+        let mut turn = kept.map_or(0, |diff| diff.turn);
+        if full && self.state.notebooks.remove(session).is_some() {
+            self.redraw_notebooks(session);
+        }
         let mut edited = std::collections::BTreeSet::new();
         for entry in entries {
             let Entry::Message { message, .. } = entry else {
                 continue;
             };
+            if matches!(message, AgentMessage::User { .. }) {
+                turn = turn.saturating_add(1);
+            }
             for update in replayed_updates(message) {
                 self.absorb_review(session, &update);
-                edited.extend(self.record_edit(session, &update));
+                edited.extend(self.record_edit(session, &update, Some(turn)));
                 self.fill_notebook(session, &update);
             }
+        }
+        if let Some(diff) = self.state.diffs.get_mut(session) {
+            diff.turn = turn;
         }
         if !edited.is_empty() {
             self.track(outbound, session, edited.into_iter().collect(), false);
@@ -207,15 +227,19 @@ impl App {
                 update,
             )
         {
-            for (pane_id, pane) in &mut self.state.panes {
-                if pane.session() == Some(session)
-                    && let PaneContent::Notebook { drawn, .. } = &mut pane.content
-                {
-                    *drawn = None;
-                    pane.scroll_from_bottom = 0;
-                    if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
-                        *seen = Instant::now();
-                    }
+            self.redraw_notebooks(session);
+        }
+    }
+
+    fn redraw_notebooks(&mut self, session: &SessionId) {
+        for (pane_id, pane) in &mut self.state.panes {
+            if pane.session() == Some(session)
+                && let PaneContent::Notebook { drawn, .. } = &mut pane.content
+            {
+                *drawn = None;
+                pane.scroll_from_bottom = 0;
+                if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
+                    *seen = Instant::now();
                 }
             }
         }

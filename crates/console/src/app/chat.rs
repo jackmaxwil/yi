@@ -310,7 +310,7 @@ impl App {
         self.seq.insert(id.clone(), None);
         self.replayed.insert(id.clone());
         if replay.child.is_none() {
-            self.absorb_history(outbound, id, &entries);
+            self.absorb_history(outbound, id, &entries, replay.from == 0);
         }
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
             row.name = Some(name.clone());
@@ -683,9 +683,6 @@ impl App {
         let id = session.0.as_str();
         match command {
             Command::Prompt(text) => {
-                if !self.connected() {
-                    return self.note("not connected — prompt not sent");
-                }
                 self.send_request(
                     outbound,
                     RequestKind::Prompt,
