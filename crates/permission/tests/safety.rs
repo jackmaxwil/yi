@@ -366,7 +366,7 @@ fn git_global_options_do_not_become_the_subcommand() -> TestResult {
     let cases = [
         ("git -C ../wt status", Class::Safe),
         ("git -C ../wt reset --hard HEAD~1", Class::Destructive),
-        ("git -c core.pager=cat log", Class::Safe),
+        ("git -c core.quotepath=off reset --hard", Class::Destructive),
         (
             "git --git-dir=.git --work-tree=. clean -fdx",
             Class::Destructive,
@@ -518,5 +518,117 @@ fn a_ripwire_read_is_query_flags_over_at_most_one_local_root() {
         "PATH=bin ripwire . --hotspots",
     ] {
         assert_ne!(verdict(contained), Verdict::Allow, "{contained}");
+    }
+}
+
+fn verdict_name(command: &str) -> &'static str {
+    match verdict(command) {
+        Verdict::Allow => "allow",
+        Verdict::Contain { .. } => "contain",
+        Verdict::Ask { .. } => "ask",
+    }
+}
+
+/// Each spelling with the verdict the auto prompt promises: a flag or script that runs a program
+/// asks or is contained, one that writes is contained, and a short flag counts inside a cluster.
+const FLAG_SPELLINGS: [(&str, &str); 57] = [
+    ("awk 'BEGIN{system(\"rm -rf x\")}'", "contain"),
+    ("awk '{print > \"out.txt\"}' data.txt", "contain"),
+    ("awk '{print | \"sh\"}' data.txt", "contain"),
+    ("awk -f prog.awk data.txt", "contain"),
+    ("sed -ri 's/a/b/' f", "contain"),
+    ("sed -Ei 's/a/b/' f", "contain"),
+    ("sed -ni 's/a/b/p' f", "contain"),
+    ("sed --in-place 's/a/b/' f", "contain"),
+    ("sed 's/a/b/w out.txt' f", "contain"),
+    ("sed 's/x/date/e' f", "contain"),
+    ("sed '1e date' f", "contain"),
+    ("sed -n -e 'p;w out.txt' f", "contain"),
+    ("sed -n 'W out.txt' f", "contain"),
+    ("sed -n 's/a;b/c/w out.txt' f", "contain"),
+    ("sed -n '/x/Iw out.txt' f", "contain"),
+    ("sed -n '/x/M,/y/w out.txt' f", "contain"),
+    ("sed -I '' 's/a/b/' f", "contain"),
+    ("awk -i inplace '{print}' f", "contain"),
+    ("awk -E prog.awk f", "contain"),
+    ("find . -fprint out.txt", "ask"),
+    ("find . -fprint0 out.txt", "ask"),
+    ("find . -okdir rm \\;", "ask"),
+    ("fd -x rm", "ask"),
+    ("fd -X rm", "ask"),
+    ("fd --exec rm", "ask"),
+    ("fd --exec-batch rm", "ask"),
+    ("rg --pre ./decode pattern", "ask"),
+    ("rg --pre=./decode pattern", "ask"),
+    ("sort -o out.txt in.txt", "contain"),
+    ("sort -uo out.txt in.txt", "contain"),
+    ("sort --output=out.txt in.txt", "contain"),
+    ("sort --out=out.txt in.txt", "contain"),
+    ("tree -o out.txt", "contain"),
+    ("uniq in.txt out.txt", "contain"),
+    ("git diff --output=out.txt", "contain"),
+    ("git log --output=out.txt", "contain"),
+    ("git -c core.fsmonitor=./hook status", "contain"),
+    ("git -c core.pager=./pager log", "contain"),
+    ("git -c core.sshCommand=./ssh status", "contain"),
+    ("git clean -df", "ask"),
+    ("git clean -xdf", "ask"),
+    ("git clean -fxd", "ask"),
+    ("git checkout -f", "ask"),
+    ("git checkout .", "ask"),
+    ("git switch -f main", "ask"),
+    ("nice -n 5 rm -rf x", "ask"),
+    ("timeout -s KILL 5 rm -rf x", "ask"),
+    ("FOO=1 rm -rf x", "ask"),
+    ("rm -rf build", "ask"),
+    ("git reset --hard", "ask"),
+    ("git clean -f", "ask"),
+    ("git push -f origin main", "ask"),
+    ("chmod -R 777 .", "ask"),
+    ("rsync -a src host:dst", "ask"),
+    ("git pull", "ask"),
+    ("sh -c ls", "ask"),
+    ("ls > out.txt", "contain"),
+];
+
+#[test]
+fn a_flag_that_runs_or_writes_is_not_read_only() -> TestResult {
+    let wrong: Vec<String> = (FLAG_SPELLINGS.iter())
+        .filter(|(command, expected)| verdict_name(command) != *expected)
+        .map(|(command, expected)| format!("{command:?}: {} not {expected}", verdict_name(command)))
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    match verdict("FOO=1 rm -rf x") {
+        Verdict::Ask { reason } => assert!(reason.starts_with("`rm` is destructive"), "{reason}"),
+        other => return Err(format!("FOO=1 rm must ask, got {other:?}").into()),
+    }
+    match verdict("FOO=1 git pull") {
+        Verdict::Ask { reason } => assert!(reason.starts_with("`git pull` needs"), "{reason}"),
+        other => return Err(format!("FOO=1 git pull must ask, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// The cluster reader and the script scan must not take a plain read for a write.
+#[test]
+fn a_read_spelled_with_flags_stays_a_read() {
+    for (command, expected) in [
+        ("sed -n 1p f", "allow"),
+        ("sed -n '1,5p;$p' f", "allow"),
+        ("sed -e 's/hello/world/g' f", "allow"),
+        ("sed -n '/x/Ip;s/a/b/gp' f", "allow"),
+        ("git ls-files -co --exclude-standard", "allow"),
+        ("git log -c", "allow"),
+        ("git diff --output-indicator-new=+", "allow"),
+        ("awk '{print $1}' f", "allow"),
+        ("sort -u -k2 f", "allow"),
+        ("uniq -c f", "allow"),
+        ("fd -e rs crates", "allow"),
+        ("timeout 30 cargo test", "allow"),
+        ("git clean -n", "contain"),
+        ("nice -n 5 cargo build", "contain"),
+        ("FOO=1 ls", "contain"),
+    ] {
+        assert_eq!(verdict_name(command), expected, "{command:?}");
     }
 }

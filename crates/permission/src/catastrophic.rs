@@ -231,41 +231,50 @@ pub(crate) fn absolute(path: &Path, context: &CatastrophicContext) -> PathBuf {
 /// Whether destroying this path is categorically unacceptable. Checked before
 /// decide() and denied in every mode including yolo (design §8, D15).
 pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
-    let path = lexical_normalize(path);
+    let path = folded(&lexical_normalize(path));
     if PROTECTED_SYSTEM_PATHS
         .iter()
-        .any(|protected| path == Path::new(protected))
+        .any(|protected| path == folded(Path::new(protected)))
     {
         return true;
     }
     if SYSTEM_PATHS_PROTECTED_RECURSIVELY
         .iter()
-        .any(|protected| path.starts_with(protected))
+        .any(|protected| path.starts_with(folded(Path::new(protected))))
     {
         return true;
     }
     if (context.workspace_git.iter())
         .chain(&context.host_owned)
-        .any(|guarded| path.starts_with(lexical_normalize(guarded)))
+        .any(|guarded| path.starts_with(folded(&lexical_normalize(guarded))))
     {
         return true;
     }
     let Some(home) = &context.home_dir else {
         return false;
     };
-    let home = lexical_normalize(home);
+    let home = folded(&lexical_normalize(home));
     if path == home {
         return true;
     }
     if PROTECTED_CREDENTIAL_SUBPATHS
         .iter()
-        .any(|sub| path.starts_with(home.join(sub)))
+        .any(|sub| path.starts_with(folded(&home.join(sub))))
     {
         return true;
     }
     PROTECTED_HOME_SUBPATHS
         .iter()
-        .any(|sub| path == home.join(sub))
+        .any(|sub| path == folded(&home.join(sub)))
+}
+
+/// Invariant: a default macOS volume folds letter case, so `~/.SSH` names `~/.ssh`; folding
+/// both sides of a comparison only ever denies more.
+fn folded(path: &Path) -> PathBuf {
+    match cfg!(target_os = "macos") {
+        true => PathBuf::from(path.to_string_lossy().to_lowercase()),
+        false => path.to_path_buf(),
+    }
 }
 
 /// The credential stores under `home`, the one list the destroy gate, the read gate, the bash
@@ -710,16 +719,22 @@ const WRAPPERS: [&str; 11] = [
     "xargs",
 ];
 
-/// Reading past a wrapper, flag, assignment or number only widens what the belt and wall see.
+/// Shell words a command runs behind: `then rm -rf .git` runs `rm`.
+const OPENERS: [&str; 9] = [
+    "!", "do", "elif", "else", "if", "then", "until", "while", "{",
+];
+
+/// Reading past a wrapper, opener, flag, assignment or number widens what the belt and wall see.
 pub fn wraps(word: &str) -> bool {
     WRAPPERS.contains(&word.rsplit('/').next().unwrap_or(word))
+        || OPENERS.contains(&word)
         || word.starts_with('-')
         || word.contains('=')
         || word.chars().all(|character| character.is_ascii_digit())
 }
 
-fn runs_destructive(command: &str) -> bool {
-    command
+fn runs_destructive(segment: &str) -> bool {
+    segment
         .split_whitespace()
         .find(|token| !wraps(token))
         .is_some_and(|token| {
@@ -727,17 +742,19 @@ fn runs_destructive(command: &str) -> bool {
         })
 }
 
-/// A destructive verb sends every path-shaped token through the denylist. No
-/// shell-parsing cleverness (D15): this is a belt over the path-based checks.
+/// A destructive verb in any segment sends every path-shaped token of the whole command through
+/// the denylist, since a quoted `;` may cut a segment short. No shell parsing (D15).
 pub fn command_targets_catastrophic(
     command: &str,
     context: &CatastrophicContext,
 ) -> Option<String> {
-    if !runs_destructive(command) {
+    let separator = [';', '&', '|', '\n', '(', ')', '`'];
+    if !command.split(separator).any(runs_destructive) {
         return None;
     }
-    for token in command.split_whitespace().skip(1) {
-        if token.starts_with('-') {
+    for token in command.split(|c: char| c.is_whitespace() || separator.contains(&c)) {
+        let token = token.trim_matches(['"', '\'']);
+        if token.is_empty() || token.starts_with('-') {
             continue;
         }
         // Incident: `rm -rf /` trimmed to an empty path that expanded to the working dir and
