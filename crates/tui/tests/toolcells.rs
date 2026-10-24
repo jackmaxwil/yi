@@ -698,7 +698,8 @@ fn bash_first_lines(session: &std::path::Path) -> Result<Vec<String>, Box<dyn Er
 /// Dies with a digest read off the model's own words: a grep recorded from the real tool drew
 /// `0 hits` for six, because its rows are `N:text` under a `[path#TAG]` header and not
 /// `path:N:text`, and an edit's digest was whatever line two of its text became once the header
-/// moved. Producer: `yi ask --faux` over a three-file tree (grep), the older sessions (edit, read, bash).
+/// moved. Producer: `yi ask --faux` over a three-file tree (grep) and a five-line file (an
+/// insert-after edit), the older sessions (edit, read, bash).
 #[test]
 fn digests_come_from_the_typed_details_and_survive_rewording_the_text() -> TestResult {
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sessions");
@@ -715,6 +716,15 @@ fn digests_come_from_the_typed_details_and_survive_rewording_the_text() -> TestR
             ],
         ),
         ("01a16f24", vec!["6 hits".to_owned()]),
+        // An insert after line 2: the tool reports its anchor, 2, where the patch's first
+        // changed row is 3.
+        (
+            "01a16f6f",
+            vec![
+                "5 lines".to_owned(),
+                "updated; first change at line 2".to_owned(),
+            ],
+        ),
         ("01a0d6e4", bash_heads),
     ] {
         let original = fixtures.join(format!("{session}.jsonl"));

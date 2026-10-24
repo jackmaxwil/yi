@@ -11,6 +11,7 @@ use yi_tui::Command;
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::default_keymap;
+use yi_tui::port::Reply;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, UserContent};
 
@@ -104,6 +105,43 @@ fn a_steer_leaves_the_queued_row_when_the_loop_injects_it() -> TestResult {
     app.reduce_agent(injected("then run the tests"));
     let rows = common::live_rows(&mut app)?;
     assert!(!has_row(&rows, "Steering"), "{rows:#?}");
+    Ok(())
+}
+
+/// Dies with `wait-idle` walking on before a turn started (A10): a busy prompt was counted off the
+/// moment the runtime called it a steer, so one that missed the run's last boundary and opened a
+/// turn of its own left every later prompt looking already begun.
+#[test]
+fn a_busy_prompt_is_awaited_until_a_run_reads_it() -> TestResult {
+    for opens_its_own_turn in [false, true] {
+        let mut app = app();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for line in ["first", "second"] {
+            type_text(&mut app, &tx, line);
+            press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+        }
+        app.apply(Reply::Notice("a turn was already running".to_owned()));
+        app.reduce_agent(AgentEvent::AgentStart);
+        app.reduce_agent(injected("first"));
+        if opens_its_own_turn {
+            app.reduce_agent(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            });
+            assert!(!app.turn_idle(), "the steer's own turn is about to start");
+            app.reduce_agent(AgentEvent::AgentStart);
+        }
+        app.reduce_agent(injected("second"));
+        app.reduce_agent(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        });
+        assert!(app.turn_idle(), "own turn {opens_its_own_turn}: both read");
+        type_text(&mut app, &tx, "third");
+        press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            app.awaiting_turn(),
+            "own turn {opens_its_own_turn}: a later prompt reads as already begun"
+        );
+    }
     Ok(())
 }
 
@@ -286,13 +324,17 @@ fn a_pasted_tab_and_escape_are_drawn_as_cells_not_sent_to_the_terminal() -> Test
 /// kept an empty query and the text sent with the next prompt.
 #[test]
 fn a_paste_with_a_popup_open_fills_the_popup_not_the_composer() -> TestResult {
-    let mut app = app();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    type_text(&mut app, &tx, "/");
-    paste(&mut app, &tx, "mod\nel");
-    assert_eq!(app.composer_text(), "");
-    let rows = common::live_rows(&mut app)?;
-    assert!(has_row(&rows, " /mod el"), "{rows:#?}");
+    // The second is a triple-click copy: CRLF between the lines and a newline after the last,
+    // which left two spaces inside the query and one after it.
+    for pasted in ["mod\nel", "mod\r\nel\n"] {
+        let mut app = app();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        type_text(&mut app, &tx, "/");
+        paste(&mut app, &tx, pasted);
+        assert_eq!(app.composer_text(), "");
+        let rows = common::live_rows(&mut app)?;
+        assert!(has_row(&rows, " /mod el█"), "{pasted:?}: {rows:#?}");
+    }
     Ok(())
 }
 
@@ -365,5 +407,36 @@ fn a_double_slash_and_a_slash_path_are_prompts() -> TestResult {
             "prompt /* a block comment */",
         ]
     );
+    Ok(())
+}
+
+/// The notice says to type `//`, and a typed `/` opens the popup: Enter there ran `//model` and
+/// `//undo` as commands and answered `//plna` with the notice that had just named the escape.
+#[test]
+fn a_double_slash_typed_in_the_popup_is_a_prompt() -> TestResult {
+    let mut app = app();
+    app.set_width(120);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    for line in [
+        "//plna is a word",
+        "//model",
+        "//undo",
+        "/usr/local/bin is on my PATH",
+    ] {
+        type_text(&mut app, &tx, line);
+        press(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.bottom_open(), "{line}: a view stayed open");
+    }
+    assert_eq!(
+        sent(&mut rx),
+        [
+            "prompt /plna is a word",
+            "prompt /model",
+            "prompt /undo",
+            "prompt /usr/local/bin is on my PATH",
+        ]
+    );
+    let rows = transcript(&app);
+    assert!(!rows.contains("unknown command"), "{rows}");
     Ok(())
 }

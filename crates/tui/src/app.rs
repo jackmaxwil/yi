@@ -170,7 +170,7 @@ pub struct App {
     seen_turn: bool,
     /// Incident: a submitted prompt reaches the runtime thread over a channel, so the UI can
     /// look idle after Enter; a script checking only `running` opened the tree mid-write.
-    submitted_turns: u64,
+    awaited: Vec<String>,
     started_turns: u64,
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
@@ -297,7 +297,7 @@ impl App {
             asked: Vec::new(),
             hud_hidden: false,
             seen_turn: false,
-            submitted_turns: 0,
+            awaited: Vec::new(),
             started_turns: 0,
             user_turns: 0,
             mode: TranscriptMode::default(),
@@ -376,8 +376,8 @@ impl App {
         self.quit
     }
 
-    pub(crate) fn note_submission(&mut self) {
-        self.submitted_turns = self.submitted_turns.saturating_add(1);
+    pub(crate) fn note_submission(&mut self, text: &str) {
+        self.awaited.push(text.to_owned());
     }
 
     pub fn open_approval(&mut self, ask: AskRequest) {
@@ -666,6 +666,9 @@ impl App {
                     Attribution::User | Attribution::Task => {
                         if let Some(at) = self.steering.iter().position(|queued| *queued == text) {
                             self.steering.remove(at);
+                        }
+                        if let Some(at) = self.awaited.iter().position(|sent| *sent == text) {
+                            self.awaited.remove(at);
                         }
                         self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1015,7 +1018,7 @@ pub fn run_tui(
 
     app.load_history(&mut port);
     if let Some(prompt) = app.options.initial_prompt.clone() {
-        app.note_submission();
+        app.note_submission(&prompt);
         let _ = cmd_tx.send(Command::Prompt(prompt));
     }
 

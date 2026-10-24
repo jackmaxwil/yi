@@ -194,10 +194,7 @@ pub(crate) fn handle_bottom_key(
             Bottom::Command(_) | Bottom::File(_) | Bottom::Question(_) => {}
         },
         PopupResult::Insert(text) => match bottom {
-            Bottom::Command(_) => {
-                let command = text.trim_start_matches('/').to_owned();
-                handle_slash(app, &command);
-            }
+            Bottom::Command(_) => submit_line(app, cmd_tx, text),
             Bottom::File(_) => {
                 app.composer
                     .textarea
@@ -212,12 +209,30 @@ pub(crate) fn handle_bottom_key(
     }
 }
 
+/// Invariant: Enter in the composer and in the `/` popup both submit here, so `//word` prompts.
+fn submit_line(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
+    let text = match slash_line(text) {
+        Slash::Command(command) => return handle_slash(app, &command),
+        Slash::Prompt(text) => text,
+    };
+    if let Some(bound) = app.reply_bound.take() {
+        let (child_id, question) = (bound.child_id, bound.question);
+        let _ = cmd_tx.send(Command::Answer {
+            child_id,
+            question,
+            text,
+        });
+        return;
+    }
+    send_message(app, cmd_tx, text);
+}
+
 fn send_message(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>, text: String) {
     if app.running {
         app.steering.push(text.clone());
         let _ = cmd_tx.send(Command::Steer(text));
     } else {
-        app.note_submission();
+        app.note_submission(&text);
         let _ = cmd_tx.send(Command::Prompt(text));
     }
 }
@@ -234,23 +249,7 @@ pub(crate) fn handle_action(
                 return;
             }
             if let Some(text) = app.composer.take_submission() {
-                let text = match slash_line(text) {
-                    Slash::Command(command) => {
-                        handle_slash(app, &command);
-                        return;
-                    }
-                    Slash::Prompt(text) => text,
-                };
-                if let Some(bound) = app.reply_bound.take() {
-                    let (child_id, question) = (bound.child_id, bound.question);
-                    let _ = cmd_tx.send(Command::Answer {
-                        child_id,
-                        question,
-                        text,
-                    });
-                    return;
-                }
-                send_message(app, cmd_tx, text);
+                submit_line(app, cmd_tx, text);
             }
         }
         Action::InsertNewline => app.composer.insert_newline(),

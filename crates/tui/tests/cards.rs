@@ -615,7 +615,8 @@ fn injected_text_takes_one_callout_shape_and_a_run_is_one_block() -> TestResult 
 
 /// Dies with a mail body losing its `<...>` text: every injected cell was stripped of markup, so a
 /// review comment about `Vec<String>` read `return Vec, not &[String]`. Only the envelope's own
-/// element (`present` in the runtime's mail.rs) and an advisory's tags are structure.
+/// element (`present` in the runtime's mail.rs), the wrapper rows of a reap or goal prompt and an
+/// advisory's tags are structure.
 #[test]
 fn a_mail_body_keeps_its_angle_brackets_and_an_advisory_loses_only_its_tags() -> TestResult {
     let theme = theme();
@@ -627,6 +628,31 @@ fn a_mail_body_keeps_its_angle_brackets_and_an_advisory_loses_only_its_tags() ->
     assert_eq!(
         flat(&mail.lines(80, &theme, TranscriptMode::Thinking, 0)),
         vec!["  ▌ ⚑ mail alice → bob return Vec<String>, not &[String]"]
+    );
+    // The wrappers `reap` (mailbox.rs) and a goal prompt (goal/prompts/budget_limit.md) put round
+    // their bodies are structure like the envelope's, whatever source names the cell.
+    let reap = Cell::Advisory {
+        source: "reap".to_owned(),
+        text: "<reaped_child from=\"r1\">\nWrote a.py and ran the test.\n</reaped_child>"
+            .to_owned(),
+    };
+    assert_eq!(
+        flat(&reap.lines(80, &theme, TranscriptMode::Thinking, 0)),
+        vec!["  ▌ ⚑ reap Wrote a.py and ran the test."]
+    );
+    let goal = Cell::Advisory {
+        source: "goal_prompt".to_owned(),
+        text: "The goal has reached its token budget.\n\n<untrusted_objective>\nfinish the port\n</untrusted_objective>\n\nBudget:\n- Tokens used: 5"
+            .to_owned(),
+    };
+    assert_eq!(
+        flat(&goal.lines(80, &theme, TranscriptMode::Thinking, 0)),
+        vec![
+            "  ▌ ⚑ goal_prompt The goal has reached its token budget.",
+            "  ▌ ⚑ goal_prompt finish the port",
+            "  ▌ ⚑ goal_prompt Budget:",
+            "  ▌ ⚑ goal_prompt - Tokens used: 5",
+        ]
     );
     let advisory = Cell::Advisory {
         source: "advisory".to_owned(),

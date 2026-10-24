@@ -21,13 +21,11 @@ pub trait BottomView {
 }
 
 pub(crate) fn one_line(text: &str) -> String {
-    text.chars()
-        .filter_map(|c| match c {
-            c if c.is_whitespace() => Some(' '),
-            c if c.is_control() => None,
-            c => Some(c),
-        })
-        .collect()
+    let kept: String = text
+        .chars()
+        .filter(|c| c.is_whitespace() || !c.is_control())
+        .collect();
+    kept.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub struct ListPopup {

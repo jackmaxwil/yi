@@ -44,13 +44,9 @@ impl App {
         self.running
     }
 
-    /// A prompt has been submitted whose turn has not started yet.
+    /// Invariant: a prompt is awaited until a run reads its text, opening a turn or injected.
     pub fn awaiting_turn(&self) -> bool {
-        self.submitted_turns > self.started_turns
-    }
-
-    pub(crate) fn note_steered(&mut self) {
-        self.submitted_turns = self.submitted_turns.saturating_sub(1);
+        !self.awaited.is_empty()
     }
 
     pub fn turn_idle(&self) -> bool {
