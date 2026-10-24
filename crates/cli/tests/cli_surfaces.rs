@@ -535,6 +535,27 @@ fn undo_restores_the_files_a_turn_changed() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn undo_with_a_sentence_restores_nothing_and_names_the_ask() -> TestResult {
+    let workspace = Workspace::new("undo-sentence")?;
+    let kept = workspace.project().join("kept.txt");
+    std::fs::write(&kept, "before\n")?;
+    let script = tool_script(
+        &workspace,
+        &[("write", json!({"path": "kept.txt", "content": "after\n"}))],
+        Some("written"),
+    )?;
+    ask(&workspace, "start a turn", &["--faux", &script])?;
+    let refused = workspace.yi(&["undo", "the", "last", "edit"])?;
+    assert_eq!(refused.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr).trim(),
+        "error: `yi undo` takes only `list`; to ask the model: yi ask undo the last edit"
+    );
+    assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
+    Ok(())
+}
+
 /// A hand edit after the turn is out of scope (b, c) or, on a path the turn wrote, kept and
 /// named (d): `yi undo` moves only what the turn changed.
 #[test]
@@ -1562,6 +1583,65 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     for (shell, offered) in [("bash", bash), ("zsh", zsh), ("fish", fish)] {
         assert_eq!(offered.0, want.0, "{shell} verbs");
         assert_eq!(offered.1, want.1, "{shell} flags");
+    }
+    Ok(())
+}
+
+/// The bound is by length: `doctr` (five letters) and `dotcor` (six) are one and two edits from
+/// `doctor`, `dctr` (four) is two and still asks.
+#[test]
+fn a_lone_word_near_a_verb_is_refused_and_writes_no_session() -> TestResult {
+    let workspace = Workspace::new("near-verb")?;
+    for word in ["doctr", "dotcor"] {
+        let refused = workspace.yi(&["--model", "faux/faux-1", word])?;
+        assert_eq!(refused.status.code(), Some(2), "{word}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr).trim(),
+            format!("error: did you mean \"doctor\"? to ask the model: yi ask {word}")
+        );
+    }
+    let sessions = workspace.0.join("home/sessions");
+    assert!(!sessions.exists() || session_files(&sessions)?.is_empty());
+    for words in [
+        &["ask", "doctr"][..],
+        &["hello", "there"],
+        &["fix", "the", "bug"],
+        &["dctr"],
+    ] {
+        let mut argv = vec!["--model", "faux/faux-1"];
+        argv.extend_from_slice(words);
+        let asked = workspace.yi(&argv)?;
+        let prompt = words
+            .iter()
+            .skip_while(|word| **word == "ask")
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(stdout(&asked).trim(), format!("faux: {}", prompt.join(" ")));
+    }
+    Ok(())
+}
+
+/// The console and the daemon never hand these flags to a session; the refusal comes before
+/// either starts, so no socket is bound.
+#[test]
+fn console_and_serve_refuse_a_flag_they_would_drop() -> TestResult {
+    let workspace = Workspace::new("unread-flags")?;
+    let socket = std::env::temp_dir().join(format!("yi-unread-{}.sock", std::process::id()));
+    let path = socket.display().to_string();
+    for (argv, said) in [
+        (
+            ["console", "--thinking", "high"],
+            "error: --thinking is not applied by yi console; set \"thinking\" in ~/.yi/config.json",
+        ),
+        (
+            ["serve", "--system", "x"],
+            "error: --system is not applied by yi serve; pass it to `yi ask` or `yi tui`",
+        ),
+    ] {
+        let refused = workspace.yi(&[&argv[..], &["--socket", &path]].concat())?;
+        assert_eq!(refused.status.code(), Some(2), "{argv:?}");
+        assert_eq!(String::from_utf8_lossy(&refused.stderr).trim(), said);
+        assert!(!socket.exists(), "{argv:?} bound {path}");
     }
     Ok(())
 }

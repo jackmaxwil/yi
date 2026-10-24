@@ -12,40 +12,46 @@ pub(crate) enum Route {
 }
 use Route::{Early, Run};
 
-pub(crate) struct Verb(&'static str, Route, &'static str);
+pub(crate) enum Words {
+    Any,
+    Only(&'static [&'static str]),
+}
+use Words::{Any, Only};
+
+pub(crate) struct Verb(&'static str, Route, Words, &'static str);
 
 pub(crate) struct Flag(&'static str, Option<&'static str>, &'static str);
 
 #[rustfmt::skip]
 const VERBS: &[Verb] = &[
-    Verb("ask", Run(run_ask), "run one turn and print the answer"),
-    Verb("rpc", Run(run_rpc), "speak the Pi JSON-RPC protocol on stdio"),
-    Verb("acp", Run(run_acp), "speak ACP v2 on stdio"),
-    Verb("undo", Run(run_undo), "restore the files the last turn changed"),
-    Verb("lanes", Run(lanes::run_lanes), "list the lane slots, or reap one"),
-    Verb("trust", Run(run_trust), "trust this repository, or list or revoke"),
-    Verb("gate", Run(run_gate), "say whether a command would run, and why"),
-    Verb("fetch", Run(fetch::run), "resolve one URL through the wall"),
-    Verb("catalog", Run(catalog::run), "show or refresh the model catalog"),
-    Verb("doctor", Run(doctor::run), "check session invariants, --fix repairs"),
-    Verb("gc", Run(run_gc), "preview the retention sweep, --fix runs it"),
-    Verb("debug", Run(debug::run), "info, paths, config, profile, trace, select"),
-    Verb("why", Run(run_why), "trace a line or a todo back to its goal"),
-    Verb("plan", Run(run_plan), "plan ops as the owner"),
-    Verb("todo", Run(todo::run), "print the newest todo list"),
-    Verb("memory", Run(memory::run), "list, search, import or forget memories"),
-    Verb("sessions", Run(run_sessions), "list, show, or remove stored sessions"),
-    Verb("stats", Run(run_stats), "tools and tokens of a session, or a rollup"),
-    Verb("serve", Run(run_serve_command), "run the session daemon"),
-    Verb("console", Run(run_console_command), "open the workspace shell"),
-    Verb("tui", Run(run_tui), "open the solo terminal UI"),
-    Verb("version", Run(run_version), "print the version"),
-    Verb("update", Early, "replace this install from the latest release"),
-    Verb("plugin", Early, "list, add, remove or sync pinned programs"),
-    Verb("login", Early, "store a provider credential"),
-    Verb("logout", Early, "remove a provider credential"),
-    Verb("setup", Early, "choose a model and a permission mode"),
-    Verb("mcp", Early, "one-shot MCP client calls, under mcp.enabled"),
+    Verb("ask", Run(run_ask), Any, "run one turn and print the answer"),
+    Verb("rpc", Run(run_rpc), Only(&[]), "speak the Pi JSON-RPC protocol on stdio"),
+    Verb("acp", Run(run_acp), Only(&[]), "speak ACP v2 on stdio"),
+    Verb("undo", Run(run_undo), Only(&["list"]), "restore the files the last turn changed"),
+    Verb("lanes", Run(lanes::run_lanes), Any, "list the lane slots, or reap one"),
+    Verb("trust", Run(run_trust), Any, "trust this repository, or list or revoke"),
+    Verb("gate", Run(run_gate), Any, "say whether a command would run, and why"),
+    Verb("fetch", Run(fetch::run), Any, "resolve one URL through the wall"),
+    Verb("catalog", Run(catalog::run), Any, "show or refresh the model catalog"),
+    Verb("doctor", Run(doctor::run), Only(&[]), "check session invariants, --fix repairs"),
+    Verb("gc", Run(run_gc), Only(&[]), "preview the retention sweep, --fix runs it"),
+    Verb("debug", Run(debug::run), Any, "info, paths, config, profile, trace, select"),
+    Verb("why", Run(run_why), Any, "trace a line or a todo back to its goal"),
+    Verb("plan", Run(run_plan), Any, "plan ops as the owner"),
+    Verb("todo", Run(todo::run), Any, "print the newest todo list"),
+    Verb("memory", Run(memory::run), Any, "list, search, import or forget memories"),
+    Verb("sessions", Run(run_sessions), Any, "list, show, or remove stored sessions"),
+    Verb("stats", Run(run_stats), Any, "tools and tokens of a session, or a rollup"),
+    Verb("serve", Run(run_serve_command), Only(&[]), "run the session daemon"),
+    Verb("console", Run(run_console_command), Only(&[]), "open the workspace shell"),
+    Verb("tui", Run(run_tui), Any, "open the solo terminal UI"),
+    Verb("version", Run(run_version), Only(&[]), "print the version"),
+    Verb("update", Early, Any, "replace this install from the latest release"),
+    Verb("plugin", Early, Any, "list, add, remove or sync pinned programs"),
+    Verb("login", Early, Any, "store a provider credential"),
+    Verb("logout", Early, Any, "remove a provider credential"),
+    Verb("setup", Early, Any, "choose a model and a permission mode"),
+    Verb("mcp", Early, Any, "one-shot MCP client calls, under mcp.enabled"),
 ];
 
 #[rustfmt::skip]
@@ -93,6 +99,23 @@ pub(crate) fn find_flag(name: &str) -> Option<&'static Flag> {
 }
 
 pub(crate) fn run(verb: &Verb, args: &Args) -> i32 {
+    if let Only(words) = verb.2
+        && !(args.prompt.is_empty() || words.contains(&args.prompt.as_str()))
+    {
+        let takes = match words {
+            [] => "no words".to_owned(),
+            words => format!("only `{}`", words.join("`, `")),
+        };
+        eprintln!(
+            "error: `yi {0}` takes {takes}; to ask the model: yi ask {0} {1}",
+            verb.0, args.prompt
+        );
+        return 2;
+    }
+    if let Some((flag, remedy)) = unread(verb.0, args) {
+        eprintln!("error: --{flag} is not applied by yi {}; {remedy}", verb.0);
+        return 2;
+    }
     match verb.1 {
         Run(run) => run(args),
         Early => {
@@ -105,12 +128,61 @@ pub(crate) fn run(verb: &Verb, args: &Args) -> i32 {
     }
 }
 
+/// Incident: `serve_flags` hands a worker only the model, the session dir and the mode, and the
+/// console only reaches the daemon, so these flags were dropped without a word.
+const UNREAD: &[(&str, &str)] = &[
+    ("thinking", "set \"thinking\" in ~/.yi/config.json"),
+    ("system", "pass it to `yi ask` or `yi tui`"),
+    ("schema", "pass it to `yi ask`"),
+    ("deadline", "pass it to `yi ask` or a headless drive"),
+];
+
+fn unread(verb: &str, args: &Args) -> Option<(&'static str, &'static str)> {
+    let reads_deadline = verb == "console" && args.headless;
+    UNREAD.iter().copied().find(|(flag, _)| {
+        matches!(verb, "console" | "serve")
+            && args.flags.iter().any(|given| given == flag)
+            && !(reads_deadline && *flag == "deadline")
+    })
+}
+
+/// A lone word this close to a verb is a typo, not a prompt: one edit at four or five letters,
+/// two from six, none below four, where real words sit one edit from `gc`, `why` or `tui`.
+pub(crate) fn near(word: &str) -> Option<&'static str> {
+    let bound = match word.chars().count() {
+        0..=3 => return None,
+        4 | 5 => 1,
+        _ => 2,
+    };
+    VERBS
+        .iter()
+        .map(|verb| (distance(word, verb.0), verb.0))
+        .filter(|(edits, _)| *edits <= bound)
+        .min()
+        .map(|(_, name)| name)
+}
+
+fn distance(from: &str, to: &str) -> usize {
+    let to: Vec<char> = to.chars().collect();
+    let mut row: Vec<usize> = (0..=to.len()).collect();
+    for (index, left) in from.chars().enumerate() {
+        let mut next = vec![index.saturating_add(1)];
+        for ((swap, up), right) in row.iter().zip(row.iter().skip(1)).zip(&to) {
+            let beside = next.last().copied().unwrap_or(usize::MAX);
+            let swapped = swap.saturating_add(usize::from(left != *right));
+            next.push(swapped.min(up.min(&beside).saturating_add(1)));
+        }
+        row = next;
+    }
+    row.last().copied().unwrap_or(usize::MAX)
+}
+
 pub(crate) fn help() -> String {
     let mut out = format!(
         "yi {}: `yi <words>` asks the model; bare `yi` on a terminal opens the console\n\nverbs:\n",
         env!("ARCHITECTURE_VERSION")
     );
-    for Verb(name, _, summary) in VERBS {
+    for Verb(name, _, _, summary) in VERBS {
         out.push_str(&format!("  {name:<10}{summary}\n"));
     }
     out.push_str("\nflags:\n");
