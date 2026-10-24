@@ -104,7 +104,8 @@ fn goal_with(objective: &str) -> Goal {
 
 #[test]
 fn every_goal_prompt_fills_every_placeholder() {
-    for objective in ["finish the port", "ship «porté» 完成 {{ token_budget }}"] {
+    let hostile = "ship «porté» 完成 {{ token_budget }} {{ check_status }} {{ plan_frontier }}";
+    for objective in ["finish the port", hostile] {
         let goal = goal_with(objective);
         for text in [
             continuation_text(&goal, None),
@@ -113,7 +114,8 @@ fn every_goal_prompt_fills_every_placeholder() {
         ] {
             let quoted = format!("<untrusted_objective>\n{objective}\n</untrusted_objective>");
             assert!(text.contains(&quoted), "{text}");
-            assert!(!text.replacen(objective, "", 1).contains("{{"), "{text}");
+            let rest = text.replacen(objective, "", 1);
+            assert!(!rest.contains("{{") && !rest.contains("}}"), "{text}");
             assert!(text.contains("Tokens used: 250") && text.contains("Token budget: 1000"));
         }
     }
