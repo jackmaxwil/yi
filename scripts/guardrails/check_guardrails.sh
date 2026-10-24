@@ -2,11 +2,14 @@
 # Aggregator = the gate entrypoint itself (D31; a surveyed aggregator was referenced by
 # nothing). Ordered most-legible-failure-first. Prints one debt total at the end.
 # `--fast` drops the gates that need a build (dist binary, startup, rustdoc, the two
-# cargo tools) so pre-commit stays quick; pre-push runs the whole thing.
+# cargo tools) so pre-commit stays quick; pre-push runs the whole thing. `--quiet` prints only
+# the failing gates' output and the summary line, so an agent reads one line, not sixty.
 set -u
 cd "$(dirname "$0")/../.."
-FAST=0
-[ "${1:-}" = "--fast" ] && FAST=1
+FAST=0 QUIET=0
+for arg in "$@"; do
+  case "$arg" in --fast) FAST=1 ;; --quiet) QUIET=1 ;; esac
+done
 PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)}"
 "$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
 FAILED=0
@@ -19,9 +22,21 @@ run() { N=$((N + 1)); { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
 drain() {
   wait
   for i in $(seq 1 "$N"); do
-    cat "$OUT/$i.out"
-    [ "$(cat "$OUT/$i.rc")" = 0 ] || FAILED=$((FAILED + 1))
+    if [ "$(cat "$OUT/$i.rc")" = 0 ]; then
+      [ "$QUIET" = 1 ] || cat "$OUT/$i.out"
+    else
+      cat "$OUT/$i.out"
+      FAILED=$((FAILED + 1))
+    fi
   done
+}
+# The two dist gates run after drain, on a quiet tree, so they print through here instead.
+after() {
+  local out rc
+  out=$("$@" 2>&1)
+  rc=$?
+  [ "$QUIET" = 1 ] && [ "$rc" = 0 ] || printf '%s\n' "$out"
+  return "$rc"
 }
 
 run "$PY" scripts/guardrails/check_manifests.py
@@ -112,8 +127,8 @@ run "$PY" scripts/guardrails/check_orphans.py --selfcheck
 # The public surface is what the mirror publishes, modelled on filter-repo's own
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
-# Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
-# set the spelling. Config and the domain-word allowlist live in .codespellrc.
+# Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
+# the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
 # binary_size and startup are the only two readers of target/dist/yi, and the
 # fat-LTO build that writes it is minutes, so this is where it is paid for
@@ -157,8 +172,8 @@ drain
 
 if [ "$DIST" -gt 0 ]; then
   if [ "$(cat "$OUT/$DIST.rc")" = 0 ]; then
-    "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
-    "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
+    after "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
+    after "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
   else
     # A stale target/dist/yi from an earlier build would pass both gates while
     # measuring code nobody wrote, so a failed build fails them instead.
@@ -166,5 +181,5 @@ if [ "$DIST" -gt 0 ]; then
   fi
 fi
 
-echo "----"
+[ "$QUIET" = 1 ] || echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "guardrails: all green"; else echo "guardrails: $FAILED failing"; exit 1; fi
