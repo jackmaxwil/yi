@@ -6,6 +6,7 @@ use yi_types::model::{Effort, UnknownEffort};
 pub(crate) struct Args {
     pub(crate) command: String,
     pub(crate) help: bool,
+    pub(crate) flags: Vec<String>,
     pub(crate) model: String,
     pub(crate) system: String,
     pub(crate) thinking: Option<Effort>,
@@ -57,6 +58,7 @@ pub(super) fn parse_from(
     use lexopt::prelude::*;
     let mut command = String::new();
     let mut help = false;
+    let mut given = Vec::new();
     let mut model = None;
     let mut system = String::new();
     let mut thinking = None;
@@ -86,10 +88,11 @@ pub(super) fn parse_from(
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_iter(argv);
     while let Some(argument) = parser.next()? {
-        if let Long(name) = argument
-            && crate::commands::find_flag(name).is_none()
-        {
-            return Err(argument.unexpected());
+        if let Long(name) = argument {
+            if crate::commands::find_flag(name).is_none() {
+                return Err(argument.unexpected());
+            }
+            given.push(name.to_owned());
         }
         match argument {
             Long("help") | Short('h') => help = true,
@@ -145,6 +148,7 @@ pub(super) fn parse_from(
     let args = Args {
         command,
         help,
+        flags: given,
         model_pinned: model.is_some(),
         model: model.or_else(configured_model).unwrap_or_default(),
         system,

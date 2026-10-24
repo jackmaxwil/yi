@@ -820,6 +820,12 @@ fn dispatch(args: Args) -> i32 {
     if let Some(verb) = commands::find(word) {
         return commands::run(verb, &args);
     }
+    if args.prompt.is_empty()
+        && let Some(verb) = commands::near(word)
+    {
+        eprintln!("error: did you mean \"{verb}\"? to ask the model: yi ask {word}");
+        return 2;
+    }
     // §17.1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
     let mut full = args.command.clone();
     if !args.prompt.is_empty() {
