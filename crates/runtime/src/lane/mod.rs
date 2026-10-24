@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use yi_types::lane::SlotState;
 
+use reap::Uncommitted;
+
 pub mod land;
+pub mod reap;
 pub mod settle;
 pub mod toolchain;
 
@@ -398,7 +401,13 @@ impl SlotView {
 }
 
 /// Incident: `status.showUntrackedFiles=no` in a user's config read a tree of new files as clean.
-pub(crate) const STATUS: [&str; 3] = ["status", "--porcelain", "--untracked-files=normal"];
+/// No optional locks: an unlocked listing's status must not take the index lock from a claim.
+pub(crate) const STATUS: [&str; 4] = [
+    "--no-optional-locks",
+    "status",
+    "--porcelain",
+    "--untracked-files=normal",
+];
 
 /// One deadline for a whole listing: every read past it is `Unread`, never a wait.
 const LIST_BUDGET: std::time::Duration = std::time::Duration::from_millis(3_000);
@@ -645,9 +654,10 @@ impl Pool {
                     holder: holder(session),
                     path,
                 },
+                // Invariant: only a status read dirty makes an orphan; the claim decides an unread one.
                 (None, None)
-                    if !probe_git(&path, &STATUS, deadline)
-                        .is_ok_and(|status| status.trim().is_empty()) =>
+                    if probe_git(&path, &STATUS, deadline)
+                        .is_ok_and(|status| !status.trim().is_empty()) =>
                 {
                     SlotView::Orphan {
                         slot,
@@ -920,96 +930,6 @@ impl Pool {
         path.join(".git").is_file() && yi_permission::git_dirs(&path).is_empty()
     }
 
-    /// Incident: three lanes left by dead `pid-` drives held nothing and still filled the pool.
-    /// An orphan with a clean tree and a branch `main` already contains has nothing to lose.
-    fn abandoned(&self, slot: SlotIndex) -> Result<bool, LaneError> {
-        let path = self.slot_path(slot);
-        if self.dirty(slot) {
-            return Ok(false);
-        }
-        // Invariant: an unreadable HEAD is not a free slot; only a detached one is.
-        let branch = match head(&path) {
-            Ok(Head::Detached(_)) => return Ok(true),
-            Ok(Head::Branch(branch)) => branch,
-            Err(_) => return Ok(false),
-        };
-        let branch = branch.as_str();
-        let base = self.resolve(&ClaimBase::Main, false)?;
-        Ok(git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok())
-    }
-
-    /// Invariant: an orphan's branch is the only copy of its work; it goes only once `main` has it.
-    pub fn reap(&self, slot: SlotIndex) -> Result<String, LaneError> {
-        self.reap_if(slot, None)
-    }
-
-    /// The prompt's answer: the slot is freed only if the session named at the
-    /// prompt is still the one on it, so an answer never lands on a slot that moved.
-    pub fn reap_left_by(&self, slot: SlotIndex, session: &str) -> Result<String, LaneError> {
-        self.reap_if(slot, Some(session))
-    }
-
-    fn reap_if(&self, slot: SlotIndex, expected: Option<&str>) -> Result<String, LaneError> {
-        let _pool = self.lock()?;
-        let (guard, holder) = self.probe(slot)?;
-        if let Some(session) = holder {
-            return Err(LaneError::SlotBusy { slot, session });
-        }
-        if let Some(expected) = expected {
-            let found = self.read_state(slot)?.session.unwrap_or_default();
-            if found != expected {
-                return Err(LaneError::SlotChanged {
-                    slot,
-                    expected: expected.to_owned(),
-                    found,
-                });
-            }
-        }
-        let branch = self.branch_of(slot);
-        let kept = self.detach(slot, branch.as_deref())?;
-        let lost = self.wipe(slot)?;
-        let mut state = self.read_state(slot)?;
-        state.session = None;
-        self.write_state(slot, &state)?;
-        drop(guard);
-        Ok(match (branch, kept) {
-            (Some(branch), true) => {
-                format!("lane {slot} freed{lost}; branch {branch} kept (unmerged)")
-            }
-            (Some(branch), false) => {
-                format!("lane {slot} freed{lost}; branch {branch} deleted (merged)")
-            }
-            (None, _) => format!("lane {slot} freed{lost}"),
-        })
-    }
-
-    /// Whether `git status` names a path in a slot's tree; an unreadable status counts as dirty.
-    fn dirty(&self, slot: SlotIndex) -> bool {
-        !git(&self.slot_path(slot), &STATUS).is_ok_and(|status| status.trim().is_empty())
-    }
-
-    /// Invariant: the only wipe of a session's work; a claim checks out only over a clean tree.
-    fn wipe(&self, slot: SlotIndex) -> Result<String, LaneError> {
-        let path = self.slot_path(slot);
-        let status = git_capture(&path, &STATUS)?;
-        let paths = status.stdout.lines().count();
-        if paths == 0 {
-            return Ok(String::new());
-        }
-        git(&path, &["checkout", "-q", "-f"])?;
-        git(&path, &["clean", "-qfd"])?;
-        // Invariant: a cut list is a head and a tail around a marker row; three lines may be no path.
-        Ok(match (status.cut, paths) {
-            (Some((kept, total)), n) => format!(
-                "; at least {} uncommitted paths discarded (status read {kept} of {total} bytes, OUTPUT_CAP {})",
-                n.saturating_sub(3),
-                yi_tools::OUTPUT_CAP
-            ),
-            (None, 1) => "; 1 uncommitted path discarded".to_owned(),
-            (None, n) => format!("; {n} uncommitted paths discarded"),
-        })
-    }
-
     fn detach(&self, slot: SlotIndex, branch: Option<&str>) -> Result<bool, LaneError> {
         let path = self.slot_path(slot);
         let text = path.to_string_lossy().into_owned();
@@ -1125,7 +1045,7 @@ impl Lane {
         Ok(())
     }
 
-    pub fn discard(self) -> Result<String, LaneError> {
+    pub fn discard(self) -> Result<Uncommitted, LaneError> {
         let branch = self.branch.as_str().to_owned();
         let repo = self.pool.repo.clone();
         let dropped = self.release_inner(false)?;
@@ -1133,18 +1053,26 @@ impl Lane {
         Ok(dropped)
     }
 
-    pub fn release(self) -> Result<(), LaneError> {
-        self.release_inner(true).map(drop)
+    /// A non-empty answer is the work that kept the slot as this session's orphan.
+    pub fn release(self) -> Result<Uncommitted, LaneError> {
+        self.release_inner(true)
     }
 
-    fn release_inner(mut self, quit: bool) -> Result<String, LaneError> {
+    fn release_inner(mut self, quit: bool) -> Result<Uncommitted, LaneError> {
         self.released = true;
         let _pool = self.pool.lock()?;
-        if quit && self.pool.dirty(self.slot) {
-            return Ok(String::new());
+        if quit {
+            let kept = Uncommitted::read(&self.path)?;
+            if !kept.is_empty() {
+                return Ok(kept);
+            }
         }
         self.pool.detach(self.slot, Some(self.branch.as_str()))?;
-        let dropped = (!quit).then(|| self.pool.wipe(self.slot)).transpose()?;
+        let dropped = if quit {
+            Uncommitted::default()
+        } else {
+            self.pool.wipe(self.slot)?
+        };
         let mut state = self.pool.read_state(self.slot)?;
         state.session = None;
         self.pool.write_state(self.slot, &state)?;
@@ -1155,7 +1083,7 @@ impl Lane {
                 Err(error) => return Err(error),
             }
         }
-        Ok(dropped.unwrap_or_default())
+        Ok(dropped)
     }
 
     pub fn sync(&self) -> Result<Option<String>, LaneError> {
