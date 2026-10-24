@@ -217,7 +217,6 @@ fn a_diff_body_lands_on_a_real_screen_below_a_viewport_offset() -> TestResult {
     let cell = Cell::Tool(yi_tui::cell::ToolCell {
         name: "edit".to_owned(),
         call_id: String::new(),
-        intent: None,
         status: yi_tui::cell::ToolStatus::Done,
         summary: yi_tui::cell::ToolCell::summary_of("edit", "src/lib.rs"),
         digest: Some("updated; first change at line 2".to_owned()),
@@ -826,7 +825,7 @@ fn each_kind_of_work_puts_its_own_state_on_the_orb() -> TestResult {
     let cases = [
         ("read", OrbState::Reading),
         ("grep", OrbState::Searching),
-        ("fetch", OrbState::Browsing),
+        ("get_context", OrbState::Reading),
         ("edit", OrbState::Editing),
         ("bash", OrbState::Executing),
         ("ipython", OrbState::Computing),

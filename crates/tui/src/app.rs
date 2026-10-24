@@ -23,7 +23,7 @@ use crate::orb;
 use crate::popup::ListPopup;
 use crate::port::SessionPort;
 use crate::term;
-use crate::transcript::{arg_summary, intent_of, result_preview, text_of, thinking_of, user_text};
+use crate::transcript::{arg_summary, result_preview, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
 use yi_orb::OrbState;
 pub enum UiEvent {
@@ -162,7 +162,6 @@ pub struct App {
     pub(crate) committed_tasks: HashSet<String>,
     pub(crate) steering: Vec<String>,
     pub(crate) running: bool,
-    pub(crate) intent: Option<String>,
     pub(crate) esc_armed_at: Option<Instant>,
     pub(crate) last_esc_at: Option<Instant>,
     pub(crate) ctrl_c_at: Option<Instant>,
@@ -291,7 +290,6 @@ impl App {
             committed_tasks: HashSet::new(),
             steering: Vec::new(),
             running: false,
-            intent: None,
             esc_armed_at: None,
             last_esc_at: None,
             ctrl_c_at: None,
@@ -639,11 +637,7 @@ impl App {
                 let now = self.clock.now();
                 crate::pen::wait_label(wait, *since, now, &self.selection.model.provider)
             });
-        Some(
-            waiting
-                .or_else(|| self.intent.clone())
-                .unwrap_or_else(|| state.label().to_owned()),
-        )
+        Some(waiting.unwrap_or_else(|| state.label().to_owned()))
     }
 
     pub fn orb_state(&self) -> Option<OrbState> {
@@ -700,9 +694,8 @@ impl App {
 
     fn tool_state(&self, name: &str) -> OrbState {
         match name {
-            "read" | "ls" | "document" | "get_context" => OrbState::Reading,
-            "grep" | "glob" | "find" => OrbState::Searching,
-            "web_search" | "fetch" => OrbState::Browsing,
+            "read" | "get_context" => OrbState::Reading,
+            "grep" => OrbState::Searching,
             "edit" | "write" => OrbState::Editing,
             "bash" => OrbState::Executing,
             "ipython" => OrbState::Computing,
@@ -731,7 +724,6 @@ impl App {
             AgentEvent::AgentStart => self.start_turn(),
             AgentEvent::AgentEnd { .. } => {
                 self.running = false;
-                self.intent = None;
                 self.wait = None;
                 self.pen = None;
                 self.esc_armed_at = None;
@@ -819,14 +811,12 @@ impl App {
                 tool_name,
                 args,
             } => {
-                self.intent = intent_of(&args);
                 self.note_question(&tool_name, &args);
                 self.tool_started
                     .insert(tool_call_id.clone(), self.clock.now());
                 self.live_tools.push(ToolCell {
                     name: tool_name.clone(),
                     call_id: tool_call_id.clone(),
-                    intent: self.intent.clone(),
                     status: ToolStatus::Running,
                     summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
                     digest: None,
@@ -960,7 +950,6 @@ impl App {
                 let cell = Cell::Tool(ToolCell {
                     name: tool_name.clone(),
                     call_id: String::new(),
-                    intent: None,
                     status: ToolStatus::Done,
                     summary: ToolCell::summary_of(&tool_name, ""),
                     digest: ToolCell::digest_of(

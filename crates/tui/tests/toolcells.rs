@@ -40,7 +40,7 @@ fn started(app: &mut App, id: &str, tool: &str, arg: &str) {
     app.reduce_agent(AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
         tool_name: tool.to_owned(),
-        args: json!({ "path": arg, "pattern": arg, "cmd": arg }),
+        args: json!({ "path": arg, "pattern": arg, "command": arg }),
     });
 }
 
@@ -78,13 +78,9 @@ fn ended_with(
 #[test]
 fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
     let mut app = app();
-    for (index, (tool, arg)) in [
-        ("read", "src/lib.rs"),
-        ("grep", "ToolCell"),
-        ("glob", "**/*.rs"),
-    ]
-    .into_iter()
-    .enumerate()
+    for (index, (tool, arg)) in [("read", "src/lib.rs"), ("grep", "ToolCell")]
+        .into_iter()
+        .enumerate()
     {
         let id = format!("t{index}");
         started(&mut app, &id, tool, arg);
@@ -98,10 +94,9 @@ fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
     });
     let committed = flat(&app.take_commits());
     let joined = committed.join("\n");
-    assert!(joined.contains("✱ Explored ×3"), "{joined}");
+    assert!(joined.contains("✱ Explored ×2"), "{joined}");
     assert!(joined.contains("Read   src/lib.rs"), "{joined}");
     assert!(joined.contains("Search"), "{joined}");
-    assert!(joined.contains("List"), "{joined}");
     // One bullet, not three.
     assert_eq!(committed.iter().filter(|row| row.contains('✱')).count(), 1);
     Ok(())
@@ -163,7 +158,6 @@ fn a_call_held_at_the_permission_gate_says_so() -> TestResult {
         &Cell::Tool(ToolCell {
             name: String::new(),
             call_id: String::new(),
-            intent: None,
             status: ToolStatus::Awaiting,
             summary: ToolCell::summary_of("bash", "rm -rf build"),
             digest: None,
@@ -188,7 +182,6 @@ fn edit_cell(path: &str) -> ToolCell {
     ToolCell {
         name: "edit".to_owned(),
         call_id: String::new(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("edit", path),
         digest: Some("updated".to_owned()),
@@ -339,7 +332,7 @@ fn a_failed_card_opens_with_a_cross_and_keeps_its_reason() -> TestResult {
         json!({}),
     );
     let rows = flat(&app.take_commits());
-    assert!(rows.iter().any(|row| row.contains("✕ ⚙ Todo")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("✕ ≡ Todo")), "{rows:?}");
     assert!(
         rows.iter().any(|row| row.contains("done needs evidence")),
         "{rows:?}"
@@ -616,5 +609,45 @@ fn every_syntax_error_row_under_a_diff_carries_the_error_colour() -> TestResult 
         spans.iter().any(|(text, _)| text.contains("b.py")),
         "second file's verdict row missing: {spans:?}"
     );
+    Ok(())
+}
+
+/// Dies with a generic gear and the fallback hue on tools the registry has: the tables named
+/// `ls`, `glob` and `fetch`, so `todo`, `answer` and `get_context` fell through to `_`. The
+/// names come from the recorded sessions, so a tool a real run calls cannot go unlisted.
+#[test]
+fn every_tool_a_recorded_session_calls_has_its_own_glyph_and_hue() -> TestResult {
+    let theme = theme();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sessions");
+    let mut called = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(dir)? {
+        for line in std::fs::read_to_string(entry?.path())?.lines() {
+            let row: serde_json::Value = serde_json::from_str(line)?;
+            if let Some(name) = row
+                .pointer("/message/toolName")
+                .and_then(|name| name.as_str())
+            {
+                called.insert(name.to_owned());
+            }
+        }
+    }
+    for registered in ["todo", "answer", "get_context"] {
+        assert!(
+            called.contains(registered),
+            "no recorded session calls {registered}"
+        );
+    }
+    for name in &called {
+        let head = ToolCell::summary_of(name, "");
+        assert!(
+            !head.starts_with('⚙'),
+            "{name} draws the generic gear: {head}"
+        );
+        assert_ne!(
+            yi_tui::card::tool_hue(&theme, name),
+            theme.warning,
+            "{name} has no hue"
+        );
+    }
     Ok(())
 }

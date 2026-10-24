@@ -731,7 +731,6 @@ impl App {
             None => ToolCell {
                 name: tool_name.clone(),
                 call_id: tool_call_id.clone(),
-                intent: None,
                 status: ToolStatus::Running,
                 summary: ToolCell::summary_of(&tool_name, ""),
                 digest: None,
@@ -751,18 +750,16 @@ impl App {
             result.terminate == Some(true),
         );
         self.commit_finished_tasks();
-        self.intent = None;
     }
 
     fn count_kind(&mut self, name: &str) {
         let verb = match name {
-            "read" | "ls" | "document" | "get_context" => "read",
-            "grep" | "glob" | "find" => "searched",
-            "web_search" | "fetch" => "fetched",
+            "read" | "get_context" => "read",
+            "grep" => "searched",
             "edit" | "write" => "edited",
             "bash" => "ran",
             "ipython" => "computed",
-            "todo" | "plan" => return,
+            "todo" | "plan" | "answer" | "ask_user" | "annotate" => return,
             _ => "used",
         };
         self.turn_tools = self.turn_tools.saturating_add(1);
