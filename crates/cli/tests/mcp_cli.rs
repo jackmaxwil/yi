@@ -348,7 +348,7 @@ mod sealed_store {
                     .ok_or_else(|| format!("not an mcp url: {url}"))?;
                 let args =
                     ["--json", &format!("@{server}"), "resources-read", uri].map(str::to_owned);
-                match yi_mcp_cli::run(&args, None) {
+                match yi_mcp_cli::run(&args, None, "9.9.9") {
                     0 => Ok(serde_json::Map::from_iter([(
                         "text".to_owned(),
                         "ok".into(),
