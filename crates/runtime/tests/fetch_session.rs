@@ -607,6 +607,70 @@ fn named_session(
     Ok(id)
 }
 
+/// An assistant line of the recorded session `01a0d6e4` (scrubbed by `evals/record.py`) that
+/// carries `phrase`: a model's own wording, case and length.
+fn recorded_line(phrase: &str) -> Result<String, Box<dyn Error>> {
+    for row in include_str!("../../tui/tests/fixtures/sessions/01a0d6e4.jsonl").lines() {
+        let row: serde_json::Value = serde_json::from_str(row)?;
+        let blocks = row["message"]["content"].as_array().into_iter().flatten();
+        let lines = blocks
+            .filter_map(|block| block["text"].as_str())
+            .flat_map(str::lines);
+        if let Some(line) = lines.into_iter().find(|line| line.contains(phrase)) {
+            return Ok(line.to_owned());
+        }
+    }
+    Err("the recording lost its line".into())
+}
+
+/// The incident's shape: a snippet cut at 160 chars with nothing to say so, and on `history.grep`
+/// no address to read the rest. The remedy the notice names is run the way the model runs it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn both_history_verbs_name_the_snippet_cap_and_the_address_that_reads_the_rest() -> TestResult
+{
+    use yi_kernel::client::HostHandlers;
+    let root = Scratch::new("yi-fetch-snippet-cap")?;
+    let (sessions, here) = (root.join("sessions"), root.join("here"));
+    std::fs::create_dir_all(&here)?;
+    let line = recorded_line("well-governed codebase")?;
+    assert!(line.chars().count() > 400, "a life-sized line");
+    named_session(&sessions, &here, "snippets", &line)?;
+    let own = memory_store();
+    let said = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text(&line)],
+        yi_types::message::StopReason::Stop,
+    );
+    yi_session::lock_session(&own).append_message("main", said)?;
+    let mut registry = yi_runtime::HostRegistry::default();
+    let handle = own.clone();
+    yi_runtime::history::register_grep(&mut registry, Arc::new(move || Some(handle.clone())));
+    yi_runtime::history::register(&mut registry, sessions.clone(), here.clone());
+    let host = crate::support::family(root.to_path_buf(), here.clone(), own.clone(), None).host;
+    let desk = yi_runtime::fetch::SessionTranscripts::new(host, Some(sessions), &here);
+    let resolver = Resolver::new(here.clone(), Wall::default())
+        .with_session("main", own)
+        .with_transcripts(Arc::new(desk));
+    for (verb, key) in [("history.grep", "pattern"), ("history.search", "query")] {
+        let payload = serde_json::json!({ key: "WELL-GOVERNED" });
+        let call = registry
+            .dispatch(verb, payload.as_object().cloned().unwrap_or_default())
+            .ok_or("the verb is not registered")?;
+        let reply = call.await?;
+        let hit = &reply["hits"][0];
+        let notice = reply.get("notice").and_then(serde_json::Value::as_str);
+        let notice = notice.ok_or("a cut snippet carries a notice")?;
+        assert!(
+            notice.contains("1 of 1 snippets cut to 160 chars (SNIPPET_CHARS)")
+                && notice.contains("rlm.fetch(hit[\"url\"])"),
+            "{verb}: {notice}"
+        );
+        let url: Url = hit["url"].as_str().ok_or("no url")?.parse()?;
+        let whole = resolver.fetch(&url)?.text;
+        assert!(whole.contains(&line), "{verb}: {url} reads {whole}");
+    }
+    Ok(())
+}
+
 /// A wall written with the lowercase address a name resolves as holds against that session's id,
 /// whether the name has capitals or runs its words together with two spaces, for a read and a grep.
 #[test]
