@@ -363,13 +363,33 @@ impl ReadGate {
     /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
     /// is the file opened, so a link swapped in after an earlier check reaches nothing (#890).
     pub fn open(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
+        self.open_after(path, walls, &mut || ())
+    }
+
+    /// [`Self::open`], as [`Self::open_write_after`] and [`Self::remove_after`] are theirs, with
+    /// `held` run between the judgement and the act: the one window a racing process has.
+    pub fn open_after(
+        &self,
+        path: &Path,
+        walls: &[PathBuf],
+        held: &mut dyn FnMut(),
+    ) -> io::Result<File> {
         let real = fs::canonicalize(path)?;
-        self.opened(&real, walls, false, OpenOptions::new().read(true))
+        self.opened(&real, walls, false, OpenOptions::new().read(true), held)
     }
 
     /// [`Self::open`] to write, under the destroy gate too: untruncated, or created only where
     /// nothing stands, not even a dangling link; the caller truncates through the handle.
     pub fn open_write(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
+        self.open_write_after(path, walls, &mut || ())
+    }
+
+    pub fn open_write_after(
+        &self,
+        path: &Path,
+        walls: &[PathBuf],
+        held: &mut dyn FnMut(),
+    ) -> io::Result<File> {
         let real = match fs::canonicalize(path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
@@ -381,9 +401,9 @@ impl ReadGate {
         };
         let mut options = OpenOptions::new();
         options.read(true).write(true);
-        match self.opened(&real, walls, true, &options) {
+        match self.opened(&real, walls, true, &options, held) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.opened(&real, walls, true, options.create_new(true))
+                self.opened(&real, walls, true, options.create_new(true), held)
             }
             opened => opened,
         }
@@ -395,7 +415,12 @@ impl ReadGate {
         self.remove_after(path, walls, || ())
     }
 
-    fn remove_after(&self, path: &Path, walls: &[PathBuf], held: impl FnOnce()) -> io::Result<()> {
+    pub fn remove_after(
+        &self,
+        path: &Path,
+        walls: &[PathBuf],
+        held: impl FnOnce(),
+    ) -> io::Result<()> {
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return Err(io::ErrorKind::InvalidInput.into());
         };
@@ -421,8 +446,10 @@ impl ReadGate {
         walls: &[PathBuf],
         writes: bool,
         options: &OpenOptions,
+        held: &mut dyn FnMut(),
     ) -> io::Result<File> {
         self.guard_resolved(real, walls, writes)?;
+        held();
         let (_dir, at) = beside(real)?;
         let file = no_link(options)?.open(&at)?;
         opened_at(&file, real)
@@ -754,42 +781,4 @@ pub fn command_targets_catastrophic(
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The swap lands between the judgement and the unlink every time, where the race found in
-    /// review lands once in 100,000 tries: the delete must stay in the directory judged.
-    #[test]
-    fn a_parent_swapped_after_the_judgement_deletes_in_the_judged_dir() -> io::Result<()> {
-        let root = std::env::temp_dir().join(format!("yi-gate-unlink-{}", std::process::id()));
-        let (store, workspace) = (root.join("home/.ssh"), root.join("workspace"));
-        let (d, stash) = (workspace.join("d"), workspace.join("dir.tmp"));
-        fs::create_dir_all(&store)?;
-        fs::create_dir_all(&d)?;
-        fs::write(store.join("id_rsa"), "FAKE KEY MARKER\n")?;
-        fs::write(d.join("id_rsa"), "ordinary\n")?;
-        let gate = ReadGate::new(&CatastrophicContext {
-            home_dir: Some(root.join("home")),
-            working_dir: Some(workspace.clone()),
-            workspace_git: Vec::new(),
-            host_owned: Vec::new(),
-        });
-        let mut swapped = Ok(());
-        let removed = gate.remove_after(&d.join("id_rsa"), &[], || {
-            swapped = fs::rename(&d, &stash).and_then(|()| std::os::unix::fs::symlink(&store, &d));
-        });
-        let (key, ordinary) = (store.join("id_rsa").exists(), stash.join("id_rsa").exists());
-        fs::remove_dir_all(&root)?;
-        swapped?;
-        assert!(removed.is_ok(), "{removed:?}");
-        assert!(key, "the remove deleted the key behind the swapped parent");
-        assert!(
-            !ordinary,
-            "the remove left the file in the directory it judged"
-        );
-        Ok(())
-    }
 }
