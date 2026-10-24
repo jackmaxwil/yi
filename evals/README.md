@@ -24,6 +24,7 @@ graph/refine.py              offline refiner for the procedural graph (D219): pr
 orient_census.py             read-only census of route telemetry and get_context packets in session files
 judge_replay.py              stage 0 judge replay over recorded sessions, read-only (D259); replay/ holds its prompts and schemas
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
+stops_on_fail.py             stops a run took while its last ipython cell printed FAIL, per root session (EXP-B3c)
 skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 search_gate.py               paired history-search gate (#1184): a fact printed only in a tool result, graded on the actor
@@ -598,6 +599,9 @@ python3 evals/kill.py report
   takes the lower of that and its own stage and week caps. A sweep that filed no rows is
   charged the whole cap. A subscription family's harbor spec is written unrun, because the
   sweep spends OpenRouter on its own model.
+- **EXP-B3c** is `evals/kill/x-b3c.py`, ladder step 6: the 12-task slice through the sweep,
+  read by `stops_on_fail.py`. Its Kimi family reads unrun until the sweep can carry a Kimi
+  route, so until then its verdict is KILL (GLM flash under 2 of 12 tasks) or UNRESOLVED.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
   `selftest.check_kill` pins all of this against a fake yi that replays recorded streams.
 
