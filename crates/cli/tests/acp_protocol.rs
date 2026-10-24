@@ -1792,3 +1792,55 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
     );
     Ok(())
 }
+
+/// The review pane asks `_yi/why` for each hunk it shows; a router that lost the method
+/// refused every chain with METHOD_NOT_FOUND while its handler sat one call away.
+#[test]
+fn why_answers_for_a_committed_edit_and_an_unknown_extension_is_not_found() -> TestResult {
+    let dir = temp_dir("why")?;
+    git_in(&dir, &["init", "-q", "-b", "main"])?;
+    // The file as session 01a129b6 (tui fixtures) left it after its one edit.
+    std::fs::write(
+        dir.join("a.py"),
+        "def greet(name):\n    return f\"hi {name}\"\n",
+    )?;
+    git_in(&dir, &["add", "a.py"])?;
+    let subject = "Drop the greeting parameter";
+    git_in(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            subject,
+        ],
+    )?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    let why = client.request(
+        "3",
+        "_yi/why",
+        json!({"sessionId": session_id, "path": "a.py", "lines": [1, 2]}),
+    )?;
+    let reply = why.last().ok_or("no reply")?;
+    assert!(reply.get("error").is_none(), "_yi/why must route: {reply}");
+    let answers = reply["result"]["answers"].as_array().ok_or("no answers")?;
+    assert_eq!(answers.len(), 2, "one answer per asked line: {reply}");
+    for (answer, line) in answers.iter().zip([1, 2]) {
+        assert_eq!(answer["line"], line, "{reply}");
+        assert_eq!(answer["subject"], subject, "the line's commit: {reply}");
+    }
+    assert_eq!(reply["result"]["path"], "a.py");
+    assert_eq!(reply["result"]["cap"], 8);
+    let nope = client.request("4", "_yi/nope", json!({}))?;
+    let refused = nope.last().ok_or("no reply")?;
+    assert_eq!(
+        refused["error"]["code"], -32601,
+        "an extension nothing handles is not found, even with no session named: {refused}"
+    );
+    client.finish()
+}
