@@ -1462,7 +1462,7 @@ fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
             ToolStatus::Done
         },
         summary: ToolCell::summary_of(name, ""),
-        digest: ToolCell::digest_of(name, result, failed),
+        digest: ToolCell::digest_of(name, result, &serde_json::Value::Null, failed),
         preview: result.lines().map(str::to_owned).collect(),
         elapsed_ms: 0,
         calls: 1,

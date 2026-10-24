@@ -955,6 +955,7 @@ impl App {
                     digest: ToolCell::digest_of(
                         &tool_name,
                         &text,
+                        &result.details,
                         yi_types::event::shown_failed(is_error, &result.details),
                     ),
                     preview: result_preview(&text, &result.details),
