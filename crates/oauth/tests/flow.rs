@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use yi_oauth::flow;
-use yi_oauth::registry::{self, OauthCode};
+use yi_oauth::registry::{self, CodeLogin, Login, OauthCode};
 use yi_oauth::store::{self, Credential, Kind, Store};
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -20,18 +20,25 @@ fn spec(port: u16) -> OauthCode {
         id: "fixture".to_owned(),
         client_id: "test-client".to_owned(),
         client_secret: None,
-        authorize: "https://example.invalid/authorize".to_owned(),
         token: format!("http://127.0.0.1:{port}/token"),
         scopes: String::new(),
-        callback_port: 0,
+        json_token: false,
+        stream_headers: Vec::new(),
+        refresh_headers: Vec::new(),
+        api_base: None,
+        login: code_login(0),
+    }
+}
+
+fn code_login(callback_port: u16) -> Login {
+    Login::Code(CodeLogin {
+        authorize: "https://example.invalid/authorize".to_owned(),
+        callback_port,
         callback_path: "/callback".to_owned(),
         redirect_host: "localhost".to_owned(),
         port_fallback: false,
-        json_token: false,
         extra_authorize: Vec::new(),
-        stream_headers: Vec::new(),
-        refresh_headers: Vec::new(),
-    }
+    })
 }
 
 fn expired_credential() -> Credential {
@@ -238,7 +245,7 @@ fn a_state_mismatch_aborts_the_login() -> Res {
     // A free port for the loopback listener.
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let mut spec = spec(9); // the token endpoint is never reached
-    spec.callback_port = port;
+    spec.login = code_login(port);
     let (token_port, _) = serve_tokens("{}".to_owned(), 0)?;
     spec.token = format!("http://127.0.0.1:{token_port}/token");
 
@@ -262,7 +269,7 @@ fn a_state_mismatch_aborts_the_login() -> Res {
 fn a_denial_callback_says_so_instead_of_missing_code() -> Res {
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let mut spec = spec(9);
-    spec.callback_port = port;
+    spec.login = code_login(port);
 
     let login = std::thread::spawn(move || {
         flow::login_oauth(&spec, &flow::LoginOptions { no_browser: true }, None)
