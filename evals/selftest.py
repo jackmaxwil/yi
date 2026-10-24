@@ -48,6 +48,7 @@ import test_judge_replay  # noqa: E402
 import test_kill  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
+import test_checker_screen  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -1149,6 +1150,15 @@ def check_judge_replay():
     assert result.testsRun >= 20 and result.wasSuccessful(), report.getvalue()
 
 
+def check_checker_screen():
+    """EXP-B3d's screen: a variant per defect, the oracle-pass catch rule, the op-coverage refusal,
+    and the verdict at both bars and one past each."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_checker_screen)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
+
+
 def check_kill():
     """The kill-test runner: the $30 cap at the limit and a cent past it, the live kill, the
     unpriced ceiling, the flock across threads and processes, the Kimi quota park, run isolation
@@ -1164,6 +1174,7 @@ CHECKS = (
     check_surface,
     check_surface_compare,
     check_judge_replay,
+    check_checker_screen,
     check_graph_refiner,
     check_levers,
     check_plugins,
