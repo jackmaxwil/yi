@@ -216,6 +216,37 @@ fn usage_in_choices_zero_is_read_when_the_top_level_has_none() -> TestResult {
     Ok(())
 }
 
+/// A turn the account streamed on 2026-10-24: reasoning, then a bash call, with the usage at the
+/// top level. The ratios are the raw chunk's own: 13307 prompt tokens, 12800 of them cached.
+#[test]
+fn the_recorded_tool_turn_maps_to_thinking_a_call_and_its_usage() -> TestResult {
+    let message = mapped(
+        include_str!("fixtures/kimi-chat-2026-10-24-bash.sse"),
+        &k3_1()?,
+    )?;
+    let AgentMessage::Assistant { usage, content, .. } = &message else {
+        return Err("not an assistant message".into());
+    };
+    assert_eq!(
+        (usage.input, usage.cache_read, usage.output),
+        (507, 12800, 132)
+    );
+    assert!(
+        matches!(content.first(), Some(Content::Thinking { thinking_signature: Some(field), .. }) if field == "reasoning_content")
+    );
+    let Some(Content::ToolCall {
+        name, arguments, ..
+    }) = content.last()
+    else {
+        return Err(format!("no tool call: {content:?}").into());
+    };
+    assert_eq!(
+        (name.as_str(), arguments.get("command")),
+        ("bash", Some(&json!("echo one")))
+    );
+    Ok(())
+}
+
 /// Answers each request with `reply` in turn and hands back every request it read, head and body.
 pub(crate) fn record(
     replies: Vec<String>,

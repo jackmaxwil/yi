@@ -24,6 +24,7 @@ mod browser;
 mod cli_surfaces;
 mod console_drive;
 mod journeys;
+mod kimi_login;
 mod mcp_cli;
 mod mcp_oauth;
 mod monkey;
