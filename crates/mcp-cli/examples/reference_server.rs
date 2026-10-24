@@ -36,9 +36,7 @@ impl ServerHandler for Echo {
         let Some(schema) = schema.as_object().cloned() else {
             return Err(McpError::internal_error("schema was not an object", None));
         };
-        let Some(no_arguments) = serde_json::json!({"type": "object"}).as_object().cloned() else {
-            return Err(McpError::internal_error("schema was not an object", None));
-        };
+        let no_arguments = serde_json::Map::from_iter([("type".to_owned(), "object".into())]);
         Ok(ListToolsResult::with_all_items(vec![
             Tool::new("echo", "returns its argument", schema),
             Tool::new(
