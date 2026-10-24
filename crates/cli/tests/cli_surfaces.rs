@@ -1587,8 +1587,8 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     Ok(())
 }
 
-/// The bound is by length: `doctr` (five letters) and `dotcor` (six) are one and two edits from
-/// `doctor`, `dctr` (four) is two and still asks.
+/// The bound is by length, each tier at its limit and one past it: `doctr` and `dotcor` are refused
+/// at one and two edits from `doctor`; `dctr`, `dxxxor` and the three-letter `wha` still ask.
 #[test]
 fn a_lone_word_near_a_verb_is_refused_and_writes_no_session() -> TestResult {
     let workspace = Workspace::new("near-verb")?;
@@ -1607,6 +1607,8 @@ fn a_lone_word_near_a_verb_is_refused_and_writes_no_session() -> TestResult {
         &["hello", "there"],
         &["fix", "the", "bug"],
         &["dctr"],
+        &["dxxxor"],
+        &["wha"],
     ] {
         let mut argv = vec!["--model", "faux/faux-1"];
         argv.extend_from_slice(words);
@@ -1621,13 +1623,14 @@ fn a_lone_word_near_a_verb_is_refused_and_writes_no_session() -> TestResult {
     Ok(())
 }
 
-/// The console and the daemon never hand these flags to a session; the refusal comes before
-/// either starts, so no socket is bound.
+/// The console and the daemon never hand these flags to a session. The socket sits under a
+/// regular file, so a regressed run fails to bind and exits rather than leaving a daemon behind.
 #[test]
 fn console_and_serve_refuse_a_flag_they_would_drop() -> TestResult {
     let workspace = Workspace::new("unread-flags")?;
-    let socket = std::env::temp_dir().join(format!("yi-unread-{}.sock", std::process::id()));
-    let path = socket.display().to_string();
+    let blocker = workspace.0.join("not-a-dir");
+    std::fs::write(&blocker, "")?;
+    let path = blocker.join("yi.sock").display().to_string();
     for (argv, said) in [
         (
             ["console", "--thinking", "high"],
@@ -1641,8 +1644,33 @@ fn console_and_serve_refuse_a_flag_they_would_drop() -> TestResult {
         let refused = workspace.yi(&[&argv[..], &["--socket", &path]].concat())?;
         assert_eq!(refused.status.code(), Some(2), "{argv:?}");
         assert_eq!(String::from_utf8_lossy(&refused.stderr).trim(), said);
-        assert!(!socket.exists(), "{argv:?} bound {path}");
     }
+    Ok(())
+}
+
+/// Each of these verbs is a server or a fixed report, so a trailing word is a prompt it would
+/// drop; `doctor` is answered before the config loads and must refuse the same way.
+#[test]
+fn a_verb_that_takes_no_words_refuses_one() -> TestResult {
+    let workspace = Workspace::new("no-words")?;
+    for verb in ["version", "rpc", "acp", "doctor", "gc"] {
+        let refused = workspace.yi(&[verb, "foo"])?;
+        assert_eq!(refused.status.code(), Some(2), "{verb}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr).trim(),
+            format!("error: `yi {verb}` takes no words; to ask the model: yi ask {verb} foo")
+        );
+    }
+    let help = workspace.yi(&["doctor", "--fix", "--help"])?;
+    assert_eq!(help.status.code(), Some(0));
+    assert!(stdout(&help).contains("\nverbs:\n"), "{}", stdout(&help));
+    assert!(String::from_utf8_lossy(&help.stderr).is_empty());
+    let early = workspace.yi(&["--json", "update"])?;
+    assert_eq!(early.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&early.stderr).trim(),
+        "error: `yi update` reads its own flags: put it first, `yi update ...`"
+    );
     Ok(())
 }
 
