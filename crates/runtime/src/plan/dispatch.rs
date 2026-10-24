@@ -74,11 +74,20 @@ impl PlanEngine {
         if !matches!(todo.state, TodoState::Pending) {
             return Ok(());
         }
-        let told = super::brief::lines(&self.store.artifacts(id), &txn.records, id, todo);
+        let artifacts = self.store.artifacts(id);
+        let told = super::brief::lines(&artifacts, &txn.records, id, todo);
         if !told.is_empty() {
             delegation
                 .extra
                 .insert(super::brief::KEY.to_owned(), serde_json::json!(told));
+        }
+        if super::spawn::reads_only(&delegation)
+            && let Some(schema) =
+                super::spawn::schema(&artifacts, todo, self.output_resolve.as_deref())
+        {
+            delegation
+                .extra
+                .insert(super::spawn::SCHEMA.to_owned(), schema);
         }
         let addr = TodoAddr {
             plan: id.clone(),

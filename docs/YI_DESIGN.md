@@ -612,7 +612,11 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
-  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
+  `role="reader"` (D308); a juror and a service are `root`, and so is a plan delegation unless it
+  reads only: spec role `reader`, an accept that is not a command, no isolation, tools within
+  `read` and `grep`, and no `kernel://` or `family://` context. That one spawns `role="reader"`,
+  its context the partition and its schema (the declared output's, else the contract's schema
+  item) inlined; a Writer or a command-accepted delegation stays `root` (#937). A reader is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
