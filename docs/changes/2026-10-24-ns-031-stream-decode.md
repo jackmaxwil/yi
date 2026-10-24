@@ -1,7 +1,9 @@
 ---
 issue: Closes #1469, Closes #138, Closes #139, Closes #140, Closes #141, Refs #1442
-raise: crate ai +2, crate kernel +1, tests +50
+raise: crate ai +2, crate kernel +1, crate loop +14, comments +2, tests +220
 ---
 This change bundles three units: HB-utf8-rest, HA-INT-abort and HA-PLAN-leak.
 
 HB-utf8-rest: yi-ai, yi-context, yi-kernel and yi-mcp-cli now deny `clippy::string_slice` at their crate roots, so no byte-index slice of a `str` compiles under clippy in those crates. The fifteen slices they held were boundary-safe, each behind a `find` of an ASCII byte or a hand-written walk back to a char boundary; they are now `split_once`, `str::get`, or `floor_char_boundary` and `ceil_char_boundary`, which deletes the five hand-written walks. The pending list keeps only runtime and tools, which other changes clear.
+
+HA-INT-abort: an abort now cuts the provider request as well as the loop's reading of it. `InterruptSignal::fire` sets the cut flag the HTTP adapters already read between SSE events, so the pump stops at its next event and drops the connection instead of letting the provider generate, and bill, to `max_tokens`; on Kimi's recorded 91-event bash stream an abort at the third event now reads three events, where it read all 91. A turn cut at the reasoning budget waits up to 45 s for the provider's settled `Done`; an abort during that wait now ends it at once. Two races in the signal are closed: `wait` creates its `Notified` before it checks `fired`, so a fire between the check and the await is heard, and `fire` moves the epoch before it sets `fired` while `reset_if_epoch` re-reads the epoch after clearing and restores `fired` when a fire raced it; a three-thread stress lost 496 of 10,000 fires before and loses none now. Cursor's stop function keeps reading both flags: with `fire` setting the cut it is equivalent to the cut alone, and reducing it deletes runtime lines, which reads red under the Kimi change's declared runtime raise until that change merges.

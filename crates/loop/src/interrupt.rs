@@ -40,9 +40,11 @@ impl InterruptSignal {
         Arc::clone(&self.fired)
     }
 
+    /// Invariant: the epoch moves before `fired` is set, so a reset that raced it sees the move.
     pub fn fire(&self) {
-        self.fired.store(true, Ordering::SeqCst);
         self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.fired.store(true, Ordering::SeqCst);
+        self.cut();
         self.wake.notify_waiters();
     }
 
@@ -55,17 +57,23 @@ impl InterruptSignal {
     }
 
     pub fn reset_if_epoch(&self, epoch: u64) -> bool {
-        if self.epoch.load(Ordering::SeqCst) == epoch {
-            self.fired.store(false, Ordering::SeqCst);
-            return true;
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            return false;
         }
-        false
+        self.fired.store(false, Ordering::SeqCst);
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            self.fired.store(true, Ordering::SeqCst);
+            return false;
+        }
+        true
     }
 
+    /// Invariant: a `Notified` hears `notify_waiters` from creation, so it exists before the check.
     pub async fn wait(&self) {
+        let notified = self.wake.notified();
         if self.is_fired() {
             return;
         }
-        self.wake.notified().await;
+        notified.await;
     }
 }

@@ -461,13 +461,19 @@ fn cut_message(partial: Option<&AgentMessage>, model: &Model, chars: usize) -> A
 /// `Done` at the moment of the cut, and the pump stops reading at the flag.
 const CUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// The provider's `Done` after a cut, if it comes within the bound; its usage is settled.
+/// The provider's `Done` after a cut, if it comes within the bound and before an abort.
 async fn drain_to_done(
     receiver: &mut tokio::sync::mpsc::Receiver<AssistantMessageEvent>,
+    signal: &InterruptSignal,
 ) -> Option<AgentMessage> {
     let deadline = tokio::time::Instant::now() + CUT_DRAIN;
     loop {
-        match tokio::time::timeout_at(deadline, receiver.recv()).await {
+        let event = tokio::select! {
+            biased;
+            () = signal.wait() => return None,
+            event = tokio::time::timeout_at(deadline, receiver.recv()) => event,
+        };
+        match event {
             Ok(Some(AssistantMessageEvent::Done { message, .. })) => return Some(message),
             Ok(Some(AssistantMessageEvent::Error { .. }) | None) | Err(_) => return None,
             Ok(Some(_)) => {}
@@ -665,8 +671,8 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut cut: Option<usize> = None;
     let mut timed_out = false;
     loop {
-        // The provider's stream takes no cancellation input, so this is a streaming answer's
-        // only interrupt checkpoint; without it a tool-less turn ran to completion first.
+        // A fire also sets the cut the provider pump reads, so the request stops on the wire;
+        // here the loop stops reading, or a tool-less turn ran to completion first.
         let event = tokio::select! {
             biased;
             () = signal.wait() => None,
@@ -746,7 +752,7 @@ async fn stream_assistant_response<S: StreamFn>(
     }
     let cut = match cut {
         Some(chars) => {
-            let settled = drain_to_done(&mut receiver).await;
+            let settled = drain_to_done(&mut receiver, signal).await;
             let source = settled
                 .as_ref()
                 .or_else(|| added_partial.then(|| context.messages.last()).flatten());
