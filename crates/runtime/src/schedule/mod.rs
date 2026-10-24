@@ -358,6 +358,10 @@ pub struct JobStore {
     path: std::path::PathBuf,
     state: std::sync::Mutex<ScheduleState>,
     changed: std::sync::Arc<tokio::sync::Notify>,
+    hub: Option<std::sync::Arc<shared::DeliveryHub>>,
+    /// The write error its sessions were last told of, so a ledger that stays unwritable tells
+    /// them once; a write that succeeds clears it.
+    failed: std::sync::Mutex<Option<String>>,
 }
 
 fn lock_or_poisoned<T>(state: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -378,6 +382,19 @@ impl JobStore {
             path,
             state: std::sync::Mutex::new(state),
             changed: std::sync::Arc::new(tokio::sync::Notify::new()),
+            hub: None,
+            failed: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn with_hub(mut self, hub: std::sync::Arc<shared::DeliveryHub>) -> Self {
+        self.hub = Some(hub);
+        self
+    }
+
+    fn notify(&self, session_id: Option<&str>, text: &str) {
+        if let Some(hub) = &self.hub {
+            hub.notify(session_id, text);
         }
     }
 
@@ -400,18 +417,21 @@ impl JobStore {
                 .filter_map(|job| Some((job.id.clone(), job.channel.as_ref()?.path.clone())))
                 .collect()
         };
-        let (result, ended) = {
+        let (result, ended, failed) = {
             let mut state = lock_or_poisoned(&self.state);
             let before = reading(&state);
             let result = action(&mut state);
-            self.persist(&state);
+            let failed = self.persist(&state);
             let after = reading(&state);
             let ended: Vec<(String, String)> = before
                 .into_iter()
                 .filter(|job| !after.contains(job))
                 .collect();
-            (result, ended)
+            (result, ended, failed)
         };
+        if let Some(text) = failed {
+            self.notify(None, &text);
+        }
         // Invariant: a channel job that ends by any path drops its ack, so a finished wait or a
         // cancelled subscription never holds its channel's truncation back.
         for (id, path) in ended {
@@ -433,17 +453,20 @@ impl JobStore {
         }
     }
 
-    fn persist(&self, state: &ScheduleState) {
-        let Ok(text) = serde_json::to_string_pretty(state) else {
-            return;
-        };
+    /// `Some` is a notice the ledger's sessions have not had yet.
+    fn persist(&self, state: &ScheduleState) -> Option<String> {
+        let text = serde_json::to_string_pretty(state).ok()?;
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let write = yi_session::replace_file(&self.path, text.as_bytes());
-        if let Err(error) = write {
-            eprintln!("scheduled-jobs.json write failed: {error}");
-        }
+        let error = (yi_session::replace_file(&self.path, text.as_bytes()).err()).map(|error| {
+            format!(
+                "[heartbeat ledger {} not written: {error}; schedule changes hold in memory only and a restart loses them]",
+                self.path.display()
+            )
+        });
+        let told = std::mem::replace(&mut *lock_or_poisoned(&self.failed), error.clone());
+        error.filter(|text| told.as_ref() != Some(text))
     }
 }
 
@@ -506,6 +529,7 @@ pub struct HeartbeatService {
     durable: Option<(std::path::PathBuf, tokio::runtime::Handle)>,
     deliver: Option<std::sync::Arc<DeliverFn>>,
     stop: Option<std::sync::Arc<shared::StopFn>>,
+    notice: Option<std::sync::Arc<shared::NoticeFn>>,
     words: Option<crate::goal::StoreHandle>,
     /// The machine's channel buffers, `<sessions>/channels/`.
     channels: Option<std::path::PathBuf>,
@@ -527,6 +551,7 @@ impl HeartbeatService {
             durable: None,
             deliver: None,
             stop: None,
+            notice: None,
             words: None,
             channels: None,
             gate: None,
@@ -552,6 +577,11 @@ impl HeartbeatService {
 
     pub fn with_stop(mut self, stop: std::sync::Arc<dyn Fn(bool) -> bool + Send + Sync>) -> Self {
         self.stop = Some(stop);
+        self
+    }
+
+    pub(crate) fn with_notice(mut self, notice: std::sync::Arc<shared::NoticeFn>) -> Self {
+        self.notice = Some(notice);
         self
     }
 
@@ -647,6 +677,9 @@ impl HeartbeatService {
             hub.register(session_id.to_owned(), std::sync::Arc::clone(deliver));
             if let Some(stop) = &self.stop {
                 hub.register_stop(session_id.to_owned(), std::sync::Arc::clone(stop));
+            }
+            if let Some(notice) = &self.notice {
+                hub.register_notice(session_id.to_owned(), std::sync::Arc::clone(notice));
             }
         }
     }

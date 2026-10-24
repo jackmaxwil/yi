@@ -7,10 +7,12 @@ use super::{DeliverFn, JobStore, RunOutcome, Scheduler};
 /// The kill switch's reach into one session: `true` holds its wakes and interrupts its turn,
 /// `false` lifts the hold; each answers whether it changed anything.
 pub(crate) type StopFn = dyn Fn(bool) -> bool + Send + Sync;
+pub(crate) type NoticeFn = dyn Fn(&str) + Send + Sync;
 
 pub(crate) struct DeliveryHub {
     lanes: Mutex<HashMap<String, Arc<DeliverFn>>>,
     stops: Mutex<HashMap<String, Arc<StopFn>>>,
+    notices: Mutex<HashMap<String, Arc<NoticeFn>>>,
 }
 
 impl DeliveryHub {
@@ -18,6 +20,7 @@ impl DeliveryHub {
         Self {
             lanes: Mutex::new(HashMap::new()),
             stops: Mutex::new(HashMap::new()),
+            notices: Mutex::new(HashMap::new()),
         }
     }
 
@@ -27,6 +30,22 @@ impl DeliveryHub {
 
     pub(crate) fn register_stop(&self, session_id: String, stop: Arc<StopFn>) {
         lock_lanes(&self.stops).insert(session_id, stop);
+    }
+
+    pub(crate) fn register_notice(&self, session_id: String, notice: Arc<NoticeFn>) {
+        lock_lanes(&self.notices).insert(session_id, notice);
+    }
+
+    /// `None` tells every session on the ledger; the hooks run with no lock held.
+    pub(crate) fn notify(&self, session_id: Option<&str>, text: &str) {
+        let notices: Vec<Arc<NoticeFn>> = {
+            let all = lock_lanes(&self.notices);
+            match session_id {
+                Some(id) => all.get(id).map(Arc::clone).into_iter().collect(),
+                None => all.values().map(Arc::clone).collect(),
+            }
+        };
+        notices.iter().for_each(|notice| notice(text));
     }
 
     /// Invariant: a session reopened before its old handle drops re-registered under the same id,
@@ -41,6 +60,7 @@ impl DeliveryHub {
         }
         lanes.remove(session_id);
         lock_lanes(&self.stops).remove(session_id);
+        lock_lanes(&self.notices).remove(session_id);
         true
     }
 
@@ -151,8 +171,8 @@ pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<Sha
         prime(&existing.hub);
         return Arc::clone(existing);
     }
-    let store = Arc::new(JobStore::open(path.clone()));
     let hub = Arc::new(DeliveryHub::new());
+    let store = Arc::new(JobStore::open(path.clone()).with_hub(Arc::clone(&hub)));
     prime(&hub);
     let dispatch = Arc::clone(&hub);
     let scheduler = Scheduler::start(

@@ -1894,3 +1894,51 @@ async fn an_idle_mailbox_tick_writes_no_ledger_file() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a ledger write failure printed to stderr, which tears a raw-mode screen and reaches
+/// no model, and with one notice per failed write while the disk stays broken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ledger_that_cannot_be_written_reaches_the_session_once() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let root = Scratch::new("yi-ledger-unwritable")?;
+    let sessions = root.join("sessions");
+    std::fs::create_dir_all(&sessions)?;
+    // A file where the schedules directory goes (ENOTDIR): CI runs as root, past any chmod.
+    std::fs::write(sessions.join("schedules"), "not a directory")?;
+    let mut repo = JsonlRepo::new(sessions, "/tmp/yi-ledger-unwritable".to_owned());
+    let session = wired_root(&root, "noted")?;
+    session.attach_store(repo.create(CreateOptions {
+        id: Some("unwritable-1".to_owned()),
+        ..CreateOptions::default()
+    })?)?;
+    let clock = session.heartbeat_service().ok_or("no clock wired")?;
+    clock.run("/heartbeat every 1h write the stand-up notes")?;
+    clock.run("/heartbeat pause")?;
+
+    session.prompt("is the clock set?")?;
+    session.wait_idle().await;
+
+    let told: Vec<String> = session
+        .messages()
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } if text.contains("scheduled-jobs.json") => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    let [notice] = told.as_slice() else {
+        return Err(format!("three failed writes, one notice: {told:#?}").into());
+    };
+    assert!(
+        notice.contains("not written") && notice.contains("a restart loses them"),
+        "{notice}"
+    );
+    assert!(
+        answered(&session, "noted"),
+        "the turn carrying the notice never ran"
+    );
+    Ok(())
+}
