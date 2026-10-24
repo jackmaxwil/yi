@@ -67,7 +67,7 @@ pub struct Capacity {
 
 impl Capacity {
     /// Incident: one verification lane bounced each concurrent acceptance outlasting its wait,
-    /// so a quarter of the pool, one to four lanes, verifies; `PoolFull` catches overcommit.
+    /// so a quarter of the pool, one to four lanes, verifies; the pool refuses overcommit.
     pub fn for_slots(slots: u8) -> Arc<Self> {
         let verification_cap = (slots / 4).clamp(1, 4);
         Arc::new(Self {
