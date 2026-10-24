@@ -14,7 +14,7 @@ Header keys, each optional:
   raise: tests +140, comments +12, over-cap +1, crate runtime +60
   decision: <decision> | <why> | <reversible via>      repeatable; numbered by the recorder
 The recorder adds `version:` and `decisions:` when it records the file."""
-import pathlib, re, sys
+import functools, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, fork, git, no_fork
 
@@ -71,14 +71,14 @@ def at(rev, path):
     return shown.stdout if shown.returncode == 0 else None
 
 
+@functools.cache
 def pending(base):
     """The change files this branch adds: in the working tree, absent at the fork. A file this gate
-    refuses lends no raise and no memo, or a size gate run alone would be green on its numbers."""
-    out = []
-    for name, text in files():
-        if name not in held(base) and not file_errors([(name, text)]):
-            out.append((name, parse(text)[0]))
-    return out
+    refuses lends no raise and no memo, or a size gate run alone would be green on its numbers.
+    Incident: an ls-tree per file per caller made check_crate_size.py take 68 s on 187 change files."""
+    fork_names = held(base)
+    return tuple((name, parse(text)[0]) for name, text in files()
+                 if name not in fork_names and not file_errors([(name, text)]))
 
 
 def held(base):
@@ -242,8 +242,25 @@ def fork_cases():
     return bad
 
 
+def scan_cases():
+    """Every size gate asks pending() once per crate or key; the fork's listing is read once a process."""
+    global git, files
+    calls, real = [], (git, files)
+    text = "---\nissue: Closes #974\ngrowth: +212 weighed X\nraise: tests +140, crate runtime +60\ndecision: a | b | c\n---\nProse.\n"
+    listing = lambda *a: calls.append(a) or type("Run", (), {"stdout": "", "returncode": 0})()
+    git, files = listing, lambda: [(f"2026-10-{1 + i % 28:02d}-change-{i}.md", text) for i in range(187)]
+    pending.cache_clear()
+    try:
+        asks = [raised("fork", key) for key in ("tests", "comments", "over-cap", "crate runtime")]
+    finally:
+        git, files = real
+        pending.cache_clear()
+    bad = [] if len(calls) == 1 else [f"pending() ran git {len(calls)} times for {len(asks)} asks over 187 change files, not once"]
+    return bad + ([] if asks == [140 * 187, 0, 0, 60 * 187] else [f"187 change files summed to {asks}"])
+
+
 def selfcheck():
-    errs = cases()
+    errs = cases() + scan_cases()
     for check in CHECKS:
         OFF.clear()
         OFF.add(check)
