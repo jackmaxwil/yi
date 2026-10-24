@@ -728,7 +728,9 @@ async fn an_aborted_turn_is_settled_from_the_record() -> TestResult {
         )?;
         stream.flush()?;
         let _aborted = held.recv();
-        write!(stream, "data: {chunk}\n\n")?;
+        // Incident: a pump that read the cut first had closed the socket, so this write hit
+        // EPIPE and its `?` ended the stand-in before it served the record.
+        let _cut_may_have_closed = write!(stream, "data: {chunk}\n\n");
         drop(stream);
         let record = json!({"data": {"tokens_prompt": 5200, "tokens_completion": 900, "total_cost": 0.0004}});
         answer(&listener, "application/json", &record.to_string())
