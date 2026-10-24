@@ -370,7 +370,8 @@ impl App {
                     outbound,
                     RequestKind::Initialize,
                     "initialize",
-                    json!({"protocolVersion": 2, "clientInfo": {"name": "yi-console"}}),
+                    json!({"protocolVersion": 2, "clientInfo": {"name": "yi-console"},
+                        "_meta": {"yi": {"events": true}}}),
                 );
             }
             ClientEvent::Disconnected { .. } if self.shutdown_at.is_some() => {
