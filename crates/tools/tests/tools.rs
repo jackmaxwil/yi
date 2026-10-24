@@ -882,7 +882,7 @@ fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
         let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
         let text = output_text(&output);
         let path = (text.lines().last())
-            .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+            .and_then(|line| Some(yi_tools::spill_path(line)?.1))
             .ok_or_else(|| format!("{command}: the pointer is not last: {text}"))?;
         let bytes: usize = (1..=count).map(|n| format!("{n}\n").len()).sum();
         let whole = fs::read_to_string(path)?;
@@ -998,12 +998,15 @@ fn a_red_workspace_build_keeps_its_error_through_the_reducer() -> TestResult {
         assert!(text.contains("b/src/main.rs:121:36"), "{command}: {text}");
         let cap = yi_tools::OUTPUT_CAP;
         let row = format!(
-            "[capture cut: kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream); every byte: ",
+            "[full output, kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream), every byte: ",
             streamed + extra
         );
+        let naming: Vec<&str> = (text.lines())
+            .filter(|line| line.contains(&*dir.join("tool-output").to_string_lossy()))
+            .collect();
         assert!(
-            text.lines().any(|line| line.starts_with(&row)),
-            "{command}: no {row}: {text}"
+            naming.len() == 1 && naming.iter().all(|line| line.starts_with(&row)),
+            "{command}: not one {row}: {text}"
         );
     }
     Ok(())
@@ -1022,7 +1025,7 @@ fn the_omitted_lines_notice_names_lines_of_the_file_it_points_at() -> TestResult
         .ok_or_else(|| format!("no notice: {text}"))?;
     let (from, to): (usize, usize) = (range.0.parse()?, range.1.parse()?);
     let path = (text.lines())
-        .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .find_map(|line| Some(yi_tools::spill_path(line)?.1))
         .ok_or_else(|| format!("no pointer: {text}"))?;
     let whole = fs::read_to_string(path)?;
     let spill: Vec<&str> = whole.lines().collect();
@@ -1067,6 +1070,101 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let finished = text_of(&polled.result.content);
     assert!(finished.contains("woke"), "{finished}");
     assert!(finished.contains("finished (exit 0)"), "{finished}");
+    Ok(())
+}
+
+/// Runs `command` past a 200 ms auto-background, so it becomes a job, and polls it to its end.
+fn polled_job(command: &str, context: &mut ToolContext) -> Result<yi_tools::ToolOutput, String> {
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let started = BashTool::default().execute(args(&[("command", json!(command))]), context);
+    let job = (started.result.details.get("job").and_then(Value::as_u64))
+        .ok_or_else(|| format!("not a job: {}", output_text(&started)))?;
+    let poll = args(&[("job", json!(job)), ("wait", json!(60))]);
+    Ok(BashTool::default().execute(poll, context))
+}
+
+/// A red `cargo test` of 2,000 cases that became a job reached the model raw, 64,656 B; the
+/// view keeps the failing test and its assert lines inside the ceiling, the program value all.
+#[test]
+fn a_failing_cargo_test_job_is_polled_through_the_view_and_valued_whole() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("job-view-cargo")?;
+    let recorded = view_fixture("view/cargo-test-2000-one-assert-eq.txt");
+    let cargo = dir.join("bin/cargo");
+    fs::create_dir_all(dir.join("bin"))?;
+    let script = format!(
+        "#!/bin/sh\nsleep 0.5\ncat '{}'\nexit 101\n",
+        recorded.display()
+    );
+    fs::write(&cargo, script)?;
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    context.program = true;
+    let command = format!("PATH='{}':\"$PATH\" cargo test", dir.join("bin").display());
+    let polled = polled_job(&command, &mut context)?;
+    let text = output_text(&polled);
+    let (headline, body) = text.split_once('\n').ok_or("no headline")?;
+    assert!(headline.contains("finished (exit 101)"), "{headline}");
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING,
+        "{} B: {body}",
+        body.len()
+    );
+    let verdict = [
+        "---- tests::balance_1377 stdout ----",
+        "  left: 4132",
+        " right: 4133",
+    ];
+    for line in verdict
+        .iter()
+        .chain(&["test result: FAILED. 1999 passed; 1 failed"])
+    {
+        assert!(body.contains(line), "no {line:?}: {body}");
+    }
+    let raw = fs::read_to_string(&recorded)?;
+    let value = polled.value.ok_or("no program value")?;
+    let stdout = value
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let half = yi_tools::OUTPUT_CAP / 2;
+    let (head, tail) = (raw.get(..half), raw.get(raw.len().saturating_sub(half)..));
+    assert!(
+        head.is_some_and(|head| stdout.starts_with(head)),
+        "{stdout}"
+    );
+    assert!(tail.is_some_and(|tail| stdout.contains(tail)), "{stdout}");
+    Ok(())
+}
+
+/// A 258,672 B build whose one error is its last line, run as a job: the error stays inline
+/// inside the ceiling, and the one row naming the file reads back every byte.
+#[test]
+fn a_job_whose_build_errors_last_keeps_the_error_and_names_the_spill() -> TestResult {
+    let dir = temp_dir("job-view-build")?;
+    let recorded = view_fixture("view/make-build-error-last.txt");
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let command = format!("sleep 0.5; cat '{}'; exit 2", recorded.display());
+    let text = output_text(&polled_job(&command, &mut context)?);
+    let (_, body) = text.split_once('\n').ok_or("no headline")?;
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING,
+        "{} B: {body}",
+        body.len()
+    );
+    let error = "src/unit_1700.c:1:42: error: use of undeclared identifier 'undeclared_offset'";
+    assert!(body.contains(error), "{body}");
+    let named: Vec<&str> = (body.lines().filter_map(yi_tools::spill_path))
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(named.len(), 1, "{body}");
+    let kept = named.first().map(fs::read).transpose()?;
+    assert!(
+        kept == Some(fs::read(&recorded)?),
+        "the named file is not the whole build"
+    );
     Ok(())
 }
 

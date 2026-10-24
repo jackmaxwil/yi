@@ -70,6 +70,8 @@ pub struct JobReport {
     pub exit_code: Option<i32>,
     pub state: JobState,
     pub output: String,
+    capture: Option<CommandCapture>,
+    recovery_dir: Option<PathBuf>,
 }
 
 /// Who settles the job: its owner's completion loop, which announces it (an ownerless one only a
@@ -86,6 +88,7 @@ struct Job {
     command: String,
     /// Where the command runs: a lane settles only once no job under its path is running.
     cwd: PathBuf,
+    recovery_dir: Option<PathBuf>,
     started: u64,
     reaper: Reaper,
     polled: bool,
@@ -172,7 +175,7 @@ impl Jobs {
     fn insert(
         &self,
         command: &str,
-        cwd: &Path,
+        (cwd, recovery_dir): (&Path, Option<&Path>),
         reaper: Reaper,
         live: Arc<LiveOutput>,
         kill: Arc<AtomicBool>,
@@ -184,6 +187,7 @@ impl Jobs {
             Job {
                 command: command.to_owned(),
                 cwd: cwd.to_path_buf(),
+                recovery_dir: recovery_dir.map(Path::to_path_buf),
                 started: id,
                 reaper,
                 polled: false,
@@ -344,6 +348,26 @@ impl JobReport {
         };
         format!("job {} {ending}: {}", self.id, self.command)
     }
+
+    /// What the model reads of a finished job, poll and announcement alike; `output` stays whole.
+    pub fn view(&self) -> String {
+        let Some(capture) = &self.capture else {
+            return String::new();
+        };
+        let strip = crate::reduce::strip_ansi;
+        let viewed = crate::reduce::view(
+            crate::reduce::Involuntary::Job(&self.command),
+            &strip(&capture.stdout),
+            &strip(&capture.stderr),
+            self.exit_code.unwrap_or(-1),
+            capture.kept().as_deref(),
+            self.recovery_dir.as_deref().filter(|_| !capture.truncated),
+        );
+        let failed =
+            (capture.kill_error.iter()).map(|error| format!("[group kill failed: {error}]"));
+        let rows: Vec<String> = capture.shown(&viewed).into_iter().chain(failed).collect();
+        rows.join("\n")
+    }
 }
 
 fn state(job: &Job) -> JobState {
@@ -386,6 +410,8 @@ fn render(id: u64, job: &Job) -> JobReport {
         },
         state,
         output,
+        capture: job.capture.clone(),
+        recovery_dir: job.recovery_dir.clone(),
     }
 }
 
@@ -447,7 +473,7 @@ fn start(
     let kill = Arc::new(AtomicBool::new(false));
     let id = registry().insert(
         shell_command,
-        cwd,
+        (cwd, spill_dir),
         reaper,
         Arc::clone(&live),
         Arc::clone(&kill),
@@ -834,7 +860,7 @@ mod tests {
             reported: false,
             owner: Some(owner),
         };
-        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let id = registry().insert("true", (cwd, None), reaper, Arc::default(), Arc::default());
         let seen = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
         std::thread::spawn(move || woke.send(registry().wait_settle(seen)));
@@ -855,7 +881,7 @@ mod tests {
             reported: true,
             owner: Some(owner),
         };
-        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let id = registry().insert("true", (cwd, None), reaper, Arc::default(), Arc::default());
         registry().finish(id, exited());
         let held = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
@@ -872,19 +898,20 @@ mod tests {
     #[test]
     fn a_poll_after_the_queue_marks_the_announcement_delivered() -> Fallible {
         let cwd = Path::new("/yi-jobs-test/polled-after-queue");
+        let at = (cwd, None);
         let owner = JobOwner::mint();
         let reaper = || Reaper::Poller {
             reported: false,
             owner: Some(owner),
         };
-        let queued = registry().insert("true", cwd, reaper(), Arc::default(), Arc::default());
+        let queued = registry().insert("true", at, reaper(), Arc::default(), Arc::default());
         registry().finish(queued, exited());
         assert_eq!(registry().take_finished(owner).len(), 1);
         assert!(!registry().delivered(queued));
         assert!(!poll(queued, cwd).is_error);
         assert!(registry().delivered(queued));
 
-        let running = registry().insert("true", cwd, reaper(), Arc::default(), Arc::default());
+        let running = registry().insert("true", at, reaper(), Arc::default(), Arc::default());
         assert_eq!(poll(running, cwd).result.details["running"], true);
         registry().finish(running, exited());
         assert_eq!(registry().take_finished(owner).len(), 1);
@@ -898,7 +925,7 @@ mod tests {
         // report can say why.
         let id = registry().insert(
             "sleep 300",
-            Path::new("."),
+            (Path::new("."), None),
             Reaper::Handle,
             Arc::default(),
             Arc::default(),
