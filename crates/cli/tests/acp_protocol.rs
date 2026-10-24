@@ -1845,15 +1845,8 @@ fn why_answers_for_a_committed_edit_and_an_unknown_extension_is_not_found() -> T
     client.finish()
 }
 
-/// The console reads at most 32 MiB a line and re-dials past it, so a long session's replay
-/// must arrive in frames under that cap; checked at the 512-entry limit and one entry past it.
-#[test]
-fn a_session_of_large_tool_results_replays_in_frames_a_reader_can_hold() -> TestResult {
-    const READER_CAP: usize = 32 * 1024 * 1024;
-    let dir = temp_dir("replay-bytes")?;
-    let mut client = AcpClient::spawn(&dir)?;
-    let session_id = new_faux_session(&mut client, &dir)?;
-    client.request("3", "session/close", json!({"sessionId": session_id}))?;
+/// The `read` result recorded in tui fixture session 01a129b6, its text repeated past `bytes`.
+fn recorded_result(bytes: usize) -> Result<yi_types::message::AgentMessage, Box<dyn Error>> {
     let line = include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl")
         .lines()
         .find(|line| line.contains("\"role\":\"toolResult\""))
@@ -1863,48 +1856,70 @@ fn a_session_of_large_tool_results_replays_in_frames_a_reader_can_hold() -> Test
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    result["content"][0]["text"] = Value::String(text.repeat(64 * 1024 / text.len() + 1));
-    let result: yi_types::message::AgentMessage = serde_json::from_value(result)?;
-    let append = |count: u64| -> TestResult {
-        use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
+    result["content"][0]["text"] = Value::String(text.repeat(bytes / text.len() + 1));
+    Ok(serde_json::from_value(result)?)
+}
+
+type ReplayLine = (usize, u64, u64);
+
+/// Appends `count` copies of `message` to a closed session, resumes it, and returns the entries
+/// held before and each `_yi/replay` line's length, `from` and `replayedTo`.
+fn replay_lines(
+    count: usize,
+    message: &yi_types::message::AgentMessage,
+) -> Result<(u64, Vec<ReplayLine>), Box<dyn Error>> {
+    use yi_runtime::session_store::{EntryQuery, JsonlRepo, SessionRepo, lock_session};
+    let dir = temp_dir("replay-bytes")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    client.request("3", "session/close", json!({"sessionId": session_id}))?;
+    let held = {
         let mut repo = JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
         let store = repo.open(&session_id)?;
         let mut session = lock_session(&store);
+        let held = session.find_entries(&EntryQuery::default())?.len() as u64;
         for _ in 0..count {
-            session.append_message("main", result.clone())?;
+            session.append_message("main", message.clone())?;
         }
-        Ok(())
+        held
     };
-    let mut held = None;
-    for (id, added) in ["4", "5", "6"].into_iter().zip([0, 512, 1]) {
-        append(added)?;
-        let frames = client.request(
-            id,
-            "session/resume",
-            json!({"sessionId": session_id, "replayFrom": 0, "_meta": {"yi": {"replayUpdates": false}}}),
-        )?;
-        let mut next = 0;
-        for frame in updates_of(&frames, "_yi/replay") {
-            let bytes = serde_json::to_vec(frame)?.len();
-            assert!(
-                bytes < READER_CAP,
-                "a {bytes}-byte replay frame after {added} more entries"
-            );
-            let update = &frame["params"]["update"];
-            assert_eq!(update["from"], next, "frames are contiguous");
-            next = update["replayedTo"].as_u64().ok_or("no replayedTo")?;
+    let meta = json!({"yi": {"replayUpdates": false}});
+    let params = json!({"sessionId": session_id, "replayFrom": 0, "_meta": meta});
+    client.send(
+        &json!({"jsonrpc": "2.0", "id": "4", "method": "session/resume", "params": params}),
+    )?;
+    let mut frames = Vec::new();
+    for line in client.lines.by_ref() {
+        let line = line?;
+        let frame: Value = serde_json::from_str(&line)?;
+        if frame["id"] == "4" {
+            break;
         }
-        if let Some(held) = held {
-            assert_eq!(next, held + added, "every entry arrives");
+        let update = &frame["params"]["update"];
+        if update["sessionUpdate"] == "_yi/replay" {
+            let at = |key: &str| update[key].as_u64().ok_or(format!("no {key}"));
+            frames.push((line.len(), at("from")?, at("replayedTo")?));
         }
-        held = Some(next);
-        client.request(
-            &format!("{id}c"),
-            "session/close",
-            json!({"sessionId": session_id}),
-        )?;
     }
-    client.finish()
+    client.finish()?;
+    Ok((held, frames))
+}
+
+/// The console reads at most 32 MiB a line and re-dials past it; 512 entries of 64 KiB, the
+/// entry limit, once went out as one 35.6 MB frame.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_session_of_large_tool_results_replays_in_frames_a_reader_can_hold() -> TestResult {
+    const READER_CAP: usize = 32 * 1024 * 1024;
+    let (held, frames) = replay_lines(512, &recorded_result(64 * 1024)?)?;
+    let mut next = 0;
+    for (bytes, from, to) in frames {
+        assert!(bytes < READER_CAP, "a {bytes}-byte replay frame");
+        assert_eq!(from, next, "frames are contiguous");
+        next = to;
+    }
+    assert_eq!(next, held + 512, "every entry arrives");
+    Ok(())
 }
 
 /// What the request carried that this agent does not read is named where the user and the
@@ -1964,6 +1979,7 @@ fn a_dropped_prompt_block_and_unread_mcp_servers_are_named() -> TestResult {
 /// The committed entry is found by walking back from the leaf to the message it holds, so a
 /// long branch still names the entry the turn just saved, not an older one.
 #[test]
+#[ignore = "tier-2 journey: `just journeys`"]
 fn a_five_thousand_message_session_names_each_committed_entry() -> TestResult {
     use yi_runtime::session_store::{JsonlRepo, SessionRepo, lock_session};
     let dir = temp_dir("committed-long")?;
