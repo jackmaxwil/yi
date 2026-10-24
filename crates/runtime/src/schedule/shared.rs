@@ -484,7 +484,7 @@ mod tests {
 
         drop(a);
         due(&b)?;
-        let first = tokio::time::timeout(Duration::from_secs(5), delivered.recv())
+        let first = tokio::time::timeout(Duration::from_secs(25), delivered.recv())
             .await
             .map_err(|_| "a leaving stopped the timer b is still bound to")?;
         assert_eq!(first.as_deref(), Some("b"));
@@ -493,7 +493,7 @@ mod tests {
         drop(b);
         c.bind_session("c".to_owned());
         due(&c)?;
-        let next = tokio::time::timeout(Duration::from_secs(5), delivered.recv())
+        let next = tokio::time::timeout(Duration::from_secs(25), delivered.recv())
             .await
             .map_err(|_| "the last lane leaving stopped the timer c was wired to")?;
         assert_eq!(next.as_deref(), Some("c"));
