@@ -61,10 +61,10 @@ _yi() {
         '--deadline[wall-clock limit for the run]:secs:'
         '--continue[resume the newest session for this directory]'
         '--session[resume this session]:id:'
-        '--schema[answer JSON valid against this schema]:schema:'
-        '--since[fold stats over the sessions of this window]:span:'
-        '--by[group stats by model, upstream, day or prices]:axis:'
-        '--top[stats lists the n costliest sessions]:n:'
+        '--schema[answer JSON valid against this schema]:schema:_files'
+        '--since[after stats: fold the sessions of this window]:span:'
+        '--by[after stats: group by model, upstream, day or prices]:axis:'
+        '--top[after stats: list the n costliest sessions]:n:'
     )
     _arguments -C $flags '1: :->command' '*:: :->rest'
     case $state in
