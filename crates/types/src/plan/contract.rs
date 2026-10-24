@@ -718,8 +718,8 @@ pub struct CheckerManifest {
 
 impl CheckerManifest {
     /// # Errors
-    /// Not the format, a bad cwd policy or subdir, or an environment name this session refuses.
-    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+    /// Not the format, a bad cwd policy or subdir, or an env name `session_has` does not hold.
+    pub fn parse(bytes: &[u8], session_has: impl Fn(&str) -> bool) -> Result<Self, String> {
         let manifest: Self =
             serde_json::from_slice(bytes).map_err(|error| format!("checker manifest: {error}"))?;
         if manifest.manifest != MANIFEST_FORMAT {
@@ -765,7 +765,7 @@ impl CheckerManifest {
                     "checker manifest: {name} looks like a secret; a criterion may not read one"
                 ));
             }
-            if std::env::var_os(name).is_none() {
+            if !session_has(name) {
                 return Err(format!(
                     "checker manifest: this session holds no {name}; a criterion cannot ask for more than the session has"
                 ));

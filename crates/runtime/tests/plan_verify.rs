@@ -48,7 +48,7 @@ use serde_json::{Value, json};
 use yi_runtime::plan::artifact::Artifacts;
 use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError, TodoSpec};
 use yi_runtime::plan::store::PlanStore;
-use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze};
+use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze, session_has};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::canonical::{ArtifactRef, Digest};
 use yi_types::plan::contract::{Contract, ItemVerdict, Outcome, VerificationToken};
@@ -308,12 +308,15 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
         ),
     ];
     for (value, expected) in bad {
-        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?)
+        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?, session_has)
             .err()
             .ok_or_else(|| format!("{value} was accepted"))?;
         assert!(refusal.contains(expected), "{value}: {refusal}");
     }
-    CheckerManifest::parse(&serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?)?;
+    CheckerManifest::parse(
+        &serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?,
+        session_has,
+    )?;
     // Through the engine: the refusal lands at start, when the contract is frozen, never at done.
     let temp = Scratch::new("yi-verify-freeze")?;
     let store = PlanStore::open(temp.join("plans"))?;
