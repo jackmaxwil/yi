@@ -436,7 +436,7 @@ impl App {
                 {
                     self.composer.set_text(&text);
                 }
-                if !self.pane {
+                if !self.pane && self.pending_summary.is_some() {
                     self.notice(
                         "conversation rewound; files stay as the abandoned branch left them; /undo restores the last turn's edits",
                     );

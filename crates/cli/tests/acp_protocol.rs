@@ -891,7 +891,8 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
 }
 
 /// Dies with the history replaced under a turn: a `_yi/rewind` without `files` reached the
-/// session while its bash call ran, and only the `files` form answered `still running`.
+/// session while its bash call ran, and only the `files` form answered `still running`. The
+/// bash ask may land before a reply (no sandbox off macOS), so each reply is read allowing it.
 #[test]
 fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
     let dir = temp_dir("rewind-running")?;
@@ -934,7 +935,11 @@ fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
 
     for (id, files) in [("plain", false), ("files", true)] {
         let params = json!({"sessionId": session_id, "entryId": asked, "files": files});
-        let frames = client.request(id, "_yi/rewind", params)?;
+        client
+            .send(&json!({"jsonrpc": "2.0", "id": id, "method": "_yi/rewind", "params": params}))?;
+        let frames = read_allowing(&mut client, |frame| {
+            frame["id"] == id && frame.get("method").is_none()
+        })?;
         let answer = frames.last().ok_or("no rewind response")?;
         assert_eq!(answer["error"]["code"], -32602, "{id}: {answer}");
         assert!(
