@@ -203,7 +203,7 @@ async fn the_snapshot_dir_is_the_sessions_dir_not_the_process_dir() -> TestResul
     assert_eq!(outcome.result.status, yi_types::kernel::ExecuteStatus::Ok);
     kernel.dispose().await;
     let state = root.join("sessions").join("kernels").join(ID);
-    let (snapshot, _) = yi_runtime::kernel::snapshot_paths(&state, Some(ID));
+    let snapshot = yi_runtime::kernel::snapshot_path(&state, Some(ID));
     assert!(
         snapshot.is_file(),
         "the root's snapshot sits in its own kernels/<id> under the sessions dir, not under \
@@ -243,7 +243,7 @@ async fn a_store_switch_rekeys_the_live_kernel() -> TestResult {
     );
     kernel.dispose().await;
     let state = root.join("sessions").join("kernels").join("snap-b");
-    let (snapshot, _) = yi_runtime::kernel::snapshot_paths(&state, Some("snap-b"));
+    let snapshot = yi_runtime::kernel::snapshot_path(&state, Some("snap-b"));
     assert!(
         snapshot.is_file(),
         "keyed by the new id: {}",
@@ -303,20 +303,14 @@ async fn a_second_process_on_one_session_leaves_its_snapshot_alone() -> TestResu
     let owner = service(&dir, &notices);
     cell(&owner, "owner = 1").await?;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    let saved = || -> Result<Vec<String>, Box<dyn Error>> {
-        let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("kernel-state.json"))?)?;
-        Ok(serde_json::from_value(manifest["savedNames"].clone())?)
-    };
-    assert!(saved()?.contains(&"owner".to_owned()));
+    assert!(index_names(&dir, "owner")?);
 
     let second = service(&dir, &notices);
     let outcome = cell(&second, "intruder = 2\nprint('owner' in globals())").await?;
     second.kill().await;
-    let after = saved()?;
     assert!(
-        after.contains(&"owner".to_owned()) && !after.contains(&"intruder".to_owned()),
-        "the second process rewrote the owner's snapshot: {after:?}"
+        index_names(&dir, "owner")? && !index_names(&dir, "intruder")?,
+        "the second process rewrote the owner's snapshot"
     );
     assert!(
         outcome.result.stdout.contains("False"),
@@ -359,14 +353,20 @@ async fn a_prewarmed_kernel_owns_the_snapshot_its_bootstrap_writes() -> TestResu
     cell(&first, "owner = 1").await?;
     first.dispose().await;
     second.dispose().await;
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("kernel-state.json"))?)?;
-    let saved: Vec<String> = serde_json::from_value(manifest["savedNames"].clone())?;
     assert!(
-        saved.contains(&"owner".to_owned()) && !saved.contains(&"intruder".to_owned()),
-        "the prewarmed process lost its snapshot to a later one: {saved:?}"
+        index_names(&dir, "owner")? && !index_names(&dir, "intruder")?,
+        "the prewarmed process lost its snapshot to a later one"
     );
     Ok(())
+}
+
+/// Whether the snapshot index names `name`. The index is a pickled map of name to blob digest,
+/// so a saved name sits in it as plain bytes.
+fn index_names(dir: &Path, name: &str) -> Result<bool, Box<dyn Error>> {
+    let index = std::fs::read(dir.join("kernel-state.dill"))?;
+    Ok(index
+        .windows(name.len())
+        .any(|window| window == name.as_bytes()))
 }
 
 fn blobs_in(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
