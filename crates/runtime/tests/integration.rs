@@ -8,6 +8,8 @@ mod own;
 mod scratch;
 #[path = "support/family.rs"]
 mod support;
+#[path = "support/upstream.rs"]
+mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
 
