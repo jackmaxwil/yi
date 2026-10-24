@@ -155,7 +155,9 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
 }
 
 /// Dies with `connect` printing the server's whole tool catalog, schemas and all, to a model that
-/// only asked to connect: the row now names the call that lists them, and that call works.
+/// only asked to connect: the row now names the call that lists them, and that call works. Dies
+/// too with the instructions the server wrote for the model, and the capability names that say
+/// whether `resources-list` and `prompts-list` mean anything, left out of what it prints.
 #[test]
 fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestResult {
     let home = mcp_home()?;
@@ -163,7 +165,9 @@ fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestRes
     assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
     assert_eq!(
         connect.stdout.trim(),
-        "@s live · yi-fixture\n[…] 2 tools not printed · list them: yi mcp @s tools-list"
+        "@s live · yi-fixture\ncapabilities: tools, resources, prompts\n\
+         instructions: Fixture server. The echo tool repeats input.\n\
+         […] 2 tools not printed · list them: yi mcp @s tools-list"
     );
     let call = connect.stdout.trim().rsplit_once("list them: yi mcp ");
     let args: Vec<&str> = call.ok_or("no call named")?.1.split_whitespace().collect();
@@ -182,6 +186,7 @@ fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestRes
         document["server"]["tools"].as_array().map(Vec::len),
         Some(2)
     );
+
     Ok(())
 }
 

@@ -157,8 +157,20 @@ fn do_connect(
                 let noun = if tools == 1 { "tool" } else { "tools" };
                 let server =
                     (record.server_name.as_deref()).map_or_else(String::new, |n| format!(" · {n}"));
+                let capabilities = (connected.get("capabilities").and_then(Value::as_object))
+                    .map(|found| found.keys().cloned().collect::<Vec<_>>().join(", "));
+                let facts = [
+                    ("capabilities", capabilities),
+                    ("instructions", record.instructions.clone()),
+                ]
+                .into_iter()
+                .filter_map(|(label, text)| {
+                    text.filter(|text| !text.is_empty())
+                        .map(|text| format!("\n{label}: {text}"))
+                })
+                .collect::<String>();
                 Value::String(format!(
-                    "@{name} live{server}\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
+                    "@{name} live{server}{facts}\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
                 ))
             };
             output::emit(&shown, flags.json, flags.max_chars);
