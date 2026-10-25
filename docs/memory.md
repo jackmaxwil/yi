@@ -92,7 +92,8 @@ resumed, it does the following:
 2. Builds the block: the header (the verbs, the four types and the save template), the note
    counts, the repo lines, then `global:` and the global lines.
 3. Loads at most 200 lines or 25,000 bytes per store, keeping the most recently used, in index
-   order, then `+N not loaded`. With no notes, the block reads `No notes yet.`
+   order, then a row `[… K of T notes loaded within LOAD_BYTES 25000 (LOAD_LINES 200); the rest:
+   await memory.search("words")]`. With no notes, the block reads `No notes yet.`
 4. Marks a line `⚠ <path>` when its text or description names a relative path that is missing
    under the git root.
 5. Fits the block to the `memory` source budget (32,768 bytes) and emits it as
