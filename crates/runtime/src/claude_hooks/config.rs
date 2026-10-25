@@ -316,15 +316,6 @@ impl Hooks {
         let Some(events) = value.get("hooks").and_then(Value::as_object) else {
             return;
         };
-        let other: Vec<&str> = (events.keys().map(String::as_str))
-            .filter(|name| Event::parse(name).is_none())
-            .collect();
-        if !other.is_empty() {
-            self.notices.push(format!(
-                "[Claude Code hooks for {} in {shown} are not run: Yi runs PreToolUse, PostToolUse and PostToolUseFailure hooks only]",
-                other.join(", ")
-            ));
-        }
         for (name, groups) in events {
             let Some(event) = Event::parse(name) else {
                 continue;
