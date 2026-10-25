@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -7,21 +7,19 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, mpsc, oneshot};
-use yi_types::kernel::{
-    ConnectionInfo, ExecuteResult, ExecuteStatus, JupyterMessage, KernelSentAgentMessage,
-};
+use yi_types::kernel::{ConnectionInfo, ExecuteResult, ExecuteStatus, JupyterMessage};
 use zeromq::ZmqMessage;
 
 use crate::bootstrap::{BootstrapOptions, ProgressFn, ensure_kernel_python};
 use crate::connection::{has_resolved_ports, make_connection, random_hex, read_connection_info};
 use crate::framing::{build_message, encode};
 use crate::journal::record_orphan_process_state;
-use crate::reduce::{CellState, parse_sent_agent_message};
+use crate::reduce::CellState;
 use crate::{
     DEFAULT_MAX_OUTPUT_CHARS, HOST_REQUEST_DISPOSE_TIMEOUT_MS, KERNEL_ABORT_GRACE_MS,
     KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
-    KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
-    PORTS_RESOLVE_TIMEOUT_MS, SNAPSHOT_DISPOSE_TIMEOUT_MS,
+    KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, PORTS_RESOLVE_TIMEOUT_MS,
+    SNAPSHOT_DISPOSE_TIMEOUT_MS,
 };
 
 const STDERR_TAIL_CAP: usize = 16_384;
@@ -110,14 +108,12 @@ pub struct KernelOptions {
 }
 
 pub type StreamFn = dyn FnMut(&str, &str) + Send;
-pub type LateAgentMessageFn = dyn Fn(KernelSentAgentMessage) + Send + Sync;
 pub type RequestFn = dyn FnOnce(&str) + Send;
 
 #[derive(Default)]
 pub struct ExecuteOptions {
     pub abort: Option<AbortFlag>,
     pub on_stream: Option<Box<StreamFn>>,
-    pub on_late_sent_agent_message: Option<Box<LateAgentMessageFn>>,
     pub max_output_chars: Option<usize>,
     pub internal: bool,
     pub on_request: Option<Box<RequestFn>>,
@@ -135,13 +131,10 @@ pub(crate) struct Active {
     pub(crate) cell: CellState,
     pub(crate) started: std::time::Instant,
     pub(crate) on_stream: Option<Box<StreamFn>>,
-    pub(crate) on_late: Option<Box<LateAgentMessageFn>>,
     pub(crate) abort: Option<AbortFlag>,
     pub(crate) settled: bool,
     pub(crate) result_tx: Option<oneshot::Sender<Result<ExecuteResult, ExecuteError>>>,
 }
-
-pub(crate) type LateHandlers = VecDeque<(String, Arc<LateAgentMessageFn>)>;
 
 pub(crate) struct Channels {
     shell_tx: mpsc::UnboundedSender<Vec<Vec<u8>>>,
@@ -175,7 +168,6 @@ pub(crate) struct Inner {
     pub(crate) pending_control: Mutex<HashMap<String, (String, oneshot::Sender<()>)>>,
     pub(crate) comm_targets: Mutex<HashMap<String, String>>,
     pub(crate) handled_host_comm_ids: Mutex<HashSet<String>>,
-    pub(crate) late_handlers: Mutex<LateHandlers>,
     // Source of the most recently started cell, retained after it finishes so rlm.run spawns
     // from detached asyncio tasks can still attribute their spawning program.
     pub(crate) last_cell_code: Mutex<Option<String>>,
@@ -453,10 +445,6 @@ impl Inner {
                     &mut current.cell,
                     CellState::new(String::new(), String::new(), 0, true),
                 );
-                let request_id = cell.request_msg_id.clone();
-                if let Some(handler) = current.on_late.take() {
-                    register_late_handler(&self.late_handlers, request_id, handler.into());
-                }
                 let result = crate::reduce::finish(cell, duration, aborted);
                 if let Some(tx) = current.result_tx.take() {
                     resolved = Some((tx, Ok(result)));
@@ -498,9 +486,6 @@ impl Inner {
     pub(crate) fn cleanup_resources(self: &Arc<Self>) {
         self.start_generation.fetch_add(1, Ordering::SeqCst);
         self.clear_snapshot_timer();
-        if let Ok(mut handlers) = self.late_handlers.lock() {
-            handlers.clear();
-        }
         self.reject_active(ExecuteError::ShutDown);
         let channels = self.channels.lock().ok().and_then(|mut slot| slot.take());
         if let Some(channels) = channels {
@@ -543,47 +528,6 @@ pub(crate) fn trim_tail(text: &mut String) {
     }
 }
 
-pub(crate) fn register_late_handler(
-    handlers: &Mutex<LateHandlers>,
-    request_id: String,
-    handler: Arc<LateAgentMessageFn>,
-) {
-    if let Ok(mut handlers) = handlers.lock() {
-        handlers.push_back((request_id, handler));
-        while handlers.len() > MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS {
-            handlers.pop_front();
-        }
-    }
-}
-
-pub(crate) fn dispatch_late_agent_message(
-    handlers: &Mutex<LateHandlers>,
-    parent_id: Option<&str>,
-    payload: Option<&Value>,
-) -> bool {
-    let (Some(parent_id), Some(payload)) = (parent_id, payload) else {
-        return false;
-    };
-    let Some(message) = parse_sent_agent_message(payload) else {
-        return false;
-    };
-    let handler = {
-        let Ok(mut handlers) = handlers.lock() else {
-            return false;
-        };
-        let Some(index) = handlers.iter().position(|(id, _)| id == parent_id) else {
-            return false;
-        };
-        let Some((id, handler)) = handlers.remove(index) else {
-            return false;
-        };
-        handlers.push_back((id, Arc::clone(&handler)));
-        handler
-    };
-    handler(message);
-    true
-}
-
 impl KernelManager {
     pub fn new(options: KernelOptions) -> Result<Self, String> {
         Ok(Self {
@@ -612,7 +556,6 @@ impl KernelManager {
                 pending_control: Mutex::new(HashMap::new()),
                 comm_targets: Mutex::new(HashMap::new()),
                 handled_host_comm_ids: Mutex::new(HashSet::new()),
-                late_handlers: Mutex::new(VecDeque::new()),
                 last_cell_code: Mutex::new(None),
                 kernel_stderr: Mutex::new(String::new()),
                 in_flight_host: Mutex::new(Vec::new()),
@@ -966,7 +909,6 @@ impl KernelManager {
                 ),
                 started: std::time::Instant::now(),
                 on_stream: options.on_stream,
-                on_late: options.on_late_sent_agent_message,
                 abort: options.abort.clone(),
                 settled: false,
                 result_tx: Some(result_tx),
@@ -1139,9 +1081,7 @@ fn aborted_result() -> ExecuteResult {
         stdout: String::new(),
         stderr: String::new(),
         result: None,
-        diffs: Vec::new(),
         attachments: Vec::new(),
-        sent_agent_messages: Vec::new(),
         status: ExecuteStatus::Aborted,
         error: None,
         duration_ms: 0,
