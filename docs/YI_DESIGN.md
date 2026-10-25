@@ -49,7 +49,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-loop` | `run_loop`, `LoopConfig`, `AgentTool`, interrupt signal, tool-name repair | yi-types |
 | `yi-ai` | Provider streams, model catalog, retry, SSE | yi-types, yi-oauth |
 | `yi-oauth` | PKCE, loopback callback, token store, `login`/`logout` | yi-types |
-| `yi-orb` | Orb geometry and kitty-graphics painter | none |
+| `yi-orb` | Orb geometry and kitty-graphics painter | yi-types |
 | `yi-session` | Session store: JSONL and in-memory repos, ids, queries | yi-types |
 | `yi-context` | Token accounting, compaction cut point, context assembly | yi-types, yi-tools |
 | `yi-permission` | Modes, rules, command classifier, catastrophic denylist, review ledger | yi-types |
@@ -317,7 +317,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
-  out-edges (8), guidance (160 B), pitfalls (3 × 120 B), and forbids self edges.
+  out-edges (8), guidance (160 B), and forbids self edges.
 - Levers: tunables are read via `levers::get()`, `DEFAULT` unless `init` (first statement of
   `build_session`) loaded `YI_LEVERS`, read only with `--eval`; a bad file is `refusal:config`.
 - Skills catalog: `window × 4 / 50` bytes, clamped 8-32 KiB; descriptions clip to 120, then 60
@@ -836,7 +836,11 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
   and warms, `Drop` detaches; over a dirty tree `release` and `Drop` keep the session and branch, so
   the slot is that session's orphan. `discard` and `yi lanes reap` are the only tree wipes, and each
   counts the paths it dropped. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
-  `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2).
+  `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2). `merge_worktree`'s
+  optional `check` meets the host gate a spawn's check meets, then runs in the lane with a cleared
+  environment under the session deadline before the lane settles, so its unignored writes are
+  committed with the child's work; red or cut, the reply is `merged: false` with
+  `check: {exit, tail}` and the branch kept as a conflict keeps it, with no disposition recorded.
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
 - The warmer runs offline under Seatbelt, only for a lockfile hash a session already synced.
@@ -945,7 +949,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | Verb | What |
 |---|---|
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask`. A lone word one edit from a verb (four or five letters; two edits from six) is refused with the verb and `yi ask <word>`, and a verb that reads no words (`version`, `rpc`, `acp`, `doctor`, `gc`, `serve`, `console`; `undo` reads only `list`) refuses trailing ones; `console` and `serve` refuse `--thinking`, `--system`, `--schema` and `--deadline` (a headless console drive reads `--deadline`), which never reach their sessions |
-| `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
+| `ask`, `rpc`, `acp`, `serve` | One headless run (plain text puts a blank line between one turn's text and the next; `--json` prints each event as a JSON line, and `--no-deltas` leaves out the `message_update` ones); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |

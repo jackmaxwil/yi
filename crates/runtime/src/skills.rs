@@ -144,7 +144,11 @@ pub fn catalog_text(skills: &[Skill], budget: Bytes) -> Option<Truncated> {
             });
         }
         if described == 0 {
-            return Some(fit(&body, budget));
+            let next = format!(
+                "read(\"{}<name>\") for one skill",
+                crate::rules::SKILL_ADDRESS
+            );
+            return Some(fit(&body, budget, &next));
         }
         described = described.saturating_sub(1);
     }
