@@ -45,7 +45,7 @@ fn console() -> Result<(App, PaneId), Box<dyn Error>> {
     Ok((app, pane))
 }
 
-fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> TestResult {
+pub(crate) fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> TestResult {
     let theme = theme();
     terminal.draw(|frame| {
         let mut view = yi_console::render::compute_view(app, frame.area(), &theme);
@@ -55,7 +55,7 @@ fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> TestResult {
     Ok(())
 }
 
-fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
+pub(crate) fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
     let buffer = terminal.backend().buffer();
     (0..buffer.area.width)
         .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
@@ -142,6 +142,25 @@ fn a_pane_with_no_session_titles_itself_without_a_status_dot() -> TestResult {
     let top = row_text(&terminal, 2);
     assert!(top.contains("─ Settings ─"), "{top}");
     assert!(top.contains("─ ❯ no session ─"), "{top}");
+    Ok(())
+}
+
+/// Dies with the pane calling the reveal pace solo-only, though every console chat takes it.
+#[test]
+fn the_pane_says_a_console_restart_applies_the_reveal_pace() -> TestResult {
+    let (mut app, pane) = console()?;
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let mut settings = Settings::new(None, yi_types::settings::TABS.len());
+    settings.rows = Some(yi_types::settings::rows());
+    app.state.panes.get_mut(&pane).ok_or("no pane")?.content =
+        PaneContent::Settings(Box::new(settings));
+    draw(&mut app, &mut terminal)?;
+    let screen: Vec<_> = (0..30).map(|y| row_text(&terminal, y)).collect();
+    let row = screen.iter().find(|text| text.contains("Reveal pace %"));
+    assert!(
+        row.is_some_and(|text| text.contains("next console")),
+        "{screen:#?}"
+    );
     Ok(())
 }
 

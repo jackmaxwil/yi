@@ -227,8 +227,16 @@ pub(crate) fn cached<K: PartialEq, V>(
     &drawn.insert(fresh).1
 }
 
-/// Invariant: `usize::MAX` holds a view at its top while its rows grow, and a scroll down from
-/// there leaves MAX less the rows, counted down from the top until the next draw.
+/// Invariant: this scroll holds a view at its top while its rows grow, and a scroll down from
+/// there leaves it less the rows, counted down from the top until the next draw.
+pub(crate) const TOP: usize = usize::MAX;
+
+/// The rows a view held at its top was scrolled down, or `None` for a count from the bottom.
+pub(crate) fn down_from_top(from_bottom: usize) -> Option<usize> {
+    let down = TOP.saturating_sub(from_bottom);
+    (down < TOP / 2).then_some(down)
+}
+
 pub(crate) fn windowed(
     all: &[Line<'static>],
     from_bottom: &mut usize,
@@ -236,14 +244,11 @@ pub(crate) fn windowed(
 ) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
     let total = all.len();
     let highest = total.saturating_sub(visible);
-    let down = usize::MAX.saturating_sub(*from_bottom);
     // Scrolling past the top would bank rows a later scroll down must first spend.
-    if down != 0 {
-        *from_bottom = if down < usize::MAX / 2 {
-            highest.saturating_sub(down)
-        } else {
-            (*from_bottom).min(highest)
-        };
+    match down_from_top(*from_bottom) {
+        Some(0) => {}
+        Some(down) => *from_bottom = highest.saturating_sub(down),
+        None => *from_bottom = (*from_bottom).min(highest),
     }
     let top = highest.saturating_sub((*from_bottom).min(highest));
     let rows = all.get(top..total.min(top.saturating_add(visible)));

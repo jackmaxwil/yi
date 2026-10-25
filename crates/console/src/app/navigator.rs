@@ -150,7 +150,7 @@ impl App {
                             drawn: None,
                         }
                     };
-                    pane.scroll_from_bottom = usize::MAX;
+                    pane.scroll_from_bottom = crate::panes::TOP;
                 }
             }
             Err(error) => self.note(&format!("{path}: {error}")),

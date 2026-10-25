@@ -604,7 +604,8 @@ fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
             let (refused, text) = call(&rig, step.clone());
             assert!(!refused, "{name} setup: {text}");
         }
-        let (refused, text) = call(&rig, case["call"].clone());
+        let decoded = yi_ai::leak::unleak(case["call"].as_object().ok_or("call")?).into_owned();
+        let (refused, text) = call(&rig, Value::Object(decoded));
         let lands = case["lands"].as_bool().unwrap_or(false);
         let says = case["says"].as_str().unwrap_or("");
         if refused == lands || !text.contains(says) {

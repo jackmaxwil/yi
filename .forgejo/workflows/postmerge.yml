@@ -105,3 +105,29 @@ jobs:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
       - run: just lane ${{ matrix.lane }}
+
+  # The version, the changelog and the decision log are views written from docs/changes (#975).
+  # Off until the repository variable RECORD_CHANGES is `on`: the push to main needs a token that
+  # branch protection lets through, and the first run, a backfill, is the owner's call.
+  record:
+    if: vars.RECORD_CHANGES == 'on'
+    concurrency:
+      group: record-changes
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RECORDER_TOKEN }}
+      - name: record the change files main landed
+        run: |
+          set -euo pipefail
+          python3 scripts/record_changes.py
+          if [ -z "$(git status --porcelain)" ]; then exit 0; fi
+          git add docs
+          git -c user.name=yi-ci -c user.email=ci@yi \
+            commit -q -m "Record the change files main landed" -m "[skip ci]"
+          git push origin HEAD:main

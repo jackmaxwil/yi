@@ -511,6 +511,12 @@ impl BottomView for QuestionView {
         self.card(width, theme, pictured).0
     }
 
+    fn paste(&mut self, text: &str) {
+        if self.typing {
+            self.other.push_str(&crate::popup::one_line(text));
+        }
+    }
+
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult {
         let Some(others) = self.current().map(|question| question.choices.len()) else {
             return PopupResult::Close;

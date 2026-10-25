@@ -3,22 +3,11 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 use yi_tui::colors::Theme;
+use yi_tui::markdown::{cell_width, expand_tabs_at as expand};
 
 use crate::model::Editor;
-
-const TAB_STOP: usize = 4;
-
-/// Incident: the buffer drops a tab like any control character, so a Makefile drew flush-left;
-/// a tab runs to the next four-column stop, and every other char is its display width.
-fn cell_width(c: char, at: usize) -> usize {
-    if c == '\t' {
-        TAB_STOP.saturating_sub(at % TAB_STOP)
-    } else {
-        c.width().unwrap_or(0)
-    }
-}
 
 fn drawn_col(line: &str, index: usize) -> usize {
     line.chars()
@@ -37,19 +26,6 @@ pub(crate) fn char_at(line: &str, col: usize) -> usize {
         }
     }
     line.chars().count()
-}
-
-fn expand(text: &str, mut at: usize) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        let width = cell_width(c, at);
-        match c {
-            '\t' => out.extend(std::iter::repeat_n(' ', width)),
-            _ => out.push(c),
-        }
-        at = at.saturating_add(width);
-    }
-    out
 }
 
 pub(crate) fn cursor_cell(editor: &Editor, inner: Rect) -> Option<(u16, u16)> {

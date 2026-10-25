@@ -364,6 +364,11 @@ impl TreeView {
         }
     }
 
+    pub(crate) fn paste(&mut self, text: &str) {
+        self.query.push_str(&crate::popup::one_line(text));
+        self.reselect();
+    }
+
     fn reselect(&mut self) {
         self.selected = first_if_hidden(self.visible().iter().map(|(i, _)| *i), self.selected);
     }

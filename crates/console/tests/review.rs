@@ -2,9 +2,11 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use yi_console::model::{
-    FileDiff, MAX_DIFF_FILES, PaneContent, ReviewScope, SessionDiff, SessionId, Zone,
+    FileDiff, MAX_DIFF_FILES, PaneContent, ReviewScope, SessionDiff, SessionId,
 };
 use yi_tui::colors::{ColorTier, Theme};
+
+use crate::editor_view::{console, palette};
 
 fn text(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
     lines
@@ -146,14 +148,6 @@ fn multifile_diff() -> SessionDiff {
     diff
 }
 
-fn console() -> (yi_console::app::App, yi_console::client::Outbound) {
-    let (events, _received) = yi_console::client::events();
-    let socket = std::env::temp_dir().join("yi-review-no-daemon.sock");
-    let (outbound, _threads) = yi_console::client::spawn(socket, events);
-    let app = yi_console::app::App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
-    (app, outbound)
-}
-
 fn press(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, code: KeyCode) {
     let key = KeyEvent::new(code, KeyModifiers::NONE);
     app.handle_event(outbound, ratatui::crossterm::event::Event::Key(key));
@@ -219,12 +213,7 @@ fn a_review_taller_than_its_pane_opens_on_its_file_list() {
 /// A console with `query` run in its palette, its pane focused.
 fn palette_app(query: &str) -> (yi_console::app::App, yi_console::client::Outbound) {
     let (mut app, outbound) = console();
-    app.state.zone = Zone::Panes;
-    alt(&mut app, &outbound, '/');
-    for c in query.chars() {
-        press(&mut app, &outbound, KeyCode::Char(c));
-    }
-    press(&mut app, &outbound, KeyCode::Enter);
+    palette(&mut app, &outbound, query);
     (app, outbound)
 }
 
@@ -294,7 +283,6 @@ fn review_app() -> (yi_console::app::App, yi_console::client::Outbound) {
             chat: None,
         };
     }
-    app.state.zone = Zone::Panes;
     app.state.diffs.insert(session, multifile_diff());
     alt(&mut app, &outbound, 'g');
     (app, outbound)
