@@ -109,6 +109,16 @@ pub fn family(
     store: yi_session::SharedSession,
     hold: Option<&'static str>,
 ) -> Family {
+    family_with_slots(dir, cwd, store, hold, 2)
+}
+
+pub fn family_with_slots(
+    dir: PathBuf,
+    cwd: PathBuf,
+    store: yi_session::SharedSession,
+    hold: Option<&'static str>,
+    lane_slots: u8,
+) -> Family {
     let built: Arc<Mutex<Vec<Built>>> = Arc::default();
     let notices: Arc<Mutex<Vec<String>>> = Arc::default();
     let (seen, told, journal) = (Arc::clone(&built), Arc::clone(&notices), store.clone());
@@ -124,7 +134,7 @@ pub fn family(
         plans_dir: cwd.join(".yi/plans"),
         cwd,
         home: dir.join("home"),
-        lane_slots: 2,
+        lane_slots,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut seen) = seen.lock() {

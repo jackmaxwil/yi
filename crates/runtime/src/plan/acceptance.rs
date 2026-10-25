@@ -2,7 +2,7 @@
 //! under the generation check; phases are typestate read from the journal, never from a lane.
 
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
 
 use serde_json::{Value, json};
 use yi_types::plan::canonical::Digest;
@@ -23,7 +23,9 @@ use super::state::{Decided, root_of};
 use super::store::draft;
 use super::table::{OpKind, check_plan_state, check_terminal, locate_step, op_name};
 use super::verify::Snapshot;
-use crate::lane::settle::{Prepared as Merge, Publish, generation_of, prepare, publish, slot_url};
+use crate::lane::settle::{
+    INTEGRATION, Prepared as Merge, Publish, generation_of, prepare, publish, slot_url,
+};
 use crate::lane::{Pool, Sha};
 
 pub const KIND_CANDIDATE_SUBMITTED: &str = "candidate_submitted";
@@ -38,10 +40,6 @@ pub const KIND_DISPOSITION: &str = Disposition::KIND;
 
 /// Re-preparations after a stale publication before `done` gives up on this call.
 pub const REPREPARE_CAP: u32 = 2;
-
-/// ponytail: one process-wide integration lock; the generation check at publication is the
-/// cross-process guard, so a second process prepares in vain rather than publishes wrong.
-static INTEGRATION: Mutex<()> = Mutex::new(());
 
 /// Where a worktree todo's attempt stands, read from its records and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
