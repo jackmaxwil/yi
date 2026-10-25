@@ -1,6 +1,7 @@
 //! Solo's chat bound to a pane: the `App` is built at bind time, fed the wire's events,
 //! and drained of what it asks its session — one place per direction.
 
+use std::collections::BTreeSet;
 use std::sync::mpsc::TryRecvError;
 
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -10,7 +11,7 @@ use yi_tui::input::handle_terminal_event;
 use yi_tui::{AskChoice, AskRequest, Command, Reply, TuiOptions, UiEvent};
 use yi_types::acp::{AcpExtensionUpdate, AcpPermissionParams, AcpSessionResult};
 use yi_types::entry::Entry;
-use yi_types::subagent::{ChildStatus, ChildUpdate};
+use yi_types::subagent::{ChildId, ChildStatus, ChildUpdate};
 
 use super::port::{
     Config, Decoded, PortRequest, RemotePort, Replay, config_of, decode, option_for,
@@ -29,7 +30,11 @@ const CHILD_ROW_CAP: usize = 32;
 
 /// A child first heard of at its end (retired before this console saw it run) gets no row;
 /// a full cache gives up its oldest finished row, never the new one.
-fn keep_child_row(rows: &mut Vec<ChildUpdate>, child: &ChildUpdate) {
+fn keep_child_row(
+    rows: &mut Vec<ChildUpdate>,
+    evicted: &mut BTreeSet<ChildId>,
+    child: &ChildUpdate,
+) {
     if let Some(slot) = rows.iter_mut().find(|row| row.id == child.id) {
         *slot = child.clone();
         return;
@@ -41,8 +46,9 @@ fn keep_child_row(rows: &mut Vec<ChildUpdate>, child: &ChildUpdate) {
     }
     if rows.len() >= CHILD_ROW_CAP {
         let oldest_finished = rows.iter().position(|row| !running(row)).unwrap_or(0);
-        rows.remove(oldest_finished);
+        evicted.insert(rows.remove(oldest_finished).id);
     }
+    evicted.remove(&child.id);
     rows.push(child.clone());
 }
 
@@ -215,7 +221,7 @@ impl App {
                 });
             }
             Decoded::Gap => self.heal(outbound, id),
-            Decoded::Replay(replay, entries) => self.absorb_replay(id, &replay, entries),
+            Decoded::Replay(replay, entries) => self.absorb_replay(outbound, id, &replay, entries),
             Decoded::Goal(goal) => {
                 for chat in self.state.chats_mut(id) {
                     chat.port.set_goal(goal.clone());
@@ -262,7 +268,12 @@ impl App {
                 self.apply_config(id, &config, in_flight <= 1);
             }
             Decoded::Child(child) => {
-                keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
+                let evicted = self.state.children_evicted.entry(id.clone()).or_default();
+                keep_child_row(
+                    self.state.children.entry(id.clone()).or_default(),
+                    evicted,
+                    &child,
+                );
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
             }
             Decoded::Committed(entry) => {
@@ -291,7 +302,13 @@ impl App {
         }
     }
 
-    fn absorb_replay(&mut self, id: &SessionId, replay: &Replay, entries: Vec<Entry>) {
+    fn absorb_replay(
+        &mut self,
+        outbound: &Outbound,
+        id: &SessionId,
+        replay: &Replay,
+        entries: Vec<Entry>,
+    ) {
         if replay.leaf.is_some() && yi_types::trace::enabled() {
             let mut args = serde_json::Map::new();
             args.insert("session".to_owned(), json!(id.0));
@@ -303,6 +320,9 @@ impl App {
         }
         self.seq.insert(id.clone(), None);
         self.replayed.insert(id.clone());
+        if replay.child.is_none() {
+            self.absorb_history(outbound, id, &entries, replay.from == 0);
+        }
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
             row.name = Some(name.clone());
         }
@@ -471,11 +491,24 @@ impl App {
     fn answer_ask(&mut self, outbound: &Outbound, ask: PendingAsk, choice: Option<AskChoice>) {
         // A popup that closed without a verdict is a rejection, never a hung worker.
         let option = option_for(choice.unwrap_or(AskChoice::Reject), &ask.options);
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": ask.request_id,
-            "result": {"outcome": {"outcome": "selected", "optionId": option}},
-        });
+        let outcome = json!({"outcome": "selected", "optionId": option});
+        self.reply_ask(outbound, ask.request_id, outcome);
+    }
+
+    /// Incident: an ask lived only in its pane's chat, so a closed pane or a quit left the
+    /// worker blocked on an answer nobody could give; the worker reads `cancelled` as a refusal.
+    pub(super) fn cancel_ask(&mut self, outbound: &Outbound, request_id: String) {
+        self.reply_ask(outbound, request_id, json!({"outcome": "cancelled"}));
+    }
+
+    pub fn cancel_asks(&mut self, outbound: &Outbound) {
+        for request_id in self.state.take_asks() {
+            self.cancel_ask(outbound, request_id);
+        }
+    }
+
+    fn reply_ask(&mut self, outbound: &Outbound, request_id: String, outcome: Value) {
+        let response = json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}});
         if !outbound.send(&response) {
             self.note("send failed: permission answer not delivered");
         }
@@ -661,9 +694,6 @@ impl App {
         let id = session.0.as_str();
         match command {
             Command::Prompt(text) => {
-                if !self.connected() {
-                    return self.note("not connected — prompt not sent");
-                }
                 self.send_request(
                     outbound,
                     RequestKind::Prompt,
@@ -919,17 +949,18 @@ mod tests {
     #[test]
     fn a_child_first_seen_at_its_end_gets_no_row_and_row_thirty_three_is_kept() {
         let mut rows = Vec::new();
-        keep_child_row(&mut rows, &update(99, ChildStatus::Error));
+        let mut evicted = BTreeSet::new();
+        keep_child_row(&mut rows, &mut evicted, &update(99, ChildStatus::Error));
         assert!(
             rows.is_empty(),
             "a retired stranger leaves no row: {rows:?}"
         );
         for id in 0..CHILD_ROW_CAP {
-            keep_child_row(&mut rows, &update(id, ChildStatus::Running));
+            keep_child_row(&mut rows, &mut evicted, &update(id, ChildStatus::Running));
         }
-        keep_child_row(&mut rows, &update(5, ChildStatus::Completed));
+        keep_child_row(&mut rows, &mut evicted, &update(5, ChildStatus::Completed));
         assert_eq!(rows.len(), CHILD_ROW_CAP, "an update replaces its own row");
-        keep_child_row(&mut rows, &update(32, ChildStatus::Running));
+        keep_child_row(&mut rows, &mut evicted, &update(32, ChildStatus::Running));
         assert_eq!(rows.len(), CHILD_ROW_CAP);
         assert!(
             rows.iter().any(|row| row.id.as_str() == "sub-32"),

@@ -21,9 +21,6 @@ pub fn snapshot_path_in(artifact_dir: &Path) -> PathBuf {
     artifact_dir.join(format!("{KERNEL_STATE_BASENAME}.dill"))
 }
 
-pub fn manifest_path_in(artifact_dir: &Path) -> PathBuf {
-    artifact_dir.join(format!("{KERNEL_STATE_BASENAME}.json"))
-}
 /// The blob directory beside a snapshot index; write and restore must derive
 /// it from the same path or restore misses every blob.
 pub fn blobs_dir_for(snapshot_path: &Path) -> PathBuf {
@@ -41,13 +38,11 @@ fn py_path(path: &Path) -> String {
 
 pub fn build_snapshot_code(
     out_path: &Path,
-    manifest_path: &Path,
     max_bytes: u64,
     max_variable_bytes: u64,
     prune_oversized: bool,
 ) -> String {
     let out = py_path(out_path);
-    let manifest = py_path(manifest_path);
     let marker = py_str(RESULT_MARKER);
     let prune = if prune_oversized { "True" } else { "False" };
     // All builtins are sourced via the locally-imported _b alias so the helper
@@ -55,7 +50,7 @@ pub fn build_snapshot_code(
     let blobs = py_path(&blobs_dir_for(out_path));
     format!(
         r#"def _yi_snapshot_state():
-    import builtins as _b, hashlib, io, json, os, sys, datetime
+    import builtins as _b, hashlib, io, json, os, sys
     try:
         import dill
     except _b.Exception as _err:
@@ -206,19 +201,6 @@ pub fn build_snapshot_code(
     bytes_written = _b.sum(_b.len(blob) for blob in payload.values())
     saved = _b.sorted(payload.keys())
     pruned = _b.sorted(name for name in oversized if name in ns) if identify_oversized else []
-    manifest = {{
-        "version": 1,
-        "savedNames": saved,
-        "skipped": skipped,
-        "pruned": pruned,
-        "bytes": bytes_written,
-        "pythonVersion": sys.version.split()[0],
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }}
-    try:
-        durable({manifest}, json.dumps(manifest).encode())
-    except _b.Exception:
-        pass
     pruned_ids = {{_b.id(ns[name]) for name in pruned}}
     while True:
         try:
@@ -442,7 +424,6 @@ impl KernelManager {
         let seen = self.inner.checkpoints.cells.load(Ordering::SeqCst);
         let code = build_snapshot_code(
             &config.path,
-            &config.manifest_path,
             config.max_bytes.unwrap_or(DEFAULT_SNAPSHOT_MAX_BYTES),
             config
                 .max_variable_bytes
@@ -623,7 +604,6 @@ mod tests {
     fn generated_python_carries_caps_and_paths() {
         let code = build_snapshot_code(
             Path::new("/tmp/out.dill"),
-            Path::new("/tmp/out.json"),
             DEFAULT_SNAPSHOT_MAX_BYTES,
             DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES,
             false,
@@ -638,10 +618,6 @@ mod tests {
             "snapshot must name the blobs dir the shared Rust derivation yields"
         );
         assert!(code.contains("os.replace"), "the write must be atomic");
-        assert!(
-            !code.contains("manifest_tmp"),
-            "the manifest write must go through durable() with the other writes"
-        );
         let restore = build_restore_code(Path::new("/tmp/out.dill"));
         assert!(
             restore.contains("\"/tmp/out.blobs\""),
