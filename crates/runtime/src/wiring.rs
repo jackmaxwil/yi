@@ -575,7 +575,8 @@ fn wire_plan_request(
     if wiring.depth == 0 {
         todos.set_carry(crate::todo::mirror::carry(Arc::downgrade(&engine)));
     }
-    crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
+    let gate = session.heartbeat_service().and_then(|beat| beat.gate());
+    crate::plan::request::register(Arc::clone(&engine), actor.clone(), gate, registry);
     Some((engine, actor, todos))
 }
 
