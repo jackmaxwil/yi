@@ -476,14 +476,15 @@ class Runs(unittest.TestCase):
             kill.TRIALS.mkdir()
             sweep = [sys.executable, "-c", (
                 "import json, os, sys\n"
-                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP']}\n"
+                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP'], 'job': sys.argv[2]}\n"
                 "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write(json.dumps(row) + '\\n')\n"),
                 str(kill.TRIALS)]
-            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "first"]}, 1.0)
             filed = json.loads((kill.TRIALS / "ns-tb-flash-one.jsonl").read_text())
-            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"]), ("ok", 0.12, "1.00"), row)
-            again = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
-            self.assertEqual((again["chargedUsd"], again["trials"]), (0.12, 1), "a re-run pays only its own rows")
+            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"], row["jobs"]), ("ok", 0.12, "1.00", ["first"]), row)
+            again = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "again"]}, 1.0)
+            self.assertEqual((again["chargedUsd"], again["trials"], again["jobs"]), (0.12, 1, ["again"]),
+                             "a re-run pays for and names only its own rows")
             silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
             self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
             self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
