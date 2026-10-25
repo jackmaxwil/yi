@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, text_output};
-use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel, TodoStateName};
+use yi_types::plan::doc::{BlockedOn, TODO_LABEL_MAX, Todo, TodoLabel, TodoStateName};
 use yi_types::todo::PhaseName;
 
 use super::{Op, Target, TodoError, TodoStore, mirror, text};
@@ -115,13 +115,14 @@ fn named(args: &Map<String, Value>) -> Option<String> {
 
 fn label(args: &Map<String, Value>, op: &'static str) -> Result<TodoLabel, ArgError> {
     let needle = named(args).ok_or(ArgError::Missing { op, field: "label" })?;
-    Todo::from_text(&needle)
-        .map(|item| item.label)
-        .map_err(|cause| ArgError::Malformed {
-            op,
-            field: "label",
-            cause: cause.to_string(),
-        })
+    // A name, never a new row's text: a long one is cut plainly and matched against the note.
+    let (needle, _) = yi_types::todo::split_cited(needle.trim());
+    let head: String = needle.chars().take(TODO_LABEL_MAX).collect();
+    TodoLabel::new(head.trim_end()).map_err(|cause| ArgError::Malformed {
+        op,
+        field: "label",
+        cause: cause.to_string(),
+    })
 }
 
 /// `items`, which the v4 sweep's models also sent as `todos`.
