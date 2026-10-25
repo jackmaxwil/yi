@@ -422,7 +422,7 @@ fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<Stri
                 Ok(Some(trimmed.to_owned()))
             }
         }
-        Some(other) => Err(format!("rlm.run {key} must be a string, got {other}")),
+        Some(other) => Err(format!("{key} must be a string, got {other}")),
     }
 }
 
@@ -1133,10 +1133,11 @@ impl SubagentHost {
             let host = Arc::clone(self);
             registry.register(method, move |payload| {
                 let target = payload.str_of("target").map(str::to_owned);
-                let check = payload.str_of("check").map(str::to_owned);
+                let check = optional_string(&payload, "check");
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
+                    let check = check?;
                     off_executor(method, move || {
                         if merges {
                             host.merge_worktree(&target, check.as_deref())

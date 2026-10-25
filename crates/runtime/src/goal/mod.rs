@@ -23,7 +23,7 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 /// Checks are integration gates (`just check`-class), not unit runs; 10 min
 /// covers a cold cargo build without letting a hang eat the session.
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
-const CHECK_TAIL_CHARS: usize = 2_000;
+pub(crate) const CHECK_TAIL_CHARS: usize = 2_000;
 
 pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
     let mut combined = String::new();

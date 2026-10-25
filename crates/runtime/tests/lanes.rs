@@ -3021,12 +3021,12 @@ async fn a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it() ->
 /// The kernel's own `rlm.merge_worktree` request for `writer`, carrying `check`.
 fn checked_merge(
     family: &support::Family,
-    check: &str,
+    check: impl Into<serde_json::Value>,
 ) -> Result<yi_kernel::client::HostFuture, Box<dyn Error>> {
     use yi_kernel::client::HostHandlers;
     let mut registry = yi_runtime::HostRegistry::default();
     family.host.register(&mut registry);
-    let asked = serde_json::json!({"target": "writer", "check": check});
+    let asked = serde_json::json!({"target": "writer", "check": check.into()});
     let asked = asked.as_object().cloned().unwrap_or_default();
     Ok(registry
         .dispatch("rlm.merge_worktree", asked)
@@ -3065,27 +3065,118 @@ async fn a_checked_hand_back_merges_only_a_lane_whose_check_passes() -> TestResu
     Ok(())
 }
 
+/// Dies with `check` read as an optional string: a list is no check, and the work lands unrun.
+#[tokio::test]
+async fn a_check_that_is_not_a_string_is_refused_and_merges_nothing() -> TestResult {
+    let rig = Rig::new("check-list")?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let refused = checked_merge(&family, vec!["false"])?.await;
+    let error = refused.err().ok_or("a list check merged")?;
+    assert!(error.contains("check must be a string"), "{error}");
+    assert!(!rig.repo.join("draft.txt").exists());
+    let reply = checked_merge(&family, "true")?.await?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    Ok(())
+}
+
+/// Dies with the red reply naming the branch unconditionally: a child that changed nothing has
+/// its branch deleted at release, and `git merge <branch>` would then fail.
+#[tokio::test]
+async fn a_red_check_on_a_child_that_changed_nothing_names_no_branch() -> TestResult {
+    let rig = Rig::new("check-noop")?;
+    let family = writer(&rig, "true").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let reply = checked_merge(&family, "false")?.await?;
+    assert_eq!(reply["merged"], false, "{reply:?}");
+    let branch = reply["branch"].as_str().ok_or("no branch")?;
+    assert!(!git_raw(&rig.repo, &["rev-parse", "--verify", "-q", branch])?.0);
+    let next = reply["next"].as_str().ok_or("no next sentence")?;
+    assert!(next.contains("no branch was kept"), "{next}");
+    assert!(!next.contains(branch), "{next}");
+    Ok(())
+}
+
+/// Dies with the quiescence read before the check: a job that ends while the check runs still
+/// reads as running, and the settle refuses the lane as busy.
+#[tokio::test]
+async fn a_job_that_ends_during_the_check_does_not_hold_the_lane() -> TestResult {
+    let rig = Rig::new("check-job")?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let listed = git(&rig.repo, &["worktree", "list", "--porcelain"])?;
+    let lane = listed
+        .split("\n\n")
+        .find(|entry| entry.contains("branch refs/heads/yi/sub-"))
+        .and_then(|entry| entry.lines().next()?.strip_prefix("worktree "))
+        .ok_or("no lane worktree")?;
+    let lane = rig
+        .home
+        .join(Path::new(lane).strip_prefix(rig.home.canonicalize()?)?);
+    let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+    let _job = yi_tools::jobs::spawn_job("sleep 1", &lane, &never, None);
+    let reply = checked_merge(&family, "sleep 3")?.await?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    Ok(())
+}
+
 /// A red check's tail keeps its last 2,000 chars: at the limit it is whole and says nothing,
-/// one past it the cut is a row naming kept over total and where the rest is.
+/// one past it, or past the capture's own cut, a row names kept over total and the rerun.
 #[tokio::test]
 async fn a_red_checks_tail_names_its_cut() -> TestResult {
-    for (label, chars) in [("tail-at", 2000), ("tail-over", 2001)] {
+    let awk =
+        |n: usize| format!("awk 'BEGIN {{ for (i = 0; i < {n}; i++) printf \"é\" }}'; exit 3");
+    let cases = [
+        ("tail-at", awk(2000), 2000),
+        ("tail-over", awk(2001), 2001),
+        (
+            "tail-captured",
+            "head -c 100000 /dev/zero | tr '\\0' x; exit 3".to_owned(),
+            100_000,
+        ),
+    ];
+    for (label, check, printed) in cases {
         let rig = Rig::new(label)?;
         let family = writer(&rig, "echo x > draft.txt").await?;
         assert!(family.reaches("writer", "finished").await);
-        let check = format!("awk 'BEGIN {{ for (i = 0; i < {chars}; i++) printf \"é\" }}'; exit 3");
-        let reply = checked_merge(&family, &check)?.await?;
+        let reply = checked_merge(&family, check.as_str())?.await?;
         assert_eq!(reply["check"]["exit"], 3, "{reply:?}");
         let tail = reply["check"]["tail"].as_str().ok_or("no tail")?;
-        let (row, body) = tail.split_once('\n').unwrap_or(("", tail));
-        if chars == 2000 {
+        let rows: Vec<&str> = tail
+            .lines()
+            .take_while(|row| row.starts_with('['))
+            .collect();
+        let body = tail.lines().last().unwrap_or_default();
+        if printed == 2000 {
             assert_eq!(tail.chars().filter(|c| *c == 'é').count(), 2000, "{tail}");
-            assert!(!tail.contains('['), "{tail}");
+            assert!(rows.is_empty(), "{tail}");
             continue;
         }
-        assert!(row.contains("last 2000 of 2001 chars"), "{row}");
-        assert!(row.contains("`git switch` to the kept branch"), "{row}");
-        assert_eq!(body.chars().count(), 2000, "{body}");
+        assert_eq!(body.chars().count(), 2000, "{tail}");
+        let last = rows.last().ok_or("no cut row")?;
+        assert!(last.contains("(CHECK_TAIL_CHARS 2000)"), "{last}");
+        if printed == 2001 {
+            assert!(last.contains("last 2000 of 2001 chars ("), "{last}");
+        } else {
+            assert!(
+                rows.iter().any(|row| row.contains("of 100000 bytes")),
+                "{rows:?}"
+            );
+            assert!(last.contains("chars the capture kept"), "{last}");
+        }
+        let candidate = reply["candidate"].as_str().ok_or("no candidate")?;
+        assert!(last.contains(&format!("`git worktree add --detach <dir> {candidate}`")));
+        let rerun = rig.root.join(format!("{label}-rerun"));
+        let dir = rerun.to_str().ok_or("path")?;
+        git(&rig.repo, &["worktree", "add", "--detach", dir, candidate])?;
+        let again = yi_tools::command("sh")
+            .args(["-c", &check])
+            .current_dir(&rerun)
+            .output()?;
+        assert_eq!(
+            String::from_utf8_lossy(&again.stdout).chars().count(),
+            printed
+        );
     }
     Ok(())
 }
