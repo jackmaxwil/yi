@@ -1,6 +1,6 @@
 use serde_json::json;
 use std::error::Error;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::TcpListener;
 use yi_ai::catalog::Catalog;
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
@@ -536,20 +536,7 @@ fn answer(listener: &TcpListener, content_type: &str, reply: &str) -> std::io::R
 fn accept_request(listener: &TcpListener) -> std::io::Result<std::net::TcpStream> {
     let (stream, _) = listener.accept()?;
     let mut reader = BufReader::new(stream);
-    let mut length = 0usize;
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
-            break;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse().unwrap_or(0);
-        }
-    }
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body)?;
+    crate::loopback::read_request(&mut reader);
     Ok(reader.into_inner())
 }
 
