@@ -239,25 +239,21 @@ fn draw<B: Backend>(
         app.state.browser_placed.clear();
     }
     let _span = yi_types::trace::span("console.draw");
+    let scroll = |app: &App| {
+        let drag = app.selection.as_ref()?;
+        Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
+    };
     terminal.draw(|frame| {
         let computing = yi_types::trace::span("console.compute_view");
+        let pinned = scroll(app);
         let mut view = render::compute_view(app, frame.area(), theme);
         drop(computing);
         let _rendering = yi_types::trace::span("console.render");
-        let scroll = |app: &App| {
-            let drag = app.selection.as_ref()?;
-            Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
-        };
         let before = scroll(app);
         render::render(app, frame, &mut view, theme);
         app.selected.clear();
         if let Some(mut drag) = app.selection.take() {
-            // A held view that grew below raises its scroll with nothing moving on screen.
-            if let (Some(before), Some(after)) = (before, scroll(app))
-                && after > before
-            {
-                drag.shift(after - before);
-            }
+            drag.follow(pinned, before, scroll(app));
             app.selected = crate::select::selected(
                 app,
                 &view,
