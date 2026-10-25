@@ -23,7 +23,7 @@ fn usage() -> i32 {
     eprintln!("usage: yi login [--list] <provider> [--no-browser] [--key <secret>]");
     eprintln!("       yi logout [provider]");
     eprintln!(
-        "profiles: ~/.yi/oauth/<provider>.json (yi ships none; see docs/examples/oauth-profile.json)"
+        "profiles: ~/.yi/oauth/<provider>.json (yi ships none; see docs/examples/oauth-profile.json and oauth-device-profile.json)"
     );
     eprintln!("examples: yi login --list");
     eprintln!("          yi login openai            # paste the key at the prompt");

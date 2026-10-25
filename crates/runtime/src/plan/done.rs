@@ -8,11 +8,13 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yi_types::plan::canonical::Digest;
 use yi_types::plan::contract::{
-    Decider, ItemVerdict, Outcome as ContractOutcome, Resolution, Verdict, VerificationToken, Vote,
+    Contract, Decider, ItemVerdict, Outcome as ContractOutcome, Resolution, Verdict,
+    VerificationToken, Vote,
 };
 use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState, TouchCount};
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, RequestId};
 
+use super::acceptance::{Contracted, verification};
 use super::journal::JournalError;
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Txn};
 use super::output::check_output;
@@ -63,6 +65,13 @@ const LEASE_POLL: Duration = Duration::from_millis(20);
 /// The grace past the verifier's own deadline before another process's claim counts as dead.
 const CLAIM_GRACE_MS: u64 = 5_000;
 
+/// Incident: a per-effect suffix on every request shortened the longest id a client may send.
+#[derive(Clone, Copy)]
+pub(super) enum Requests {
+    Once,
+    PerEffect,
+}
+
 /// What step 1 established under the lease and step 4 runs against.
 pub(super) struct Prepared {
     pub(super) id: PlanId,
@@ -74,6 +83,27 @@ pub(super) struct Prepared {
     pub(super) effect: EffectId,
     /// Juries this todo has convened at this plan version, and the model its child was given.
     pub(super) jury: (u32, Option<String>),
+}
+
+impl Prepared {
+    pub(super) fn unjuried(
+        id: &PlanId,
+        root: &PlanId,
+        token: VerificationToken,
+        contracted: &Contracted,
+        effect: EffectId,
+    ) -> Self {
+        Self {
+            id: id.clone(),
+            root: root.clone(),
+            label: token.todo.clone(),
+            token,
+            contract: contracted.contract.clone(),
+            product: contracted.product.clone(),
+            effect,
+            jury: (0, None),
+        }
+    }
 }
 
 enum Phase1 {
@@ -167,8 +197,6 @@ impl PlanEngine {
                 self.settle(&mut txn, &id, &root, op)?,
             )));
         };
-        let todos = u32::try_from(current.todos.len()).unwrap_or(u32::MAX);
-        let attempt = todo.attempt;
         let owner_model = todo
             .delegation
             .as_ref()
@@ -221,32 +249,9 @@ impl PlanEngine {
                     let flight = self.flight_for(&token)?;
                     return Ok(Phase1::Run(prepared(effect, convened), flight));
                 }
-                let effect = EffectId::new(format!("e-{}", self.store.request_nonce())).map_err(
-                    |error| PlanOpError::Verification {
-                        label: label.clone(),
-                        reason: error.to_string(),
-                    },
-                )?;
-                let claim = Claim {
-                    pid: std::process::id(),
-                    at: self.store.now_ms(),
-                };
-                let mut record = draft(
-                    &id,
-                    KIND_VERIFICATION_REQUESTED,
-                    txn.actor.clone(),
-                    self.store.now_ms(),
-                    todos,
-                    json!({"label": label, "token": token, "effect_id": effect,
-                           "claim": claim.to_value()}),
-                    txn.derived("verify")?,
-                    txn.expected,
-                    Some(attempt),
-                );
-                record.record.todo = Some(label.clone());
-                let committed = self.commit(&mut txn, record)?;
+                let effect =
+                    self.request_verification(&mut txn, &id, label, &token, Requests::Once)?;
                 self.store.checkpoint_family(&txn.state)?;
-                self.emit(&committed);
                 // Invariant: the flight is registered before the lease drops, so no caller can
                 // see the committed effect with nothing in this process behind it.
                 let flight = self.flight_for(&token)?;
@@ -275,8 +280,10 @@ impl PlanEngine {
             return Ok(());
         };
         let alive = yi_kernel::bootstrap::process_is_running(claim.pid).unwrap_or(true);
-        let young = self.store.now_ms().saturating_sub(claim.at)
-            <= self.verifier.timeout_ms().saturating_add(CLAIM_GRACE_MS);
+        // ponytail: young spans a lane wait and a run; a longer session deadline reads as overrun.
+        let window = self.verifier.timeout_ms().saturating_mul(2);
+        let young =
+            self.store.now_ms().saturating_sub(claim.at) <= window.saturating_add(CLAIM_GRACE_MS);
         // ponytail: an adopted effect is not re-claimed, so two adopters of one dead claim can
         // both run the checker; step 5's replay guard still charges one refusal.
         if alive && young {
@@ -304,25 +311,13 @@ impl PlanEngine {
         let plan = txn.state.plan(id)?;
         check_plan_state(plan, OpKind::Done)?;
         locate_step(plan, label, OpKind::Done)?;
-        let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
-            plan: id.clone(),
-            label: label.clone(),
-        })?;
-        let frozen = todo.contract_hash.ok_or_else(|| PlanOpError::Contract {
-            label: label.clone(),
-            detail: "the contract was never frozen; start records it".to_owned(),
-        })?;
-        if contract.digest()? != frozen {
-            return Err(PlanOpError::ContractDrift {
-                label: label.clone(),
-            });
-        }
-        let product = check_output(self.output_resolve.as_deref(), plan, label, output)?;
+        let resolve = self.output_resolve.as_deref();
+        let contracted = self.contracted_with(txn, id, label, contract.clone(), output, resolve)?;
         let needs_product = contract
             .items
             .iter()
             .any(|item| matches!(item.decider, Decider::Schema { .. }));
-        if needs_product && product.is_none() {
+        if needs_product && contracted.product.is_none() {
             return Err(if output.is_none() {
                 PlanOpError::OutputRequired {
                     label: label.clone(),
@@ -343,18 +338,138 @@ impl PlanEngine {
                     label: label.clone(),
                     reason: format!("snapshot: {reason}"),
                 })?;
-        let token = VerificationToken {
+        let token = self.token(txn, id, label, &contracted, &snapshot, None)?;
+        Ok((token, contracted.product))
+    }
+
+    pub(super) fn contracted_with(
+        &self,
+        txn: &Txn,
+        id: &PlanId,
+        label: &TodoLabel,
+        contract: Contract,
+        output: Option<&yi_types::url::Url>,
+        resolve: Option<&dyn super::output::OutputResolve>,
+    ) -> Result<Contracted, PlanOpError> {
+        let plan = txn.state.plan(id)?;
+        let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
+            plan: id.clone(),
+            label: label.clone(),
+        })?;
+        let frozen = todo.contract_hash.ok_or_else(|| PlanOpError::Contract {
+            label: label.clone(),
+            detail: "the contract was never frozen; start records it".to_owned(),
+        })?;
+        if contract.digest()? != frozen {
+            return Err(PlanOpError::ContractDrift {
+                label: label.clone(),
+            });
+        }
+        let product = check_output(resolve, plan, label, output)?;
+        Ok(Contracted {
+            contract,
+            frozen,
+            product,
+        })
+    }
+
+    /// Invariant: the one token builder, since step 5 decides staleness by equality with it.
+    pub(super) fn token(
+        &self,
+        txn: &Txn,
+        id: &PlanId,
+        label: &TodoLabel,
+        contracted: &Contracted,
+        snapshot: &str,
+        integration: Option<u64>,
+    ) -> Result<VerificationToken, PlanOpError> {
+        let plan = txn.state.plan(id)?;
+        let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
+            plan: id.clone(),
+            label: label.clone(),
+        })?;
+        Ok(VerificationToken {
             plan: id.clone(),
             version: plan.version,
             todo: label.clone(),
             attempt: todo.attempt,
-            contract_digest: frozen,
-            criteria_digest: contract.criteria_digest()?,
-            output_digest: Digest::of(product.as_deref().unwrap_or("").as_bytes()),
-            snapshot,
-            integration: None,
+            contract_digest: contracted.frozen,
+            criteria_digest: contracted.contract.criteria_digest()?,
+            output_digest: Digest::of(contracted.product.as_deref().unwrap_or("").as_bytes()),
+            snapshot: snapshot.to_owned(),
+            integration,
+        })
+    }
+
+    /// Section 6.3 step 2: the effect committed under the lease, so a dropped request leaves an
+    /// intent recovery can see.
+    pub(super) fn request_verification(
+        &self,
+        txn: &mut Txn,
+        id: &PlanId,
+        label: &TodoLabel,
+        token: &VerificationToken,
+        requests: Requests,
+    ) -> Result<EffectId, PlanOpError> {
+        let effect = EffectId::new(format!("e-{}", self.store.request_nonce()))
+            .map_err(|error| verification(label, error.to_string()))?;
+        let claim = Claim {
+            pid: std::process::id(),
+            at: self.store.now_ms(),
         };
-        Ok((token, product))
+        let mut record = draft(
+            id,
+            KIND_VERIFICATION_REQUESTED,
+            txn.actor.clone(),
+            self.store.now_ms(),
+            todo_count(txn, id)?,
+            json!({"label": label, "token": token, "effect_id": effect, "claim": claim.to_value()}),
+            txn.derived(&match requests {
+                Requests::Once => "verify".to_owned(),
+                Requests::PerEffect => format!("verify-{effect}"),
+            })?,
+            txn.expected,
+            Some(token.attempt),
+        );
+        record.record.todo = Some(label.clone());
+        let committed = self.commit(txn, record)?;
+        self.emit(&committed);
+        Ok(effect)
+    }
+
+    /// Step 5's refusal: `was` is not the token the plan computes now; it charges nothing.
+    pub(super) fn record_stale(
+        &self,
+        txn: &mut Txn,
+        id: &PlanId,
+        was: &VerificationToken,
+        detail: String,
+        effect: Option<&EffectId>,
+    ) -> Result<(), PlanOpError> {
+        let mut args = json!({"label": was.todo, "token": was});
+        if let Some(effect) = effect {
+            args["effect_id"] = json!(effect);
+        }
+        let mut record = draft(
+            id,
+            KIND_VERIFICATION_STALE,
+            txn.actor.clone(),
+            self.store.now_ms(),
+            todo_count(txn, id)?,
+            args,
+            txn.derived("stale")?,
+            txn.expected,
+            Some(was.attempt),
+        );
+        record.record.todo = Some(was.todo.clone());
+        record.record.extra.insert(
+            "refusal".to_owned(),
+            json!({"code": "stale", "detail": detail}),
+        );
+        let committed = self.commit(txn, record)?;
+        self.store.checkpoint_family(&txn.state)?;
+        self.emit(&committed);
+        Ok(())
     }
 
     /// Two `done` calls may overlap by design (step 3 releases the lease), so the done path
@@ -479,25 +594,8 @@ impl PlanEngine {
                 Ok(token) => stale_detail(&prepared.token, token),
                 Err(error) => error.to_string(),
             };
-            let mut record = draft(
-                &prepared.id,
-                KIND_VERIFICATION_STALE,
-                txn.actor.clone(),
-                self.store.now_ms(),
-                u32::try_from(txn.state.plan(&prepared.id)?.todos.len()).unwrap_or(u32::MAX),
-                json!({"label": label, "token": prepared.token, "effect_id": prepared.effect}),
-                txn.derived("stale")?,
-                txn.expected,
-                Some(prepared.token.attempt),
-            );
-            record.record.todo = Some(label.clone());
-            record.record.extra.insert(
-                "refusal".to_owned(),
-                json!({"code": "stale", "detail": detail}),
-            );
-            let committed = self.commit(&mut txn, record)?;
-            self.store.checkpoint_family(&txn.state)?;
-            self.emit(&committed);
+            let (id, was) = (&prepared.id, &prepared.token);
+            self.record_stale(&mut txn, id, was, detail, Some(&prepared.effect))?;
             return Err(PlanOpError::Stale {
                 label: label.clone(),
                 token: Box::new(prepared.token.clone()),
@@ -509,6 +607,7 @@ impl PlanEngine {
             return self.settle(&mut txn, &prepared.id, &prepared.root, op);
         }
         self.refuse(&mut txn, prepared, op, verdict)
+            .map(|never| match never {})
     }
 
     /// Step 6, the refusal: `done_refused` with the verdict, the counter bump the reducer
@@ -519,7 +618,7 @@ impl PlanEngine {
         prepared: &Prepared,
         op: &Op,
         verdict: Verdict,
-    ) -> Result<Outcome, PlanOpError> {
+    ) -> Result<std::convert::Infallible, PlanOpError> {
         let label = &prepared.label;
         let error = PlanOpError::Refused {
             label: label.clone(),
@@ -530,7 +629,7 @@ impl PlanEngine {
             KIND_DONE_REFUSED,
             txn.actor.clone(),
             self.store.now_ms(),
-            u32::try_from(txn.state.plan(&prepared.id)?.todos.len()).unwrap_or(u32::MAX),
+            todo_count(txn, &prepared.id)?,
             op.args()?,
             txn.derived("refused")?,
             txn.expected,
@@ -756,6 +855,10 @@ fn clipped(verdict: &Verdict, budget: usize) -> Verdict {
         };
     }
     out
+}
+
+pub(super) fn todo_count(txn: &Txn, id: &PlanId) -> Result<u32, PlanOpError> {
+    Ok(u32::try_from(txn.state.plan(id)?.todos.len()).unwrap_or(u32::MAX))
 }
 
 pub(super) fn stale_detail(was: &VerificationToken, now: &VerificationToken) -> String {
