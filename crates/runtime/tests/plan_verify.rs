@@ -218,7 +218,9 @@ fn the_checker_sees_no_provider_key() -> TestResult {
 fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
     let temp = Scratch::new("yi-verify-grandchild")?;
     let artifacts = Artifacts::under(&temp);
-    let checker = put(&artifacts, &manifest("sleep 5993 &", 30_000, &[]))?;
+    // The fraction is this process's own, so a sibling suite's sleeper is never counted here.
+    let sleeper = format!("sleep 5993.{}", std::process::id());
+    let checker = put(&artifacts, &manifest(&format!("{sleeper} &"), 30_000, &[]))?;
     let contract = cmd_contract(checker, 30_000)?;
     let started = std::time::Instant::now();
     let verdict = Verifier::new(1_000).run(
@@ -251,7 +253,8 @@ fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
         let survivors = yi_tools::run_captured(
             {
                 let mut ps = yi_tools::command("/bin/sh");
-                ps.args(["-c", "ps -axo command | grep -c '^sleep 5993' || true"]);
+                let count = format!("ps -axo command | grep -cx '{sleeper}' || true");
+                ps.args(["-c", &count]);
                 ps
             },
             None,
