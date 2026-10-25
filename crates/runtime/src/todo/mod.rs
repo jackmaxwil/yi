@@ -15,6 +15,7 @@ pub mod tool;
 
 pub const DEFAULT_PHASE: &str = "Tasks";
 pub const PREFIX_MIN: usize = 8;
+const LIST_ROWS: usize = 12;
 
 pub type ChangeHook = Arc<dyn Fn(&TodoList) + Send + Sync>;
 
@@ -286,12 +287,9 @@ impl TodoStore {
             [] => Target::All,
             [one] => Target::Label(id_needle(one)),
             many => {
+                let names: Vec<String> = many.iter().map(|item| named(item)).collect();
                 return Err(TodoError::ManyRunning {
-                    running: many
-                        .iter()
-                        .map(|item| named(item))
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    running: rows(&names, "running todos"),
                 });
             }
         };
@@ -610,12 +608,17 @@ fn named(item: &Todo) -> String {
     }
 }
 
+fn rows(names: &[String], what: &str) -> String {
+    let view = "todo {\"op\": \"view\"}";
+    crate::listed::listed(names, what, "LIST_ROWS", LIST_ROWS, view)
+}
+
 fn known_labels(list: &TodoList) -> String {
     let labels: Vec<String> = list.items().map(named).collect();
     if labels.is_empty() {
         "nothing".to_owned()
     } else {
-        labels.join(", ")
+        rows(&labels, "todos")
     }
 }
 
@@ -628,7 +631,7 @@ fn known_phases(list: &TodoList) -> String {
     if names.is_empty() {
         "nothing".to_owned()
     } else {
-        names.join(", ")
+        rows(&names, "phases")
     }
 }
 
@@ -718,15 +721,14 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
             label: needle.to_owned(),
             known: known_labels(list),
         }),
-        many => Err(TodoError::Ambiguous {
-            needle: needle.to_owned(),
-            candidates: many
-                .iter()
-                .filter_map(|index| items.get(*index))
-                .map(|item| named(item))
-                .collect::<Vec<_>>()
-                .join(", "),
-        }),
+        many => {
+            let hits = many.iter().filter_map(|index| items.get(*index));
+            let names: Vec<String> = hits.map(|item| named(item)).collect();
+            Err(TodoError::Ambiguous {
+                needle: needle.to_owned(),
+                candidates: rows(&names, "todos"),
+            })
+        }
     }
 }
 

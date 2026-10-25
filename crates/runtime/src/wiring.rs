@@ -345,6 +345,7 @@ fn wire_schedule(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
             .with_stop(session.halt_hook())
+            .with_notice(session.notice_hook(HostSource::Notice))
             .with_words(session.store_handle())
             .with_channels(
                 wiring
@@ -742,7 +743,7 @@ pub(crate) fn wire_job_completions(session: &AgentSession) {
     tokio::spawn(crate::session::until(job_settled(), move || {
         let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
         let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), &report.output);
+            let (job, headline, body) = (report.id, report.headline(), report.view());
             let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
             let unread: crate::session::StillNews =
                 Arc::new(move || !yi_tools::jobs::registry().delivered(job));
@@ -811,10 +812,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         session.set_deadline(total);
     }
     session.provider().settle_into(session.settle_hook(None));
-    let plans_dir = wiring
-        .plans_dir
-        .clone()
-        .unwrap_or_else(|| wiring.cwd.join(crate::plan::PLANS_DIR));
+    let plans_dir = crate::plan::resolve_plans_dir(wiring.plans_dir.clone(), &wiring.cwd);
     wiring.plans_dir = Some(plans_dir.clone());
     if session.compactor().is_none() {
         session.enable_compaction_with_summarizer(
