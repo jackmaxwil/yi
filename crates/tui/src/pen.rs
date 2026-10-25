@@ -39,7 +39,6 @@ impl Pen {
         ToolCell {
             name: self.name.clone(),
             call_id: String::new(),
-            intent: None,
             status: ToolStatus::Running,
             summary: ToolCell::summary_of(&self.name, &arg_summary(&self.name, &args)),
             digest: (lines.len() > 1).then(|| format!("{} lines so far", lines.len())),

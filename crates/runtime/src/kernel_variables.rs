@@ -168,8 +168,7 @@ finally:
 }
 
 pub(crate) fn parse_variable_reply(stdout: &str) -> Option<VariableReply> {
-    let index = stdout.rfind(VARIABLE_MARKER)?;
-    let rest = &stdout[index.saturating_add(VARIABLE_MARKER.len())..];
+    let (_, rest) = stdout.rsplit_once(VARIABLE_MARKER)?;
     let value: Value = serde_json::from_str(rest.lines().next()?.trim()).ok()?;
     if !value.get("found")?.as_bool()? {
         return Some(VariableReply::Missing);

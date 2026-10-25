@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "kind": "device-code",
+  "client_id": "fixture-device-client",
+  "device_authorization": "https://auth.example.com/api/oauth/device_authorization",
+  "token": "https://auth.example.com/api/oauth/token",
+  "api_base": "https://api.example.com/coding/v1"
+}
