@@ -163,10 +163,15 @@ impl App {
         }
         let mut edited = std::collections::BTreeSet::new();
         for entry in entries {
-            let Entry::Message { message, .. } = entry else {
+            let Entry::Message {
+                message, timestamp, ..
+            } = entry
+            else {
                 continue;
             };
-            if matches!(message, AgentMessage::User { .. }) {
+            if let AgentMessage::User { attribution, .. } = message
+                && attribution.reads_as_typed(*timestamp)
+            {
                 turn = turn.saturating_add(1);
             }
             for update in replayed_updates(message) {
