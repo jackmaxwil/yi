@@ -1,6 +1,6 @@
 use serde_json::{Map, Value, json};
+use yi_kernel::ATTACHMENT_DISPLAY_MIME;
 use yi_kernel::reduce::{CellState, Reduction, finish, reduce};
-use yi_kernel::{ATTACHMENT_DISPLAY_MIME, DIFF_DISPLAY_MIME};
 use yi_types::kernel::{ExecuteStatus, JupyterHeader, JupyterMessage};
 
 fn message(msg_type: &str, parent: &str, content: Value) -> JupyterMessage {
@@ -110,13 +110,8 @@ fn an_attachment_is_kept_only_as_base64_of_the_image_it_names() {
 }
 
 #[test]
-fn diff_error_result_and_idle_reduce_into_the_cell() {
+fn error_result_and_idle_reduce_into_the_cell() {
     let mut cell = cell(65_536);
-    let diff = json!({"data": {DIFF_DISPLAY_MIME: {"path": "/a.txt", "old_str": "a", "new_str": "b", "start_line": 3}}});
-    reduce(&mut cell, &message("display_data", "req", diff), None);
-    assert_eq!(cell.diffs.len(), 1);
-    assert_eq!(cell.diffs[0].start_line, Some(3));
-
     reduce(
         &mut cell,
         &message(
