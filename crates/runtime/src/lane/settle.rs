@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
 use yi_types::plan::op::Choice;
 
 use super::{
-    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView, capture,
+    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView,
+    capture_named,
 };
 use crate::subagent::{ChildRecord, SubagentHost};
 
@@ -101,16 +102,28 @@ fn past(deadline: Option<Instant>) -> Result<(), LaneError> {
 /// `git` under the caller's deadline as well as the lane's own: a settle step cannot outlive
 /// the run it belongs to (D177).
 fn git_by(cwd: &Path, args: &[&str], deadline: Option<Instant>) -> Result<String, LaneError> {
+    git_capped(cwd, args, deadline, yi_tools::OUTPUT_CAP)
+}
+
+fn git_capped(
+    cwd: &Path,
+    args: &[&str],
+    deadline: Option<Instant>,
+    cap: usize,
+) -> Result<String, LaneError> {
     past(deadline)?;
     let own = Duration::from_millis(GIT_TIMEOUT_MS);
     let budget = deadline.map_or(own, |at| {
         own.min(at.saturating_duration_since(Instant::now()))
     });
-    capture(cwd, "git", args, budget).map_err(|output| LaneError::Git {
-        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-        exit_code: None,
-        output,
-    })
+    let label = format!("git {}", args.join(" "));
+    capture_named(cwd, &label, "git", args, budget, cap, None)
+        .map(|capture| capture.stdout)
+        .map_err(|output| LaneError::Git {
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            exit_code: None,
+            output,
+        })
 }
 
 fn sha_of(text: &str) -> Result<Sha, LaneError> {
@@ -406,6 +419,9 @@ pub fn prepare(
         session,
         ClaimBase::Commit(generation.base.as_str().to_owned()),
     )?;
+    // Invariant: a claim keeps an unmerged branch, but a staging branch holds no one's only copy.
+    let base = ["reset", "-q", "--hard", generation.base.as_str()];
+    git_by(lane.path(), &base, deadline)?;
     let message = format!(
         "Integrate {} onto {}",
         candidate.short(),
@@ -595,6 +611,33 @@ fn in_progress(top: &Path, deadline: Option<Instant>) -> Result<bool, LaneError>
     .any(|name| git_dir.join(name).exists()))
 }
 
+/// Invariant: uncapped, since [`git_by`]'s 30 KB cut splices an omitted-bytes row into the list.
+/// A `{path, added, removed}` per file against the base, else the merge base with `parent` HEAD.
+fn changed_files(
+    parent: &Path,
+    candidate: &Candidate,
+    deadline: Option<Instant>,
+) -> Result<Value, LaneError> {
+    let from = candidate.base.as_ref().map_or("HEAD", Sha::as_str);
+    let range = format!("{from}...{}", candidate.commit.as_str());
+    let args = ["diff", "--numstat", "-z", "--no-renames", range.as_str()];
+    let numstat = git_capped(parent, &args, deadline, usize::MAX)?;
+    let rows = nul_lines(&numstat);
+    let files = rows.iter().filter_map(|row| {
+        let (path, added, removed) = numstat_row(row)?;
+        Some(json!({"path": path, "added": added, "removed": removed}))
+    });
+    Ok(Value::Array(files.collect()))
+}
+
+/// One `diff --numstat` row as path, added, removed; a binary file's `-` counts read as 0.
+pub(crate) fn numstat_row(row: &str) -> Option<(&str, u64, u64)> {
+    let mut parts = row.splitn(3, '\t');
+    let added = parts.next()?.parse().unwrap_or(0);
+    let removed = parts.next()?.parse().unwrap_or(0);
+    Some((parts.next()?, added, removed))
+}
+
 fn nul_lines(text: &str) -> Vec<String> {
     text.split('\0')
         .filter(|line| !line.is_empty())
@@ -752,6 +795,9 @@ impl SubagentHost {
             .map_err(|unsettled| unsettled.error().to_string())?;
         let mut reply = settled.candidate.as_reply();
         let parent = self.options.cwd.clone();
+        let files = changed_files(&parent, &settled.candidate, deadline)
+            .map_err(|error| error.to_string())?;
+        reply.insert("files".to_owned(), files);
         let mut moved: Option<(Sha, Sha)> = None;
         for _attempt in 0..2 {
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
