@@ -619,22 +619,26 @@ impl LaneHandle {
             .take()
             .ok_or_else(|| LaneError::Forge("no lane to discard".to_owned()))?;
         let branch = lane.branch().to_string();
-        lane.discard()?;
+        let lost = lane.discard()?.discarded();
         self.set_landing(Landing::Unlanded);
-        Ok(format!("discarded {branch}; the transcript is kept"))
+        Ok(format!("discarded {branch}{lost}; the transcript is kept"))
     }
 
     /// Incident: `process::exit` skips destructors, so the CLI calls this first.
-    pub fn release(&self) -> Result<(), LaneError> {
+    pub fn release(&self) -> Result<Option<String>, LaneError> {
         let lane = self
             .lane
             .lock()
             .map_err(|_| LaneError::Forge("lane state poisoned".to_owned()))?
             .take();
-        match lane {
-            Some(lane) => lane.release(),
-            None => Ok(()),
-        }
+        let Some(lane) = lane else {
+            return Ok(None);
+        };
+        let (slot, path) = (lane.slot(), tilde(lane.path()));
+        let kept = lane.release()?;
+        Ok((!kept.is_empty()).then(|| {
+            format!("lane {slot} kept: {kept} in {path}; `yi lanes reap {slot}` discards them")
+        }))
     }
 
     pub fn bind_session(&self, session: &str) -> Result<(), LaneError> {
@@ -698,6 +702,7 @@ fn who(holder: &Holder, ledger: Option<&DaemonLedger>) -> String {
                 tilde(Path::new(&entry.cwd))
             )
         }
+        None if holder.session.is_empty() => "no session".to_owned(),
         None => holder.session.clone(),
     }
 }
@@ -737,8 +742,8 @@ fn tree_label(tree: &TreeState) -> String {
 }
 
 /// What a reap costs, said before anyone types it.
-fn verdict(tree: &TreeState) -> &'static str {
-    match tree {
+fn verdict(holder: &Holder) -> &'static str {
+    match &holder.tree {
         TreeState::Unread { .. } => "reap keeps the branch; the tree is unread",
         tree if tree.is_empty() => "the next claim takes it",
         TreeState::Known {
@@ -749,6 +754,7 @@ fn verdict(tree: &TreeState) -> &'static str {
         } => match (*ahead > 0, modified.saturating_add(*untracked) > 0) {
             (true, true) => "reap keeps the branch; the uncommitted paths are lost",
             (true, false) => "reap keeps the branch",
+            (false, true) if holder.branch.is_none() => "reap discards the uncommitted paths",
             (false, true) => "reap deletes the merged branch; the uncommitted paths are lost",
             (false, false) => "the next claim takes it",
         },
@@ -794,7 +800,7 @@ pub fn lane_line(view: &SlotView, ledger: Option<&DaemonLedger>) -> String {
             "lane {slot}: left by {} · {} — {}",
             holder_line(holder, ledger),
             tilde(path),
-            verdict(&holder.tree)
+            verdict(holder)
         ),
     }
 }
