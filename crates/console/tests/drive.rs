@@ -4981,7 +4981,7 @@ fn resume_both_turns(frame: &Value) -> Vec<Value> {
 }
 
 /// Both turns, then a third typed while the console was away, which made the recording's edit
-/// again: its call and result as the recording holds them, under new ids.
+/// again on `b.py`, the caller its ripwire check broke: its call and result under new ids.
 fn resume_with_a_missed_edit_turn(frame: &Value) -> Vec<Value> {
     let recording = recorded(EDIT_SESSION);
     let result = recording
@@ -4994,6 +4994,15 @@ fn resume_with_a_missed_edit_turn(frame: &Value) -> Vec<Value> {
     for (seq, made) in (101..).zip(again.into_iter().flatten()) {
         let mut made = made.clone();
         made["id"] = json!(format!("e-again-{seq}"));
+        let details = &mut made["message"]["details"];
+        if let Some(patch) = details["patch"].as_str() {
+            let moved = patch.lines().map(|line| match line {
+                l if l.starts_with("--- a/") => "--- a/b.py",
+                l if l.starts_with("+++ b/") => "+++ b/b.py",
+                l => l,
+            });
+            details["patch"] = json!(moved.collect::<Vec<_>>().join("\n"));
+        }
         entries.push(made);
     }
     resume_with(frame, &entries)
@@ -5024,8 +5033,8 @@ fn review_after_a_reconnect(
     )
 }
 
-/// Dies with `Review · turn · 0 files` after a reconnect: the console kept the turn it saw live,
-/// or stamped the replayed edit with it, so the third turn's edit left the Turn scope.
+/// Dies with `0 files` when the replay leaves the turn count or stamps the edit with the live
+/// turn, and with `2 files` when replayed prompts stop counting, so `a.py` joins the last turn.
 #[test]
 fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestResult {
     let frame = review_after_a_reconnect(
@@ -5035,6 +5044,8 @@ fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestRe
     )?;
     let row = row_holding(&frame, "Review · turn")?;
     assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
+    let file = row_holding(&frame, "▸ ")?;
+    assert!(file.contains("▸ b.py  +2 −2"), "{file}");
     Ok(())
 }
 
