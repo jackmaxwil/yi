@@ -141,6 +141,8 @@ pub struct Host {
     frozen: OnceCell<String>,
     /// Slots attached after the freeze: their current text goes out again after a compaction.
     late: BTreeSet<Slot>,
+    /// The last snapshot the store holds, so an unmoved state appends nothing.
+    persisted: Option<Value>,
     started: bool,
     turn: u32,
     tool_calls_this_turn: u32,
@@ -169,6 +171,7 @@ impl Host {
             state: PromptState::default(),
             frozen: OnceCell::new(),
             late: BTreeSet::new(),
+            persisted: None,
             started: false,
             turn: 0,
             tool_calls_this_turn: 0,
@@ -231,6 +234,13 @@ impl Host {
         self.frozen.get_or_init(|| self.state.assemble()).clone()
     }
 
+    pub fn peek_prompt(&self) -> String {
+        self.frozen
+            .get()
+            .cloned()
+            .unwrap_or_else(|| self.state.assemble())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.state.is_empty()
     }
@@ -244,8 +254,10 @@ impl Host {
             return;
         }
         self.started = true;
-        if let Some(restored) = store.and_then(restore_state) {
-            self.state = restored;
+        self.state.seal_build();
+        if let Some(snapshot) = store.and_then(last_snapshot) {
+            self.state.restore(&snapshot);
+            self.persisted = Some(snapshot);
         }
         let reason = if resumed {
             StartReason::Resume
@@ -320,8 +332,13 @@ impl Host {
                 Effect::Record { key, value } => record(store, key, &value),
             }
         }
-        if changed && let Some(store) = store {
-            persist_state(store, &self.state);
+        if changed
+            && let Some(store) = store
+            && let snapshot = self.state.snapshot()
+            && self.persisted.as_ref() != Some(&snapshot)
+        {
+            persist_state(store, &snapshot);
+            self.persisted = Some(snapshot);
         }
     }
 }
@@ -336,24 +353,24 @@ fn fragment_message(text: &str) -> AgentMessage {
     }
 }
 
-fn restore_state(store: &yi_session::SharedSession) -> Option<PromptState> {
+fn last_snapshot(store: &yi_session::SharedSession) -> Option<Value> {
     let entries = yi_session::lock_session(store)
         .find_entries(&yi_session::EntryQuery {
             order: yi_session::EntryOrder::NewestFirst,
             ..yi_session::EntryQuery::default()
         })
         .ok()?;
-    entries.iter().find_map(|entry| match entry {
+    entries.into_iter().find_map(|entry| match entry {
         yi_types::entry::Entry::Custom {
             custom_type, data, ..
-        } if custom_type == STATE_ENTRY => data.as_ref().and_then(PromptState::restore),
+        } if custom_type == STATE_ENTRY => data,
         _ => None,
     })
 }
 
-fn persist_state(store: &yi_session::SharedSession, state: &PromptState) {
+fn persist_state(store: &yi_session::SharedSession, snapshot: &Value) {
     let _unavailable_store_only_costs_the_rehydrate =
-        yi_session::lock_session(store).append_custom("main", STATE_ENTRY, Some(state.snapshot()));
+        yi_session::lock_session(store).append_custom("main", STATE_ENTRY, Some(snapshot.clone()));
 }
 
 fn record(store: Option<&yi_session::SharedSession>, key: &str, value: &Value) {
