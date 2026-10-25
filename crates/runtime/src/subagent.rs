@@ -41,6 +41,7 @@ pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
     trail: Option<PathBuf>,
+    spawned_by: Option<String>,
     pub(crate) worktree: Option<crate::lane::Lane>,
     /// The worker share of the lane pool this child's checkout was taken from; dropped with
     /// the lane, so a settled child stops holding a slot nobody is standing in.
@@ -163,6 +164,8 @@ impl std::ops::DerefMut for Children {
 pub struct ChildView {
     pub update: ChildUpdate,
     pub session: ChildFeed,
+    /// The tool call id of the kernel cell running when the host admitted the child, if any.
+    pub spawned_by: Option<String>,
 }
 
 pub struct ChildBuild<'a> {
@@ -244,6 +247,7 @@ pub struct SubagentHost {
     /// Invariant: a `check` runs `sh -c` on the host at `rlm.result`, so the host gate judges it
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
+    kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
 }
 
 impl SubagentHost {
@@ -485,6 +489,7 @@ impl SubagentHost {
             partitions: Mutex::default(),
             leads: Mutex::default(),
             check_gate: std::sync::OnceLock::new(),
+            kernel: std::sync::OnceLock::new(),
         }
     }
 
@@ -525,6 +530,7 @@ impl SubagentHost {
                     .map(|(id, record)| ChildView {
                         update: crate::family::flagged(record.update(id), &states),
                         session: ChildFeed::of(Arc::clone(&record.session)),
+                        spawned_by: record.spawned_by.clone(),
                     })
                     .collect();
                 view.sort_by(|left, right| left.update.id.cmp(&right.update.id));
@@ -748,6 +754,7 @@ impl SubagentHost {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
                     trail,
+                    spawned_by: self.spawning_cell(),
                     worktree,
                     lane_permit,
                     _container: container,
