@@ -1,4 +1,7 @@
 use std::collections::HashSet;
+use std::error::Error;
+
+use crate::scratch::Scratch;
 
 use yi_runtime::schedule::{
     JobSpec, ONE_MINUTE_MS, RunOutcome, SessionActivity, Zone, claim_due_in_state, new_job,
@@ -321,5 +324,129 @@ fn a_wall_time_dst_skips_waits_a_day_and_one_it_repeats_fires_once() -> Result<(
         instant("2026-11-02T09:30Z")?,
         "not again at 01:30 PST"
     );
+    Ok(())
+}
+
+/// Runs of `expression` in UTC from `from` until `until`, as (day of month, minute of day).
+fn runs_until(expression: &str, from: u64, until: u64) -> Result<Vec<(u64, u64)>, String> {
+    let (mut runs, mut at) = (Vec::new(), from);
+    loop {
+        let (_, next) = parse_schedule_in(expression, at, &Zone::default())?;
+        if next >= until {
+            return Ok(runs);
+        }
+        let day = (next - from) / (24 * 60 * ONE_MINUTE_MS) + 1;
+        runs.push((day, next % (24 * 60 * ONE_MINUTE_MS) / ONE_MINUTE_MS));
+        at = next;
+    }
+}
+
+/// crontab(5)'s own example; the expected days are Python's calendar module over October 2026.
+#[test]
+fn crontab_five_example_runs_on_the_first_and_fifteenth_and_every_friday() -> Result<(), String> {
+    let (october, november) = (instant("2026-10-01T00:00Z")?, instant("2026-11-01T00:00Z")?);
+    let either: Vec<(u64, u64)> = [1, 2, 9, 15, 16, 23, 30]
+        .into_iter()
+        .map(|day| (day, 4 * 60 + 30))
+        .collect();
+    assert_eq!(runs_until("30 4 1,15 * 5", october, november)?, either);
+    let weekdays: Vec<(u64, u64)> = [
+        1, 2, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 26, 27, 28, 29, 30,
+    ]
+    .into_iter()
+    .map(|day| (day, 9 * 60))
+    .collect();
+    assert_eq!(runs_until("0 9 * * 1-5", october, november)?, weekdays);
+    // A stepped `*/2` opens with `*`, so both fields must match: odd days that are Fridays.
+    assert_eq!(
+        runs_until("0 0 */2 * 5", october, november)?,
+        [(9, 0), (23, 0)]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_multibyte_schedule_text_is_refused_not_panicked() {
+    let refused = parse_schedule_in("да", MONDAY_MIDNIGHT, &Zone::default());
+    assert!(
+        refused
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.starts_with("Unsupported cron schedule")),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn the_cached_zone_follows_a_changed_tz_and_a_replaced_file() -> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-zone-cache")?;
+    let los_angeles = include_bytes!("fixtures/zoneinfo/America_Los_Angeles");
+    let mut renamed = los_angeles.to_vec();
+    for at in 0..renamed.len() {
+        if renamed.get(at..at + 4) == Some(b"PST\0".as_slice())
+            && let Some(byte) = renamed.get_mut(at)
+        {
+            *byte = b'Q';
+        }
+    }
+    let (first, second) = (
+        Zone::from_tzif(los_angeles).ok_or("fixture")?,
+        Zone::from_tzif(&renamed).ok_or("renamed fixture")?,
+    );
+    assert_ne!(first, second);
+    let rewrite = |path: &std::path::Path, bytes: &[u8]| -> std::io::Result<()> {
+        let modified = std::fs::metadata(path)?.modified()?;
+        let mut file = std::fs::File::options().write(true).open(path)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.set_modified(modified)
+    };
+    let broken = dir.join("broken");
+    std::fs::write(&broken, vec![0; los_angeles.len()])?;
+    // SAFETY: nextest runs each test in a process of its own, so no other thread reads the env.
+    unsafe { std::env::set_var("TZ", format!(":{}", broken.display())) };
+    assert_eq!(Zone::local(), Zone::default(), "an unreadable zone is UTC");
+    rewrite(&broken, los_angeles)?;
+    assert_eq!(Zone::local(), first, "a failed parse was cached");
+    rewrite(&broken, &renamed)?;
+    assert_eq!(
+        Zone::local(),
+        first,
+        "an unchanged length, inode and mtime is a hit"
+    );
+
+    let path = dir.join("zone");
+    std::fs::write(&path, los_angeles)?;
+    // SAFETY: as above, this process's only thread.
+    unsafe { std::env::set_var("TZ", format!(":{}", path.display())) };
+    let threads: Vec<_> = (0..8).map(|_| std::thread::spawn(Zone::local)).collect();
+    for thread in threads {
+        assert_eq!(thread.join().map_err(|_| "a zone thread panicked")?, first);
+    }
+
+    let old = std::fs::metadata(&path)?;
+    let staged = dir.join("zone.new");
+    std::fs::write(&staged, &renamed)?;
+    std::fs::File::options()
+        .write(true)
+        .open(&staged)?
+        .set_modified(old.modified()?)?;
+    std::fs::rename(&staged, &path)?;
+    let new = std::fs::metadata(&path)?;
+    assert_eq!((new.len(), new.modified()?), (old.len(), old.modified()?));
+    assert_ne!(
+        std::os::unix::fs::MetadataExt::ino(&new),
+        std::os::unix::fs::MetadataExt::ino(&old)
+    );
+    assert_eq!(
+        Zone::local(),
+        second,
+        "a file replaced by rename is read again"
+    );
+
+    let other = dir.join("other");
+    std::fs::write(&other, los_angeles)?;
+    // SAFETY: as above, this process's only thread.
+    unsafe { std::env::set_var("TZ", format!(":{}", other.display())) };
+    assert_eq!(Zone::local(), first, "a changed $TZ is read again");
     Ok(())
 }
