@@ -2,6 +2,7 @@
 //! with the branch kept; plus the staging merge and the generation-checked publication.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
@@ -12,6 +13,10 @@ use super::{
     BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView, capture,
 };
 use crate::subagent::{ChildRecord, SubagentHost};
+
+/// Invariant: held from the generation read through publication, so two hand-backs in this
+/// process never race on the parent checkout; across processes only the generation check guards.
+pub(crate) static INTEGRATION: Mutex<()> = Mutex::new(());
 
 /// The jobs registry's answer for `root`: every backgrounded command still running under
 /// the lane path. A child's foreground command has returned by the time it can ask.
@@ -133,7 +138,7 @@ pub fn candidate_of(
     deadline: Option<Instant>,
 ) -> Result<Candidate, LaneError> {
     quiet(quiescence)?;
-    let status = git_by(path, &["status", "--porcelain"], deadline)?;
+    let status = git_by(path, &super::STATUS, deadline)?;
     if !status.trim().is_empty() {
         git_by(
             path,
@@ -274,7 +279,7 @@ impl Staging {
 
     pub fn release(mut self) -> Result<(), LaneError> {
         match self.lane.take() {
-            Some(lane) => lane.discard(),
+            Some(lane) => lane.discard().map(drop),
             None => Ok(()),
         }
     }
@@ -749,6 +754,7 @@ impl SubagentHost {
         let parent = self.options.cwd.clone();
         let mut moved: Option<(Sha, Sha)> = None;
         for _attempt in 0..2 {
+            let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
             let prepared = prepare(

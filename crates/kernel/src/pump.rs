@@ -6,16 +6,10 @@ use tokio::sync::mpsc;
 use yi_types::kernel::{ConnectionInfo, JupyterMessage};
 use zeromq::{Socket, SocketRecv, SocketSend};
 
-use crate::client::{
-    ExecuteError, Inner, Lifecycle, dispatch_late_agent_message, frames_of, now_iso, trim_tail,
-    zmq_message,
-};
+use crate::client::{ExecuteError, Inner, Lifecycle, frames_of, trim_tail, zmq_message};
 use crate::framing::{decode, encode};
-use crate::journal::record_orphan_process_state;
 use crate::reduce::{Reduction, StreamChunk, parent_msg_id, reduce};
-use crate::{
-    AGENT_MESSAGE_DISPLAY_MIME, HOST_COMM_TARGET, IOPUB_PROBE_RESEND_MS, READY_TIMEOUT_MS,
-};
+use crate::{HOST_COMM_TARGET, IOPUB_PROBE_RESEND_MS, READY_TIMEOUT_MS};
 
 pub(crate) struct ChildTasks {
     pub(crate) kill_tx: mpsc::UnboundedSender<()>,
@@ -51,7 +45,6 @@ pub(crate) fn spawn_child_tasks(
         let inner = Arc::clone(inner);
         tokio::spawn(async move {
             let _held_until_the_child_is_reaped = held;
-            let mut kill_confirmed = false;
             loop {
                 tokio::select! {
                     status = child.wait() => {
@@ -59,12 +52,6 @@ pub(crate) fn spawn_child_tasks(
                             *exited = true;
                         }
                         inner.exit_notify.notify_waiters();
-                        // The journal record flips inactive only on a confirmed kill: a wrong
-                        // inactive write could mask a reused pid (design §9).
-                        if let Some(pid) = child.id().or_else(|| inner.child_pid.lock().ok().and_then(|slot| *slot))
-                            && kill_confirmed {
-                                record_orphan_process_state(pid, false, now_iso());
-                            }
                         if inner.state() != Lifecycle::Shutdown {
                             let detail = status
                                 .map(|status| status.to_string())
@@ -79,9 +66,7 @@ pub(crate) fn spawn_child_tasks(
                         if signal.is_none() {
                             continue;
                         }
-                        if child.start_kill().is_ok() {
-                            kill_confirmed = true;
-                        }
+                        let _already_gone = child.start_kill();
                     }
                 }
             }
@@ -283,60 +268,25 @@ pub(crate) fn spawn_shell_task(
 pub(crate) fn handle_execution_message(inner: &Arc<Inner>, message: &JupyterMessage) {
     let parent = parent_msg_id(message).map(str::to_owned);
     let mut done = false;
-    let mut late_payload = None;
-    if let Ok(mut active) = inner.active.lock() {
-        let matches = active
-            .as_ref()
-            .is_some_and(|current| parent.as_deref() == Some(current.cell.request_msg_id.as_str()));
-        if !matches {
-            if matches!(
-                message.header.msg_type.as_str(),
-                "display_data" | "update_display_data"
-            ) {
-                late_payload = message
-                    .content
-                    .get("data")
-                    .and_then(|data| data.get(AGENT_MESSAGE_DISPLAY_MIME))
-                    .cloned();
-            }
-        } else if let Some(current) = active.as_mut() {
-            if current.settled
-                && matches!(
-                    message.header.msg_type.as_str(),
-                    "display_data" | "update_display_data"
-                )
-            {
-                late_payload = message
-                    .content
-                    .get("data")
-                    .and_then(|data| data.get(AGENT_MESSAGE_DISPLAY_MIME))
-                    .cloned();
-            }
-            if late_payload.is_none() {
-                let mut stream_sink = current.on_stream.take();
-                let reduction = {
-                    let mut callback = stream_sink
-                        .as_mut()
-                        .map(|sink| move |chunk: StreamChunk<'_>| sink(chunk.name, chunk.text));
-                    reduce(
-                        &mut current.cell,
-                        message,
-                        callback
-                            .as_mut()
-                            .map(|callback| callback as &mut dyn FnMut(StreamChunk<'_>)),
-                    )
-                };
-                current.on_stream = stream_sink;
-                done = reduction == Reduction::Done;
-            }
-        }
-    }
-    if let Some(payload) = late_payload {
-        let dispatched =
-            dispatch_late_agent_message(&inner.late_handlers, parent.as_deref(), Some(&payload));
-        if dispatched {
-            return;
-        }
+    if let Ok(mut active) = inner.active.lock()
+        && let Some(current) = active.as_mut()
+        && parent.as_deref() == Some(current.cell.request_msg_id.as_str())
+    {
+        let mut stream_sink = current.on_stream.take();
+        let reduction = {
+            let mut callback = stream_sink
+                .as_mut()
+                .map(|sink| move |chunk: StreamChunk<'_>| sink(chunk.name, chunk.text));
+            reduce(
+                &mut current.cell,
+                message,
+                callback
+                    .as_mut()
+                    .map(|callback| callback as &mut dyn FnMut(StreamChunk<'_>)),
+            )
+        };
+        current.on_stream = stream_sink;
+        done = reduction == Reduction::Done;
     }
     if done {
         inner.resolve_active(parent.as_deref(), true, None);
@@ -453,30 +403,13 @@ async fn dispatch_host_request(
     inner: &Arc<Inner>,
     payload: Option<Map<String, Value>>,
 ) -> Result<Map<String, Value>, String> {
-    let mut payload = payload.ok_or("host request payload must be an object")?;
+    let payload = payload.ok_or("host request payload must be an object")?;
     let request_type = payload
         .get("type")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or("host request payload must have a string type")?;
-    // Tag the request with the cell that triggered it: a blocking call is the in-flight
-    // execution, and a detached spawn falls back to the last cell's source.
-    let cell_source = inner
-        .active
-        .lock()
-        .ok()
-        .and_then(|active| active.as_ref().map(|current| current.cell.code.clone()))
-        .or_else(|| {
-            inner
-                .last_cell_code
-                .lock()
-                .ok()
-                .and_then(|last| last.clone())
-        });
-    if let Some(source) = cell_source {
-        payload.insert("cellSourceCode".to_owned(), Value::String(source));
-    }
     let host = inner.host.as_ref().ok_or_else(|| {
         format!("host request type \"{request_type}\" is not available in this session")
     })?;

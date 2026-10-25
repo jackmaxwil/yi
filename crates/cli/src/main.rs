@@ -948,7 +948,8 @@ fn mcp_fast_path() {
             .mcp
             .as_ref()
             .and_then(|mcp| mcp.token_store.as_deref());
-        std::process::exit(yi_mcp_cli::run(&raw, token_store));
+        let version = env!("ARCHITECTURE_VERSION");
+        std::process::exit(yi_mcp_cli::run(&raw, token_store, version));
     }
 }
 
