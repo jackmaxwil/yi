@@ -817,7 +817,10 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
     let (is_error, text) = call(&tool, json!({"op": "init", "items": [long, "short"]}));
     assert!(!is_error, "{text}");
     assert!(
-        text.contains("- [>] t1 Verify the parser against every fixture in the corpus, then the live forge, then…"),
+        text.lines().any(
+            |row| row.starts_with("- [>] t1 Verify the parser against every fixture")
+                && row.ends_with(" 4fb0534d…")
+        ),
         "{text}"
     );
     let list = latest_record(&session).ok_or("no record")?.list;
@@ -1223,6 +1226,41 @@ fn replayed_to(
     Ok((root, tool))
 }
 
+/// Main's text with each long row text's label in today's spelling (a seed line or a string a
+/// call sent): main cut it to its first 80 chars, and a cut label now ends in a digest of it.
+fn respelled(sequence: &Sequence, text: &str) -> String {
+    fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => out.push(text),
+            Value::Array(items) => items.iter().for_each(|item| strings(item, out)),
+            Value::Object(map) => map.values().for_each(|item| strings(item, out)),
+            _ => {}
+        }
+    }
+    let mut texts: Vec<&str> = (sequence.seed.iter())
+        .flat_map(|seed| seed.lines())
+        .collect();
+    texts = texts
+        .into_iter()
+        .map(|line| line.split_once(". ").map_or(line, |(_, text)| text))
+        .collect();
+    sequence
+        .calls
+        .iter()
+        .for_each(|row| strings(&row["args"], &mut texts));
+    (texts.into_iter())
+        .filter_map(|line| Some((line, Todo::from_text(line).ok().filter(Todo::is_cut)?.label)))
+        .map(|(line, label)| {
+            (
+                line.trim().chars().take(80).collect::<String>(),
+                label.to_string(),
+            )
+        })
+        .fold(text.to_owned(), |text, (main, now)| {
+            text.replace(main.trim_end(), &now)
+        })
+}
+
 /// validate, then execute, as the loop runs a tool call.
 fn replay(tool: &TodoTool, args: &Value) -> (bool, String) {
     let input = args.as_object().cloned().unwrap_or_default();
@@ -1247,7 +1285,8 @@ fn every_well_formed_call_returns_mains_result() -> TestResult {
                 "{} call {index}: {text}",
                 sequence.name
             );
-            assert_eq!(row["text"], text, "{} call {index}", sequence.name);
+            let recorded = respelled(&sequence, row["text"].as_str().unwrap_or_default());
+            assert_eq!(recorded, text, "{} call {index}", sequence.name);
             calls += 1;
         }
     }
@@ -1272,7 +1311,8 @@ fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
                 let lands = shown.is_none_or(|call| {
                     serde_json::from_str(call).is_ok_and(|call: Value| !replay(&tool, &call).0)
                 });
-                if is_error && row["text"] == text && lands {
+                let recorded = respelled(&sequence, row["text"].as_str().unwrap_or_default());
+                if is_error && recorded == text && lands {
                     refused += 1;
                 } else {
                     wrong.push(format!("{at} is not the refusal it was: {text}"));
