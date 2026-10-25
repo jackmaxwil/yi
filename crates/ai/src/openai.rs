@@ -549,11 +549,23 @@ impl ChunkMapper {
         }
     }
 
-    fn content_mut(&mut self) -> &mut Vec<Content> {
+    fn content_mut(&mut self) -> Option<&mut Vec<Content>> {
         match &mut self.output {
-            AgentMessage::Assistant { content, .. } => content,
-            _ => unreachable!("mapper output is always an assistant message"),
+            AgentMessage::Assistant { content, .. } => Some(content),
+            _ => None,
         }
+    }
+
+    fn block_mut(&mut self, index: usize) -> Option<&mut Content> {
+        self.content_mut()?.get_mut(index)
+    }
+
+    fn push_block(&mut self, block: Content) -> usize {
+        let Some(content) = self.content_mut() else {
+            return 0;
+        };
+        content.push(block);
+        content.len().saturating_sub(1)
     }
 
     pub fn start_event(&self) -> AssistantMessageEvent {
@@ -640,8 +652,7 @@ impl ChunkMapper {
             let content_index = match self.text_index {
                 Some(existing) => existing,
                 None => {
-                    let content_index = self.content_mut().len();
-                    self.content_mut().push(Content::Text {
+                    let content_index = self.push_block(Content::Text {
                         text: String::new(),
                         text_signature: None,
                     });
@@ -650,9 +661,7 @@ impl ChunkMapper {
                     content_index
                 }
             };
-            if let Some(Content::Text { text: existing, .. }) =
-                self.content_mut().get_mut(content_index)
-            {
+            if let Some(Content::Text { text: existing, .. }) = self.block_mut(content_index) {
                 existing.push_str(text);
             }
             events.push(AssistantMessageEvent::TextDelta {
@@ -673,8 +682,7 @@ impl ChunkMapper {
             let content_index = match self.thinking_index {
                 Some(existing) => existing,
                 None => {
-                    let content_index = self.content_mut().len();
-                    self.content_mut().push(Content::Thinking {
+                    let content_index = self.push_block(Content::Thinking {
                         thinking: String::new(),
                         thinking_signature: Some(field.to_owned()),
                         redacted: None,
@@ -684,9 +692,7 @@ impl ChunkMapper {
                     content_index
                 }
             };
-            if let Some(Content::Thinking { thinking, .. }) =
-                self.content_mut().get_mut(content_index)
-            {
+            if let Some(Content::Thinking { thinking, .. }) = self.block_mut(content_index) {
                 thinking.push_str(text);
             }
             events.push(AssistantMessageEvent::ThinkingDelta {
@@ -714,8 +720,7 @@ impl ChunkMapper {
                         || (!id.is_empty() && slot.id == id)
                 })
                 .unwrap_or_else(|| {
-                    let content_index = self.content_mut().len();
-                    self.content_mut().push(Content::ToolCall {
+                    let content_index = self.push_block(Content::ToolCall {
                         id: id.to_owned(),
                         name: name.to_owned(),
                         arguments: serde_json::Map::new(),
@@ -758,7 +763,7 @@ impl ChunkMapper {
                 name: block_name,
                 arguments,
                 ..
-            }) = self.content_mut().get_mut(content_index)
+            }) = self.block_mut(content_index)
             {
                 if block_id.is_empty() && !id.is_empty() {
                     *block_id = id.to_owned();
@@ -778,7 +783,7 @@ impl ChunkMapper {
     pub fn finish(mut self) -> Vec<AssistantMessageEvent> {
         let mut events = Vec::new();
         crate::leak::recover_in(&mut self.output);
-        let content = self.content_mut().clone();
+        let content = self.content_mut().cloned().unwrap_or_default();
         for (content_index, block) in content.iter().enumerate() {
             match block {
                 Content::Text { text, .. } => events.push(AssistantMessageEvent::TextEnd {

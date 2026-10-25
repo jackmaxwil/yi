@@ -87,6 +87,9 @@ run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
 # target/dist/yi; only this flag proves the cap fires on its own reason (D249).
 run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
+# Both read the real tree, which holds no defect of either kind, so only these flags plant one.
+run "$PY" scripts/guardrails/check_boundaries.py --selfcheck
+run "$PY" scripts/guardrails/check_env_surface.py --selfcheck
 # The prose windows scan zero hits today, so only this flag proves a planted copy still fails.
 run "$PY" scripts/guardrails/check_duplication.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching

@@ -412,17 +412,27 @@ impl Mapper {
         }
     }
 
-    fn content_mut(&mut self) -> &mut Vec<Content> {
+    fn content_mut(&mut self) -> Option<&mut Vec<Content>> {
         match &mut self.output {
-            AgentMessage::Assistant { content, .. } => content,
-            _ => unreachable!("mapper output is always an assistant message"),
+            AgentMessage::Assistant { content, .. } => Some(content),
+            _ => None,
         }
     }
 
-    fn usage_mut(&mut self) -> &mut Usage {
+    fn block_mut(&mut self, index: usize) -> Option<&mut Content> {
+        self.content_mut()?.get_mut(index)
+    }
+
+    fn push_block(&mut self, block: Content) {
+        if let Some(content) = self.content_mut() {
+            content.push(block);
+        }
+    }
+
+    fn usage_mut(&mut self) -> Option<&mut Usage> {
         match &mut self.output {
-            AgentMessage::Assistant { usage, .. } => usage,
-            _ => unreachable!("mapper output is always an assistant message"),
+            AgentMessage::Assistant { usage, .. } => Some(usage),
+            _ => None,
         }
     }
 
@@ -433,14 +443,15 @@ impl Mapper {
     }
 
     fn recompute_totals(&mut self) {
-        let usage = self.usage_mut();
-        usage.total_tokens = usage
-            .input
-            .saturating_add(usage.output)
-            .saturating_add(usage.cache_read)
-            .saturating_add(usage.cache_write);
         let model = self.model.clone();
-        calculate_cost(&model, self.usage_mut());
+        if let Some(usage) = self.usage_mut() {
+            usage.total_tokens = usage
+                .input
+                .saturating_add(usage.output)
+                .saturating_add(usage.cache_read)
+                .saturating_add(usage.cache_write);
+            calculate_cost(&model, usage);
+        }
     }
 
     pub fn push(&mut self, payload: &Value) -> Vec<AssistantMessageEvent> {
@@ -475,8 +486,7 @@ impl Mapper {
             }
             let usage_value = &message["usage"];
             let read = |key: &str| usage_value.get(key).and_then(Value::as_i64).unwrap_or(0);
-            {
-                let usage = self.usage_mut();
+            if let Some(usage) = self.usage_mut() {
                 usage.input = read("input_tokens");
                 usage.output = read("output_tokens");
                 usage.cache_read = read("cache_read_input_tokens");
@@ -497,11 +507,11 @@ impl Mapper {
         {
             let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
             let block = &payload["content_block"];
-            let content_index = self.content_mut().len();
+            let content_index = self.content_mut().map_or(0, |content| content.len());
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                    self.content_mut().push(Content::Text {
+                    self.push_block(Content::Text {
                         text: text.to_owned(),
                         text_signature: None,
                     });
@@ -510,7 +520,7 @@ impl Mapper {
                     events.push(AssistantMessageEvent::TextStart { content_index });
                 }
                 Some("thinking") => {
-                    self.content_mut().push(Content::Thinking {
+                    self.push_block(Content::Thinking {
                         thinking: block
                             .get("thinking")
                             .and_then(Value::as_str)
@@ -530,7 +540,7 @@ impl Mapper {
                     events.push(AssistantMessageEvent::ThinkingStart { content_index });
                 }
                 Some("redacted_thinking") => {
-                    self.content_mut().push(Content::Thinking {
+                    self.push_block(Content::Thinking {
                         thinking: "[Reasoning redacted]".to_owned(),
                         thinking_signature: block
                             .get("data")
@@ -548,7 +558,7 @@ impl Mapper {
                         .and_then(Value::as_object)
                         .cloned()
                         .unwrap_or_default();
-                    self.content_mut().push(Content::ToolCall {
+                    self.push_block(Content::ToolCall {
                         id: block
                             .get("id")
                             .and_then(Value::as_str)
@@ -589,9 +599,7 @@ impl Mapper {
             match delta.get("type").and_then(Value::as_str) {
                 Some("text_delta") => {
                     let chunk = delta.get("text").and_then(Value::as_str).unwrap_or("");
-                    if let Some(Content::Text { text, .. }) =
-                        self.content_mut().get_mut(content_index)
-                    {
+                    if let Some(Content::Text { text, .. }) = self.block_mut(content_index) {
                         text.push_str(chunk);
                     }
                     events.push(AssistantMessageEvent::TextDelta {
@@ -601,8 +609,7 @@ impl Mapper {
                 }
                 Some("thinking_delta") => {
                     let chunk = delta.get("thinking").and_then(Value::as_str).unwrap_or("");
-                    if let Some(Content::Thinking { thinking, .. }) =
-                        self.content_mut().get_mut(content_index)
+                    if let Some(Content::Thinking { thinking, .. }) = self.block_mut(content_index)
                     {
                         thinking.push_str(chunk);
                     }
@@ -623,8 +630,7 @@ impl Mapper {
                         } else {
                             Map::new()
                         };
-                    if let Some(Content::ToolCall { arguments, .. }) =
-                        self.content_mut().get_mut(content_index)
+                    if let Some(Content::ToolCall { arguments, .. }) = self.block_mut(content_index)
                     {
                         *arguments = parsed;
                     }
@@ -637,7 +643,7 @@ impl Mapper {
                     let chunk = delta.get("signature").and_then(Value::as_str).unwrap_or("");
                     if let Some(Content::Thinking {
                         thinking_signature, ..
-                    }) = self.content_mut().get_mut(content_index)
+                    }) = self.block_mut(content_index)
                     {
                         match thinking_signature {
                             Some(signature) => signature.push_str(chunk),
@@ -656,7 +662,7 @@ impl Mapper {
             let Some(content_index) = self.local_index(api_index) else {
                 return;
             };
-            let block = self.content_mut().get(content_index).cloned();
+            let block = self.block_mut(content_index).cloned();
             match block {
                 Some(Content::Text { text, .. }) => {
                     events.push(AssistantMessageEvent::TextEnd {
@@ -677,13 +683,12 @@ impl Mapper {
                         .and_then(|buffer| buffer.as_deref())
                         .map(parse_streaming_json)
                         .unwrap_or_default();
-                    if let Some(Content::ToolCall { arguments, .. }) =
-                        self.content_mut().get_mut(content_index)
+                    if let Some(Content::ToolCall { arguments, .. }) = self.block_mut(content_index)
                         && (!final_arguments.is_empty() || arguments.is_empty())
                     {
                         *arguments = final_arguments;
                     }
-                    if let Some(block) = self.content_mut().get(content_index).cloned() {
+                    if let Some(block) = self.block_mut(content_index).cloned() {
                         events.push(AssistantMessageEvent::ToolCallEnd {
                             content_index,
                             tool_call: block,
@@ -720,8 +725,9 @@ impl Mapper {
                     }
                 }
             }
-            if let Some(usage_value) = payload.get("usage").filter(|value| !value.is_null()) {
-                let usage = self.usage_mut();
+            if let Some(usage_value) = payload.get("usage").filter(|value| !value.is_null())
+                && let Some(usage) = self.usage_mut()
+            {
                 usage.unknown = false;
                 let update = |target: &mut i64, key: &str| {
                     if let Some(value) = usage_value.get(key).and_then(Value::as_i64) {
