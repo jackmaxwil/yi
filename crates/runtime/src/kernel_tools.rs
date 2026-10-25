@@ -244,16 +244,28 @@ async fn call(
 }
 
 impl yi_tools::KernelBridge for KernelService {
+    /// Invariant: the loop runs an exec call alone, so one cell runs at a time and the slot
+    /// names the cell whose children spawn now.
     fn execute_cell(
         &self,
         code: &str,
+        call_id: &str,
         cancelled: &yi_tools::CancelFlag,
         recovery_dir: Option<&std::path::Path>,
     ) -> Result<yi_tools::KernelCellOutcome, String> {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| "ipython requires a tokio runtime".to_owned())?;
         let calls = self.cell_calls.get().cloned();
-        handle.block_on(self.execute_async(code, cancelled, recovery_dir, calls))
+        let running = |call| {
+            *self
+                .running_cell
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = call
+        };
+        running((!call_id.is_empty()).then(|| call_id.to_owned()));
+        let outcome = handle.block_on(self.execute_async(code, cancelled, recovery_dir, calls));
+        running(None);
+        outcome
     }
 }
 

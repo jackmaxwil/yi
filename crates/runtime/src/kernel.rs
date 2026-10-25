@@ -250,6 +250,7 @@ pub struct KernelService {
     own_paths: Option<crate::wiring::OwnPathsFn>,
     user_cells: std::sync::atomic::AtomicUsize,
     pub(crate) cell_calls: std::sync::OnceLock<Arc<dyn yi_tools::CellCalls>>,
+    pub(crate) running_cell: Mutex<Option<String>>,
 }
 
 impl KernelService {
@@ -273,6 +274,7 @@ impl KernelService {
             own_paths: None,
             user_cells: std::sync::atomic::AtomicUsize::new(0),
             cell_calls: std::sync::OnceLock::new(),
+            running_cell: Mutex::new(None),
         }
     }
 

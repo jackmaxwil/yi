@@ -41,6 +41,7 @@ pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
     trail: Option<PathBuf>,
+    spawned_by: Option<String>,
     pub(crate) worktree: Option<crate::lane::Lane>,
     /// The worker share of the lane pool this child's checkout was taken from; dropped with
     /// the lane, so a settled child stops holding a slot nobody is standing in.
@@ -163,6 +164,8 @@ impl std::ops::DerefMut for Children {
 pub struct ChildView {
     pub update: ChildUpdate,
     pub session: ChildFeed,
+    /// The tool call id of the kernel cell running when the host admitted the child, if any.
+    pub spawned_by: Option<String>,
 }
 
 pub struct ChildBuild<'a> {
@@ -244,6 +247,7 @@ pub struct SubagentHost {
     /// Invariant: a `check` runs `sh -c` on the host at `rlm.result`, so the host gate judges it
     /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
     pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
+    kernel: std::sync::OnceLock<std::sync::Weak<crate::kernel::KernelService>>,
 }
 
 impl SubagentHost {
@@ -422,7 +426,7 @@ fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<Stri
                 Ok(Some(trimmed.to_owned()))
             }
         }
-        Some(other) => Err(format!("rlm.run {key} must be a string, got {other}")),
+        Some(other) => Err(format!("{key} must be a string, got {other}")),
     }
 }
 
@@ -485,6 +489,7 @@ impl SubagentHost {
             partitions: Mutex::default(),
             leads: Mutex::default(),
             check_gate: std::sync::OnceLock::new(),
+            kernel: std::sync::OnceLock::new(),
         }
     }
 
@@ -525,6 +530,7 @@ impl SubagentHost {
                     .map(|(id, record)| ChildView {
                         update: crate::family::flagged(record.update(id), &states),
                         session: ChildFeed::of(Arc::clone(&record.session)),
+                        spawned_by: record.spawned_by.clone(),
                     })
                     .collect();
                 view.sort_by(|left, right| left.update.id.cmp(&right.update.id));
@@ -748,6 +754,7 @@ impl SubagentHost {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
                     trail,
+                    spawned_by: self.spawning_cell(),
                     worktree,
                     lane_permit,
                     _container: container,
@@ -1133,12 +1140,14 @@ impl SubagentHost {
             let host = Arc::clone(self);
             registry.register(method, move |payload| {
                 let target = payload.str_of("target").map(str::to_owned);
+                let check = optional_string(&payload, "check");
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
+                    let check = check?;
                     off_executor(method, move || {
                         if merges {
-                            host.merge_worktree(&target)
+                            host.merge_worktree(&target, check.as_deref())
                         } else {
                             host.discard_worktree(&target)
                         }
