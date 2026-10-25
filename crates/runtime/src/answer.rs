@@ -6,6 +6,7 @@ use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_outpu
 
 use crate::session::AnswerHandle;
 
+const ANSWER_ECHO_BYTES: usize = 4096;
 const HELD: &str = "The answer is held, not shown. Fix what this names, patch any draft below with `edit`, then call `answer` with only `summary`, or with a new `text`.";
 pub(crate) const GUIDE: &str = "# answer\n\nThe last call of a turn: `text` is the whole answer, `summary` one line on what changed or was found.\n\nIt is checked before anyone sees it: open todos, numbers no tool printed, an open plan step. A refusal holds the draft and prints it as `[path#TAG]` rows: do the missing work, patch those rows with `edit`, and call `answer` with only `summary`. Nothing after an accepted answer reaches the user.";
 
@@ -20,8 +21,8 @@ pub(crate) fn tool(handle: AnswerHandle, tools: &[Arc<dyn Tool>]) -> Arc<dyn Too
 }
 
 impl AnswerTool {
-    /// The draft written through `write`, so its tag anchors an `edit`, and shown as `read`
-    /// shows it; None with no spill dir or when a wall refuses the write.
+    /// The draft written through `write`, so its tag anchors an `edit`, and the echo of its first
+    /// [`ANSWER_ECHO_BYTES`] of rows. None with no spill dir or when a wall refuses the write.
     fn hold_file(&self, draft: &str, context: &ToolContext) -> Option<(PathBuf, String)> {
         let stem = (context.transcript.as_ref()).and_then(|path| path.file_stem());
         let stem = stem.map_or_else(|| "draft".into(), |stem| stem.to_string_lossy());
@@ -33,7 +34,25 @@ impl AnswerTool {
         let header = yi_types::message::join_text(&written.result.content, "\n");
         let header = header.lines().next().filter(|_| !written.is_error)?;
         let rows = yi_tools::hashline::format::format_numbered_lines(draft, 1);
-        Some((path, format!("{header}\n{rows}")))
+        let all: Vec<&str> = rows.split('\n').collect();
+        let mut used = 0usize;
+        let kept = (all.iter())
+            .take_while(|row| {
+                used = used.saturating_add(row.len()).saturating_add(1);
+                used <= ANSWER_ECHO_BYTES
+            })
+            .count();
+        if kept == all.len() {
+            return Some((path, format!("{header}\n{rows}")));
+        }
+        let next = format!("read {} offset {}", path.display(), kept.saturating_add(1));
+        let (what, cap) = ("draft lines shown", "ANSWER_ECHO_BYTES");
+        let row = crate::listed::cut_row(kept, all.len(), what, cap, ANSWER_ECHO_BYTES, &next);
+        let mut shown: Vec<&str> = std::iter::once(header)
+            .chain(all.iter().take(kept).copied())
+            .collect();
+        shown.push(&row);
+        Some((path, shown.join("\n")))
     }
 }
 

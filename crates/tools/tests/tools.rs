@@ -882,7 +882,7 @@ fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
         let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
         let text = output_text(&output);
         let path = (text.lines().last())
-            .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+            .and_then(|line| Some(yi_tools::spill_path(line)?.1))
             .ok_or_else(|| format!("{command}: the pointer is not last: {text}"))?;
         let bytes: usize = (1..=count).map(|n| format!("{n}\n").len()).sum();
         let whole = fs::read_to_string(path)?;
@@ -934,6 +934,31 @@ fn a_backgrounded_jobs_report_names_its_spill() -> TestResult {
         .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
         .ok_or("the report names no spill")?;
     assert_eq!(fs::read_to_string(path)?.lines().count(), 20_000);
+    Ok(())
+}
+
+/// Dies with the container wrapper kept as the job's text: its headline named `docker exec`
+/// and the reducer read `docker`, not the model's `cargo`, so a cargo job lost its filter.
+#[test]
+fn a_container_job_keeps_the_models_command_and_runs_the_placed_one() -> TestResult {
+    let dir = temp_dir("jobs-placed")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let (after, limit) = (
+        Some(std::time::Duration::from_millis(50)),
+        std::time::Duration::from_secs(60),
+    );
+    let placed = Some(("sleep 0.3; printf placed", "true"));
+    let run = yi_tools::run_or_background("cargo test", &context, after, limit, None, placed)?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the placed command did not become a job".into());
+    };
+    yi_tools::jobs::registry().wait_settled(Some(id), limit);
+    let report = yi_tools::jobs::registry().release(id)?;
+    assert_eq!(
+        report.headline(),
+        format!("job {id} finished (exit 0): cargo test")
+    );
+    assert_eq!(report.view(), "placed");
     Ok(())
 }
 
@@ -998,12 +1023,15 @@ fn a_red_workspace_build_keeps_its_error_through_the_reducer() -> TestResult {
         assert!(text.contains("b/src/main.rs:121:36"), "{command}: {text}");
         let cap = yi_tools::OUTPUT_CAP;
         let row = format!(
-            "[capture cut: kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream); every byte: ",
+            "[full output, kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream), every byte: ",
             streamed + extra
         );
+        let naming: Vec<&str> = (text.lines())
+            .filter(|line| line.contains(&*dir.join("tool-output").to_string_lossy()))
+            .collect();
         assert!(
-            text.lines().any(|line| line.starts_with(&row)),
-            "{command}: no {row}: {text}"
+            naming.len() == 1 && naming.iter().all(|line| line.starts_with(&row)),
+            "{command}: not one {row}: {text}"
         );
     }
     Ok(())
@@ -1022,7 +1050,7 @@ fn the_omitted_lines_notice_names_lines_of_the_file_it_points_at() -> TestResult
         .ok_or_else(|| format!("no notice: {text}"))?;
     let (from, to): (usize, usize) = (range.0.parse()?, range.1.parse()?);
     let path = (text.lines())
-        .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .find_map(|line| Some(yi_tools::spill_path(line)?.1))
         .ok_or_else(|| format!("no pointer: {text}"))?;
     let whole = fs::read_to_string(path)?;
     let spill: Vec<&str> = whole.lines().collect();
@@ -1067,6 +1095,129 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let finished = text_of(&polled.result.content);
     assert!(finished.contains("woke"), "{finished}");
     assert!(finished.contains("finished (exit 0)"), "{finished}");
+    Ok(())
+}
+
+/// Runs `command` past a 200 ms auto-background, so it becomes a job, and polls it to its end.
+fn polled_job(command: &str, context: &mut ToolContext) -> Result<yi_tools::ToolOutput, String> {
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let started = BashTool::default().execute(args(&[("command", json!(command))]), context);
+    let job = (started.result.details.get("job").and_then(Value::as_u64))
+        .ok_or_else(|| format!("not a job: {}", output_text(&started)))?;
+    let poll = args(&[("job", json!(job)), ("wait", json!(60))]);
+    Ok(BashTool::default().execute(poll, context))
+}
+
+/// A red `cargo test` of 2,000 cases that became a job reached the model raw, 64,656 B; the
+/// view keeps the failing test and its assert lines inside the ceiling, the program value all.
+#[test]
+fn a_failing_cargo_test_job_is_polled_through_the_view_and_valued_whole() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("job-view-cargo")?;
+    let recorded = view_fixture("view/cargo-test-2000-one-assert-eq.txt");
+    let cargo = dir.join("bin/cargo");
+    fs::create_dir_all(dir.join("bin"))?;
+    let script = format!(
+        "#!/bin/sh\nsleep 0.5\ncat '{}'\nexit 101\n",
+        recorded.display()
+    );
+    fs::write(&cargo, script)?;
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    context.program = true;
+    let command = format!("PATH='{}':\"$PATH\" cargo test", dir.join("bin").display());
+    let polled = polled_job(&command, &mut context)?;
+    let text = output_text(&polled);
+    let (headline, body) = text.split_once('\n').ok_or("no headline")?;
+    assert!(headline.contains("finished (exit 101)"), "{headline}");
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING,
+        "{} B: {body}",
+        body.len()
+    );
+    let verdict = [
+        "---- tests::balance_1377 stdout ----",
+        "  left: 4132",
+        " right: 4133",
+    ];
+    for line in verdict
+        .iter()
+        .chain(&["test result: FAILED. 1999 passed; 1 failed"])
+    {
+        assert!(body.contains(line), "no {line:?}: {body}");
+    }
+    let raw = fs::read_to_string(&recorded)?;
+    let value = polled.value.ok_or("no program value")?;
+    let stdout = value
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let half = yi_tools::OUTPUT_CAP / 2;
+    let (head, tail) = (raw.get(..half), raw.get(raw.len().saturating_sub(half)..));
+    assert!(
+        head.is_some_and(|head| stdout.starts_with(head)),
+        "{stdout}"
+    );
+    assert!(tail.is_some_and(|tail| stdout.contains(tail)), "{stdout}");
+    Ok(())
+}
+
+/// A 258,672 B build whose one error is its last line, run as a job: the error stays inline
+/// inside the ceiling, and the one row naming the file reads back every byte.
+#[test]
+fn a_job_whose_build_errors_last_keeps_the_error_and_names_the_spill() -> TestResult {
+    let dir = temp_dir("job-view-build")?;
+    let recorded = view_fixture("view/make-build-error-last.txt");
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let command = format!("sleep 0.5; cat '{}'; exit 2", recorded.display());
+    let text = output_text(&polled_job(&command, &mut context)?);
+    let (_, body) = text.split_once('\n').ok_or("no headline")?;
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING,
+        "{} B: {body}",
+        body.len()
+    );
+    let error = "src/unit_1700.c:1:42: error: use of undeclared identifier 'undeclared_offset'";
+    assert!(body.contains(error), "{body}");
+    let named: Vec<&str> = (body.lines().filter_map(yi_tools::spill_path))
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(named.len(), 1, "{body}");
+    let kept = named.first().map(fs::read).transpose()?;
+    assert!(
+        kept == Some(fs::read(&recorded)?),
+        "the named file is not the whole build"
+    );
+    Ok(())
+}
+
+/// A cut capture no file holds, foreground and as a job: one `[capture cut: …]` row each, and the
+/// job's view passes the ceiling by that row alone, since the row is appended after the view.
+#[test]
+fn a_cut_capture_with_no_file_says_so_once_on_both_paths() -> TestResult {
+    let dir = temp_dir("cut-no-file")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let print = "awk 'BEGIN{for(i=0;i<4000;i++) print \"0123456789\"}'";
+    let foreground = BashTool::default().execute(args(&[("command", json!(print))]), &context);
+    let job = output_text(&polled_job(&format!("sleep 0.5; {print}"), &mut context)?);
+    for text in [output_text(&foreground), job.clone()] {
+        let rows: Vec<&str> = (text.lines())
+            .filter(|line| line.starts_with("[capture cut: kept 30000 of 44000 bytes"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{text}");
+        assert!(text.ends_with("; no file kept the rest]"), "{text}");
+        assert!(!text.contains("[output truncated]"), "{text}");
+    }
+    let (_, body) = job.split_once('\n').ok_or("no headline")?;
+    let row = body.lines().last().unwrap_or_default();
+    assert!(body.contains("(VIEW_CEILING 16384)"), "{body}");
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING + 1 + row.len(),
+        "{} B: {body}",
+        body.len()
+    );
     Ok(())
 }
 
@@ -1569,6 +1720,7 @@ impl yi_tools::KernelBridge for DeadKernel {
     fn execute_cell(
         &self,
         _code: &str,
+        _call_id: &str,
         _cancelled: &yi_tools::CancelFlag,
         _recovery_dir: Option<&std::path::Path>,
     ) -> Result<yi_tools::KernelCellOutcome, String> {
@@ -1802,6 +1954,38 @@ fn read_footers_name_the_next_offset() -> TestResult {
     Ok(())
 }
 
+/// Dies with the 2,000-line default window cutting a file at a row that never says why. A window
+/// the model asked for stays plain.
+#[test]
+fn a_default_read_window_names_its_cap_and_an_asked_one_does_not() -> TestResult {
+    let dir = temp_dir("read-default-cap")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let rows = |count: usize| {
+        (1..=count)
+            .map(|n| format!("row {n}\n"))
+            .collect::<String>()
+    };
+    let page = |path: &str, extra: &[(&str, Value)]| {
+        let pairs = [&[("path", json!(path))], extra].concat();
+        output_text(&read_tool().execute(args(&pairs), &context))
+    };
+    fs::write(dir.join("at.txt"), rows(2_000))?;
+    assert!(!page("at.txt", &[]).contains("[showing lines"));
+    fs::write(dir.join("past.txt"), rows(2_001))?;
+    let default = page("past.txt", &[]);
+    let cut =
+        "[showing lines 1-2000 of 2001 (READ_LINE_CAP 2000) \u{2014} continue with offset=2001]";
+    assert!(
+        default.ends_with(cut),
+        "{}",
+        default.lines().last().unwrap_or_default()
+    );
+    assert!(page("past.txt", &[("offset", json!(2_001))]).contains("row 2001"));
+    let asked = page("past.txt", &[("limit", json!(1_000))]);
+    assert!(asked.ends_with("[showing lines 1-1000 of 2001 \u{2014} continue with offset=1001]"));
+    Ok(())
+}
+
 /// P3: hits that exactly fill the collection cap are not a truncation, and an
 /// offset past the end names what it ran off — matches, or files in
 /// `files_with_matches` mode.
@@ -1835,6 +2019,126 @@ fn grep_cap_and_offset_footers_are_honest() -> TestResult {
     );
     let text = output_text(&past_files);
     assert!(text.contains("beyond the 1 matching files"), "{text}");
+    Ok(())
+}
+
+/// A page stops between hits once its rows hold PAGE_BYTES (51,200). A row is `a.txt:n:text` and
+/// a newline; a 101st line sized to land exactly on the cap ends the page, and one char fewer
+/// leaves a byte for the 102nd hit. With context 2 the window of hit 99 already draws hits 100
+/// and 101 as hit rows, so the footer must count them or the next page prints them again.
+#[test]
+fn a_grep_page_stops_on_its_byte_cap_between_hits() -> TestResult {
+    let cost = |n: usize, width: usize| "a.txt:".len() + n.to_string().len() + width + 2;
+    let used: usize = (1..=100).map(|n| cost(n, 500)).sum();
+    let exact = 51_200 - used - cost(101, 0);
+    let page = |last: usize, offset: u64, context: u64| -> Result<String, Box<dyn Error>> {
+        let dir = temp_dir(&format!("grep-page-bytes-{last}-{context}"))?;
+        let line = |n: usize| {
+            let width = if n == 101 { last } else { 500 };
+            format!("needle {n:03} {}\n", "x".repeat(width - 11))
+        };
+        fs::write(dir.join("a.txt"), (1..=102).map(line).collect::<String>())?;
+        let input = args(&[
+            ("pattern", json!("needle")),
+            ("offset", json!(offset)),
+            ("context", json!(context)),
+        ]);
+        Ok(output_text(
+            &GrepTool::default().execute(input, &ToolContext::new(dir.to_path_buf())),
+        ))
+    };
+    let hit_rows = |text: &str| -> Vec<usize> {
+        let number = |row: &str| row.strip_prefix("a.txt:")?.split_once(':')?.0.parse().ok();
+        text.lines().filter_map(number).collect()
+    };
+    let cut = "[showing matches 1-101 of 102 (PAGE_BYTES 51200) \u{2014} continue with offset=101]";
+    for context in [0, 2] {
+        let first = page(exact, 0, context)?;
+        assert_eq!(first.lines().last(), Some(cut), "context {context}");
+        assert_eq!(hit_rows(&first), (1..=101).collect::<Vec<_>>());
+        assert_eq!(hit_rows(&page(exact, 101, context)?), [102]);
+        let under = page(exact - 1, 0, context)?;
+        assert_eq!(hit_rows(&under), (1..=102).collect::<Vec<_>>());
+        assert!(!under.contains("[showing"), "context {context}: {under}");
+    }
+    Ok(())
+}
+
+/// A page cut by its hit count names the row cap that cut it, in line mode and in block mode,
+/// and a page of exactly the cap carries no continuation row.
+#[test]
+fn a_grep_page_cut_by_its_hit_cap_names_the_cap() -> TestResult {
+    let page = |hits: usize, block: bool| -> Result<String, Box<dyn Error>> {
+        let dir = temp_dir(&format!("grep-page-rows-{hits}-{block}"))?;
+        let body: String = (1..=hits)
+            .map(|n| format!("fn f{n}() {{}} // needle\n"))
+            .collect();
+        fs::write(dir.join("a.rs"), body)?;
+        let input = args(&[("pattern", json!("needle")), ("block", json!(block))]);
+        Ok(output_text(
+            &GrepTool::default().execute(input, &ToolContext::new(dir.to_path_buf())),
+        ))
+    };
+    for (cap, name, block) in [(200, "PAGE_CAP", false), (20, "BLOCK_PAGE_CAP", true)] {
+        let whole = page(cap, block)?;
+        assert!(!whole.contains("[showing"), "{name}: {whole}");
+        let cut = page(cap + 1, block)?;
+        let row = format!(
+            "[showing matches 1-{cap} of {} ({name} {cap}) \u{2014} continue with offset={cap}]",
+            cap + 1
+        );
+        assert_eq!(cut.lines().last(), Some(row.as_str()), "{cut}");
+    }
+    Ok(())
+}
+
+/// Five recorded sessions, one compact JSON entry a line: 169 hits of 64,701 B under the 200-hit
+/// cap. Dies with all of them on one page. The corpus is those five files, copied by name, so a
+/// session added beside them cannot move the page count.
+#[test]
+fn a_grep_page_over_recorded_long_lines_pages_exactly() -> TestResult {
+    const SESSIONS: [&str; 5] = [
+        "01a0648f.jsonl",
+        "01a0d6e4.jsonl",
+        "01a129b6.jsonl",
+        "01a13357.jsonl",
+        "01a133ca.jsonl",
+    ];
+    let recorded =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/tests/fixtures/sessions");
+    let root = temp_dir("grep-recorded-sessions")?;
+    let mut expected = Vec::new();
+    for name in SESSIONS {
+        let text = fs::read_to_string(recorded.join(name))?;
+        expected.extend((1..=text.lines().count()).map(|n| format!("{name}:{n}")));
+        fs::write(root.join(name), text)?;
+    }
+    let key = |row: &str| {
+        let (path, rest) = row.split_once(':').unwrap_or_default();
+        let n = rest.split(':').next().unwrap_or_default();
+        format!("{}:{n}", path.rsplit('/').next().unwrap_or_default())
+    };
+    let (grep, context) = (GrepTool::default(), ToolContext::new(root.to_path_buf()));
+    let (mut seen, mut pages) = (Vec::new(), 0);
+    loop {
+        let input = args(&[("pattern", json!("\"")), ("offset", json!(seen.len()))]);
+        let text = output_text(&grep.execute(input, &context));
+        seen.extend(text.lines().filter(|row| !row.starts_with('[')).map(key));
+        pages += 1;
+        let Some(more) = text.lines().find(|row| row.starts_with("[showing matches")) else {
+            break;
+        };
+        let next = format!(
+            "(PAGE_BYTES 51200) \u{2014} continue with offset={}]",
+            seen.len()
+        );
+        assert!(
+            more.ends_with(&next) && text.len() < 52_600,
+            "{more}: {}",
+            text.len()
+        );
+    }
+    assert!(pages > 1 && seen == expected, "{pages} pages");
     Ok(())
 }
 

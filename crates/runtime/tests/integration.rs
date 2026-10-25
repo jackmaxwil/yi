@@ -27,6 +27,7 @@ mod auto_review;
 mod branch_diff;
 mod breakpoints;
 mod cache_miss;
+mod caps_runtime;
 mod channel_e2e;
 mod child_trail;
 mod child_transcript;
@@ -109,3 +110,10 @@ mod todo_mirror;
 mod undo_to;
 mod wall_e2e;
 mod worker_prompt;
+
+/// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict
+/// last, past the view's 16 KiB ceiling and, as JSON, past a channel message's cap.
+pub const RED_PYTEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+);

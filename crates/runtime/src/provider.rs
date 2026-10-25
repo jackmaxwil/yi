@@ -484,11 +484,7 @@ fn offered(
 
 fn cursor_stop(signal: &InterruptSignal) -> yi_ai::cursor::StopFn {
     let cut = signal.cut_flag();
-    let fired = signal.fired_flag();
-    Arc::new(move || {
-        cut.load(std::sync::atomic::Ordering::SeqCst)
-            || fired.load(std::sync::atomic::Ordering::SeqCst)
-    })
+    Arc::new(move || cut.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 fn cursor_tool(

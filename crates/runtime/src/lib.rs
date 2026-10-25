@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::string_slice)]
 
 pub mod advisor;
 pub mod affordance;
@@ -27,6 +28,7 @@ mod kernel_variables;
 pub mod lane;
 pub mod lease;
 pub mod levers;
+mod listed;
 mod mail;
 pub mod mailbox;
 pub mod memory;

@@ -2,7 +2,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use yi_tools::{CancelFlag, IpythonTool, KernelBridge, KernelCellOutcome, Tool};
+use yi_tools::{CancelFlag, IpythonTool, KernelBridge, KernelCellOutcome, Tool, ToolContext};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -35,10 +35,47 @@ impl KernelBridge for NoKernel {
     fn execute_cell(
         &self,
         _code: &str,
+        _call_id: &str,
         _cancelled: &CancelFlag,
         _recovery_dir: Option<&std::path::Path>,
     ) -> Result<KernelCellOutcome, String> {
         Err("no kernel in this test".to_owned())
+    }
+}
+
+/// Dies with every child card back on the timing guess: a child is placed under its spawning cell
+/// only when the cell's own call id reaches the kernel, and an empty id records no cell.
+#[test]
+fn a_cell_hands_its_call_id_to_the_kernel() -> TestResult {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tool = IpythonTool {
+        bridge: Arc::new(Recording(Arc::clone(&seen))),
+        calls: None,
+    };
+    let mut input = Map::new();
+    input.insert("code".to_owned(), Value::String("1".to_owned()));
+    let mut context = ToolContext::new(std::env::temp_dir());
+    context.call_id = "toolu_01Ab".to_owned();
+    tool.execute(input, &context);
+    assert_eq!(*seen.lock().map_err(|e| e.to_string())?, ["toolu_01Ab"]);
+    Ok(())
+}
+
+struct Recording(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl KernelBridge for Recording {
+    fn execute_cell(
+        &self,
+        _code: &str,
+        call_id: &str,
+        _cancelled: &CancelFlag,
+        _recovery_dir: Option<&std::path::Path>,
+    ) -> Result<KernelCellOutcome, String> {
+        self.0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .push(call_id.to_owned());
+        Err("recorded".to_owned())
     }
 }
 
