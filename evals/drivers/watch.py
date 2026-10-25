@@ -108,6 +108,19 @@ def prune(idle, ripe_at=IDLE_POLLS):
     return removed
 
 
+def kill_group(child, wait_sec):
+    """SIGTERM the child's process group, then SIGKILL it if it outlives wait_sec."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(child.pid, sig)
+            child.wait(timeout=wait_sec)
+            return
+        except ProcessLookupError:
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=Path, required=True)
@@ -154,16 +167,7 @@ def main():
         if reason:
             stopped.write_text(reason + "\n")
             print("STOP:", reason, flush=True)
-            for sig in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(child.pid, sig)
-                except ProcessLookupError:
-                    break
-                try:
-                    child.wait(timeout=120)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+            kill_group(child, 120)
             stop_containers(path.name for path in args.runs.glob("*/*__*") if path.is_dir())
             return 2
 

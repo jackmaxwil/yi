@@ -20,7 +20,7 @@ when the stream's summed cost crosses what is left, and a park on an exhausted K
 ledger is ~/Development/yi-runs/next-shape/ledger.jsonl, flock'd and shared by every worktree.
 Stdlib only.
 """
-import argparse, contextlib, datetime, fcntl, hashlib, importlib.util, json, os, shutil, signal
+import argparse, contextlib, datetime, fcntl, hashlib, importlib.util, json, os, shutil
 import subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
 from pathlib import Path
 
@@ -30,13 +30,14 @@ sys.path.insert(0, str(ROOT / "drivers"))
 
 import yi_usage  # noqa: E402
 import trials  # noqa: E402
+import watch  # noqa: E402
 
 KILL_DIR = ROOT / "kill"
 PROVIDERS = KILL_DIR / "providers.json"
 TRIALS = ROOT / "trials"
 CAP_USD = 30.0
 QUOTA_MARKS = ("quota exhausted", "exceeded_current_quota_error", "insufficient_quota")
-NOT_RUN = ("unrun", "crash")
+NOT_RUN = ("unrun", "crash", "quota")
 GRACE_SEC = 60
 # Injected by the selftest: a park is hours of wall clock.
 clock, sleep = time.time, time.sleep
@@ -79,8 +80,9 @@ def ledger():
 
 
 def state(rows):
-    """(spent micro-dollars, {key: (test, family, micro)} still reserved, {(test, family)} done)."""
-    spent, held, done = 0, {}, set()
+    """(spent micro-dollars, {key: (test, family, micro)} still reserved, {(test, family)} done,
+    {(test, family)} with a row that ran)."""
+    spent, held, done, ran = 0, {}, set(), set()
     for row in rows:
         if row["kind"] == "reserve":
             held[row["key"]] = (row["test"], row["family"], micro(row["usd"]))
@@ -89,15 +91,17 @@ def state(rows):
             held.pop(row["key"], None)
             if any(r.get("status") != "crash" for r in row["rows"]):
                 done.add((row["test"], row["family"]))
+            if any(r.get("status") not in NOT_RUN for r in row["rows"]):
+                ran.add((row["test"], row["family"]))
         elif row["kind"] == "unrun":
             done.add((row["test"], row["family"]))
-    return spent, held, done
+    return spent, held, done, ran
 
 
 def admit(rows, test, family, usd, earlier=()):
     """Micro-dollars left after this reserve: spent, every open reserve, and the reserve of every
     earlier ladder step not yet settled stay within the cap, or the answer is negative."""
-    spent, held, done = state(rows)
+    spent, held, done, _ = state(rows)
     flying = {(t, f) for t, f, _ in held.values()}
     waiting = sum(micro(u) for t, f, u in earlier if (t, f) not in done | flying | {(test, family)})
     return micro(CAP_USD) - spent - sum(m for _, _, m in held.values()) - waiting - micro(usd)
@@ -214,8 +218,8 @@ def clone_tree(source, target):
 def seed_home(home, binary, route, need_sec):
     yi = home / ".yi"
     yi.mkdir(parents=True)
-    config = {"telemetry": {"enabled": True}, **({"routing": route["routing"]} if route.get("routing") else {})}
-    (yi / "config.json").write_text(json.dumps(config))
+    routing = {yi_usage.ROUTING_ENV: json.dumps(route["routing"])} if route.get("routing") else {}
+    (yi / "config.json").write_text(json.dumps(yi_usage.eval_config(routing)))
     for venv in sorted((prebuilt(binary) / ".yi").glob("kernel-venv-*")):
         clone_tree(venv, yi / venv.name)
     central = kimi_home() / ".yi"
@@ -233,18 +237,6 @@ def seed_home(home, binary, route, need_sec):
 
 def venv_ids(home):
     return {path.name: path.stat().st_ino for path in (home / ".yi").glob("kernel-venv-*")}
-
-
-def kill_group(proc):
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(proc.pid, sig)
-            proc.wait(timeout=5)
-            return
-        except ProcessLookupError:
-            return
-        except subprocess.TimeoutExpired:
-            continue
 
 
 def quota_hit(events):
@@ -294,7 +286,7 @@ def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors,
                                     start_new_session=True)
         fired = []
-        timer = threading.Timer(deadline + GRACE_SEC, lambda: (fired.append(True), kill_group(proc)))
+        timer = threading.Timer(deadline + GRACE_SEC, lambda: (fired.append(True), watch.kill_group(proc, 5)))
         timer.start()
         spent, status = 0.0, None
         with events.open("w") as sink, proc.stdout:
@@ -313,7 +305,7 @@ def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
                 spent += cost if isinstance(cost, (int, float)) else 0
                 if paid(route) and status is None and spent > stop_usd:
                     status = "budget"
-                    kill_group(proc)
+                    watch.kill_group(proc, 5)
         exit_code = proc.wait()
         timer.cancel()
         usage = yi_usage.parse_events(events)
@@ -349,7 +341,10 @@ def ask(test, family, spec, binary, stop_usd, until=None, estimate_usd=0.0, ceil
             sleep(parked - clock())
         row = ask_once(test, family, route, spec, binary, stop_usd,
                        stop_usd if ceiling_usd is None else ceiling_usd)
-        if row["status"] != "quota" or paid(route):
+        if row["status"] != "quota":
+            return row
+        row = {**row, "needsUsd": estimate_usd, "why": "the quota stayed exhausted"}
+        if paid(route):
             return row
         reset = quota_reset(binary)
         if reset is None:
@@ -367,9 +362,12 @@ def harbor(test, family, spec, stop_usd):
         return {"test": test, "family": family, "id": spec["id"], "status": "unrun", "chargedUsd": 0.0,
                 "needsUsd": 0.0, "why": "a harbor sweep spends OpenRouter on its own model, never a subscription"}
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
-    done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     store = TRIALS / f"{run}.jsonl"
-    filed = [json.loads(line) for line in store.read_text().splitlines() if line.strip()] if store.exists() else []
+    stored = lambda: [json.loads(line) for line in store.read_text().splitlines() if line.strip()] if store.exists() else []
+    before = len(stored())
+    done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
+    # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
+    filed = stored()[before:]
     charged = sum(trials.cost(row) for row in filed) if filed else stop_usd
     return {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
             "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
@@ -410,6 +408,8 @@ def cmd_run(args):
     module, table = available[args.test], routes()
     families = [args.family] if args.family else list(module.FAMILIES)
     problems = [refused(f, table.get(f)) for f in families]
+    if args.family and args.family not in module.FAMILIES:
+        problems.append(f"{args.test} has no family {args.family}; its families are {', '.join(module.FAMILIES)}")
     gate = refused("kimi", table.get("kimi"))
     if gate and not args.without_kimi and any(paid(table.get(f, {})) for f in families):
         problems.append(f"a paid run waits for the Kimi route (--without-kimi overrides): {gate}")
@@ -422,9 +422,9 @@ def cmd_run(args):
     for family in families:
         route, usd = table[family], reserve_of(module, family, table[family])
         with ledger() as (rows, _):
-            done = state(rows)[2]
+            ran = state(rows)[3]
             left = admit(rows, args.test, family, usd, earlier)
-        first = [f for f in module.FAMILIES[: list(module.FAMILIES).index(family)] if (args.test, f) not in done]
+        first = [f for f in module.FAMILIES[: list(module.FAMILIES).index(family)] if (args.test, f) not in ran]
         if first and paid(route) and not (args.dry or args.without_kimi):
             print(f"refused: {args.test} runs {', '.join(first)} before {family}", file=sys.stderr)
             return 2
@@ -468,7 +468,7 @@ def cmd_run(args):
 def cmd_budget(_args):
     table = routes()
     with ledger() as (rows, _):
-        spent, held, done = state(rows)
+        spent, held, done, _ = state(rows)
     ladder = [{"step": mod.STEP, "test": name, "family": f, "reserveUsd": reserve_of(mod, f, table[f]),
                "settled": (name, f) in done} for name, mod in tests().items() for f in mod.FAMILIES if f in table]
     print(json.dumps({"capUsd": CAP_USD, "spentUsd": spent / 1e6, "heldUsd": sum(m for *_, m in held.values()) / 1e6,
