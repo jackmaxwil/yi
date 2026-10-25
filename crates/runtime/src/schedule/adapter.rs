@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use yi_tools::cut;
+use yi_tools::Cut;
 use yi_types::channel::MESSAGE_MAX_BYTES;
 
 use super::channel::{Appended, Channel};
@@ -336,7 +336,14 @@ fn exec(command: &str, cwd: &Path) -> Value {
             let (total, rerun) = (output.len(), crate::goal::rerun_in(cwd, command));
             let next = format!("bash ({rerun}) > exec.log 2>&1, then read exec.log");
             let cap = "MESSAGE_MAX_BYTES";
-            let row = |kept| cut(kept, total, "bytes kept", cap, MESSAGE_MAX_BYTES, &next);
+            let row = |kept| Cut {
+                kept,
+                total,
+                what: "bytes kept",
+                cap,
+                limit: MESSAGE_MAX_BYTES,
+                next: &next,
+            };
             let room = level(&format!("{}\n", row(total))).to_string().len();
             let sent = |c: char| serde_json::to_string(&c).map_or(6, |s| s.len().saturating_sub(2));
             let from = output
