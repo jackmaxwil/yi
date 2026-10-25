@@ -812,10 +812,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         session.set_deadline(total);
     }
     session.provider().settle_into(session.settle_hook(None));
-    let plans_dir = wiring
-        .plans_dir
-        .clone()
-        .unwrap_or_else(|| wiring.cwd.join(crate::plan::PLANS_DIR));
+    let plans_dir = crate::plan::resolve_plans_dir(wiring.plans_dir.clone(), &wiring.cwd);
     wiring.plans_dir = Some(plans_dir.clone());
     if session.compactor().is_none() {
         session.enable_compaction_with_summarizer(
