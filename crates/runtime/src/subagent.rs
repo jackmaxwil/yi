@@ -1133,12 +1133,13 @@ impl SubagentHost {
             let host = Arc::clone(self);
             registry.register(method, move |payload| {
                 let target = payload.str_of("target").map(str::to_owned);
+                let check = payload.str_of("check").map(str::to_owned);
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
                     off_executor(method, move || {
                         if merges {
-                            host.merge_worktree(&target)
+                            host.merge_worktree(&target, check.as_deref())
                         } else {
                             host.discard_worktree(&target)
                         }
