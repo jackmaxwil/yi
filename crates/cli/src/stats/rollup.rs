@@ -1,10 +1,13 @@
-//! `yi stats --since 7d --by model|upstream|day|prices [--top N]`: the sessions directory
-//! folded into one table, and the per-route prices its billed dollars imply.
+//! `yi stats --since 7d --by model|upstream|day|prices|plan [--top N]`: the sessions directory
+//! folded into one table, the per-route prices it implies, or the plan engine's ops.
 
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use serde_json::{Value, json};
-use yi_runtime::rollup::{Request, Scan, day_label, now_ms, scan};
+use yi_runtime::plan::acceptance::KIND_ACCEPTED;
+use yi_runtime::plan::state::{KIND_DONE_REFUSED, KIND_SPAWN_INTENT};
+use yi_runtime::rollup::{Request, Scan, day_label, fold_journals, now_ms, scan};
 use yi_runtime::schedule::Zone;
 
 use super::{Tokens, percentile};
@@ -22,6 +25,7 @@ enum By {
     Upstream,
     Day,
     Prices,
+    Plan,
 }
 
 /// What `--since`, `--by` and `--top` asked for; all unset means `yi stats` is the one-session view.
@@ -56,7 +60,12 @@ impl Flags {
             "upstream" => Ok(By::Upstream),
             "day" => Ok(By::Day),
             "prices" => Ok(By::Prices),
-            _ => Err(bad("by", &raw, "wants model, upstream, day or prices")),
+            "plan" => Ok(By::Plan),
+            _ => Err(bad(
+                "by",
+                &raw,
+                "wants model, upstream, day, prices or plan",
+            )),
         });
         let top = self.top.map(|raw| {
             raw.parse()
@@ -166,7 +175,7 @@ fn grouped(scan: &Scan, by: By, zone: &Zone) -> Vec<(String, Group)> {
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     for request in &scan.requests {
         let key = match by {
-            By::Model | By::Prices => route(request).0,
+            By::Model | By::Prices | By::Plan => route(request).0,
             By::Upstream => route(request).1,
             By::Day => day_label(zone, request.at_ms),
         };
@@ -446,14 +455,92 @@ fn prices_view(scanned: &Scan, window: &str, skipped: Option<String>, json_out: 
     0
 }
 
-pub fn run(query: &Query, dir: &std::path::Path, json_out: bool) -> i32 {
+/// The plan view: every applied engine op by kind and actor, from session files and the plans
+/// directory's journals, with the totals a delegation, an acceptance, a refusal and a retry make.
+fn plan_view(
+    scanned: &Scan,
+    window: &str,
+    plans: &Path,
+    skipped: Option<String>,
+    json_out: bool,
+) -> i32 {
+    const TOTALS: [(&str, &str); 4] = [
+        ("delegations", KIND_SPAWN_INTENT),
+        ("accepted", KIND_ACCEPTED),
+        ("doneRefused", KIND_DONE_REFUSED),
+        ("retries", "retry"),
+    ];
+    let mut rows: Vec<(&str, &str, u64)> = scanned
+        .plan_ops
+        .iter()
+        .map(|((op, actor), count)| (op.as_str(), actor.as_str(), *count))
+        .collect();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.2));
+    let add = |sum: u64, row: &(&str, &str, u64)| sum.saturating_add(row.2);
+    let total = rows.iter().fold(0, add);
+    let totals: BTreeMap<&str, u64> = TOTALS
+        .iter()
+        .map(|(name, kind)| (*name, rows.iter().filter(|row| row.0 == *kind).fold(0, add)))
+        .collect();
+    if json_out {
+        let table: Vec<Value> = rows
+            .iter()
+            .map(|(op, actor, count)| json!({"op": op, "actor": actor, "count": count}))
+            .collect();
+        println!(
+            "{}",
+            json!({
+                "since": window, "files": scanned.files, "journals": scanned.journals,
+                "planOps": total, "rows": table, "totals": totals,
+                "unreadable": scanned.unreadable, "badLines": scanned.bad_lines,
+            })
+        );
+        return 0;
+    }
+    println!(
+        "{window}: {total} plan op(s) from {} session file(s) and {} journal(s) under {}",
+        scanned.files,
+        scanned.journals,
+        plans.display()
+    );
+    if rows.is_empty() {
+        println!(
+            "[no plan ops: no plan_op entry in those session files, no record in those journals]"
+        );
+    } else {
+        let line: Vec<String> = totals
+            .iter()
+            .map(|(name, n)| format!("{name} {n}"))
+            .collect();
+        println!("{}", line.join(", "));
+        println!("{:<34} {:<7} {:>6}", "op", "actor", "count");
+    }
+    for (op, actor, count) in rows.iter().take(ROW_CAP) {
+        println!("{op:<34} {actor:<7} {count:>6}");
+    }
+    if rows.len() > ROW_CAP {
+        println!(
+            "[showing {ROW_CAP} of {} rows (ROW_CAP); `yi stats --by plan --json` lists all]",
+            rows.len()
+        );
+    }
+    if let Some(note) = skipped {
+        println!("{note}");
+    }
+    0
+}
+
+pub fn run(query: &Query, dir: &Path, plans: &Path, json_out: bool) -> i32 {
     let by = query.by.unwrap_or(By::Model);
     let since = query
         .since
         .as_ref()
         .map(|(_, span)| now_ms().saturating_sub(*span));
     let top = query.top;
-    let scanned = scan(dir, since.unwrap_or(0));
+    let mut scanned = scan(dir, since.unwrap_or(0));
+    if by == By::Plan {
+        fold_journals(&mut scanned, plans, since.unwrap_or(0));
+    }
     let window = query.since.as_ref().map_or("all time", |(raw, _)| raw);
     let skipped = (scanned.unreadable > 0 || scanned.bad_lines > 0).then(|| {
         format!(
@@ -463,6 +550,9 @@ pub fn run(query: &Query, dir: &std::path::Path, json_out: bool) -> i32 {
     });
     if by == By::Prices {
         return prices_view(&scanned, window, skipped, json_out);
+    }
+    if by == By::Plan {
+        return plan_view(&scanned, window, plans, skipped, json_out);
     }
     let zone = Zone::local();
     let rows = grouped(&scanned, by, &zone);
