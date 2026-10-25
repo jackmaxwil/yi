@@ -5,7 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 use crate::drive::{open_editor_script, run, session_fixture};
+use crate::editor_view::{console, key, palette};
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -81,5 +84,62 @@ fn an_unchanged_save_writes_the_same_bytes() -> TestResult {
         }
     }
     assert!(changed.is_empty(), "an unchanged save rewrote: {changed:?}");
+    Ok(())
+}
+
+/// Opens `path` in a console with no daemon, types `typed` at the cursor and saves.
+fn type_and_save(path: &Path, rewrite: Option<&str>, typed: &str) -> TestResult {
+    let (mut app, outbound) = console();
+    palette(&mut app, &outbound, &format!("e {}", path.display()));
+    if let Some(format) = rewrite {
+        printf(path, format)?;
+        app.tick(&outbound);
+    }
+    for c in typed.chars() {
+        key(
+            &mut app,
+            &outbound,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+        );
+    }
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SUPER),
+    );
+    outbound.shutdown();
+    let banner = app.state.banner.unwrap_or_default();
+    if banner.starts_with("saved") {
+        Ok(())
+    } else {
+        Err(format!("no save: {banner:?}").into())
+    }
+}
+
+/// Dies with the agent's file rewritten in the endings read at open: an editor that reloaded the
+/// agent's CRLF file saved it back LF and dropped its final newline.
+#[test]
+fn a_save_after_a_reload_keeps_the_endings_the_agent_wrote() -> TestResult {
+    let dir = Scratch::new("yi-console-save-reload")?;
+    let path = dir.join("notes.txt");
+    printf(&path, "")?;
+    type_and_save(&path, Some("hello\\r\\nworld\\r\\n"), "X")?;
+    assert_eq!(std::fs::read_to_string(&path)?, "Xhello\r\nworld\r\n");
+    Ok(())
+}
+
+/// Dies with a new file saved without the newline every other new file ends on, and with one
+/// CRLF line in a file of LF lines turning every line CRLF.
+#[test]
+fn a_typed_empty_file_ends_on_a_newline_and_a_mixed_file_keeps_its_majority() -> TestResult {
+    let dir = Scratch::new("yi-console-save-typed")?;
+    let empty = dir.join("main.rs");
+    printf(&empty, "")?;
+    type_and_save(&empty, None, "fn main() {}")?;
+    assert_eq!(std::fs::read_to_string(&empty)?, "fn main() {}\n");
+    let mixed = dir.join("mixed.txt");
+    printf(&mixed, "a\\nb\\nc\\r\\nd\\n")?;
+    type_and_save(&mixed, None, "")?;
+    assert_eq!(std::fs::read_to_string(&mixed)?, "a\nb\nc\nd\n");
     Ok(())
 }

@@ -88,7 +88,7 @@ fn the_primed_state_is_cached_and_advances_with_the_viewport() -> TestResult {
     Ok(())
 }
 
-fn console() -> (yi_console::app::App, yi_console::client::Outbound) {
+pub(crate) fn console() -> (yi_console::app::App, yi_console::client::Outbound) {
     let (events, _received) = yi_console::client::events();
     let socket = std::env::temp_dir().join("yi-editor-no-daemon.sock");
     let (outbound, _threads) = yi_console::client::spawn(socket, events);
@@ -98,12 +98,20 @@ fn console() -> (yi_console::app::App, yi_console::client::Outbound) {
     (app, outbound)
 }
 
-fn key(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, key: KeyEvent) {
+pub(crate) fn key(
+    app: &mut yi_console::app::App,
+    outbound: &yi_console::client::Outbound,
+    key: KeyEvent,
+) {
     app.handle_event(outbound, ratatui::crossterm::event::Event::Key(key));
 }
 
 /// The palette's `query`, typed and entered: `e <path>` opens an editor, `/<text>` finds.
-fn palette(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, query: &str) {
+pub(crate) fn palette(
+    app: &mut yi_console::app::App,
+    outbound: &yi_console::client::Outbound,
+    query: &str,
+) {
     key(
         app,
         outbound,
