@@ -45,8 +45,8 @@ fn an_unknown_predicate_fails_to_parse() -> Result<(), serde_json::Error> {
     Ok(())
 }
 
-/// Invariant: `after` names every variant with no wildcard arm, so a new kind stops this file
-/// compiling until it joins the chain, then fails the equality until `PREDICATES` admits it.
+/// Invariant: `after` has no wildcard arm, so a new kind fails to compile here; it is walked and
+/// held equal to [`PREDICATES`] only once the arm before it names it as the next kind.
 fn every_kind() -> Vec<ToolErrorKind> {
     use ToolErrorKind::*;
     let after = |kind| match kind {
