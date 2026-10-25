@@ -33,15 +33,9 @@ pub(super) fn run(args: &Args) -> i32 {
         },
         given => given.to_owned(),
     };
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     // Session wiring spawns runtime tasks, so the runtime context must exist before it.
     let target = session_target(args);
@@ -71,7 +65,7 @@ pub(super) fn run(args: &Args) -> i32 {
         }
     }
     let json = args.json;
-    let schema = match args.schema.as_deref().map(yi_runtime::schema::Schema::load) {
+    let schema = match crate::schema(args) {
         Some(Ok(schema)) => Some(schema),
         Some(Err(error)) => {
             eprintln!("error: {error}");
@@ -115,8 +109,8 @@ fn emit_structured(schema: &yi_runtime::schema::Schema, said: &[String], json: b
         });
         match checked {
             Ok(value) => {
-                if !json && let Ok(line) = serde_json::to_string(&value) {
-                    println!("{line}");
+                if !json {
+                    crate::print_json(&value);
                 }
                 return 0;
             }
