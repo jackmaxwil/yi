@@ -13,6 +13,7 @@ pub struct LoginOptions {
 
 pub(crate) fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30));
     if let Some(proxy) = proxy {
