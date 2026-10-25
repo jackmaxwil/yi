@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Activity;
-use super::store::{IndexLine, Store, StoreError, global_dir, loaded, repo_dir};
+use super::store::{
+    IndexLine, LOAD_BYTES, LOAD_LINES, Store, StoreError, global_dir, loaded, repo_dir,
+};
 use crate::ext::{Effect, Event, EventMask, Extension, StartReason, Trust};
 
 const SOURCE: &str = "memory";
@@ -137,7 +139,16 @@ pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
                 }
                 body.extend(scoped.lines.iter().cloned());
                 if scoped.not_loaded > 0 {
-                    body.push(format!("+{} not loaded", scoped.not_loaded));
+                    let shown = scoped.lines.len();
+                    let (cap, limit) = if shown >= LOAD_LINES {
+                        ("LOAD_LINES", LOAD_LINES)
+                    } else {
+                        ("LOAD_BYTES", LOAD_BYTES)
+                    };
+                    let all = shown.saturating_add(scoped.not_loaded);
+                    let next = "await memory.search(\"words\")";
+                    let row = crate::listed::cut_row(shown, all, "notes loaded", cap, limit, next);
+                    body.push(row);
                 }
             }
             Err(error) => body.push(format!("{label} notes not loaded: {error}")),
@@ -191,7 +202,8 @@ impl Extension for MemoryExt {
             }
         }
         self.activity.push(summary.line());
-        let text = yi_context::fit(&text, yi_context::SourceBudgets::default().memory).text;
+        let budget = yi_context::SourceBudgets::default().memory;
+        let text = yi_context::fit(&text, budget, "await memory.search(\"words\")").text;
         out.push(Effect::AttachExternal {
             source: SOURCE.to_owned(),
             trust: Trust::Untrusted,

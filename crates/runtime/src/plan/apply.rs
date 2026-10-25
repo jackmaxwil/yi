@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 use yi_types::plan::doc::{PlanId, PlanIssue, Todo, TodoLabel, TodoStateName};
 
 use super::declare::Blob;
-use super::ops::{Op, OpRequest, Outcome, PlanOpError, SetRow, TodoSpec};
+use super::ops::{Op, OpRequest, Outcome, PlanEngine, PlanOpError, SetRow, TodoSpec};
 use super::table::OpKind;
 use super::tool::{ArgError, PlanTool, PlanToolError, opt, todo_specs, view_request};
 
@@ -538,18 +538,40 @@ pub(super) fn noted(mut text: String, said: Vec<String>) -> String {
     text
 }
 
+/// A `set` as the tool reads one, on every surface: rows it does not name stay, struck rows drop
+/// once the rest lands, and what that did is a notice beside the engine's own.
+pub(super) fn apply_set(
+    engine: &PlanEngine,
+    request: OpRequest,
+    blobs: &[Blob],
+) -> Result<Outcome, PlanOpError> {
+    let mut said = Vec::new();
+    let (request, struck) = keep_omitted(engine, request, &mut said);
+    let outcome = engine.apply_with(request, blobs)?;
+    let mut outcome = drop_struck(engine, outcome, struck, &mut said);
+    outcome.notices.extend(said);
+    Ok(outcome)
+}
+
 /// Invariant: a `set` from a stale view never deletes a row it left out; the session todo list
 /// holds the same rule, so a fix to one walks the other. A row leaves by state `dropped`.
 pub(super) fn keep_omitted(
-    tool: &PlanTool,
+    engine: &PlanEngine,
     mut request: OpRequest,
     said: &mut Vec<String>,
 ) -> (OpRequest, Vec<OpRequest>) {
     if !matches!(request.op, Op::Set { .. }) {
         return (request, Vec::new());
     }
-    let held = todos_of(tool, request.plan.clone());
-    let template = request.clone();
+    let view = view_request(&request.actor, request.plan.clone());
+    let held = engine
+        .apply(view)
+        .map_or_else(|_| Vec::new(), |seen| seen.plan.todos);
+    let template = OpRequest {
+        request_id: None,
+        expected_revision: None,
+        ..request.clone()
+    };
     let Op::Set { rows, .. } = &mut request.op else {
         return (request, Vec::new());
     };
@@ -588,7 +610,7 @@ pub(super) fn keep_omitted(
 
 /// The struck rows of a checklist `set`, dropped once the rest of it landed.
 pub(super) fn drop_struck(
-    tool: &PlanTool,
+    engine: &PlanEngine,
     mut outcome: Outcome,
     struck: Vec<OpRequest>,
     said: &mut Vec<String>,
@@ -598,7 +620,7 @@ pub(super) fn drop_struck(
             continue;
         };
         let label = label.clone();
-        match tool.engine().apply(drop) {
+        match engine.apply(drop) {
             Ok(dropped) => {
                 said.push(format!("{label} was struck, so it was dropped"));
                 outcome = dropped;

@@ -20,19 +20,13 @@ fn middle_truncate(text: &str, budget: Tokens) -> String {
         return text.to_owned();
     }
     let half = keep_chars / 2;
-    let mut head_end = half;
-    while head_end > 0 && !text.is_char_boundary(head_end) {
-        head_end = head_end.saturating_sub(1);
-    }
-    let mut tail_start = text.len().saturating_sub(half);
-    while tail_start < text.len() && !text.is_char_boundary(tail_start) {
-        tail_start = tail_start.saturating_add(1);
-    }
+    let head_end = text.floor_char_boundary(half);
+    let tail_start = text.ceil_char_boundary(text.len().saturating_sub(half));
     let dropped = tail_start.saturating_sub(head_end);
     format!(
         "{}\n[... {dropped} characters truncated ...]\n{}",
-        &text[..head_end],
-        &text[tail_start..]
+        text.get(..head_end).unwrap_or_default(),
+        text.get(tail_start..).unwrap_or_default()
     )
 }
 
