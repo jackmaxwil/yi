@@ -79,6 +79,10 @@ pub fn default_plans_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_default().join(PLANS_DIR)
 }
 
+pub fn resolve_plans_dir(configured: Option<PathBuf>, workspace: &Path) -> PathBuf {
+    configured.unwrap_or_else(|| workspace.join(PLANS_DIR))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalPlanError {
     #[error("no plan is open under {dir}")]
