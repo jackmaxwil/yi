@@ -78,7 +78,7 @@ impl Applied {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SubmitError {
-    #[error("{0}")]
+    #[error("{}", super::tool::ops_spelling(&.0.to_string()))]
     Arg(#[from] ArgError),
     #[error(
         "{op} needs the user's confirmation, and nothing in this session can ask for it: say in your answer what you ran and its exit line, and leave the todo open"
@@ -94,7 +94,7 @@ pub enum SubmitError {
     },
     #[error("the confirmation could not be cited: {0}")]
     Citation(String),
-    #[error(transparent)]
+    #[error("{}", super::tool::ops_spelling(&.0.to_string()))]
     Op(#[from] PlanOpError),
 }
 

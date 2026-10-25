@@ -194,3 +194,39 @@ fn an_edited_checkpoint_is_deleted_and_the_next_set_lands() -> TestResult {
     );
     Ok(())
 }
+
+/// The plan wall's remedy, run as the model would: a set whose new rows push the plan past its
+/// cap is refused whole, and the same change with fewer rows lands.
+#[test]
+fn a_change_past_the_plan_cap_lands_once_it_sends_fewer_rows() -> TestResult {
+    let (_temp, engine, tool) = rig("over-cap")?;
+    let row = |at: usize| {
+        let cmd = format!("test -n {}", "x".repeat(900));
+        json!({"label": format!("row {at}"), "contract": {"class": "inline", "items": [
+            {"id": "check", "critical": true, "weight": 1, "decider": {"cmd": cmd}}
+        ]}})
+    };
+    let rows = |range: std::ops::Range<usize>| range.map(row).collect::<Vec<_>>();
+    let held = || -> Result<usize, Box<dyn Error>> {
+        Ok(engine
+            .apply(owner(None, Op::View { full: false }))?
+            .plan
+            .todos
+            .len())
+    };
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "set", "goal": "ship it", "todos": rows(0..36)}),
+    );
+    assert!(!refused, "{text}");
+    let (refused, text) = call(&tool, json!({"op": "set", "todos": rows(36..56)}));
+    assert!(
+        refused && text.contains("send the change with fewer or shorter rows"),
+        "{text}"
+    );
+    assert_eq!(held()?, 36, "nothing was written: {text}");
+    let (refused, text) = call(&tool, json!({"op": "set", "todos": rows(36..42)}));
+    assert!(!refused, "{text}");
+    assert_eq!(held()?, 42, "{text}");
+    Ok(())
+}

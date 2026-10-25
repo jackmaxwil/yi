@@ -25,7 +25,7 @@ fn legal_ops() -> String {
 pub(super) fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
     match (op, in_todo, key) {
         (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => {
-            Some("; a todo blocks as a set row: {label, state: blocked, on, note, options}")
+            Some(BLOCKS.0)
         }
         (OpKind::Init | OpKind::Append | OpKind::Decompose, false, "label") => {
             Some("; each todo's label goes inside todos: [{label, ...}]")
@@ -33,6 +33,26 @@ pub(super) fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static
         (_, true, "todos") => Some("; a todo's own sub-steps are the todos of its set row"),
         _ => None,
     }
+}
+
+/// A hint as the plan tool spells its move, then as plan.op and `yi plan` do: their strict set
+/// refuses a row's `on` and `note`, and reads a failed row as pending.
+pub(super) const BLOCKS: (&str, &str) = (
+    "; a todo blocks as a set row: {label, state: blocked, on, note, options}",
+    "; a todo blocks once it exists: op block with {label, on, note, options}",
+);
+pub(super) const FAILS: (&str, &str) = (
+    "; a running todo ends with fail and a cause: a set row with state failed and its cause",
+    "; a running todo ends with fail and a cause: op fail with {label, cause}",
+);
+pub(super) const REOPENS: (&str, &str) = (
+    "; only a failed todo reopens: set it failed first",
+    "; only a failed todo reopens: op fail it first",
+);
+
+pub(super) fn ops_spelling(text: &str) -> String {
+    ([BLOCKS, FAILS, REOPENS].iter())
+        .fold(text.to_owned(), |text, (tool, ops)| text.replace(tool, ops))
 }
 
 /// What the caller evidently meant, per argument: F0e sessions sent prose or a bare path as
