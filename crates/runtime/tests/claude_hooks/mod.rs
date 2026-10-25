@@ -753,8 +753,8 @@ async fn plugin_root_and_project_dir_reach_a_real_plugins_hooks() -> TestResult 
         format!("{project}|{project}")
     );
     assert!(
-        outcome.text.contains("hooks for Stop, UserPromptSubmit"),
-        "{}",
+        !outcome.text.contains("UserPromptSubmit"),
+        "the plugin's non-tool hooks reached the tool result: {}",
         outcome.text
     );
     Ok(())
