@@ -477,7 +477,7 @@ async fn the_plan_skill_is_gone_and_plan_op_answers() -> TestResult {
         Arc::new(NoChildren),
     ));
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(engine, Actor::Owner, None, &mut registry);
     let service = service_with(registry);
     let outcome = cell(
         &service,
@@ -577,7 +577,12 @@ impl PlanRig {
 
     fn kernel(&self) -> Arc<KernelService> {
         let mut registry = HostRegistry::default();
-        yi_runtime::plan::request::register(Arc::clone(&self.engine), Actor::Owner, &mut registry);
+        yi_runtime::plan::request::register(
+            Arc::clone(&self.engine),
+            Actor::Owner,
+            None,
+            &mut registry,
+        );
         let kids = Arc::clone(&self.kids);
         let engine = Arc::clone(&self.engine);
         registry.register("rlm.wait", move |_payload| {
@@ -817,7 +822,7 @@ fn crewed(
             .with_width(std::num::NonZeroUsize::MIN),
     );
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
     let reply = |value: serde_json::Value| value.as_object().cloned().ok_or("reply".to_owned());
     registry.register("rlm.wait", move |_payload| {
         let spawned = Arc::clone(&crew);

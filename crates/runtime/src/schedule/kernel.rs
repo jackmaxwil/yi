@@ -62,6 +62,10 @@ fn subscription(
 }
 
 impl HeartbeatService {
+    pub(crate) fn gate(&self) -> Option<std::sync::Arc<super::GateFn>> {
+        self.gate.clone()
+    }
+
     /// A clock job from `schedule` or a `clock://` address, or a channel subscription from any
     /// other address, with its policy and the words that set it up.
     fn create_job(

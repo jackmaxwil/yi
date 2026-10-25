@@ -228,7 +228,7 @@ impl PlanEngine {
             .unwrap_or(now)
             .min(run.deadline);
         super::verify::protecting(&manifest, root, || {
-            super::verify::run_cmd(&manifest, root, deadline, Some(run.cancel))
+            super::verify::run_cmd(&manifest, root, artifacts, deadline, Some(run.cancel))
         })
     }
 }

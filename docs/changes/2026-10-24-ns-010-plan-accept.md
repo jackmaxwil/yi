@@ -1,6 +1,6 @@
 ---
 issue: Closes #1452, Refs #1442
-raise: tests +588
+raise: tests +590
 decision: Verification runs up to max(1, min(4, slots/4)) acceptances at once and a waiter waits until the verifier's deadline | owner: "Fix bugs, keep design"; one permit with a 30 s wait bounced every concurrent worktree acceptance whose check outlasted it | restore VERIFICATION_RESERVE 1 and RESERVE_WAIT 30 s
 decision: A user's plan confirmation stands however late it arrives unless the plan changed while it was asked | owner: "Fix bugs, keep design"; a correct allow after 300 s was discarded and asked again | restore the CONFIRM_TTL check in authority.rs
 ---

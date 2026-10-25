@@ -38,6 +38,7 @@ pub(crate) mod render;
 pub mod request;
 pub mod schedule;
 pub mod snapshot;
+mod spawn;
 pub mod state;
 pub mod store;
 pub mod submit;
@@ -176,29 +177,30 @@ pub fn accept_text(check: &Check) -> &str {
     }
 }
 
+/// A loud cut's row in the shape yi-tools writes: kept of what existed, the cap that cut it, and
+/// the call that gets the rest.
+pub(super) fn cut(kept: usize, all: usize, what: &str, cap: &str, n: usize, next: &str) -> String {
+    format!("[\u{2026} {kept} of {all} {what} ({cap} {n}); the rest: {next}]")
+}
+
+/// The call that returns every todo a capped list left out.
+pub(super) const VIEW_ALL: &str = r#"plan {"op": "view", "full": true}"#;
+
+/// Rows a frontier or a compaction directive lists before it names the cut.
+const FRONTIER: usize = 16;
+
 pub fn frontier_text(plan: &Plan) -> String {
     if plan.finished() {
         return String::new();
     }
-    let mut lines = Vec::new();
-    let ready = plan.ready();
-    if !ready.is_empty() {
-        lines.push("Ready todos (edges satisfied):".to_owned());
-        for todo in &ready {
-            let mut line = format!("- {}", todo.label);
-            if let Some(delegation) = &todo.delegation {
-                line.push_str(&format!(" — accept: {}", accept_text(&delegation.accept)));
-            }
-            lines.push(line);
-        }
-    }
+    let mut live = Vec::new();
     for todo in &plan.todos {
         match &todo.state {
             TodoState::Running { by } => {
-                lines.push(format!("In progress: {} (by {by})", todo.label));
+                live.push(format!("In progress: {} (by {by})", todo.label));
             }
             TodoState::Blocked { on: _, note } => {
-                lines.push(format!("Blocked: {} — {note}", todo.label));
+                live.push(format!("Blocked: {} — {note}", todo.label));
             }
             TodoState::Pending
             | TodoState::Done { .. }
@@ -207,7 +209,39 @@ pub fn frontier_text(plan: &Plan) -> String {
             | TodoState::Other(_) => {}
         }
     }
+    let ready = plan.ready();
+    let total = ready.len().saturating_add(live.len());
+    // The cap takes ready rows before running and blocked ones, which say what is in flight.
+    live.truncate(FRONTIER);
+    let room = FRONTIER.saturating_sub(live.len());
+    let mut lines = Vec::new();
+    if !ready.is_empty() && room > 0 {
+        lines.push("Ready todos (edges satisfied):".to_owned());
+        for todo in ready.iter().take(room) {
+            let mut line = format!("- {}", todo.label);
+            if let Some(delegation) = &todo.delegation {
+                line.push_str(&format!(" — accept: {}", accept_text(&delegation.accept)));
+            }
+            lines.push(line);
+        }
+    }
+    lines.append(&mut live);
+    if total > FRONTIER {
+        lines.push(frontier_cut(total, "rows"));
+    }
     lines.join("\n")
+}
+
+fn frontier_cut(total: usize, what: &str) -> String {
+    cut(FRONTIER, total, what, "FRONTIER", FRONTIER, VIEW_ALL)
+}
+
+fn listed(labels: &[&str]) -> String {
+    let mut text = labels.get(..FRONTIER).unwrap_or(labels).join("; ");
+    if labels.len() > FRONTIER {
+        text.push_str(&format!(" {}", frontier_cut(labels.len(), "todos")));
+    }
+    text
 }
 
 /// §12's plan-aware compaction, as an instruction rather than a filter: the ledger names what
@@ -236,12 +270,12 @@ pub fn compaction_directive(plan: &Plan) -> Option<String> {
         "This session is working plan {}. Material for these todos is still load-bearing and \
          must survive in enough detail to act on: {}.",
         plan.id,
-        live.join("; ")
+        listed(&live)
     );
     if !settled.is_empty() {
         text.push_str(&format!(
             " Work on these is finished, so compress it to its outcome: {}.",
-            settled.join("; ")
+            listed(&settled)
         ));
     }
     text.push_str(" The ledger itself rehydrates from its file; do not restate it.");
