@@ -33,11 +33,9 @@
 //! disposition through `fail` or `drop` as any other non-accept exit does. Writing it from
 //! the repossession needs a road from the host into the engine's journal, which F3a owns.
 
-#[path = "../../types/tests/support/repo.rs"]
-mod repo;
+use crate::repo::init_repo;
 use crate::scratch;
 use crate::support;
-use repo::init_repo;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -2720,26 +2718,160 @@ mod accept {
     }
 }
 
-/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
-/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
-#[tokio::test]
-async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
-    let rig = Rig::new("repossess")?;
-    let store = support::memory_store("lanes-repossess");
-    let hold = Some("echo unsaved > draft.txt; sleep 30");
-    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, hold);
+/// A worktree child `name` of `family`, run on its hold, once its `draft.txt` is on disk.
+async fn spawn_writer(family: &support::Family, name: &str) -> TestResult {
     let mut asked = serde_json::Map::new();
-    asked.insert("name".to_owned(), "writer".into());
+    asked.insert("name".to_owned(), name.into());
     asked.insert("role".to_owned(), "root".into());
     asked.insert("isolation".to_owned(), "worktree".into());
     family.host.spawn("write a draft".to_owned(), asked)?;
-    let tree = family.host.cwd_of("writer").ok_or("no worktree")?;
+    let tree = family.host.cwd_of(name).ok_or("no worktree")?;
     for _ in 0..400 {
         if tree.join("draft.txt").exists() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
+    Ok(())
+}
+
+/// A child named `writer` in a worktree of the rig's repository, run on `hold`.
+async fn writer(rig: &Rig, hold: &'static str) -> Result<support::Family, Box<dyn Error>> {
+    let store = support::memory_store("lanes-writer");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, Some(hold));
+    spawn_writer(&family, "writer").await?;
+    Ok(family)
+}
+
+/// A `name` hook in the rig's repository that sleeps two seconds the first time git runs it
+/// and leaves `hook-ran` behind.
+fn slow_hook(rig: &Rig, name: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let mark = rig.root.join("hook-ran");
+    let hook = rig.repo.join(".git/hooks").join(name);
+    let script = format!(
+        "#!/bin/sh\n[ -e '{0}' ] && exit 0\n: > '{0}'\nsleep 2\n",
+        mark.display()
+    );
+    std::fs::write(&hook, script)?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// Runs `work` on this current-thread runtime and asks `rlm.status` every 20 ms meanwhile:
+/// the executor must keep answering, where a git inside the handler holds it for seconds.
+async fn served_while<T: Send + 'static>(
+    family: &support::Family,
+    work: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, Box<dyn Error>> {
+    use yi_kernel::client::HostHandlers;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let job = tokio::spawn(work);
+    let (mut polls, mut slowest) = (0, std::time::Duration::ZERO);
+    while !job.is_finished() {
+        let asked = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let status = registry.dispatch("rlm.status", serde_json::Map::new());
+        status.ok_or("rlm.status")?.await?;
+        slowest = slowest.max(asked.elapsed());
+        polls += 1;
+    }
+    assert!(
+        polls >= 10 && slowest < std::time::Duration::from_millis(200),
+        "{polls} status polls ran while the git worked, the slowest after {slowest:?}"
+    );
+    Ok(job.await?)
+}
+
+/// Incident: the hand-back's git ran inside the async handler, so one slow hook held the
+/// session's one-thread runtime and every other host call waited behind it.
+#[tokio::test]
+async fn handing_a_worktree_back_leaves_the_executor_free() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    for (method, hook) in [
+        ("rlm.merge_worktree", "post-merge"),
+        ("rlm.discard_worktree", "pre-commit"),
+        ("rlm.delete_subagent", "pre-commit"),
+    ] {
+        let rig = Rig::new(hook)?;
+        slow_hook(&rig, hook)?;
+        let family = writer(&rig, "echo unsaved > draft.txt").await?;
+        assert!(family.reaches("writer", "finished").await);
+        if method == "rlm.delete_subagent" {
+            family
+                .host
+                .mark_disposed("writer", yi_types::plan::op::Choice::Retained)?;
+        }
+        let mut registry = yi_runtime::HostRegistry::default();
+        family.host.register(&mut registry);
+        let target = serde_json::json!({"target": "writer"});
+        let asked = target.as_object().cloned().unwrap_or_default();
+        let handing = registry.dispatch(method, asked).ok_or(method)?;
+        let reply = served_while(&family, handing).await??;
+        assert!(rig.root.join("hook-ran").exists(), "{method}: {reply:?}");
+        if method == "rlm.delete_subagent" {
+            assert!(reply.contains_key("disposition"), "{reply:?}");
+        } else {
+            assert_eq!(reply["merged"], method == "rlm.merge_worktree");
+        }
+    }
+    Ok(())
+}
+
+/// Incident: a lease expiry settled the repossessed lane's git inside the expire task, so a
+/// slow hook held the session's one-thread runtime and every host call behind it.
+#[tokio::test]
+async fn a_lease_expiry_leaves_the_executor_free() -> TestResult {
+    let rig = Rig::new("expiry")?;
+    slow_hook(&rig, "pre-commit")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
+    family.host.revoke("writer", 0, "scope changed")?;
+    let host = std::sync::Arc::clone(&family.host);
+    let expired = served_while(&family, async move { host.expire().await }).await?;
+    assert_eq!(expired, ["writer"]);
+    assert!(rig.root.join("hook-ran").exists());
+    Ok(())
+}
+
+/// Incident: once the hand-back hopped to the blocking pool, concurrent `rlm.merge_worktree`
+/// calls published against one parent checkout at once, and the third lost the generation
+/// check twice and returned an error with its lane already released.
+#[tokio::test]
+async fn gathered_hand_backs_all_merge() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let rig = Rig::new("gathered")?;
+    let store = support::memory_store("lanes-gathered");
+    let hold = "echo unsaved > draft.txt; : > \"own-$$\"";
+    let root = rig.root.to_path_buf();
+    let family = support::family_with_slots(root, rig.repo.clone(), store, Some(hold), 6);
+    let names = ["first", "second", "third"];
+    for name in names {
+        spawn_writer(&family, name).await?;
+        assert!(family.reaches(name, "finished").await);
+    }
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let mut merges = Vec::new();
+    for name in names {
+        let target = serde_json::json!({"target": name});
+        let asked = target.as_object().cloned().unwrap_or_default();
+        let merge = registry.dispatch("rlm.merge_worktree", asked);
+        merges.push(tokio::spawn(merge.ok_or("rlm.merge_worktree")?));
+    }
+    for merge in merges {
+        let reply = merge.await??;
+        assert_eq!(reply["merged"], true, "{reply:?}");
+    }
+    Ok(())
+}
+
+/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
+/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
+#[tokio::test]
+async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
+    let rig = Rig::new("repossess")?;
+    let family = writer(&rig, "echo unsaved > draft.txt; sleep 30").await?;
     family.host.revoke("writer", 0, "scope changed")?;
     assert_eq!(family.host.expire().await, ["writer"]);
     let journal = family.journal();
@@ -2828,5 +2960,122 @@ fn a_stale_fetch_does_not_hold_the_claim() -> TestResult {
     let local = rig.repo.to_string_lossy().into_owned();
     git(&rig.repo, &["remote", "set-url", "origin", &local])?;
     drop(lane);
+    Ok(())
+}
+
+/// The `git` of `args` in `cwd`, success or not, as its exit status and both streams.
+fn git_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String), Box<dyn Error>> {
+    let out = yi_tools::command("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()?;
+    let text = [&out.stdout[..], &out.stderr[..]].concat();
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&text).into_owned(),
+    ))
+}
+
+/// Dies with a ref-only hand-back that replies `merged` and nothing more: the user's edit to a
+/// file the child changed stays on disk without the child's change, so the next commit undoes it.
+#[tokio::test]
+async fn a_ref_only_hand_back_lists_the_edits_it_kept() -> TestResult {
+    let rig = Rig::new("kept-yours")?;
+    std::fs::write(rig.repo.join("gone.txt"), "old\n")?;
+    git(&rig.repo, &["add", "gone.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "add gone"])?;
+    let hold =
+        "printf 'child\\n' >> README.md; printf 'c\\n' > café.txt; echo x > draft.txt; rm gone.txt";
+    let family = writer(&rig, hold).await?;
+    assert!(family.reaches("writer", "finished").await);
+    for (path, text) in [
+        ("README.md", "base\nmine\n"),
+        ("café.txt", "mine\n"),
+        ("gone.txt", "old\nmine\n"),
+        ("elsewhere.txt", "mine\n"),
+    ] {
+        std::fs::write(rig.repo.join(path), text)?;
+    }
+    let reply = family.host.merge_worktree("writer")?;
+    assert_eq!(reply["merged"], true, "{reply:?}");
+    assert_eq!(reply["published"], "ref_only", "{reply:?}");
+    let mut kept: Vec<&str> = reply
+        .get("kept_yours")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("no kept_yours: {reply:?}"))?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    kept.sort_unstable();
+    assert_eq!(kept, ["README.md", "café.txt", "gone.txt"], "{reply:?}");
+    let next = reply
+        .get("next")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("no next sentence: {reply:?}"))?;
+    assert!(
+        next.contains("git diff HEAD") && next.contains("git show HEAD:"),
+        "{next}"
+    );
+    let (_, diff) = git_raw(&rig.repo, &["diff", "HEAD", "--", "README.md"])?;
+    assert!(diff.contains("-child") && diff.contains("+mine"), "{diff}");
+    assert_eq!(git(&rig.repo, &["show", "HEAD:README.md"])?, "base\nchild");
+    let (_, gone) = git_raw(&rig.repo, &["status", "--porcelain", "--", "gone.txt"])?;
+    assert_eq!(gone.trim(), "?? gone.txt", "{gone}");
+    assert!(!git_raw(&rig.repo, &["show", "HEAD:gone.txt"])?.0);
+    assert!(
+        next.contains("missing from HEAD") && next.contains("deleted"),
+        "{next}"
+    );
+    Ok(())
+}
+
+/// Dies with a fast-forward reply that carries `kept_yours`: nothing was kept, and a list that
+/// is sometimes empty and sometimes absent makes the model test for both.
+#[tokio::test]
+async fn a_fast_forward_hand_back_keeps_nothing_and_says_so_by_omission() -> TestResult {
+    let rig = Rig::new("kept-none")?;
+    let family = writer(&rig, "printf 'child\\n' >> README.md; echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let reply = family.host.merge_worktree("writer")?;
+    assert_eq!(reply["published"], "fast_forward", "{reply:?}");
+    assert!(
+        !reply.contains_key("kept_yours") && !reply.contains_key("next"),
+        "{reply:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a conflict reply that stops at `merged: false`: the child's lane is released, so
+/// only the branch it names and a git call that merges or drops it lead anywhere.
+#[tokio::test]
+async fn a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it() -> TestResult {
+    let rig = Rig::new("conflict-next")?;
+    let family = writer(&rig, "printf 'child\\n' > README.md; echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    std::fs::write(rig.repo.join("README.md"), "parent\n")?;
+    git(&rig.repo, &["commit", "-qam", "parent moved"])?;
+    let before = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    let reply = family.host.merge_worktree("writer")?;
+    assert_eq!(reply["merged"], false, "{reply:?}");
+    let branch = reply["branch"].as_str().ok_or("no branch")?;
+    let next = reply
+        .get("next")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("no next sentence: {reply:?}"))?;
+    assert!(next.contains(&format!("git merge {branch}")), "{next}");
+    assert!(next.contains(&format!("git branch -D {branch}")), "{next}");
+    assert_eq!(git(&rig.repo, &["rev-parse", "HEAD"])?, before);
+    let (merged, said) = git_raw(&rig.repo, &["merge", "--no-edit", branch])?;
+    assert!(!merged && said.contains("CONFLICT"), "{said}");
+    let unmerged = git(&rig.repo, &["diff", "--name-only", "--diff-filter=U"])?;
+    assert_eq!(
+        unmerged,
+        reply["conflict_provenance"][0]["path"]
+            .as_str()
+            .ok_or("no path")?
+    );
+    git(&rig.repo, &["merge", "--abort"])?;
+    git(&rig.repo, &["branch", "-D", branch])?;
+    assert!(!git_raw(&rig.repo, &["rev-parse", "--verify", "-q", branch])?.0);
     Ok(())
 }

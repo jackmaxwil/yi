@@ -51,7 +51,7 @@ use serde_json::{Value, json};
 use yi_runtime::plan::artifact::Artifacts;
 use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError, TodoSpec};
 use yi_runtime::plan::store::PlanStore;
-use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze};
+use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze, session_has};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::canonical::{ArtifactRef, Digest};
 use yi_types::plan::contract::{Contract, ItemVerdict, Outcome, VerificationToken};
@@ -286,7 +286,9 @@ fn a_failing_checkers_output_past_the_ceiling_names_a_file_not_a_rerun() -> Test
 fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
     let temp = Scratch::new("yi-verify-grandchild")?;
     let artifacts = Artifacts::under(&temp);
-    let checker = put(&artifacts, &manifest("sleep 5993 &", 30_000, &[]))?;
+    // The fraction is this process's own, so a sibling suite's sleeper is never counted here.
+    let sleeper = format!("sleep 5993.{}", std::process::id());
+    let checker = put(&artifacts, &manifest(&format!("{sleeper} &"), 30_000, &[]))?;
     let contract = cmd_contract(checker, 30_000)?;
     let started = std::time::Instant::now();
     let verdict = Verifier::new(1_000).run(
@@ -319,7 +321,8 @@ fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
         let survivors = yi_tools::run_captured(
             {
                 let mut ps = yi_tools::command("/bin/sh");
-                ps.args(["-c", "ps -axo command | grep -c '^sleep 5993' || true"]);
+                let count = format!("ps -axo command | grep -cx '{sleeper}' || true");
+                ps.args(["-c", &count]);
                 ps
             },
             None,
@@ -376,12 +379,15 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
         ),
     ];
     for (value, expected) in bad {
-        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?)
+        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?, session_has)
             .err()
             .ok_or_else(|| format!("{value} was accepted"))?;
         assert!(refusal.contains(expected), "{value}: {refusal}");
     }
-    CheckerManifest::parse(&serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?)?;
+    CheckerManifest::parse(
+        &serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?,
+        session_has,
+    )?;
     // Through the engine: the refusal lands at start, when the contract is frozen, never at done.
     let temp = Scratch::new("yi-verify-freeze")?;
     let store = PlanStore::open(temp.join("plans"))?;

@@ -668,3 +668,28 @@ print(repr(rows))
     assert!(text.contains(expected), "{text}");
     Ok(())
 }
+
+/// A program's read through the adapter a session builds cuts at the shipped item fuse, so the
+/// cut names 100,000 lines however far the tool tests lower it.
+#[tokio::test]
+async fn a_program_read_through_the_adapter_cuts_at_the_shipped_fuse() -> Result<(), Box<dyn Error>>
+{
+    let (_dir, cwd) = scratch("kernel-tools-fuse")?;
+    let lines: String = (1..=100_001).map(|n| format!("{n}\n")).collect();
+    std::fs::write(cwd.join("long.txt"), lines)?;
+    let read = (yi_tools::builtin_tools().into_iter())
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let adapter = yi_runtime::tools::ToolAdapter::new(read, cwd, Arc::new(|| false), None);
+    let mut args = Map::new();
+    args.insert("path".to_owned(), json!("long.txt"));
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let (outcome, value) = yi_loop::AgentTool::execute_program(&adapter, "c1", args, &signal).await;
+    let value = value.ok_or_else(|| format!("no value: {:?}", outcome.result))?;
+    let cut = value["cut"].as_str().unwrap_or_default();
+    assert!(
+        cut.contains("the program fuse is 100000 lines; read with offset=100001"),
+        "{cut}"
+    );
+    Ok(())
+}

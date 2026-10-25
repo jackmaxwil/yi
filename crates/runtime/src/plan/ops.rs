@@ -32,6 +32,8 @@ use yi_types::plan::op::Reaped;
 
 pub(crate) use yi_types::plan::doc::OWNER_AGENT;
 pub(crate) const ENGINE_AGENT: &str = "engine";
+pub(crate) const CLASSIFIER_ACTOR: &str = "classifier";
+pub(crate) const HOST_ACTOR: &str = "host";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
 
@@ -1078,8 +1080,8 @@ fn actor_word(actor: &Actor) -> String {
         Actor::Owner => OWNER_AGENT.to_owned(),
         Actor::Child(agent) => agent.as_str().to_owned(),
         Actor::User(citation) => citation.to_string(),
-        Actor::Classifier => "classifier".to_owned(),
-        Actor::Host => "host".to_owned(),
+        Actor::Classifier => CLASSIFIER_ACTOR.to_owned(),
+        Actor::Host => HOST_ACTOR.to_owned(),
         Actor::Engine => ENGINE_AGENT.to_owned(),
     }
 }
