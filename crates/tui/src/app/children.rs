@@ -110,7 +110,8 @@ impl App {
         }
         self.retired_tasks.remove(&id);
         if !self.tasks.contains_key(&id) {
-            let (spawn, born_under) = self.spawned_under(spawned_by);
+            // Invariant: a feed comes only with the roster's record, where no cell means none ran.
+            let (spawn, born_under) = self.spawned_under(spawned_by, session.is_some());
             self.task_order.push(id.clone());
             self.tasks.insert(
                 id.clone(),
