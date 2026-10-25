@@ -7,7 +7,6 @@ pub struct Snapshot {
     pub path: String,
     pub text: String,
     pub hash: FileTag,
-    pub recorded_at: u64,
     pub seen_lines: Option<HashSet<u64>>,
     /// Invariant: lines a kernel program's `read` returned, which only a program's edit may
     /// anchor to; the model's own edits still answer to `seen_lines` alone.
@@ -31,17 +30,11 @@ const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Default, Clone)]
 pub struct SnapshotStore {
     paths: Vec<(String, Vec<Snapshot>)>,
-    clock: u64,
 }
 
 impl SnapshotStore {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    fn tick(&mut self) -> u64 {
-        self.clock = self.clock.saturating_add(1);
-        self.clock
     }
 
     fn touch(&mut self, path: &str) -> Option<&mut Vec<Snapshot>> {
@@ -101,7 +94,6 @@ impl SnapshotStore {
 
     pub fn record(&mut self, path: &str, full_text: &str, seen_lines: Option<&[u64]>) -> FileTag {
         let hash = compute_file_hash(full_text);
-        let recorded_at = self.tick();
         if self.touch(path).is_none() {
             self.paths.insert(0, (path.to_owned(), Vec::new()));
         }
@@ -115,7 +107,6 @@ impl SnapshotStore {
             .position(|version| version.hash == hash && version.text == full_text)
         {
             let mut existing = history.remove(position);
-            existing.recorded_at = recorded_at;
             merge_seen_lines(&mut existing, seen_lines);
             history.insert(0, existing);
             return hash;
@@ -124,7 +115,6 @@ impl SnapshotStore {
             path: path.to_owned(),
             text: full_text.to_owned(),
             hash,
-            recorded_at,
             seen_lines: None,
             program_lines: HashSet::new(),
         };

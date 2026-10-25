@@ -43,7 +43,8 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
         Path::new("/home/user"),
         Some(Path::new("/home/user/.yi/sessions")),
     );
-    let policy = sandbox.policy();
+    let (program, args) = sandbox.wrap("sh", &["-c", "ls"]);
+    let policy = args.get(1).ok_or("the policy follows -p")?;
     assert!(
         policy.contains("(deny default)"),
         "the base policy is first"
@@ -60,22 +61,21 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
         "loopback is the one network, for every profile: {policy}"
     );
 
-    let params = sandbox.params();
-    let keys: Vec<&str> = params.iter().map(|(key, _)| key.as_str()).collect();
-    assert!(keys.contains(&"WRITABLE_ROOT_0"));
-    assert!(keys.contains(&"DENY_READ_0"));
+    let params: Vec<(&str, &str)> = args
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("-D")?.split_once('='))
+        .collect();
+    assert!(params.iter().any(|(key, _)| *key == "WRITABLE_ROOT_0"));
+    assert!(params.iter().any(|(key, _)| *key == "DENY_READ_0"));
     assert!(
-        params.iter().any(|(_, path)| path == Path::new("/repo")),
+        params.iter().any(|(_, path)| *path == "/repo"),
         "the working tree is writable"
     );
     assert!(
-        params
-            .iter()
-            .any(|(_, path)| path == Path::new("/home/user/.ssh")),
+        params.iter().any(|(_, path)| *path == "/home/user/.ssh"),
         "credential stores are read-denied"
     );
 
-    let (program, args) = sandbox.wrap("sh", &["-c", "ls"]);
     assert_eq!(program, "/usr/bin/sandbox-exec");
     assert_eq!(args.first().map(String::as_str), Some("-p"));
     let tail: Vec<&str> = args.iter().rev().take(3).map(String::as_str).collect();
@@ -906,10 +906,11 @@ fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
     let common = trunk.join(".git").canonicalize()?;
     let gitdir = PathBuf::from(git(&lane, &["rev-parse", "--absolute-git-dir"])?).canonicalize()?;
     let roots: Vec<PathBuf> = sandbox
-        .params()
-        .into_iter()
-        .filter(|(key, _)| key.starts_with("WRITABLE_ROOT_"))
-        .map(|(_, path)| path)
+        .wrap("true", &[])
+        .1
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("-DWRITABLE_ROOT_")?.split_once('='))
+        .map(|(_, path)| PathBuf::from(path))
         .collect();
     for wanted in [&gitdir, &common] {
         assert!(
