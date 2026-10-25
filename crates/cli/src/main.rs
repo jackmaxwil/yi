@@ -544,6 +544,10 @@ fn build_session(
     Ok((session, host))
 }
 
+fn plans_dir(workspace: &std::path::Path) -> std::path::PathBuf {
+    configured_plans_dir(workspace).unwrap_or_else(|| workspace.join(yi_runtime::plan::PLANS_DIR))
+}
+
 /// `plans.dir`, relative to the workspace root unless absolute. Unset leaves
 /// the resolver's own `.yi/plans` default in place.
 fn configured_plans_dir(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -618,7 +622,7 @@ fn run_gc(fix: bool) {
 fn run_why(args: &Args) -> i32 {
     let cwd = effective_cwd(args);
     let options = why::Options {
-        plans_dir: configured_plans_dir(&cwd),
+        plans_dir: plans_dir(&cwd),
         cwd,
         json: args.json,
     };
@@ -628,7 +632,7 @@ fn run_why(args: &Args) -> i32 {
 fn run_plan(args: &Args) -> i32 {
     let cwd = effective_cwd(args);
     let options = plan::Options {
-        plans_dir: configured_plans_dir(&cwd),
+        plans_dir: plans_dir(&cwd),
         session_dir: default_session_dir(args),
         cwd,
         json: args.json,
@@ -1084,7 +1088,7 @@ fn dispatch(args: Args) {
             let cwd = effective_cwd(&args);
             let options = stats::Options {
                 session_dir: default_session_dir(&args),
-                plans_dir: configured_plans_dir(&cwd),
+                plans_dir: plans_dir(&cwd),
                 cwd: cwd.display().to_string(),
                 json: args.json,
                 query: args.stats.clone(),

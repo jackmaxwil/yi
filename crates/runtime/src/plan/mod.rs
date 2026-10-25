@@ -38,6 +38,7 @@ pub(crate) mod render;
 pub mod request;
 pub mod schedule;
 pub mod snapshot;
+mod spawn;
 pub mod state;
 pub mod store;
 pub mod submit;

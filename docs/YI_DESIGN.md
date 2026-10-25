@@ -278,12 +278,15 @@ The system prompt is a table of ranked slots plus a yard of fenced external text
 extension `Host` whose synchronous extensions turn session events into effects.
 
 - `PromptState::assemble` joins three blocks with `SYSTEM_BLOCK_SEPARATOR`: ranks ≤ `Doctrine`,
-  ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, the permission-mode
+  ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, `delegation` (Doctrine
+  rank, only when `can_delegate`), the permission-mode
   fragment, user system text and schema instruction (text compiled in from
   `crates/runtime/src/prompts/`); a headless ask (`yi ask` or bare prompt words) with no terminal on stdin also attaches
   `unattended` (Mode rank): nobody answers, hidden checks grade the task text, a check per
   requirement, one verifier cell before stopping. Then it registers `project-resources` (skills catalog), `pack`
-  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `plugins` (the card of each plugin found,
+  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate` (only when `ExtOptions::can_delegate`, which a
+  child gets while its own depth is below `max_depth`; one the depth cap stops from spawning is
+  never sent the protocol), `plugins` (the card of each plugin found,
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
@@ -331,7 +334,8 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `annotate`, `plan`, `todo`, and `ask_user`. `check_request_budget.py` prices system block plus tool
-  table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
+  table against a shrink-only baseline and locks each tool's text and sha256 in `tool_surface.json`;
+  a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
   (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
@@ -612,7 +616,16 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
-  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
+  `role="reader"` (D308); a juror and a service are `root`, and so is a plan delegation unless it
+  reads only: spec role `reader`, an accept that is not a command, no isolation, tools within
+  `read` and `grep`, and no `kernel://`, `family://` or directory context. That one spawns
+  `role="reader"`, its context the partition and its schema (the declared output's, else the
+  contract's schema item) inlined; a Writer or a command-accepted delegation stays `root` (#937).
+  A `root` child the
+  depth cap leaves unable to spawn (its own depth has reached `max_depth`, so every one at the
+  default `rlm.maxDepth` of 1) is a leaf: no `orchestrate` protocol, and no `delegation` fragment,
+  which holds the working model's delegation rules, Planning's lift rule and the RLM children
+  bullet. A reader is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
@@ -1230,7 +1243,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
-| `check_request_budget` | system-prompt and tool-table bytes; tool-surface hashes (D188) | `request_budget.json`, `tool_surface.json` |
+| `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
 | `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |
