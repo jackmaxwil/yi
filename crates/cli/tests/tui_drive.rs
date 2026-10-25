@@ -130,6 +130,56 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     Ok(())
 }
 
+/// Dies with an `@` picker over 101 files that searched only the first 100: typing the last
+/// file's name matched nothing, and Enter on no match dropped the typed text from the composer.
+#[test]
+fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestResult {
+    let dir = Scratch::new("yi-tui-picker")?;
+    let home = dir.home()?;
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree)?;
+    for n in 0..101 {
+        std::fs::write(tree.join(format!("f{n:03}.txt")), "x")?;
+    }
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\ntype @\nwait-frame 10000 \u{2026} 93 more\n\
+         type f100\nkey enter\nwait-frame 10000 !@f100\n\
+         wait-frame 10000 \u{2502}f100.txt\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--cwd",
+            &tree.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "ping",
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "the composer never held the file typed into the picker: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 #[test]
 fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     let dir = Scratch::new("yi-tui-new")?;
@@ -1581,5 +1631,91 @@ fn a_pasted_control_character_is_dropped_behind_a_slash_command() -> TestResult 
     let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
     let row = last.lines().next().ok_or("an empty frame")?;
     assert_eq!(row.trim_matches(['"', ',', ' ']), "/treex[31mredy\u{2588}");
+    Ok(())
+}
+
+/// A typo'd command and `/pr` (routed, but missing from the popup's table) each answer on the
+/// spot. Both took a model turn before: the box held `/plna`, the first word named no command
+/// the table knew, and the line went out as a prompt.
+#[test]
+fn a_typo_and_pr_answer_locally_without_a_model_turn() -> TestResult {
+    let dir = Scratch::new("yi-tui-slash-local")?;
+    let home = dir.home()?;
+    let keys = dir.join("keys");
+    std::fs::write(
+        &keys,
+        "type /plna\nkey enter\nwait-frame 10000 unknown command: /plna\n\
+         type /pr\nkey enter\nwait-frame 10000 /pr: \nquit\n",
+    )?;
+    let frames = dir.join("frames");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--cwd",
+            &dir.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
+    assert!(
+        !last.contains("faux:"),
+        "a model turn answered a slash line: {last}"
+    );
+    Ok(())
+}
+
+/// Dies with `ctrl-x ctrl-e` parsed into a sequence nothing resolves: the config said it was
+/// bound, the key did nothing, and nothing said why.
+#[test]
+fn a_chord_in_the_keys_config_stops_the_drive_naming_it() -> TestResult {
+    let dir = Scratch::new("yi-tui-chord")?;
+    let home = dir.home()?;
+    std::fs::create_dir_all(home.join(".yi"))?;
+    std::fs::write(
+        home.join(".yi/config.json"),
+        r#"{"kernel":{"prewarm":false},"keys":{"ctrl-x ctrl-e":"external-editor"}}"#,
+    )?;
+    let keys = dir.join("keys");
+    std::fs::write(&keys, "quit\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+        ])
+        .env("HOME", &home)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("ctrl-x ctrl-e"), "{stderr}");
     Ok(())
 }

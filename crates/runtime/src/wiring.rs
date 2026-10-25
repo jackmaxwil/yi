@@ -743,7 +743,7 @@ pub(crate) fn wire_job_completions(session: &AgentSession) {
     tokio::spawn(crate::session::until(job_settled(), move || {
         let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
         let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), &report.output);
+            let (job, headline, body) = (report.id, report.headline(), report.view());
             let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
             let unread: crate::session::StillNews =
                 Arc::new(move || !yi_tools::jobs::registry().delivered(job));
@@ -893,6 +893,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
     crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, &wiring, registry);
+    host.attach_kernel(&service);
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);
