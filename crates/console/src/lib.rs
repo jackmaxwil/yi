@@ -566,7 +566,7 @@ fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
             cells
                 .iter()
                 .rev()
-                .flat_map(|cell| cell.images.iter())
+                .flat_map(|cell| cell.images.iter().rev())
                 .next()
         })
         .and_then(|image| {

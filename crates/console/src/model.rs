@@ -191,7 +191,10 @@ pub struct NbCell {
     pub stderr: String,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// Invariant: only the session's newest cell with images keeps their base64; every cell keeps
+    /// `image_bytes`, their lengths, for its size rows.
     pub images: Vec<String>,
+    pub image_bytes: Vec<usize>,
     pub dropped_image_bytes: Vec<usize>,
     pub images_past_limit: usize,
     pub duration_ms: Option<u64>,
