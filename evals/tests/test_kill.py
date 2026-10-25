@@ -174,6 +174,25 @@ class Ledger(unittest.TestCase):
                 unrun = [row["why"] for row in r.ledger() if row["kind"] == "unrun"]
                 self.assertEqual(unrun, [] if runs else ["needs $0.28, $0.27 left of $30"])
 
+    def test_a_reserve_whose_runner_died_is_closed_by_hand_at_its_full_reserve(self):
+        with rig() as r:
+            r.module("hung", ["flash"], {"flash": 0.4})
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead.wait()
+            with kill.ledger() as (_, write):
+                write({"kind": "reserve", "key": "hung/flash/dead", "test": "hung", "family": "flash", "usd": 0.4,
+                       "pid": dead.pid})
+                write({"kind": "reserve", "key": "hung/flash/live", "test": "hung", "family": "flash", "usd": 0.3,
+                       "pid": os.getpid()})
+            self.assertEqual(quiet(["budget", "--close", "hung/flash/live"]),
+                             (2, f"refused: hung/flash/live's runner, pid {os.getpid()}, is alive and settles it itself\n"))
+            code, out = quiet(["budget", "--close", "hung/flash/dead"])
+            self.assertEqual(code, 0, out)
+            shown = json.loads(out)
+            self.assertEqual((shown["spentUsd"], shown["heldUsd"], shown["open"]), (0.4, 0.3, ["hung/flash/live"]))
+            self.assertEqual(quiet(["budget", "--close", "hung/flash/dead"])[0], 2, "a closed reserve closes once")
+            self.assertEqual(quiet(["report"])[1].strip(), "hung: unrun: needs $0.40", "a closed reserve never ran")
+
     def test_twelve_threads_and_another_process_never_reserve_past_the_cap(self):
         with rig() as r:
             path = r.root / "next-shape" / "ledger.jsonl"
@@ -367,6 +386,16 @@ class Quota(unittest.TestCase):
                                                       "exhausted and `yi catalog usage kimi` gave no reset"))
             self.assertEqual(quiet(["report"])[1].strip(), "dead: unrun: needs $0.50")
 
+    def test_a_paid_family_that_meets_a_quota_429_is_not_run_and_never_judged(self):
+        with rig() as r:
+            r.streams(QUOTA, EVENTS)
+            r.module("paidq", ["flash"], {"flash": 0.2})
+            code, out = quiet(["run", "paidq", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (1, "paidq flash: 0 runs, $0.0000, 1 not run, "
+                                                      "needs $0.20: the quota stayed exhausted"))
+            self.assertEqual(len([n for n in r.notes() if "ask" in n]), 1, "a paid route is never parked or retried")
+            self.assertEqual(quiet(["report"])[1].strip(), "paidq: unrun: needs $0.20")
+
 
 class Isolation(unittest.TestCase):
     def test_a_route_s_routing_reaches_the_run_home_config_verbatim(self):
@@ -458,17 +487,44 @@ class Runs(unittest.TestCase):
             kill.TRIALS.mkdir()
             sweep = [sys.executable, "-c", (
                 "import json, os, sys\n"
-                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP']}\n"
+                "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP'], 'job': sys.argv[2]}\n"
                 "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write(json.dumps(row) + '\\n')\n"),
                 str(kill.TRIALS)]
-            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "first"]}, 1.0)
             filed = json.loads((kill.TRIALS / "ns-tb-flash-one.jsonl").read_text())
-            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"]), ("ok", 0.12, "1.00"), row)
-            again = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
-            self.assertEqual((again["chargedUsd"], again["trials"]), (0.12, 1), "a re-run pays only its own rows")
+            self.assertEqual((row["status"], row["chargedUsd"], filed["cap"], row["jobs"]), ("ok", 0.12, "1.00", ["first"]), row)
+            again = kill.harbor("tb", "flash", {"id": "one", "harbor": [*sweep, "again"]}, 1.0)
+            self.assertEqual((again["chargedUsd"], again["trials"], again["jobs"]), (0.12, 1, ["again"]),
+                             "a re-run pays for and names only its own rows")
             silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
             self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
             self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
+
+    def test_an_old_corrupt_line_is_skipped_and_a_torn_one_this_sweep_filed_charges_the_cap(self):
+        with rig() as r:
+            kill.TRIALS.mkdir()
+            (kill.TRIALS / "ns-tb-flash-one.jsonl").write_text('{"costUsd": 0.5}\n{"costUsd": 0.1\n[1]\n')
+            sweep = [sys.executable, "-c", (
+                "import json, os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "json.dumps({'costUsd': 0.12}) + '\\n')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            self.assertEqual((row["status"], row["trials"], row["chargedUsd"]), ("ok", 1, 0.12), row)
+            torn = [sys.executable, "-c", (
+                "import os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "'{\"costUsd\": 0.2}\\n{\"costUsd\": 0.3')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": torn}, 0.8)
+            self.assertEqual((row["trials"], row["unreadable"], row["chargedUsd"]), (1, 1, 0.8),
+                             "a torn final append is charged the cap and named, never dropped")
+            self.assertIn("1 line(s) this sweep filed", row["why"])
+            fused = [sys.executable, "-c", (
+                "import os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "'{\"costUsd\": 0.4}\\n{\"costUsd\": 0.1}\\n')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": fused}, 0.9)
+            self.assertEqual((row["trials"], "unreadable" in row, row["chargedUsd"]), (2, False, 0.5),
+                             "a re-run's first row never fuses onto the torn line the last sweep left")
 
     def test_the_sweep_cap_is_the_lower_of_the_trials_cap_and_the_reserve_handed_down(self):
         with tempfile.TemporaryDirectory() as store:
