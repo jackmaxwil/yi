@@ -33,6 +33,7 @@ struct Rig {
     root: Scratch,
     host: Arc<SubagentHost>,
     built: Built,
+    delivered: Arc<Mutex<Vec<String>>>,
 }
 
 fn reply(text: &str) -> AgentMessage {
@@ -41,7 +42,7 @@ fn reply(text: &str) -> AgentMessage {
 
 /// A reader is built by the runtime's own `reader::session`; a root child is a plain session.
 fn rig(answer: &'static str) -> Result<Rig, Box<dyn Error>> {
-    let root = Scratch::new("yi-plan-readers")?;
+    let root = crate::node::git_repo("yi-plan-readers")?;
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws)?;
     std::fs::write(ws.join("notes.txt"), "red sun\nblue sky\ngreen sea\n")?;
@@ -97,13 +98,23 @@ fn rig(answer: &'static str) -> Result<Rig, Box<dyn Error>> {
         family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     host.set_resolver(Arc::new(Resolver::new(ws, yi_runtime::Wall::default())));
-    Ok(Rig { root, host, built })
+    Ok(Rig {
+        root,
+        host,
+        built,
+        delivered: Arc::default(),
+    })
 }
 
 fn delegate(rig: &Rig) -> SessionDelegate {
+    let sink = Arc::clone(&rig.delivered);
     SessionDelegate::new(
         Arc::clone(&rig.host),
-        Arc::new(|_message, _mode| {}),
+        Arc::new(move |message, _mode| {
+            if let Ok(mut sink) = sink.lock() {
+                sink.push(format!("{message:?}"));
+            }
+        }),
         Arc::new(FetchLog::new()),
     )
 }
@@ -137,7 +148,8 @@ fn at(label: &str) -> Result<TodoAddr, Box<dyn Error>> {
 }
 
 /// Dies with `kwargs_of` inserting `role="root"` for every delegation: the Reader is built a
-/// root child, whose prompt is the root's and whose partition is a prose list of URLs.
+/// root child, whose prompt is the root's and whose partition is a prose list of URLs. Dies
+/// with the reap measuring the inlined partition: the parent is told its context went unread.
 #[tokio::test]
 async fn a_plan_reader_with_a_schema_contract_runs_as_a_reader_and_is_accepted() -> TestResult {
     let rig = rig(
@@ -200,6 +212,13 @@ async fn a_plan_reader_with_a_schema_contract_runs_as_a_reader_and_is_accepted()
     let built = rig.built.lock().map_err(|_| "poisoned")?.clone();
     let (_, reader, prompt) = built.first().ok_or("no child built")?;
     assert!(*reader && prompt == READER_PROMPT, "{prompt}");
+    let delivered = rig.delivered.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        !delivered
+            .iter()
+            .any(|note| note.contains("context relevance")),
+        "{delivered:?}"
+    );
     let texts = user_texts(&rig)?;
     let partition = texts.first().ok_or("no first message")?;
     assert!(
@@ -244,5 +263,62 @@ async fn a_reader_given_a_kernel_value_stays_a_root_child() -> TestResult {
     delegate(&rig).spawn(&at("read-the-value")?, &delegation)?;
     let built = rig.built.lock().map_err(|_| "poisoned")?.clone();
     assert!(matches!(built.first(), Some((_, false, _))), "{built:?}");
+    Ok(())
+}
+
+/// Dies with the directory clause dropped: a reader's partition reads each entry as one file,
+/// so `local://crates/auth` is refused at spawn where the root child would list and read it.
+#[tokio::test]
+async fn a_reader_given_a_directory_stays_a_root_child() -> TestResult {
+    let rig = rig("done")?;
+    let auth = rig.root.join("ws/crates/auth/src");
+    std::fs::create_dir_all(&auth)?;
+    std::fs::write(auth.join("lib.rs"), "pub fn login() {}\n")?;
+    let stated = json!({"stated": "read it"});
+    delegate(&rig).spawn(
+        &at("read-auth")?,
+        &reader_delegation(stated.clone(), "local://crates/auth")?,
+    )?;
+    let mut beside = reader_delegation(stated, "local://notes.txt")?;
+    beside.context.push("local://crates".parse()?);
+    delegate(&rig).spawn(&at("read-beside")?, &beside)?;
+    let built = rig.built.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        built.len() == 2 && built.iter().all(|(_, reader, _)| !reader),
+        "{built:?}"
+    );
+    Ok(())
+}
+
+/// Dies with any one clause of the routing test dropped: each case differs from the routed
+/// Reader in that one part, and a reader child would refuse the spawn the root child takes.
+#[tokio::test]
+async fn each_part_a_reader_cannot_take_keeps_a_root_child() -> TestResult {
+    let rig = rig("done")?;
+    let cases = [
+        ("writer", "role", json!("writer")),
+        ("worktree", "isolation", json!("worktree")),
+        ("bash", "tools", json!(["read", "bash"])),
+        (
+            "family",
+            "context",
+            json!(["local://notes.txt", "family://main/notes"]),
+        ),
+    ];
+    for (part, key, value) in cases {
+        let mut wire = json!({"spec": {"role": "reader"}, "accept": "stated: read it",
+            "context": ["local://notes.txt"]});
+        match key {
+            "context" => wire[key] = value,
+            _ => wire["spec"][key] = value,
+        }
+        let delegation: Delegation = serde_json::from_value(wire)?;
+        delegate(&rig).spawn(&at(&format!("read-{part}"))?, &delegation)?;
+    }
+    let built = rig.built.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        built.len() == 4 && built.iter().all(|(_, reader, _)| !reader),
+        "{built:?}"
+    );
     Ok(())
 }

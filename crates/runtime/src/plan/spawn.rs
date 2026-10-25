@@ -1,7 +1,10 @@
+use std::path::Path;
+
 use serde_json::{Map, Value};
 use yi_types::plan::canonical::DIGEST_PREFIX;
 use yi_types::plan::contract::Decider;
 use yi_types::plan::doc::{AgentId, Check, Delegation, Isolation, Todo, TodoAddr};
+use yi_types::url::Scheme;
 
 use super::artifact::Artifacts;
 use super::output::OutputResolve;
@@ -24,9 +27,9 @@ fn accept_line(accept: &Check) -> String {
     }
 }
 
-/// A Reader runs as a reader child only when nothing it was given needs a root: a reader runs no
-/// check, isolates nothing, calls read and grep alone, and takes no kernel or family partition.
-pub(super) fn reads_only(delegation: &Delegation) -> bool {
+/// A Reader runs as a reader child only when nothing it was given needs a root: no check, no
+/// isolation, read and grep alone, and a partition of files, which is all a reader can inline.
+pub(super) fn reads_only(delegation: &Delegation, cwd: &Path) -> bool {
     let spec = &delegation.spec;
     spec.role.as_deref() == Some("reader")
         && !matches!(delegation.accept, Check::Command(_))
@@ -35,10 +38,10 @@ pub(super) fn reads_only(delegation: &Delegation) -> bool {
             .tools
             .iter()
             .all(|tool| ["read", "grep"].contains(&tool.as_str()))
-        && delegation
-            .context
-            .iter()
-            .all(|url| !matches!(url.scheme().as_str(), "kernel" | "family"))
+        && delegation.context.iter().all(|url| match url.scheme() {
+            Scheme::Local => !cwd.join(url.path()).is_dir(),
+            scheme => !matches!(scheme.as_str(), "kernel" | "family"),
+        })
 }
 
 /// The declared output's schema, else the contract's schema item, as the JSON object it holds.
@@ -65,7 +68,7 @@ pub(super) fn schema(
     serde_json::from_str(&text).ok().filter(Value::is_object)
 }
 
-pub(super) fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
+pub(super) fn brief(at: &TodoAddr, delegation: &Delegation, reader: bool) -> String {
     let mut lines = vec![format!(
         "Execute todo {:?} of plan {}.",
         at.todo.as_str(),
@@ -81,7 +84,7 @@ pub(super) fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
             output.schema
         ));
     }
-    if !delegation.context.is_empty() && !reads_only(delegation) {
+    if !delegation.context.is_empty() && !reader {
         lines.push("Context:".to_owned());
         for url in &delegation.context {
             lines.push(format!("- {url}"));
@@ -124,10 +127,10 @@ pub(super) fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
 pub(super) fn kwargs_of(
     agent: &AgentId,
     delegation: &Delegation,
+    reader: bool,
 ) -> Result<Map<String, Value>, String> {
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String(agent.as_str().to_owned()));
-    let reader = reads_only(delegation);
     kwargs.insert(
         "role".to_owned(),
         Value::from(if reader { "reader" } else { "root" }),
@@ -208,7 +211,7 @@ mod tests {
         let mut delegation = delegated("gateway")?.delegation.ok_or("delegated")?;
         for isolation in [None, Some(Isolation::None), Some(Isolation::Worktree)] {
             delegation.spec.isolation = isolation;
-            let brief = brief(&at, &delegation);
+            let brief = brief(&at, &delegation, false);
             assert!(brief.contains("Execute todo \"gateway\""), "{brief}");
             assert!(!brief.contains("submit"), "{brief}");
             assert!(
@@ -232,7 +235,7 @@ mod tests {
             super::super::declare::NOTE_REF.to_owned(),
             serde_json::json!({"digest": format!("sha256:{hex}"), "media_type": "text/markdown", "length": 2000}),
         );
-        let brief = brief(&at, &delegation);
+        let brief = brief(&at, &delegation, false);
         assert!(
             brief.contains(&format!("read plan://ship-the-thing/artifacts/{hex}")),
             "{brief}"
@@ -250,7 +253,7 @@ mod tests {
             deny_read: vec!["secrets/".to_owned()],
             deny_url: vec!["history://main".to_owned()],
         });
-        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation)?;
+        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation, false)?;
         assert_eq!(kwargs["deny_write"], serde_json::json!(["."]));
         assert_eq!(kwargs["deny_read"], serde_json::json!(["secrets/"]));
         assert_eq!(kwargs["deny_url"], serde_json::json!(["history://main"]));
@@ -260,7 +263,7 @@ mod tests {
             "the host reads the same keys it is handed"
         );
         delegation.spec.wall = None;
-        let bare = kwargs_of(&AgentId::new("reader-2")?, &delegation)?;
+        let bare = kwargs_of(&AgentId::new("reader-2")?, &delegation, false)?;
         assert!(!bare.contains_key("deny_write") && !bare.contains_key("deny_url"));
         Ok(())
     }
@@ -271,7 +274,7 @@ mod tests {
     fn kwargs_draw_the_specs_budget_as_the_childs_lease() -> TestResult {
         let mut delegation = delegated("read the docs")?.delegation.ok_or("delegated")?;
         delegation.spec.budget = Some(yi_types::plan::doc::TokenBudget(4_000));
-        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation)?;
+        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation, false)?;
         assert_eq!(kwargs["tokens"], serde_json::json!(4_000));
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
         assert_eq!(
@@ -280,7 +283,7 @@ mod tests {
             "the host reads the key it is handed"
         );
         delegation.spec.budget = None;
-        assert!(!kwargs_of(&AgentId::new("reader-2")?, &delegation)?.contains_key("tokens"));
+        assert!(!kwargs_of(&AgentId::new("reader-2")?, &delegation, false)?.contains_key("tokens"));
         Ok(())
     }
 
