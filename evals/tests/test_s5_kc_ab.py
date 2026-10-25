@@ -1,7 +1,7 @@
 """EXP-S5-E2's score reader, its pre-registered verdict at each limit and its arm wiring: no model,
 no Docker, no Terminal-Bench task text. The verifier files are written by the tests with the keys and
 lines the real verifiers print, numbers only (case ids and sentences are task text)."""
-import importlib.util, json, os, re, shutil, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, os, re, shutil, sys, tempfile, unittest
 from fractions import Fraction
 from pathlib import Path
 from unittest import mock
@@ -12,6 +12,9 @@ sys.path.insert(0, str(EVALS))
 SPEC = importlib.util.spec_from_file_location("kill_s5_kc_ab", EVALS / "kill" / "s5-kc-ab.py")
 E2 = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(E2)
+import kill  # noqa: E402
+# The tests of the rule read it as it would run once the owner has adopted the score.
+DECIDED = mock.patch.object(E2, "SCORE_DECISION", "the owner's words")
 
 JOB = EVALS / "fixtures" / "axes" / "harbor" / "job"
 # The tally's three sources, as the verifiers write them: heat-pump-warranty and legacy-utility-triage
@@ -62,6 +65,7 @@ class Tally(unittest.TestCase):
             self.assertIsNone(E2.tally(bare), "a trial whose verifier wrote nothing is unscored, not 0 of 0")
 
 
+@DECIDED
 class Judge(unittest.TestCase):
     def test_build_at_a_mean_of_exactly_one_fifth_and_kill_one_step_under(self):
         # Failure: a float mean of nine 0.2s reads 0.19999999999999998 and a true limit case is killed,
@@ -123,6 +127,7 @@ class Judge(unittest.TestCase):
         self.assertTrue(E2.decide({"glm-flash": edge})[1].endswith("; no Kimi trial ran"))
 
 
+@DECIDED
 class Trials(unittest.TestCase):
     def test_the_parent_is_split_from_its_children_by_the_session_header(self):
         # A fresh trial dir holding two real session files (the axes fixtures: peak 10,410 and
@@ -146,7 +151,6 @@ class Trials(unittest.TestCase):
         self.assertEqual((got["task"], got["arm"], got["pass"], got["score"]),
                          ("heat-pump-warranty", "kernel", False, Fraction(7, 20)))
         self.assertEqual((got["parentPeakTokens"], got["children"], got["childInputTokens"]), (10410, 1, 16000))
-
 
     def test_the_verdict_reads_every_arms_run_dir_once_however_many_rows_name_it(self):
         # Failure: the report line says UNRESOLVED for a finished A/B because an arm's dir was missed,
@@ -175,6 +179,7 @@ class Trials(unittest.TestCase):
             self.assertTrue(short.startswith("UNRESOLVED: kimi open: kernel heat-pump-warranty has 2 of 3 scored trials"), short)
 
 
+@DECIDED
 class Arms(unittest.TestCase):
     def test_the_two_child_arms_differ_in_the_role_and_nothing_else(self):
         # Failure: grouping advice that differs between arms makes the A/B measure the prompt.
@@ -204,6 +209,23 @@ class Arms(unittest.TestCase):
             self.assertLess(text.index("`cp <rules file> .`"), text.index("partition=RULES"), arm)
             for address in re.findall(r"local://(\S*)", text):
                 self.assertFalse(address.startswith(("/", "..")), address)
+
+
+class Held(unittest.TestCase):
+    def test_no_sweep_runs_and_no_verdict_is_read_until_the_owner_adopts_the_score(self):
+        # Failure: the paid sweep runs and renders BUILD or KILL under a score nobody pre-registered.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"EVAL_KILL_ROOT": tmp}), \
+                contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as refused:
+            catalog = kill.kimi_home() / ".yi" / "catalog"
+            catalog.mkdir(parents=True)
+            (catalog / "openrouter.json").write_text('{"models": [{"id": "z-ai/glm-5.3-flash"}]}')
+            kill.main(["run", "s5-kc-ab", "--family", "glm-flash", "--without-kimi", "--dry"])
+        self.assertEqual(str(refused.exception), f"refused: s5-kc-ab runs no sweep while {E2.HELD}")
+        self.assertEqual(out.getvalue(), "", "a refused test reserves nothing, not even in a dry run")
+        word, text = E2.decide({"kimi": family([14] * 9, [10] * 9, [5] * 9),
+                                "glm-flash": family([12] * 9, [10] * 9, [5] * 9)})
+        self.assertEqual(word, "UNRESOLVED")
+        self.assertTrue(text.startswith("kimi d +0.20 (LB +0.20, SD 0.00)") and text.endswith("; " + E2.HELD), text)
 
 
 if __name__ == "__main__":

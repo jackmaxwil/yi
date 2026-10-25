@@ -4,4 +4,4 @@
 {"agent": "oracle", "errored": false, "host": "arm64", "kind": "precheck", "reward": 1.0, "tally": [20, 20, "trace_results.json"], "task": "heat-pump-warranty"}
 {"agent": "oracle", "errored": false, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": [0, 19, "trace_results.json"], "task": "legacy-utility-triage"}
 {"agent": "oracle", "errored": true, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": null, "task": "medical-claims-processing"}
-{"agent": "verifier-image", "errored": false, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": [0, 116, "test-stdout.txt"], "task": "medical-claims-processing"}
+{"agent": "verifier-image", "errored": false, "host": "arm64", "kind": "verifier-probe", "reward": 0.0, "tally": [0, 116, "test-stdout.txt"], "task": "medical-claims-processing", "why": "the task's verifier run by hand in its own image on an empty decision set, since both precheck passes errored on this host; precheck does not write this row"}

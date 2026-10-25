@@ -615,7 +615,8 @@ python3 evals/kill.py report
   context and its children's input tokens. The pre-registered score is the ctrf tally, but only
   medical-claims-processing writes a ctrf (one test that passes whatever the agent did), so the score
   is the verifier's own count: `trace_results.json`'s cases, else the `Scoring: X/Y lines correct` line
-  (a departure from the pre-registered score: a paid sweep waits for the owner's `decision:` line on it).
+  (a departure from the pre-registered score: until `SCORE_DECISION` holds the owner's words, `kill.py run`
+  refuses the test and its verdict reads UNRESOLVED).
   Run it on an x86 host: on an arm64 Mac the amd64 images run emulated, medical-claims-processing's
   browser sidecar never turned healthy and legacy-utility-triage's oracle could not commit through the GUI.
   Its Kimi family reads unrun like EXP-B3c's, so until the sweep can carry a Kimi route its verdict is UNRESOLVED (no Kimi trial ran);
