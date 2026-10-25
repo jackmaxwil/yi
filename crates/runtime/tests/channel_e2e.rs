@@ -392,7 +392,7 @@ async fn a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix()
     Ok(())
 }
 
-/// A real `pytest -v` run (#1153), 32,955 B: the view cuts it to 16 KiB, which JSON passes.
+/// A real `pytest -v` run (#1153), 32,955 B: its 16 KiB view serializes past the channel cap.
 const RED_PYTEST: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
@@ -415,17 +415,24 @@ async fn first_red_message(name: &str, body: &str) -> Result<serde_json::Value, 
 }
 
 /// Dies with the view's 16 KiB text pushing a red level past the channel cap: the message is
-/// refused whole, so a filter on `ok=false` never matches and the todo is never made.
+/// refused whole, so a filter on `ok=false` never matches and the todo is never made. Dies too
+/// with the fix dropping the output whole: the verdict sits at the end and must survive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_red_exec_past_the_channel_cap_keeps_its_level_and_names_the_rest() -> TestResult {
+async fn a_red_exec_past_the_channel_cap_keeps_its_level_and_its_verdict() -> TestResult {
     let data =
         first_red_message("yi-channel-bigred", &format!("cat '{RED_PYTEST}'; exit 1")).await?;
     assert_eq!((&data["ok"], &data["exit"]), (&false.into(), &1.into()));
     let output = data["output"].as_str().ok_or("no output")?;
-    assert!(
-        output.contains("MESSAGE_MAX_BYTES 16384); the rest: bash (./red.sh) > exec.log 2>&1"),
-        "{output}"
-    );
+    let row = "bytes kept (MESSAGE_MAX_BYTES 16384); the rest: bash (cd '";
+    for kept in [
+        row,
+        "&& ./red.sh) > exec.log 2>&1, then read exec.log]",
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+        "[capture cut: kept 30000 of 32955 bytes (OUTPUT_CAP 30000 per stream)",
+    ] {
+        assert!(output.contains(kept), "{kept}: {output:.400}");
+    }
     Ok(())
 }
 
@@ -439,11 +446,14 @@ async fn a_red_exec_message_is_whole_at_the_channel_cap_and_cut_one_byte_past_it
     let at = first_red_message("yi-channel-atcap", &printing(fill)).await?;
     assert_eq!(at["output"].as_str().map(str::len), Some(fill));
     let past = first_red_message("yi-channel-pastcap", &printing(fill + 1)).await?;
-    let row = past["output"].as_str().ok_or("no output")?;
+    let cut = past["output"].as_str().ok_or("no output")?;
+    let total = fill + 1;
     assert!(
-        row.starts_with("[… 0 of 16385 bytes kept (MESSAGE_MAX_BYTES 16384)"),
-        "{row}"
+        cut.starts_with("[… ")
+            && cut.contains(&format!(" of {total} bytes kept (MESSAGE_MAX_BYTES 16384)")),
+        "{cut:.400}"
     );
+    assert!(cut.ends_with('x'), "the end of the output is the part kept");
     Ok(())
 }
 

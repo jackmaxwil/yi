@@ -1,6 +1,6 @@
 pub mod template;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -24,17 +24,53 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 /// covers a cold cargo build without letting a hang eat the session.
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
 
-/// A failed check's output through [`yi_tools::view`]. A check keeps no spill, so a cut row's
-/// recovery is the rerun of `command` to a file; the capture's own cut row follows the view's.
-pub(crate) fn check_view(command: &str, capture: &yi_tools::CommandCapture) -> String {
+/// A failed check's output through [`yi_tools::view`]: a cut row's recovery is the rerun from
+/// `dir`, or a file under `spill`; the capture's own cut row follows the view's.
+pub(crate) fn check_view(
+    command: &str,
+    dir: &std::path::Path,
+    spill: Option<&std::path::Path>,
+    capture: &yi_tools::CommandCapture,
+) -> String {
     let (stdout, stderr) = (&capture.stdout, &capture.stderr);
     let exit = capture.exit_code.unwrap_or(-1);
-    let producer = yi_tools::Involuntary::Job(command);
-    let view = yi_tools::view(producer, stdout, stderr, exit, None, None);
+    let rerun = rerun_in(dir, command);
+    let producer = yi_tools::Involuntary::Job(&rerun);
+    let view = yi_tools::view(producer, stdout, stderr, exit, None, spill);
     let text = view.text.trim();
     capture
         .cut_row()
         .map_or_else(|| text.to_owned(), |row| format!("{text}\n{row}"))
+}
+
+/// The rerun a cut row names: `command` from `dir`, where the check ran. The reader's own bash
+/// is rooted elsewhere for a child's lane or a `cwd_subdir`, and a bare command would pass there.
+pub(crate) fn rerun_in(dir: &std::path::Path, command: &str) -> String {
+    let dir = dir.to_string_lossy().replace('\'', r"'\''");
+    format!("cd '{dir}' && {command}")
+}
+
+const REPEAT_BYTES: usize = 2_000;
+
+/// A later copy of evidence the model already read whole: its first line and last
+/// [`REPEAT_BYTES`], where the verdict sits, with a row for the cut.
+pub(crate) fn evidence_repeat(evidence: &str) -> String {
+    if evidence.len() <= REPEAT_BYTES {
+        return evidence.to_owned();
+    }
+    let head: String = evidence
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    let from = evidence.ceil_char_boundary(evidence.len().saturating_sub(REPEAT_BYTES));
+    let tail = evidence.get(from..).unwrap_or_default();
+    let (kept, total) = (tail.len(), evidence.len());
+    format!(
+        "{head}\n[… last {kept} of {total} bytes kept (REPEAT_BYTES {REPEAT_BYTES}); the rest: the refusal that first carried this output, or run the check again]\n{tail}"
+    )
 }
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
@@ -56,7 +92,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
             let exit = code.map_or_else(|| "signal".to_owned(), |code| code.to_string());
             Err(format!(
                 "goal check `{check}` exited {exit}:\n{}",
-                check_view(check, &capture)
+                check_view(check, cwd, None, &capture)
             ))
         }
     }
@@ -366,7 +402,7 @@ impl GoalService {
         {
             let timeout = goal.check_timeout_ms.unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
             if let Err(evidence) = run_check(&check, &self.cwd, timeout) {
-                goal.check_failure = Some(evidence.clone());
+                goal.check_failure = Some(evidence_repeat(&evidence));
                 goal.updated = yi_session::now_ms();
                 self.write_goal(goal)?;
                 return Err(format!(
@@ -398,6 +434,7 @@ impl GoalService {
         };
         // One check run per named todo, however many rows name it.
         let mut adjudged: HashMap<yi_types::plan::TaskId, Option<String>> = HashMap::new();
+        let mut shown = HashSet::new();
         let mut kept = Vec::new();
         let mut blockers = Vec::new();
         for row in std::mem::take(&mut goal.discoveries) {
@@ -417,6 +454,12 @@ impl GoalService {
                             drained_message(&row, json!({ "drained": true, "task": id.as_str() }))
                         }
                         Some(evidence) => {
+                            let evidence = if shown.insert(id.clone()) {
+                                evidence
+                            } else {
+                                "(the same evidence as the first row naming this task, above)"
+                                    .to_owned()
+                            };
                             blockers.push(format!(
                                 "undrained HIGH discovery {}: {}\nThe check of task {} is still red:\n{evidence}",
                                 row.fingerprint,
