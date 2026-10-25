@@ -171,8 +171,8 @@ pub struct ChildSpawned {
     pub session: String,
     pub path: String,
     pub brief: String,
-    /// The tool call id of the kernel cell that spawned the child; absent outside a cell, and
-    /// from a host older than the field.
+    /// The tool call id of the kernel cell running when the host admitted the child; absent
+    /// outside a cell, and from a host older than the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_by: Option<String>,
 }

@@ -163,7 +163,7 @@ impl std::ops::DerefMut for Children {
 pub struct ChildView {
     pub update: ChildUpdate,
     pub session: ChildFeed,
-    /// The tool call id of the kernel cell that spawned the child, when one did.
+    /// The tool call id of the kernel cell running when the host admitted the child, if any.
     pub spawned_by: Option<String>,
 }
 
