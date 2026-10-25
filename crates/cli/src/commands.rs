@@ -95,7 +95,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "session", value: Some("id"), summary: "resume this session" },
     Flag { name: "schema", value: Some("schema"), summary: "answer JSON valid against this schema" },
     Flag { name: "since", value: Some("span"), summary: "after stats: fold the sessions of this window" },
-    Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day or prices" },
+    Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices or plan" },
     Flag { name: "top", value: Some("n"), summary: "after stats: list the n costliest sessions" },
 ];
 
