@@ -54,7 +54,8 @@ pub(super) fn load(path: &str) -> Result<Editor, String> {
         lang: Path::new(path)
             .extension()
             .map(|ext| ext.to_string_lossy().into_owned()),
-        crlf: source.contains("\r\n"),
+        // Invariant: a file mixing endings saves with the one most of its lines use.
+        crlf: source.matches("\r\n").count().saturating_mul(2) > source.matches('\n').count(),
         final_newline: source.ends_with('\n'),
     })
 }
@@ -82,9 +83,12 @@ impl Editor {
         let target = std::fs::canonicalize(&self.path).map_err(fail)?;
         let mut tmp = target.clone().into_os_string();
         tmp.push(".yi-tmp");
-        let written = std::fs::metadata(&target).and_then(|meta| {
-            let mut file = std::fs::File::create(&tmp)?;
-            file.write_all(self.contents().as_bytes())?;
+        let meta = std::fs::metadata(&target).map_err(fail)?;
+        // An empty file has no ending to keep; once typed into, it ends on a newline.
+        self.final_newline |= meta.len() == 0 && self.text.lines() != [""];
+        let body = self.contents();
+        let written = std::fs::File::create(&tmp).and_then(|mut file| {
+            file.write_all(body.as_bytes())?;
             file.set_permissions(meta.permissions())?;
             file.sync_all()?;
             std::fs::rename(&tmp, &target)
@@ -102,6 +106,8 @@ impl Editor {
         let fresh = load(&self.path)?;
         let (row, col) = self.text.cursor();
         self.text = fresh.text;
+        self.crlf = fresh.crlf;
+        self.final_newline = fresh.final_newline;
         self.text.move_cursor(CursorMove::Jump(
             u16::try_from(row).unwrap_or(u16::MAX),
             u16::try_from(col).unwrap_or(u16::MAX),
