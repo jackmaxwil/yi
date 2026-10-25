@@ -44,13 +44,9 @@ impl App {
         self.running
     }
 
-    pub fn has_run(&self) -> bool {
-        self.seen_turn
-    }
-
-    /// A prompt has been submitted whose turn has not started yet.
+    /// Invariant: a prompt is awaited until a run reads its text, opening a turn or injected.
     pub fn awaiting_turn(&self) -> bool {
-        self.submitted_turns > self.started_turns
+        !self.awaited.is_empty()
     }
 
     pub fn turn_idle(&self) -> bool {

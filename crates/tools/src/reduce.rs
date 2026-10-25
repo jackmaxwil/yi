@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::process::spill_path;
-use crate::tool::Cut;
+use crate::tool::cut_row;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reduced {
@@ -104,15 +104,10 @@ fn read_spill(kept: &str) -> Result<String, Option<String>> {
     let size = std::fs::metadata(path).map_err(|_| None)?.len();
     let size = usize::try_from(size).unwrap_or(usize::MAX);
     if size > SPILL_READ_LIMIT {
-        let row = Cut {
-            kept: 0,
-            total: size,
-            what: "bytes of it read, so omitted-line numbers count the cut capture",
-            cap: "SPILL_READ_LIMIT",
-            limit: SPILL_READ_LIMIT,
-            next: &format!("read {path} with offset and limit"),
-        };
-        return Err(Some(row.to_string()));
+        let what = "bytes of it read, so omitted-line numbers count the cut capture";
+        let next = format!("read {path} with offset and limit");
+        let row = cut_row(0, size, what, "SPILL_READ_LIMIT", SPILL_READ_LIMIT, &next);
+        return Err(Some(row));
     }
     let bytes = std::fs::read(path).map_err(|_| None)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -206,32 +201,22 @@ fn clip_lines(text: String) -> (String, bool) {
     let Some(at) = first else {
         return (text, false);
     };
-    let row = Cut {
-        kept: shown,
-        total: long,
-        what: "chars kept on the clipped lines",
-        cap: "LINE_CLIP",
-        limit: LINE_CLIP,
-        next: "read the full output named below",
-    };
-    lines.insert(at.saturating_add(1), row.to_string());
+    let (what, next) = (
+        "chars kept on the clipped lines",
+        "read the full output named below",
+    );
+    lines.insert(
+        at.saturating_add(1),
+        cut_row(shown, long, what, "LINE_CLIP", LINE_CLIP, next),
+    );
     (lines.join("\n"), true)
 }
 
 /// Two thirds of `room` from the head and the rest from the tail, where a verdict sits, each end
 /// on a line boundary when one is in reach; the row between counts against `room`.
 fn ceiling(text: &str, total: usize, room: usize, next: &str) -> String {
-    let row = |kept| {
-        let cut = Cut {
-            kept,
-            total,
-            what: "bytes kept",
-            cap: "VIEW_CEILING",
-            limit: VIEW_CEILING,
-            next,
-        };
-        cut.to_string()
-    };
+    let what = "bytes kept";
+    let row = |kept| cut_row(kept, total, what, "VIEW_CEILING", VIEW_CEILING, next);
     let budget = room.saturating_sub(row(total).len().saturating_add(2));
     let head_end = text.floor_char_boundary(budget.saturating_mul(2) / 3);
     let head = text.get(..head_end).unwrap_or_default();

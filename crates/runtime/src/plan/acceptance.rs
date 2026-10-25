@@ -816,7 +816,7 @@ impl PlanEngine {
         )
         .map_err(|error| verification(label, format!("publish: {error}")))?;
         let (at, how) = match published {
-            Publish::Published { at, how } => (at, Some(how)),
+            Publish::Published { at, how, .. } => (at, Some(how)),
             // Incident: a run killed between publish and `accepted` left HEAD at this integration.
             Publish::Moved { found, .. } if found == integration.integrated => (found, None),
             Publish::Moved { expected, found } => {

@@ -8,9 +8,9 @@ Exits on stdin EOF.
 import json
 import sys
 
-CLIENT = {}
 NO_TOOLS = "--no-tools" in sys.argv
 LIST_FAILS = "--tools-list-fails" in sys.argv
+CLIENT = {}
 
 TOOLS = [
     {
