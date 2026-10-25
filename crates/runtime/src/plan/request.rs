@@ -289,7 +289,7 @@ fn answer(
         };
         return refusal(&request_id, None, code, message);
     }
-    match engine.apply_with(request, &blobs) {
+    match super::apply::apply_set(engine, request, &blobs) {
         Ok(outcome) => {
             let mut reply = Map::new();
             reply.insert("ok".to_owned(), Value::Bool(true));

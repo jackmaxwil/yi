@@ -537,6 +537,7 @@ pub(super) fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequ
     if args.contains_key("actor") {
         return Err(ArgError::ActorArg);
     }
+    let args = &super::natural::unstring_todos(args);
     let op = parse_op(args)?;
     Ok(OpRequest {
         plan: opt(args, op.kind(), "plan")?,
@@ -612,7 +613,7 @@ impl PlanTool {
             return self.each(&args, labels, said);
         }
         let (request, blobs) = declared(&self.actor, &args)?;
-        let (request, struck) = super::apply::keep_omitted(self, request, &mut said);
+        let (request, struck) = super::apply::keep_omitted(&self.engine, request, &mut said);
         if let Op::Accept { .. } = &request.op {
             let confirming = self.confirming.as_ref();
             return Ok(
@@ -729,7 +730,7 @@ impl PlanTool {
             }
             other => other?,
         };
-        let outcome = super::apply::drop_struck(self, outcome, struck, &mut said);
+        let outcome = super::apply::drop_struck(&self.engine, outcome, struck, &mut said);
         Ok(super::apply::noted(render_outcome(&op, &outcome), said))
     }
 }
