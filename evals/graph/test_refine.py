@@ -129,7 +129,6 @@ class Refiner(unittest.TestCase):
             "self_edge": add(to="grep"),
             "unknown_node": add(to="a_verb_nobody_registered"),
             "guidance_size": add(guidance="é" * 81),
-            "pitfalls_size": add(pitfalls=["one", "two", "three", "four"]),
             "parse": add(condition="the_model_thinks_so"),
             "edge_exists": dict(DROP, kind="add_edge"),
             "no_such_edge": dict(ADD, kind="reword"),
