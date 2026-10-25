@@ -126,6 +126,19 @@ pub const VIEW_CEILING: usize = ERROR_BYTES;
 const LINE_CLIP: usize = 512;
 const LAST_TRACEBACK: &str = "import sys, traceback; traceback.print_exception(sys.last_value)";
 
+pub fn rerun(how: &str, command: &str, log: &str) -> String {
+    let command = command.trim_end();
+    let first = command.lines().next().unwrap_or_default();
+    match crate::tool::clip(first, LINE_CLIP) {
+        (line, false) if !command.contains('\n') => {
+            format!("{how} ({line}) > {log} 2>&1, then read {log}")
+        }
+        (line, _) => format!(
+            "{how} the command that began {line}, its output sent to {log}, then read {log}"
+        ),
+    }
+}
+
 /// [`reduce`], then cut in the middle to [`VIEW_CEILING`] bytes, one row naming the rest.
 pub fn view(
     producer: Involuntary<'_>,
@@ -154,25 +167,13 @@ pub fn view(
     let pointer = (reduced.recovery.clone())
         .or_else(|| kept.map(str::to_owned))
         .or_else(|| tee_dir.and_then(|dir| tee(dir, &raw)));
-    let rerun = |how: &str, command: &str| {
-        let command = command.trim_end();
-        let first = command.lines().next().unwrap_or_default();
-        match crate::tool::clip(first, LINE_CLIP) {
-            (line, false) if !command.contains('\n') => {
-                format!("{how} ({line}) > view.log 2>&1, then read view.log")
-            }
-            (line, _) => format!(
-                "{how} the command that began {line}, its output sent to view.log, then read view.log"
-            ),
-        }
-    };
     let next = match (pointer.as_deref(), producer) {
         (Some(note), _) => format!("read {}", spill_path(note).map_or(note, |(_, path)| path)),
         (None, Traceback) => format!(
             "an ipython cell running {LAST_TRACEBACK}, which prints this exception again in Python's own format"
         ),
-        (None, ShellCell(command)) => rerun("a %%bash cell running", command),
-        (None, Job(command)) => rerun("bash", command),
+        (None, ShellCell(command)) => rerun("a %%bash cell running", command, "view.log"),
+        (None, Job(command)) => rerun("bash", command, "view.log"),
     };
     let mut text = ceiling(body, reduced.raw_bytes, room(pointer.as_deref()), &next);
     if let Some(note) = &pointer {
