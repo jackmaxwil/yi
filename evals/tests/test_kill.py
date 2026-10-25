@@ -36,6 +36,8 @@ elif argv[:1] == ["ask"]:
          config=json.loads((home / ".yi" / "config.json").read_text()),
          token=json.loads(token.read_text()) if token.exists() else None,
          mode=oct(token.stat().st_mode & 0o777) if token.exists() else None)
+    if os.environ.get("FAKE_WRITE"):
+        Path(os.environ["FAKE_WRITE"]).write_text("print('PASS kept')\n")
     sys.stderr.write("fake stderr: " + "x" * 3000 + " the tail\n")
     streams = os.environ["FAKE_STREAMS"].split(os.pathsep)
     for line in open(streams[min(asked, len(streams) - 1)]):
@@ -433,6 +435,15 @@ class Runs(unittest.TestCase):
             row = kill.ask("t", "flash", r.spec, str(r.yi), 1.0)
             self.assertTrue(row["venvRebuilt"] is True, row)
             self.assertEqual((len(row["stderr"]), row["stderr"][-9:]), (2000, "the tail\n"), row)
+
+    def test_a_kept_file_outlives_the_clone_in_the_run_directory_and_the_row_names_its_spec(self):
+        with rig() as r:
+            os.environ["FAKE_WRITE"] = "checks.py"
+            r.streams(EVENTS)
+            row = kill.ask("t", "flash", {**r.spec, "keep": ["checks.py", "absent.py"]}, str(r.yi), 1.0)
+            base = r.root / "t" / row["run"]
+            self.assertEqual((row["id"], (base / "checks.py").read_text()), ("one", "print('PASS kept')\n"))
+            self.assertFalse((base / "repo").exists() or (base / "absent.py").exists(), sorted(base.iterdir()))
 
     def test_a_run_past_its_deadline_is_killed_as_a_timeout(self):
         with rig() as r:
