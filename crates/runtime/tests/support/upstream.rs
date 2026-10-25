@@ -163,7 +163,8 @@ pub(crate) async fn body_asking(
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
     let status = yi_tools::command("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(["-c", "commit.gpgsign=false", "-C"])
         .arg(dir)
         .args(args)
         .output()?
