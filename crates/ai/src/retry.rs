@@ -18,6 +18,34 @@ impl Default for RetryPolicy {
     }
 }
 
+/// A 429 coding an exhausted quota or balance is final; billing wording without a code counts on
+/// Moonshot's host only, since Gemini's per-minute throttle says it too (kimi-errors.ts:1-22).
+pub fn quota_exhausted(status: u16, body: &str, url: &str) -> bool {
+    const CODES: [&str; 2] = ["exceeded_current_quota_error", "insufficient_quota"];
+    const WORDING: [&str; 8] = [
+        "exceeded your current quota",
+        "exceeded your current token quota",
+        "check your account balance",
+        "insufficient balance",
+        "recharge your account",
+        "please recharge",
+        "account in arrears",
+        "account is in arrears",
+    ];
+    let parsed = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
+    let coded = std::iter::successors(Some(&parsed), |level| level.get("error"))
+        .take(3)
+        .flat_map(|level| [level.get("code"), level.get("type")])
+        .any(|code| {
+            code.and_then(serde_json::Value::as_str)
+                .is_some_and(|code| CODES.contains(&code))
+        });
+    let lower = body.to_lowercase();
+    let worded =
+        crate::compat::moonshot_url(url) && WORDING.iter().any(|words| lower.contains(words));
+    status == 429 && (coded || worded)
+}
+
 pub fn is_retryable_status(status: u16) -> bool {
     status == 408 || status == 409 || status == 429 || status >= 500
 }
