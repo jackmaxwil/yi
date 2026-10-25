@@ -16,6 +16,8 @@ mod images;
 mod kimi_catalog;
 mod kimi_wire;
 mod leak;
+#[path = "../../types/tests/support/loopback.rs"]
+mod loopback;
 mod model_headers;
 mod oauth;
 mod openai_mapper;
