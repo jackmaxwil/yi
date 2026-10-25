@@ -1,4 +1,5 @@
 use crate::scratch;
+use crate::upstream::git;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -967,25 +968,6 @@ fn a_ruler_pair_rides_once_and_whole() -> TestResult {
         "a 42 KB rules file loads whole"
     );
     Ok(())
-}
-
-fn git(dir: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
-    let status = yi_tools::command("git")
-        .current_dir(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .status()?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| format!("git {args:?}").into())
 }
 
 #[test]

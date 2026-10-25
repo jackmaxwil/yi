@@ -343,7 +343,8 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `annotate`, `plan`, `todo`, and `ask_user`. `check_request_budget.py` prices system block plus tool
-  table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
+  table against a shrink-only baseline and locks each tool's text and sha256 in `tool_surface.json`;
+  a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
   (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
@@ -1254,7 +1255,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
-| `check_request_budget` | system-prompt and tool-table bytes; tool-surface hashes (D188) | `request_budget.json`, `tool_surface.json` |
+| `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
 | `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |
