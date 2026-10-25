@@ -291,6 +291,12 @@ impl Evidence {
     }
 }
 
+enum Pass {
+    Call,
+    Again,
+    Result { is_error: bool },
+}
+
 #[derive(Default)]
 struct FireState {
     turn: u64,
@@ -502,13 +508,19 @@ impl RuleEngine {
     }
 
     pub fn check_tool(&self, tool: &str, args_json: &str) -> Option<String> {
-        self.scan(tool, args_json, args_json, false, true)
+        self.scan(tool, args_json, args_json, Pass::Call)
+    }
+
+    /// Invariant: a call judged once is judged again as the same attempt: a rule that counted it
+    /// reads that count, one promoted since counts it first, so an `after: N` gate is not hurried.
+    pub fn recheck_tool(&self, tool: &str, args_json: &str) -> Option<String> {
+        self.scan(tool, args_json, args_json, Pass::Again)
     }
 
     pub fn check_result(&self, tool: &str, args_json: &str, result: &str, is_error: bool) {
         self.note_skill_read(tool, args_json);
         // The tool already ran: a post-spawn scan only reminds, so its denial slot is always None.
-        let _ = self.scan(tool, args_json, result, is_error, false);
+        let _ = self.scan(tool, args_json, result, Pass::Result { is_error });
     }
 
     fn note_skill_read(&self, tool: &str, args_json: &str) {
@@ -533,14 +545,7 @@ impl RuleEngine {
         }
     }
 
-    fn scan(
-        &self,
-        tool: &str,
-        args_json: &str,
-        haystack: &str,
-        is_error: bool,
-        pre: bool,
-    ) -> Option<String> {
+    fn scan(&self, tool: &str, args_json: &str, haystack: &str, pass: Pass) -> Option<String> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
@@ -549,10 +554,9 @@ impl RuleEngine {
         let path = call_path(args_json);
         let rules = self.snapshot();
         for rule in &rules {
-            let in_scope = if pre {
-                tool_gate_scope(rule, tool)
-            } else {
-                result_scope(rule, is_error)
+            let in_scope = match pass {
+                Pass::Call | Pass::Again => tool_gate_scope(rule, tool),
+                Pass::Result { is_error } => result_scope(rule, is_error),
             };
             if skill_name(rule).is_some()
                 || !in_scope
@@ -562,12 +566,15 @@ impl RuleEngine {
                 continue;
             }
             let evidence = Evidence::of(rule, haystack, &path);
-            let n = state.bump(&evidence);
+            let n = match pass {
+                Pass::Again => state.seen.get(&evidence).copied().unwrap_or(0).max(1),
+                Pass::Call | Pass::Result { .. } => state.bump(&evidence),
+            };
             if n < rule.after.max(1) || !state.eligible(rule, &evidence) {
                 continue;
             }
             match rule.mode {
-                RuleMode::Gate if pre && denial.is_none() => {
+                RuleMode::Gate if !matches!(pass, Pass::Result { .. }) && denial.is_none() => {
                     state.mark(&evidence);
                     denial = Some(format!(
                         "Denied by rule `{}` ({}):\n{}",

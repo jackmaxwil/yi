@@ -25,3 +25,12 @@ pub(crate) fn tty_ask(ask: &yi_runtime::PermissionAsk<'_>) -> yi_runtime::AskOut
             ),
     }
 }
+
+pub(crate) fn eprint_dim(line: &str) {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        eprintln!("\x1b[2m{line}\x1b[0m");
+    } else {
+        eprintln!("{line}");
+    }
+}

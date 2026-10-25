@@ -443,7 +443,7 @@ async fn a_container_child_runs_bash_in_its_container_and_merges_like_a_worktree
         !repo.join(".git/hooks/post-merge").exists(),
         "the container wrote a hook the host's next git runs"
     );
-    let merged = family.host.merge_worktree("boxed")?;
+    let merged = family.host.merge_worktree("boxed", None)?;
     assert_eq!(merged["merged"], true, "{merged:?}");
     let landed = std::fs::read_to_string(repo.join("container.txt"))?;
     assert!(
@@ -748,7 +748,7 @@ async fn eight_container_children_fill_the_node_and_a_ninth_kernel_waits() -> Te
         "the ninth kernel boots only once a slot frees"
     );
 
-    let merged = demo.host.merge_worktree("box-0")?;
+    let merged = demo.host.merge_worktree("box-0", None)?;
     assert_eq!(merged["merged"], true, "{merged:?}");
     assert_eq!(
         std::fs::read_to_string(repo.join("placed.txt"))?.trim(),
