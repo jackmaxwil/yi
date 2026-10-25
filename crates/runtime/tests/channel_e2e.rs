@@ -1,6 +1,7 @@
 //! Channels (plan section 3.5, D287): a durable buffer the home orders, subscriptions that
 //! create or unblock todos from it, and supervised adapters that feed it.
 
+use crate::RED_PYTEST;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -392,12 +393,6 @@ async fn a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix()
     Ok(())
 }
 
-/// A real `pytest -v` run (#1153), 32,955 B: its 16 KiB view serializes past the channel cap.
-const RED_PYTEST: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
-);
-
 /// The first message a red `exec://` check leaves in a fresh channel.
 async fn first_red_message(name: &str, body: &str) -> Result<serde_json::Value, Box<dyn Error>> {
     let dir = Scratch::new(name)?;
@@ -454,6 +449,24 @@ async fn a_red_exec_message_is_whole_at_the_channel_cap_and_cut_one_byte_past_it
         "{cut:.400}"
     );
     assert!(cut.ends_with('x'), "the end of the output is the part kept");
+    Ok(())
+}
+
+/// Dies with the cut measured on the JSON-escaped message and applied to the raw output: a quote
+/// costs two bytes as sent, so a quote-dense view cut that way kept nothing, verdict included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_of_escape_dense_output_keeps_its_verdict_under_the_cap() -> TestResult {
+    let quotes = "\"".repeat(48);
+    let body = format!(
+        "yes '{quotes}' | head -n 400; echo 'FAILED test_quote - VERDICT red'; echo '{quotes}'; exit 1"
+    );
+    let data = first_red_message("yi-channel-quotes", &body).await?;
+    assert!(data.to_string().len() <= MESSAGE_MAX_BYTES);
+    let output = data["output"].as_str().ok_or("no output")?;
+    assert!(
+        output.contains("FAILED test_quote - VERDICT red"),
+        "{output:.400}"
+    );
     Ok(())
 }
 
