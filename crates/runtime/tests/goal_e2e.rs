@@ -267,6 +267,25 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
 }
 
 #[test]
+fn placeholders_in_check_output_and_plan_labels_stay_literal() -> TestResult {
+    use yi_types::plan::doc::{GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel};
+    let label = "port «A» {{ objective }} 完成";
+    let failure = "unit «A» missing {{ objective }} {{ plan_frontier }}";
+    let plan = Plan::opening(
+        PlanId::new("braces")?,
+        GoalText::new("keep braces")?,
+        PlanTier::Root,
+        vec![Todo::pending(TodoLabel::new(label)?)],
+    );
+    let mut goal = goal_with("finish the port");
+    goal.check_failure = Some(failure.to_owned());
+    let text = continuation_text(&goal, Some(&plan));
+    assert!(text.contains(failure), "{text}");
+    assert!(text.contains(&format!("- {label}")), "{text}");
+    Ok(())
+}
+
+#[test]
 fn continuation_prompt_interpolates_budgets() -> TestResult {
     let goal = goal_with("finish the port");
     let text = continuation_text(&goal, None);
