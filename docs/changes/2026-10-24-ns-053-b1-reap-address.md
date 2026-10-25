@@ -1,7 +1,7 @@
 ---
 issue: Closes #1489, Refs #1442
 growth: +33 the address grep (+34: a row builder and a notice writer shared with the history grep, a line walk over the text read serves, and an agent:// grep sent through its reap pin to the history grep) and the product and last-product clauses on the finish lines, the refused and conflicted lines included (+17); weighed for deletion: the 2,000-char reap body, its clamp arm and the harvest slot's stored block are gone (-16), leaving grep unable to open plan:// and agent:// was rejected because the kill test forbids it, and a second notice writer for the address grep was folded into the history grep's
-raise: crate runtime +33, tests +297
+raise: crate runtime +33, tests +295
 decision: a plan child's ending reaches the owner as one line naming its product's address (plan:// on accept, history://<child> otherwise) and no reap block, revising the promotion invariant at mailbox.rs:883-884 and D230 | twelve plan children cost about 24 KB on every later request, and reclaim never cuts the block (reclaim.rs:320-326) | restore the clamped body in SubagentHost::reap
 ---
 This is Bet 1 item 4 of Yi's next shape, the reap half (B1-reap-address).
