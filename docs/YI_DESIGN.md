@@ -59,7 +59,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-runtime` | `AgentSession` and everything that composes the crates above | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel, yi-browser |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon | yi-types, yi-runtime |
 | `yi-tui` | The ratatui shell | yi-types, yi-runtime, yi-orb |
-| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui, yi-browser |
+| `yi-console` | The multi-pane workspace, an ACP client of the daemon; links `yi-runtime` through `yi-tui` | yi-types, yi-tui, yi-browser |
 | `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router | yi-types |
 | `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser |
 
@@ -71,7 +71,11 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
   `Result` in its public API is `AgentTool::validate`.
 - `yi-runtime` is the only non-test constructor of `LoopConfig`.
 - Surfaces (`yi-acp`, `yi-tui`, `yi-console`, `yi-cli`) never depend on `yi-tools`, `yi-ai` or
-  `yi-permission`; `yi-console` does not depend on `yi-runtime`.
+  `yi-permission`. `yi-console` declares no `yi-runtime` dependency, yet its build contains
+  `yi-runtime`, because `yi-tui` depends on it. The seam that would cut that path runs through
+  `yi-tui`, between the pane engine the console reuses and the in-process shell that hosts an
+  `AgentSession` (`SessionPort` for `AgentSession` in `port.rs`, `app/bridge.rs`); engine files
+  call `yi_runtime` helpers too, so the cut moves those. It is not made.
 - Only `yi-cli` depends on `yi-mcp-cli`.
 - `yi-browser` starts the user's Chrome, through `yi __fds`, and runs `yi plugin add chrome`
   when there is none, for the console's browser pane; `yi-runtime` depends on it only to retain
@@ -724,7 +728,8 @@ applies and journals. A todo's contract decides when it is done.
 - Todos are addressed by label; `after` edges order siblings, carry no data, are acyclic; ready is
   derived, never stored. A non-Active plan admits `view` alone (Done: also `retry`, `program`).
 - `Actor::User` is minted only by `authority::confirmed`, from a permission prompt a tty process
-  holds, for one request, valid 300 s. `yi plan` and the serve worker refuse user-only ops.
+  holds, for one request, valid while the plan revision it named still holds, with no time window.
+  `yi plan` and the serve worker refuse user-only ops.
 - Owner: [`crates/runtime/src/plan/ops.rs`](../crates/runtime/src/plan/ops.rs) (legality:
   `table.rs`).
 
@@ -810,10 +815,14 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
 - The pool is `~/.yi/lanes/<hash>/<n>`, keyed by the common git dir; `pool.lock` serializes
   claims; a slot is live iff a process holds its `.held` flock.
 - A claim resets the slot to `origin/main` (else `main`, `HEAD`, or a given commit), checks out
-  `yi/<session>` and locks the worktree `session:<id>`. With `lanes.slots` unset it never refuses.
-- A resumed session reclaims its slot; a dead holder's clean slot with its branch in `main` is free.
-- Every hand-back takes `self`: `discard` deletes the branch, `release` detaches and warms, `Drop`
-  detaches. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
+  `yi/<session>` and locks the worktree `session:<id>`; a `yi/<session>` holding commits the base
+  lacks is checked out as it stands, never reset. With `lanes.slots` unset it never refuses.
+- A resumed session takes its own slot before any free one; a dead holder's clean slot with its
+  branch in `main` is free. A dirty tree is never free, with a session recorded or without one.
+- Every hand-back takes `self`: `discard` cleans the tree and deletes the branch, `release` detaches
+  and warms, `Drop` detaches; over a dirty tree `release` and `Drop` keep the session and branch, so
+  the slot is that session's orphan. `discard` and `yi lanes reap` are the only tree wipes, and each
+  counts the paths it dropped. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
   `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2).
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
@@ -1023,7 +1032,8 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 
 ### 17.4 Console
 `yi-console` is the workspace shell: an ACP client of the daemon (§17.2) on the alternate screen
-with mouse capture. It depends on `yi-types` and `yi-tui` only.
+with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, and through
+`yi-tui` its build links `yi-runtime` (§2).
 
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
