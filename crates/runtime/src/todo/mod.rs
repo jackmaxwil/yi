@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, DocError, Note, PlanId, Todo, TodoLabel, TodoState, TodoStateName,
+    AgentId, BlockedOn, DocError, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState,
+    TodoStateName,
 };
 use yi_types::todo::{PhaseName, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord};
 
@@ -674,6 +675,10 @@ fn normalized(text: &str) -> String {
 /// spec`); the same label [`normalized`]; a unique case-insensitive prefix of [`PREFIX_MIN`].
 fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     let items: Vec<&Todo> = list.items().collect();
+    // A cut row is also named by the text it was cut from, whose head its label may not be.
+    fn text(item: &Todo) -> &str {
+        (item.note.as_ref().filter(|_| item.is_cut())).map_or(item.label.as_str(), |n| n.as_str())
+    }
     if let Some(index) = items.iter().position(|item| item.label.as_str() == needle) {
         return Ok(index);
     }
@@ -685,7 +690,7 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     }
     if let Some((id, rest)) = bare.split_once(' ')
         && let Some(index) = items.iter().position(|item| {
-            let (label, rest) = (normalized(item.label.as_str()), normalized(rest));
+            let (label, rest) = (normalized(text(item)), normalized(rest));
             let same = !rest.is_empty() && (label.starts_with(&rest) || rest.starts_with(&label));
             same && item.id.as_ref().is_some_and(|own| own.as_str() == id)
         })
@@ -697,19 +702,30 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
         let same: Vec<usize> = items
             .iter()
             .enumerate()
-            .filter(|(_, item)| normalized(item.label.as_str()) == wanted)
+            .filter(|(_, item)| {
+                [item.label.as_str(), text(item)]
+                    .map(normalized)
+                    .contains(&wanted)
+            })
             .map(|(index, _)| index)
             .collect();
         if let [one] = same.as_slice() {
             return Ok(*one);
         }
     }
+    // A whole text whose digest named no row (retyped in another case) still names it by head.
+    let digest = |tail: &str| tail.len() == 8 && tail.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let long = bare.chars().count() > TODO_LABEL_MAX.saturating_sub(9);
+    let tail = bare
+        .rsplit_once(' ')
+        .filter(|(_, tail)| long && digest(tail));
+    let bare = tail.map_or(bare, |(head, _)| head);
     let prefix = bare.to_lowercase();
     let hits: Vec<usize> = if bare.chars().count() >= PREFIX_MIN {
         items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.label.as_str().to_lowercase().starts_with(&prefix))
+            .filter(|(_, item)| text(item).to_lowercase().starts_with(&prefix))
             .map(|(index, _)| index)
             .collect()
     } else {

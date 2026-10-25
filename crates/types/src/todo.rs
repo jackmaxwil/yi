@@ -87,24 +87,40 @@ pub struct Claim {
     pub observed: Option<String>,
 }
 
+/// Text over the label max as a label: its head and a digest of the whole text, so two todos
+/// that share a head are two labels; text at the max is its own label.
+fn cut_label(text: &str) -> String {
+    if text.chars().count() <= TODO_LABEL_MAX {
+        return text.to_owned();
+    }
+    let digest = crate::plan::canonical::Digest::of(text.as_bytes()).hex();
+    let head: String = text
+        .chars()
+        .take(TODO_LABEL_MAX.saturating_sub(9))
+        .collect();
+    format!("{} {}", head.trim_end(), digest.get(..8).unwrap_or(&digest))
+}
+
 impl Todo {
     /// Text over the label max is cut to a label and kept whole as the note; trailing
     /// `user://<n>` tokens are the intent.
     pub fn from_text(text: &str) -> Result<Self, DocError> {
         let (text, intent) = split_cited(text.trim());
-        let cut: String = text.chars().take(TODO_LABEL_MAX).collect();
-        let mut todo = Self::pending(TodoLabel::new(cut.trim_end())?);
-        if cut.len() < text.len() {
+        let mut todo = Self::pending(TodoLabel::new(cut_label(text))?);
+        if text.chars().count() > TODO_LABEL_MAX {
             todo.note = Some(Note::new(text)?);
         }
         todo.cites.intent = intent;
         Ok(todo)
     }
 
+    /// An older build's cut label is the bare head of its note, and one cut now ends in a digest
+    /// of the note; both read as cut.
     pub fn is_cut(&self) -> bool {
         let label = self.label.as_str();
         self.note.as_ref().is_some_and(|note| {
-            note.as_str().len() > label.len() && note.as_str().starts_with(label)
+            let note = note.as_str();
+            note.len() > label.len() && (note.starts_with(label) || cut_label(note) == label)
         })
     }
 }

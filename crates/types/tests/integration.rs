@@ -18,5 +18,7 @@ mod session_output;
 mod settings;
 mod stream_apply;
 mod text_newtypes;
+mod todo;
 mod todo_record;
+mod url;
 mod wire_roundtrip;
