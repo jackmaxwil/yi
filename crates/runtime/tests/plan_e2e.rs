@@ -998,3 +998,57 @@ fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
     }
     Ok(())
 }
+
+/// A `set` naming one row leaves a failed row it does not name failed on the tool and on
+/// `plan.op` alike, and a struck row drops on both; `plan.op` once called the reducer's raw set.
+#[tokio::test]
+async fn a_set_reads_its_rows_alike_on_the_tool_and_plan_op() -> TestResult {
+    use yi_tools::Tool;
+    let mut wrong = Vec::new();
+    for surface in ["tool", "plan.op"] {
+        let dir = Scratch::new(&format!("yi-plan-oneparse-{surface}"))?;
+        let engine = Arc::new(PlanEngine::new(
+            PlanStore::open(dir.to_path_buf())?,
+            Arc::new(NoChildren),
+        ));
+        let tool = yi_runtime::plan::tool::PlanTool::new(Arc::clone(&engine), Actor::Owner);
+        let mut registry = HostRegistry::default();
+        yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
+        let calls = [
+            serde_json::json!({"op": "set", "goal": "ship it", "list": "- [ ] a\n- [ ] b\n- [ ] c"}),
+            serde_json::json!({"op": "start", "label": "a"}),
+            serde_json::json!({"op": "fail", "label": "a", "cause": "the build broke"}),
+            serde_json::json!({"op": "set", "todos": [{"label": "b", "state": "running"}]}),
+            serde_json::json!({"op": "set", "list": "- [-] c"}),
+        ];
+        for (at, call) in calls.into_iter().enumerate() {
+            let mut args = call.as_object().cloned().unwrap_or_default();
+            let refused = if surface == "tool" {
+                let context = yi_tools::ToolContext::new(std::env::temp_dir());
+                tool.execute(args, &context).is_error
+            } else {
+                let op = args.remove("op").unwrap_or_default();
+                let payload =
+                    serde_json::json!({"request_id": format!("r{at}"), "op": op, "args": args});
+                plan_op(&registry, payload).await?["ok"] != serde_json::json!(true)
+            };
+            assert!(!refused, "{surface} {call}");
+        }
+        let id = PlanStore::open(dir.to_path_buf())?
+            .roots()?
+            .into_iter()
+            .next()
+            .ok_or("no plan")?;
+        let plan = PlanStore::open(dir.to_path_buf())?.read(&id)?;
+        let state = |label: &str| {
+            let todo = plan.todos.iter().find(|todo| todo.label.as_str() == label);
+            todo.map(|todo| yi_types::plan::doc::TodoStateName::of(&todo.state).to_string())
+        };
+        let seen = (state("a"), state("c"));
+        if seen != (Some("failed".to_owned()), Some("abandoned".to_owned())) {
+            wrong.push(format!("{surface}: a and c read {seen:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    Ok(())
+}

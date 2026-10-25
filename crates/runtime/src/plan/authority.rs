@@ -139,7 +139,7 @@ pub fn submit(
     request.expected_revision = expected_revision;
     let Err(refused) = check_actor(actor, &request.op) else {
         let op = request.op.clone();
-        let outcome = engine.apply(request)?;
+        let outcome = super::apply::apply_set(engine, request, &[])?;
         return Ok(Applied { op, outcome });
     };
     if *actor != Actor::Owner {
