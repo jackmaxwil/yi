@@ -3679,6 +3679,58 @@ fn a_drag_held_at_the_bottom_edge_scrolls_and_copies_past_the_screen() -> TestRe
     Ok(())
 }
 
+/// The clipboard writes of a drag over a markdown viewer, from row 5 down past the bottom edge,
+/// after `before` has run in the opened viewer.
+fn viewer_drag_copy(name: &str, before: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
+    let doc = dir.join("long.md");
+    let text: String = (1..=60)
+        .map(|n| format!("paragraph {n:02} of the scroll fixture\n\n"))
+        .collect();
+    std::fs::write(&doc, text + "the last paragraph\n")?;
+    run_opts(
+        name,
+        Some(session_fixture()),
+        &format!(
+            "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+             key alt-/\ntype md {}\nkey enter\nwait-frame 3000 paragraph 01 of\n{before}\
+             mouse down 60 5\nmouse drag 60 29\nwait-frame 9000 the last paragraph\n\
+             mouse up 60 29\nwait-frame 3000 copied\nquit\n",
+            doc.display()
+        ),
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    Ok(log
+        .lines()
+        .filter(|line| line.starts_with("\u{1b}]52;"))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Dies with a drag begun on a viewer held at its top copying its opening rows twice and
+/// stopping short of the end: the press anchored at the pin, not at a row of the content.
+#[test]
+fn a_drag_from_a_viewers_held_top_copies_what_one_from_a_scrolled_top_does() -> TestResult {
+    let held = viewer_drag_copy("drag-held-top", "")?;
+    let scrolled = viewer_drag_copy(
+        "drag-scrolled-top",
+        "mouse scrolldown 60 10\nmouse scrolldown 60 10\nwait-frame 3000 !paragraph 01 of\n\
+         mouse scrollup 60 10\nmouse scrollup 60 10\nmouse scrollup 60 10\n\
+         wait-frame 3000 paragraph 01 of\n",
+    )?;
+    assert_eq!(
+        scrolled.len(),
+        1,
+        "one copy from the scrolled top: {scrolled:?}"
+    );
+    assert_eq!(held, scrolled);
+    Ok(())
+}
+
 fn resume_long(frame: &Value) -> Vec<Value> {
     let text: String = (0..60).map(|row| format!("row {row}\n\n")).collect();
     vec![
