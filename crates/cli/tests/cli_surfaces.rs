@@ -1,8 +1,13 @@
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
+use yi_runtime::plan::authority::{Submission, submit};
+use yi_runtime::plan::ops::{Actor, PlanEngine};
+use yi_runtime::plan::store::PlanStore;
+use yi_types::plan::doc::PlanId;
 
 use crate::scratch::Scratch;
 
@@ -2034,6 +2039,258 @@ fn stats_rolls_sessions_up_by_day_and_window() -> TestResult {
     assert_eq!(recent["rows"].as_array().map(Vec::len), Some(1), "{recent}");
     assert_eq!(recent["rows"][0]["key"], "Together", "{recent}");
     assert_eq!(recent["rows"][0]["requests"], 30, "{recent}");
+    Ok(())
+}
+
+/// A faux session whose every turn is a `plan` call, then the one text turn: the engine inside
+/// `yi ask` writes the session ledger and the journal itself. Returns the session file it wrote.
+fn plan_session(
+    workspace: &Workspace,
+    name: &str,
+    calls: &[Value],
+) -> Result<PathBuf, Box<dyn Error>> {
+    use yi_runtime::faux::{faux_text, faux_tool_call};
+    use yi_types::message::StopReason::{Stop, ToolUse};
+    let mut turns: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .map(|(n, args)| {
+            let args = args.as_object().cloned().unwrap_or_default();
+            (
+                vec![faux_tool_call(&format!("c{n}"), "plan", args)],
+                ToolUse,
+            )
+        })
+        .collect();
+    turns.push((vec![faux_text("finished")], Stop));
+    let script = turns_script(workspace, name, &turns)?;
+    let out = ask(workspace, name, &["--faux", &script])?;
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{name}: {said}");
+    let files = session_files(&workspace.0.join("home/sessions"))?;
+    files.into_iter().max().ok_or_else(|| "no session".into())
+}
+
+/// An `init` for one chain of todos, then a `start` and a `done` for each in order.
+fn walked(goal: &str, labels: &[&str]) -> Vec<Value> {
+    let todos: Vec<Value> = labels
+        .iter()
+        .enumerate()
+        .map(
+            |(at, label)| match at.checked_sub(1).and_then(|prev| labels.get(prev)) {
+                Some(prev) => json!({"label": label, "after": [prev]}),
+                None => json!({"label": label}),
+            },
+        )
+        .collect();
+    let mut calls = vec![json!({"op": "init", "goal": goal, "todos": todos})];
+    for label in labels {
+        calls.push(json!({"op": "start", "label": label}));
+        calls.push(json!({"op": "done", "label": label}));
+    }
+    calls
+}
+
+/// One op as the owner, the way the plan tool submits it.
+fn apply(engine: &PlanEngine, args: Value) -> Result<(), String> {
+    let submission = Submission {
+        args: args.as_object().cloned().unwrap_or_default(),
+        request_id: None,
+        expected_revision: None,
+    };
+    submit(engine, &Actor::Owner, None, submission)
+        .map(|_applied| ())
+        .map_err(|error| error.to_string())
+}
+
+/// The `--by plan` rows as `"<op> <actor> <count>"`, sorted.
+fn plan_rows(table: &Value) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut rows: Vec<String> = table["rows"]
+        .as_array()
+        .ok_or("no rows")?
+        .iter()
+        .map(|row| format!("{} {} {}", row["op"], row["actor"], row["count"]).replace('"', ""))
+        .collect();
+    rows.sort();
+    Ok(rows)
+}
+
+/// Dies when `--by plan` skips the children directory, double-counts the ops a session mirrors and
+/// its journal also holds (an `init` stamped with a trace carries two extra keys the mirror and
+/// the journal order differently), drops the journal-only kinds (an engine's `spawn_intent`, a
+/// refusal), reads a refusal as the op it refused, or leaves a verifier's `done_refused` out of
+/// its total or reads a stale verification as a rejected op. Every record is written by the engine
+/// itself: three `yi ask` sessions (one moved under `children/`, one citing a `user://9` nobody
+/// wrote), the `yi plan` verbs, a hosted engine that delegates, and an engine whose checker exits 1. The expected counts are the ops each
+/// script applied, tallied by hand.
+#[test]
+fn stats_by_plan_counts_engine_ops_across_sessions_and_children() -> TestResult {
+    let workspace = Workspace::new("rollup-plan")?;
+    let first = plan_session(
+        &workspace,
+        "one",
+        &walked("ship the parser", &["cut", "wire"]),
+    )?;
+    let mut stray = walked("tune the lexer", &["scan"]);
+    stray[0]["todos"][0]["intent"] = json!(["user://9"]);
+    plan_session(&workspace, "two", &stray)?;
+    let third = plan_session(&workspace, "three", &walked("audit the docs", &["read"]))?;
+    let nested = first.with_extension("").join("children/sub-aa");
+    std::fs::create_dir_all(&nested)?;
+    std::fs::rename(&third, nested.join("c.jsonl"))?;
+
+    let plan = |verb: &str, args: &str| -> Result<Output, Box<dyn Error>> {
+        workspace.yi(&["plan", verb, args])
+    };
+    let opened = r#"{"goal":"file the report","todos":[{"label":"draft"},{"label":"send","after":["draft"]}]}"#;
+    assert_eq!(plan("init", opened)?.status.code(), Some(0));
+    let early = plan("done", r#"{"label":"send"}"#)?;
+    assert_ne!(early.status.code(), Some(0), "send is still pending");
+    for (verb, label) in [
+        ("start", "draft"),
+        ("done", "draft"),
+        ("start", "send"),
+        ("done", "send"),
+    ] {
+        let step = plan(verb, &format!(r#"{{"label":"{label}"}}"#))?;
+        assert_eq!(step.status.code(), Some(0), "{verb} {label}");
+    }
+
+    // A `done` that a second engine moves to attempt 2 mid-check goes stale; on attempt 2 a checker
+    // that exits 1 makes the verifier, not the table, refuse it. Failing the todo then closes the
+    // plan, since the store holds one open plan at a time.
+    let store = PlanStore::open(workspace.project().join(".yi/plans"))?;
+    let manifest = json!({
+        "manifest": 1, "command": "exit 1", "cwd": "snapshot_root", "cwd_subdir": null,
+        "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
+    });
+    let checker = store.artifacts(&PlanId::slug("check the build")?).put(
+        &serde_json::to_vec(&manifest)?,
+        "application/vnd.yi.checker-manifest+json",
+        "test",
+    )?;
+    let contract = json!({
+        "class": "writer", "threshold": 1000, "min_coverage": 1000,
+        "items": [{"id": "check", "critical": true, "weight": 100,
+                   "decider": {"cmd": {"checker": checker, "timeout_ms": 10_000}}}]
+    });
+    let ws = workspace.0.join("checker-ws");
+    std::fs::create_dir_all(&ws)?;
+    let mover = PlanEngine::new(store.clone(), Arc::new(crate::plan_ops::Hosted));
+    let hook: yi_runtime::plan::ops::VerifyHook = Arc::new(move || {
+        for args in [
+            json!({"op": "fail", "label": "build", "cause": "moved"}),
+            json!({"op": "retry", "label": "build"}),
+            json!({"op": "start", "label": "build"}),
+        ] {
+            let _moved = apply(&mover, args);
+        }
+    });
+    let checked = PlanEngine::new(store.clone(), Arc::new(crate::plan_ops::Hosted))
+        .with_cwd(ws.clone())
+        .with_verify_hook(hook);
+    let todos = json!([{"label": "build", "contract": contract}]);
+    apply(
+        &checked,
+        json!({"op": "init", "goal": "check the build", "todos": todos}),
+    )?;
+    apply(&checked, json!({"op": "start", "label": "build"}))?;
+    let quiet = PlanEngine::new(store, Arc::new(crate::plan_ops::Hosted)).with_cwd(ws);
+    let stale = apply(&checked, json!({"op": "done", "label": "build"}));
+    assert!(stale.is_err(), "the todo moved mid-check: {stale:?}");
+    let refused = apply(&quiet, json!({"op": "done", "label": "build"}));
+    assert!(refused.is_err(), "the checker exits 1: {refused:?}");
+    apply(
+        &quiet,
+        json!({"op": "fail", "label": "build", "cause": "red"}),
+    )?;
+
+    // A hosted engine delegates, fails the child's todo and retries it: two dispatches.
+    let engine = PlanEngine::new(
+        PlanStore::open(workspace.project().join(".yi/plans"))?,
+        Arc::new(crate::plan_ops::Hosted),
+    );
+    let delegated = json!({"label": "write", "delegation": {"spec": {"role": "worker"}, "accept": {"command": "true"}}});
+    for args in [
+        json!({"op": "init", "goal": "report the run", "todos": [delegated]}),
+        json!({"op": "fail", "label": "write", "cause": "no"}),
+        json!({"op": "retry", "label": "write"}),
+    ] {
+        apply(&engine, args)?;
+    }
+
+    let table = rolled(&workspace, &["stats", "--by", "plan", "--json"])?;
+    assert_eq!(
+        plan_rows(&table)?,
+        [
+            "done (rejected) owner 1",
+            "done owner 6",
+            "done_refused owner 1",
+            "fail owner 3",
+            "init owner 6",
+            "retry owner 2",
+            "spawn_intent engine 2",
+            "spawn_result engine 2",
+            "start engine 2",
+            "start owner 8",
+            "verification_requested owner 2",
+            "verification_stale owner 1",
+        ],
+        "{table}"
+    );
+    assert_eq!(
+        table["totals"],
+        json!({"delegations": 2, "accepted": 0, "doneRefused": 1, "retries": 2})
+    );
+    assert_eq!(table["files"], 3, "the child file is read: {table}");
+    assert_eq!(table["journals"], 6, "one journal per plan: {table}");
+    Ok(())
+}
+
+/// Dies when sessions that never held a plan make `--by plan` fail or print a bare header.
+#[test]
+fn stats_by_plan_says_so_when_there_are_no_plan_ops() -> TestResult {
+    let workspace = Workspace::new("rollup-no-plan")?;
+    with_four_sessions(&workspace)?;
+    let none = rolled(&workspace, &["stats", "--by", "plan", "--json"])?;
+    assert_eq!(none["planOps"], 0, "{none}");
+    assert_eq!(none["rows"].as_array().map(Vec::len), Some(0), "{none}");
+    assert_eq!(none["files"], 4, "{none}");
+    let text = stdout(&workspace.yi(&["stats", "--by", "plan"])?);
+    assert!(text.contains("[no plan ops:"), "{text}");
+    Ok(())
+}
+
+/// Forty distinct op kinds fill the table; a forty-first is named, not dropped.
+#[test]
+fn stats_by_plan_names_the_rows_it_cut() -> TestResult {
+    let workspace = Workspace::new("rollup-plan-cap")?;
+    let real = plan_session(&workspace, "one", &walked("ship the parser", &["cut"]))?;
+    let text = std::fs::read_to_string(&real)?;
+    std::fs::remove_dir_all(workspace.project().join(".yi/plans"))?;
+    let header = text.lines().next().ok_or("empty session")?;
+    let entry = text
+        .lines()
+        .find(|line| line.contains(r#""customType":"plan_op""#))
+        .ok_or("no plan_op entry")?;
+    for kinds in [40, 41] {
+        let sessions = workspace.0.join("home/sessions");
+        std::fs::remove_dir_all(&sessions)?;
+        std::fs::create_dir_all(sessions.join("--p--"))?;
+        let mut lines = vec![header.to_owned()];
+        lines.extend(
+            (0..kinds)
+                .map(|kind| entry.replace(r#""op":"init""#, &format!(r#""op":"kind-{kind:02}""#))),
+        );
+        std::fs::write(sessions.join("--p--/kinds.jsonl"), lines.join("\n"))?;
+        let all = rolled(&workspace, &["stats", "--by", "plan", "--json"])?;
+        assert_eq!(all["rows"].as_array().map(Vec::len), Some(kinds), "{all}");
+        let shown = stdout(&workspace.yi(&["stats", "--by", "plan"])?);
+        let rows = shown.lines().filter(|line| line.contains("kind-")).count();
+        assert_eq!(rows, kinds.min(40), "{shown}");
+        let notice = "[showing 40 of 41 rows (ROW_CAP); `yi stats --by plan --json` lists all]";
+        assert_eq!(shown.contains(notice), kinds == 41, "{kinds}: {shown}");
+    }
     Ok(())
 }
 
