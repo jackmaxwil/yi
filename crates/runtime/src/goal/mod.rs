@@ -67,7 +67,14 @@ pub(crate) fn evidence_repeat(evidence: &str) -> String {
     let tail = evidence.get(from..).unwrap_or_default();
     let (kept, total, cap) = (tail.len(), evidence.len(), "REPEAT_BYTES");
     let next = "the refusal that first carried this output, or run the check again";
-    let row = yi_tools::cut(kept, total, "bytes kept", cap, REPEAT_BYTES, next);
+    let row = yi_tools::Cut {
+        kept,
+        total,
+        what: "bytes kept",
+        cap,
+        limit: REPEAT_BYTES,
+        next,
+    };
     format!(
         "{head}
 {row}

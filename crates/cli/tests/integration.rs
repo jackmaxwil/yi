@@ -8,6 +8,8 @@ mod acp_schema;
 mod config_option;
 #[path = "support/daemon.rs"]
 mod daemon;
+#[path = "../../types/tests/support/loopback.rs"]
+mod loopback;
 #[path = "support/prompt_slots.rs"]
 mod prompt_slots_support;
 #[path = "../../types/tests/support/repo.rs"]
@@ -24,6 +26,7 @@ mod browser;
 mod cli_surfaces;
 mod console_drive;
 mod journeys;
+mod kimi_login;
 mod mcp_cli;
 mod mcp_oauth;
 mod monkey;

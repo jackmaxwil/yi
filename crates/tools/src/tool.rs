@@ -224,15 +224,24 @@ pub(crate) fn clip(line: &str, cols: usize) -> (String, bool) {
 }
 
 /// A loud cut's row: kept of what existed, the cap that cut it, and the call that gets the rest.
-pub fn cut(
-    kept: usize,
-    total: usize,
-    what: &str,
-    cap: &str,
-    limit: usize,
-    next_call: &str,
-) -> String {
-    format!("[\u{2026} {kept} of {total} {what} ({cap} {limit}); the rest: {next_call}]")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut<'a> {
+    pub kept: usize,
+    pub total: usize,
+    pub what: &'a str,
+    pub cap: &'a str,
+    pub limit: usize,
+    pub next: &'a str,
+}
+
+impl std::fmt::Display for Cut<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "[\u{2026} {} of {} {} ({} {}); the rest: {}]",
+            self.kept, self.total, self.what, self.cap, self.limit, self.next
+        )
+    }
 }
 
 pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
