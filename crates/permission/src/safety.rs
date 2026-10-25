@@ -268,7 +268,7 @@ fn flags(argv: &[String]) -> Vec<&str> {
     argv.iter()
         .skip(1)
         .map(String::as_str)
-        .filter(|token| token.starts_with('-'))
+        .filter(|token| token.starts_with('-') && *token != "-")
         .collect()
 }
 
@@ -292,7 +292,7 @@ fn given(argv: &[String], flag: &str) -> bool {
 /// Flags that make a read run a program (destructive, as `find -exec` is; a git `-c` value can
 /// name one) or write a file.
 #[rustfmt::skip]
-const ACTING: [(&str, &str, Class); 19] = [
+const ACTING: [(&str, &str, Class); 25] = [
     ("fd", "-x", Class::Destructive), ("fd", "-X", Class::Destructive),
     ("fd", "--exec", Class::Destructive), ("fd", "--exec-batch", Class::Destructive),
     ("rg", "--pre", Class::Destructive), ("rg", "--hostname-bin", Class::Destructive),
@@ -300,7 +300,9 @@ const ACTING: [(&str, &str, Class); 19] = [
     ("sort", "--output", Class::Unknown), ("tree", "-o", Class::Unknown), ("git", "--output", Class::Unknown),
     ("awk", "-f", Class::Unknown), ("awk", "--file", Class::Unknown), ("awk", "-E", Class::Unknown),
     ("awk", "--exec", Class::Unknown), ("awk", "-i", Class::Unknown), ("awk", "--include", Class::Unknown),
-    ("awk", "-l", Class::Unknown), ("awk", "--load", Class::Unknown),
+    ("awk", "-l", Class::Unknown), ("awk", "--load", Class::Unknown), ("awk", "-p", Class::Unknown),
+    ("awk", "--profile", Class::Unknown), ("awk", "-o", Class::Unknown), ("awk", "-d", Class::Unknown),
+    ("awk", "--pretty-print", Class::Unknown), ("awk", "--dump-variables", Class::Unknown),
 ];
 
 fn acting(name: &str, argv: &[String]) -> Class {
@@ -347,7 +349,9 @@ fn git_class(argv: &[String]) -> Class {
         "reset" => has("--hard") || has("--merge") || has("--keep"),
         "clean" => given(argv, "-f") || given(argv, "-d") || given(argv, "-x") || has("--force"),
         "checkout" | "switch" => {
-            (argv.iter()).any(|token| token == "--" || token == "." || token.starts_with("./"))
+            // Invariant: a ref name never starts with `.`, `/` or `~` and never ends in `/`.
+            let mut after = argv.iter().skip_while(|w| **w != subcommand).skip(1);
+            after.any(|it| it == "--" || it.starts_with(['.', '/', '~']) || it.ends_with('/'))
                 || given(argv, "-f")
                 || has("--force")
                 || has("--discard-changes")
@@ -495,7 +499,7 @@ pub fn classify(argv: &[String]) -> Class {
         "awk" if (argv.iter()).any(|word| word.contains("system") || word.contains(['|', '>'])) => {
             Class::Unknown
         }
-        "uniq" if argv.iter().filter(|word| !word.starts_with('-')).count() > 2 => Class::Unknown,
+        "uniq" if argv.len() > flags(argv).len().saturating_add(2) => Class::Unknown,
         "grep" | "awk" => Class::Safe,
         "npm" | "pnpm" | "yarn" | "pip" | "pip3" | "brew" | "gem" => match subcommand(argv) {
             Some("install" | "uninstall" | "remove" | "add" | "publish" | "link") => {
@@ -541,9 +545,7 @@ fn sed_class(argv: &[String]) -> Class {
             None => first = first.or(Some(word)),
         }
     }
-    if scripts.is_empty() {
-        scripts.extend(first);
-    }
+    scripts.extend(first.filter(|_| scripts.is_empty()));
     match scripts.iter().any(|script| sed_script_acts(script)) {
         true => Class::Unknown,
         false => Class::Safe,
@@ -641,8 +643,8 @@ const KEYWORDS: [&str; 12] = [
     "case", "do", "done", "elif", "else", "esac", "fi", "for", "in", "then", "until", "while",
 ];
 /// Shell words a command can hide behind, and words that open a header naming no command.
-const OPENERS: [&str; 6] = ["do", "done", "else", "esac", "fi", "then"];
-const HEADERS: [&str; 6] = ["case", "elif", "for", "if", "until", "while"];
+pub(crate) const OPENERS: [&str; 8] = ["!", "do", "done", "else", "esac", "fi", "then", "{"];
+pub(crate) const HEADERS: [&str; 6] = ["case", "elif", "for", "if", "until", "while"];
 
 const VERB_PROGRAMS: [&str; 16] = [
     "brew", "bun", "cargo", "docker", "gem", "git", "go", "just", "make", "npm", "pip", "pip3",
@@ -733,7 +735,7 @@ pub fn write_targets(command: &str) -> Vec<String> {
             out.push(target.to_owned());
         }
     }
-    for segment in command.split([';', '&', '|', '\n', '(', ')']) {
+    for segment in command.split(crate::catastrophic::SEPARATORS) {
         let words: Vec<&str> = segment
             .split_whitespace()
             .map(|word| word.trim_matches(['\'', '"']))
@@ -751,6 +753,7 @@ pub fn write_targets(command: &str) -> Vec<String> {
         let in_place = args.iter().any(|word| {
             *word == "--in-place"
                 || (word.starts_with('-') && !word.starts_with("--") && word.contains('i'))
+                || (program == "sed" && word.starts_with('-') && word.contains('I'))
         });
         match program {
             "sed" | "perl" if in_place => out.extend(operands),
