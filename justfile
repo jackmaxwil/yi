@@ -58,9 +58,9 @@ build-dist:
 
 # No build-dist dependency: the aggregator is the one place that knows whether
 # binary_size and startup will run at all, so it owns the LTO build they read
-# (D91). CI skips both, and paid 2-3 min a job for a binary nothing measured.
-guardrails:
-    bash scripts/guardrails/check_guardrails.sh
+# (D91). CI skips startup, and builds the binary only on Linux to measure it there.
+guardrails *flags:
+    bash scripts/guardrails/check_guardrails.sh "$@"
 
 # The build-free subset, which is what keeps pre-commit under two seconds.
 guardrails-fast:
@@ -68,7 +68,22 @@ guardrails-fast:
 
 # Serial on purpose: beside the dist build, nextest's first exec of 134 fresh test binaries
 # queued behind Gatekeeper's per-binary scan, and the gate took 116-302s where serial took 135-151s.
-check: lint guardrails test
+# `--quiet` prints one line when green and only the failing lane's own output otherwise, with the
+# same exit code, so an agent reads `$?` and the failure rather than every launched gate.
+check *flags:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    case "${1:-}" in
+      "") just lint && just guardrails && just test; exit ;;
+      --quiet) ;;
+      *) echo "check: unknown flag $1 (the one flag is --quiet)"; exit 2 ;;
+    esac
+    for lane in lint "guardrails --quiet" test; do
+      out=$(just $lane 2>&1)
+      rc=$?
+      if [ "$rc" != 0 ]; then printf '%s\n' "$out"; exit "$rc"; fi
+    done
+    echo "check: lint, guardrails and test green"
 
 # --- Local CI: three tiers, run by the hooks in scripts/hooks ----------------
 
@@ -121,7 +136,7 @@ lane name:
 prerelease version:
     #!/usr/bin/env bash
     set -euo pipefail
-    declared=$(sed -n 's/^version:[[:space:]]*\([^[:space:]]*\).*/\1/p' docs/ARCHITECTURE.md | head -1)
+    declared=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import forge_tracking; print(forge_tracking.version())')
     if [ "{{version}}" != "$declared" ]; then
       echo "tag {{version}} disagrees with docs/ARCHITECTURE.md $declared"
       exit 1
