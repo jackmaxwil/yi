@@ -2,7 +2,7 @@
 """Named kill tests against a built yi, under one spend ledger.
 
     python3 evals/kill.py run <test> --binary <yi> [--family F] [--until ISO] [--dry]
-    python3 evals/kill.py budget
+    python3 evals/kill.py budget [--close KEY]
     python3 evals/kill.py report
 
 A test is its own module, evals/kill/<test>.py: THRESHOLD (the pre-registered text), FAMILIES
@@ -363,14 +363,18 @@ def harbor(test, family, spec, stop_usd):
                 "needsUsd": 0.0, "why": "a harbor sweep spends OpenRouter on its own model, never a subscription"}
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
-    stored = lambda: yi_usage.json_lines(store)[0]
-    before = len(stored())
+    rows, bad = yi_usage.json_lines(store)
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
-    filed = stored()[before:]
-    charged = sum(trials.cost(row) for row in filed) if filed else stop_usd
-    return {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
-            "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
+    after, bad_after = yi_usage.json_lines(store)
+    filed, torn = after[len(rows):], bad_after - bad
+    # A line this sweep filed that does not parse is spend nobody can read: charge the cap.
+    charged = sum(trials.cost(row) for row in filed) if filed and not torn else stop_usd
+    row = {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
+           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
+    if torn:
+        row.update(unreadable=torn, why=f"{torn} line(s) this sweep filed in {store.name} do not parse; charged its cap")
+    return row
 
 
 def tests():
@@ -465,10 +469,33 @@ def cmd_run(args):
     return code
 
 
-def cmd_budget(_args):
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def cmd_budget(args):
     table = routes()
-    with ledger() as (rows, _):
+    with ledger() as (rows, write):
         spent, held, done, _ = state(rows)
+        if args.close:
+            if args.close not in held:
+                print(f"no open reserve {args.close}; open: {', '.join(sorted(held)) or 'none'}", file=sys.stderr)
+                return 2
+            pid = next(row["pid"] for row in rows if row["kind"] == "reserve" and row["key"] == args.close)
+            if alive(pid):
+                print(f"refused: {args.close}'s runner, pid {pid}, is alive and settles it itself", file=sys.stderr)
+                return 2
+            # Its run may have spent up to the whole reserve before it died, so that is the charge.
+            test, family, usd = held.pop(args.close)
+            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6, "rows": [],
+                   "why": "closed by hand: its runner died without settling"})
+            spent += usd
     ladder = [{"step": mod.STEP, "test": name, "family": f, "reserveUsd": reserve_of(mod, f, table[f]),
                "settled": (name, f) in done} for name, mod in tests().items() for f in mod.FAMILIES if f in table]
     print(json.dumps({"capUsd": CAP_USD, "spentUsd": spent / 1e6, "heldUsd": sum(m for *_, m in held.values()) / 1e6,
@@ -510,7 +537,8 @@ def main(argv=None):
     run.add_argument("--until", help="ISO time; a Kimi quota reset past it writes the run unrun")
     run.add_argument("--dry", action="store_true", help="check routes and the ladder, spend nothing")
     run.add_argument("--without-kimi", action="store_true", help="run a paid family before Kimi is confirmed or has run")
-    verbs.add_parser("budget")
+    budget = verbs.add_parser("budget")
+    budget.add_argument("--close", metavar="KEY", help="charge an open reserve whose runner died in full and close it")
     verbs.add_parser("report")
     args = parser.parse_args(argv)
     os.environ.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
