@@ -573,8 +573,8 @@ async fn a_walled_member_reads_its_familys_spill_and_no_other() -> TestResult {
         vec![("bash", args(&[("command", "seq 1 20000")]))],
     );
     let (text, _) = cut.await?.pop().ok_or("no bash result")?;
-    let pointer = (text.split("[full output: ").nth(1))
-        .and_then(|rest| rest.split(']').next())
+    let pointer = (text.lines().find_map(yi_tools::spill_path))
+        .map(|(_, path)| path)
         .ok_or_else(|| format!("no pointer: {text}"))?;
     let board = family_board(&home).join("spills").display().to_string();
     assert!(
