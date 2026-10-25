@@ -31,6 +31,7 @@ fn reap_lane(
     res: Result<(Id, ()), tokio::task::JoinError>,
     owners: &mut HashMap<Id, String>,
     busy: &mut HashSet<String>,
+    store: &JobStore,
 ) {
     let (id, aborted) = match res {
         Ok((id, ())) => (id, None),
@@ -40,7 +41,8 @@ fn reap_lane(
         return;
     };
     if let Some(error) = aborted {
-        eprintln!("heartbeat lane for session {session} did not finish: {error}");
+        let text = format!("[heartbeat delivery for session {session} did not finish: {error}]");
+        store.notify(Some(&session), &text);
     }
     busy.remove(&session);
 }
@@ -67,7 +69,7 @@ fn spawn_claimed(
         let store = Arc::clone(store);
         let deliver = Arc::clone(deliver);
         let handle = lanes.spawn_blocking(move || {
-            // Invariant: a panicked DeliverFn reaps as a JoinError reap_lane logs (dist
+            // Invariant: a panicked DeliverFn reaps as a JoinError reap_lane reports (dist
             // aborts the process instead); either way Scheduler::start recovers its claims next.
             for dispatch in &lane {
                 let (outcome, error) = match deliver(&dispatch.job, &dispatch.firing) {
@@ -111,13 +113,14 @@ impl Scheduler {
             let mut busy = HashSet::new();
             loop {
                 while let Some(res) = lanes.try_join_next_with_id() {
-                    reap_lane(res, &mut owners, &mut busy);
+                    reap_lane(res, &mut owners, &mut busy, &store);
                 }
                 // Invariant: `JobStore::mutate` wakes with `notify_waiters`, which stores no
                 // permit, so the waiter registers before reading the snapshot it acts on.
                 let mut woken = std::pin::pin!(changed.notified());
                 let _ = woken.as_mut().enable();
                 let now = yi_session::now_ms();
+                store.rearm_idle(now, &busy);
                 let next = next_claimable_run_at(&store.snapshot(), &busy);
                 if next.is_some_and(|at| at <= now) {
                     let claimed = store
@@ -144,7 +147,7 @@ impl Scheduler {
                     () = due => {}
                     () = woken => {}
                     Some(res) = lanes.join_next_with_id() => {
-                        reap_lane(res, &mut owners, &mut busy);
+                        reap_lane(res, &mut owners, &mut busy, &store);
                     }
                 }
             }
@@ -165,10 +168,27 @@ impl Drop for Scheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::{HashMap, HashSet, JoinSet, reap_lane};
+    use std::sync::{Arc, Mutex};
 
+    use super::{HashMap, HashSet, JobStore, JoinSet, reap_lane};
+
+    /// Dies with the lane left busy for good, with its failure on stderr, where a raw-mode screen
+    /// tears and no model reads it, or with the notice sent to a session not the lane's own.
     #[tokio::test]
-    async fn an_aborted_lane_frees_its_session() -> Result<(), Box<dyn std::error::Error>> {
+    async fn an_aborted_lane_frees_its_session_and_names_it_in_a_notice()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let hub = Arc::new(super::super::shared::DeliveryHub::new());
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        for session in ["a", "b"] {
+            let seen = Arc::clone(&notes);
+            let note = move |text: &str| {
+                seen.lock()
+                    .map_or((), |mut s| s.push((session, text.to_owned())))
+            };
+            hub.register_notice(session.to_owned(), Arc::new(note));
+        }
+        let store =
+            JobStore::open(std::env::temp_dir().join("yi-lanes-unwritten.json")).with_hub(hub);
         let mut lanes: JoinSet<()> = JoinSet::new();
         let mut owners = HashMap::new();
         let mut busy = HashSet::new();
@@ -179,13 +199,18 @@ mod tests {
         handle.abort();
         let res = lanes.join_next_with_id().await.ok_or("lane never joined")?;
         assert!(res.is_err(), "an aborted lane must join as an error");
-        reap_lane(res, &mut owners, &mut busy);
+        reap_lane(res, &mut owners, &mut busy, &store);
 
         assert!(
             !busy.contains("a"),
             "an aborted lane left its session busy for the process lifetime"
         );
         assert!(owners.is_empty(), "the task-id map must not leak the lane");
+        let notes = notes.lock().map_err(|_| "poisoned")?.clone();
+        let [("a", text)] = notes.as_slice() else {
+            return Err(format!("one note, to the lane's own session: {notes:?}").into());
+        };
+        assert!(text.contains("session a did not finish"), "{text}");
         Ok(())
     }
 }

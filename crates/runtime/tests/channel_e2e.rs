@@ -21,7 +21,7 @@ use yi_runtime::schedule::adapter;
 use yi_runtime::schedule::channel::{Appended, Channel, WAKE_MAX_BYTES, render};
 use yi_runtime::schedule::clock::{self, Fired};
 use yi_runtime::schedule::{
-    DeliverFn, Firing, HeartbeatService, JobSpec, JobStore, Scheduler, new_job,
+    DeliverFn, Firing, HeartbeatService, JobSpec, JobStore, RunOutcome, Scheduler, new_job,
 };
 use yi_runtime::todo::mirror;
 use yi_runtime::todo::tool::TodoTool;
@@ -37,7 +37,9 @@ use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, GoalText, PlanId, ProbeCommand, Todo, TodoAddr, TodoLabel,
     TodoState, TodoStateName,
 };
-use yi_types::schedule::{CronSchedule, Job, JobSource, JobStatus, Overlap, ScheduleKind};
+use yi_types::schedule::{
+    CronSchedule, Job, JobSource, JobStatus, Overlap, ScheduleKind, ScheduleState,
+};
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1184,6 +1186,129 @@ async fn a_kernel_exec_subscription_asks_as_bash_and_a_refusal_makes_no_job() ->
     assert!(
         store.snapshot().jobs.is_empty(),
         "a refused subscription left a job"
+    );
+    Ok(())
+}
+
+/// Each delivery, with whether the ledger on disk already held its claim when it began.
+type Seen = Arc<Mutex<Vec<bool>>>;
+
+fn claim_on_disk(ledger: &Path, job: &Job) -> bool {
+    std::fs::read_to_string(ledger)
+        .ok()
+        .and_then(|text| serde_json::from_str::<ScheduleState>(&text).ok())
+        .is_some_and(|disk| disk.dispatches.iter().any(|claim| claim.job_id == job.id))
+}
+
+/// Dies with the idle peek reading a letter another process appended as nothing to deliver, with
+/// a delivery before its claim is on disk, and with a mailbox acked to its newest letter re-claimed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_letter_appended_by_another_process_is_delivered_with_its_claim_already_on_disk()
+-> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    let dir = Scratch::new("yi-channel-peek")?;
+    let path = dir.join("channels/mail-peer.jsonl");
+    let channel = Channel::at(&path);
+    channel.open("channel://mail-peer", None)?;
+    let mut job = subscription(&channel, "sub-mail", None)?;
+    job.schedule.interval_ms = Some(200);
+    job.next_run_at = Some(yi_session::now_ms());
+    let ledger = dir.join("scheduled-jobs.json");
+    let store = Arc::new(JobStore::open(ledger.clone()));
+    store.mutate(|state| state.jobs.push(job));
+    let seen: Seen = Arc::default();
+    let record = Arc::clone(&seen);
+    let deliver: Arc<DeliverFn> = Arc::new(move |job: &Job, _: &Firing| {
+        let on_disk = claim_on_disk(&ledger, job);
+        record.lock().map_err(|_| "poisoned")?.push(on_disk);
+        let sub = job.channel.as_ref().ok_or("no channel")?;
+        let reader = Channel::at(&sub.path);
+        let last = reader.last().map_or(0, |entry| entry.offset);
+        reader.ack(&job.id, last)?;
+        Ok(RunOutcome::Ran)
+    });
+    let timer = start(&store, deliver);
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let idle = seen.lock().map_err(|_| "poisoned")?.len();
+
+    let writer = Channel::at(&path);
+    writer.append(
+        "letter-1",
+        yi_session::now_ms(),
+        serde_json::json!({"body": "hello"}),
+    )?;
+    let delivered = wait_until(10_000, || seen.lock().is_ok_and(|seen| !seen.is_empty())).await;
+    wait_until(10_000, || store.snapshot().dispatches.is_empty()).await;
+    let ino = || std::fs::metadata(dir.join("scheduled-jobs.json")).map(|meta| meta.ino());
+    let (acked, five_ticks) = (ino()?, yi_session::now_ms().saturating_add(1_000));
+    let armed = |job: &Job| job.next_run_at >= Some(five_ticks);
+    let ticked = wait_until(10_000, || store.snapshot().jobs.iter().all(armed)).await;
+    timer.stop();
+
+    assert_eq!(idle, 0, "an empty mailbox was delivered to");
+    assert!(
+        delivered,
+        "a letter from another process was never delivered"
+    );
+    let seen = seen.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        seen.iter().all(|on_disk| *on_disk),
+        "a delivery began before its claim was on disk: {seen:?}"
+    );
+    assert!(ticked, "the acked mailbox stopped ticking");
+    assert_eq!(seen.len(), 1, "an acked mailbox was claimed again");
+    assert_eq!(ino()?, acked, "idle ticks after an ack rewrote the ledger");
+    Ok(())
+}
+
+/// Dies with an adapter's subscription taken for an idle mailbox: its tick is what starts and
+/// keeps its adapter, so routing it through the idle path never runs the source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_adapter_subscription_still_claims_every_tick() -> TestResult {
+    let dir = Scratch::new("yi-channel-adapter-tick")?;
+    script(&dir, "probe.sh", "echo run >> runs; exit 1")?;
+    let uri = "exec://./probe.sh?every=1s";
+    let channel = Channel::at(dir.join("channels/probe.jsonl"));
+    channel.open(uri, None)?;
+    let mut job = subscription(&channel, "sub-probe", None)?;
+    job.cwd = dir.to_string_lossy().into_owned();
+    job.schedule.interval_ms = Some(300);
+    job.next_run_at = Some(yi_session::now_ms());
+    if let Some(sub) = job.channel.as_mut() {
+        sub.address = uri.to_owned();
+        sub.filter = Some("never=1".to_owned());
+    }
+    let ledger = dir.join("scheduled-jobs.json");
+    let store = Arc::new(JobStore::open(ledger.clone()));
+    store.mutate(|state| state.jobs.push(job));
+    let (session, _todos) = session(&[])?;
+    let real = session.heartbeat_deliverer();
+    let seen: Seen = Arc::default();
+    let record = Arc::clone(&seen);
+    let deliver: Arc<DeliverFn> = Arc::new(move |job: &Job, firing: &Firing| {
+        let on_disk = claim_on_disk(&ledger, job);
+        record.lock().map_err(|_| "poisoned")?.push(on_disk);
+        real(job, firing)
+    });
+    let timer = start(&store, deliver);
+    let ticked = wait_until(10_000, || {
+        seen.lock().is_ok_and(|seen| seen.len() >= 3) && runs(&dir) > 0
+    })
+    .await;
+    timer.stop();
+    adapter::halt(true);
+    adapter::halt(false);
+
+    assert!(
+        ticked,
+        "an adapter subscription stopped claiming: {} deliveries, {} source runs",
+        seen.lock().map_or(0, |seen| seen.len()),
+        runs(&dir)
+    );
+    let seen = seen.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        seen.iter().all(|on_disk| *on_disk),
+        "an adapter tick ran before its claim was on disk: {seen:?}"
     );
     Ok(())
 }
