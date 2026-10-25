@@ -321,6 +321,96 @@ fn a_schema_answer_is_the_newest_message_that_matches() -> TestResult {
     Ok(())
 }
 
+fn bash_true(id: &str) -> yi_types::message::Content {
+    let mut args = serde_json::Map::new();
+    args.insert("command".into(), "true".into());
+    yi_runtime::faux::faux_tool_call(id, "bash", args)
+}
+
+const ANSWER: &str = "Done. The file holds three lines and no tabs.";
+
+/// A session the store wrote: a turn that said `Let me look.` and ran bash, then one that said [`ANSWER`].
+fn recorded_two_turns(workspace: &Workspace) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::faux::faux_text;
+    use yi_types::message::StopReason::{Stop, ToolUse};
+    let turns = [
+        (vec![faux_text("Let me look."), bash_true("c0")], ToolUse),
+        (vec![faux_text(ANSWER)], Stop),
+    ];
+    let script = turns_script(workspace, "two-turns", &turns)?;
+    let recorded = ask(workspace, "look", &["--faux", &script])?;
+    assert_eq!(recorded.status.code(), Some(0), "{recorded:?}");
+    let files = session_files(&workspace.0.join("home/sessions"))?;
+    Ok(files.first().ok_or("no session")?.display().to_string())
+}
+
+/// Dies with the turns run together: `Let me look.Done.` told a script nothing of where the
+/// narration ended and the answer began. A turn that said nothing between two that did adds no gap.
+#[test]
+fn a_turn_that_said_text_ends_with_a_blank_line_before_the_next_turns_text() -> TestResult {
+    use yi_runtime::faux::faux_text;
+    use yi_types::message::StopReason::{Stop, ToolUse};
+    let workspace = Workspace::new("turn-gap")?;
+    let turns = [
+        (vec![faux_text("A."), bash_true("c0")], ToolUse),
+        (vec![bash_true("c1")], ToolUse),
+        (vec![faux_text(ANSWER)], Stop),
+    ];
+    let silent = turns_script(&workspace, "silent-middle", &turns)?;
+    let recorded = recorded_two_turns(&workspace)?;
+    for (script, before) in [(recorded, "Let me look.\n\n"), (silent, "A.\n\n")] {
+        let said = ask(&workspace, "look", &["--faux", &script])?;
+        assert_eq!(stdout(&said), format!("{before}{ANSWER}\n"), "{said:?}");
+    }
+    Ok(())
+}
+
+/// Dies with `--no-deltas` unknown: a script wanting the finished messages had to `grep -v
+/// message_update`. Inert without `--json` or on another verb it would read as a filter that matched nothing.
+#[test]
+fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
+    let workspace = Workspace::new("no-deltas")?;
+    let recorded = recorded_two_turns(&workspace)?;
+    let kinds = |extra: &[&str]| -> Result<Vec<String>, Box<dyn Error>> {
+        let args = [&["--faux", recorded.as_str(), "--json"][..], extra].concat();
+        let run = ask(&workspace, "look", &args)?;
+        assert_eq!(run.status.code(), Some(0), "{run:?}");
+        let event = |line: &str| serde_json::from_str::<Value>(line);
+        let kind = |line| Ok(event(line)?["type"].as_str().ok_or("no type")?.to_owned());
+        stdout(&run).lines().map(kind).collect()
+    };
+    let (full, lean) = (kinds(&[])?, kinds(&["--no-deltas"])?);
+    assert!(full.iter().any(|kind| kind == "message_update"), "{full:?}");
+    let kept: Vec<_> = full.into_iter().filter(|k| k != "message_update").collect();
+    assert_eq!(lean, kept);
+    assert_eq!(lean.last().map(String::as_str), Some("agent_end"));
+
+    let mut argv = vec!["--faux", recorded.as_str()];
+    argv.extend("--model faux/faux-1 --json --no-deltas look on".split(' '));
+    let asked = workspace.yi(&argv)?;
+    assert_eq!(asked.status.code(), Some(0), "{asked:?}");
+    assert!(!stdout(&asked).contains("message_update"), "{asked:?}");
+
+    let plain = ask(&workspace, "look", &["--faux", &recorded, "--no-deltas"])?;
+    let bare = workspace.yi(&["stats", "--no-deltas"])?;
+    let other = workspace.yi(&["stats", "--json", "--no-deltas"])?;
+    let console = workspace.yi(&["--json", "--no-deltas"])?;
+    for (run, said) in [
+        (plain, "needs `yi ask --json`"),
+        (bare, "needs `yi ask --json`"),
+        (other, "needs `yi ask --json`"),
+        (console, "needs `yi ask --json`"),
+    ] {
+        let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert_eq!(
+            (run.status.code(), stderr.contains(said)),
+            (Some(2), true),
+            "{stderr}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn sessions_rm_removes_the_session() -> TestResult {
     let workspace = Workspace::new("rm")?;
