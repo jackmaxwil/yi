@@ -153,6 +153,28 @@ fn a_todos_commits_are_those_its_trailer_names_exactly() -> TestResult {
     Ok(())
 }
 
+/// Dies with a user's `grep.patternType` reading the trailer pattern: `fixed` matched nothing, and
+/// `extended` read a label's `(1)` as a group, so `p/todo(1)` lost its own commit.
+#[test]
+fn a_todos_commits_ignore_the_users_grep_pattern_type() -> TestResult {
+    for kind in ["fixed", "extended", "perl"] {
+        let dir = Scratch::new(&format!("yi-plan-why-{kind}"))?;
+        let messages = [
+            trailered("Cut the seam", "p/todo(1)"),
+            trailered("Ship the cut", "p/todo(1)-2"),
+        ];
+        repo(&dir, &messages)?;
+        let config = dir.join(".git/config");
+        let mut text = std::fs::read_to_string(&config)?;
+        text.push_str(&format!("[grep]\n\tpatternType = {kind}\n"));
+        std::fs::write(&config, text)?;
+        let (found, _) = commits_for(&dir, "p/todo(1)")?;
+        let subjects: Vec<&str> = found.iter().map(|(_, subject)| subject.as_str()).collect();
+        assert_eq!(subjects, vec!["Cut the seam"], "grep.patternType {kind}");
+    }
+    Ok(())
+}
+
 /// 256 lines of 256 bytes (40 hash, a space, a 214-char subject, a newline) are the cap exactly.
 #[test]
 fn a_log_past_the_cap_ends_with_the_row_and_the_call_that_reads_it_whole() -> TestResult {
@@ -169,7 +191,7 @@ fn a_log_past_the_cap_ends_with_the_row_and_the_call_that_reads_it_whole() -> Te
             256 - over,
             "the byte the cut takes tears one line"
         );
-        let row = "[… 65536 of 65537 bytes of git log (CAP 65536); the rest: git log --format='%H %s' --grep '^[[:space:]]*Plan: plan://p/todo[[:space:]]*$']";
+        let row = "[… 65536 of 65537 bytes of git log (CAP 65536); the rest: git log --format='%H %s' --basic-regexp --grep '^[[:space:]]*Plan: plan://p/todo[[:space:]]*$']";
         assert_eq!(cut.as_deref(), (over == 1).then_some(row));
     }
     Ok(())

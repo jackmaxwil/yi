@@ -144,6 +144,9 @@ pub fn answer(cwd: &Path, plans_dir: &Path, path: &str, line: u32) -> Result<Ans
     })
 }
 
+/// Basic regexp named, so a user's `grep.patternType` never reads the trailer pattern.
+const LOG: [&str; 4] = ["log", "--format=%H %s", "--basic-regexp", "--grep"];
+
 /// The reverse index is the same data: every commit whose trailer names this todo exactly, so
 /// `p/todo` never lists `p/todo-2`'s; a log past [`CAP`] ends with the row naming the cut.
 pub fn commits_for(cwd: &Path, address: &str) -> Result<Commits, WhyError> {
@@ -151,12 +154,12 @@ pub fn commits_for(cwd: &Path, address: &str) -> Result<Commits, WhyError> {
         .flat_map(|c| (".[]*^$\\".contains(c).then_some('\\').into_iter()).chain([c]))
         .collect();
     let pattern = format!("^[[:space:]]*{TRAILER}{escaped}[[:space:]]*$");
-    let capture = run(cwd, "log", &["log", "--format=%H %s", "--grep", &pattern])?;
+    let capture = run(cwd, "log", &[&LOG[..], &[pattern.as_str()]].concat())?;
     let found = (capture.stdout.lines())
         .filter_map(|line| line.split_once(' ').filter(|(commit, _)| is_commit(commit)))
         .map(|(commit, subject)| (commit.to_owned(), subject.to_owned()))
         .collect();
-    let rest = format!("git log --format='%H %s' --grep '{pattern}'");
+    let rest = format!("git log --format='%H %s' --basic-regexp --grep '{pattern}'");
     let cut = (capture.cut)
         .map(|(kept, all)| super::cut(kept, all, "bytes of git log", "CAP", CAP, &rest));
     Ok((found, cut))
