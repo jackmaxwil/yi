@@ -473,7 +473,7 @@ fn settle_faux(
     let waiting = Instant::now();
     while app.awaiting_turn() {
         if waiting.elapsed() > Duration::from_secs(5) {
-            return Some("tick: the turn did not start within 5 s".to_owned());
+            return Some("tick: the prompt was not read within 5 s".to_owned());
         }
         crate::port::tick(app, port, ui_rx, cmd_tx);
         std::thread::sleep(Duration::from_millis(1));
@@ -570,7 +570,7 @@ pub fn run_headless(
     let mut port = Arc::clone(&session);
     app.load_history(&mut port);
     if let Some(prompt) = initial_prompt {
-        app.note_submission();
+        app.note_submission(&prompt);
         let _ = cmd_tx.send(crate::app::Command::Prompt(prompt));
     }
 

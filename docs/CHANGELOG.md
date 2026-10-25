@@ -1,8 +1,8 @@
 # Changelog
 
 One row per version of `docs/ARCHITECTURE.md`. A structural change adds a file
-under `docs/changes/`; after the merge the recorder bumps the `version:` there and
-writes its row here.
+under `docs/changes/`; after the merge `scripts/record_changes.py` bumps the `version:`
+there and writes its row here, in the order main landed the files.
 
 | ver | date | change |
 |---|---|---|

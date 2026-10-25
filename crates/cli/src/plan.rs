@@ -14,7 +14,7 @@ use yi_types::plan::ledger::PlanOpRecord;
 
 pub struct Options {
     pub cwd: PathBuf,
-    pub plans_dir: Option<PathBuf>,
+    pub plans_dir: PathBuf,
     pub session_dir: PathBuf,
     pub json: bool,
 }
@@ -46,29 +46,22 @@ fn split(subcommand: &str) -> (&str, Option<&str>) {
     (parts.next().unwrap_or_default(), parts.next())
 }
 
-fn dir(options: &Options) -> PathBuf {
-    options
-        .plans_dir
-        .clone()
-        .unwrap_or_else(|| options.cwd.join(yi_runtime::plan::PLANS_DIR))
-}
-
 /// Invariant: this process holds no human's prompt, so every op applies here as the owner and
 /// an administrative one is refused; the daemon socket cannot carry the answer, so none is dialed.
 fn apply(line: &str, options: &Options) -> i32 {
     let reply = cli_args(line).and_then(|mut args| {
         import_source(&mut args, options);
-        let plans = dir(options);
-        let store = PlanStore::open(plans.clone()).map_err(|error| error.to_string())?;
-        let resolver =
-            Resolver::new(options.cwd.clone(), Wall::default()).with_plans_dir(plans.clone());
+        let store =
+            PlanStore::open(options.plans_dir.clone()).map_err(|error| error.to_string())?;
+        let resolver = Resolver::new(options.cwd.clone(), Wall::default())
+            .with_plans_dir(options.plans_dir.clone());
         let mut engine = PlanEngine::new(store, Arc::new(Unhosted))
             .unhosted()
             .with_cwd(options.cwd.clone())
             .with_output_resolve(Arc::new(resolver));
         // The same snapshot the session mints (plan section 6.5): a contracted `done` from the
         // CLI reads the shadow gitdir tree, not a walk of the whole workspace.
-        if let Some(snapshotter) = shadow_tree(crate::home(), &options.cwd, &plans) {
+        if let Some(snapshotter) = shadow_tree(crate::home(), &options.cwd, &options.plans_dir) {
             engine = engine.with_snapshotter(snapshotter);
         }
         let submission = Submission {
@@ -126,7 +119,7 @@ fn import_source(args: &mut Map<String, Value>, options: &Options) {
     } else {
         format!(
             "local://{}",
-            dir(options).join(format!("{word}.md")).display()
+            options.plans_dir.join(format!("{word}.md")).display()
         )
     };
     args.insert("source".to_owned(), Value::String(source));
@@ -135,7 +128,7 @@ fn import_source(args: &mut Map<String, Value>, options: &Options) {
 /// Named, or the one Active root — the same resolution the tool's own unnamed
 /// ops use, so `yi plan lint` and the model see the same plan.
 fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32) -> i32 {
-    let store = match PlanStore::open(dir(options)) {
+    let store = match PlanStore::open(options.plans_dir.clone()) {
         Ok(store) => store,
         Err(error) => {
             eprintln!("error: {error}");
@@ -162,7 +155,10 @@ fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32
     let Some(chosen) = chosen else {
         match refused {
             Some(error) => eprintln!("error: {error}"),
-            None => eprintln!("error: no plan is open under {}", dir(options).display()),
+            None => eprintln!(
+                "error: no plan is open under {}",
+                options.plans_dir.display()
+            ),
         }
         return 1;
     };
@@ -351,8 +347,8 @@ mod tests {
             metadata: None,
         })?;
         let options = Options {
+            plans_dir: cwd.join(yi_runtime::plan::PLANS_DIR),
             cwd,
-            plans_dir: None,
             session_dir: sessions,
             json: true,
         };

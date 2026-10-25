@@ -4,12 +4,16 @@
 //! `autotests = false`, so a new file here runs only once it has a line below.
 #[path = "support/own.rs"]
 mod own;
+#[path = "../../types/tests/support/recorded.rs"]
+mod recorded;
 #[path = "../../types/tests/support/repo.rs"]
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/family.rs"]
 mod support;
+#[path = "support/upstream.rs"]
+mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
 #[path = "support/worktree.rs"]
