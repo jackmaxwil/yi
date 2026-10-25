@@ -3469,10 +3469,7 @@ const TWO_ROWS_ONE_TASK: &str = r#"{"value": "patched", "discoveries": [
 #[tokio::test]
 async fn two_discoveries_on_one_red_task_print_its_evidence_once() -> TestResult {
     let cwd = Scratch::new("yi-adjudication-once")?;
-    let pytest = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
-    );
+    let pytest = crate::RED_PYTEST;
     write_canonical_plan(&cwd, &[("t1", &format!("cat '{pytest}'; exit 1"))])?;
     let harness = harness_with(HarnessOptions {
         child_errors: false,
