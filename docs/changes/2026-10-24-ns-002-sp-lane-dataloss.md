@@ -1,6 +1,6 @@
 ---
 issue: Closes #1444, Refs #1442
-raise: crate runtime +128, crate cli +19, tests +310, comments +14
+raise: crate runtime +131, crate cli +19, tests +334, comments +14
 decision: a clean quit keeps a lane's session while its tree is dirty, and only reap and discard clean a tree | rt-lanes-1: release cleared the session, so the next claim ran checkout -f -B and clean -qfd over uncommitted work, and a resume reset its own unmerged branch; D130's tree rule held for crash orphans only | drop the release-side status read and the claim-side branch check; claim's tree check alone still refuses the wipe
 ---
 A lane's uncommitted work and its unmerged commits now survive a clean quit. Before, `release` and a dropped lane cleared the slot's session even when the tree was dirty. The next claim then took the slot as free and ran `checkout -f -B` and `clean -qfd` over the only copy of the work. A resumed session that landed on a free or fresh slot had its own unmerged branch reset to `main` by `-B`. D130's rule, that a dirty tree is not free, held only for the orphan a crash leaves.

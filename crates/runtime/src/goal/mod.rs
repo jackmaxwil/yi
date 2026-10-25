@@ -1,6 +1,4 @@
-pub mod template;
-
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -23,25 +21,54 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 /// Checks are integration gates (`just check`-class), not unit runs; 10 min
 /// covers a cold cargo build without letting a hang eat the session.
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
-pub(crate) const CHECK_TAIL_CHARS: usize = 2_000;
 
-pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
-    let mut combined = String::new();
-    if !capture.stdout.trim().is_empty() {
-        combined.push_str(capture.stdout.trim_end());
+/// A failed check's output through [`yi_tools::view`]: a cut row's recovery is the rerun from
+/// `dir`, or a file under `spill`; the capture's own cut row follows the view's.
+pub(crate) fn check_view(
+    command: &str,
+    dir: &std::path::Path,
+    spill: Option<&std::path::Path>,
+    capture: &yi_tools::CommandCapture,
+) -> String {
+    let (stdout, stderr) = (&capture.stdout, &capture.stderr);
+    let exit = capture.exit_code.unwrap_or(-1);
+    let rerun = rerun_in(dir, command);
+    let producer = yi_tools::Involuntary::Job(&rerun);
+    let view = yi_tools::view(producer, stdout, stderr, exit, None, spill);
+    let text = view.text.trim();
+    capture
+        .cut_row()
+        .map_or_else(|| text.to_owned(), |row| format!("{text}\n{row}"))
+}
+
+/// The rerun a cut row names: `command` from `dir`, where the check ran. The reader's own bash
+/// is rooted elsewhere for a child's lane or a `cwd_subdir`, and a bare command would pass there.
+pub(crate) fn rerun_in(dir: &std::path::Path, command: &str) -> String {
+    let dir = dir.to_string_lossy().replace('\'', r"'\''");
+    format!("cd '{dir}' && {command}")
+}
+
+const REPEAT_BYTES: usize = 2_000;
+
+/// A later copy of evidence the model already read whole: its first line and last
+/// [`REPEAT_BYTES`], where the verdict sits, with a row for the cut.
+pub(crate) fn evidence_repeat(evidence: &str) -> String {
+    if evidence.len() <= REPEAT_BYTES {
+        return evidence.to_owned();
     }
-    if !capture.stderr.trim().is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(capture.stderr.trim_end());
-    }
-    let start = combined
-        .char_indices()
-        .rev()
-        .nth(CHECK_TAIL_CHARS.saturating_sub(1))
-        .map_or(0, |(index, _)| index);
-    combined.get(start..).unwrap_or(&combined).to_owned()
+    let head: String = evidence
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    let from = evidence.ceil_char_boundary(evidence.len().saturating_sub(REPEAT_BYTES));
+    let tail = evidence.get(from..).unwrap_or_default();
+    let (kept, total) = (tail.len(), evidence.len());
+    format!(
+        "{head}\n[… last {kept} of {total} bytes kept (REPEAT_BYTES {REPEAT_BYTES}); the rest: the refusal that first carried this output, or run the check again]\n{tail}"
+    )
 }
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
@@ -52,7 +79,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000)
+    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -63,7 +90,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
             let exit = code.map_or_else(|| "signal".to_owned(), |code| code.to_string());
             Err(format!(
                 "goal check `{check}` exited {exit}:\n{}",
-                output_tail(&capture)
+                check_view(check, cwd, None, &capture)
             ))
         }
     }
@@ -167,10 +194,34 @@ fn budget_values(goal: &Goal) -> [(&'static str, String); 3] {
     ]
 }
 
-pub fn continuation_text(
-    goal: &Goal,
-    plan: Option<&yi_types::plan::doc::Plan>,
-) -> Result<String, template::TemplateError> {
+/// Invariant: one scan of the template, so a `{{ name }}` inside a value (the objective,
+/// check output, a plan label) is copied verbatim, never filled.
+fn fill(template: &str, goal: &Goal, extra: Vec<(&'static str, String)>) -> String {
+    let mut values = budget_values(goal).to_vec();
+    values.push(("time_used_seconds", goal.time_used_seconds.to_string()));
+    values.push(("objective", goal.objective.clone()));
+    values.extend(extra);
+    let lookup = |name: &str| values.iter().find(|(key, _)| *key == name).map(|(_, v)| v);
+    let mut text = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some((head, tail)) = rest.split_once("{{ ") {
+        text.push_str(head);
+        let filled = tail
+            .split_once(" }}")
+            .and_then(|(name, after)| Some((lookup(name)?, after)));
+        let Some((value, after)) = filled else {
+            text.push_str("{{ ");
+            rest = tail;
+            continue;
+        };
+        text.push_str(value);
+        rest = after;
+    }
+    text.push_str(rest);
+    text
+}
+
+pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) -> String {
     let check_status = goal
         .check_failure
         .as_ref()
@@ -185,32 +236,19 @@ pub fn continuation_text(
             format!("Plan state:\n{text}\n")
         }
     });
-    let mut values = vec![
-        ("objective", goal.objective.clone()),
+    let extra = vec![
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    values.extend(budget_values(goal));
-    template::render(CONTINUATION_TEMPLATE, values)
+    fill(CONTINUATION_TEMPLATE, goal, extra)
 }
 
-pub fn budget_limit_text(goal: &Goal) -> Result<String, template::TemplateError> {
-    let [used, budget, _remaining] = budget_values(goal);
-    template::render(
-        BUDGET_LIMIT_TEMPLATE,
-        vec![
-            ("objective", goal.objective.clone()),
-            ("time_used_seconds", goal.time_used_seconds.to_string()),
-            used,
-            budget,
-        ],
-    )
+pub fn budget_limit_text(goal: &Goal) -> String {
+    fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
 }
 
-pub fn objective_updated_text(goal: &Goal) -> Result<String, template::TemplateError> {
-    let mut values = vec![("objective", goal.objective.clone())];
-    values.extend(budget_values(goal));
-    template::render(OBJECTIVE_UPDATED_TEMPLATE, values)
+pub fn objective_updated_text(goal: &Goal) -> String {
+    fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
 }
 
 fn goal_prompt_message(text: String) -> AgentMessage {
@@ -373,7 +411,7 @@ impl GoalService {
         {
             let timeout = goal.check_timeout_ms.unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
             if let Err(evidence) = run_check(&check, &self.cwd, timeout) {
-                goal.check_failure = Some(evidence.clone());
+                goal.check_failure = Some(evidence_repeat(&evidence));
                 goal.updated = yi_session::now_ms();
                 self.write_goal(goal)?;
                 return Err(format!(
@@ -405,6 +443,7 @@ impl GoalService {
         };
         // One check run per named todo, however many rows name it.
         let mut adjudged: HashMap<yi_types::plan::TaskId, Option<String>> = HashMap::new();
+        let mut shown = HashSet::new();
         let mut kept = Vec::new();
         let mut blockers = Vec::new();
         for row in std::mem::take(&mut goal.discoveries) {
@@ -424,6 +463,12 @@ impl GoalService {
                             drained_message(&row, json!({ "drained": true, "task": id.as_str() }))
                         }
                         Some(evidence) => {
+                            let evidence = if shown.insert(id.clone()) {
+                                evidence
+                            } else {
+                                "(the same evidence as the first row naming this task, above)"
+                                    .to_owned()
+                            };
                             blockers.push(format!(
                                 "undrained HIGH discovery {}: {}\nThe check of task {} is still red:\n{evidence}",
                                 row.fingerprint,
@@ -460,9 +505,10 @@ impl GoalService {
         goal.check_failure = None;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
-        if let Ok(text) = objective_updated_text(&goal) {
-            (self.deliver)(goal_prompt_message(text), DeliveryMode::Steer);
-        }
+        (self.deliver)(
+            goal_prompt_message(objective_updated_text(&goal)),
+            DeliveryMode::Steer,
+        );
         if let Ok(mut deferred) = self.deferred.lock() {
             *deferred = false;
         }
@@ -546,8 +592,11 @@ impl GoalService {
         }
         // One-shot by construction: the Active→BudgetLimited transition
         // happens exactly once per goal.
-        if crossed && let Ok(text) = budget_limit_text(&goal) {
-            (self.deliver)(goal_prompt_message(text), DeliveryMode::Steer);
+        if crossed {
+            (self.deliver)(
+                goal_prompt_message(budget_limit_text(&goal)),
+                DeliveryMode::Steer,
+            );
         }
     }
 
@@ -575,9 +624,7 @@ impl GoalService {
         if !goal.status.is_active() {
             return;
         }
-        let Ok(text) = continuation_text(&goal, self.read_plan().ok().as_ref()) else {
-            return;
-        };
+        let text = continuation_text(&goal, self.read_plan().ok().as_ref());
         Self::set_flag(&self.pending, true);
         (self.deliver)(goal_prompt_message(text), DeliveryMode::FollowUp);
     }

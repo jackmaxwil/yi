@@ -448,6 +448,46 @@ fn a_child_lane_branches_from_the_parents_head() -> TestResult {
     Ok(())
 }
 
+/// A staging branch an earlier attempt left unmerged is never what the next merge builds on.
+#[test]
+fn a_left_staging_branch_is_not_the_next_merges_base() -> TestResult {
+    let rig = Rig::new("stale-stage")?;
+    let pool = rig.pool(3)?;
+    let parent = pool.claim("s-parent", ClaimBase::Main)?;
+    let generation = generation_of(parent.path(), None)?;
+    let base = ClaimBase::Commit(generation.base.as_str().to_owned());
+    let stale = pool.claim("stage-sub-1", base.clone())?;
+    std::fs::write(stale.path().join("stale.txt"), "stale\n")?;
+    git(stale.path(), &["add", "stale.txt"])?;
+    git(stale.path(), &["commit", "-qm", "an earlier attempt"])?;
+    drop(stale);
+    let child = pool.claim("sub-1", base)?;
+    std::fs::write(child.path().join("child.txt"), "child\n")?;
+    let settled = child.settle(&quiet(), None)?;
+    let Prepared::Merged(staging) = prepare(
+        &pool,
+        "stage-sub-1",
+        &generation,
+        &settled.candidate.commit,
+        None,
+    )?
+    else {
+        return Err("a clean candidate conflicted".into());
+    };
+    let lane = staging.path().ok_or("no staging lane")?;
+    assert_eq!(
+        git(lane, &["rev-parse", "HEAD^1"])?,
+        generation.base.as_str()
+    );
+    assert!(
+        !lane.join("stale.txt").exists(),
+        "the earlier attempt is not merged"
+    );
+    staging.release()?;
+    drop(parent);
+    Ok(())
+}
+
 #[test]
 fn branch_names_reject_flags_and_traversal() {
     for bad in ["", "-x", "a..b", "a b", "a//b", "a/", "a.lock"] {
@@ -780,6 +820,30 @@ fn a_quit_over_new_files_keeps_them_under_a_quiet_status_config() -> TestResult 
         "{refused:?}"
     );
     assert!(note.is_file());
+    Ok(())
+}
+
+/// Incident: the same quiet config read a child's new files as no work, so its candidate
+/// was the base commit and the files were cleaned when the slot was handed back.
+#[test]
+fn a_candidate_commits_new_files_under_a_quiet_status_config() -> TestResult {
+    let rig = Rig::new("quiet-candidate")?;
+    git(&rig.repo, &["config", "status.showUntrackedFiles", "no"])?;
+    let lane = rig.pool(1)?.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("notes-é.txt"), "brouillon\n")?;
+    let candidate = lane.candidate(&quiet(), None)?;
+    let files = git(
+        lane.path(),
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--name-only",
+            "--format=",
+            candidate.commit.as_str(),
+        ],
+    )?;
+    assert_eq!(files, "notes-é.txt");
     Ok(())
 }
 
@@ -3120,62 +3184,70 @@ async fn a_job_that_ends_during_the_check_does_not_hold_the_lane() -> TestResult
     Ok(())
 }
 
-/// A red check's tail keeps its last 2,000 chars: at the limit it is whole and says nothing,
-/// one past it, or past the capture's own cut, a row names kept over total and the rerun.
+/// A red check's tail is the view of its output: whole under the ceiling, past it (or past the
+/// capture's own cut) rows name kept over total and the rerun, and that rerun, run where the
+/// model would, writes the check's whole output to the file it names.
 #[tokio::test]
 async fn a_red_checks_tail_names_its_cut() -> TestResult {
-    let awk =
-        |n: usize| format!("awk 'BEGIN {{ for (i = 0; i < {n}; i++) printf \"é\" }}'; exit 3");
+    let bytes = |lines: usize| (1..=lines).fold(2, |all, n| all + n.to_string().len() + 1);
     let cases = [
-        ("tail-at", awk(2000), 2000),
-        ("tail-over", awk(2001), 2001),
-        (
-            "tail-captured",
-            "head -c 100000 /dev/zero | tr '\\0' x; exit 3".to_owned(),
-            100_000,
-        ),
+        ("tail-whole", 2_000),
+        ("tail-over", 5_000),
+        ("tail-captured", 20_000),
     ];
-    for (label, check, printed) in cases {
+    for (label, lines) in cases {
         let rig = Rig::new(label)?;
         let family = writer(&rig, "echo x > draft.txt").await?;
         assert!(family.reaches("writer", "finished").await);
-        let reply = checked_merge(&family, check.as_str())?.await?;
+        let reply = checked_merge(
+            &family,
+            format!("cat draft.txt; seq 1 {lines}; exit 3").as_str(),
+        )?
+        .await?;
+        let before = git(&rig.repo, &["worktree", "list"])?;
         assert_eq!(reply["check"]["exit"], 3, "{reply:?}");
         let tail = reply["check"]["tail"].as_str().ok_or("no tail")?;
-        let rows: Vec<&str> = tail
-            .lines()
-            .take_while(|row| row.starts_with('['))
-            .collect();
-        let body = tail.lines().last().unwrap_or_default();
-        if printed == 2000 {
-            assert_eq!(tail.chars().filter(|c| *c == 'é').count(), 2000, "{tail}");
-            assert!(rows.is_empty(), "{tail}");
+        let (cut, captured) = (
+            tail.contains("VIEW_CEILING 16384"),
+            tail.contains("OUTPUT_CAP"),
+        );
+        assert_eq!(
+            (cut, captured),
+            (lines > 2_000, lines > 5_000),
+            "{label}: {tail:.300}"
+        );
+        if !cut {
+            assert_eq!(
+                tail.lines().count(),
+                lines + 1,
+                "whole under the ceiling: {tail:.200}"
+            );
             continue;
         }
-        assert_eq!(body.chars().count(), 2000, "{tail}");
-        let last = rows.last().ok_or("no cut row")?;
-        assert!(last.contains("(CHECK_TAIL_CHARS 2000)"), "{last}");
-        if printed == 2001 {
-            assert!(last.contains("last 2000 of 2001 chars ("), "{last}");
-        } else {
-            assert!(
-                rows.iter().any(|row| row.contains("of 100000 bytes")),
-                "{rows:?}"
-            );
-            assert!(last.contains("chars the capture kept"), "{last}");
-        }
-        let candidate = reply["candidate"].as_str().ok_or("no candidate")?;
-        assert!(last.contains(&format!("`git worktree add --detach <dir> {candidate}`")));
-        let rerun = rig.root.join(format!("{label}-rerun"));
-        let dir = rerun.to_str().ok_or("path")?;
-        git(&rig.repo, &["worktree", "add", "--detach", dir, candidate])?;
-        let again = yi_tools::command("sh")
-            .args(["-c", &check])
-            .current_dir(&rerun)
-            .output()?;
+        assert!(
+            tail.contains(&format!("kept 30000 of {} bytes", bytes(lines))) == captured,
+            "{label}: {tail:.600}"
+        );
+        let (_, rest) = tail.split_once("the rest: bash ").ok_or(tail)?;
+        let (call, _) = rest.split_once(" > view.log 2>&1").ok_or(rest)?;
+        let scratch = Scratch::new("lane-rerun")?;
+        let script = format!("{call} > view.log 2>&1");
+        let mut bash = yi_tools::command("bash");
+        bash.args(["-c", &script]).current_dir(&*scratch);
+        let never: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
+        let rerun = yi_tools::run_captured(bash, None, &never, yi_tools::OUTPUT_CAP)?;
         assert_eq!(
-            String::from_utf8_lossy(&again.stdout).chars().count(),
-            printed
+            rerun.exit_code,
+            Some(3),
+            "the check's own exit survives the rerun"
+        );
+        let log = std::fs::read_to_string(scratch.join("view.log"))?;
+        let whole: String = (1..=lines).fold("x\n".to_owned(), |all, n| format!("{all}{n}\n"));
+        assert_eq!(log, whole, "the rerun holds the output the view cut");
+        assert_eq!(
+            git(&rig.repo, &["worktree", "list"])?,
+            before,
+            "the rerun cleans up"
         );
     }
     Ok(())

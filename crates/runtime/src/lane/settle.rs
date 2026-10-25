@@ -421,6 +421,9 @@ pub fn prepare(
         session,
         ClaimBase::Commit(generation.base.as_str().to_owned()),
     )?;
+    // Invariant: a claim keeps an unmerged branch, but a staging branch holds no one's only copy.
+    let base = ["reset", "-q", "--hard", generation.base.as_str()];
+    git_by(lane.path(), &base, deadline)?;
     let message = format!(
         "Integrate {} onto {}",
         candidate.short(),
@@ -628,13 +631,20 @@ fn changed_files(
     let range = format!("{from}...{}", candidate.commit.as_str());
     let args = ["diff", "--numstat", "-z", "--no-renames", range.as_str()];
     let numstat = git_capped(parent, &args, deadline, usize::MAX)?;
-    let files = numstat.split('\0').filter_map(|record| {
-        let mut parts = record.splitn(3, '\t');
-        let added = parts.next()?.parse().unwrap_or(0u64);
-        let removed = parts.next()?.parse().unwrap_or(0u64);
-        Some(json!({"path": parts.next()?, "added": added, "removed": removed}))
+    let rows = nul_lines(&numstat);
+    let files = rows.iter().filter_map(|row| {
+        let (path, added, removed) = numstat_row(row)?;
+        Some(json!({"path": path, "added": added, "removed": removed}))
     });
     Ok(Value::Array(files.collect()))
+}
+
+/// One `diff --numstat` row as path, added, removed; a binary file's `-` counts read as 0.
+pub(crate) fn numstat_row(row: &str) -> Option<(&str, u64, u64)> {
+    let mut parts = row.splitn(3, '\t');
+    let added = parts.next()?.parse().unwrap_or(0);
+    let removed = parts.next()?.parse().unwrap_or(0);
+    Some((parts.next()?, added, removed))
 }
 
 fn nul_lines(text: &str) -> Vec<String> {
@@ -817,11 +827,12 @@ impl SubagentHost {
         if let Some((capture, cap)) = red {
             let kept = settled.candidate.branch.as_str();
             let commit = settled.candidate.commit.as_str();
-            let rerun = format!(
-                "`git worktree add --detach <dir> {commit}` and run the check there for the rest"
-            );
             reply.insert("merged".to_owned(), Value::Bool(false));
-            reply.insert("check".to_owned(), verdict(&capture, &cap, &rerun));
+            let check = check.unwrap_or_default();
+            reply.insert(
+                "check".to_owned(),
+                verdict(&capture, &cap, &parent, check, commit),
+            );
             let next = if settled.branch_kept() {
                 format!(
                     "The check failed, so this checkout is unchanged and the child's lane is released; its work is kept on branch {kept}. `git merge {kept}` lands it anyway, and `git branch -D {kept}` drops it."
@@ -981,36 +992,25 @@ fn red_check(
     Ok(Some((capture, cap)))
 }
 
-/// A red check's `{exit, tail}`, each cut a row naming its cap and `rerun`, the call for the rest.
-fn verdict(capture: &yi_tools::CommandCapture, cap: &str, rerun: &str) -> Value {
-    let tail = crate::goal::output_tail(capture);
-    let total = [&capture.stdout, &capture.stderr]
-        .iter()
-        .filter(|out| !out.trim().is_empty())
-        .map(|out| out.trim_end().chars().count().saturating_add(1))
-        .sum::<usize>()
-        .saturating_sub(1);
-    let kept = tail.chars().count();
-    let limit = crate::goal::CHECK_TAIL_CHARS;
-    let timed_out = capture
-        .cancelled
-        .then(|| format!("[… cut at {cap}; {rerun}]\n"));
-    let captured = capture.cut_row().map(|row| format!("{row}\n"));
-    let of = if capture.truncated {
-        " the capture kept"
-    } else {
-        ""
-    };
-    let trimmed = (kept < total).then(|| {
-        format!("[… last {kept} of {total} chars{of} (CHECK_TAIL_CHARS {limit}); {rerun}]\n")
+/// A red check's `{exit, tail}` through [`crate::goal::check_view`]; its rerun is the check on
+/// `commit` in a scratch worktree, since the released lane's slot is reused.
+fn verdict(
+    capture: &yi_tools::CommandCapture,
+    cap: &str,
+    parent: &Path,
+    check: &str,
+    commit: &str,
+) -> Value {
+    let rerun = format!(
+        "d=$(mktemp -d) && git worktree add -q --detach \"$d\" {commit} && (cd \"$d\" && {check}); s=$?; git worktree remove --force \"$d\"; exit $s"
+    );
+    let view = crate::goal::check_view(&rerun, parent, None, capture);
+    let cut = capture.cancelled.then(|| {
+        let call = crate::goal::rerun_in(parent, &rerun);
+        format!("[… cut at {cap}; the rest: bash ({call}) > view.log 2>&1, then read view.log]\n")
     });
-    let cut: String = timed_out
-        .into_iter()
-        .chain(captured)
-        .chain(trimmed)
-        .collect();
     let exit = capture.exit_code.filter(|_| !capture.cancelled);
-    json!({"exit": exit, "tail": format!("{cut}{tail}")})
+    json!({"exit": exit, "tail": format!("{}{view}", cut.unwrap_or_default())})
 }
 
 /// A slot path under the pool, so a staging lane can be named in a record without its host path.
@@ -1028,11 +1028,12 @@ mod tests {
         let budget = Duration::from_millis(300);
         let red = super::red_check(&std::env::temp_dir(), "sleep 30", None, budget)?;
         let (capture, cap) = red.ok_or("a cut check passed")?;
-        let verdict = super::verdict(&capture, &cap, "rerun");
+        let parent = std::env::temp_dir();
+        let verdict = super::verdict(&capture, &cap, &parent, "sleep 30", "abc");
         assert!(verdict["exit"].is_null(), "{verdict}");
         let tail = verdict["tail"].as_str().unwrap_or_default();
         assert!(
-            tail.starts_with("[… cut at the 300 ms check timeout; rerun]"),
+            tail.starts_with("[… cut at the 300 ms check timeout; the rest: bash ("),
             "{tail}"
         );
         Ok(())
