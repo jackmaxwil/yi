@@ -23,7 +23,7 @@ Internal deps are the allowlist in `scripts/guardrails/boundaries.toml` (YI_DESI
 | `yi-loop` | `run_loop`, `LoopConfig`, `AgentTool`, interrupt signal, tool-name repair (§4.2, §4.5) | yi-types | 1,340 |
 | `yi-ai` | provider streams, model catalog, retry, SSE (§5) | yi-types, yi-oauth | 4,905 |
 | `yi-oauth` | PKCE, loopback callback, token store, `login`/`logout` (§5) | yi-types | 1,207 |
-| `yi-orb` | the state loops and their morphs, kitty-graphics painter (§17.3) | — | 1,242 |
+| `yi-orb` | the state loops and their morphs, kitty-graphics painter (§17.3) | yi-types | 1,242 |
 | `yi-session` | session store: JSONL and in-memory repos, ids, queries (§4.1) | yi-types | 1,755 |
 | `yi-context` | token accounting, compaction cut point, context assembly (§4.4) | yi-types | 1,520 |
 | `yi-permission` | modes, rules, command classifier, catastrophic denylist, review ledger (§8) | yi-types | 1,753 |

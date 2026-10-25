@@ -24,6 +24,7 @@ pub mod checkpoint;
 pub mod classifier;
 pub mod compaction;
 pub mod config;
+pub mod encoding;
 pub mod entry;
 pub mod event;
 pub mod fetch;
