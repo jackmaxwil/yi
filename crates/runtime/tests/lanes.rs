@@ -2919,12 +2919,17 @@ fn git_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String), Box<dyn Error>> 
 #[tokio::test]
 async fn a_ref_only_hand_back_lists_the_edits_it_kept() -> TestResult {
     let rig = Rig::new("kept-yours")?;
-    let hold = "printf 'child\\n' >> README.md; printf 'c\\n' > café.txt; echo x > draft.txt";
+    std::fs::write(rig.repo.join("gone.txt"), "old\n")?;
+    git(&rig.repo, &["add", "gone.txt"])?;
+    git(&rig.repo, &["commit", "-qm", "add gone"])?;
+    let hold =
+        "printf 'child\\n' >> README.md; printf 'c\\n' > café.txt; echo x > draft.txt; rm gone.txt";
     let family = writer(&rig, hold).await?;
     assert!(family.reaches("writer", "finished").await);
     for (path, text) in [
         ("README.md", "base\nmine\n"),
         ("café.txt", "mine\n"),
+        ("gone.txt", "old\nmine\n"),
         ("elsewhere.txt", "mine\n"),
     ] {
         std::fs::write(rig.repo.join(path), text)?;
@@ -2940,7 +2945,7 @@ async fn a_ref_only_hand_back_lists_the_edits_it_kept() -> TestResult {
         .filter_map(serde_json::Value::as_str)
         .collect();
     kept.sort_unstable();
-    assert_eq!(kept, ["README.md", "café.txt"], "{reply:?}");
+    assert_eq!(kept, ["README.md", "café.txt", "gone.txt"], "{reply:?}");
     let next = reply
         .get("next")
         .and_then(serde_json::Value::as_str)
@@ -2952,6 +2957,13 @@ async fn a_ref_only_hand_back_lists_the_edits_it_kept() -> TestResult {
     let (_, diff) = git_raw(&rig.repo, &["diff", "HEAD", "--", "README.md"])?;
     assert!(diff.contains("-child") && diff.contains("+mine"), "{diff}");
     assert_eq!(git(&rig.repo, &["show", "HEAD:README.md"])?, "base\nchild");
+    let (_, gone) = git_raw(&rig.repo, &["status", "--porcelain", "--", "gone.txt"])?;
+    assert_eq!(gone.trim(), "?? gone.txt", "{gone}");
+    assert!(!git_raw(&rig.repo, &["show", "HEAD:gone.txt"])?.0);
+    assert!(
+        next.contains("missing from HEAD") && next.contains("deleted"),
+        "{next}"
+    );
     Ok(())
 }
 
