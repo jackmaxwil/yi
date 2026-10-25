@@ -1,6 +1,27 @@
+use std::collections::hash_map::RandomState;
+use std::fs::{File, OpenOptions};
+use std::hash::{BuildHasher, Hasher};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
 use crate::app::App;
 use crate::cell::Cell;
 use crate::term;
+
+/// Incident: `yi-compose-<pid>.md` in a shared temp directory was world-readable and a link
+/// planted at that name was written through; the name now carries a per-call random salt.
+pub fn draft_file(dir: &Path) -> std::io::Result<(PathBuf, File)> {
+    let salt = RandomState::new().build_hasher().finish();
+    let name = format!("yi-compose-{}-{salt:016x}.md", std::process::id());
+    let path = dir.join(name);
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    Ok((path, file))
+}
 
 /// Raw mode and the keyboard flags come off before the child starts and back on after: the
 /// child owns the tty. `restore_tty` is false where there is no terminal to hand over.
@@ -13,13 +34,16 @@ pub fn process_pending_editor<B: ratatui::backend::Backend>(
         return;
     }
     app.pending_editor = false;
-    let path = std::env::temp_dir().join(format!("yi-compose-{}.md", std::process::id()));
-    if std::fs::write(&path, app.composer.text()).is_err() {
+    let written = draft_file(&std::env::temp_dir()).and_then(|(path, mut file)| {
+        file.write_all(app.composer.text().as_bytes())?;
+        Ok(path)
+    });
+    let Ok(path) = written else {
         app.commit_cell(&Cell::Notice {
             text: "editor: could not write the draft file".to_owned(),
         });
         return;
-    }
+    };
     // Mode toggles go to stdout, as the startup guard's `Drop` and the panic hook do: raw
     // mode is process-wide and the paste/keyboard escapes ride the same writer.
     let mut out = std::io::stdout();
