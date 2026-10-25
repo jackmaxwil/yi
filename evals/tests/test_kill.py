@@ -427,6 +427,24 @@ class Isolation(unittest.TestCase):
             server.server_close()
 
 
+class Credentials(unittest.TestCase):
+    def test_a_run_home_holds_its_own_routes_credential_and_no_other_providers_key(self):
+        # Failure: a --yolo model reads the owner's other API keys out of its HOME and spends them
+        # outside the ledger's cap; a Kimi run needs no OpenRouter key at all.
+        with rig() as r:
+            tokens = kill.kimi_home() / ".yi" / "providers" / "tokens"
+            for name in ("openrouter", "deepseek"):
+                kill.write_0600(tokens / f"{name}.json", {"version": 1, "kind": "key", "key": f"{name}-secret"})
+            kill.write_0600(tokens / "kimi.json", {"version": 1, "kind": "oauth", "access": "a", "refresh": "r"})
+            kill.write_0600(kill.kimi_home() / ".yi" / "oauth" / "kimi.json", {"client_id": "c", "token": "t"})
+            seeded = {}
+            for family in ("flash", "kimi"):
+                home = r.tmp / family
+                kill.seed_home(home, str(r.yi), kill.routes()[family], 60)
+                seeded[family] = sorted(p.name for p in (home / ".yi" / "providers" / "tokens").glob("*.json"))
+            self.assertEqual(seeded, {"flash": ["openrouter.json"], "kimi": ["kimi.json"]})
+
+
 class Runs(unittest.TestCase):
     def test_an_empty_seed_boots_its_own_venv_and_the_row_says_so_with_the_stderr_tail(self):
         with rig() as r:
