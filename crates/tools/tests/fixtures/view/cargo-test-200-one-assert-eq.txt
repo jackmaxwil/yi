@@ -1,0 +1,224 @@
+   Compiling ledger v0.1.0 (/work/ledger)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (/work/ledger/target/debug/deps/ledger-0d61fc207018dd0f)
+
+running 201 tests
+test tests::balance_000 ... ok
+test tests::balance_002 ... ok
+test tests::balance_001 ... ok
+test tests::balance_007 ... ok
+test tests::balance_008 ... ok
+test tests::balance_005 ... ok
+test tests::balance_009 ... ok
+test tests::balance_003 ... ok
+test tests::balance_004 ... ok
+test tests::balance_006 ... ok
+test tests::balance_010 ... ok
+test tests::balance_011 ... ok
+test tests::balance_012 ... ok
+test tests::balance_013 ... ok
+test tests::balance_014 ... ok
+test tests::balance_015 ... ok
+test tests::balance_016 ... ok
+test tests::balance_017 ... ok
+test tests::balance_018 ... ok
+test tests::balance_019 ... ok
+test tests::balance_020 ... ok
+test tests::balance_021 ... ok
+test tests::balance_022 ... ok
+test tests::balance_023 ... ok
+test tests::balance_024 ... ok
+test tests::balance_025 ... ok
+test tests::balance_026 ... ok
+test tests::balance_027 ... ok
+test tests::balance_028 ... ok
+test tests::balance_029 ... ok
+test tests::balance_030 ... ok
+test tests::balance_031 ... ok
+test tests::balance_032 ... ok
+test tests::balance_033 ... ok
+test tests::balance_034 ... ok
+test tests::balance_035 ... ok
+test tests::balance_036 ... ok
+test tests::balance_037 ... ok
+test tests::balance_038 ... ok
+test tests::balance_039 ... ok
+test tests::balance_040 ... ok
+test tests::balance_041 ... ok
+test tests::balance_042 ... ok
+test tests::balance_043 ... ok
+test tests::balance_044 ... ok
+test tests::balance_045 ... ok
+test tests::balance_046 ... ok
+test tests::balance_047 ... ok
+test tests::balance_048 ... ok
+test tests::balance_049 ... ok
+test tests::balance_050 ... ok
+test tests::balance_051 ... ok
+test tests::balance_052 ... ok
+test tests::balance_053 ... ok
+test tests::balance_054 ... ok
+test tests::balance_055 ... ok
+test tests::balance_056 ... ok
+test tests::balance_057 ... ok
+test tests::balance_058 ... ok
+test tests::balance_059 ... ok
+test tests::balance_060 ... ok
+test tests::balance_061 ... ok
+test tests::balance_062 ... ok
+test tests::balance_063 ... ok
+test tests::balance_064 ... ok
+test tests::balance_065 ... ok
+test tests::balance_066 ... ok
+test tests::balance_067 ... ok
+test tests::balance_068 ... ok
+test tests::balance_069 ... ok
+test tests::balance_070 ... ok
+test tests::balance_071 ... ok
+test tests::balance_072 ... ok
+test tests::balance_073 ... ok
+test tests::balance_074 ... ok
+test tests::balance_075 ... ok
+test tests::balance_076 ... ok
+test tests::balance_077 ... ok
+test tests::balance_078 ... ok
+test tests::balance_079 ... ok
+test tests::balance_080 ... ok
+test tests::balance_081 ... ok
+test tests::balance_082 ... ok
+test tests::balance_083 ... ok
+test tests::balance_084 ... ok
+test tests::balance_085 ... ok
+test tests::balance_086 ... ok
+test tests::balance_087 ... ok
+test tests::balance_088 ... ok
+test tests::balance_089 ... ok
+test tests::balance_090 ... ok
+test tests::balance_091 ... ok
+test tests::balance_092 ... ok
+test tests::balance_093 ... ok
+test tests::balance_094 ... ok
+test tests::balance_095 ... ok
+test tests::balance_096 ... ok
+test tests::balance_097 ... ok
+test tests::balance_098 ... ok
+test tests::balance_099 ... ok
+test tests::balance_100 ... ok
+test tests::balance_101 ... ok
+test tests::balance_102 ... ok
+test tests::balance_103 ... ok
+test tests::balance_104 ... ok
+test tests::balance_105 ... ok
+test tests::balance_106 ... ok
+test tests::balance_107 ... ok
+test tests::balance_108 ... ok
+test tests::balance_109 ... ok
+test tests::balance_110 ... ok
+test tests::balance_111 ... ok
+test tests::balance_112 ... ok
+test tests::balance_113 ... ok
+test tests::balance_114 ... ok
+test tests::balance_115 ... ok
+test tests::balance_116 ... ok
+test tests::balance_117 ... ok
+test tests::balance_118 ... ok
+test tests::balance_119 ... ok
+test tests::balance_120 ... ok
+test tests::balance_121 ... ok
+test tests::balance_122 ... ok
+test tests::balance_123 ... ok
+test tests::balance_124 ... ok
+test tests::balance_125 ... ok
+test tests::balance_126 ... ok
+test tests::balance_127 ... ok
+test tests::balance_128 ... ok
+test tests::balance_129 ... ok
+test tests::balance_130 ... ok
+test tests::balance_131 ... ok
+test tests::balance_132 ... ok
+test tests::balance_133 ... ok
+test tests::balance_134 ... ok
+test tests::balance_135 ... ok
+test tests::balance_136 ... ok
+test tests::balance_138 ... ok
+test tests::balance_139 ... ok
+test tests::balance_140 ... ok
+test tests::balance_141 ... ok
+test tests::balance_142 ... ok
+test tests::balance_143 ... ok
+test tests::balance_137 ... FAILED
+test tests::balance_144 ... ok
+test tests::balance_145 ... ok
+test tests::balance_146 ... ok
+test tests::balance_147 ... ok
+test tests::balance_148 ... ok
+test tests::balance_149 ... ok
+test tests::balance_150 ... ok
+test tests::balance_151 ... ok
+test tests::balance_152 ... ok
+test tests::balance_153 ... ok
+test tests::balance_154 ... ok
+test tests::balance_155 ... ok
+test tests::balance_156 ... ok
+test tests::balance_157 ... ok
+test tests::balance_158 ... ok
+test tests::balance_159 ... ok
+test tests::balance_160 ... ok
+test tests::balance_161 ... ok
+test tests::balance_162 ... ok
+test tests::balance_163 ... ok
+test tests::balance_164 ... ok
+test tests::balance_165 ... ok
+test tests::balance_166 ... ok
+test tests::balance_167 ... ok
+test tests::balance_168 ... ok
+test tests::balance_169 ... ok
+test tests::balance_170 ... ok
+test tests::balance_171 ... ok
+test tests::balance_172 ... ok
+test tests::balance_173 ... ok
+test tests::balance_174 ... ok
+test tests::balance_175 ... ok
+test tests::balance_176 ... ok
+test tests::balance_177 ... ok
+test tests::balance_178 ... ok
+test tests::balance_179 ... ok
+test tests::balance_180 ... ok
+test tests::balance_181 ... ok
+test tests::balance_182 ... ok
+test tests::balance_183 ... ok
+test tests::balance_184 ... ok
+test tests::balance_185 ... ok
+test tests::balance_186 ... ok
+test tests::balance_187 ... ok
+test tests::balance_188 ... ok
+test tests::balance_189 ... ok
+test tests::balance_190 ... ok
+test tests::balance_191 ... ok
+test tests::balance_192 ... ok
+test tests::balance_193 ... ok
+test tests::balance_194 ... ok
+test tests::balance_195 ... ok
+test tests::balance_196 ... ok
+test tests::balance_197 ... ok
+test tests::balance_198 ... ok
+test tests::balance_199 ... ok
+test tests::balance_200 ... ok
+
+failures:
+
+---- tests::balance_137 stdout ----
+
+thread 'tests::balance_137' (41130130) panicked at src/lib.rs:558:9:
+assertion `left == right` failed
+  left: 412
+ right: 411
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::balance_137
+
+test result: FAILED. 200 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
