@@ -761,3 +761,188 @@ fn an_examples_runner_that_cannot_spawn_abstains() -> TestResult {
     assert!(reason.starts_with("failed to spawn"), "{reason}");
     Ok(())
 }
+
+/// A cut the plan makes in what the model reads names kept over total, the cap, and the call
+/// that returns the rest; at the limit nothing is cut and no row is written.
+mod caps {
+    use super::*;
+    use yi_runtime::plan::tool::PlanTool;
+    use yi_tools::{Tool, ToolContext};
+    use yi_types::subagent::{ChildExit, FailClass};
+
+    fn rig(name: &str) -> Result<(Scratch, Arc<PlanEngine>), Box<dyn Error>> {
+        let temp = Scratch::new(&format!("yi-plan-caps-{name}"))?;
+        let engine = PlanEngine::new(
+            PlanStore::open(temp.to_path_buf())?,
+            Arc::new(crate::plan_e2e::Named),
+        )
+        .with_width(std::num::NonZeroUsize::MIN);
+        Ok((temp, Arc::new(engine)))
+    }
+
+    fn todos(n: usize) -> Result<Vec<TodoSpec>, Box<dyn Error>> {
+        (0..n)
+            .map(|at| {
+                crate::plan_e2e::delegated(&format!("step {at}")).map(|mut spec| {
+                    spec.delegation = None;
+                    spec
+                })
+            })
+            .collect()
+    }
+
+    fn opened(
+        engine: &PlanEngine,
+        specs: Vec<TodoSpec>,
+    ) -> Result<yi_types::plan::doc::Plan, Box<dyn Error>> {
+        let goal = GoalText::new("ship the widget")?;
+        Ok(engine
+            .apply(owner(None, Op::Init { goal, todos: specs }))?
+            .plan)
+    }
+
+    /// Non-ASCII on purpose: the cut counts chars, and a byte cut would split a character.
+    #[test]
+    fn a_child_failure_cause_past_its_cap_keeps_the_rest_at_the_address_it_names() -> TestResult {
+        for total in [500, 501] {
+            let (temp, engine) = rig(&format!("cause-{total}"))?;
+            let plan = opened(&engine, vec![crate::plan_e2e::delegated("build")?])?;
+            let cause: String = "編譯失敗 ".chars().cycle().take(total).collect();
+            let failed = ChildExit::Failed {
+                class: FailClass::Other,
+            };
+            engine.finish_child("build", failed, Some(cause.clone()), None);
+            let todo = engine
+                .store()
+                .read(&plan.id)?
+                .todos
+                .into_iter()
+                .next()
+                .ok_or("no todo")?;
+            let TodoState::Failed { cause: kept, .. } = &todo.state else {
+                return Err(format!("{total}: not failed: {:?}", todo.state).into());
+            };
+            if total == 500 {
+                assert_eq!(kept, &cause, "at the limit the cause is whole");
+                continue;
+            }
+            let (head, row) = kept.split_once('\n').ok_or(kept.clone())?;
+            assert_eq!(head.chars().count(), 500, "{kept}");
+            let prefix = format!(
+                "[… 500 of 501 chars (CAUSE_CHARS 500); the rest: read plan://{}/artifacts/",
+                plan.id
+            );
+            let address = row
+                .strip_prefix(&prefix)
+                .and_then(|hex| hex.strip_suffix(']'))
+                .ok_or(row.to_owned())?;
+            let url = format!("plan://{}/artifacts/{address}", plan.id).parse()?;
+            let resolver =
+                yi_runtime::fetch::Resolver::new(temp.to_path_buf(), yi_runtime::Wall::default())
+                    .with_plans_dir(temp.to_path_buf());
+            assert_eq!(
+                resolver.fetch(&url)?.text,
+                cause,
+                "the address holds the whole cause"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_frontier_and_a_directive_past_their_cap_name_it_and_the_view_call() -> TestResult {
+        let call = r#"the rest: plan {"op": "view", "full": true}]"#;
+        for total in [16, 17] {
+            let (_temp, engine) = rig(&format!("frontier-{total}"))?;
+            let plan = opened(&engine, todos(total)?)?;
+            let frontier = yi_runtime::plan::frontier_text(&plan);
+            let directive = yi_runtime::plan::compaction_directive(&plan).ok_or("no directive")?;
+            let rows = frontier
+                .lines()
+                .filter(|line| line.starts_with("- step"))
+                .count();
+            assert_eq!(rows, 16, "{frontier}");
+            let cut = format!("[… 16 of {total} rows (FRONTIER 16); {call}");
+            assert_eq!(frontier.contains(&cut), total == 17, "{frontier}");
+            let cut = format!("[… 16 of {total} todos (FRONTIER 16); {call}");
+            assert_eq!(directive.contains(&cut), total == 17, "{directive}");
+            assert!(!directive.contains("step 16"), "{directive}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_windowed_view_names_its_cap_at_one_past_the_window() -> TestResult {
+        for total in [8, 9] {
+            let (_temp, engine) = rig(&format!("window-{total}"))?;
+            opened(&engine, todos(total)?)?;
+            let tool = PlanTool::new(Arc::clone(&engine), Actor::Owner);
+            let view = tool.execute(
+                serde_json::Map::from_iter([("op".to_owned(), json!("view"))]),
+                &ToolContext::new(std::env::temp_dir()),
+            );
+            let text = yi_types::message::join_text(&view.result.content, "\n");
+            let cut = format!(
+                "[… 8 of {total} todos: the window shows ready, running and blocked ones (WINDOW 8); the rest: plan {{\"op\": \"view\", \"full\": true}}]"
+            );
+            assert_eq!(text.contains(&cut), total == 9, "{text}");
+            assert_eq!(text.contains("[…"), total == 9, "{text}");
+        }
+        Ok(())
+    }
+
+    /// Dies with the frontier's cut taking the running row, the one that says what is in flight,
+    /// and keeping a ready one in its place.
+    #[test]
+    fn a_frontier_past_its_cap_keeps_the_running_row() -> TestResult {
+        let (_temp, engine) = rig("frontier-running")?;
+        opened(&engine, todos(18)?)?;
+        let label = TodoLabel::new("step 0")?;
+        let plan = engine.apply(owner(None, Op::Start { label }))?.plan;
+        let frontier = yi_runtime::plan::frontier_text(&plan);
+        let running = frontier
+            .lines()
+            .any(|line| line.starts_with("In progress: step 0"));
+        assert!(running, "{frontier}");
+        assert!(
+            frontier.contains("[… 16 of 18 rows (FRONTIER 16);"),
+            "{frontier}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the owner-row filter dropping every row: a delegated row admitted while no child
+    /// is hosted is still named as dispatched.
+    #[test]
+    fn dispatched_names_an_admitted_delegated_row() -> TestResult {
+        let temp = Scratch::new("yi-plan-caps-dispatched-child")?;
+        let store = PlanStore::open(temp.to_path_buf())?;
+        let engine = PlanEngine::new(store, Arc::new(crate::plan_e2e::NoChildren)).unhosted();
+        let tool = PlanTool::new(Arc::new(engine), Actor::Owner);
+        let child =
+            json!({"label": "child", "delegation": {"spec": {}, "accept": {"command": "true"}}});
+        let init = json!({"op": "init", "goal": "ship it", "todos": [{"label": "mine"}, child]});
+        let input = init.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        let text = yi_types::message::join_text(&output.result.content, "\n");
+        let line = text.lines().find(|line| line.starts_with("dispatched:"));
+        assert_eq!(line, Some("dispatched: child"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn dispatched_never_names_a_row_the_owner_runs() -> TestResult {
+        let (_temp, engine) = rig("dispatched")?;
+        let tool = PlanTool::new(Arc::clone(&engine), Actor::Owner);
+        let child =
+            json!({"label": "child", "delegation": {"spec": {}, "accept": {"command": "true"}}});
+        let init = json!({"op": "init", "goal": "ship it", "todos": [{"label": "mine"}, child]});
+        let input = init.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        let text = yi_types::message::join_text(&output.result.content, "\n");
+        let line = text.lines().find(|line| line.starts_with("dispatched:"));
+        assert_eq!(line, None, "an owner's row is never dispatched: {text}");
+        assert!(text.contains("spawned agent://ship-it/child"), "{text}");
+        Ok(())
+    }
+}
