@@ -13,8 +13,9 @@ Header keys, each optional:
   growth: +212 <memo>           net src growth past the free band, and what was weighed for deletion
   raise: tests +140, comments +12, over-cap +1, crate runtime +60
   decision: <decision> | <why> | <reversible via>      repeatable; numbered by the recorder
-The recorder adds `version:` and `decisions:` when it records the file."""
-import pathlib, re, sys
+scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
+diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
+import functools, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, fork, git, no_fork
 
@@ -71,14 +72,14 @@ def at(rev, path):
     return shown.stdout if shown.returncode == 0 else None
 
 
+@functools.cache
 def pending(base):
     """The change files this branch adds: in the working tree, absent at the fork. A file this gate
-    refuses lends no raise and no memo, or a size gate run alone would be green on its numbers."""
-    out = []
-    for name, text in files():
-        if name not in held(base) and not file_errors([(name, text)]):
-            out.append((name, parse(text)[0]))
-    return out
+    refuses lends no raise and no memo, or a size gate run alone would be green on its numbers.
+    Incident: an ls-tree per file per caller made check_crate_size.py take 68 s on 187 change files."""
+    fork_names = held(base)
+    return tuple((name, parse(text)[0]) for name, text in files()
+                 if name not in fork_names and not file_errors([(name, text)]))
 
 
 def held(base):
@@ -145,6 +146,18 @@ def tree_edits(base):
         elif exists_at_fork:
             errs.append(f"{path}: main holds this change file; add a new one instead")
     return errs
+
+
+def recorded(base):
+    """The recorder's own diff is the one a branch may carry into the views: every path it writes
+    from the fork's tree holds exactly that text here, and nothing else under those paths changed."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import record_changes
+    writes, fork_names = record_changes.expected_at(ROOT, base), held(base)
+    changed = {p for p in git("diff", "--name-only", "--no-renames", base, "--", "docs/CHANGELOG.md", "docs/ARCHITECTURE.md",
+                              "docs/solutions", DIR).stdout.split() if not p.startswith(f"{DIR}/") or p[len(DIR) + 1:] in fork_names}
+    return bool(writes) and changed <= writes.keys() and all(
+        (ROOT / p).is_file() and (ROOT / p).read_text() == text for p, text in writes.items())
 
 
 def file_errors(names_texts, recorded=()):
@@ -242,8 +255,25 @@ def fork_cases():
     return bad
 
 
+def scan_cases():
+    """Every size gate asks pending() once per crate or key; the fork's listing is read once a process."""
+    global git, files
+    calls, real = [], (git, files)
+    text = "---\nissue: Closes #974\ngrowth: +212 weighed X\nraise: tests +140, crate runtime +60\ndecision: a | b | c\n---\nProse.\n"
+    listing = lambda *a: calls.append(a) or type("Run", (), {"stdout": "", "returncode": 0})()
+    git, files = listing, lambda: [(f"2026-10-{1 + i % 28:02d}-change-{i}.md", text) for i in range(187)]
+    pending.cache_clear()
+    try:
+        asks = [raised("fork", key) for key in ("tests", "comments", "over-cap", "crate runtime")]
+    finally:
+        git, files = real
+        pending.cache_clear()
+    bad = [] if len(calls) == 1 else [f"pending() ran git {len(calls)} times for {len(asks)} asks over 187 change files, not once"]
+    return bad + ([] if asks == [140 * 187, 0, 0, 60 * 187] else [f"187 change files summed to {asks}"])
+
+
 def selfcheck():
-    errs = cases()
+    errs = cases() + scan_cases()
     for check in CHECKS:
         OFF.clear()
         OFF.add(check)
@@ -262,8 +292,8 @@ def main():
         no_fork("changes")
     views = ("docs/CHANGELOG.md", "docs/ARCHITECTURE.md")
     errs = file_errors(files(), held(base))
-    errs += view_edits({p: at(base, p) for p in views}, {p: (ROOT / p).read_text() for p in views})
-    errs += tree_edits(base)
+    edits = view_edits({p: at(base, p) for p in views}, {p: (ROOT / p).read_text() for p in views}) + tree_edits(base)
+    errs += edits if edits and not recorded(base) else []
     fail(errs, f"changes ({len(pending(base))} pending in this branch, fork {base[:8]})")
 
 
