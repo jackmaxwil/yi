@@ -7,6 +7,7 @@ use yi_types::model::Model;
 
 use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
+use crate::rules::RuleEngine;
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
@@ -55,6 +56,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
             global_skills: Vec::new(),
+            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         let host = attach_runtime(
             &mut child,
@@ -352,9 +354,10 @@ fn wire_schedule(
                     .unwrap_or(&wiring.rlm_dir)
                     .join("channels"),
             )
-            .with_gate(crate::tools::heartbeat_gate(
+            .with_gate(crate::tools::host_gate(
                 wiring,
                 session.rules_handle(),
+                RuleEngine::check_tool,
                 wiring.own_paths(session),
             ))
             .interned();
@@ -740,7 +743,7 @@ pub(crate) fn wire_job_completions(session: &AgentSession) {
     tokio::spawn(crate::session::until(job_settled(), move || {
         let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
         let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), &report.output);
+            let (job, headline, body) = (report.id, report.headline(), report.view());
             let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
             let unread: crate::session::StillNews =
                 Arc::new(move || !yi_tools::jobs::registry().delivered(job));
@@ -981,6 +984,10 @@ fn subagent_host(
     }));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
+    let (handle, own) = (session.rules_handle(), wiring.own_paths(session));
+    let gate = |scan| crate::tools::host_gate(wiring, handle.clone(), scan, own.clone());
+    let gates = (gate(RuleEngine::check_tool), gate(RuleEngine::recheck_tool));
+    host.check_gate.get_or_init(|| gates);
     let counted = Arc::downgrade(&host);
     session.set_waits(Arc::new(move || {
         let host = counted.upgrade();

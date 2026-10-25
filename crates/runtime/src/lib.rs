@@ -117,6 +117,11 @@ pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
 }
 
+/// Attached only where [`ext::ExtOptions::can_delegate`]: a leaf never reads it.
+pub fn delegation_fragment() -> &'static str {
+    include_str!("prompts/delegation.md")
+}
+
 /// Rides the system prompt only when no asker is wired, so no person can answer.
 pub fn unattended_fragment() -> &'static str {
     include_str!("prompts/unattended.md")
