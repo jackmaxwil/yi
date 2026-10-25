@@ -102,8 +102,8 @@ fn streamed_arguments(arguments: &Value) -> Result<Value, Box<dyn Error>> {
     }
 }
 
-/// Dies with a tool reading GLM's leaked markup as a field: every `done` call of the sweep's
-/// two leaked shapes reaches the tool with `evidence` as a field and the op word as a flag.
+/// Dies with a tool reading GLM's leaked markup as a field: a synthetic replay of the sweep's two
+/// leaked `done` shapes reaches the tool with `evidence` as a field and the op word as a flag.
 #[test]
 fn a_streamed_call_with_leaked_markup_reaches_the_tool_repaired() -> TestResult {
     let fixture: Value = serde_json::from_str(include_str!(

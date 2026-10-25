@@ -3,25 +3,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::Notify;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InterruptSignal {
-    fired: Arc<AtomicBool>,
+    fired: AtomicBool,
     epoch: AtomicU64,
     wake: Notify,
     /// Invariant: a fresh flag per request, so a later request never clears an earlier one's cut.
     /// The loop (D163) or a fire sets it; the provider pump reads it between events.
     cut: Mutex<Arc<AtomicBool>>,
-}
-
-impl Default for InterruptSignal {
-    fn default() -> Self {
-        Self {
-            fired: Arc::new(AtomicBool::new(false)),
-            epoch: AtomicU64::new(0),
-            wake: Notify::new(),
-            cut: Mutex::default(),
-        }
-    }
 }
 
 impl InterruptSignal {
@@ -35,10 +24,6 @@ impl InterruptSignal {
 
     pub fn cut_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cut.lock().unwrap_or_else(PoisonError::into_inner))
-    }
-
-    pub fn fired_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.fired)
     }
 
     /// Invariant: the epoch moves before `fired` is set, so a reset that raced it sees the move.
