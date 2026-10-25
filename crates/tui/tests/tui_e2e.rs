@@ -2819,6 +2819,33 @@ fn the_local_port_answers_now_and_apply_is_the_only_writer() -> TestResult {
     Ok(())
 }
 
+/// Dies with a false row: Enter on the current leaf in `/tree` rewinds nothing (no abandoned
+/// branch), and the solo notice still told the person the conversation was rewound.
+#[test]
+fn a_rewind_onto_the_leaf_adds_no_notice_but_one_that_abandons_does() {
+    let mut app = app();
+    let mut said = |abandoned| {
+        let entries = Vec::new();
+        app.apply(yi_tui::port::Reply::Rewound {
+            entries,
+            unsent: None,
+            abandoned,
+        });
+        let rows = flat_lines(&app.take_commits());
+        rows.iter().any(|row| row.contains("conversation rewound"))
+    };
+    assert!(!said(None), "nothing was abandoned, so nothing was rewound");
+    let messages = vec![yi_runtime::session::user_input("ping")];
+    let stub = yi_runtime::BranchStub {
+        from_id: "leaf".to_owned(),
+        messages,
+    };
+    assert!(
+        said(Some(stub)),
+        "a rewind that left a branch says the files stayed"
+    );
+}
+
 /// The chat paints into any rectangle of a buffer: the status row lands on the rect's last
 /// row, nothing lands outside it, and a scroll offset shifts the history above the frame.
 #[test]
