@@ -564,8 +564,8 @@ A persistent IPython process per session that reaches the host only through host
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and
   `<name>.json` `{name, owner, at, bytes, type, serializer}`; `get` and `ls` read them.
 - Kernel env: `YI_BIN`, `RLM_SESSION_DIR` (sessions dir for a root, the child's dir otherwise),
-  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`, `RLM_DEPTH`, `RLM_MAX_DEPTH` (unread).
-- Snapshot: `<kernel dir>/<store id>.kernel-state.{dill,json}` is an index over per-variable blobs in
+  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`.
+- Snapshot: `<kernel dir>/<store id>.kernel-state.dill` is an index over per-variable blobs in
   `<store id>.kernel-state.blobs/`; only changed variables are rewritten. Dilled 1.5 s after an `ok`
   cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable.
 - Owner: [`kernel/src/client.rs`](../crates/kernel/src/client.rs),
