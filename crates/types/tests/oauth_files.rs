@@ -33,3 +33,25 @@ fn the_v1_profile_fixture_deserializes() -> TestResult {
     assert_eq!(profile.callback_port, Some(8317));
     Ok(())
 }
+
+#[test]
+fn the_device_profile_fixture_parses_and_every_key_it_uses_is_known() -> TestResult {
+    let raw = include_str!("fixtures/oauth-profile-device-v1.json");
+    let profile: ProfileFile = serde_json::from_str(raw)?;
+    assert_eq!(profile.kind, "device-code");
+    assert_eq!(
+        profile.device_authorization.as_deref(),
+        Some("https://auth.example.com/api/oauth/device_authorization")
+    );
+    assert_eq!(
+        profile.api_base.as_deref(),
+        Some("https://api.example.com/coding/v1")
+    );
+    assert!(profile.extra.is_empty(), "{:?}", profile.extra);
+    // The refusal lists KNOWN_KEYS as the valid set, so every key the fixture uses must be in it.
+    let keys: serde_json::Map<String, serde_json::Value> = serde_json::from_str(raw)?;
+    for key in keys.keys() {
+        assert!(ProfileFile::KNOWN_KEYS.contains(&key.as_str()), "{key}");
+    }
+    Ok(())
+}
