@@ -1,8 +1,8 @@
 ---
 issue: Refs #1487, Refs #1442
-raise: tests +574, crate runtime +96
+raise: tests +574, crate runtime +87
 ---
-This is Bet 2's loud-caps part for the runtime's own lists (unit CAPS-runtime). Seven cuts that shrank what the model reads without saying so now end in the row the reducer already uses, `[… kept of total what (CAP limit); the rest: next]`. `yi_tools::cut` builds that row and is crate-private, and the context-budget change turns it into a public `Cut` struct, so the runtime builds the same row from one function of its own, `listed::cut_row`. Swapping its body for `Cut` is the whole follow-up, and #1487 stays open for it.
+This is Bet 2's loud-caps part for the runtime's own lists (unit CAPS-runtime). Seven cuts that shrank what the model reads without saying so now end in the row the reducer already uses, `[… kept of total what (CAP limit); the rest: next]`. One function builds that row in both crates: yi-tools' `cut`, made public here as `cut_row` (its longer name keeps rustfmt from folding the signature), which the runtime imports. The context-budget change replaces it with a public `Cut` struct and has to move these runtime callers with it.
 
 `rlm.find_models(query, limit)` returned the first `limit` matches and nothing else. The host reply now carries a `cut` row when more matched, naming the matches it held back and the call that lists them all (`await rlm.find_models("", limit=31)`). The `rlm` shim in `python/yi_runtime` reads only `models`, so a cell does not print the row yet. That edit moves the runtime identity hash, so it ships with the one Python release; #1487 stays open until the shim prints `cut`, and this change only Refs it.
 

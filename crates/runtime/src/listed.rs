@@ -1,13 +1,4 @@
-pub(crate) fn cut_row(
-    kept: usize,
-    total: usize,
-    what: &str,
-    cap: &str,
-    limit: usize,
-    next: &str,
-) -> String {
-    format!("[\u{2026} {kept} of {total} {what} ({cap} {limit}); the rest: {next}]")
-}
+pub(crate) use yi_tools::cut_row;
 
 pub(crate) fn first(items: &[String], limit: usize) -> String {
     let head: Vec<&str> = items.iter().take(limit).map(String::as_str).collect();
