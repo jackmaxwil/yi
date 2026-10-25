@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
@@ -39,26 +39,13 @@ fn serve_once(status: &str, body: &str) -> std::io::Result<(u16, std::thread::Jo
             return String::new();
         };
         let mut reader = BufReader::new(stream);
-        let mut head = String::new();
-        let mut length = 0usize;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                break;
-            }
-            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = value.trim().parse().unwrap_or(0);
-            }
-            head.push_str(&line);
-        }
-        let mut sent = vec![0; length];
-        let _ = reader.read_exact(&mut sent);
+        let request = crate::loopback::read_request(&mut reader);
         let reply = format!(
             "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
             body.len()
         );
         let _ = reader.get_mut().write_all(reply.as_bytes());
-        head + &String::from_utf8_lossy(&sent)
+        request
     });
     Ok((port, handle))
 }

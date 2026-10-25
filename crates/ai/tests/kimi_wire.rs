@@ -2,12 +2,14 @@
 //! reasoning echoed across tool turns, and Yi's own name.
 
 use std::error::Error;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 
 use serde_json::{Map, Value, json};
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{Effort, LlmContext, Model};
+
+use crate::loopback::read_request;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -238,21 +240,7 @@ pub(crate) fn record(
                 break;
             };
             let mut reader = BufReader::new(stream);
-            let mut request = String::new();
-            let mut length = 0usize;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-                request.push_str(&line);
-            }
-            let mut body = vec![0; length];
-            let _ = reader.read_exact(&mut body);
-            request.push_str(&String::from_utf8_lossy(&body));
+            let request = read_request(&mut reader);
             let _ = reader.get_mut().write_all(reply.as_bytes());
             seen.push(request);
         }
