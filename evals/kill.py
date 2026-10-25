@@ -225,11 +225,12 @@ def seed_home(home, binary, route, need_sec):
     central = kimi_home() / ".yi"
     if (central / "catalog").is_dir():
         shutil.copytree(central / "catalog", yi / "catalog")
-    for token in sorted((central / "providers" / "tokens").glob("*.json")):
-        if json.loads(token.read_text()).get("kind") == "key":
-            write_0600(yi / "providers" / "tokens" / token.name, json.loads(token.read_text()))
+    provider = route["model"].split("/", 1)[0]
+    # A --yolo run can read its HOME, so it gets its own route's key and no other provider's.
+    key = central / "providers" / "tokens" / f"{provider}.json"
+    if paid(route) and key.is_file() and json.loads(key.read_text()).get("kind") == "key":
+        write_0600(yi / "providers" / "tokens" / key.name, json.loads(key.read_text()))
     if not paid(route):
-        provider = route["model"].split("/", 1)[0]
         write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(provider, need_sec))
         (yi / "oauth").mkdir()
         shutil.copy(central / "oauth" / f"{provider}.json", yi / "oauth" / f"{provider}.json")
