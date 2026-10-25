@@ -22,6 +22,12 @@ pub(crate) fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     builder.build()
 }
 
+pub(crate) fn seconds(body: &Value, key: &str) -> Option<std::time::Duration> {
+    body.get(key)
+        .and_then(Value::as_f64)
+        .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+}
+
 pub(crate) fn parse_tokens(body: &Value) -> Result<Credential> {
     let access = body
         .get("access_token")
@@ -29,11 +35,7 @@ pub(crate) fn parse_tokens(body: &Value) -> Result<Credential> {
         .and_then(Value::as_str)
         .ok_or("token response has no access_token")?
         .to_owned();
-    let expires = body
-        .get("expires_in")
-        .and_then(Value::as_f64)
-        .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
-        .and_then(|life| store::now().checked_add(life));
+    let expires = seconds(body, "expires_in").and_then(|life| store::now().checked_add(life));
     Ok(Credential {
         kind: Kind::Oauth,
         access,
