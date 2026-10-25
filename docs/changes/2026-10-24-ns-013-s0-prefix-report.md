@@ -1,6 +1,6 @@
 ---
 issue: Closes #1455, Refs #1442
-raise: tests +244
+raise: crate runtime +1, tests +227
 decision: the request budget also ratchets each role's first-request prefix in a bare workspace | the gate priced a root prompt no child sends, so a child prefix could grow unseen | delete role_prefix.json and the ROLE_PREFIX reader in check_request_budget.py
 ---
 This is the stage 0 report of Yi's next shape (S0-prefix-report). Every later byte claim in the stack restates its numbers from the rows below, and re-runs the same test to judge itself.
@@ -41,4 +41,4 @@ So for the instruction files a `--here` run equals a lane: a current CLAUDE.md c
 
 The plan counters' first reading, required by S0-plan-counters: `yi stats --by plan` over the stack's own scratch sessions only (the 13 worktree HOMEs under ~/Development/yi-ns, never the owner's ~/.yi/sessions) found 0 plan ops in 3 session files and 0 journals.
 
-To share the wiring, `key`, `root_with`, `stand_in`, `body_asking` and the `git` helper moved from family_cache.rs and worker_prompt.rs into crates/runtime/tests/support/upstream.rs, which integration.rs and request_budget.rs both include. `root_with` gains two arguments: whether to install the root extensions, and the tool table. No production source changed.
+To share the wiring, `key`, `root_with`, `stand_in`, `body_asking` and the `git` helper moved from family_cache.rs and worker_prompt.rs into crates/runtime/tests/support/upstream.rs, which integration.rs and request_budget.rs both include. `root_with` gains two arguments: whether to install the root extensions, and the tool table. The one production line is in the plan-op tally this branch carries: a record stamped before `--since` is dropped before its dedupe key is built, so an old journal no longer pays a key sort and a set entry for every record outside the window.

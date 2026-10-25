@@ -4,7 +4,7 @@ use yi_runtime::plan::why::{Answer, answer, commits_for};
 
 pub struct Options {
     pub cwd: PathBuf,
-    pub plans_dir: Option<PathBuf>,
+    pub plans_dir: PathBuf,
     pub json: bool,
 }
 
@@ -25,15 +25,8 @@ fn split_location(target: &str) -> Option<(&str, u32)> {
     line.parse::<u32>().ok().map(|line| (path, line))
 }
 
-fn plans_dir(options: &Options) -> PathBuf {
-    options
-        .plans_dir
-        .clone()
-        .unwrap_or_else(|| options.cwd.join(yi_runtime::plan::PLANS_DIR))
-}
-
 fn forward(path: &str, line: u32, options: &Options) -> i32 {
-    let resolved = match answer(&options.cwd, &plans_dir(options), path, line) {
+    let resolved = match answer(&options.cwd, &options.plans_dir, path, line) {
         Ok(resolved) => resolved,
         Err(error) => {
             eprintln!("error: {error}");

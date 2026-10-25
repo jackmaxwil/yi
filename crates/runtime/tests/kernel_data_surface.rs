@@ -124,6 +124,7 @@ fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
         tool.description(),
         yi_runtime::identity_fragment(),
         yi_runtime::doctrine_fragment(),
+        yi_runtime::delegation_fragment(),
     ]
     .join("\n");
     let pieces: Vec<&str> = text.split("rlm.").collect();
