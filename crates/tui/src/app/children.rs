@@ -213,10 +213,10 @@ impl App {
     /// one cell it was born under, so a lost cell end cannot hold every other card.
     pub(super) fn commit_finished_tasks(&mut self) {
         while let Some(id) = self.task_order.iter().find(|id| self.ready(id)).cloned() {
-            let cell = self
-                .tasks
-                .get(&id)
-                .map(|state| Cell::Task(state.cell.clone()));
+            let cell = self.tasks.get_mut(&id).map(|state| {
+                state.rows = crate::cell::AnswerRows::default();
+                Cell::Task(state.cell.clone())
+            });
             self.committed_tasks.insert(id);
             if let Some(cell) = cell {
                 self.commit_cell(&cell);
