@@ -817,7 +817,10 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
     let (is_error, text) = call(&tool, json!({"op": "init", "items": [long, "short"]}));
     assert!(!is_error, "{text}");
     assert!(
-        text.contains("- [>] t1 Verify the parser against every fixture in the corpus, then the live forge, then…"),
+        text.lines().any(
+            |row| row.starts_with("- [>] t1 Verify the parser against every fixture")
+                && row.ends_with(" 4fb0534d…")
+        ),
         "{text}"
     );
     let list = latest_record(&session).ok_or("no record")?.list;
@@ -826,9 +829,56 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
     assert_eq!(first.note.as_ref().map(|note| note.as_str()), Some(long));
     let (is_error, text) = call(
         &tool,
-        json!({"op": "done", "label": long, "evidence": "`pytest fixtures` 12 passed in 1s"}),
+        json!({"op": "done", "label": long.to_lowercase(), "evidence": "`pytest fixtures` 12 passed in 1s"}),
     );
-    assert!(!is_error, "the full text still names the cut item: {text}");
+    assert!(
+        !is_error,
+        "the full text, retyped in lower case, still names the cut item: {text}"
+    );
+    Ok(())
+}
+
+/// Dies with a long todo that shares its head with another unnamable by its own text, or with a
+/// resent render re-cutting the `…` row into a new label that no longer carries its note.
+#[test]
+fn two_todos_sharing_a_long_head_are_named_whole_and_resent_as_they_are() -> TestResult {
+    let (_root, session) = session("shared-head")?;
+    let tool = TodoTool::new(store_for(&session));
+    let head = "read the record (architecture, design doc, git log, changelog, gate recipe, last";
+    let texts = [
+        format!("{head} release notes"),
+        format!("{head} incident log"),
+    ];
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "init", "items": [&texts[0], &texts[1]]}),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "start", "label": &texts[1]}));
+    assert!(!is_error, "the whole text names its own row: {text}");
+    let rows = |list: &TodoList| -> Vec<(String, Option<String>, String)> {
+        let note = |item: &Todo| item.note.as_ref().map(|note| note.as_str().to_owned());
+        let state = |item: &Todo| TodoStateName::of(&item.state).to_string();
+        (list.items())
+            .map(|item| (item.label.to_string(), note(item), state(item)))
+            .collect()
+    };
+    let before = rows(&latest_record(&session).ok_or("no record")?.list);
+    assert_eq!(
+        before.get(1).map(|row| row.2.as_str()),
+        Some("running"),
+        "{before:#?}"
+    );
+    let rendered: Vec<&str> = (text.lines())
+        .filter(|line| line.trim_start().starts_with("- ["))
+        .collect();
+    let (is_error, text) = call(&tool, json!({"op": "set", "list": rendered.join("\n")}));
+    assert!(!is_error, "{text}");
+    let after = rows(&latest_record(&session).ok_or("no record")?.list);
+    assert_eq!(
+        after, before,
+        "the render sent back is the list it rendered: {text}"
+    );
     Ok(())
 }
 
@@ -1223,6 +1273,41 @@ fn replayed_to(
     Ok((root, tool))
 }
 
+/// Main's text with each long row text's label in today's spelling (a seed line or a string a
+/// call sent): main cut it to its first 80 chars, and a cut label now ends in a digest of it.
+fn respelled(sequence: &Sequence, text: &str) -> String {
+    fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => out.push(text),
+            Value::Array(items) => items.iter().for_each(|item| strings(item, out)),
+            Value::Object(map) => map.values().for_each(|item| strings(item, out)),
+            _ => {}
+        }
+    }
+    let mut texts: Vec<&str> = (sequence.seed.iter())
+        .flat_map(|seed| seed.lines())
+        .collect();
+    texts = texts
+        .into_iter()
+        .map(|line| line.split_once(". ").map_or(line, |(_, text)| text))
+        .collect();
+    sequence
+        .calls
+        .iter()
+        .for_each(|row| strings(&row["args"], &mut texts));
+    (texts.into_iter())
+        .filter_map(|line| Some((line, Todo::from_text(line).ok().filter(Todo::is_cut)?.label)))
+        .map(|(line, label)| {
+            (
+                line.trim().chars().take(80).collect::<String>(),
+                label.to_string(),
+            )
+        })
+        .fold(text.to_owned(), |text, (main, now)| {
+            text.replace(main.trim_end(), &now)
+        })
+}
+
 /// validate, then execute, as the loop runs a tool call.
 fn replay(tool: &TodoTool, args: &Value) -> (bool, String) {
     let input = args.as_object().cloned().unwrap_or_default();
@@ -1247,7 +1332,8 @@ fn every_well_formed_call_returns_mains_result() -> TestResult {
                 "{} call {index}: {text}",
                 sequence.name
             );
-            assert_eq!(row["text"], text, "{} call {index}", sequence.name);
+            let recorded = respelled(&sequence, row["text"].as_str().unwrap_or_default());
+            assert_eq!(recorded, text, "{} call {index}", sequence.name);
             calls += 1;
         }
     }
@@ -1272,7 +1358,8 @@ fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
                 let lands = shown.is_none_or(|call| {
                     serde_json::from_str(call).is_ok_and(|call: Value| !replay(&tool, &call).0)
                 });
-                if is_error && row["text"] == text && lands {
+                let recorded = respelled(&sequence, row["text"].as_str().unwrap_or_default());
+                if is_error && recorded == text && lands {
                     refused += 1;
                 } else {
                     wrong.push(format!("{at} is not the refusal it was: {text}"));

@@ -1,3 +1,4 @@
+use serde_json::Value;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::doc::{BlockedOn, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
 use yi_types::schedule::{
@@ -112,6 +113,25 @@ pub fn wait_of(on: &BlockedOn) -> Option<(String, Option<String>)> {
 
 pub fn armed_command(on: &BlockedOn) -> Option<String> {
     wait_of(on).and_then(|(address, _)| super::adapter::exec_command(&address))
+}
+
+/// Every command an `on` at any depth of `value` arms: a row's own `on` and a sub-row's arm as a
+/// bare `on` does, so each meets the gate.
+pub fn armed_commands(value: &Value) -> Vec<String> {
+    let (mut stack, mut commands) = (vec![value], Vec::new());
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Object(map) => {
+                let on = map.get("on").cloned();
+                let on = on.and_then(|on| serde_json::from_value::<BlockedOn>(on).ok());
+                commands.extend(on.as_ref().and_then(armed_command));
+                stack.extend(map.values());
+            }
+            Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    commands
 }
 
 fn address(job: &Job) -> String {

@@ -228,9 +228,14 @@ impl std::str::FromStr for Url {
             Some(fragment) => Some(HashlineFragment::parse(fragment)?),
             None => None,
         };
+        // ponytail: `%20` alone decodes, so a literal `%20` in a file name has no spelling.
+        let path = match scheme {
+            Scheme::Local => path.replace("%20", " "),
+            _ => path.to_owned(),
+        };
         Ok(Self {
             scheme,
-            path: path.to_owned(),
+            path,
             fragment,
         })
     }
@@ -238,7 +243,11 @@ impl std::str::FromStr for Url {
 
 impl std::fmt::Display for Url {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}://{}", self.scheme, self.path)?;
+        let path = match self.scheme {
+            Scheme::Local => std::borrow::Cow::Owned(self.path.replace(' ', "%20")),
+            _ => std::borrow::Cow::Borrowed(self.path.as_str()),
+        };
+        write!(formatter, "{}://{path}", self.scheme)?;
         match &self.fragment {
             Some(fragment) => write!(formatter, "#{fragment}"),
             None => Ok(()),
