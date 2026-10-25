@@ -444,17 +444,23 @@ fn grep_reply(
     paged_reply(rows, total, (offset, limit), call, None, walled)
 }
 
+/// Invariant: a cut hit's fetch is judged at its own address and at every spelling of this
+/// session, so the snippet row offers a fetch only where the resolver would serve it.
+fn refused(wall: &crate::wall::Wall, store: &yi_session::SessionStore, entry: &str) -> bool {
+    let tail = format!("/{entry}");
+    let own = format!("history://{}{tail}", crate::fetch::SELF).parse::<yi_types::url::Url>();
+    own.is_ok_and(|own| wall.check_url(&own, Path::new("")).is_some())
+        || crate::fetch::spelling_refused(wall, Path::new(""), store, &tail).is_some()
+}
+
 pub fn register_grep(
     registry: &mut crate::kernel::HostRegistry,
     handle: crate::goal::StoreHandle,
     wall: &crate::wall::Wall,
 ) {
-    let own = format!("history://{}", crate::fetch::SELF).parse::<yi_types::url::Url>();
-    let walled = own.map_or(wall.denies_history(), |own| {
-        wall.check_url(&own, Path::new("")).is_some()
-    });
+    let wall = Arc::new(wall.clone());
     registry.register("history.grep", move |payload| {
-        let handle = Arc::clone(&handle);
+        let (handle, wall) = (Arc::clone(&handle), Arc::clone(&wall));
         Box::pin(async move {
             let pattern = payload
                 .str_of("pattern")
@@ -467,11 +473,14 @@ pub fn register_grep(
                 let shared = handle()
                     .ok_or_else(|| "history.grep: missing an attached session store".to_owned())?;
                 let store = yi_session::lock_session(&shared);
-                Ok::<_, String>((store.grep_page(&pattern, offset, limit), pattern))
+                let (hits, total) = store.grep_page(&pattern, offset, limit);
+                let walled = (hits.iter().filter(|found| found.cut && !wall.is_empty()))
+                    .any(|found| refused(&wall, &store, &found.entry_id));
+                Ok::<_, String>((hits, total, pattern, walled))
             })
             .await
             .map_err(|error| format!("history.grep task failed: {error}"))??;
-            let ((hits, total), pattern) = page;
+            let (hits, total, pattern, walled) = page;
             Ok(grep_reply(&hits, total, &pattern, offset, limit, walled))
         })
     });
@@ -600,9 +609,6 @@ mod tests {
         let entry = reply["hits"][0]["entryId"].as_str().unwrap().to_owned();
         assert_eq!(reply["hits"][0]["url"], format!("history://s-lane/{entry}"));
         assert_eq!(reply["total"], 2, "{reply:?}");
-        let row = reply["hits"][0].as_object().into_iter();
-        let keys: Vec<&str> = row.flat_map(|row| row.keys().map(String::as_str)).collect();
-        assert_eq!(keys, ["session", "entryId", "type", "snippet", "url"]);
         assert_eq!(
             reply["notice"],
             "[1 session directories were not searched: their checkout is gone, so their repository is unknown]"
@@ -688,14 +694,15 @@ mod tests {
     }
 
     #[test]
-    fn a_page_at_the_limit_has_no_notice_and_one_past_it_names_the_next_offset()
+    fn a_page_at_the_limit_names_its_cut_rows_and_one_past_it_the_next_offset()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = Scratch::new("yi-history-limit")?;
         let cwd = root.join("cwd");
         fs::create_dir_all(&cwd)?;
         for (count, more) in [(PAGE_MAX, false), (PAGE_MAX + 1, true)] {
+            let pad = "x".repeat(SNIPPET_CHARS);
             let said: Vec<Value> = (0..count)
-                .map(|n| user(&format!("note {n} on the limit")))
+                .map(|n| user(&format!("note {n} on the limit {pad}")))
                 .collect();
             let sessions = root.join(format!("sessions-{count}"));
             session(&sessions, &cwd, "s-one", &said);
@@ -711,13 +718,12 @@ mod tests {
                 ),
             ] {
                 let next = format!("compact.{call}(\"limit\", limit=32, offset=32)");
-                let want = more.then(|| {
-                    Value::from(format!(
-                        "[32 of 33 hits · limit 32 (at most 32) · {next} for the next]"
-                    ))
-                });
+                let page =
+                    format!("[32 of 33 hits · limit 32 (at most 32) · {next} for the next]\n");
+                let cut = "[32 of 32 snippets cut to 160 chars (SNIPPET_CHARS) · rlm.fetch(hit[\"url\"]) reads a cut hit whole]";
+                let want = Value::from(format!("{}{cut}", if more { page.as_str() } else { "" }));
                 assert_eq!(reply["total"], count, "{call}");
-                assert_eq!(reply.get("notice"), want.as_ref(), "{call} at {count}");
+                assert_eq!(reply.get("notice"), Some(&want), "{call} at {count}");
             }
         }
         Ok(())

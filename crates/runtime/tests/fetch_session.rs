@@ -636,7 +636,11 @@ async fn both_history_verbs_name_the_snippet_cap_and_the_address_that_reads_the_
     let resolver = Resolver::new(here.clone(), Wall::default())
         .with_session("main", own)
         .with_transcripts(Arc::new(desk));
-    for (verb, key) in [("history.grep", "pattern"), ("history.search", "query")] {
+    let keys = ["session", "entryId", "type", "snippet", "url", "cut"];
+    for (verb, key, from) in [
+        ("history.grep", "pattern", 1),
+        ("history.search", "query", 0),
+    ] {
         let payload = serde_json::json!({ key: "WELL-GOVERNED" });
         let call = registry
             .dispatch(verb, payload.as_object().cloned().unwrap_or_default())
@@ -650,6 +654,9 @@ async fn both_history_verbs_name_the_snippet_cap_and_the_address_that_reads_the_
                 && notice.contains("rlm.fetch(hit[\"url\"])"),
             "{verb}: {notice}"
         );
+        let row = hit.as_object().into_iter();
+        let listed: Vec<&str> = row.flat_map(|row| row.keys().map(String::as_str)).collect();
+        assert_eq!(listed, keys.get(from..).unwrap_or_default(), "{verb}");
         let url: Url = hit["url"].as_str().ok_or("no url")?.parse()?;
         let whole = resolver.fetch(&url)?.text;
         assert!(whole.contains(&line), "{verb}: {url} reads {whole}");
@@ -657,8 +664,8 @@ async fn both_history_verbs_name_the_snippet_cap_and_the_address_that_reads_the_
     Ok(())
 }
 
-/// The same hit walled two ways: `history://` refuses its address, so the notice must not name
-/// `rlm.fetch(hit["url"])`; `history://main` walls only the parent, so the notice still must.
+/// The same hit walled three ways: `history://` and this session's own id refuse its fetch, so the
+/// notice must not name `rlm.fetch(hit["url"])`; `history://main` walls only the parent, so it must.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reader_walled_from_history_is_not_told_to_fetch_a_cut_hit() -> TestResult {
     use yi_kernel::client::HostHandlers;
@@ -672,7 +679,12 @@ async fn a_reader_walled_from_history_is_not_told_to_fetch_a_cut_hit() -> TestRe
         yi_types::message::StopReason::Stop,
     );
     yi_session::lock_session(&own).append_message("main", said)?;
-    for (deny, refused) in [("history://", true), ("history://main", false)] {
+    let walls = [
+        ("history://", true),
+        ("history://fetch-session-test", true),
+        ("history://main", false),
+    ];
+    for (deny, refused) in walls {
         let wall = Wall {
             deny_url: vec![deny.to_owned()],
             ..Wall::default()
