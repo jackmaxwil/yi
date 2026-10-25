@@ -316,7 +316,7 @@ fn files_of(
 async fn a_merged_worktree_names_the_files_it_changed() -> TestResult {
     let hold = "printf 'a\\nb\\n' >> README.md; printf 'new\\n' > 'my notes.txt'; printf '1\\n2\\n3\\n' > café.txt; printf '\\000\\001' > blob.bin";
     let (_root, repo, family) = finished_child("files", hold, false).await?;
-    let merged = family.host.merge_worktree("writer")?;
+    let merged = family.host.merge_worktree("writer", None)?;
     assert_eq!(merged["merged"], true, "{merged:?}");
     let listed = |path: &str, added, removed| (path.to_owned(), added, removed);
     assert_eq!(
@@ -340,7 +340,7 @@ async fn a_conflicting_merge_names_the_files_too() -> TestResult {
         finished_child("conflict", "printf 'child\\n' > README.md", false).await?;
     std::fs::write(repo.join("README.md"), "parent\n")?;
     git(&repo, &["commit", "-qam", "parent moved"])?;
-    let merged = family.host.merge_worktree("writer")?;
+    let merged = family.host.merge_worktree("writer", None)?;
     assert_eq!(merged["merged"], false, "{merged:?}");
     assert_eq!(files_of(&merged)?, [("README.md".to_owned(), 1, 1)]);
     Ok(())
@@ -352,7 +352,7 @@ async fn a_conflicting_merge_names_the_files_too() -> TestResult {
 async fn a_list_past_the_capture_cap_is_whole() -> TestResult {
     let hold = "mkdir -p a-directory-name-long-enough-to-pad-each-path; for n in $(seq 1000 1700); do echo x > a-directory-name-long-enough-to-pad-each-path/file_$n.txt; done";
     let (_root, _repo, family) = finished_child("big", hold, false).await?;
-    let merged = family.host.merge_worktree("writer")?;
+    let merged = family.host.merge_worktree("writer", None)?;
     let files = files_of(&merged)?;
     assert_eq!(files.len(), 701, "{merged:?}");
     let bytes: usize = files.iter().map(|(path, ..)| path.len() + 6).sum();
@@ -374,7 +374,7 @@ async fn a_worktree_with_no_recorded_base_still_names_its_files() -> TestResult 
     for pool in std::fs::read_dir(root.join("home/.yi/lanes"))? {
         std::fs::remove_file(pool?.path().join("0.json"))?;
     }
-    let merged = family.host.merge_worktree("writer")?;
+    let merged = family.host.merge_worktree("writer", None)?;
     assert_eq!(files_of(&merged)?, [("README.md".to_owned(), 1, 0)]);
     Ok(())
 }
@@ -383,7 +383,7 @@ async fn a_worktree_with_no_recorded_base_still_names_its_files() -> TestResult 
 #[tokio::test]
 async fn a_child_that_changed_nothing_lists_no_files() -> TestResult {
     let (_root, _repo, family) = finished_child("nothing", "true", false).await?;
-    let merged = family.host.merge_worktree("writer")?;
+    let merged = family.host.merge_worktree("writer", None)?;
     assert_eq!(files_of(&merged)?, []);
     Ok(())
 }
