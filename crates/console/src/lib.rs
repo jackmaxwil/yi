@@ -9,6 +9,7 @@ pub mod avatar;
 pub mod browser;
 mod chrome;
 pub mod client;
+mod editor_view;
 mod header;
 pub mod keys;
 pub mod kitty;
@@ -63,6 +64,7 @@ pub struct ConsoleOptions {
     pub pace: u16,
     pub browser: Option<PathBuf>,
     pub chrome_pin: Option<crate::browser::Pinned>,
+    pub home: Option<String>,
 }
 
 pub struct DriveOptions {
@@ -237,25 +239,21 @@ fn draw<B: Backend>(
         app.state.browser_placed.clear();
     }
     let _span = yi_types::trace::span("console.draw");
+    let scroll = |app: &App| {
+        let drag = app.selection.as_ref()?;
+        Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
+    };
     terminal.draw(|frame| {
         let computing = yi_types::trace::span("console.compute_view");
+        let pinned = scroll(app);
         let mut view = render::compute_view(app, frame.area(), theme);
         drop(computing);
         let _rendering = yi_types::trace::span("console.render");
-        let scroll = |app: &App| {
-            let drag = app.selection.as_ref()?;
-            Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
-        };
         let before = scroll(app);
         render::render(app, frame, &mut view, theme);
         app.selected.clear();
         if let Some(mut drag) = app.selection.take() {
-            // A held view that grew below raises its scroll with nothing moving on screen.
-            if let (Some(before), Some(after)) = (before, scroll(app))
-                && after > before
-            {
-                drag.shift(after - before);
-            }
+            drag.follow(pinned, before, scroll(app));
             app.selected = crate::select::selected(
                 app,
                 &view,
@@ -832,6 +830,7 @@ fn configure(app: &mut App, options: &ConsoleOptions) {
     app.state.open_apps = options.open_apps.clone();
     app.state.sidebar = options.sidebar;
     app.state.chat_pace = options.pace;
+    app.state.home.clone_from(&options.home);
     app.state.chrome =
         crate::browser::Chrome::new(options.browser.clone(), options.chrome_pin.clone());
 }

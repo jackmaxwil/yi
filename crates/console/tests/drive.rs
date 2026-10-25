@@ -21,7 +21,7 @@ use crate::scratch::Scratch;
 type TestResult = Result<(), Box<dyn Error>>;
 type Responder = fn(&Value) -> Vec<Value>;
 
-enum Step {
+pub(crate) enum Step {
     /// Wait for a request whose method matches; reply with the responder's
     /// frames. Non-matching requests get a generic empty reply.
     Expect(&'static str, Responder),
@@ -35,6 +35,11 @@ enum Step {
     Gone,
     /// Wait for the console's answer to a worker request; its outcome must be this one.
     Outcome(&'static str),
+}
+
+/// The HOME a drive run expands `~` from; nextest gives each test its own process.
+fn drive_home() -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-home-{}", std::process::id()))
 }
 
 fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
@@ -340,7 +345,7 @@ fn init_reply(frame: &Value) -> Vec<Value> {
     )]
 }
 
-fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
+pub(crate) fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
     run_with(name, fixture, script, false)
 }
 
@@ -455,6 +460,7 @@ fn run_console(
             pace: 0,
             browser: None,
             chrome_pin: None,
+            home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
             script: steps,
@@ -497,6 +503,7 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             pace: 0,
             browser: None,
             chrome_pin: None,
+            home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
             script: steps,
@@ -720,6 +727,103 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
          wait-frame 3000 !⎇ lane\n\
          quit\n",
     )
+}
+
+fn lane_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-lane-{}", std::process::id()))
+}
+
+fn resume_alpha_in_a_lane_dir(frame: &Value) -> Vec<Value> {
+    let mut frames = resume_alpha(frame);
+    let cwd = lane_dir().display().to_string();
+    let workdir = json!({"sessionUpdate": "_yi/workdir", "cwd": cwd, "lane": "yi"});
+    frames.insert(0, update("s-alpha", workdir));
+    frames
+}
+
+fn agent_rewrites_the_lane_file() -> Vec<Value> {
+    let path = lane_dir().join("a.txt");
+    let _write = std::fs::write(&path, "rewritten in the lane\n");
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e11", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": format!("--- a/{0}\n+++ b/{0}\n@@ -1,1 +1,1 @@\n-lane copy\n+rewritten in the lane\n", path.display()),
+                      "added": 1, "removed": 1}}),
+    )]
+}
+
+/// Dies with `e a.txt` opening the main checkout's copy while the agent edits the lane's, so
+/// the agent's patch, which names the lane's file, never refreshed the open editor either.
+#[test]
+fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
+    let lane = lane_dir();
+    std::fs::create_dir_all(&lane)?;
+    std::fs::write(lane.join("a.txt"), "lane copy\n")?;
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("_yi/seen", seen_ok),
+        Step::Expect("session/list", empty_list),
+        Step::Push(agent_rewrites_the_lane_file),
+        Step::Expect("_yi/tracked", tracked_no_then_answer),
+    ];
+    let ran = run(
+        "lane-editor",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy\n\
+         wait-frame 9000 1 rewritten in the lane\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&lane);
+    ran
+}
+
+/// Dies with the second palette path opening the main checkout's copy: the editor or viewer the
+/// first one opened holds no session, so the next relative path fell back to the root.
+#[test]
+fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult {
+    let lane = lane_dir();
+    std::fs::create_dir_all(&lane)?;
+    std::fs::write(lane.join("a.txt"), "lane copy a\n")?;
+    std::fs::write(lane.join("b.txt"), "lane copy b\n")?;
+    std::fs::write(lane.join("c.md"), "lane notes\n")?;
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("_yi/seen", seen_ok),
+    ];
+    let ran = run(
+        "lane-panes",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy a\n\
+         key alt-/\ntype e b.txt\nkey enter\nwait-frame 3000 1 lane copy b\n\
+         key alt-/\ntype md c.md\nkey enter\nwait-frame 3000 lane notes\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy a\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&lane);
+    ran
+}
+
+/// Dies with `e ~/x.txt` reported as no such file: the path was joined to the root verbatim.
+#[test]
+fn e_opens_a_path_under_home() -> TestResult {
+    let home = drive_home();
+    std::fs::create_dir_all(&home)?;
+    std::fs::write(home.join("x.txt"), "from home\n")?;
+    let ran = run(
+        "home-editor",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e ~/x.txt\nkey enter\nwait-frame 3000 1 from home\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&home);
+    ran
 }
 
 #[test]
@@ -1927,7 +2031,7 @@ fn seed_editor_file(name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
-fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
+pub(crate) fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
     editor_script(path, "", rest)
 }
 
@@ -2031,7 +2135,7 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
     Ok(())
 }
 
-fn session_fixture() -> Vec<Step> {
+pub(crate) fn session_fixture() -> Vec<Step> {
     vec![
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
@@ -3621,6 +3725,58 @@ fn a_drag_held_at_the_bottom_edge_scrolls_and_copies_past_the_screen() -> TestRe
         copied > 30,
         "copied {copied} lines, less than a screen:\n{frame}"
     );
+    Ok(())
+}
+
+/// The clipboard writes of a drag over a markdown viewer, from row 5 down past the bottom edge,
+/// after `before` has run in the opened viewer.
+fn viewer_drag_copy(name: &str, before: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
+    let doc = dir.join("long.md");
+    let text: String = (1..=60)
+        .map(|n| format!("paragraph {n:02} of the scroll fixture\n\n"))
+        .collect();
+    std::fs::write(&doc, text + "the last paragraph\n")?;
+    run_opts(
+        name,
+        Some(session_fixture()),
+        &format!(
+            "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+             key alt-/\ntype md {}\nkey enter\nwait-frame 3000 paragraph 01 of\n{before}\
+             mouse down 60 5\nmouse drag 60 29\nwait-frame 9000 the last paragraph\n\
+             mouse up 60 29\nwait-frame 3000 copied\nquit\n",
+            doc.display()
+        ),
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    Ok(log
+        .lines()
+        .filter(|line| line.starts_with("\u{1b}]52;"))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Dies with a drag begun on a viewer held at its top copying its opening rows twice and
+/// stopping short of the end: the press anchored at the pin, not at a row of the content.
+#[test]
+fn a_drag_from_a_viewers_held_top_copies_what_one_from_a_scrolled_top_does() -> TestResult {
+    let held = viewer_drag_copy("drag-held-top", "")?;
+    let scrolled = viewer_drag_copy(
+        "drag-scrolled-top",
+        "mouse scrolldown 60 10\nmouse scrolldown 60 10\nwait-frame 3000 !paragraph 01 of\n\
+         mouse scrollup 60 10\nmouse scrollup 60 10\nmouse scrollup 60 10\n\
+         wait-frame 3000 paragraph 01 of\n",
+    )?;
+    assert_eq!(
+        scrolled.len(),
+        1,
+        "one copy from the scrolled top: {scrolled:?}"
+    );
+    assert_eq!(held, scrolled);
     Ok(())
 }
 
