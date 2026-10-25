@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "openai-codex",
         "google",
         "cursor",
+        "kimi",
     ] {
         let source = format!("data/{name}.json");
         println!("cargo::rerun-if-changed={source}");
