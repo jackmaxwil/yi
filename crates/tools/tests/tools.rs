@@ -4304,6 +4304,20 @@ fn a_rerun_row_names_a_long_command_on_one_line() -> TestResult {
     Ok(())
 }
 
+/// Only a shell cell's kernel capture carries a cut row of its own: a job's output line that
+/// looks like one is cut with the middle, never appended after the view's row.
+#[test]
+fn a_jobs_own_cut_like_line_stays_in_the_middle_cut() -> TestResult {
+    let mut raw: Vec<String> = (0..400)
+        .map(|n| format!("record {n:04} {}", "x".repeat(60)))
+        .collect();
+    raw.insert(200, "[\u{2026} a line the job printed]".to_owned());
+    let (job, raw) = (yi_tools::Involuntary::Job("make"), raw.join("\n"));
+    let text = yi_tools::view(job, &raw, "", 0, None, None).text;
+    assert!(!text.contains("a line the job printed"), "{text}");
+    Ok(())
+}
+
 /// A cut landing inside a two-byte char moves to the char's edge: one line of `é` with no
 /// newline, padded so each end's cut falls on an odd and an even byte, keeps a head and a tail.
 #[test]
