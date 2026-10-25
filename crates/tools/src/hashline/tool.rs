@@ -654,8 +654,14 @@ impl HashlineReadTool {
                 "[byte budget {budget} reached at line {line} of {line_count} — continue with offset={line}]"
             ));
         } else if shown_end < line_count && found.is_none() {
+            let asked = explicit_limit.is_some() || input.contains_key("ranges");
+            let cap = if asked {
+                String::new()
+            } else {
+                format!(" (READ_LINE_CAP {READ_LINE_CAP})")
+            };
             rendered.push(format!(
-                "[showing lines {first_shown}-{shown_end} of {line_count} — continue with offset={}]",
+                "[showing lines {first_shown}-{shown_end} of {line_count}{cap} — continue with offset={}]",
                 shown_end + 1
             ));
         } else if first_shown > 1 && shown_end >= line_count && found.is_none() {

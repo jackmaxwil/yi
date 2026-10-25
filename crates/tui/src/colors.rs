@@ -280,11 +280,6 @@ pub fn name_accent(name: &str) -> Color {
     accent(accent_index(name))
 }
 
-/// The same accent as bytes, for a raster that must agree with the text beside it.
-pub fn name_accent_rgb(name: &str) -> (u8, u8, u8) {
-    accent_rgb(accent_index(name))
-}
-
 /// Two-letter tile: the first two alphanumerics, uppercased; `··` for nothing to say.
 pub fn name_tile(name: &str) -> String {
     let letters: String = name

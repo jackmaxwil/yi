@@ -1,6 +1,6 @@
 use serde_json::json;
 use std::error::Error;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::TcpListener;
 use yi_ai::catalog::Catalog;
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
@@ -526,27 +526,18 @@ fn a_mid_stream_error_chunk_names_the_upstream_and_the_code() -> TestResult {
 /// One HTTP/1.1 exchange on the loopback proxy: the request is read whole and `reply`
 /// answers it as a sized body.
 fn answer(listener: &TcpListener, content_type: &str, reply: &str) -> std::io::Result<()> {
-    let (stream, _) = listener.accept()?;
-    let mut reader = BufReader::new(stream);
-    let mut length = 0usize;
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
-            break;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse().unwrap_or(0);
-        }
-    }
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body)?;
     write!(
-        reader.into_inner(),
+        accept_request(listener)?,
         "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     )
+}
+
+fn accept_request(listener: &TcpListener) -> std::io::Result<std::net::TcpStream> {
+    let (stream, _) = listener.accept()?;
+    let mut reader = BufReader::new(stream);
+    crate::loopback::read_request(&mut reader);
+    Ok(reader.into_inner())
 }
 
 /// Binds a loopback stand-in and spawns a detached server thread answering the two-exchange
@@ -704,5 +695,54 @@ async fn a_drain_waits_for_the_settlement_and_it_names_the_upstream() -> TestRes
     let (usage, upstream) = settled.try_recv()?;
     assert_eq!((usage.input, usage.output), (5200, 900));
     assert_eq!(upstream.as_deref(), Some("Wafer"));
+    Ok(())
+}
+
+/// An abort cuts the stream before its usage chunk, so an OpenRouter turn is settled from the
+/// generation record like a reasoning cut; the stand-in holds its second chunk until the abort.
+#[tokio::test]
+async fn an_aborted_turn_is_settled_from_the_record() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || -> std::io::Result<()> {
+        let chunk =
+            json!({"id": "gen-4", "choices": [{"index": 0, "delta": {"reasoning": "hmm"}}]});
+        let mut stream = accept_request(&listener)?;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {chunk}\n\n"
+        )?;
+        stream.flush()?;
+        let _aborted = held.recv();
+        // Incident: a pump that read the cut first had closed the socket, so this write hit
+        // EPIPE and its `?` ended the stand-in before it served the record.
+        let _cut_may_have_closed = write!(stream, "data: {chunk}\n\n");
+        drop(stream);
+        let record = json!({"data": {"tokens_prompt": 5200, "tokens_completion": 900, "total_cost": 0.0004}});
+        answer(&listener, "application/json", &record.to_string())
+    });
+    let (booked, settled) = std::sync::mpsc::channel();
+    let hook = move |usage, _upstream| {
+        let _receiver_gone = booked.send(usage);
+    };
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let mut model = target_model()?;
+    model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
+    let options = OpenAiOptions {
+        proxy: ProxyConfig::from_values(Some(&format!("http://127.0.0.1:{port}")), None, None)?,
+        stop: Some(signal.cut_flag()),
+        settle: Some(yi_ai::settle::Settle(std::sync::Arc::new(hook))),
+        ..OpenAiOptions::default()
+    };
+    let mut events = yi_ai::openai::stream(&model, &history_context(), &options, "sk-test");
+    while let Some(event) = events.recv().await {
+        if matches!(event, AssistantMessageEvent::ThinkingDelta { .. }) && !signal.is_fired() {
+            signal.fire();
+            go.send(())?;
+        }
+    }
+    let usage = settled.recv_timeout(std::time::Duration::from_secs(20))?;
+    assert_eq!((usage.input, usage.output), (5200, 900));
     Ok(())
 }

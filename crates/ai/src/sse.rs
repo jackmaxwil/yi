@@ -33,8 +33,9 @@ impl SseDecoder {
         }
         let (field, value) = match line.find(':') {
             Some(index) => {
-                let value = &line[index.saturating_add(1)..];
-                (&line[..index], value.strip_prefix(' ').unwrap_or(value))
+                let value = line.get(index.saturating_add(1)..).unwrap_or_default();
+                let field = line.get(..index).unwrap_or(line);
+                (field, value.strip_prefix(' ').unwrap_or(value))
             }
             None => (line, ""),
         };

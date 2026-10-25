@@ -276,15 +276,17 @@ fn skeletons(
     context: &ToolContext,
 ) -> LayerBody {
     let mut files: Vec<PathBuf> = Vec::new();
+    let mut unscanned = false;
     let walled = crate::builtins::walk_files(root, &context.deny_read, &mut |path| {
         let interesting = path
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| SKELETON_EXTS.contains(&ext));
-        if interesting {
+        unscanned = interesting && files.len() == SKELETON_SCAN;
+        if interesting && !unscanned {
             files.push(path.to_path_buf());
         }
-        files.len() < SKELETON_SCAN
+        !unscanned
     });
     if files.is_empty() {
         let rows = ["no source files under the working directory".to_owned()];
@@ -343,8 +345,14 @@ fn skeletons(
         shown = shown.saturating_add(1);
     }
     if shown < total {
+        let scan = format!("scan stopped at SKELETON_SCAN {SKELETON_SCAN}; ");
+        let (more, scan) = if unscanned {
+            ("+", scan)
+        } else {
+            ("", String::new())
+        };
         out.push_str(&format!(
-            "[skeletons truncated: {shown} of {total} files at {cap}; \
+            "[skeletons truncated: {shown} of {total}{more} files at {cap}; {scan}\
              read a directory for its skeletons, or pass symbol to rank its files first]\n"
         ));
     }

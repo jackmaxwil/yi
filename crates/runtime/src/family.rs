@@ -10,6 +10,7 @@ use yi_types::todo::TodoRecord;
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
 const RECENT_ENTRIES: usize = 3;
+const CHILDREN_SHOWN: usize = 8;
 pub(crate) const NOTE_CHARS: usize = 120;
 
 pub(crate) fn cut_notice() -> String {
@@ -354,6 +355,7 @@ pub fn children_line(views: &[MemberView]) -> Option<String> {
         (MemberState::Stuck, "stuck"),
         (MemberState::RepossessionPending, "repossession pending"),
     ];
+    let (mut named, mut held) = (0usize, 0usize);
     let parts: Vec<String> = groups
         .iter()
         .filter_map(|(state, label)| {
@@ -365,11 +367,22 @@ pub fn children_line(views: &[MemberView]) -> Option<String> {
                     None => view.name.clone(),
                 })
                 .collect();
-            (!members.is_empty())
-                .then(|| format!("{} {label} ({})", members.len(), members.join(", ")))
+            named = named.saturating_add(members.len().min(CHILDREN_SHOWN));
+            held = held.saturating_add(members.len());
+            (!members.is_empty()).then(|| {
+                let shown = crate::listed::first(&members, CHILDREN_SHOWN);
+                format!("{} {label} ({shown})", members.len())
+            })
         })
         .collect();
-    Some(format!("children: {}", parts.join(" · ")))
+    let mut line = format!("children: {}", parts.join(" · "));
+    if named < held {
+        let next = "await rlm.status()";
+        let what = "children named per state";
+        let row = crate::listed::cut_row(named, held, what, "CHILDREN_SHOWN", CHILDREN_SHOWN, next);
+        line.push_str(&format!(" · {row}"));
+    }
+    Some(line)
 }
 
 /// One line per entry for `history://<agent>/tail/N`: the sequence, who, and the first line.

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
@@ -679,9 +681,13 @@ impl Mapper {
                         .unwrap_or_default();
                     if let Some(Content::ToolCall { arguments, .. }) =
                         self.content_mut().get_mut(content_index)
-                        && (!final_arguments.is_empty() || arguments.is_empty())
                     {
-                        *arguments = final_arguments;
+                        if !final_arguments.is_empty() || arguments.is_empty() {
+                            *arguments = final_arguments;
+                        }
+                        if let Cow::Owned(fixed) = crate::leak::unleak(arguments) {
+                            *arguments = fixed;
+                        }
                     }
                     if let Some(block) = self.content_mut().get(content_index).cloned() {
                         events.push(AssistantMessageEvent::ToolCallEnd {
