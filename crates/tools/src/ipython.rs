@@ -8,6 +8,9 @@ use yi_types::kernel::{
 };
 use yi_types::message::Content;
 
+use crate::process::spill_path;
+use crate::reduce::Involuntary::{ShellCell, Traceback};
+use crate::reduce::view;
 use crate::spill::{Spill, Stream};
 use crate::tool::{
     CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, detail_text, error_output, require_str,
@@ -92,6 +95,7 @@ fn shell_cell(code: &str) -> Option<String> {
     let escaped: Vec<&str> = code
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix('!'))
+        .filter(|rest| !rest.starts_with('='))
         .collect();
     (!escaped.is_empty()).then(|| escaped.join("\n"))
 }
@@ -149,7 +153,7 @@ impl Tool for IpythonTool {
             .map(|calls| calls.close())
             .unwrap_or_default();
         let mut output = match outcome {
-            Ok(outcome) => cell_output(code, outcome),
+            Ok(outcome) => cell_output(code, outcome, dir),
             Err(message) => error_output(message),
         };
         if let Value::Object(details) = &mut output.result.details {
@@ -171,14 +175,22 @@ fn missing_module(evalue: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
-pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
-    let result = outcome.result;
+pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -> ToolOutput {
+    let (result, mut notes) = (outcome.result, outcome.notes);
     let mut sections = Vec::new();
     if !result.stdout.is_empty() {
         sections.push(result.stdout.clone());
     }
     if !result.stderr.is_empty() {
         sections.push(format!("stderr:\n{}", result.stderr));
+    }
+    if let Some(command) = shell_cell(code).filter(|_| !sections.is_empty()) {
+        let kept = (notes.iter().find(|note| spill_path(note).is_some())).map(String::as_str);
+        let exit = i32::from(result.error.is_some() || !code.trim_start().starts_with("%%bash"));
+        let streams = sections.join("\n");
+        let shell = view(ShellCell(&command), &streams, "", exit, kept, dir);
+        notes.retain(|note| shell.recovery.as_ref() != Some(note));
+        sections = vec![shell.text];
     }
     if let Some(value) = &result.result {
         sections.push(value.clone());
@@ -187,7 +199,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         sections.push(if error.traceback.is_empty() {
             format!("{}: {}", error.ename, error.evalue)
         } else {
-            error.traceback.join("\n")
+            view(Traceback, &error.traceback.join("\n"), "", 1, None, dir).text
         });
         if error.ename == "ModuleNotFoundError"
             && let Some(name) = missing_module(&error.evalue)
@@ -200,7 +212,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     if result.status == ExecuteStatus::Aborted {
         sections.push("[cell aborted]".to_owned());
     }
-    sections.extend(outcome.notes.iter().cloned());
+    sections.extend(notes);
     let checked: Vec<_> = result
         .attachments
         .iter()
