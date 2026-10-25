@@ -36,7 +36,8 @@ impl SubagentHost {
         let mut reply = Map::new();
         reply.insert("models".to_owned(), Value::Array(models));
         if total > limit {
-            let next = format!("await rlm.find_models({query:?}, limit={total})");
+            let query = Value::from(query);
+            let next = format!("await rlm.find_models({query}, limit={total})");
             let row =
                 crate::listed::cut_row(limit, total, "matching models", "limit", limit, &next);
             reply.insert("cut".to_owned(), Value::String(row));
