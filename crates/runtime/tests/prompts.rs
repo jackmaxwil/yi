@@ -82,6 +82,10 @@ fn every_prompt_example_defines_the_constants_it_uses() {
             "orchestrate.md",
             include_str!("../src/prompts/orchestrate.md"),
         ),
+        (
+            "delegation.md",
+            include_str!("../src/prompts/delegation.md"),
+        ),
         ("doctrine.md", include_str!("../src/prompts/doctrine.md")),
         ("identity.md", include_str!("../src/prompts/identity.md")),
     ] {
@@ -154,6 +158,10 @@ fn no_prompt_example_waits_past_the_cell_ceiling() {
         (
             "orchestrate.md",
             include_str!("../src/prompts/orchestrate.md"),
+        ),
+        (
+            "delegation.md",
+            include_str!("../src/prompts/delegation.md"),
         ),
         ("doctrine.md", include_str!("../src/prompts/doctrine.md")),
         ("identity.md", include_str!("../src/prompts/identity.md")),

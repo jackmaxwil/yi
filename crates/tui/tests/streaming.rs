@@ -332,7 +332,7 @@ fn prose_then_a_tool_card_is_spaced_the_same_in_the_rebuild() {
     app.reduce_agent(AgentEvent::ToolExecutionStart {
         tool_call_id: "t1".to_owned(),
         tool_name: "bash".to_owned(),
-        args: json!({"cmd": "cargo test"}),
+        args: json!({"command": "cargo test"}),
     });
     app.reduce_agent(AgentEvent::ToolExecutionEnd {
         tool_call_id: "t1".to_owned(),

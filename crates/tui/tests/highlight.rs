@@ -279,7 +279,6 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     let cell = ToolCell {
         name: "bash".to_owned(),
         call_id: String::new(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("bash", "cargo test --workspace"),
         digest: Some("running 12 tests".to_owned()),
@@ -488,7 +487,6 @@ fn tool_spans(name: &str, argument: &str, preview: &[&str]) -> Vec<(String, Styl
     let cell = ToolCell {
         name: name.to_owned(),
         call_id: String::new(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of(name, argument),
         digest: None,

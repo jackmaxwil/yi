@@ -384,7 +384,6 @@ impl App {
                     let cell = ToolCell {
                         name: tool_name.clone(),
                         call_id: tool_call_id.clone(),
-                        intent: None,
                         status: ToolStatus::Running,
                         summary: ToolCell::summary_of(tool_name, &arg_summary(tool_name, args)),
                         digest: None,
@@ -553,7 +552,7 @@ pub fn tick(
             crate::app::UiEvent::Children(children) => app.sync_children(&children),
             crate::app::UiEvent::ChildUpdates(updates) => {
                 for update in &updates {
-                    app.adopt(update, None);
+                    app.adopt(update, None, None);
                 }
             }
             crate::app::UiEvent::Ask(ask) => app.open_approval(ask),
