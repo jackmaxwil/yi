@@ -305,7 +305,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
-  out-edges (8), guidance (160 B), pitfalls (3 × 120 B), and forbids self edges.
+  out-edges (8), guidance (160 B), and forbids self edges.
 - Levers: tunables are read via `levers::get()`, `DEFAULT` unless `init` (first statement of
   `build_session`) loaded `YI_LEVERS`, read only with `--eval`; a bad file is `refusal:config`.
 - Skills catalog: `window × 4 / 50` bytes, clamped 8-32 KiB; descriptions clip to 120, then 60
