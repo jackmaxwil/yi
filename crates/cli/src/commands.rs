@@ -71,6 +71,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "system", value: Some("text"), summary: "extra system prompt" },
     Flag { name: "thinking", value: Some("level"), summary: "off, minimal, low, medium, high, xhigh, max" },
     Flag { name: "json", value: None, summary: "print JSON lines (the event stream, for ask)" },
+    Flag { name: "no-deltas", value: None, summary: "with ask --json: drop the per-token message_update lines" },
     Flag { name: "yolo", value: None, summary: "run without permission prompts" },
     Flag { name: "auto", value: None, summary: "let the policy judge each call (the default)" },
     Flag { name: "confirm", value: None, summary: "ask before every write or command" },
