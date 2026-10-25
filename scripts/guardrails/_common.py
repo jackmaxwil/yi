@@ -5,6 +5,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 # because check_pr_metadata prices the same band on a PR's own diff, and two
 # copies of a budget is two budgets.
 FREE_BAND = 150
+BLOB_CAP, BLOB_ALLOW = 512_000, "scripts/guardrails/baselines/blob_allowlist.txt"
 BASE = ROOT / "scripts/guardrails/baselines"
 # Cargo builds under CARGO_TARGET_DIR when it is set; a fixed target/ path measured a stale binary.
 DIST_BIN = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "dist/yi"
