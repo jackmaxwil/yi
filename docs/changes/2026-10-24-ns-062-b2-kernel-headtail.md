@@ -1,7 +1,7 @@
 ---
 issue: Closes #1498, Refs #1442
 growth: +25 the kernel capture's char counter in place of its truncated flag, the trim that keeps the first and last halves as chunks arrive, the one loud row between them, the displayed value handed to the cell spill under a third name, and a shell cell's view that keeps the kernel's row when it has no file to name; weighed for deletion: a second tail buffer per stream (two more fields and a second char count), a trim on every chunk past the cap (one line shorter, but a full rebuild of 65,536 chars per chunk), and a separate spill for the displayed value (a second file and pointer for one cell)
-raise: crate kernel +17, crate tools +8, tests +209, comments +2
+raise: crate kernel +17, crate tools +8, tests +208, comments +2
 decision: A cell's stdout, stderr and repr keep their 65,536-char budget as the first and last halves, and a repr past it spills to a file like a stream; the budget itself is unchanged and still bounds host memory | rev 3's View policy and D316's list of producers cut with no file: a repr past the cap had no file, and a failure printed at the end of a long cell was in the half the head-only cap dropped | restore append_capped's head-only branch and the repr's head-only cut
 ---
 This is Bet 2's kernel capture fix (unit B2-kernel-headtail). It revises D316's list of producers that cut with no file: a displayed value (`execute_result`) past the kernel's cut now spills like a stream.
