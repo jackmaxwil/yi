@@ -192,25 +192,14 @@ pub fn frontier_text(plan: &Plan) -> String {
     if plan.finished() {
         return String::new();
     }
-    let mut lines = Vec::new();
-    let ready = plan.ready();
-    if !ready.is_empty() {
-        lines.push("Ready todos (edges satisfied):".to_owned());
-        for todo in &ready {
-            let mut line = format!("- {}", todo.label);
-            if let Some(delegation) = &todo.delegation {
-                line.push_str(&format!(" — accept: {}", accept_text(&delegation.accept)));
-            }
-            lines.push(line);
-        }
-    }
+    let mut live = Vec::new();
     for todo in &plan.todos {
         match &todo.state {
             TodoState::Running { by } => {
-                lines.push(format!("In progress: {} (by {by})", todo.label));
+                live.push(format!("In progress: {} (by {by})", todo.label));
             }
             TodoState::Blocked { on: _, note } => {
-                lines.push(format!("Blocked: {} — {note}", todo.label));
+                live.push(format!("Blocked: {} — {note}", todo.label));
             }
             TodoState::Pending
             | TodoState::Done { .. }
@@ -219,10 +208,24 @@ pub fn frontier_text(plan: &Plan) -> String {
             | TodoState::Other(_) => {}
         }
     }
-    let head = usize::from(!ready.is_empty());
-    let total = lines.len().saturating_sub(head);
+    let ready = plan.ready();
+    let total = ready.len().saturating_add(live.len());
+    // The cap takes ready rows before running and blocked ones, which say what is in flight.
+    live.truncate(FRONTIER);
+    let room = FRONTIER.saturating_sub(live.len());
+    let mut lines = Vec::new();
+    if !ready.is_empty() && room > 0 {
+        lines.push("Ready todos (edges satisfied):".to_owned());
+        for todo in ready.iter().take(room) {
+            let mut line = format!("- {}", todo.label);
+            if let Some(delegation) = &todo.delegation {
+                line.push_str(&format!(" — accept: {}", accept_text(&delegation.accept)));
+            }
+            lines.push(line);
+        }
+    }
+    lines.append(&mut live);
     if total > FRONTIER {
-        lines.truncate(FRONTIER.saturating_add(head));
         lines.push(frontier_cut(total, "rows"));
     }
     lines.join("\n")
