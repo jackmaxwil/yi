@@ -33,7 +33,7 @@ pub struct CredentialFile {
 pub struct ProfileFile {
     #[serde(default = "profile_schema")]
     pub version: u64,
-    /// `oauth-code` or `api-key`.
+    /// `oauth-code`, `device-code` (RFC 8628) or `api-key`.
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
@@ -61,6 +61,11 @@ pub struct ProfileFile {
     pub stream_headers: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub refresh_headers: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_authorization: Option<String>,
+    /// The API base the login's token is good for, when it is not the catalog's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_base: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -72,7 +77,7 @@ fn profile_schema() -> u64 {
 impl ProfileFile {
     /// The keys a profile may carry; anything else is a typo the author meant to
     /// say something with (`stream_header` sending no headers was the incident).
-    pub const KNOWN_KEYS: [&'static str; 15] = [
+    pub const KNOWN_KEYS: [&'static str; 17] = [
         "version",
         "kind",
         "client_id",
@@ -88,6 +93,8 @@ impl ProfileFile {
         "extra_authorize",
         "stream_headers",
         "refresh_headers",
+        "device_authorization",
+        "api_base",
     ];
 }
 
