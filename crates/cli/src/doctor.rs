@@ -373,7 +373,7 @@ pub(crate) fn early() {
         return;
     }
     match crate::parse_args() {
-        Ok(args) => std::process::exit(run(&args)),
+        Ok(args) => std::process::exit(crate::dispatch(args)),
         Err(error) => {
             eprintln!("error: {error}");
             std::process::exit(2);
