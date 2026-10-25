@@ -230,9 +230,9 @@ pub fn cut_row(
     what: &str,
     cap: &str,
     limit: usize,
-    next: &str,
+    next_call: &str,
 ) -> String {
-    format!("[\u{2026} {kept} of {total} {what} ({cap} {limit}); the rest: {next}]")
+    format!("[\u{2026} {kept} of {total} {what} ({cap} {limit}); the rest: {next_call}]")
 }
 
 pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {

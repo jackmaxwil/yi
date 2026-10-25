@@ -342,7 +342,8 @@ impl Verifier {
                     deadline_after(Instant::now(), (*timeout_ms).min(manifest.timeout_ms))
                         .min(whole);
                 protecting(&manifest, snapshot.root, || {
-                    let (verdict, said) = run_cmd_said(&manifest, snapshot.root, deadline);
+                    let (verdict, said) =
+                        run_cmd_said(&manifest, snapshot.root, snapshot.artifacts, deadline);
                     *evidence = said;
                     verdict
                 })
@@ -443,10 +444,12 @@ pub(super) fn protecting(
 fn run_cmd_said(
     manifest: &CheckerManifest,
     root: &Path,
+    artifacts: &Artifacts,
     deadline: Instant,
 ) -> (ItemVerdict, Option<String>) {
+    let workdir = manifest.workdir(root);
     let capture = run_check_in(
-        &manifest.workdir(root),
+        &workdir,
         &manifest.command,
         &manifest.env,
         None,
@@ -456,7 +459,12 @@ fn run_cmd_said(
     let passed =
         |capture: &&yi_tools::CommandCapture| capture.exit_code == Some(0) && !capture.cancelled;
     let said = capture.as_ref().ok().filter(passed).map(|capture| {
-        let output = crate::goal::output_tail(capture);
+        let output = format!(
+            "{}\n{}",
+            capture.stdout.trim_end(),
+            capture.stderr.trim_end()
+        );
+        let output = output.trim();
         let total = capture.stdout.trim().chars().count() + capture.stderr.trim().chars().count();
         let skip = output.chars().count().saturating_sub(EVIDENCE_CHARS);
         let kept: String = output.chars().skip(skip).collect();
@@ -467,12 +475,13 @@ fn run_cmd_said(
         };
         format!("`{}` exit 0\n{cut}{kept}", manifest.command)
     });
-    (verdict_of(capture, manifest), said)
+    (verdict_of(capture, manifest, &workdir, artifacts), said)
 }
 
 pub(super) fn run_cmd(
     manifest: &CheckerManifest,
     root: &Path,
+    artifacts: &Artifacts,
     deadline: Instant,
     stop: Option<&yi_tools::CancelFlag>,
 ) -> ItemVerdict {
@@ -485,12 +494,14 @@ pub(super) fn run_cmd(
         deadline,
         stop,
     );
-    verdict_of(capture, manifest)
+    verdict_of(capture, manifest, &workdir, artifacts)
 }
 
 fn verdict_of(
     capture: Result<yi_tools::CommandCapture, String>,
     manifest: &CheckerManifest,
+    workdir: &Path,
+    artifacts: &Artifacts,
 ) -> ItemVerdict {
     let capture = match capture {
         Ok(capture) => capture,
@@ -508,7 +519,12 @@ fn verdict_of(
             detail: format!(
                 "exit {}: {}",
                 code.map_or_else(|| "signal".to_owned(), |code| code.to_string()),
-                crate::goal::output_tail(&capture)
+                crate::goal::check_view(
+                    &manifest.command,
+                    workdir,
+                    Some(&artifacts.spill_dir()),
+                    &capture
+                )
             ),
         },
     }
