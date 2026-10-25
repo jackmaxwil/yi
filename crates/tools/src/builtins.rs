@@ -802,12 +802,14 @@ impl Tool for BashTool {
         let placed = (context.container.as_deref())
             .map(|name| crate::jobs::in_container(name, &context.cwd, command));
         let (capture, timed_out) = match crate::jobs::run_or_background(
-            placed.as_ref().map_or(command, |(run, _)| run),
+            command,
             context,
             background_after,
             timeout,
             context.sandbox.as_ref().filter(|_| placed.is_none()),
-            placed.as_ref().map(|(_, sweep)| sweep.as_str()),
+            placed
+                .as_ref()
+                .map(|(run, sweep)| (run.as_str(), sweep.as_str())),
         ) {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
