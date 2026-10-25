@@ -3201,6 +3201,50 @@ mod contracts {
         Ok(())
     }
 
+    // Dies with the cap's note holding the last refusal whole: it is stored in the plan and
+    // printed by every frontier, so a 16 KiB view per failing check rides every continuation.
+    #[test]
+    fn the_cap_note_keeps_the_last_verdict_not_the_whole_output() -> TestResult {
+        let rig = rig("yi-f0c-capnote", None)?;
+        let plan = planned()?;
+        let line = "printf 'row %03d ' $i; head -c 300 /dev/zero | tr '\\0' x; echo";
+        let command = format!("i=0; while [ $i -lt 400 ]; do {line}; i=$((i+1)); done; exit 1");
+        let opened = init(
+            &rig.engine,
+            vec![contracted(
+                "land it",
+                cmd_contract(&rig.store, &plan, &command, "writer")?,
+            )?],
+        )?;
+        assert_eq!(opened.plan.id, plan);
+        start(&rig.engine, &plan, "land it")?;
+        for attempt in 1..=3 {
+            rig.serve
+                .set("local://out.txt", Some(&format!("product {attempt}")));
+            let verdict = refused(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+            assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+            assert!(
+                verdict.lines().len() > 16_000,
+                "the refusal itself stays whole"
+            );
+        }
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        let TodoState::Blocked { note, .. } = &todo.state else {
+            return Err(format!("not blocked: {:?}", todo.state).into());
+        };
+        assert!(
+            note.contains("3 refused verdicts; the last:"),
+            "{note:.300}"
+        );
+        assert!(
+            note.contains("bytes kept (REPEAT_BYTES 2000)"),
+            "{note:.600}"
+        );
+        assert!(note.contains("[full output: "), "{note:.600}");
+        assert!(note.len() < 3_500, "{}", note.len());
+        Ok(())
+    }
+
     // Dies with the `capped` block in `refuse`: make the cap a refusal text and a model retries
     // forever; count stale verdicts and a slow checker walks a healthy todo into the inbox.
     #[test]
