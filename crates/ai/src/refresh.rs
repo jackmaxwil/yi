@@ -34,14 +34,18 @@ fn adapter(provider: &str) -> Option<(&'static str, &'static str, Value)> {
     })
 }
 
-pub fn list_url(provider: &str) -> Option<&'static str> {
-    Some(match provider {
-        "anthropic" => "https://api.anthropic.com/v1/models",
-        "openai" => "https://api.openai.com/v1/models",
-        "openrouter" => "https://openrouter.ai/api/v1/models",
-        "cursor" => crate::cursor::MODELS_URL,
-        _ => return None,
-    })
+pub fn list_url(provider: &str) -> Option<String> {
+    Some(
+        match provider {
+            "anthropic" => "https://api.anthropic.com/v1/models",
+            "openai" => "https://api.openai.com/v1/models",
+            "openrouter" => "https://openrouter.ai/api/v1/models",
+            "cursor" => crate::cursor::MODELS_URL,
+            "kimi" => return crate::kimi::api_base().map(|base| format!("{base}/models")),
+            _ => return None,
+        }
+        .to_owned(),
+    )
 }
 
 /// `data[].id` from a provider's own list; `None` when the shape is not that, so an unexpected
@@ -176,7 +180,7 @@ pub fn is_stale(dir: &Path, provider: &str, hours: u64, now: SystemTime) -> bool
         || !current()
 }
 
-fn write_atomic(path: &Path, value: &Value) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, value: &Value) -> Result<(), String> {
     let parent = path.parent().ok_or("cache path has no parent")?;
     std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     let tmp = path.with_extension("json.tmp");
@@ -227,7 +231,7 @@ pub fn cursor_catalog(list: &Value) -> Result<Value, String> {
 /// A provider whose list is the account's own: without a login there is nothing to fetch, which
 /// is a skip, not a failed refresh.
 pub fn needs_credential(provider: &str) -> bool {
-    provider == "cursor"
+    matches!(provider, "cursor" | "kimi")
 }
 
 fn refresh_cursor(
@@ -263,8 +267,10 @@ pub fn refresh(
     key: Option<&str>,
     proxy: Option<&ProxyConfig>,
 ) -> Result<usize, String> {
-    if provider == "cursor" {
-        return refresh_cursor(dir, key, proxy);
+    match provider {
+        "cursor" => return refresh_cursor(dir, key, proxy),
+        "kimi" => return crate::kimi::refresh(dir, key, proxy),
+        _ => {}
     }
     let url = list_url(provider).ok_or_else(|| format!("no adapter for provider {provider}"))?;
     let models_dev = get_json(MODELS_DEV, &[], proxy, CAP_BYTES)?;
@@ -279,7 +285,7 @@ pub fn refresh(
         (_, Some(key)) => vec![("authorization", format!("Bearer {key}"))],
         (_, None) => Vec::new(),
     };
-    let reachable = get_json(url, &headers, proxy, CAP_BYTES)
+    let reachable = get_json(&url, &headers, proxy, CAP_BYTES)
         .ok()
         .and_then(|list| reachable_ids(&list));
     let catalog = catalog_from(
