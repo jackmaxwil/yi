@@ -15,6 +15,21 @@ pub enum ToolKind {
 
 pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// What one program call may collect before its value says `cut`; a test lowers it so a cut
+/// costs kilobytes and a hundred files rather than 64 MiB and 100,000.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fuse {
+    pub bytes: usize,
+    pub items: usize,
+}
+
+impl Fuse {
+    pub const PROGRAM: Self = Self {
+        bytes: yi_types::tool_value::PROGRAM_FUSE_BYTES,
+        items: yi_types::tool_value::PROGRAM_FUSE_ITEMS,
+    };
+}
+
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
@@ -41,6 +56,7 @@ pub struct ToolContext {
     /// Invariant: set for a call a kernel program made; a tool then fills [`ToolOutput::value`]
     /// and collects past the caps of the model's view, since the program reads the value.
     pub program: bool,
+    pub fuse: Fuse,
 }
 
 impl ToolContext {
@@ -76,6 +92,7 @@ impl ToolContext {
             call_id: String::new(),
             job_owner: None,
             program: false,
+            fuse: Fuse::PROGRAM,
         }
     }
 }
