@@ -16,6 +16,7 @@ at all. Every column is a deterministic function of the run's own files
 import argparse
 import collections
 import json
+import os
 import statistics
 import sys
 from datetime import datetime
@@ -68,6 +69,11 @@ def _iso_seconds(timing):
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
     return round((end - start).total_seconds(), 2)
+
+
+def runs_root():
+    """Where tbv4_sweep.sh --runner keeps a run's trials, by its own rule."""
+    return Path(os.environ.get("TBV4_RUNS_ROOT") or Path.home() / "Development" / "yi-runs")
 
 
 def verifier_report(trial, name):

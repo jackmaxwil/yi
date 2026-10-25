@@ -13,8 +13,10 @@ ctrf (one test), and heat-pump-warranty and legacy-utility-triage write none, so
 verifier's own count of what the agent got right: trace_results.json's cases, else the pytest
 line `Scoring: X/Y lines correct`, else the ctrf. The "fewer than 10 tests" guard counts that
 unit: a task whose verifier cannot score in at least 10 steps leaves the verdict UNRESOLVED.
+That reading is not the pre-registered one, so until SCORE_DECISION holds the owner's words the
+module refuses every sweep and every verdict reads UNRESOLVED.
 """
-import json, math, os, platform, re, subprocess, sys, tempfile
+import json, math, platform, re, subprocess, sys, tempfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -40,6 +42,9 @@ MIN_UNITS = 10
 T95_DF8 = 1.8595
 SD_MAX = Fraction(35, 100)
 LINES = re.compile(r"Scoring:\s*(\d+)/(\d+) lines correct")
+# The owner's words adopting the verifier's own count over the ctrf tally, with its decision: line.
+SCORE_DECISION = None
+HELD = "no owner decision adopts the verifier's own count over the pre-registered ctrf tally"
 
 CHILDREN = """\
 This task is a queue of items worked under one rulebook. Work it as a parent with children.
@@ -64,6 +69,8 @@ ARM_TEXT = {"solo": None,
 
 def runs():
     """One sweep per arm. The solo arm sets no arm file: its instruction is the task's own."""
+    if SCORE_DECISION is None:
+        raise SystemExit(f"refused: s5-kc-ab runs no sweep while {HELD}")
     scratch = Path(tempfile.mkdtemp(prefix="s5-kc-ab-"))
     (scratch / "defaults.json").write_text("{}")
     out = []
@@ -77,11 +84,6 @@ def runs():
         out.append({"id": arm, "harbor": ["env", *env, "sh", "evals/drivers/tbv4_sweep.sh", "--runner",
                                          str(scratch / "defaults.json"), *TASKS]})
     return out
-
-
-def runs_root():
-    """Where tbv4_sweep.sh --runner keeps a run's trials, by its own rule."""
-    return Path(os.environ.get("TBV4_RUNS_ROOT") or Path.home() / "Development" / "yi-runs")
 
 
 def tally(trial):
@@ -122,7 +124,7 @@ def trial_row(trial, run):
 def trials_of(run):
     """The trials of a run id in a fixed order: job directory, then trial name. A job's own
     result.json has no result.json above it."""
-    return [trial_row(path.parent, run) for path in sorted((runs_root() / run).rglob("result.json"))
+    return [trial_row(path.parent, run) for path in sorted((axes.runs_root() / run).rglob("result.json"))
             if (path.parent.parent / "result.json").is_file()]
 
 
@@ -176,6 +178,8 @@ def decide(tables):
     K3.1 has cleared, and a K3.1 that cannot be judged leaves the verdict open."""
     got = {family: judge(tables[family]) for family in FAMILIES if tables.get(family)}
     text = "; ".join(describe(family, got[family]) for family in FAMILIES if family in got)
+    if SCORE_DECISION is None:
+        return "UNRESOLVED", "; ".join(filter(None, [text, HELD]))
     if "kimi" not in got:
         return "UNRESOLVED", "; ".join(filter(None, [text, "no Kimi trial ran"]))
     if got["kimi"]["open"]:
@@ -226,7 +230,7 @@ def main(argv):
         out = Path(argv[1]) if argv[1:] else Path(tempfile.mkdtemp(prefix="s5-kc-ab-precheck-"))
         return precheck(out)
     if argv[:1] == ["table"]:
-        found = argv[1:] or sorted(p.name for p in runs_root().glob("ns-s5-kc-ab-*"))
+        found = argv[1:] or sorted(p.name for p in axes.runs_root().glob("ns-s5-kc-ab-*"))
         for run in found:
             for row in trials_of(run):
                 score = None if row["score"] is None else float(row["score"])

@@ -3,12 +3,13 @@
 One fresh trial per task of the 12-task TB4 slice on main's binary, per family; a task counts
 when any stop in its root session was taken over a FAIL line (evals/stops_on_fail.py).
 """
-import json, os, sys, tempfile
+import json, sys, tempfile
 from pathlib import Path
 
 EVALS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALS))
 
+import axes  # noqa: E402
 import stops_on_fail  # noqa: E402
 
 THRESHOLD = ("keep host enforcement of model-declared checks in headless runs only if a stop is taken while "
@@ -32,14 +33,9 @@ def runs():
                                        "--runner", str(overrides), *SLICE]}]
 
 
-def runs_root():
-    """Where tbv4_sweep.sh --runner keeps a run's trials, by its own rule."""
-    return Path(os.environ.get("TBV4_RUNS_ROOT") or Path.home() / "Development" / "yi-runs")
-
-
 def tasks_on_fail(run):
     """{task: stops taken over a FAIL} for every slice task with a root session in the run."""
-    found, trials = {}, runs_root() / run
+    found, trials = {}, axes.runs_root() / run
     # Incident: a sweep refused before harbor starts (no key, docker down) never makes its run dir.
     for row in stops_on_fail.rows([trials] if trials.is_dir() else []):
         if row["task"] in SLICE:
