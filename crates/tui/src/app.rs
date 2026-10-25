@@ -160,7 +160,8 @@ pub struct App {
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
     pub(crate) committed_tasks: HashSet<String>,
-    /// Cards dropped by a reset or the finished-card cap; the roster brings one back only running.
+    /// Cards dropped by a reset or the finished-card cap: their late mail stays quiet, and the
+    /// roster brings one back only running.
     pub(crate) retired_tasks: HashSet<String>,
     pub(crate) dropped_tasks: usize,
     pub(crate) steering: Vec<String>,
@@ -653,9 +654,7 @@ impl App {
                 match attribution {
                     Attribution::Unproven | Attribution::Host(_) => {
                         let carded = text.starts_with("[subagent ")
-                            && self
-                                .tasks
-                                .keys()
+                            && (self.tasks.keys().chain(&self.retired_tasks))
                                 .any(|id| text.contains(&format!("({id})")));
                         if !carded {
                             self.commit_cell(&Cell::Notice { text });

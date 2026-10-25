@@ -3301,6 +3301,29 @@ fn a_new_session_and_a_rewind_drop_the_old_cards() -> TestResult {
     Ok(())
 }
 
+/// Dies with a raw `⚑ [subagent …]` notice for a child whose card the cap dropped: the late
+/// completion mail was swallowed only while its card still lived.
+#[test]
+fn a_dropped_cards_late_mail_stays_quiet() -> TestResult {
+    let (mut app, roster) = family(40, 40)?;
+    app.sync_children(&roster);
+    app.take_commits();
+    for child in [roster.first(), roster.last()].into_iter().flatten() {
+        let (name, id) = (&child.update.name, child.update.id.as_str());
+        let mail = format!("[subagent {name} ({id}) completed]\nLast answer: done");
+        app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+            message: yi_types::message::AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                &mail,
+                0,
+            ),
+        });
+        let rows = common::flat(&app.take_commits());
+        assert!(rows.is_empty(), "{id}: {rows:?}");
+    }
+    Ok(())
+}
+
 /// Dies with no cap on finished cards: each kept its child's whole session alive and every
 /// child update walked them all. At the cap nothing is said; one past it, the oldest goes.
 #[test]
