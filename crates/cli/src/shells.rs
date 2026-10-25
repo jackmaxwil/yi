@@ -359,6 +359,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .and_then(|browser| browser.path.as_ref())
             .map(std::path::PathBuf::from),
         chrome_pin: chrome_pin(),
+        home: std::env::var("HOME").ok(),
     };
     let control = match control(args) {
         Ok(control) => control,

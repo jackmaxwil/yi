@@ -9,6 +9,7 @@ use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::{Effort, Model};
 pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, ChildUpdate};
 
+use crate::lease::off_executor;
 use crate::mail::Draft;
 use crate::mailbox::{ParentLink, timeout_of};
 use crate::schedule::GateFn;
@@ -1096,9 +1097,7 @@ impl SubagentHost {
             Box::pin(async move {
                 let target = target.ok_or("rlm.result requires a target")?;
                 // A protocol child's result runs checks; keep them off the executor.
-                tokio::task::spawn_blocking(move || host.result(&target, schema.as_ref()))
-                    .await
-                    .map_err(|error| format!("rlm.result task failed: {error}"))?
+                off_executor("rlm.result", move || host.result(&target, schema.as_ref())).await
             })
         });
         let host = Arc::clone(self);
@@ -1112,9 +1111,7 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let prompt = prompt.ok_or("rlm.run requires a prompt")?;
-                tokio::task::spawn_blocking(move || host.spawn(prompt, kwargs))
-                    .await
-                    .map_err(|error| format!("rlm.run task failed: {error}"))?
+                off_executor("rlm.run", move || host.spawn(prompt, kwargs)).await
             })
         });
         let host = Arc::clone(self);
@@ -1133,7 +1130,7 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let target = target.ok_or("rlm.delete_subagent requires a target")?;
-                host.delete(&target)
+                off_executor("rlm.delete_subagent", move || host.delete(&target)).await
             })
         });
         for (method, merges) in [
@@ -1146,11 +1143,14 @@ impl SubagentHost {
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
-                    if merges {
-                        host.merge_worktree(&target)
-                    } else {
-                        host.discard_worktree(&target)
-                    }
+                    off_executor(method, move || {
+                        if merges {
+                            host.merge_worktree(&target)
+                        } else {
+                            host.discard_worktree(&target)
+                        }
+                    })
+                    .await
                 })
             });
         }
