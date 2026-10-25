@@ -2309,6 +2309,7 @@ fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
         error: Some("€".repeat(100)),
         spawn: None,
         answer: None,
+        answer_dropped: 0,
         activity: yi_types::subagent::ChildActivity::Waiting,
         flag: None,
     };
@@ -2745,5 +2746,27 @@ fn a_table_is_found_by_every_rule_spelling_and_ends_where_markdown_ends_it() -> 
             "{committed:?}"
         );
     }
+    Ok(())
+}
+
+/// Dies with a draft other users can read and a predictable name: a link planted at
+/// `yi-compose-<pid>.md` on a shared temp directory had the draft written through it.
+#[test]
+fn the_compose_draft_is_private_new_and_never_written_through_a_link() -> TestResult {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new("yi-compose-draft")?;
+    let sentinel = dir.join("sentinel");
+    std::fs::write(&sentinel, "keep")?;
+    let planted = dir.join(format!("yi-compose-{}.md", std::process::id()));
+    std::os::unix::fs::symlink(&sentinel, &planted)?;
+    let (first, mut file) = yi_tui::editor::draft_file(&dir)?;
+    file.write_all(b"the draft")?;
+    let (second, _) = yi_tui::editor::draft_file(&dir)?;
+    assert_eq!(std::fs::read_to_string(&sentinel)?, "keep");
+    assert_eq!(std::fs::read_to_string(&first)?, "the draft");
+    assert_ne!(first, second, "every call makes a new file");
+    let mode = std::fs::metadata(&first)?.permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the draft is the user's alone: {mode:o}");
     Ok(())
 }

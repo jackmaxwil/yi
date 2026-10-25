@@ -64,8 +64,8 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     Ok(())
 }
 
-/// A rewind has to be visible: the undone exchange leaves the transcript and
-/// the message it undid comes back to the composer unsent.
+/// A rewind has to be visible: the undone exchange leaves the transcript, the
+/// message it undid comes back to the composer unsent, and a row says the files stayed.
 #[test]
 fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     let dir = Scratch::new("yi-tui-rewind")?;
@@ -100,6 +100,8 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
             &keys.display().to_string(),
             "--frames",
             &frames.display().to_string(),
+            "--size",
+            "160x30",
             "first question",
         ])
         .env("HOME", &home)
@@ -119,6 +121,17 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
         final_frame.contains("first question"),
         "the kept turn stays: {final_frame}"
     );
+    let notice = final_frame
+        .lines()
+        .map(|row| row.trim_matches(|c: char| !c.is_alphanumeric()))
+        .find(|row| row.starts_with("conversation rewound"));
+    assert_eq!(
+        notice,
+        Some(
+            "conversation rewound; files stay as the abandoned branch left them; /undo restores the last turn's edits"
+        ),
+        "the solo rewind says it never touched the files: {final_frame}"
+    );
     assert!(
         !final_frame.contains("┃   second question"),
         "the rewound user turn leaves the transcript: {final_frame}"
@@ -126,6 +139,56 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     assert!(
         final_frame.contains("│second question"),
         "the rewound message returns to the composer: {final_frame}"
+    );
+    Ok(())
+}
+
+/// Dies with an `@` picker over 101 files that searched only the first 100: typing the last
+/// file's name matched nothing, and Enter on no match dropped the typed text from the composer.
+#[test]
+fn the_at_picker_over_101_files_reaches_the_last_by_typing_its_name() -> TestResult {
+    let dir = Scratch::new("yi-tui-picker")?;
+    let home = dir.home()?;
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&tree)?;
+    for n in 0..101 {
+        std::fs::write(tree.join(format!("f{n:03}.txt")), "x")?;
+    }
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\ntype @\nwait-frame 10000 \u{2026} 93 more\n\
+         type f100\nkey enter\nwait-frame 10000 !@f100\n\
+         wait-frame 10000 \u{2502}f100.txt\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--cwd",
+            &tree.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "ping",
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "the composer never held the file typed into the picker: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
     Ok(())
 }

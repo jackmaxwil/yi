@@ -114,7 +114,8 @@ impl App {
         };
         let row = usize::from(y.checked_sub(inner.y)?).saturating_add(editor.scroll_top);
         let col = usize::from(x.checked_sub(inner.x)?).checked_sub(editor.gutter())?;
-        Some((row, col))
+        let line = editor.text.lines().get(row).map_or("", String::as_str);
+        Some((row, crate::editor_view::char_at(line, col)))
     }
 
     fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {

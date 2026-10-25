@@ -47,17 +47,6 @@ pub struct JupyterMessage {
     pub content: Map<String, Value>,
 }
 
-/// One file edit captured from a diff `display_data` payload (design §9).
-/// Wire casing is snake_case by design (§9): the Python `edit` skill emits it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KernelDiffDisplay {
-    pub path: String,
-    pub old_str: String,
-    pub new_str: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub start_line: Option<u64>,
-}
-
 /// One media attachment captured from an attachment `display_data` payload
 /// (design §9). Snake_case by design.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,30 +55,6 @@ pub struct KernelAttachment {
     pub data: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-}
-
-/// Agent-message receipt echoed back through `display_data` (design §9).
-/// CamelCase by design (§9): the host's own receipt, echoed verbatim.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KernelSentAgentMessage {
-    pub id: String,
-    pub message: String,
-    pub delivery_status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub receiver_role: Option<String>,
-    pub target: KernelAgentMessageTarget,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KernelAgentMessageTarget {
-    pub active_session_id: String,
-    pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_name: Option<String>,
 }
 
 /// Python error from an `error` iopub message (design §9).
@@ -119,11 +84,7 @@ pub struct ExecuteResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub diffs: Vec<KernelDiffDisplay>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<KernelAttachment>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sent_agent_messages: Vec<KernelSentAgentMessage>,
     pub status: ExecuteStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<KernelError>,

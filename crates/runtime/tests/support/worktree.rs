@@ -102,13 +102,11 @@ pub fn bench(
 ) -> Result<Bench, Box<dyn Error>> {
     let root = Scratch::new(&format!("yi-accept-{name}"))?;
     let parent = root.join("parent");
-    std::fs::create_dir_all(&parent)?;
-    git(&parent, &["init", "-q", "-b", "main"])?;
+    crate::repo::init_repo(&parent)?;
     let commit = |file: &str, message: &str| -> Result<String, Box<dyn Error>> {
         std::fs::write(parent.join(file), format!("{message}\n"))?;
         git(&parent, &["add", file])?;
-        let who = ["-c", "user.name=bench", "-c", "user.email=bench@fixture"];
-        git(&parent, &[&who[..], &["commit", "-qm", message]].concat())?;
+        git(&parent, &["commit", "-qm", message])?;
         git(&parent, &["rev-parse", "HEAD"])
     };
     let base = commit("README.md", "the parent")?;
