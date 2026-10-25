@@ -2,6 +2,7 @@
 //! with the branch kept; plus the staging merge and the generation-checked publication.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -13,6 +14,10 @@ use super::{
     capture_named,
 };
 use crate::subagent::{ChildRecord, SubagentHost};
+
+/// Invariant: held from the generation read through publication, so two hand-backs in this
+/// process never race on the parent checkout; across processes only the generation check guards.
+pub(crate) static INTEGRATION: Mutex<()> = Mutex::new(());
 
 /// The jobs registry's answer for `root`: every backgrounded command still running under
 /// the lane path. A child's foreground command has returned by the time it can ask.
@@ -795,6 +800,7 @@ impl SubagentHost {
         reply.insert("files".to_owned(), files);
         let mut moved: Option<(Sha, Sha)> = None;
         for _attempt in 0..2 {
+            let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
             let prepared = prepare(
