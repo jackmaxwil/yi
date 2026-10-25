@@ -506,6 +506,13 @@ class Runs(unittest.TestCase):
             self.assertEqual((row["trials"], row["unreadable"], row["chargedUsd"]), (1, 1, 0.8),
                              "a torn final append is charged the cap and named, never dropped")
             self.assertIn("1 line(s) this sweep filed", row["why"])
+            fused = [sys.executable, "-c", (
+                "import os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "'{\"costUsd\": 0.4}\\n{\"costUsd\": 0.1}\\n')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": fused}, 0.9)
+            self.assertEqual((row["trials"], row["unreadable"], row["chargedUsd"]), (1, 1, 0.9),
+                             "a re-run's first row fused onto the torn line is charged the cap, never dropped")
 
     def test_the_sweep_cap_is_the_lower_of_the_trials_cap_and_the_reserve_handed_down(self):
         with tempfile.TemporaryDirectory() as store:
