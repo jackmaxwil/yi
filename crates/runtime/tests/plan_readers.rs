@@ -550,14 +550,8 @@ async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> Te
             .await?;
             let at = hits.lines().find(|row| !row.starts_with('['));
             let at = at.and_then(|row| row.split(' ').next()).unwrap_or_default();
-            let opens = match address.starts_with("plan://") {
-                true => at.starts_with(address),
-                false if at.starts_with("history://") => {
-                    let (entry, _) = call(&session, "read", json!({"path": at})).await?;
-                    entry.contains(needle)
-                }
-                false => false,
-            };
+            let (entry, unopened) = call(&session, "read", json!({"path": at})).await?;
+            let opens = !unopened && entry.contains(needle);
             assert!(!refused && opens, "grep {address}: {hits}");
             let text = fetched(&session, address).await?;
             assert!(text.contains(needle), "rlm.fetch {address}: {text}");
