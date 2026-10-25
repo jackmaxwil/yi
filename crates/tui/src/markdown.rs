@@ -274,13 +274,7 @@ fn fence_lines(
     let columns = |line: &str| {
         line.chars()
             .take_while(|ch| matches!(ch, ' ' | '\t' | '>'))
-            .fold(0, |at, ch| {
-                if ch == '\t' {
-                    at + TAB_STOP - at % TAB_STOP
-                } else {
-                    at + 1
-                }
-            })
+            .fold(0, |at: usize, ch| at.saturating_add(cell_width(ch, at)))
     };
     let marker = opener
         .trim_start_matches([' ', '\t', '>'])
@@ -555,7 +549,7 @@ impl Builder<'_> {
     }
 
     fn code_row(&mut self, line: &str) {
-        let body = expand_tabs(line);
+        let body = expand_tabs_at(line, 0);
         let base = self.theme.syntax_style(crate::highlight::Token::Plain);
         let rail = Span::styled(self.indent.clone(), self.theme.dim_style());
         let mut spans = vec![rail.clone()];
@@ -583,7 +577,10 @@ impl Builder<'_> {
         for raw in html.split_inclusive('\n') {
             let body = raw.trim_end();
             if !body.is_empty() {
-                self.push(Span::styled(expand_tabs(body), self.theme.dim_style()));
+                self.push(Span::styled(
+                    expand_tabs_at(body, 0),
+                    self.theme.dim_style(),
+                ));
             }
             if raw.ends_with('\n') {
                 self.flush_line();
@@ -594,19 +591,25 @@ impl Builder<'_> {
 
 const TAB_STOP: usize = 4;
 
+/// The cells `ch` draws at column `at`: a tab runs to the next four-column stop.
+pub fn cell_width(ch: char, at: usize) -> usize {
+    if ch == '\t' {
+        TAB_STOP.saturating_sub(at % TAB_STOP)
+    } else {
+        UnicodeWidthChar::width(ch).unwrap_or(0)
+    }
+}
+
 /// Incident: ratatui drops control characters, so a tab vanished with the indent it carried.
-fn expand_tabs(text: &str) -> String {
+pub fn expand_tabs_at(text: &str, mut at: usize) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut column = 0;
     for ch in text.chars() {
-        if ch == '\t' {
-            let pad = TAB_STOP - column % TAB_STOP;
-            out.extend(std::iter::repeat_n(' ', pad));
-            column += pad;
-        } else {
-            out.push(ch);
-            column += UnicodeWidthChar::width(ch).unwrap_or(0);
+        let width = cell_width(ch, at);
+        match ch {
+            '\t' => out.extend(std::iter::repeat_n(' ', width)),
+            _ => out.push(ch),
         }
+        at = at.saturating_add(width);
     }
     out
 }
