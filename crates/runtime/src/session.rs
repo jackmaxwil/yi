@@ -10,6 +10,7 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Usage, UserContent};
 use yi_types::model::{Effort, Model};
 
+use crate::ext::Host;
 use crate::provider::ProviderStream;
 mod answer;
 mod deadline;
@@ -80,6 +81,7 @@ struct Shared {
     reuse: Mutex<yi_types::model::Reuse>,
     reclaimed: Arc<Mutex<crate::reclaim::Cut>>,
     /// The system bytes the first request sent; every later request must send the same (D310).
+    #[cfg(debug_assertions)]
     first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
@@ -216,6 +218,7 @@ impl AgentSession {
                 environment: Mutex::new(None),
                 reuse: Mutex::new(yi_types::model::Reuse::Loop),
                 reclaimed: Arc::default(),
+                #[cfg(debug_assertions)]
                 first_system_prompt: OnceLock::new(),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
@@ -298,14 +301,15 @@ impl AgentSession {
         extensions_of(&self.shared)
     }
 
+    /// Never freezes: a read before start would freeze a prompt missing its project rules.
     pub fn system_prompt(&self) -> String {
-        assembled_prompt(&self.shared, &self.config.system_prompt)
+        assembled_prompt(&self.shared, &self.config.system_prompt, Host::peek_prompt)
     }
 
     fn prompt_source(&self) -> PromptSource {
         let shared = Arc::clone(&self.shared);
         let fallback = self.config.system_prompt.clone();
-        Arc::new(move || assembled_prompt(&shared, &fallback))
+        Arc::new(move || assembled_prompt(&shared, &fallback, Host::system_prompt))
     }
 
     /// Starts the clock; the first call wins, so the budget never moves mid-run.
@@ -1050,14 +1054,11 @@ fn store_of(shared: &Arc<Shared>) -> Option<yi_session::SharedSession> {
         .unwrap_or_default()
 }
 
-fn assembled_prompt(shared: &Arc<Shared>, fallback: &str) -> String {
+fn assembled_prompt(shared: &Arc<Shared>, fallback: &str, read: fn(&Host) -> String) -> String {
     let Some(host) = extensions_of(shared) else {
         return fallback.to_owned();
     };
-    let assembled = host
-        .lock()
-        .map(|host| host.system_prompt())
-        .unwrap_or_default();
+    let assembled = host.lock().map(|host| read(&host)).unwrap_or_default();
     if assembled.is_empty() {
         fallback.to_owned()
     } else {

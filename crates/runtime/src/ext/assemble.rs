@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
@@ -85,6 +85,7 @@ const FENCE_ESCAPE: &str = "<\\<<";
 pub struct PromptState {
     slots: BTreeMap<Slot, String>,
     yard: BTreeMap<(Trust, String), String>,
+    built: BTreeSet<Slot>,
 }
 
 impl PromptState {
@@ -159,11 +160,24 @@ impl PromptState {
         out
     }
 
+    /// The slots attached so far are the build's own, which a resume rebuilds.
+    pub fn seal_build(&mut self) {
+        self.built = self.slots.keys().cloned().collect();
+    }
+
+    /// A build slot keeps only its hash; a slot attached since keeps its text.
     pub fn snapshot(&self) -> Value {
         let slots: Vec<Value> = self
             .slots
             .iter()
-            .map(|(slot, text)| json!({"rank": slot.rank.label(), "name": slot.name, "text": text}))
+            .map(|(slot, text)| {
+                let (rank, name) = (slot.rank.label(), &slot.name);
+                let sha256 = super::project::content_hash(text);
+                match self.built.contains(slot) {
+                    true => json!({"rank": rank, "name": name, "sha256": sha256}),
+                    false => json!({"rank": rank, "name": name, "sha256": sha256, "text": text}),
+                }
+            })
             .collect();
         let yard: Vec<Value> = self
             .yard
@@ -172,20 +186,27 @@ impl PromptState {
                 json!({"trust": trust.label(), "source": source, "text": text})
             })
             .collect();
-        json!({"slots": slots, "yard": yard})
+        json!({"version": 2, "slots": slots, "yard": yard})
     }
 
-    pub fn restore(snapshot: &Value) -> Option<Self> {
-        let mut state = Self::default();
-        for entry in snapshot.get("slots").and_then(Value::as_array)? {
+    /// Re-attaches the yard and each recorded slot with text this build lacks (v1: every slot).
+    pub fn restore(&mut self, snapshot: &Value) {
+        for entry in snapshot
+            .get("slots")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let rank = entry
                 .get("rank")
                 .and_then(Value::as_str)
                 .and_then(Rank::parse);
             let name = entry.get("name").and_then(Value::as_str);
             let text = entry.get("text").and_then(Value::as_str);
-            if let (Some(rank), Some(name), Some(text)) = (rank, name, text) {
-                state.attach(Slot::new(rank, name), text.to_owned());
+            if let (Some(rank), Some(name), Some(text)) = (rank, name, text)
+                && !self.has(&Slot::new(rank, name))
+            {
+                self.attach(Slot::new(rank, name), text.to_owned());
             }
         }
         for entry in snapshot
@@ -201,10 +222,9 @@ impl PromptState {
                 _ => Trust::Untrusted,
             };
             if let (Some(source), Some(text)) = (source, text) {
-                state.attach_external(source, trust, text);
+                self.attach_external(source, trust, text);
             }
         }
-        Some(state)
     }
 }
 

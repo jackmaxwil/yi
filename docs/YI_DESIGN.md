@@ -303,7 +303,12 @@ extension `Host` whose synchronous extensions turn session events into effects.
   comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
-- The table persists as `custom{ext_state}` on change and is restored on resume.
+- The table persists as `custom{ext_state}` when a slot's hash moves: the build's own slots (the
+  ones attached before the session starts) as rank, name and SHA-256, every slot an extension
+  attached and the yard with their text. A resume rebuilds the build's slots from the running
+  build, so its mode, identity and doctrine are current, and re-attaches the recorded ones it
+  lacks; a v1 snapshot carries text for every slot and restores the same way. Within one process
+  the first request's bytes stay frozen, and only the loop's read freezes them.
 - The environment block is a `host_user` message appended per request by `transform_context`,
   never stored: `cwd`, `files` (20), `landing`, `todos`, `time` (per minute), `deadline`,
   `platform … · host <line>`, `model`, `context`, `kernel`, children. `host` comes from

@@ -459,9 +459,8 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) -
     wire_last_word(&mut config, &shared);
     let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut emit = emit_event(&shared, &failed);
-    if cfg!(debug_assertions)
-        && let Some(errored) = first_system_prompt_broken(&shared, &context.system_prompt, &model)
-    {
+    #[cfg(debug_assertions)]
+    if let Some(errored) = first_system_prompt_broken(&shared, &context.system_prompt, &model) {
         failed_turn(&shared, prompt, errored, &mut emit);
         return false;
     }
@@ -546,6 +545,7 @@ fn emit_event(
 /// D310: the first request's bytes are the conversation's. In a debug build a later turn whose
 /// bytes differ ends before any request with this errored reply, fast and loud, and the
 /// session still settles idle; a release build rests on `ext::Host::frozen` alone.
+#[cfg(debug_assertions)]
 fn first_system_prompt_broken(
     shared: &Shared,
     system: &str,
@@ -570,6 +570,7 @@ fn first_system_prompt_broken(
 
 /// Ends a turn before any request with `errored` as its reply, through the events a run emits,
 /// so the transcript, the store and every front end see the same failed turn.
+#[cfg(debug_assertions)]
 fn failed_turn(
     shared: &Shared,
     prompt: AgentMessage,
