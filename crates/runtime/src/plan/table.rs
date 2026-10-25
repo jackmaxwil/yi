@@ -113,14 +113,10 @@ pub(super) fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
         (OpKind::Done, TodoStateName::Pending) => {
             "; set it running first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
         }
-        (OpKind::Drop, TodoStateName::Running) => {
-            "; a running todo ends with fail and a cause: a set row with state failed and its cause"
-        }
+        (OpKind::Drop, TodoStateName::Running) => super::tool::FAILS.0,
         (OpKind::Fail, TodoStateName::Pending) => "; a pending todo that will not run is dropped",
         (OpKind::Retry, TodoStateName::Pending) => "; it has not failed, so set it running",
-        (OpKind::Retry, TodoStateName::Running) => {
-            "; only a failed todo reopens: set it failed first"
-        }
+        (OpKind::Retry, TodoStateName::Running) => super::tool::REOPENS.0,
         _ => "",
     }
 }

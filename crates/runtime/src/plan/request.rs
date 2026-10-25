@@ -127,7 +127,7 @@ fn refusal(
     );
     reply.insert(
         "refusal".to_owned(),
-        json!({"code": code, "message": message}),
+        json!({"code": code, "message": super::tool::ops_spelling(&message)}),
     );
     reply
 }

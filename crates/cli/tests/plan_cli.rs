@@ -108,3 +108,24 @@ fn a_cli_set_leaves_a_failed_row_it_does_not_name_failed() -> TestResult {
     assert_eq!(row(&after, "a").as_deref(), Some("failed"), "{after:?}");
     Ok(())
 }
+
+/// Dies with `yi plan` teaching the tool's set row, which its strict set reads as pending: the
+/// hint a shell reads names `fail`, and that call lands.
+#[test]
+fn a_cli_refusal_names_the_call_that_lands_from_the_shell() -> TestResult {
+    let root = rig("hint")?;
+    plan(&root, "set", json!({"goal": "ship it", "list": "- [ ] x"}))?;
+    plan(&root, "start", json!({"label": "x"}))?;
+    let refused = plan(&root, "drop", json!({"label": "x"}))
+        .err()
+        .ok_or("a drop on a running todo landed")?
+        .to_string();
+    assert!(refused.contains("op fail with {label, cause}"), "{refused}");
+    plan(
+        &root,
+        "fail",
+        json!({"label": "x", "cause": "the build broke"}),
+    )?;
+    assert_eq!(row(&rows(&root)?, "x").as_deref(), Some("failed"));
+    Ok(())
+}

@@ -999,6 +999,67 @@ fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
     Ok(())
 }
 
+/// Dies with a cell's refusal teaching the tool's set-row move, which `plan.op`'s strict set
+/// refuses: each hint a cell reads is followed as written, and the call it names lands.
+#[tokio::test]
+async fn each_hint_a_cell_reads_names_a_call_that_lands_from_the_cell() -> TestResult {
+    use serde_json::json;
+    let dir = Scratch::new("yi-plan-cell-hints")?;
+    let store = PlanStore::open(dir.to_path_buf())?;
+    let engine = Arc::new(PlanEngine::new(store, Arc::new(NoChildren)));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
+    let user = json!({"user": null});
+    let steps = [
+        (
+            json!({"op": "set", "goal": "ship it", "list": "- [ ] a\n- [ ] b"}),
+            None,
+        ),
+        (
+            json!({"op": "append", "todos": [{"label": "c", "on": user}]}),
+            Some("op block with {label, on, note, options}"),
+        ),
+        (json!({"op": "append", "todos": [{"label": "c"}]}), None),
+        (
+            json!({"op": "block", "label": "c", "on": user, "note": "which name?"}),
+            None,
+        ),
+        (json!({"op": "start", "label": "a"}), None),
+        (
+            json!({"op": "drop", "label": "a"}),
+            Some("op fail with {label, cause}"),
+        ),
+        (
+            json!({"op": "fail", "label": "a", "cause": "the build broke"}),
+            None,
+        ),
+        (json!({"op": "start", "label": "b"}), None),
+        (
+            json!({"op": "retry", "label": "b"}),
+            Some("op fail it first"),
+        ),
+        (json!({"op": "fail", "label": "b", "cause": "flaky"}), None),
+        (json!({"op": "retry", "label": "b"}), None),
+    ];
+    for (at, (call, hint)) in steps.into_iter().enumerate() {
+        let mut args = call.as_object().cloned().unwrap_or_default();
+        let op = args.remove("op").unwrap_or_default();
+        let payload = json!({"request_id": format!("r{at}"), "op": op, "args": args});
+        let reply = plan_op(&registry, payload).await?;
+        let refusal = reply
+            .get("refusal")
+            .and_then(|refusal| refusal.get("message"));
+        let said = refusal
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match hint {
+            None => assert_eq!(reply.get("ok"), Some(&json!(true)), "{call}: {said}"),
+            Some(hint) => assert!(said.contains(hint), "{call}: {said}"),
+        }
+    }
+    Ok(())
+}
+
 /// A `set` naming one row leaves a failed row it does not name failed on the tool and on
 /// `plan.op` alike, and a struck row drops on both; `plan.op` once called the reducer's raw set.
 #[tokio::test]
