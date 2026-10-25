@@ -215,6 +215,31 @@ real-model run refuses without `OPENROUTER_API_KEY` and without `--cap-usd`,
 naming the missing precondition and never a key value, and prints its
 `docs/eval-ledger.md` row.
 
+## Prefix capture
+
+```
+python3 evals/prefix_capture.py --binary target/debug/yi --checkout ~/Development/yi
+```
+
+What a Yi-on-Yi session reads before its first word, counted in a real run rather than built
+in a test. It clones the repo into an empty scratch directory and copies in what a clone omits:
+the checkout's untracked CLAUDE.md (or the one `--claude` names) and its gitignored skill
+directories (`.claude/skills`, `.pi/skills`, `.agents/skills`, `.yi/skills`), printing each
+copy. Then it runs `yi ask --model faux/faux-1` twice under a scratch HOME and the caller's
+PATH: once claiming a lane, once with `--here`. For each run it prints the bytes of every
+prompt slot and every instruction source in the session's opening `ext_state` entry, with the
+source's trust. A lane checks out tracked files only, so the copies reach the `--here` run
+alone. A CLAUDE.md with AGENTS.md's rules is deduped by content and never shows, so pass
+`--claude AGENTS.md` to measure a checkout whose CLAUDE.md was regenerated from .ruler. The
+scratch directory must be empty, because the checkpointer adds every file under the cwd. Zero
+spend; it rides no gate. `selftest.py::check_prefix_capture` pins the parse against
+`fixtures/replay/yi/`.
+
+The test-built counterpart is `report_the_prefix_size` in crates/runtime/tests/request_budget.rs.
+Its `ROLE_PREFIX` rows give each role's first request (root, leaf root child, leaf root child
+after the orchestrate trigger, reader, worker) in a bare, a lane and a main-checkout workspace,
+and check_request_budget.py ratchets the bare rows against `baselines/role_prefix.json`.
+
 ## Judge replay (D259)
 
 ```
