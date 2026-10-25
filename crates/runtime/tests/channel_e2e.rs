@@ -395,10 +395,19 @@ async fn a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix()
 
 /// The first message a red `exec://` check leaves in a fresh channel.
 async fn first_red_message(name: &str, body: &str) -> Result<serde_json::Value, Box<dyn Error>> {
+    red_message_of(name, body, "./red.sh").await
+}
+
+async fn red_message_of(
+    name: &str,
+    body: &str,
+    command: &str,
+) -> Result<serde_json::Value, Box<dyn Error>> {
     let dir = Scratch::new(name)?;
     script(&dir, "red.sh", body)?;
     let channel = Channel::at(dir.join("channels/red.jsonl"));
-    let address = "exec://./red.sh?every=1s";
+    let address = format!("exec://{command}?every=1s");
+    let address = address.as_str();
     channel.open(address, None)?;
     adapter::ensure(address, &channel, &dir, 1_000, true)?;
     assert!(wait_until(8_000, || !channel.entries().is_empty()).await);
@@ -449,6 +458,20 @@ async fn a_red_exec_message_is_whole_at_the_channel_cap_and_cut_one_byte_past_it
         "{cut:.400}"
     );
     assert!(cut.ends_with('x'), "the end of the output is the part kept");
+    Ok(())
+}
+
+/// Dies with the exec row embedding a multi-line command whole: the rerun spills past the row's
+/// line, where the view's own row names such a command by the line it began with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_past_the_cap_names_a_multi_line_command_by_its_first_line() -> TestResult {
+    let body = format!("cat '{RED_PYTEST}'; exit 1");
+    let data = red_message_of("yi-channel-twolines", &body, "./red.sh\n# a second line").await?;
+    let output = data["output"].as_str().ok_or("no output")?;
+    let row = output.lines().next().unwrap_or_default();
+    let tail = ", its output sent to exec.log, then read exec.log]";
+    let named = row.contains("the command that began cd '") && row.ends_with(tail);
+    assert!(named, "{row}");
     Ok(())
 }
 

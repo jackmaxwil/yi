@@ -333,8 +333,8 @@ fn exec(command: &str, cwd: &Path) -> Value {
             }
             // Invariant: the channel refuses a message past MESSAGE_MAX_BYTES whole, `ok` included,
             // counting bytes as sent (a quote two, a control byte six): the tail is walked as sent.
-            let (total, rerun) = (output.len(), crate::goal::rerun_in(cwd, command));
-            let next = format!("bash ({rerun}) > exec.log 2>&1, then read exec.log");
+            let total = output.len();
+            let next = yi_tools::rerun("bash", &crate::goal::rerun_in(cwd, command), "exec.log");
             let cap = "MESSAGE_MAX_BYTES";
             let row = |kept| cut(kept, total, "bytes kept", cap, MESSAGE_MAX_BYTES, &next);
             let room = level(&format!("{}\n", row(total))).to_string().len();
