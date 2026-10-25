@@ -446,6 +446,46 @@ fn a_child_lane_branches_from_the_parents_head() -> TestResult {
     Ok(())
 }
 
+/// A staging branch an earlier attempt left unmerged is never what the next merge builds on.
+#[test]
+fn a_left_staging_branch_is_not_the_next_merges_base() -> TestResult {
+    let rig = Rig::new("stale-stage")?;
+    let pool = rig.pool(3)?;
+    let parent = pool.claim("s-parent", ClaimBase::Main)?;
+    let generation = generation_of(parent.path(), None)?;
+    let base = ClaimBase::Commit(generation.base.as_str().to_owned());
+    let stale = pool.claim("stage-sub-1", base.clone())?;
+    std::fs::write(stale.path().join("stale.txt"), "stale\n")?;
+    git(stale.path(), &["add", "stale.txt"])?;
+    git(stale.path(), &["commit", "-qm", "an earlier attempt"])?;
+    drop(stale);
+    let child = pool.claim("sub-1", base)?;
+    std::fs::write(child.path().join("child.txt"), "child\n")?;
+    let settled = child.settle(&quiet(), None)?;
+    let Prepared::Merged(staging) = prepare(
+        &pool,
+        "stage-sub-1",
+        &generation,
+        &settled.candidate.commit,
+        None,
+    )?
+    else {
+        return Err("a clean candidate conflicted".into());
+    };
+    let lane = staging.path().ok_or("no staging lane")?;
+    assert_eq!(
+        git(lane, &["rev-parse", "HEAD^1"])?,
+        generation.base.as_str()
+    );
+    assert!(
+        !lane.join("stale.txt").exists(),
+        "the earlier attempt is not merged"
+    );
+    staging.release()?;
+    drop(parent);
+    Ok(())
+}
+
 #[test]
 fn branch_names_reject_flags_and_traversal() {
     for bad in ["", "-x", "a..b", "a b", "a//b", "a/", "a.lock"] {
