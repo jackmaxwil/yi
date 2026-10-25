@@ -785,11 +785,7 @@ impl SubagentHost {
                         map.insert("task".to_owned(), Value::String(id.as_str().to_owned()));
                         map.insert("evidence".to_owned(), Value::String(evidence.clone()));
                     }
-                    let shown_text = if shown.insert(id) {
-                        evidence
-                    } else {
-                        "(the same evidence as the first row naming this task, above)".to_owned()
-                    };
+                    let shown_text = crate::goal::evidence_once(shown.insert(id), evidence);
                     format!(
                         "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{shown_text}",
                         row.text,
