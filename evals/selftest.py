@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT))
 
 import orient_census  # noqa: E402
+import prefix_capture  # noqa: E402
 import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
@@ -47,8 +48,10 @@ import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_kill  # noqa: E402
 import test_s5_kc_ab  # noqa: E402
+import test_stops_on_fail  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
+import test_checker_screen  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -864,6 +867,18 @@ def check_orient_census():
     orient_census.selftest()
 
 
+def check_prefix_capture():
+    """Bet 4 (a): the opening prompt of a real recorded session, read slot by slot and
+    source by source, so a parse that drops the yard undercounts every instruction file."""
+    session = next((FIXTURES / "replay" / "yi").glob("1790472350067_01a0e077-*.jsonl"))
+    prefix = prefix_capture.opening(session)
+    names = [slot for slot, _ in prefix["slots"]]
+    assert names == ["identity/identity", "doctrine/doctrine", "mode/permission"], names
+    assert [(source, trust) for source, trust, _ in prefix["sources"]] == [
+        ("memory", "untrusted")], prefix["sources"]
+    assert prefix["sources"][0][2] == 1068, prefix["sources"]
+
+
 def check_rule_fires():
     """The corpus is labelled; the engine that reads it is pinned in rules_e2e."""
     report = rule_fires.measure(FIXTURES / "rules" / "lanes.jsonl")
@@ -1152,6 +1167,15 @@ def check_judge_replay():
     assert result.testsRun >= 20 and result.wasSuccessful(), report.getvalue()
 
 
+def check_checker_screen():
+    """EXP-B3d's screen: a variant per defect, the oracle-pass catch rule, the op-coverage refusal,
+    and the verdict at both bars and one past each."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_checker_screen)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
+
+
 def check_kill():
     """The kill-test runner: the $30 cap at the limit and a cent past it, the live kill, the
     unpriced ceiling, the flock across threads and processes, the Kimi quota park, run isolation
@@ -1227,13 +1251,24 @@ def check_kc_ab():
     assert result.testsRun >= 11 and result.wasSuccessful(), report.getvalue()
 
 
+def check_stops_on_fail():
+    """EXP-B3c's counter: a stop over a last cell that printed FAIL, over sessions the real binary
+    wrote under faux/faux-1, and the verdict at two tasks a family and at one."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_stops_on_fail)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
+
+
 CHECKS = (
     check_kill,
+    check_stops_on_fail,
     check_kc_ab,
     check_arm_suffix,
     check_surface,
     check_surface_compare,
     check_judge_replay,
+    check_checker_screen,
     check_graph_refiner,
     check_levers,
     check_plugins,
@@ -1247,6 +1282,7 @@ CHECKS = (
     check_pin_probe,
     check_cost_cap,
     check_orient_census,
+    check_prefix_capture,
     check_rule_fires,
     check_command,
     check_install,
