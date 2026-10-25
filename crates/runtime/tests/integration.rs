@@ -14,6 +14,8 @@ mod support;
 mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/worktree.rs"]
+mod worktree;
 
 mod advisor_compaction;
 mod advisor_e2e;
@@ -55,6 +57,8 @@ mod levers;
 mod node;
 mod permission_scope;
 mod plan_arms;
+mod plan_authority;
+mod plan_capacity;
 mod plan_declare;
 mod plan_e2e;
 mod plan_errors;
@@ -70,6 +74,7 @@ mod plan_trace;
 mod plan_verify;
 mod plan_walkthrough;
 mod plan_why;
+mod plan_worktree;
 mod plugin_tree;
 mod prompt_drift;
 mod prompts;

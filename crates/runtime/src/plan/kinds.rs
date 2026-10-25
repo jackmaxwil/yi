@@ -114,11 +114,9 @@ impl PlanToolError {
         match self {
             Self::Arg(error) | Self::Submit(SubmitError::Arg(error)) => error.kind(),
             Self::Op(error) | Self::Submit(SubmitError::Op(error)) => error.kind(),
-            Self::Submit(
-                SubmitError::NoConfirmer { .. }
-                | SubmitError::Declined { .. }
-                | SubmitError::Expired { .. },
-            ) => ToolErrorKind::Denied,
+            Self::Submit(SubmitError::NoConfirmer { .. } | SubmitError::Declined { .. }) => {
+                ToolErrorKind::Denied
+            }
             Self::Submit(SubmitError::Citation(_)) => ToolErrorKind::ToolError,
         }
     }
