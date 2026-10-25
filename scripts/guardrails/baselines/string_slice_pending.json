@@ -1,7 +1,4 @@
 [
-  "ai",
-  "context",
-  "kernel",
-  "mcp-cli",
+  "runtime",
   "tools"
 ]

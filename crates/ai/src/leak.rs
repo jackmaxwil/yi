@@ -1,6 +1,8 @@
 //! A tool call the model wrote as text: GLM's call channel misfires into its prose as
 //! `<tool_call>read<arg_key>path</arg_key><arg_value>/x</arg_value></tool_call>`.
 
+use std::borrow::Cow;
+
 use serde_json::{Map, Value};
 use yi_types::message::{AgentMessage, Content, StopReason};
 
@@ -11,8 +13,8 @@ const KEY_CLOSE: &str = "</arg_key>";
 const VALUE_OPEN: &str = "<arg_value>";
 const VALUE_CLOSE: &str = "</arg_value>";
 
-/// Every well-formed block in the message's text becomes a `ToolCall` block after it; the
-/// text keeps what stood outside them, and a `Stop` becomes `ToolUse`. False when nothing moved.
+/// Every well-formed block in the text becomes a `ToolCall` after it, every call's arguments
+/// pass [`unleak`], and a `Stop` becomes `ToolUse`. False when no block moved.
 pub fn recover_in(output: &mut AgentMessage) -> bool {
     let AgentMessage::Assistant {
         content,
@@ -24,12 +26,19 @@ pub fn recover_in(output: &mut AgentMessage) -> bool {
     };
     let mut calls = Vec::new();
     for block in content.iter_mut() {
-        let Content::Text { text, .. } = block else {
-            continue;
-        };
-        if let Some((kept, found)) = recover(text) {
-            *text = kept;
-            calls.extend(found);
+        match block {
+            Content::Text { text, .. } => {
+                if let Some((kept, found)) = recover(text) {
+                    *text = kept;
+                    calls.extend(found);
+                }
+            }
+            Content::ToolCall { arguments, .. } => {
+                if let Cow::Owned(fixed) = unleak(arguments) {
+                    *arguments = fixed;
+                }
+            }
+            _ => {}
         }
     }
     if calls.is_empty() {
@@ -119,4 +128,34 @@ fn coerce(value: &str) -> Value {
         Ok(parsed) if !parsed.is_string() && !parsed.is_null() => parsed,
         _ => Value::String(value.to_owned()),
     }
+}
+
+/// Incident: 17 v4 `done` calls leaked the markup into a key, `{"done<arg_key>evidence": …}`, or a
+/// value, `{"done": "evidence</arg_key><arg_value>…"}`; the field reads back, the stray word a flag.
+pub fn unleak(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
+    let word = |text: &str| {
+        !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut fixed = Cow::Borrowed(args);
+    for (key, value) in args {
+        let leaked = match key.rsplit_once(KEY_OPEN) {
+            Some((stray, field)) => Some((stray, field, value.clone())),
+            None => (value.as_str())
+                .and_then(|text| text.split_once("</arg_key><arg_value>"))
+                .filter(|(field, _)| word(field))
+                .map(|(field, rest)| (key.as_str(), field, Value::String(rest.to_owned()))),
+        };
+        if let Some((stray, field, value)) = leaked
+            && !field.is_empty()
+            && !fixed.contains_key(field)
+        {
+            let map = fixed.to_mut();
+            map.remove(key);
+            map.insert(field.to_owned(), value);
+            if word(stray) {
+                map.entry(stray).or_insert(Value::Bool(true));
+            }
+        }
+    }
+    fixed
 }
