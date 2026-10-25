@@ -20,6 +20,9 @@ pub struct ExtOptions {
     pub schema_instruction: Option<String>,
     pub context_window: u64,
     pub global_skills: Vec<String>,
+    /// Invariant: false where the depth cap already refuses this session's spawns, so the
+    /// protocol for delegating is never sent to a session that cannot act on it.
+    pub can_delegate: bool,
 }
 
 fn rust_pack() -> Pack {
@@ -40,6 +43,7 @@ pub fn install(options: ExtOptions) -> Host {
         schema_instruction,
         context_window,
         global_skills,
+        can_delegate,
     } = options;
     let mut host = Host::new(cwd.clone());
     host.attach(
@@ -50,6 +54,12 @@ pub fn install(options: ExtOptions) -> Host {
         Slot::new(Rank::Doctrine, "doctrine"),
         crate::doctrine_fragment().to_owned(),
     );
+    if can_delegate {
+        host.attach(
+            Slot::new(Rank::Doctrine, "delegation"),
+            crate::delegation_fragment().to_owned(),
+        );
+    }
     host.attach(
         Slot::new(Rank::Mode, "permission"),
         yi_permission::mode_fragment(mode).to_owned(),
@@ -66,19 +76,17 @@ pub fn install(options: ExtOptions) -> Host {
             .with_global_skills(global_skills),
     ));
     register_packs(&mut host, &cwd, &home);
-    host.register(Box::new(Orchestrate::new(ORCHESTRATE)));
+    if can_delegate {
+        host.register(Box::new(Orchestrate::new(ORCHESTRATE)));
+    }
     host.register(Box::new(Plugins { home }));
     host.register(Box::new(RouteTelemetry::new()));
     host
 }
 
-pub fn narrow(cwd: &Path, home: &Path, identity: &str, mode: PermissionMode) -> Host {
+pub fn narrow(cwd: &Path, home: &Path, identity: &str) -> Host {
     let mut host = Host::new(cwd.to_path_buf());
     host.attach(Slot::new(Rank::Identity, "identity"), identity.to_owned());
-    host.attach(
-        Slot::new(Rank::Mode, "permission"),
-        yi_permission::mode_fragment(mode).to_owned(),
-    );
     host.register(Box::new(
         ProjectResources::new(cwd.to_path_buf(), home.to_path_buf()).without_catalogs(),
     ));

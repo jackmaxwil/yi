@@ -130,9 +130,10 @@ fn body(outcome: &Outcome, full: bool, stepped: Option<&Todo>, out: &mut Vec<Str
     let printed = shown.len().saturating_add(usize::from(stepped.is_some()));
     let hidden = plan.todos.len().saturating_sub(printed);
     if hidden > 0 {
-        out.push(format!(
-            "{hidden} more todos not shown; op view full for all"
-        ));
+        let what = "todos: the window shows ready, running and blocked ones";
+        let all = plan.todos.len();
+        let row = yi_tools::cut_row(printed, all, what, "WINDOW", WINDOW, super::VIEW_ALL);
+        out.push(row);
     }
 }
 
@@ -154,8 +155,11 @@ pub(super) fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>)
     if !outcome.ready.is_empty() {
         out.push(format!("ready: {}", labels(&outcome.ready)));
     }
-    if !outcome.dispatched.is_empty() {
-        out.push(format!("dispatched: {}", labels(&outcome.dispatched)));
+    let child =
+        |label: &&TodoLabel| (outcome.plan.todo(label)).is_some_and(|t| t.delegation.is_some());
+    let dispatched: Vec<TodoLabel> = outcome.dispatched.iter().filter(child).cloned().collect();
+    if !dispatched.is_empty() {
+        out.push(format!("dispatched: {}", labels(&dispatched)));
     }
     if !outcome.held.is_empty() {
         out.push(format!(
@@ -233,10 +237,13 @@ mod tests {
             "{windowed}"
         );
         assert!(windowed.contains("- running build by kid"), "{windowed}");
-        assert!(windowed.contains("2 more todos not shown"), "{windowed}");
+        assert!(
+            windowed.contains("[… 1 of 3 todos: the window"),
+            "{windowed}"
+        );
         let full = render(&outcome, true, None);
         assert!(full.contains("- pending ship"), "{full}");
-        assert!(!full.contains("not shown"), "{full}");
+        assert!(!full.contains("[…"), "{full}");
         Ok(())
     }
 }

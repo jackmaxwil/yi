@@ -15,6 +15,17 @@ pub enum PopupResult {
 pub trait BottomView {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>>;
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult;
+    /// A view with a text field takes a paste there; one without swallows it, so a paste never
+    /// lands in the composer hidden behind the view.
+    fn paste(&mut self, _text: &str) {}
+}
+
+pub(crate) fn one_line(text: &str) -> String {
+    let kept: String = text
+        .chars()
+        .filter(|c| c.is_whitespace() || !c.is_control())
+        .collect();
+    kept.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub struct ListPopup {
@@ -22,6 +33,7 @@ pub struct ListPopup {
     pub query: String,
     pub items: Vec<String>,
     pub selected: usize,
+    pub note: Option<String>,
 }
 
 const MAX_VISIBLE: usize = 8;
@@ -33,6 +45,7 @@ impl ListPopup {
             query: String::new(),
             items,
             selected: 0,
+            note: None,
         }
     }
 
@@ -44,7 +57,6 @@ impl ListPopup {
             .items
             .iter()
             .filter(|item| item.to_lowercase().contains(&query))
-            .take(100)
             .collect();
         if let Some(exact) = found.iter().position(|item| item.to_lowercase() == query) {
             let hit = found.remove(exact);
@@ -85,7 +97,16 @@ impl BottomView for ListPopup {
                 theme.dim_style(),
             )));
         }
+        if let Some(note) = &self.note {
+            let note: String = format!("   {note}").chars().take(width).collect();
+            out.push(Line::from(Span::styled(note, theme.dim_style())));
+        }
         out
+    }
+
+    fn paste(&mut self, text: &str) {
+        self.query.push_str(&one_line(text));
+        self.selected = 0;
     }
 
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult {
@@ -104,7 +125,8 @@ impl BottomView for ListPopup {
             }
             KeyCodeValue::Enter | KeyCodeValue::Tab => {
                 // Completing to the selected item would drop the arguments.
-                if self.prefix == '/' && self.query.contains(' ') {
+                let typo = key.code == KeyCodeValue::Enter && count == 0;
+                if self.prefix == '/' && (self.query.contains(' ') || typo) {
                     return PopupResult::Insert(format!("{}{}", self.prefix, self.query));
                 }
                 match self.filtered().get(self.selected) {

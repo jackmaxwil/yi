@@ -306,11 +306,13 @@ pub fn report(plan: &Plan, records: &[PlanOpRecord]) -> Report {
             bucket(outcome, was, record.at.saturating_sub(*since));
         }
         if let Some(now) = &record.to {
-            outcome.ended = terminal(now).then(|| now.clone());
-            outcome.resolution = record
-                .extra
-                .get("resolution")
-                .and_then(|value| serde_json::from_value(value.clone()).ok());
+            // Incident: an edge added to a done todo records `to: done` again and reset its
+            // resolution to none; only a record that moves the state ends the todo anew.
+            if standing.get(&key).is_none_or(|(was, _)| was != now) {
+                outcome.ended = terminal(now).then(|| now.clone());
+                outcome.resolution = (record.extra.get("resolution"))
+                    .and_then(|value| serde_json::from_value(value.clone()).ok());
+            }
             standing.insert(key, (now.clone(), record.at));
         }
     }
