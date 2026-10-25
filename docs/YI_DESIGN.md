@@ -625,7 +625,12 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
-  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A `root` child the
+  `role="reader"` (D308); a juror and a service are `root`, and so is a plan delegation unless it
+  reads only: spec role `reader`, an accept that is not a command, no isolation, tools within
+  `read` and `grep`, and no `kernel://`, `family://` or directory context. That one spawns
+  `role="reader"`, its context the partition and its schema (the declared output's, else the
+  contract's schema item) inlined; a Writer or a command-accepted delegation stays `root` (#937).
+  A `root` child the
   depth cap leaves unable to spawn (its own depth has reached `max_depth`, so every one at the
   default `rlm.maxDepth` of 1) is a leaf: no `orchestrate` protocol, and no `delegation` fragment,
   which holds the working model's delegation rules, Planning's lift rule and the RLM children

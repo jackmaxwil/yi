@@ -71,6 +71,7 @@ mod plan_journal;
 mod plan_ledger;
 mod plan_ops;
 mod plan_program;
+mod plan_readers;
 mod plan_recovery;
 mod plan_timer;
 mod plan_trace;
