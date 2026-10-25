@@ -680,9 +680,7 @@ pub(super) fn fold_child(
         } => {
             fold(&mut state.streaming, assistant_message_event);
             if let Some(AgentMessage::Assistant { content, .. }) = &state.streaming {
-                state.cell.answer = Some(crate::cell::tail_bounded(crate::transcript::text_of(
-                    content,
-                )));
+                state.cell.keep_answer(crate::transcript::text_of(content));
                 return true;
             }
             false
@@ -733,7 +731,6 @@ impl App {
             None => ToolCell {
                 name: tool_name.clone(),
                 call_id: tool_call_id.clone(),
-                intent: None,
                 status: ToolStatus::Running,
                 summary: ToolCell::summary_of(&tool_name, ""),
                 digest: None,
@@ -753,18 +750,16 @@ impl App {
             result.terminate == Some(true),
         );
         self.commit_finished_tasks();
-        self.intent = None;
     }
 
     fn count_kind(&mut self, name: &str) {
         let verb = match name {
-            "read" | "ls" | "document" | "get_context" => "read",
-            "grep" | "glob" | "find" => "searched",
-            "web_search" | "fetch" => "fetched",
+            "read" | "get_context" => "read",
+            "grep" => "searched",
             "edit" | "write" => "edited",
             "bash" => "ran",
             "ipython" => "computed",
-            "todo" | "plan" => return,
+            "todo" | "plan" | "answer" | "ask_user" | "annotate" => return,
             _ => "used",
         };
         self.turn_tools = self.turn_tools.saturating_add(1);
@@ -788,7 +783,7 @@ impl App {
         } else {
             ToolStatus::Done
         };
-        cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
+        cell.digest = ToolCell::digest_of(&cell.name, text, &details, is_error);
         cell.preview = result_preview(text, &details);
         if cell.name == "ask_user" && !is_error && terminate {
             cell.digest = None;
