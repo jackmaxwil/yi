@@ -29,7 +29,7 @@ pub(super) fn path_of_patch(patch: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> {
+pub(super) fn replayed_updates(message: &AgentMessage) -> Vec<AcpSessionUpdate> {
     match message {
         AgentMessage::Assistant { content, .. } => content
             .iter()
