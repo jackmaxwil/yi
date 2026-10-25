@@ -5,9 +5,9 @@ commit, and the ratchet then hid 865,664 bytes of growth across 20 PRs because
 nothing checked the baseline itself. The 9 MiB cap below is checked independently of
 the baseline so the baseline can never be edited past it, and the cap itself moves only
 with a `decision:` line: it went 7, 8, 9 MiB, each time the baseline reached it."""
-import json, os, platform, re, shutil, subprocess, sys, pathlib, tempfile
+import json, platform, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import BASE, DIST_BIN, fail, fork, no_fork
+from _common import BASE, DIST_BIN, ROOT, fail, fork, no_fork, scratch_repo
 import check_changes
 
 HARD_CAP_BYTES = 9_437_184  # 9 MiB: D249 set 8, raised for the console workbench (#1354)
@@ -48,26 +48,15 @@ def fork_cap(base):
 
 def scratch_cases():
     """The cap check run in a scratch repo cut from main: a raise is red, a decision greens it."""
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-binary-"))
-    env = {k: v for k, v in os.environ.items() if k != "CARGO_TARGET_DIR"}
-    run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True, text=True, env=env)
-    git_ = lambda *a: run("git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
-    gate = tmp / SELF
+    # The macOS baseline sits more than the allowance under the binary, so only Linux reads green.
+    seed = {f"{BASE.relative_to(ROOT)}/{name}": f'{{"max_bytes": {size}}}\n'
+            for name, size in (("binary_size_budget.json", 1_000), ("binary_size_budget_linux.json", 20_000))}
+    seed["target/dist/yi"] = b"\0" * 20_000
     host = f"import platform, runpy, sys; sys.argv = [{SELF!r}]; platform.system = lambda: %r; runpy.run_path({SELF!r}, run_name='__main__')"
-    verdict = lambda system="Linux": run(sys.executable, "-c", host % system)
     bad = []
-    try:
-        shutil.copytree(pathlib.Path(__file__).parent, gate.parent, ignore=shutil.ignore_patterns("baselines", "__pycache__"))
-        (gate.parent / "baselines").mkdir()
-        # The macOS baseline sits more than the allowance under the binary, so only Linux reads green.
-        for name, size in (("binary_size_budget.json", 1_000), ("binary_size_budget_linux.json", 20_000)):
-            (gate.parent / "baselines" / name).write_text(f'{{"max_bytes": {size}}}\n')
-        (tmp / "target/dist").mkdir(parents=True)
-        (tmp / "target/dist/yi").write_bytes(b"\0" * 20_000)
-        git_("init", "-q", "-b", "main")
-        git_("add", "-A")
-        git_("commit", "-q", "-m", "seed")
-        git_("checkout", "-q", "-b", "topic")
+    with scratch_repo("yi-binary-", seed) as (tmp, run):
+        verdict = lambda system="Linux": run(sys.executable, "-c", host % system)
+        gate = tmp / SELF
         out = verdict()
         if out.returncode != 0 or "binary_size_budget_linux.json 20000" not in out.stdout:
             bad.append(f"an unmoved cap on Linux read: {out.stdout.strip()}")
@@ -83,8 +72,6 @@ def scratch_cases():
         out = verdict()
         if out.returncode != 0:
             bad.append(f"a cap raised with a decision read red: {out.stdout.strip()}")
-    finally:
-        shutil.rmtree(tmp)
     return bad
 
 
