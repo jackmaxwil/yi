@@ -251,3 +251,49 @@ fn a_window_keeps_plan_ops_by_their_own_stamp() -> TestResult {
     }
     Ok(())
 }
+
+/// Dies when the tally counts an op the engine would refuse: a repeated or over-cap record makes
+/// the journal unreadable whole, as plan recovery does, and a torn tail is one bad line.
+#[test]
+fn a_journal_the_engine_refuses_counts_no_op_and_a_torn_tail_is_one_bad_line() -> TestResult {
+    use yi_runtime::plan::journal::RECORD_CAP;
+    use yi_runtime::plan::ops::PlanEngine;
+    use yi_runtime::plan::store::{JOURNAL_NAME, PlanStore};
+    use yi_runtime::rollup::{Scan, fold_journals};
+    for (case, ops, bad, unreadable) in [
+        ("repeated", 0, 0, 1),
+        ("capped", 0, 0, 1),
+        ("torn", 1, 1, 0),
+    ] {
+        let dir = Scratch::new("yi-rollup-journal-damage")?;
+        open_plan(
+            &PlanEngine::new(
+                PlanStore::open(dir.to_path_buf())?,
+                Arc::new(crate::plan_ops::Stub::default()),
+            ),
+            serde_json::json!([{"label": "pad"}]),
+        )?;
+        let journal = std::fs::read_dir(&*dir)?
+            .flatten()
+            .map(|entry| entry.path().join(JOURNAL_NAME))
+            .find(|path| path.is_file())
+            .ok_or("the engine wrote no journal")?;
+        let text = std::fs::read_to_string(&journal)?;
+        let record = text.lines().next().ok_or("the journal holds no record")?;
+        let tail = match case {
+            "repeated" => format!("{record}\n"),
+            "capped" => format!("{}\n", "x".repeat(RECORD_CAP + 1)),
+            _ => record.chars().take(record.len() / 2).collect(),
+        };
+        std::fs::write(&journal, format!("{text}{tail}"))?;
+        let mut found = Scan::default();
+        fold_journals(&mut found, &dir, 0);
+        let got = (
+            found.plan_ops.values().sum::<u64>(),
+            found.bad_lines,
+            found.unreadable,
+        );
+        assert_eq!(got, (ops, bad, unreadable), "{case}");
+    }
+    Ok(())
+}
