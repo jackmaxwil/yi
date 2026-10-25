@@ -140,7 +140,7 @@ impl App {
                     } else {
                         PaneContent::Diff { path, source }
                     };
-                    pane.scroll_from_bottom = 0;
+                    pane.scroll_from_bottom = usize::MAX;
                 }
             }
             Err(error) => self.note(&format!("{path}: {error}")),

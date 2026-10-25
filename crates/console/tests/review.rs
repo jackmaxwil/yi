@@ -1,6 +1,7 @@
 //! The Review pane: what a lane's branch would land, and what a turn or a session changed.
 
-use yi_console::model::{FileDiff, ReviewScope, SessionDiff};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use yi_console::model::{FileDiff, PaneContent, ReviewScope, SessionDiff, SessionId, Zone};
 use yi_tui::colors::{ColorTier, Theme};
 
 fn text(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
@@ -114,4 +115,136 @@ fn each_hunk_is_asked_why_at_its_first_changed_line_and_the_chain_shows_under_it
     let (b, chain) = (at("▸ src/b.rs"), at("↳ L2 1a2b3c4d5e6f"));
     assert!(at("● src/a.rs").is_some(), "{rows:#?}");
     assert!(b.is_some() && chain == b.map(|b| b + 1), "{rows:#?}");
+}
+
+const MULTIFILE: &str = include_str!("fixtures/review-multifile.diff");
+
+/// The fixture's six patches as the edits a session made, each counted from its own lines.
+fn multifile_diff() -> SessionDiff {
+    let mut diff = SessionDiff::default();
+    for section in MULTIFILE.split("diff --git ").skip(1) {
+        let path = section
+            .lines()
+            .find_map(|line| line.strip_prefix("+++ b/"))
+            .unwrap_or_default();
+        let count = |sign: char, header: &str| {
+            let rows = section.lines().filter(|line| line.starts_with(sign));
+            rows.filter(|line| !line.starts_with(header)).count() as u64
+        };
+        let file = FileDiff {
+            patch: format!("diff --git {section}"),
+            added: count('+', "+++"),
+            removed: count('-', "---"),
+            tracked: true,
+            serving: None,
+            turn: 0,
+        };
+        diff.files.push((path.to_owned(), file));
+    }
+    diff
+}
+
+fn console() -> (yi_console::app::App, yi_console::client::Outbound) {
+    let (events, _received) = yi_console::client::events();
+    let socket = std::env::temp_dir().join("yi-review-no-daemon.sock");
+    let (outbound, _threads) = yi_console::client::spawn(socket, events);
+    let app = yi_console::app::App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+    (app, outbound)
+}
+
+fn press(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, code: KeyCode) {
+    let key = KeyEvent::new(code, KeyModifiers::NONE);
+    app.handle_event(outbound, ratatui::crossterm::event::Event::Key(key));
+}
+
+fn alt(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, c: char) {
+    let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT);
+    app.handle_event(outbound, ratatui::crossterm::event::Event::Key(key));
+}
+
+/// The visible rows of the pane whose title starts with `title`, at 100 by 16.
+fn pane_rows(app: &mut yi_console::app::App, title: &str) -> Vec<String> {
+    let area = ratatui::layout::Rect::new(0, 0, 100, 16);
+    let theme = app.theme;
+    let view = yi_console::render::compute_view(app, area, &theme);
+    let pane = view.panes.iter().find(|pane| pane.title.starts_with(title));
+    pane.map_or_else(Vec::new, |pane| text(&pane.lines))
+}
+
+/// Dies with a Review taller than its pane opening on its last rows: the file list, the `▸`
+/// and the key hint sat above the window, and `↓` moved a selection nobody could see.
+#[test]
+fn a_review_taller_than_its_pane_opens_on_its_file_list() {
+    let (mut app, outbound) = console();
+    let session = SessionId("s-a".to_owned());
+    if let Some(pane) = app.state.focused_pane_mut() {
+        pane.content = PaneContent::Session {
+            session: Some(session.clone()),
+            chat: None,
+        };
+    }
+    app.state.zone = Zone::Panes;
+    app.state.diffs.insert(session, multifile_diff());
+    alt(&mut app, &outbound, 'g');
+    let rows = pane_rows(&mut app, "Review");
+    let files = [
+        "crates/console/src/app/chat.rs",
+        "crates/console/src/app/diffs.rs",
+        "crates/console/src/app/notebook.rs",
+        "crates/console/src/model.rs",
+        "crates/console/src/panes.rs",
+        "docs/changes/2026-10-12-notebook-cells-persist.md",
+    ];
+    let row = |at: usize| rows.get(at).map_or("", String::as_str);
+    let base = "no branch diff from git, so this session's edits";
+    assert_eq!(row(0), base, "{rows:#?}");
+    for (at, path) in files.iter().enumerate() {
+        let mark = if at == 0 { "▸" } else { "●" };
+        assert!(
+            row(at + 1).starts_with(&format!("{mark} {path}  +")),
+            "{rows:#?}"
+        );
+    }
+    assert!(row(7).starts_with("s scope · ↑/↓ file"), "{rows:#?}");
+    press(&mut app, &outbound, KeyCode::Down);
+    let rows = pane_rows(&mut app, "Review");
+    let row = |at: usize| rows.get(at).map_or("", String::as_str);
+    assert!(
+        row(1).starts_with("● crates/console/src/app/chat.rs"),
+        "{rows:#?}"
+    );
+    assert!(
+        row(2).starts_with("▸ crates/console/src/app/diffs.rs"),
+        "{rows:#?}"
+    );
+    outbound.shutdown();
+}
+
+/// Dies with a README opened through `md` showing its last page first; the first scroll down
+/// from the top must move the view, not spend itself on the pin.
+#[test]
+fn a_markdown_viewer_opens_on_its_first_page() {
+    let (mut app, outbound) = console();
+    let readme = concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md");
+    app.state.zone = Zone::Panes;
+    alt(&mut app, &outbound, '/');
+    for c in format!("md {readme}").chars() {
+        press(&mut app, &outbound, KeyCode::Char(c));
+    }
+    press(&mut app, &outbound, KeyCode::Enter);
+    let rows = pane_rows(&mut app, "¶ README.md");
+    let row = |at: usize| rows.get(at).map_or("", String::as_str);
+    assert_eq!(row(0), "Yi", "{rows:#?}");
+    assert!(
+        row(3).starts_with("A coding agent in one Rust binary"),
+        "{rows:#?}"
+    );
+    alt(&mut app, &outbound, 'j');
+    let scrolled = pane_rows(&mut app, "¶ README.md");
+    assert_eq!(
+        scrolled.first(),
+        rows.get(3),
+        "the first scroll moves three rows down"
+    );
+    outbound.shutdown();
 }

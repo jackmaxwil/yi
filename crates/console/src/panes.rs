@@ -193,6 +193,33 @@ pub fn review_view(
     (title, lines)
 }
 
+/// Invariant: `usize::MAX` holds a view at its top while its rows grow, and a scroll down from
+/// there leaves MAX less the rows, counted down from the top until the next draw.
+pub(crate) fn windowed(
+    all: &[Line<'static>],
+    from_bottom: &mut usize,
+    visible: usize,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let total = all.len();
+    let highest = total.saturating_sub(visible);
+    let down = usize::MAX.saturating_sub(*from_bottom);
+    // Scrolling past the top would bank rows a later scroll down must first spend.
+    if down != 0 {
+        *from_bottom = if down < usize::MAX / 2 {
+            highest.saturating_sub(down)
+        } else {
+            (*from_bottom).min(highest)
+        };
+    }
+    let top = highest.saturating_sub((*from_bottom).min(highest));
+    let rows = all.get(top..total.min(top.saturating_add(visible)));
+    let extent = (total > visible).then_some((total, top));
+    (
+        rows.map(<[Line<'static>]>::to_vec).unwrap_or_default(),
+        extent,
+    )
+}
+
 const CODE_ROWS: usize = 24;
 const STREAM_ROWS: usize = 40;
 const RESULT_ROWS: usize = 20;
