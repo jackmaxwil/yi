@@ -90,9 +90,10 @@ pub struct TaskState {
     pub(crate) started: Instant,
     /// When the child reached a terminal state, so the strike can sweep.
     pub(crate) finished: Option<Instant>,
-    /// The call id of the kernel cell running when the child appeared, if one was.
+    /// The call id of the kernel cell that spawned the child, the one a finished card waits on.
     pub(crate) born_under: Option<String>,
     pub(crate) session: Option<yi_runtime::ChildFeed>,
+    pub(crate) rows: crate::cell::AnswerRows,
 }
 
 pub struct App {
@@ -159,6 +160,10 @@ pub struct App {
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
     pub(crate) committed_tasks: HashSet<String>,
+    /// Cards dropped by a reset or the finished-card cap: their late mail stays quiet, and the
+    /// roster brings one back only running.
+    pub(crate) retired_tasks: HashSet<String>,
+    pub(crate) dropped_tasks: usize,
     pub(crate) steering: Vec<String>,
     pub(crate) running: bool,
     pub(crate) esc_armed_at: Option<Instant>,
@@ -287,6 +292,8 @@ impl App {
             tasks: HashMap::new(),
             task_order: Vec::new(),
             committed_tasks: HashSet::new(),
+            retired_tasks: HashSet::new(),
+            dropped_tasks: 0,
             steering: Vec::new(),
             running: false,
             esc_armed_at: None,
@@ -601,14 +608,6 @@ impl App {
             .0
     }
 
-    pub(crate) fn reset_transcript(&mut self) {
-        self.history.clear();
-        self.pending_commit.clear();
-        self.reset_live();
-        self.live_tools.clear();
-        self.user_turns = 0;
-    }
-
     pub fn take_title(&mut self) -> Option<String> {
         self.pending_title.take()
     }
@@ -655,9 +654,7 @@ impl App {
                 match attribution {
                     Attribution::Unproven | Attribution::Host(_) => {
                         let carded = text.starts_with("[subagent ")
-                            && self
-                                .tasks
-                                .keys()
+                            && (self.tasks.keys().chain(&self.retired_tasks))
                                 .any(|id| text.contains(&format!("({id})")));
                         if !carded {
                             self.commit_cell(&Cell::Notice { text });
