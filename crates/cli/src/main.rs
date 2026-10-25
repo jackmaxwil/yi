@@ -545,7 +545,7 @@ fn build_session(
 }
 
 fn plans_dir(workspace: &std::path::Path) -> std::path::PathBuf {
-    configured_plans_dir(workspace).unwrap_or_else(|| workspace.join(yi_runtime::plan::PLANS_DIR))
+    yi_runtime::plan::resolve_plans_dir(configured_plans_dir(workspace), workspace)
 }
 
 /// `plans.dir`, relative to the workspace root unless absolute. Unset leaves
@@ -952,7 +952,8 @@ fn mcp_fast_path() {
             .mcp
             .as_ref()
             .and_then(|mcp| mcp.token_store.as_deref());
-        std::process::exit(yi_mcp_cli::run(&raw, token_store));
+        let version = env!("ARCHITECTURE_VERSION");
+        std::process::exit(yi_mcp_cli::run(&raw, token_store, version));
     }
 }
 

@@ -1,0 +1,49 @@
+{
+  "managed-kimi-code.test.ts:22-40": {
+    "data": [
+      {
+        "id": "kimi-for-coding",
+        "limit": { "context": 262144 },
+        "modalities": { "input": ["text", "image", "video"], "output": ["text"] },
+        "reasoning": { "type": "both" },
+        "display_name": "Kimi for Coding"
+      },
+      {
+        "id": "kimi-k2.5",
+        "limit": { "context": 250000 },
+        "supports_tool_use": false
+      }
+    ]
+  },
+  "managed-kimi-code.test.ts:843-866": {
+    "data": [
+      {
+        "id": "kimi-for-coding",
+        "limit": { "context": 262144 },
+        "modalities": { "input": ["text", "image", "video"], "output": ["text"] },
+        "reasoning": { "type": "only" },
+        "tools": { "dynamic_load": true },
+        "display_name": "Kimi For Coding"
+      },
+      {
+        "id": "kimi-plain",
+        "limit": { "context": 128000 },
+        "reasoning": { "type": "none" }
+      },
+      {
+        "id": "kimi-toggle",
+        "limit": { "context": 128000 },
+        "reasoning": { "type": "both" }
+      }
+    ]
+  },
+  "managed-kimi-code.ts:460-461": {
+    "data": [
+      {
+        "id": "kimi-efforts",
+        "limit": { "context": 262144 },
+        "reasoning": { "type": "only", "effort": { "valid": ["low", "high", "max"], "default": "max" } }
+      }
+    ]
+  }
+}
