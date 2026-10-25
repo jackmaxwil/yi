@@ -1,0 +1,8 @@
+{
+  "kind": "device-code",
+
+  "client_id": "REPLACE_ME",
+  "device_authorization": "https://REPLACE_ME/oauth/device_authorization",
+  "token": "https://REPLACE_ME/oauth/token",
+  "api_base": "https://REPLACE_ME/v1"
+}
