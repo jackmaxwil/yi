@@ -268,7 +268,7 @@ async fn follow(
 ) -> i32 {
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
-    let (mut last_stop, mut said_anything, mut gap) = (None, false, false);
+    let (mut last_stop, mut said_anything, mut due) = (None, false, false);
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -313,7 +313,7 @@ async fn follow(
             if schema.is_some() {
                 answer.push_str(&chunk);
             } else if !json {
-                let apart = if std::mem::take(&mut gap) { "\n\n" } else { "" };
+                let apart = if std::mem::take(&mut due) { "\n\n" } else { "" };
                 print!("{apart}{chunk}");
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
@@ -330,7 +330,7 @@ async fn follow(
         {
             let text = yi_types::message::has_text(content);
             said_anything |= text;
-            gap |= text;
+            due |= text;
             last_stop = Some((*stop_reason, text));
             said.push(std::mem::take(&mut answer));
         }

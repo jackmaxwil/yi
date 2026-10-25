@@ -209,7 +209,9 @@ fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
         ));
     }
     if args.no_deltas && !args.json {
-        return Err(lexopt::Error::Custom("--no-deltas needs --json".into()));
+        return Err(lexopt::Error::Custom(
+            "--no-deltas needs `yi ask --json`".into(),
+        ));
     }
     // The console, headless too, is a client of a daemon that never sees the cassette, and
     // `yi serve` does not hand it to its workers (#943).
