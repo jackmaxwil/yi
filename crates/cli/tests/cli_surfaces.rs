@@ -1529,6 +1529,13 @@ fn help_prints_the_command_table_and_an_unknown_flag_still_exits_two() -> TestRe
     Ok(())
 }
 
+fn shipped_completion(shell: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(format!(
+        "{}/../../completions/yi.{shell}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
 /// The packaged completion files are written by hand; `yi --help` is the table dispatch reads.
 #[test]
 fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult {
@@ -1537,12 +1544,6 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     let (verbs, flags) = help_table(&stdout(&workspace.yi(&["--help"])?));
     let want: (BTreeSet<String>, BTreeSet<String>) =
         (verbs.into_iter().collect(), flags.into_iter().collect());
-    let read = |name: &str| {
-        std::fs::read_to_string(format!(
-            "{}/../../completions/yi.{name}",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-    };
     let quoted = |text: &str, key: &str| -> BTreeSet<String> {
         text.lines()
             .find_map(|line| line.trim().strip_prefix(key))
@@ -1551,12 +1552,12 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
             .map(|words| words.split_whitespace().map(str::to_owned).collect())
             .unwrap_or_default()
     };
-    let bash = read("bash")?;
+    let bash = shipped_completion("bash")?;
     let bash = (
         quoted(&bash, "local commands"),
         quoted(&bash, "local flags"),
     );
-    let zsh = read("zsh")?;
+    let zsh = shipped_completion("zsh")?;
     let block = |open: &str| -> BTreeSet<String> {
         zsh.split_once(open)
             .and_then(|(_, rest)| rest.split_once("\n    )"))
@@ -1570,7 +1571,7 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
             .unwrap_or_default()
     };
     let zsh = (block("commands=(\n"), block("flags=(\n"));
-    let fish = read("fish")?;
+    let fish = shipped_completion("fish")?;
     let after = |key: &str| -> BTreeSet<String> {
         fish.lines()
             .filter_map(|line| line.split_once(key))
@@ -1610,13 +1611,7 @@ fn help_and_completions_name_every_stats_axis_the_parser_accepts() -> TestResult
         .unwrap_or_default();
     assert!(axes.len() >= 5, "refusal lists the axes: {refusal}");
     let help = stdout(&workspace.yi(&["--help"])?);
-    let shipped = |name: &str| {
-        std::fs::read_to_string(format!(
-            "{}/../../completions/yi.{name}",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-    };
-    let (zsh, fish) = (shipped("zsh")?, shipped("fish")?);
+    let (zsh, fish) = (shipped_completion("zsh")?, shipped_completion("fish")?);
     let rows = [
         help.lines()
             .find(|line| line.trim_start().starts_with("--by ")),
