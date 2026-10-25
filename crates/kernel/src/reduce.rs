@@ -1,14 +1,10 @@
 use serde_json::Value;
 use yi_types::image::{has_magic_number, strict_base64_head};
 use yi_types::kernel::{
-    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelDiffDisplay, KernelError,
-    KernelSentAgentMessage,
+    ExecuteResult, ExecuteStatus, JupyterMessage, KernelAttachment, KernelError,
 };
 
-use crate::{
-    AGENT_MESSAGE_DISPLAY_MIME, ATTACHMENT_DISPLAY_MIME, DIFF_DISPLAY_MIME,
-    MAX_ATTACHMENT_DATA_CHARS,
-};
+use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
 
 #[derive(Debug)]
 pub struct CellState {
@@ -21,9 +17,7 @@ pub struct CellState {
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub result: Option<String>,
-    pub diffs: Vec<KernelDiffDisplay>,
     pub attachments: Vec<KernelAttachment>,
-    pub sent_agent_messages: Vec<KernelSentAgentMessage>,
     pub status: ExecuteStatus,
     pub error: Option<KernelError>,
 }
@@ -40,9 +34,7 @@ impl CellState {
             stdout_truncated: false,
             stderr_truncated: false,
             result: None,
-            diffs: Vec::new(),
             attachments: Vec::new(),
-            sent_agent_messages: Vec::new(),
             status: ExecuteStatus::Ok,
             error: None,
         }
@@ -72,10 +64,6 @@ fn append_capped(target: &mut String, truncated: &mut bool, text: &str, max_char
     }
 }
 
-pub fn parse_diff_display(payload: &Value) -> Option<KernelDiffDisplay> {
-    serde_json::from_value(payload.clone()).ok()
-}
-
 pub enum AttachmentParse {
     Attachment(KernelAttachment),
     /// Well-formed but refused; the reason is what the cell's stderr tells the model.
@@ -102,11 +90,6 @@ pub fn parse_attachment_display(payload: &Value) -> AttachmentParse {
         );
     }
     AttachmentParse::Attachment(attachment)
-}
-
-pub fn parse_sent_agent_message(payload: &Value) -> Option<KernelSentAgentMessage> {
-    let message: KernelSentAgentMessage = serde_json::from_value(payload.clone()).ok()?;
-    matches!(message.delivery_status.as_str(), "delivered" | "queued").then_some(message)
 }
 
 pub fn parent_msg_id(message: &JupyterMessage) -> Option<&str> {
@@ -165,12 +148,6 @@ pub fn reduce(
         }
         "display_data" | "update_display_data" => {
             let data = message.content.get("data");
-            if let Some(diff) = data
-                .and_then(|data| data.get(DIFF_DISPLAY_MIME))
-                .and_then(parse_diff_display)
-            {
-                cell.diffs.push(diff);
-            }
             if let Some(payload) = data.and_then(|data| data.get(ATTACHMENT_DISPLAY_MIME)) {
                 match parse_attachment_display(payload) {
                     AttachmentParse::Attachment(attachment) => cell.attachments.push(attachment),
@@ -186,12 +163,6 @@ pub fn reduce(
                     }
                     AttachmentParse::Malformed => {}
                 }
-            }
-            if let Some(sent) = data
-                .and_then(|data| data.get(AGENT_MESSAGE_DISPLAY_MIME))
-                .and_then(parse_sent_agent_message)
-            {
-                cell.sent_agent_messages.push(sent);
             }
             Reduction::Continue
         }
@@ -247,9 +218,7 @@ pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult
         stdout,
         stderr,
         result,
-        diffs: cell.diffs,
         attachments: cell.attachments,
-        sent_agent_messages: cell.sent_agent_messages,
         status,
         error: cell.error,
         duration_ms,
