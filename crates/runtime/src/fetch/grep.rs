@@ -274,8 +274,8 @@ impl Resolver {
     ) -> Result<String, FetchError> {
         let text = self.fetch(url)?.text;
         let mut hits = Hits::default();
-        for (at, line) in text.lines().enumerate().filter(|(_, line)| hit(line)) {
-            hits.take(offset, || format!("{url}:{}:", at.saturating_add(1)), line);
+        for (line, n) in text.lines().zip(1usize..).filter(|(line, _)| hit(line)) {
+            hits.take(offset, || format!("{url} line {n}:"), line);
         }
         let searched = format!("{} lines of {url}", text.lines().count());
         let named = ("address grep", "the address for its whole text");
