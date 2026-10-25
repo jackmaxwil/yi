@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
+use yi_types::message::AgentMessage;
 use yi_types::url::{Scheme, Url};
 
 use crate::session::{AgentSession, SessionConfig};
@@ -466,14 +467,56 @@ fn seen_recently(host: &super::SubagentHost, text: &str) -> bool {
     seen.insert(crate::fetch::content_hash(text), now).is_some()
 }
 
-pub(crate) fn seed(child: &AgentSession, partition: Option<String>) {
-    let Some(text) = partition else {
-        return;
+/// Cut where compaction cuts: typed turns, a cut point, the window less compaction's reserve.
+pub(super) fn seed_for_fork(
+    parent: &dyn Fn() -> Vec<AgentMessage>,
+    fork: super::Fork,
+    window: u64,
+) -> Vec<AgentMessage> {
+    let wanted = match fork {
+        super::Fork::None => return Vec::new(),
+        super::Fork::All => None,
+        super::Fork::LastN(turns) => Some(usize::try_from(turns).unwrap_or(usize::MAX)),
     };
-    let message = crate::session::task(&text);
-    if let Some(store) = child.store() {
-        let _kept_in_memory_either_way =
-            yi_session::lock_session(&store).append_message("main", message.clone());
+    let parent = parent();
+    let start = wanted.map_or(0, |wanted| {
+        let typed: Vec<usize> = parent
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| match message {
+                AgentMessage::User {
+                    attribution,
+                    timestamp,
+                    ..
+                } => attribution.reads_as_typed(*timestamp),
+                _ => false,
+            })
+            .map(|(index, _)| index)
+            .collect();
+        typed
+            .len()
+            .checked_sub(wanted)
+            .and_then(|index| typed.get(index).copied())
+            .unwrap_or(0)
+    });
+    let tail = parent.get(start..).unwrap_or_default();
+    let reserve = yi_context::Settings::default().reserve_tokens.0;
+    let budget = yi_context::Tokens(window.saturating_sub(reserve));
+    crate::compaction::fitting_start(tail, budget)
+        .map_or_else(Vec::new, |first| tail.iter().skip(first).cloned().collect())
+}
+
+/// Invariant: store before memory, so a respawn that reloads the store still opens on it.
+pub(crate) fn seed(child: &AgentSession, mut seed: Vec<AgentMessage>, partition: Option<String>) {
+    seed.extend(partition.map(|text| crate::session::task(&text)));
+    if seed.is_empty() {
+        return;
     }
-    child.seed_messages(vec![message]);
+    if let Some(store) = child.store() {
+        let mut store = yi_session::lock_session(&store);
+        for message in &seed {
+            let _kept_in_memory_either_way = store.append_message("main", message.clone());
+        }
+    }
+    child.seed_messages(seed);
 }
