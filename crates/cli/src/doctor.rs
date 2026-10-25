@@ -234,7 +234,7 @@ fn ledger_roots_exist(site: &Site) -> Finding {
 }
 
 fn lanes_consistent(site: &Site) -> Finding {
-    use yi_runtime::lane::{LaneError, Pool, SlotView, land::lane_line};
+    use yi_runtime::lane::{LaneError, Pool, SlotView, TreeState, land::lane_line};
     let pool = match Pool::open(&site.home, &site.cwd, crate::lanes::lane_slots()) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return ok("not a repository"),
@@ -244,13 +244,26 @@ fn lanes_consistent(site: &Site) -> Finding {
         Ok(views) => views,
         Err(error) => return fail(error.to_string()),
     };
-    let mut fixed = Vec::new();
-    let mut left = Vec::new();
+    let (mut fixed, mut left, mut kept) = (Vec::new(), Vec::new(), Vec::new());
     for view in &views {
-        let SlotView::Orphan { slot, .. } = view else {
+        let SlotView::Orphan { slot, holder, .. } = view else {
             continue;
         };
-        if site.fix {
+        // Invariant: a safe repair loses nothing; uncommitted work is reaped only by name.
+        let lossless = matches!(
+            holder.tree,
+            TreeState::Known {
+                modified: 0,
+                untracked: 0,
+                ..
+            }
+        );
+        if !lossless {
+            kept.push(format!(
+                "{}; `doctor --fix` keeps it",
+                lane_line(view, None)
+            ));
+        } else if site.fix {
             match pool.reap(*slot) {
                 Ok(note) => fixed.push(note),
                 Err(error) => left.push(format!("{}: {error}", lane_line(view, None))),
@@ -262,13 +275,19 @@ fn lanes_consistent(site: &Site) -> Finding {
     if !left.is_empty() {
         return fail(left.join("; "));
     }
-    if !fixed.is_empty() {
-        return Finding {
-            status: Status::Fixed,
-            detail: fixed.join("; "),
-        };
+    let status = if fixed.is_empty() {
+        Status::Ok
+    } else {
+        Status::Fixed
+    };
+    fixed.extend(kept);
+    if fixed.is_empty() {
+        return ok(format!("{} slot(s) consistent", views.len()));
     }
-    ok(format!("{} slot(s) consistent", views.len()))
+    Finding {
+        status,
+        detail: fixed.join("; "),
+    }
 }
 
 /// Never a failure: a session's history is not install health and the user cannot clear it.
