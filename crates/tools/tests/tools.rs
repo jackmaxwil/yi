@@ -11,7 +11,7 @@ use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
+pub(crate) fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
     Scratch::new(&format!("yi-tools-{tag}"))
 }
 
@@ -22,13 +22,13 @@ fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
         .collect()
 }
 
-fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
+pub(crate) fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
     yi_tools::hashline::tool::HashlineReadTool::new(
         yi_tools::hashline::tool::shared_hashline_state(),
     )
 }
 
-fn output_text(output: &yi_tools::ToolOutput) -> String {
+pub(crate) fn output_text(output: &yi_tools::ToolOutput) -> String {
     output
         .result
         .content
@@ -4036,7 +4036,7 @@ fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
     Ok(())
 }
 
-fn view_fixture(name: &str) -> PathBuf {
+pub(crate) fn view_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}"))
 }
 

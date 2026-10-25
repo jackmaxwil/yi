@@ -2,7 +2,9 @@ use std::error::Error;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use yi_tools::{CancelFlag, IpythonTool, KernelBridge, KernelCellOutcome, Tool};
+use yi_tools::{CancelFlag, IpythonTool, KernelBridge, KernelCellOutcome, Tool, ToolContext};
+
+use crate::tools::{output_text, read_tool, temp_dir, view_fixture};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -63,7 +65,7 @@ fn an_attached_image_is_in_the_models_view() -> TestResult {
         kernel_restarted: false,
         notes: Vec::new(),
     };
-    let stored = yi_tools::cell_output("x", outcome).result;
+    let stored = yi_tools::cell_output("x", outcome, None).result;
     let wire = serde_json::to_string(&stored)?;
     assert_eq!(wire.matches(PNG).count(), 1, "{wire}");
     assert_eq!(wire.matches("YSxi").count(), 1, "{wire}");
@@ -110,12 +112,99 @@ fn an_image_up_to_the_providers_limit_reaches_the_model() -> TestResult {
         kernel_restarted: false,
         notes: Vec::new(),
     };
-    let images = yi_tools::cell_output("x", outcome)
+    let images = yi_tools::cell_output("x", outcome, None)
         .result
         .content
         .into_iter()
         .filter(|block| matches!(block, yi_types::message::Content::Image { .. }))
         .count();
     assert_eq!(images, 1);
+    Ok(())
+}
+
+fn failed_cell(
+    stdout: &str,
+    stderr: &str,
+    traceback: &[&str],
+    notes: Vec<String>,
+) -> serde_json::Result<KernelCellOutcome> {
+    let last = traceback.last().copied().unwrap_or_default();
+    let (ename, evalue) = last.split_once(": ").unwrap_or((last, ""));
+    let result = serde_json::from_value(serde_json::json!({
+        "stdout": stdout, "stderr": stderr, "status": "error", "durationMs": 1,
+        "error": {"ename": ename, "evalue": evalue, "traceback": traceback},
+    }))?;
+    Ok(KernelCellOutcome {
+        result,
+        kernel_restarted: false,
+        notes,
+    })
+}
+
+/// A recursion traceback the kernel joined whole was 73,479 B of one repeated frame; the view
+/// keeps its verdict line inline and tees the rest, which read opens.
+#[test]
+fn a_recursion_traceback_lands_under_the_ceiling_with_its_file() -> TestResult {
+    let dir = temp_dir("cell-recursion")?;
+    let raw = std::fs::read_to_string(view_fixture("view/recursion-traceback.txt"))?;
+    let outcome = failed_cell("", "", &[&raw], Vec::new())?;
+    let code = "def f(n):\n    return f(n + 1)\nf(0)";
+    let text = output_text(&yi_tools::cell_output(code, outcome, Some(&dir)));
+    assert!(text.len() <= yi_tools::VIEW_CEILING, "{} B", text.len());
+    let last = "RecursionError: maximum recursion depth exceeded";
+    assert!(text.lines().any(|line| line == last), "{text}");
+    let file = text
+        .lines()
+        .last()
+        .and_then(yi_tools::spill_path)
+        .ok_or(text.clone())?
+        .1;
+    let input = Map::from_iter([("path".to_owned(), Value::String(file.to_owned()))]);
+    let read = output_text(&read_tool().execute(input, &ToolContext::new(dir.to_path_buf())));
+    assert!(read.contains("----> 4 f(0)"), "{read}");
+    assert_eq!(std::fs::read_to_string(file)?, raw);
+    Ok(())
+}
+
+/// A traceback under the reducer's floor reaches the model as the kernel joined it.
+#[test]
+fn a_short_traceback_reaches_the_model_byte_for_byte() -> TestResult {
+    let dir = temp_dir("cell-keyerror")?;
+    let raw = std::fs::read_to_string(view_fixture("view/pandas-keyerror-traceback.txt"))?;
+    let outcome = failed_cell("", "", &[&raw], Vec::new())?;
+    let text = output_text(&yi_tools::cell_output("df['total']", outcome, Some(&dir)));
+    assert_eq!(text, raw);
+    Ok(())
+}
+
+/// `%%bash` running a 3,000-test `cargo test` with one failure: the kernel kept the first 65,536
+/// chars of stdout, so the verdict sat only in the spill; the cargo reducer reads it back inline.
+#[test]
+fn a_shell_cell_keeps_its_failing_test_and_summary_inline() -> TestResult {
+    let dir = temp_dir("cell-cargo")?;
+    let fixture = |name: &str| std::fs::read_to_string(view_fixture(name));
+    let spill = dir.join("5b69550dd7781e9e92f754a050a0aad0.txt");
+    std::fs::write(&spill, fixture("view/cargo-test-3000-cell-spill.txt")?)?;
+    let pointer = format!("[full output: {}]", spill.display());
+    let stderr = "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s\n     Running unittests src/lib.rs (target/debug/deps/ledger-0d61fc207018dd0f)\nerror: test failed, to rerun pass `--lib`\n";
+    let called = "CalledProcessError: Command 'b'cargo test --color never\\n'' returned non-zero exit status 101.";
+    let traceback = ["-".repeat(75), "CalledProcessError                        Traceback (most recent call last)".to_owned(), "Cell In[3], line 1\n----> 1 get_ipython().run_cell_magic('bash', '', 'cargo test --color never\\n')\n".to_owned(), called.to_owned()];
+    let traceback: Vec<&str> = traceback.iter().map(String::as_str).collect();
+    let stdout = fixture("view/cargo-test-3000-cell-stdout.txt")?;
+    let outcome = failed_cell(&stdout, stderr, &traceback, vec![pointer.clone()])?;
+    let code = "%%bash\ncargo test --color never";
+    let text = output_text(&yi_tools::cell_output(code, outcome, Some(&dir)));
+    assert!(text.len() <= yi_tools::VIEW_CEILING, "{} B", text.len());
+    for verdict in [
+        "    tests::balance_1370",
+        "test result: FAILED. 2999 passed; 1 failed",
+        called,
+    ] {
+        assert!(
+            text.lines().any(|line| line.starts_with(verdict)),
+            "lost {verdict}: {text}"
+        );
+    }
+    assert_eq!(text.matches(&pointer).count(), 1, "{text}");
     Ok(())
 }
