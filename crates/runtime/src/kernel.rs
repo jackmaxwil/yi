@@ -612,7 +612,7 @@ impl KernelService {
         // session closes, after which no notice can wake it.
         self.user_cells.fetch_add(1, SeqCst);
         let output = match self.execute_async(code, cancelled, None, None).await {
-            Ok(outcome) => yi_tools::cell_output(code, outcome),
+            Ok(outcome) => yi_tools::cell_output(code, outcome, None),
             Err(message) => yi_tools::error_output(message),
         };
         self.user_cells.fetch_sub(1, SeqCst);
