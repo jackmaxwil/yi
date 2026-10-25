@@ -4361,10 +4361,13 @@ fn rewind_first(frame: &Value) -> Vec<Value> {
     if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e1"}) {
         return refuse(frame, "wrong rewind");
     }
-    vec![ok(
-        frame,
-        json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
-    )]
+    vec![
+        replay("s-alpha", &[], 0, None),
+        ok(
+            frame,
+            json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
+        ),
+    ]
 }
 
 /// Rewind ▸ Conversation sends the clicked prompt's entry, and the prompt comes back to edit.
@@ -4372,13 +4375,18 @@ fn rewind_first(frame: &Value) -> Vec<Value> {
 fn rewind_to_here_rewinds_to_the_clicked_prompt() -> TestResult {
     let mut steps = opened_unicode();
     steps.push(Step::Expect("_yi/rewind", rewind_first));
-    run(
+    let frame = run_frames(
         "menu-rewind",
         steps,
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          mouse right 25 2\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
          wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 rewound prompt\nquit\n",
-    )
+    )?;
+    assert!(
+        !frame.contains("conversation rewound"),
+        "the menu already asked about files, so a pane adds no solo notice:\n{frame}"
+    );
+    Ok(())
 }
 
 /// Inspect opens the entry beside the chat: its id and the message as the ledger holds it.
@@ -5185,8 +5193,40 @@ fn resume_both_turns(frame: &Value) -> Vec<Value> {
     resume_with(frame, &entries)
 }
 
+/// Both turns, then a third typed while the console was away, which made the recording's edit
+/// again on `b.py`, the caller its ripwire check broke: its call and result under new ids.
+fn resume_with_a_missed_edit_turn(frame: &Value) -> Vec<Value> {
+    let recording = recorded(EDIT_SESSION);
+    let result = recording
+        .iter()
+        .position(|e| e["message"]["toolName"] == "edit");
+    let again = result.and_then(|at| recording.get(at.saturating_sub(1)..=at));
+    let mut entries = recording.clone();
+    entries.push(entry("e-turn2", None, 99, &user_message("and again")));
+    entries.push(entry("e-turn3", None, 100, &user_message("once more")));
+    for (seq, made) in (101..).zip(again.into_iter().flatten()) {
+        let mut made = made.clone();
+        made["id"] = json!(format!("e-again-{seq}"));
+        let details = &mut made["message"]["details"];
+        if let Some(patch) = details["patch"].as_str() {
+            let moved = patch.lines().map(|line| match line {
+                l if l.starts_with("--- a/") => "--- a/b.py",
+                l if l.starts_with("+++ b/") => "+++ b/b.py",
+                l => l,
+            });
+            details["patch"] = json!(moved.collect::<Vec<_>>().join("\n"));
+        }
+        entries.push(made);
+    }
+    resume_with(frame, &entries)
+}
+
 /// Review after a live edit and a reconnect's full replay, then `keys` pressed on its pane.
-fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Error>> {
+fn review_after_a_reconnect(
+    name: &str,
+    resume: Responder,
+    keys: &str,
+) -> Result<String, Box<dyn Error>> {
     let mut fixture = session_fixture();
     fixture.extend([
         Step::Push(live_edit_then_an_empty_turn),
@@ -5194,7 +5234,7 @@ fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Er
         Step::Close,
         Step::Accept,
         Step::Expect("initialize", init_reply),
-        Step::Expect("session/resume", resume_both_turns),
+        Step::Expect("session/resume", resume),
     ]);
     run_frames(
         name,
@@ -5206,16 +5246,19 @@ fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Er
     )
 }
 
-/// Dies with `Review · turn · 1 file` after a reconnect: the full replay stamped the edit with the
-/// turn the console was in, and the second turn edited nothing.
+/// Dies with `0 files` when the replay leaves the turn count or stamps the edit with the live
+/// turn, and with `2 files` when replayed prompts stop counting, so `a.py` joins the last turn.
 #[test]
 fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestResult {
     let frame = review_after_a_reconnect(
         "replay-turn-scope",
+        resume_with_a_missed_edit_turn,
         "key s\nwait-frame 3000 Review · turn\n",
     )?;
     let row = row_holding(&frame, "Review · turn")?;
-    assert!(row.contains("Review · turn · 0 files +0 −0"), "{row}");
+    assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
+    let file = row_holding(&frame, "▸ ")?;
+    assert!(file.contains("▸ b.py  +2 −2"), "{file}");
     Ok(())
 }
 
@@ -5223,8 +5266,11 @@ fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestRe
 /// was running when the edit was made, which a replay cannot know.
 #[test]
 fn a_reconnects_replay_does_not_label_an_edit_with_the_todo_running_now() -> TestResult {
-    let frame =
-        review_after_a_reconnect("replay-todo-label", "wait-frame 3000 Review · session\n")?;
+    let frame = review_after_a_reconnect(
+        "replay-todo-label",
+        resume_both_turns,
+        "wait-frame 3000 Review · session\n",
+    )?;
     let row = row_holding(&frame, "▸ ")?;
     let file = row.split("▸ ").nth(1).ok_or("no file row")?;
     assert!(

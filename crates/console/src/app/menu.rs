@@ -314,9 +314,8 @@ impl App {
                         drawn: None,
                     },
                 );
-                // The pane clamps the offset, so the largest one opens it at its top.
                 if let Some(opened) = opened.and_then(|id| self.state.panes.get_mut(&id)) {
-                    opened.scroll_from_bottom = usize::MAX;
+                    opened.scroll_from_bottom = crate::panes::TOP;
                 }
             }
             (Verb::Rewind { .. }, _) if self.pane_running(pane) => {

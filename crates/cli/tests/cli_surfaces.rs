@@ -385,13 +385,21 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     assert_eq!(lean, kept);
     assert_eq!(lean.last().map(String::as_str), Some("agent_end"));
 
+    let mut argv = vec!["--faux", recorded.as_str()];
+    argv.extend("--model faux/faux-1 --json --no-deltas look on".split(' '));
+    let asked = workspace.yi(&argv)?;
+    assert_eq!(asked.status.code(), Some(0), "{asked:?}");
+    assert!(!stdout(&asked).contains("message_update"), "{asked:?}");
+
     let plain = ask(&workspace, "look", &["--faux", &recorded, "--no-deltas"])?;
     let bare = workspace.yi(&["stats", "--no-deltas"])?;
     let other = workspace.yi(&["stats", "--json", "--no-deltas"])?;
+    let console = workspace.yi(&["--json", "--no-deltas"])?;
     for (run, said) in [
         (plain, "needs `yi ask --json`"),
         (bare, "needs `yi ask --json`"),
-        (other, "not applied by yi stats"),
+        (other, "needs `yi ask --json`"),
+        (console, "needs `yi ask --json`"),
     ] {
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
         assert_eq!(
@@ -1428,6 +1436,42 @@ fn refreshing_cursor_without_a_login_is_a_skip_not_a_failure() -> TestResult {
     Ok(())
 }
 
+/// Kimi's list is the account's own too, read at the login profile's base: with no login and
+/// no profile the row names the verb, not "bundled only", and the run stays green.
+#[test]
+fn refreshing_kimi_without_a_login_is_a_skip_not_a_failure() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-skip")?;
+    let skipped = workspace.yi(&["catalog", "refresh", "kimi"])?;
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    let row = stdout(&skipped)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(row, "kimi no credential (yi login kimi)");
+    Ok(())
+}
+
+/// The quota windows are read with the account's login; without one the error names the verb
+/// that makes one, not a usage error.
+#[test]
+fn catalog_usage_without_a_kimi_login_names_the_login_verb() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-usage")?;
+    let refused = workspace.yi(&["catalog", "usage", "kimi"])?;
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(
+        complaint.trim(),
+        "error: no credential for provider kimi (run: yi login kimi)"
+    );
+    let other = workspace.yi(&["catalog", "usage", "openai"])?;
+    assert_eq!(other.status.code(), Some(2), "{}", stdout(&other));
+    assert_eq!(
+        String::from_utf8_lossy(&other.stderr).trim(),
+        r#"usage: yi catalog usage kimi (not "openai")"#
+    );
+    Ok(())
+}
+
 /// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
 #[test]
 fn a_relative_home_is_refused_at_boot() -> TestResult {
@@ -1611,6 +1655,13 @@ fn help_prints_the_command_table_and_an_unknown_flag_still_exits_two() -> TestRe
     Ok(())
 }
 
+fn shipped_completion(shell: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(format!(
+        "{}/../../completions/yi.{shell}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
 /// The packaged completion files are written by hand; `yi --help` is the table dispatch reads.
 #[test]
 fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult {
@@ -1619,12 +1670,6 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     let (verbs, flags) = help_table(&stdout(&workspace.yi(&["--help"])?));
     let want: (BTreeSet<String>, BTreeSet<String>) =
         (verbs.into_iter().collect(), flags.into_iter().collect());
-    let read = |name: &str| {
-        std::fs::read_to_string(format!(
-            "{}/../../completions/yi.{name}",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-    };
     let quoted = |text: &str, key: &str| -> BTreeSet<String> {
         text.lines()
             .find_map(|line| line.trim().strip_prefix(key))
@@ -1633,12 +1678,12 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
             .map(|words| words.split_whitespace().map(str::to_owned).collect())
             .unwrap_or_default()
     };
-    let bash = read("bash")?;
+    let bash = shipped_completion("bash")?;
     let bash = (
         quoted(&bash, "local commands"),
         quoted(&bash, "local flags"),
     );
-    let zsh = read("zsh")?;
+    let zsh = shipped_completion("zsh")?;
     let block = |open: &str| -> BTreeSet<String> {
         zsh.split_once(open)
             .and_then(|(_, rest)| rest.split_once("\n    )"))
@@ -1652,7 +1697,7 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
             .unwrap_or_default()
     };
     let zsh = (block("commands=(\n"), block("flags=(\n"));
-    let fish = read("fish")?;
+    let fish = shipped_completion("fish")?;
     let after = |key: &str| -> BTreeSet<String> {
         fish.lines()
             .filter_map(|line| line.split_once(key))
@@ -1670,6 +1715,40 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     for (shell, offered) in [("bash", bash), ("zsh", zsh), ("fish", fish)] {
         assert_eq!(offered.0, want.0, "{shell} verbs");
         assert_eq!(offered.1, want.1, "{shell} flags");
+    }
+    Ok(())
+}
+
+/// Every axis `yi stats --by` accepts, read from its own refusal, is named by `yi --help` and by
+/// the zsh and fish descriptions; the name check above passes when both sides omit one.
+#[test]
+fn help_and_completions_name_every_stats_axis_the_parser_accepts() -> TestResult {
+    let workspace = Workspace::new("stats-axes")?;
+    let refusal = workspace.yi(&["stats", "--by", "nope"])?;
+    assert_eq!(refusal.status.code(), Some(2));
+    let refusal = String::from_utf8_lossy(&refusal.stderr).into_owned();
+    let axes: Vec<&str> = refusal
+        .split_once("wants ")
+        .map(|(_, list)| {
+            list.split([',', ' ', '\n'])
+                .filter(|word| !word.is_empty() && *word != "or")
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(axes.len() >= 5, "refusal lists the axes: {refusal}");
+    let help = stdout(&workspace.yi(&["--help"])?);
+    let (zsh, fish) = (shipped_completion("zsh")?, shipped_completion("fish")?);
+    let rows = [
+        help.lines()
+            .find(|line| line.trim_start().starts_with("--by ")),
+        zsh.lines().find(|line| line.contains("'--by[")),
+        fish.lines().find(|line| line.contains(" -l by ")),
+    ];
+    for row in rows {
+        let row = row.ok_or("a --by row in help, zsh and fish")?;
+        for axis in &axes {
+            assert!(row.contains(axis), "{row:?} omits the axis {axis}");
+        }
     }
     Ok(())
 }

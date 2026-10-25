@@ -1,11 +1,16 @@
 use std::error::Error;
 
-use serde_json::json;
+use serde_json::{Value, json};
+use yi_ai::anthropic::Mapper;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_ai::leak::{recover, recover_in};
+use yi_ai::openai::ChunkMapper;
+use yi_ai::sse::SseDecoder;
+use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason};
 
 type TestResult = Result<(), Box<dyn Error>>;
+type Mapped = fn(&Value) -> Result<Value, Box<dyn Error>>;
 
 /// The exact text a glm-5.3-flash turn printed on 2026-09-14 in place of a call.
 const LEAK: &str = "<tool_call>read<arg_key>path</arg_key><arg_value>~/.yi/skills/yi/plan/SKILL.md</arg_value></tool_call>";
@@ -69,5 +74,91 @@ fn recover_in_turns_a_stop_into_a_tool_use_and_leaves_a_clean_message_alone() ->
     let before = clean.clone();
     assert!(!recover_in(&mut clean));
     assert_eq!(clean, before);
+    Ok(())
+}
+
+/// The streamed call's arguments as the mapper's `Done` carries them, from an OpenAI-compatible
+/// SSE body that sends `arguments` whole in one `tool_calls` delta.
+fn streamed_arguments(arguments: &Value) -> Result<Value, Box<dyn Error>> {
+    let call = json!({"id": "chatcmpl-1", "choices": [{"delta": {"tool_calls": [{"index": 0,
+        "id": "call_1", "function": {"name": "todo", "arguments": arguments.to_string()}}]}}]});
+    let stop =
+        json!({"id": "chatcmpl-1", "choices": [{"delta": {}, "finish_reason": "tool_calls"}]});
+    let model = crate::common::model("glm-5.3-flash", "openai-completions", "p", "http://h", None);
+    let mut mapper = ChunkMapper::new(&model);
+    let mut decoder = SseDecoder::default();
+    for event in decoder.feed(&format!("data: {call}\n\ndata: {stop}\n\ndata: [DONE]\n\n")) {
+        if let Ok(chunk) = serde_json::from_str::<Value>(&event.data) {
+            drop(mapper.push_chunk(&chunk));
+        }
+    }
+    done_arguments(mapper.finish().pop())
+}
+
+/// The same call through the Anthropic mapper, its `input` sent whole in one `input_json_delta`.
+fn anthropic_arguments(arguments: &Value) -> Result<Value, Box<dyn Error>> {
+    let model = crate::common::model("glm-5.3-flash", "anthropic-messages", "p", "http://h", None);
+    let mut mapper = Mapper::new(&model);
+    for payload in [
+        json!({"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block":
+            {"type": "tool_use", "id": "toolu_1", "name": "todo", "input": {}}}),
+        json!({"type": "content_block_delta", "index": 0, "delta":
+            {"type": "input_json_delta", "partial_json": arguments.to_string()}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {}}),
+        json!({"type": "message_stop"}),
+    ] {
+        drop(mapper.push(&payload));
+    }
+    done_arguments(Some(mapper.finish()))
+}
+
+fn done_arguments(event: Option<AssistantMessageEvent>) -> Result<Value, Box<dyn Error>> {
+    match event {
+        Some(AssistantMessageEvent::Done {
+            message: AgentMessage::Assistant { content, .. },
+            ..
+        }) => match content.into_iter().next() {
+            Some(Content::ToolCall { arguments, .. }) => Ok(Value::Object(arguments)),
+            other => Err(format!("expected the call: {other:?}").into()),
+        },
+        other => Err(format!("expected done: {other:?}").into()),
+    }
+}
+
+/// Dies with a tool reading GLM's leaked markup as a field: the sweep's two leaked `done` shapes,
+/// through either mapper, reach the tool with `evidence` as a field and the op word as a flag.
+#[test]
+fn a_streamed_call_with_leaked_markup_reaches_the_tool_repaired() -> TestResult {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../runtime/tests/fixtures/todo/glm-leaked-calls.json"
+    ))?;
+    let mappers: [Mapped; 2] = [streamed_arguments, anthropic_arguments];
+    for streamed in mappers {
+        for case in fixture["lands"].as_array().ok_or("lands")? {
+            let arguments = streamed(&case["arguments"])?;
+            let evidence = arguments["evidence"].as_str().map(str::trim);
+            assert_eq!(evidence, case["evidence"].as_str(), "{arguments}");
+            assert_eq!(
+                arguments["label"], case["arguments"]["label"],
+                "{arguments}"
+            );
+            assert_eq!(arguments["done"], json!(true), "{arguments}");
+            assert_eq!(
+                arguments.as_object().map(|map| map.len()),
+                Some(3),
+                "{arguments}"
+            );
+        }
+        let clean = json!({"op": "done", "label": "a", "evidence": "x</arg_value> stays"});
+        assert_eq!(streamed(&clean)?, clean);
+        let prose = &fixture["refused"][3];
+        assert_eq!(
+            streamed(prose)?,
+            *prose,
+            "prose before the markup is no field"
+        );
+    }
     Ok(())
 }

@@ -712,6 +712,11 @@ impl SubagentHost {
             let cwd = self
                 .cwd_of(&name)
                 .unwrap_or_else(|| self.options.cwd.clone());
+            if let Some(refused) = self.check_gate.get().and_then(|gates| gates.1(&check)) {
+                return Err(format!(
+                    "child \"{target}\" result held back; its check is refused: {refused}"
+                ));
+            }
             crate::goal::run_check(&check, &cwd, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
                 |evidence| {
                     format!("child \"{target}\" result held back; its check is red: {evidence}")
@@ -746,6 +751,7 @@ impl SubagentHost {
         };
         // One check run per named todo, however many rows name it.
         let mut adjudged: HashMap<&yi_types::plan::TaskId, Option<String>> = HashMap::new();
+        let mut shown = std::collections::HashSet::new();
         for row in discoveries {
             let named = row.violates_check_of.as_ref().and_then(|id| {
                 plan.as_ref()
@@ -779,8 +785,9 @@ impl SubagentHost {
                         map.insert("task".to_owned(), Value::String(id.as_str().to_owned()));
                         map.insert("evidence".to_owned(), Value::String(evidence.clone()));
                     }
+                    let shown_text = crate::goal::evidence_once(shown.insert(id), evidence);
                     format!(
-                        "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{evidence}",
+                        "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{shown_text}",
                         row.text,
                         id.as_str()
                     )

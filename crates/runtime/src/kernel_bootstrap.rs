@@ -132,6 +132,8 @@ pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
     )
 }
 
+const RESTORE_NAMES_SHOWN: usize = 40;
+
 pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> String {
     let mut lines = vec!["<ipython_state_restored>".to_owned()];
     if restore.restored.is_empty() {
@@ -141,7 +143,13 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
     } else {
         lines.push(format!(
             "Your IPython kernel state was revived from your previous session. These names are available again: {}.",
-            restore.restored.join(", ")
+            crate::listed::listed(
+                &restore.restored,
+                "restored names",
+                "RESTORE_NAMES_SHOWN",
+                RESTORE_NAMES_SHOWN,
+                "%who"
+            )
         ));
     }
     if !restore.failed.is_empty() {

@@ -96,7 +96,7 @@ const FLAGS: &[Flag] = &[
     Flag { name: "session", value: Some("id"), summary: "resume this session" },
     Flag { name: "schema", value: Some("schema"), summary: "answer JSON valid against this schema" },
     Flag { name: "since", value: Some("span"), summary: "after stats: fold the sessions of this window" },
-    Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day or prices" },
+    Flag { name: "by", value: Some("axis"), summary: "after stats: group by model, upstream, day, prices or plan" },
     Flag { name: "top", value: Some("n"), summary: "after stats: list the n costliest sessions" },
 ];
 
@@ -151,9 +151,6 @@ const UNREAD: &[(&str, &str)] = &[
 ];
 
 fn unread(verb: &str, args: &Args) -> Option<(&'static str, &'static str)> {
-    if args.no_deltas && verb != "ask" {
-        return Some(("no-deltas", "pass it to `yi ask --json`"));
-    }
     let reads_deadline = verb == "console" && args.headless;
     UNREAD.iter().copied().find(|(flag, _)| {
         matches!(verb, "console" | "serve")

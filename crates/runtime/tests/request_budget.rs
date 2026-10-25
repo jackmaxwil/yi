@@ -1,5 +1,7 @@
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+#[path = "support/upstream.rs"]
+mod upstream;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -106,8 +108,22 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
 
 type SessionTools = Vec<std::sync::Arc<dyn yi_loop::tool::AgentTool>>;
 
+/// The session's builtins with the recorded document formats, as yi-cli registers them.
+fn recorded_tools(home: &std::path::Path) -> upstream::Tools {
+    let fixed = yi_tools::Documents::fixed(
+        home.to_path_buf(),
+        yi_tools::Converter {
+            python: std::path::PathBuf::new(),
+            formats: RECORDED_DOCUMENT_FORMATS
+                .iter()
+                .map(|&format| format.to_owned())
+                .collect(),
+        },
+    );
+    std::sync::Arc::new(move || yi_runtime::session_tools(false, Some(fixed.clone()), None))
+}
+
 fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     // attach_runtime spawns nothing with prewarm off, but lanes and hooks touch
@@ -120,16 +136,6 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
     let (cwd, home) = (root.join("cwd"), root.join("home"));
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir_all(&home)?;
-    let fixed = yi_tools::Documents::fixed(
-        home.clone(),
-        yi_tools::Converter {
-            python: PathBuf::new(),
-            formats: RECORDED_DOCUMENT_FORMATS
-                .iter()
-                .map(|&format| format.to_owned())
-                .collect(),
-        },
-    );
     let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
@@ -150,7 +156,7 @@ fn session_tools() -> Result<(Scratch, SessionTools), Box<dyn Error>> {
             home: home.clone(),
             lane_slots: 1,
             broker: None,
-            tools: Arc::new(move || yi_runtime::session_tools(false, Some(fixed.clone()), None)),
+            tools: recorded_tools(&home),
             depth: 0,
             max_depth: 1,
             rlm_dir: root.join("rlm"),
@@ -204,8 +210,9 @@ fn surface_lines() -> Result<Vec<String>, Box<dyn Error>> {
 /// depend on what the runner has installed.
 fn system_prompt() -> String {
     format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         identity_fragment(),
+        yi_runtime::delegation_fragment(),
         yi_runtime::doctrine_fragment(),
         mode_fragment(PermissionMode::Ask)
     )
@@ -517,6 +524,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     });
     host.start(None, false);
     Ok(host
@@ -635,6 +643,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            can_delegate: true,
         });
         host.start(None, false);
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -665,6 +674,236 @@ fn report_the_prefix_size() -> TestResult {
     for line in surface_lines()? {
         println!("TOOL_SURFACE {line}");
     }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let (bare, lane, main) = runtime.block_on(async {
+        tokio::join!(
+            role_bodies(Workspace::Bare, 1),
+            role_bodies(Workspace::Lane, 1),
+            role_bodies(Workspace::Main, 1)
+        )
+    });
+    let claude = match checkout().join("CLAUDE.md").is_file() {
+        true => " claude=present",
+        false => " claude=absent",
+    };
+    for (workspace, rows, claude) in [
+        ("bare", bare?, ""),
+        ("lane", lane?, ""),
+        ("main", main?, claude),
+    ] {
+        for (role, body) in rows {
+            let system = serde_json::to_string(&body["system"])?.len();
+            let tools = serde_json::to_string(&body["tools"])?.len();
+            println!(
+                "ROLE_PREFIX workspace={workspace} role={role} system={system} tools={tools} total={}{claude}",
+                system.saturating_add(tools)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Bare is a TB container's root: no instruction file, Yolo. Lane adds the tracked AGENTS.md
+/// and a Cargo.toml in Auto; main adds the checkout's untracked CLAUDE.md when it has one.
+#[derive(Clone, Copy)]
+enum Workspace {
+    Bare,
+    Lane,
+    Main,
+}
+
+/// Each role's brief and spawn kwargs, `None` for the root's own turn. A brief is the needle
+/// its request is found by, so none is a substring of another.
+const ROLES: [(&str, &str, Option<&str>); 5] = [
+    ("root", "Say hello to the root.", None),
+    (
+        "leaf",
+        "Count the words of notes.txt.",
+        Some(r#"{"role":"root"}"#),
+    ),
+    (
+        "leaf_orchestrate",
+        "Orchestrate a tally of notes.txt.",
+        Some(r#"{"role":"root"}"#),
+    ),
+    (
+        "reader",
+        "Which line names the sea?",
+        Some(r#"{"role":"reader","partition":["local://notes.txt"]}"#),
+    ),
+    (
+        "worker",
+        "Rename the sea line to grey sea.",
+        Some(r#"{"role":"worker","partition":["local://notes.txt"]}"#),
+    ),
+];
+
+fn checkout() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Each role's first request body, from a root wired as yi wires one and children spawned
+/// through its host, so a child's prefix is the one its production factory builds.
+async fn role_bodies(
+    workspace: Workspace,
+    max_depth: u8,
+) -> Result<Vec<(&'static str, Value)>, Box<dyn Error>> {
+    let scratch = Scratch::new("yi-role-prefix")?;
+    let ws = scratch.join("ws");
+    std::fs::create_dir_all(&ws)?;
+    let mode = match workspace {
+        Workspace::Bare => PermissionMode::Yolo,
+        Workspace::Lane | Workspace::Main => PermissionMode::Auto,
+    };
+    let broker = std::sync::Arc::new(yi_runtime::PermissionBroker::new(
+        mode,
+        ws.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    ));
+    let (port, from) = upstream::stand_in(String::new())?;
+    let model = Model {
+        base_url: "http://anthropic.invalid".to_owned(),
+        ..model()
+    };
+    let home = scratch.join("home");
+    // Invariant: a plugin found on the runner's PATH attaches its card, which would move a
+    // gated row by machine; the pinned ripwire sits in HOME as `yi plugin add` leaves it.
+    let ripwire = yi_tools::plugin::Plugin::named("ripwire").and_then(|it| it.program(&home));
+    let ripwire = ripwire.ok_or("no pinned ripwire")?;
+    std::fs::create_dir_all(ripwire.parent().ok_or("ripwire has no dir")?)?;
+    std::fs::write(&ripwire, "")?;
+    let tools = recorded_tools(&home);
+    let provider = upstream::stream(&model, port, false)?;
+    let (session, host) = upstream::root_at(
+        &scratch,
+        model,
+        provider,
+        Some(broker),
+        true,
+        tools,
+        max_depth,
+    )?;
+    if !matches!(workspace, Workspace::Bare) {
+        std::fs::copy(checkout().join("AGENTS.md"), ws.join("AGENTS.md"))?;
+        std::fs::write(ws.join("Cargo.toml"), "[workspace]\n")?;
+        upstream::git(&ws, &["init", "-q", "-b", "main"])?;
+        upstream::git(&ws, &["add", "."])?;
+        upstream::git(&ws, &["commit", "-q", "-m", "seed"])?;
+    }
+    if matches!(workspace, Workspace::Main) && checkout().join("CLAUDE.md").is_file() {
+        std::fs::copy(checkout().join("CLAUDE.md"), ws.join("CLAUDE.md"))?;
+    }
+    for (_, brief, kwargs) in ROLES {
+        match kwargs {
+            None => session.prompt(brief)?,
+            Some(kwargs) => {
+                let kwargs: Map<String, Value> = serde_json::from_str(kwargs)?;
+                host.spawn(brief.to_owned(), kwargs)?;
+            }
+        }
+    }
+    let mut bodies = Vec::new();
+    let mut rows = Vec::new();
+    for (role, brief, _) in ROLES {
+        rows.push((
+            role,
+            upstream::body_asking(&mut bodies, &from, brief).await?,
+        ));
+    }
+    Ok(rows)
+}
+
+fn system_text(body: &Value) -> String {
+    body["system"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block["text"].as_str())
+        .collect()
+}
+
+/// Every line of `fragment` long enough to be its own, found in `text`: `all` or `any`.
+fn lines_of(fragment: &str, text: &str, all: bool) -> bool {
+    let mut lines = fragment.lines().filter(|line| line.len() > 40);
+    match all {
+        true => lines.all(|line| text.contains(line)),
+        false => lines.any(|line| text.contains(line)),
+    }
+}
+
+fn role_text(rows: &[(&str, Value)], role: &str) -> Result<String, Box<dyn Error>> {
+    let (_, body) = rows
+        .iter()
+        .find(|(name, _)| *name == role)
+        .ok_or(format!("no {role} row"))?;
+    Ok(system_text(body))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_role_prefix_is_measured_from_a_production_built_child() -> TestResult {
+    let rows = role_bodies(Workspace::Bare, 1).await?;
+    let text = |role: &str| role_text(&rows, role);
+    let doctrine = yi_runtime::doctrine_fragment();
+    let orchestrate = include_str!("../src/prompts/orchestrate.md");
+    let reader = text("reader")?;
+    assert!(
+        reader.starts_with(include_str!("../src/prompts/reader.md")),
+        "the reader is sent its own identity: {reader}"
+    );
+    assert!(
+        !lines_of(doctrine, &text("worker")?, false),
+        "a worker reads no doctrine"
+    );
+    for role in ["root", "leaf", "leaf_orchestrate"] {
+        assert!(
+            lines_of(doctrine, &text(role)?, true),
+            "{role} reads the doctrine"
+        );
+    }
+    let delegation = yi_runtime::delegation_fragment();
+    assert!(
+        lines_of(delegation, &text("root")?, true),
+        "the root reads the delegation teaching"
+    );
+    for role in ["leaf", "leaf_orchestrate"] {
+        assert!(
+            !lines_of(orchestrate, &text(role)?, false),
+            "{role} cannot spawn at max_depth 1, so no trigger attaches the protocol"
+        );
+        assert!(
+            !lines_of(delegation, &text(role)?, false),
+            "{role} cannot spawn at max_depth 1, so it reads no delegation teaching"
+        );
+    }
+    Ok(())
+}
+
+/// One level deeper than the default, a root child can still spawn, so it reads what a leaf does
+/// not: every delegation line, and the protocol once its brief trips the trigger.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_child_that_can_still_spawn_is_sent_the_protocol_and_the_delegation_teaching()
+-> TestResult {
+    let rows = role_bodies(Workspace::Bare, 2).await?;
+    let orchestrate = include_str!("../src/prompts/orchestrate.md");
+    let delegation = yi_runtime::delegation_fragment();
+    for role in ["leaf", "leaf_orchestrate"] {
+        assert!(
+            lines_of(delegation, &role_text(&rows, role)?, true),
+            "{role} can spawn at max_depth 2, so it reads the delegation teaching"
+        );
+    }
+    assert!(
+        lines_of(orchestrate, &role_text(&rows, "leaf_orchestrate")?, true),
+        "a triggered child that can spawn reads the orchestrate protocol"
+    );
+    assert!(
+        !lines_of(orchestrate, &role_text(&rows, "leaf")?, false),
+        "no trigger, no protocol"
+    );
     Ok(())
 }
 

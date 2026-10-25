@@ -128,8 +128,8 @@ fn a_save_after_a_reload_keeps_the_endings_the_agent_wrote() -> TestResult {
     Ok(())
 }
 
-/// Dies with a new file saved without the newline every other new file ends on, and with one
-/// CRLF line in a file of LF lines turning every line CRLF.
+/// Dies with a new file saved without the newline every other new file ends on, with one CRLF
+/// line turning an LF file CRLF, and with a mostly-CRLF file saved back LF.
 #[test]
 fn a_typed_empty_file_ends_on_a_newline_and_a_mixed_file_keeps_its_majority() -> TestResult {
     let dir = Scratch::new("yi-console-save-typed")?;
@@ -141,5 +141,9 @@ fn a_typed_empty_file_ends_on_a_newline_and_a_mixed_file_keeps_its_majority() ->
     printf(&mixed, "a\\nb\\nc\\r\\nd\\n")?;
     type_and_save(&mixed, None, "")?;
     assert_eq!(std::fs::read_to_string(&mixed)?, "a\nb\nc\nd\n");
+    let windows = dir.join("windows.txt");
+    printf(&windows, "a\\r\\nb\\r\\nc\\nd\\r\\n")?;
+    type_and_save(&windows, None, "")?;
+    assert_eq!(std::fs::read_to_string(&windows)?, "a\r\nb\r\nc\r\nd\r\n");
     Ok(())
 }
