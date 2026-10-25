@@ -9,11 +9,11 @@ use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
 use yi_types::plan::canonical::sorted;
 use yi_types::plan::doc::OWNER_AGENT;
-use yi_types::plan::ledger::{JournalRecord, PLAN_OP_ENTRY_TYPE, PlanOpRecord};
+use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
-use crate::plan::journal::{Journal, RealFs};
+use crate::plan::journal::{Damage, Journal, RealFs};
 use crate::plan::ops::{CLASSIFIER_ACTOR, ENGINE_AGENT, HOST_ACTOR};
 use crate::plan::state::{KIND_DONE_REFUSED, KIND_VERIFICATION_STALE};
 use crate::plan::store::JOURNAL_NAME;
@@ -269,22 +269,19 @@ pub fn fold_journals(scan: &mut Scan, plans: &Path, since_ms: u64) {
     jsonl_files(plans, since_ms, &mut files);
     files.retain(|path| path.file_name().is_some_and(|name| name == JOURNAL_NAME));
     for path in files {
-        let Ok(read) = Journal::open(path, Arc::new(RealFs)).lines() else {
+        let read = Journal::open(path, Arc::new(RealFs)).read();
+        let Some((records, torn)) = read.ok().and_then(|read| match read.damage {
+            None => Some((read.records, 0)),
+            Some(Damage::TornTail { .. }) => Some((read.records, 1)),
+            Some(Damage::Corrupt { .. }) => None,
+        }) else {
             scan.unreadable = scan.unreadable.saturating_add(1);
             continue;
         };
         scan.journals = scan.journals.saturating_add(1);
-        let torn = usize::from(read.torn.is_some());
         scan.bad_lines = scan.bad_lines.saturating_add(torn);
-        for bytes in read
-            .lines
-            .into_iter()
-            .map(|line| line.bytes.unwrap_or_default())
-        {
-            match serde_json::from_slice::<JournalRecord>(&bytes) {
-                Ok(journaled) => scan.add_plan_op(&journaled.record, since_ms),
-                Err(_) => scan.bad_lines = scan.bad_lines.saturating_add(1),
-            }
+        for journaled in &records {
+            scan.add_plan_op(&journaled.record, since_ms);
         }
     }
 }

@@ -13,6 +13,7 @@ use yi_runtime::plan::acceptance::Phase;
 use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine, PlanOpError};
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::tool::PlanTool;
+use yi_runtime::plan::verify::session_has;
 use yi_tools::{Tool, ToolContext};
 use yi_types::plan::canonical::Digest;
 use yi_types::plan::contract::{CheckerManifest, Decider};
@@ -133,8 +134,43 @@ fn a_plain_checker_command_is_frozen_and_the_engine_starts_the_todo() -> TestRes
         return Err("not a cmd item".into());
     };
     assert_eq!(*timeout_ms, yi_runtime::goal::DEFAULT_CHECK_TIMEOUT_MS);
-    let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
+    let manifest = CheckerManifest::parse(
+        &rig.store.artifacts(&plan.id).get(&checker.digest)?,
+        session_has,
+    )?;
     assert_eq!(manifest.command, "grep -qx alpha alpha.txt");
+    Ok(())
+}
+
+/// [`CheckerManifest::parse`] judges a checker's env names by the lookup it is handed, never
+/// by reading the process environment itself.
+#[test]
+fn a_frozen_manifest_asks_the_session_for_its_env_names() -> TestResult {
+    let rig = rig("env")?;
+    let plan = opened(
+        &rig,
+        json!([{"label": "alpha", "contract": {"class": "writer", "items": [
+            {"id": "alpha", "critical": true, "weight": 1, "decider": {"cmd": "true"}}
+        ]}}]),
+    )?;
+    let item = todo_of(&plan, "alpha")?
+        .contract
+        .as_ref()
+        .and_then(|c| c.items.first());
+    let Some(Decider::Cmd { checker, .. }) = item.map(|item| &item.decider) else {
+        return Err("not a cmd item".into());
+    };
+    let mut frozen: Value =
+        serde_json::from_slice(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
+    frozen["env"] = json!(["PATH"]);
+    let refusal = CheckerManifest::parse(&serde_json::to_vec(&frozen)?, |_| false)
+        .err()
+        .ok_or("PATH passed a session that holds no names")?;
+    assert!(refusal.contains("holds no PATH"), "{refusal}");
+    frozen["env"] = json!(["DECLARE_SESSION_ONLY_NAME"]);
+    CheckerManifest::parse(&serde_json::to_vec(&frozen)?, |name| {
+        name == "DECLARE_SESSION_ONLY_NAME"
+    })?;
     Ok(())
 }
 
@@ -352,7 +388,10 @@ fn an_accept_command_keeps_the_check_timeout() -> TestResult {
         return Err("not a cmd item".into());
     };
     assert_eq!(*timeout_ms, 600_000);
-    let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
+    let manifest = CheckerManifest::parse(
+        &rig.store.artifacts(&plan.id).get(&checker.digest)?,
+        session_has,
+    )?;
     assert_eq!(manifest.timeout_ms, 600_000);
     Ok(())
 }
@@ -534,7 +573,10 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
     else {
         return Err("a cmd decider".into());
     };
-    let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
+    let manifest = CheckerManifest::parse(
+        &rig.store.artifacts(&plan.id).get(&checker.digest)?,
+        session_has,
+    )?;
     assert_eq!((*timeout_ms, manifest.timeout_ms), (300_000, 300_000));
     let guide =
         yi_runtime::fetch::Resolver::new(rig.temp.to_path_buf(), yi_runtime::Wall::default())
@@ -562,7 +604,8 @@ fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
             let (refused, text) = call(&rig, step.clone());
             assert!(!refused, "{name} setup: {text}");
         }
-        let (refused, text) = call(&rig, case["call"].clone());
+        let decoded = yi_ai::leak::unleak(case["call"].as_object().ok_or("call")?).into_owned();
+        let (refused, text) = call(&rig, Value::Object(decoded));
         let lands = case["lands"].as_bool().unwrap_or(false);
         let says = case["says"].as_str().unwrap_or("");
         if refused == lands || !text.contains(says) {

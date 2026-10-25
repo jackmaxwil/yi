@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::core::{Dot, OrbFrame, finalize_frame, radius_scale};
@@ -20,6 +19,26 @@ const LEAD: f64 = 0.1;
 const MAX_STEP: f64 = 0.1;
 
 type Key = (Option<OrbState>, u64, Option<OrbState>);
+/// Empty while the matching thread solves; `None` inside means no pairing exists for the poses.
+type Pairing = Arc<OnceLock<Option<Vec<usize>>>>;
+
+/// Invariant: the lock covers a lookup or an insert, never a solve; the matching thread
+/// publishes through its cell, so no avatar waits on another's pairing and none solves it twice.
+static PAIRINGS: OnceLock<Mutex<HashMap<Key, Pairing>>> = OnceLock::new();
+
+fn pairings() -> MutexGuard<'static, HashMap<Key, Pairing>> {
+    PAIRINGS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+static SOLVED: AtomicUsize = AtomicUsize::new(0);
+
+/// Pairings solved in this process, on a matching thread or the frame loop's fallback.
+pub fn pairings_solved() -> usize {
+    SOLVED.load(Ordering::Relaxed)
+}
 
 #[derive(Default)]
 pub struct Orb {
@@ -27,28 +46,12 @@ pub struct Orb {
     clock: f64,
     next: Option<Next>,
     morph: Option<Morph>,
-    pairings: HashMap<Key, Vec<usize>>,
-}
-
-enum Job {
-    Ready(Vec<usize>),
-    Running(JoinHandle<Option<Vec<usize>>>, Arc<AtomicBool>),
-    Failed,
 }
 
 struct Next {
-    to: Option<OrbState>,
     at: f64,
     key: Key,
-    job: Job,
-}
-
-impl Drop for Next {
-    fn drop(&mut self) {
-        if let Job::Running(_, stop) = &self.job {
-            stop.store(true, Ordering::Relaxed);
-        }
-    }
+    job: Option<Pairing>,
 }
 
 struct Morph {
@@ -93,29 +96,30 @@ impl Orb {
         } else {
             self.plan(want);
             match self.next.take() {
-                Some(mut next) if self.clock + dt >= next.at => {
+                Some(next) if self.clock + dt >= next.at => {
                     // Invariant: the loop never waits on the pairing; the exit pose holds until it lands.
-                    if let Job::Running(handle, _) = &next.job
-                        && !handle.is_finished()
-                    {
+                    if next.job.as_ref().is_some_and(|cell| cell.get().is_none()) {
                         self.clock = next.at;
                         self.next = Some(next);
                         return render(&pose(self.now, self.clock));
                     }
                     let from = pose(self.now, next.at);
-                    let target = pose(next.to, 0.0);
-                    let perm = match std::mem::replace(&mut next.job, Job::Failed) {
-                        Job::Ready(perm) => Some(perm),
-                        Job::Running(handle, _) => handle.join().ok().flatten(),
-                        Job::Failed => None,
-                    }
-                    .filter(|perm| perm.len() == target.len())
-                    .unwrap_or_else(|| matching(&from, &target));
-                    self.pairings.insert(next.key, perm.clone());
+                    let target = pose(next.key.2, 0.0);
+                    let perm = next
+                        .job
+                        .and_then(|cell| cell.get().cloned().flatten())
+                        .filter(|perm| perm.len() == target.len())
+                        .unwrap_or_else(|| {
+                            SOLVED.fetch_add(1, Ordering::Relaxed);
+                            let perm = matching(&from, &target);
+                            let cell = Arc::new(OnceLock::from(Some(perm.clone())));
+                            pairings().insert(next.key, cell);
+                            perm
+                        });
                     let t = self.clock + dt - next.at;
                     let frame = render(&blend(&from, &target, &perm, t / MORPH));
                     self.morph = Some(Morph {
-                        to: next.to,
+                        to: next.key.2,
                         from,
                         target,
                         perm,
@@ -137,7 +141,7 @@ impl Orb {
             self.next = None;
             return;
         }
-        if self.next.as_ref().is_some_and(|next| next.to == want) {
+        if self.next.as_ref().is_some_and(|next| next.key.2 == want) {
             return;
         }
         let at = exit_after(self.now, self.clock + LEAD);
@@ -148,24 +152,27 @@ impl Orb {
             ((at / secs).rem_euclid(1.0) * 1e6).round() as u64
         };
         let key = (self.now, phase, want);
-        let job = match self.pairings.get(&key) {
-            Some(perm) => Job::Ready(perm.clone()),
+        let mut table = pairings();
+        let job = match table.get(&key) {
+            Some(cell) => Some(Arc::clone(cell)),
             None => {
-                let (from, target) = (pose(self.now, at), pose(want, 0.0));
-                let stop = Arc::new(AtomicBool::new(false));
-                let flag = Arc::clone(&stop);
+                let (now, cell) = (self.now, Arc::new(OnceLock::new()));
+                let out = Arc::clone(&cell);
                 std::thread::Builder::new()
                     .name("orb-matching".into())
-                    .spawn(move || pairing(&from, &target, &flag))
-                    .map_or(Job::Failed, |handle| Job::Running(handle, stop))
+                    .spawn(move || {
+                        let _ = out.set(pairing(&pose(now, at), &pose(want, 0.0)));
+                    })
+                    .ok()
+                    .map(|_| {
+                        SOLVED.fetch_add(1, Ordering::Relaxed);
+                        table.insert(key, Arc::clone(&cell));
+                        cell
+                    })
             }
         };
-        self.next = Some(Next {
-            to: want,
-            at,
-            key,
-            job,
-        });
+        drop(table);
+        self.next = Some(Next { at, key, job });
     }
 }
 
@@ -225,11 +232,10 @@ pub fn blend(from: &[Point], target: &[Point], perm: &[usize], f: f64) -> Vec<Po
 /// Invariant: in the least-squares pairing (Hungarian method) no two points meet mid-morph;
 /// a meeting would make the swapped pairing shorter.
 pub fn matching(from: &[Point], target: &[Point]) -> Vec<usize> {
-    pairing(from, target, &AtomicBool::new(false))
-        .unwrap_or_else(|| (0..from.len().min(target.len())).collect())
+    pairing(from, target).unwrap_or_else(|| (0..from.len().min(target.len())).collect())
 }
 
-fn pairing(from: &[Point], target: &[Point], stop: &AtomicBool) -> Option<Vec<usize>> {
+fn pairing(from: &[Point], target: &[Point]) -> Option<Vec<usize>> {
     let n = from.len().min(target.len());
     let cost: Vec<f64> = target
         .iter()
@@ -243,9 +249,6 @@ fn pairing(from: &[Point], target: &[Point], stop: &AtomicBool) -> Option<Vec<us
     let (mut owner, mut way) = (vec![0usize; n + 1], vec![0usize; n + 1]);
     let (mut least, mut used) = (vec![f64::INFINITY; n + 1], vec![false; n + 1]);
     for row in 1..=n {
-        if stop.load(Ordering::Relaxed) {
-            return None;
-        }
         owner[0] = row;
         least.fill(f64::INFINITY);
         used.fill(false);

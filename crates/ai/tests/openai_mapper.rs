@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 use std::error::Error;
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params, normalize_openai_tool_call_id};
+use yi_ai::sse::{SseDecoder, SseEvent};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
@@ -106,6 +107,24 @@ fn id_normalization_handles_pipe_ids() {
     assert!(normalized.len() <= 40);
     assert!(normalized.starts_with("call_abc"));
     assert_eq!(normalize_openai_tool_call_id("short"), "short");
+    assert_eq!(
+        normalize_openai_tool_call_id("call_é|item_ü"),
+        "call___item__"
+    );
+}
+
+#[test]
+fn an_sse_field_name_ending_in_a_multibyte_char_is_dropped_and_its_values_kept() {
+    let mut decoder = SseDecoder::default();
+    let mut events = decoder.feed("datä:skipped\nevent: café\ndata: {\"text\":\"é…\"}\n");
+    events.extend(decoder.finish());
+    assert_eq!(
+        events,
+        vec![SseEvent {
+            event: Some("café".to_owned()),
+            data: "{\"text\":\"é…\"}".to_owned(),
+        }]
+    );
 }
 
 fn chunks() -> Vec<Value> {
