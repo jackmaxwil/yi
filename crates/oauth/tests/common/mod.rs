@@ -9,6 +9,7 @@ use serde_json::Value;
 
 #[path = "../../../types/tests/support/loopback.rs"]
 mod loopback;
+use loopback::read_request;
 
 pub type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -28,7 +29,7 @@ pub fn serve(script: Vec<(u16, Value)>) -> Res<(u16, Seen)> {
             };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
             let mut reader = BufReader::new(stream);
-            let request = loopback::read_request(&mut reader);
+            let request = read_request(&mut reader);
             let mut stream = reader.into_inner();
             let line = request.lines().next().unwrap_or_default();
             let form = request.rsplit("\r\n").next().unwrap_or_default();

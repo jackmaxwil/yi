@@ -12,6 +12,9 @@
 # left alone: their backtraces should stay clickable.
 set -euo pipefail
 
+# Incident: a forge run that restored no cache had no registry sources to remap yet, and the same
+# tree measured 24,576 bytes more; fetching first unpacks every source the lockfile names.
+cargo fetch -q
 remap=()
 for dir in "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/; do
   [ -d "$dir" ] && remap+=("--remap-path-prefix=${dir%/}=/c")
