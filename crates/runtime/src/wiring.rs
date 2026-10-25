@@ -55,6 +55,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
             global_skills: Vec::new(),
+            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         let host = attach_runtime(
             &mut child,
