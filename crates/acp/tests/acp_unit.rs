@@ -1,3 +1,5 @@
+#[path = "../../types/tests/support/recorded_read.rs"]
+mod recorded_read;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 
@@ -797,5 +799,73 @@ fn why_names_an_uncommitted_line_the_real_error_and_the_lines_past_its_cap() -> 
         .as_str()
         .ok_or("a bare dir answered")?;
     assert!(error.contains("not a git repository"), "{error}");
+    Ok(())
+}
+
+fn recorded_result(index: u64, text: &str) -> Result<Entry, Box<dyn Error>> {
+    Ok(Entry::Message {
+        id: format!("e{index}"),
+        message: serde_json::from_value(recorded_read::recorded_read(|_| text.to_owned())?)?,
+        terminate: None,
+        parent_id: None,
+        seq: index,
+        timestamp: 0,
+    })
+}
+
+fn sizes(frames: &[&[Entry]]) -> Result<Vec<usize>, Box<dyn Error>> {
+    let mut bytes = Vec::new();
+    for frame in frames {
+        let mut total = 0;
+        for entry in *frame {
+            total += serde_json::to_vec(entry)?.len();
+        }
+        bytes.push(total);
+    }
+    Ok(bytes)
+}
+
+/// The console's reader drops a frame past 32 MiB and re-dials; replay closes a frame at 512
+/// entries or 8 MiB serialized, at each limit exactly and one past it.
+#[test]
+fn replay_frames_close_at_the_entry_and_byte_limits() -> TestResult {
+    use yi_acp::replay::{REPLAY_BYTES, REPLAY_CHUNK, frames};
+    let small: Vec<Entry> = (0..=REPLAY_CHUNK as u64)
+        .map(|index| recorded_result(index, "1:def greet(name):"))
+        .collect::<Result<_, _>>()?;
+    let lens = |frames: Vec<&[Entry]>| frames.iter().map(|frame| frame.len()).collect::<Vec<_>>();
+    assert_eq!(lens(frames(&small[..REPLAY_CHUNK])), [REPLAY_CHUNK]);
+    assert_eq!(lens(frames(&small)), [REPLAY_CHUNK, 1]);
+    assert_eq!(
+        lens(frames(&[])),
+        [0],
+        "an empty tail is one frame, which carries the leaf"
+    );
+
+    let overhead = serde_json::to_vec(&recorded_result(0, "")?)?.len();
+    let half = REPLAY_BYTES / 2 - overhead;
+    let fits = [
+        recorded_result(0, &"x".repeat(half))?,
+        recorded_result(1, &"x".repeat(half))?,
+    ];
+    assert_eq!(
+        sizes(&frames(&fits))?,
+        [REPLAY_BYTES],
+        "two entries that fill the budget"
+    );
+    let over = [fits[0].clone(), recorded_result(1, &"x".repeat(half + 1))?];
+    let split = frames(&over);
+    assert_eq!(
+        lens(split.clone()),
+        [1, 1],
+        "one byte past the budget starts a frame"
+    );
+    assert!(sizes(&split)?.iter().all(|bytes| *bytes <= REPLAY_BYTES));
+    let alone = [recorded_result(0, &"x".repeat(REPLAY_BYTES))?];
+    assert_eq!(
+        lens(frames(&alone)),
+        [1],
+        "an entry past the budget is sent whole"
+    );
     Ok(())
 }
