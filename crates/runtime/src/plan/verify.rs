@@ -446,7 +446,12 @@ fn run_cmd_said(
     let passed =
         |capture: &&yi_tools::CommandCapture| capture.exit_code == Some(0) && !capture.cancelled;
     let said = capture.as_ref().ok().filter(passed).map(|capture| {
-        let output = crate::goal::output_tail(capture);
+        let output = format!(
+            "{}\n{}",
+            capture.stdout.trim_end(),
+            capture.stderr.trim_end()
+        );
+        let output = output.trim();
         let total = capture.stdout.trim().chars().count() + capture.stderr.trim().chars().count();
         let skip = output.chars().count().saturating_sub(EVIDENCE_CHARS);
         let kept: String = output.chars().skip(skip).collect();
@@ -498,7 +503,7 @@ fn verdict_of(
             detail: format!(
                 "exit {}: {}",
                 code.map_or_else(|| "signal".to_owned(), |code| code.to_string()),
-                crate::goal::output_tail(&capture)
+                crate::goal::check_view(&manifest.command, &capture)
             ),
         },
     }

@@ -342,6 +342,84 @@ fn a_red_check_prints_no_provider_key() -> TestResult {
     Ok(())
 }
 
+/// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict last.
+const RED_PYTEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+);
+
+fn refusal_of(check: &str) -> Result<String, Box<dyn Error>> {
+    let (_plans, (service, _store, _delivered)) = service_with_plans()?;
+    service.create("check output", None, Some(check.to_owned()), None)?;
+    Ok(service.update("complete").err().ok_or("must reject")?)
+}
+
+#[test]
+fn a_red_check_keeps_its_verdict_and_names_the_cut() -> TestResult {
+    let error = refusal_of(&format!("cat '{RED_PYTEST}'; exit 1"))?;
+    for verdict in [
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+        "collected 400 items",
+    ] {
+        assert!(error.contains(verdict), "{verdict}: {error}");
+    }
+    assert!(
+        error.contains("bytes kept (VIEW_CEILING 16384); the rest: bash ("),
+        "{error}"
+    );
+    let total = std::fs::metadata(RED_PYTEST)?.len();
+    let capture = format!("kept 30000 of {total} bytes (OUTPUT_CAP 30000 per stream)");
+    assert!(
+        error.contains(&capture),
+        "the capture's own cut is named too: {error}"
+    );
+    assert!(
+        error.len() < yi_tools::VIEW_CEILING + 1024,
+        "{}",
+        error.len()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_rerun_a_cut_row_names_writes_the_full_output_to_its_file() -> TestResult {
+    let error = refusal_of(&format!("cat '{RED_PYTEST}'; exit 1"))?;
+    let (_, rest) = error.split_once("the rest: bash ").ok_or(error.as_str())?;
+    let (call, _) = rest.split_once(" > view.log 2>&1").ok_or(rest)?;
+    let dir = Scratch::new("yi-goal-rerun")?;
+    let script = format!("{call} > view.log 2>&1");
+    let mut bash = yi_tools::command("bash");
+    bash.args(["-c", &script]).current_dir(&*dir);
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let rerun = yi_tools::run_captured(bash, None, &never, yi_tools::OUTPUT_CAP)?;
+    assert_eq!(
+        rerun.exit_code,
+        Some(1),
+        "the check's own exit survives the rerun"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("view.log"))?,
+        std::fs::read(RED_PYTEST)?
+    );
+    Ok(())
+}
+
+#[test]
+fn a_checks_output_is_whole_at_the_ceiling_and_cut_one_byte_past_it() -> TestResult {
+    let ceiling = yi_tools::VIEW_CEILING;
+    let printing = |bytes: usize| format!("head -c {bytes} /dev/zero | tr '\\0' x; exit 1");
+    let at = refusal_of(&printing(ceiling))?;
+    assert!(at.contains(&"x".repeat(ceiling)) && !at.contains("VIEW_CEILING"));
+    let past = refusal_of(&printing(ceiling + 1))?;
+    assert!(
+        past.contains("of 16385 bytes kept (VIEW_CEILING 16384)"),
+        "{past}"
+    );
+    assert!(!past.contains(&"x".repeat(ceiling + 1)));
+    Ok(())
+}
+
 #[test]
 fn check_gate_passes_and_clears_the_failure() -> TestResult {
     let (_plans, (service, store, _delivered)) = service_with_plans()?;

@@ -25,6 +25,7 @@
 //! | `example_json_equality_ignores_whitespace_and_key_order` | T0 | The five cases of `fixtures/plans/contracts/cases.json`. Cases 0, 1 and 2 pass on three spellings of the same value, the second with its keys reordered and the third with padding; case 3 answers wrongly and case 4 prints prose after its JSON, and those two fail for reasons the item's detail distinguishes. Stdout must be one complete JSON value: several values, non-finite numbers, a timeout and output overflow are their own failures, not near misses. | Structural comparison over the parsed values, and the one-complete-value rule on the far side of it. Compare bytes and cases 1 and 2 fail, which makes the runner's formatter part of the contract; take the first JSON value and ignore the rest and case 4 passes, which teaches a model that a summary line after the answer is free. |
 //! | `a_checker_that_edits_a_protected_path_fails` | T0 | A manifest lists `runner.sh` as protected and its command rewrites that file to `exit 0`: the item fails naming the path, even though the command itself exited 0. The same manifest with a command that leaves the path alone passes. | `protecting` in `verify.rs`, the digests of every protected path taken before and after the run. Drop the comparison and a checker that rewrites its own script mid-run passes on the rewritten script, which is the edit `contracts.md`'s `protected` row exists against. |
 //! | `the_session_deadline_bounds_the_verification` | T0 | A verifier whose own clock allows a minute but whose session deadline (D177) has already passed abstains every item with the deadline reason and runs no command. | `Verifier::with_deadline` folded into the whole-verification deadline in `run`. Read only `timeout_ms` and a checker launched at the wire runs ten minutes past the run's own clock. |
+//! | `a_failing_checkers_output_is_cut_loudly_in_the_detail` | T0 | A checker that prints a real 32,955 B `pytest -v` run and exits 1 fails its item with the head of that output, its verdict line and one row naming the cut (`VIEW_CEILING`) and the rerun that returns the rest, so the author who is refused can see what failed and where to read more. | `check_view` in `verdict_of`. Hand its output back to the last 2,000 chars and the head and the row are gone, and a refused author reads a tail that stops mid-run with nothing saying so. |
 //! | `example_failures_are_distinct_by_kind` | T0 | One case, ten runners. A right answer passes; a wrong one, prose after the JSON, two values, a non-finite number, unparsable output, no output, a non-zero exit, output past the capture cap and a runner that outruns its deadline each fail with their own reason in the item's detail. | The distinct reasons `one_json_value` and `run_case` return. Fold them into one "failed" and the detail stops naming what to repair, which is the only thing a refused author can act on; read the first value and drop the rest and `trailing_output` becomes a pass. |
 //!
 //! Fixtures this file reads: `fixtures/plans/contracts/examples-runner.json` and its
@@ -209,6 +210,40 @@ fn the_checker_sees_no_provider_key() -> TestResult {
             .any(|name| name.contains("KEY") || name.contains("TOKEN")),
         "{names:?}"
     );
+    Ok(())
+}
+
+/// A real `pytest -v` run (#1153): 32,955 B, past the view's 16 KiB ceiling.
+const RED_PYTEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+);
+
+// Dies with `check_view` in `verdict_of`: the detail is the output's last 2,000 chars again.
+#[test]
+fn a_failing_checkers_output_is_cut_loudly_in_the_detail() -> TestResult {
+    let temp = Scratch::new("yi-verify-view")?;
+    let artifacts = Artifacts::under(&temp);
+    let command = format!("cat '{RED_PYTEST}'; exit 1");
+    let contract = cmd_contract(put(&artifacts, &manifest(&command, 5_000, &[]))?, 5_000)?;
+    let snapshot = Snapshot {
+        id: "tree:test",
+        root: &temp,
+        output: None,
+        artifacts: &artifacts,
+        jury: None,
+    };
+    let verdict = Verifier::new(5_000).run(&token(&contract)?, &contract, &snapshot);
+    let ItemVerdict::Fail { detail } = &verdict.items[0].verdict else {
+        return Err(format!("not a failure: {}", verdict.lines()).into());
+    };
+    for shown in [
+        "collected 400 items",
+        "1 failed, 399 passed",
+        "bytes kept (VIEW_CEILING 16384); the rest: bash (cat '",
+    ] {
+        assert!(detail.contains(shown), "{shown}: {detail}");
+    }
     Ok(())
 }
 

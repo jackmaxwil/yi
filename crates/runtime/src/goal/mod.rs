@@ -23,25 +23,18 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 /// Checks are integration gates (`just check`-class), not unit runs; 10 min
 /// covers a cold cargo build without letting a hang eat the session.
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
-const CHECK_TAIL_CHARS: usize = 2_000;
 
-pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
-    let mut combined = String::new();
-    if !capture.stdout.trim().is_empty() {
-        combined.push_str(capture.stdout.trim_end());
-    }
-    if !capture.stderr.trim().is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(capture.stderr.trim_end());
-    }
-    let start = combined
-        .char_indices()
-        .rev()
-        .nth(CHECK_TAIL_CHARS.saturating_sub(1))
-        .map_or(0, |(index, _)| index);
-    combined.get(start..).unwrap_or(&combined).to_owned()
+/// A failed check's output through [`yi_tools::view`]. A check keeps no spill, so a cut row's
+/// recovery is the rerun of `command` to a file; the capture's own cut row follows the view's.
+pub(crate) fn check_view(command: &str, capture: &yi_tools::CommandCapture) -> String {
+    let (stdout, stderr) = (&capture.stdout, &capture.stderr);
+    let exit = capture.exit_code.unwrap_or(-1);
+    let producer = yi_tools::Involuntary::Job(command);
+    let view = yi_tools::view(producer, stdout, stderr, exit, None, None);
+    let text = view.text.trim();
+    capture
+        .cut_row()
+        .map_or_else(|| text.to_owned(), |row| format!("{text}\n{row}"))
 }
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
@@ -52,7 +45,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000)
+    let capture = yi_tools::run_captured(command, None, &cancelled, yi_tools::OUTPUT_CAP)
         .map_err(|error| format!("goal check failed to run: {error}"))?;
     if capture.cancelled {
         return Err(format!("goal check timed out after {timeout_ms} ms"));
@@ -63,7 +56,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
             let exit = code.map_or_else(|| "signal".to_owned(), |code| code.to_string());
             Err(format!(
                 "goal check `{check}` exited {exit}:\n{}",
-                output_tail(&capture)
+                check_view(check, &capture)
             ))
         }
     }
