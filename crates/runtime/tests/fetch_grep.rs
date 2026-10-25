@@ -339,3 +339,39 @@ fn a_history_grep_names_every_cut_it_makes() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with an address other than `history://` handed to the file grep, which reads it as a
+/// path; or with the page or line cap silent one past its limit, or naming a remedy that fails.
+#[test]
+fn an_address_grep_names_its_page_and_line_cuts_one_past_each_limit() -> TestResult {
+    let ws = Scratch::new("yi-fetch-grep-address")?;
+    let grep = |name: &str, hits: usize, chars: usize, offset: usize| {
+        let line = format!("hit {}", "é".repeat(chars - 4));
+        std::fs::write(ws.join(name), vec![line; hits].join("\n"))?;
+        let ask = json!({"pattern": "^hit", "path": format!("local://{name}"), "offset": offset});
+        tool_text(
+            Resolver::new(ws.to_path_buf(), Wall::default()),
+            "grep",
+            ask,
+        )
+    };
+    let (at, refused) = grep("at.txt", 40, 200, 0)?;
+    let rows = at.lines().filter(|row| row.starts_with("local://at.txt:"));
+    assert!(!refused && rows.count() == 40 && !at.contains("[…"), "{at}");
+    let (past, _) = grep("past.txt", 41, 201, 0)?;
+    let notices: Vec<&str> = past.lines().skip(40).collect();
+    assert_eq!(
+        notices,
+        [
+            "[… hits 1-40 of 41 in 41 lines of local://past.txt · address grep page 40 · grep again with offset=40]",
+            "[… a hit line is cut at 200 chars (LINE_CHARS) · read the address for the whole line]",
+        ]
+    );
+    let (rest, _) = grep("past.txt", 41, 201, 40)?;
+    assert!(rest.starts_with("local://past.txt:41: hit "), "{rest}");
+    let resolver = Resolver::new(ws.to_path_buf(), Wall::default());
+    let (text, _) = tool_text(resolver, "read", json!({"path": "local://past.txt"}))?;
+    let whole = format!("hit {}", "é".repeat(197));
+    assert!(text.lines().nth(40) == Some(whole.as_str()), "{text}");
+    Ok(())
+}

@@ -229,7 +229,7 @@ pub struct SubagentHost {
     pub(crate) grant: Mutex<crate::lease::Grant>,
     pub(crate) finished: Mutex<Option<Arc<FinishFn>>>,
     pub(crate) settling: std::sync::atomic::AtomicUsize,
-    pub(crate) harvests: Mutex<HashMap<String, Option<String>>>,
+    pub(crate) harvests: Mutex<std::collections::HashSet<String>>,
     pub(crate) waits: std::sync::atomic::AtomicU64,
     pub(crate) told: Mutex<Option<(String, u64)>>,
     pub(crate) stuck: Mutex<std::collections::HashSet<String>>,

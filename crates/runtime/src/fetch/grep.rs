@@ -136,19 +136,61 @@ impl Hits {
                 .iter()
                 .flat_map(|(kind, text)| text.lines().map(move |line| (kind, line)));
             for (kind, line) in lines.filter(|(_, line)| hit(line)) {
-                self.total = self.total.saturating_add(1);
-                if self.total <= offset || self.rows.len() == HITS {
-                    continue;
-                }
-                let kept: String = line.chars().take(LINE_CHARS).collect();
-                let cut = if kept.len() < line.len() { "…" } else { "" };
-                self.clipped = self.clipped || !cut.is_empty();
                 let (id, seq) = (entry.id(), entry.seq());
-                self.rows
-                    .push(format!("history://{agent}/{id} #{seq} {kind}: {kept}{cut}"));
+                self.take(
+                    offset,
+                    || format!("history://{agent}/{id} #{seq} {kind}:"),
+                    line,
+                );
             }
         }
         Ok(true)
+    }
+
+    fn take(&mut self, offset: usize, at: impl FnOnce() -> String, line: &str) {
+        self.total = self.total.saturating_add(1);
+        if self.total <= offset || self.rows.len() == HITS {
+            return;
+        }
+        let kept: String = line.chars().take(LINE_CHARS).collect();
+        let cut = if kept.len() < line.len() { "…" } else { "" };
+        self.clipped = self.clipped || !cut.is_empty();
+        self.rows.push(format!("{} {kept}{cut}", at()));
+    }
+
+    fn close(self, offset: usize, searched: &str, (verb, whole): (&str, &str)) -> String {
+        let Self {
+            mut rows,
+            total,
+            clipped,
+            skipped,
+            ..
+        } = self;
+        if rows.is_empty() {
+            rows.push(match total {
+                0 => format!("[no hits in {searched}; try ignore_case, fewer words, or a synonym]"),
+                _ => format!("[offset {offset} is past the last of {total} hits]"),
+            });
+        }
+        let shown = rows.len();
+        let last = offset.saturating_add(shown);
+        if last < total {
+            rows.push(format!(
+                "[… hits {}-{last} of {total} in {searched} · {verb} page {HITS} · grep again with offset={last}]",
+                offset.saturating_add(1)
+            ));
+        }
+        if clipped {
+            rows.push(format!(
+                "[… a hit line is cut at {LINE_CHARS} chars (LINE_CHARS) · read {whole}]"
+            ));
+        }
+        if skipped > 0 {
+            rows.push(format!(
+                "[… {skipped} not searched: session directories whose checkout is gone, and unreadable session files]"
+            ));
+        }
+        rows.join("\n")
     }
 }
 
@@ -219,40 +261,25 @@ impl Resolver {
                 }
             }
         }
-        let Hits {
-            mut rows,
-            total,
-            entries,
-            sessions,
-            clipped,
-            skipped,
-        } = hits;
-        let searched = format!("{entries} entries of {sessions} sessions");
-        if rows.is_empty() {
-            rows.push(match total {
-                0 => format!("[no hits in {searched}; try ignore_case, fewer words, or a synonym]"),
-                _ => format!("[offset {offset} is past the last of {total} hits]"),
-            });
+        let searched = format!("{} entries of {} sessions", hits.entries, hits.sessions);
+        let named = ("history grep", "its address for the whole entry");
+        Ok(hits.close(offset, &searched, named))
+    }
+
+    fn grep_text(
+        &self,
+        url: &Url,
+        hit: &dyn Fn(&str) -> bool,
+        offset: usize,
+    ) -> Result<String, FetchError> {
+        let text = self.fetch(url)?.text;
+        let mut hits = Hits::default();
+        for (at, line) in text.lines().enumerate().filter(|(_, line)| hit(line)) {
+            hits.take(offset, || format!("{url}:{}:", at.saturating_add(1)), line);
         }
-        let shown = rows.len();
-        let last = offset.saturating_add(shown);
-        if last < total {
-            rows.push(format!(
-                "[… hits {}-{last} of {total} in {searched} · history grep page {HITS} · grep again with offset={last}]",
-                offset.saturating_add(1)
-            ));
-        }
-        if clipped {
-            rows.push(format!(
-                "[… a hit line is cut at {LINE_CHARS} chars (LINE_CHARS) · read its address for the whole entry]"
-            ));
-        }
-        if skipped > 0 {
-            rows.push(format!(
-                "[… {skipped} not searched: session directories whose checkout is gone, and unreadable session files]"
-            ));
-        }
-        Ok(rows.join("\n"))
+        let searched = format!("{} lines of {url}", text.lines().count());
+        let named = ("address grep", "the address for the whole line");
+        Ok(hits.close(offset, &searched, named))
     }
 }
 
@@ -263,7 +290,7 @@ pub(super) fn serve_grep(
 ) -> Option<ToolOutput> {
     let path = input.get("path").and_then(Value::as_str)?;
     let url = match path.parse::<Url>() {
-        Ok(url) if *url.scheme() == Scheme::History => url,
+        Ok(url) if path.contains("://") => url,
         Err(error) if path.starts_with("history://") => {
             return Some(error_output(format!("{path}: {error}")));
         }
@@ -271,7 +298,7 @@ pub(super) fn serve_grep(
     };
     if let Some(other) = input.keys().find(|key| !ARGS.contains(&key.as_str())) {
         return Some(error_output(format!(
-            "{other} is a file grep option; a history:// grep takes {}",
+            "{other} is a file grep option; an address grep takes {}",
             ARGS.join(", ")
         )));
     }
@@ -284,10 +311,13 @@ pub(super) fn serve_grep(
         .and_then(Value::as_u64)
         .and_then(|n| usize::try_from(n).ok())
         .unwrap_or(0);
-    Some(
-        match resolver.grep_history(&url, &|line| matcher.is_match(line), offset) {
-            Ok(text) => text_output(text),
-            Err(error) => error_output(error.to_string()),
-        },
-    )
+    let hit = |line: &str| matcher.is_match(line);
+    let grepped = match url.scheme() {
+        Scheme::History => resolver.grep_history(&url, &hit, offset),
+        _ => resolver.grep_text(&url, &hit, offset),
+    };
+    Some(match grepped {
+        Ok(text) => text_output(text),
+        Err(error) => error_output(error.to_string()),
+    })
 }
