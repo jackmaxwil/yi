@@ -817,6 +817,45 @@ mod caps {
         Ok(())
     }
 
+    /// Dies with the frontier's cut taking the running row, the one that says what is in flight,
+    /// and keeping a ready one in its place.
+    #[test]
+    fn a_frontier_past_its_cap_keeps_the_running_row() -> TestResult {
+        let (_temp, engine) = rig("frontier-running")?;
+        opened(&engine, todos(18)?)?;
+        let label = TodoLabel::new("step 0")?;
+        let plan = engine.apply(owner(None, Op::Start { label }))?.plan;
+        let frontier = yi_runtime::plan::frontier_text(&plan);
+        let running = frontier
+            .lines()
+            .any(|line| line.starts_with("In progress: step 0"));
+        assert!(running, "{frontier}");
+        assert!(
+            frontier.contains("[… 16 of 18 rows (FRONTIER 16);"),
+            "{frontier}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the owner-row filter dropping every row: a delegated row admitted while no child
+    /// is hosted is still named as dispatched.
+    #[test]
+    fn dispatched_names_an_admitted_delegated_row() -> TestResult {
+        let temp = Scratch::new("yi-plan-caps-dispatched-child")?;
+        let store = PlanStore::open(temp.to_path_buf())?;
+        let engine = PlanEngine::new(store, Arc::new(crate::plan_e2e::NoChildren)).unhosted();
+        let tool = PlanTool::new(Arc::new(engine), Actor::Owner);
+        let child =
+            json!({"label": "child", "delegation": {"spec": {}, "accept": {"command": "true"}}});
+        let init = json!({"op": "init", "goal": "ship it", "todos": [{"label": "mine"}, child]});
+        let input = init.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        let text = yi_types::message::join_text(&output.result.content, "\n");
+        let line = text.lines().find(|line| line.starts_with("dispatched:"));
+        assert_eq!(line, Some("dispatched: child"), "{text}");
+        Ok(())
+    }
+
     #[test]
     fn dispatched_never_names_a_row_the_owner_runs() -> TestResult {
         let (_temp, engine) = rig("dispatched")?;
