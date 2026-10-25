@@ -1,8 +1,8 @@
 use crate::common;
 
+use crate::common::flat_trimmed as flat;
 use std::error::Error;
 
-use ratatui::text::Line;
 use serde_json::json;
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
@@ -34,20 +34,6 @@ fn app() -> App {
         default_keymap(),
         80,
     )
-}
-
-fn flat(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
 }
 
 fn started(app: &mut App, id: &str, tool: &str, arg: &str) {

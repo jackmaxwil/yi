@@ -134,6 +134,7 @@ pub fn tokens_from_exchange(body: &[u8], previous_refresh: &str) -> Result<Crede
 pub fn login_ureq(no_browser: bool, proxy: Option<&ureq::Proxy>) -> Result<Credential> {
     let agent = {
         let mut builder = ureq::AgentBuilder::new()
+            .user_agent(yi_types::USER_AGENT)
             .timeout_connect(Duration::from_secs(10))
             .timeout_read(Duration::from_secs(30));
         if let Some(proxy) = proxy {
@@ -165,6 +166,7 @@ fn poll_once(agent: &ureq::Agent, url: &str) -> std::result::Result<(u16, Vec<u8
 
 pub fn refresh_ureq(refresh_token: &str, proxy: Option<&ureq::Proxy>) -> Result<Credential> {
     let mut builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30));
     if let Some(proxy) = proxy {

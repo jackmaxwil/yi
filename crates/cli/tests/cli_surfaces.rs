@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::scratch::Scratch;
 
 use crate::prompt_slots_support::prompt_slots;
-use crate::session_files::session_files;
+use crate::session_files::{session_files, session_text};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -272,7 +272,7 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
 /// "`lines[0]`" before a read, or answered and then wrapped up its todos in prose; both exited 3.
 #[test]
 fn a_schema_answer_is_the_newest_message_that_matches() -> TestResult {
-    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_runtime::faux::{faux_text, faux_tool_call};
     use yi_types::message::StopReason::{Stop, ToolUse};
     let workspace = Workspace::new("schema-newest")?;
     std::fs::write(workspace.project().join("r.rs"), "let lines = vec![1];\n")?;
@@ -301,14 +301,8 @@ fn a_schema_answer_is_the_newest_message_that_matches() -> TestResult {
         ],
     ];
     let schema = r#"{"type":"object","required":["refuted","reason"],"properties":{"refuted":{"type":"boolean"},"reason":{"type":"string"}}}"#;
-    for (n, run) in runs.into_iter().enumerate() {
-        let lines = run
-            .into_iter()
-            .map(|(content, stop)| serde_json::to_string(&faux_assistant_message(content, stop)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let script = workspace.project().join(format!("script-{n}.jsonl"));
-        std::fs::write(&script, lines.join("\n"))?;
-        let script = script.display().to_string();
+    for (n, run) in runs.iter().enumerate() {
+        let script = turns_script(&workspace, &format!("script-{n}"), run)?;
         let answered = ask(
             &workspace,
             "break the claim",
@@ -1222,10 +1216,7 @@ fn plans_config_takes_dir_and_names_every_other_key() -> TestResult {
 fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     let workspace = Workspace::new("attribution")?;
     ask(&workspace, "prove it", &[])?;
-    let lines: String = session_files(&workspace.0.join("home/sessions"))?
-        .iter()
-        .map(std::fs::read_to_string)
-        .collect::<std::io::Result<_>>()?;
+    let lines = session_text(&workspace.0.join("home/sessions"))?;
     assert!(lines.contains("prove it"), "{lines}");
     assert!(lines.contains(r#""attribution":"user""#), "{lines}");
     Ok(())
@@ -1293,6 +1284,42 @@ fn refreshing_cursor_without_a_login_is_a_skip_not_a_failure() -> TestResult {
         .collect::<Vec<_>>()
         .join(" ");
     assert_eq!(row, "cursor no credential (yi login cursor)");
+    Ok(())
+}
+
+/// Kimi's list is the account's own too, read at the login profile's base: with no login and
+/// no profile the row names the verb, not "bundled only", and the run stays green.
+#[test]
+fn refreshing_kimi_without_a_login_is_a_skip_not_a_failure() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-skip")?;
+    let skipped = workspace.yi(&["catalog", "refresh", "kimi"])?;
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    let row = stdout(&skipped)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(row, "kimi no credential (yi login kimi)");
+    Ok(())
+}
+
+/// The quota windows are read with the account's login; without one the error names the verb
+/// that makes one, not a usage error.
+#[test]
+fn catalog_usage_without_a_kimi_login_names_the_login_verb() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-usage")?;
+    let refused = workspace.yi(&["catalog", "usage", "kimi"])?;
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(
+        complaint.trim(),
+        "error: no credential for provider kimi (run: yi login kimi)"
+    );
+    let other = workspace.yi(&["catalog", "usage", "openai"])?;
+    assert_eq!(other.status.code(), Some(2), "{}", stdout(&other));
+    assert_eq!(
+        String::from_utf8_lossy(&other.stderr).trim(),
+        r#"usage: yi catalog usage kimi (not "openai")"#
+    );
     Ok(())
 }
 
@@ -2088,6 +2115,27 @@ fn tool_script(
     Ok(path.display().to_string())
 }
 
+/// A `--faux` script: one line per `(content, stop)` turn, written to `<name>.jsonl`.
+fn turns_script(
+    workspace: &Workspace,
+    name: &str,
+    turns: &[(
+        Vec<yi_types::message::Content>,
+        yi_types::message::StopReason,
+    )],
+) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::faux::faux_assistant_message;
+    let lines = turns
+        .iter()
+        .map(|(content, stop)| {
+            serde_json::to_string(&faux_assistant_message(content.clone(), *stop))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let path = workspace.project().join(format!("{name}.jsonl"));
+    std::fs::write(&path, lines.join("\n"))?;
+    Ok(path.display().to_string())
+}
+
 /// Dies with the last word started at `--deadline` and followed 90 s past it: the eval
 /// harness kills `yi ask` at the deadline, so the answer and the lane release were lost.
 #[test]
@@ -2345,6 +2393,49 @@ fn a_run_with_nobody_attached_is_told_it_is_alone() -> TestResult {
     let alone = Workspace::new("unattended-ask")?;
     ask(&alone, "build the report", &[])?;
     assert!(told_it_is_alone(&alone)?);
+    Ok(())
+}
+
+/// Dies with the CLI's unattended wiring dropped from `main`: an unattended `ask` run whose
+/// model calls `ask_user` must resolve to the default and go on, not end its turn at a
+/// question nobody can answer.
+#[test]
+fn an_unattended_run_answers_ask_user_with_the_default_and_goes_on() -> TestResult {
+    use yi_runtime::faux::{faux_text, faux_tool_call};
+    use yi_types::message::StopReason::{Stop, ToolUse};
+    let alone = Workspace::new("unattended-ask-user")?;
+    let question = json!({
+        "question": "Ship it now or hold for the report?",
+        "options": [{"label": "Ship it"}, {"label": "Hold"}],
+        "default": "Hold"
+    });
+    let runs = [
+        (
+            vec![faux_tool_call(
+                "c0",
+                "ask_user",
+                question.as_object().cloned().unwrap_or_default(),
+            )],
+            ToolUse,
+        ),
+        (
+            vec![faux_text("Went with the default and carried on.")],
+            Stop,
+        ),
+    ];
+    let script = turns_script(&alone, "script", &runs)?;
+    let answered = ask(&alone, "ship or hold", &["--faux", &script])?;
+    let said = String::from_utf8_lossy(&answered.stderr).into_owned();
+    assert_eq!(answered.status.code(), Some(0), "{said}");
+    let out = stdout(&answered);
+    assert!(
+        out.contains("Went with the default and carried on."),
+        "{out}"
+    );
+    assert!(told_it_is_alone(&alone)?);
+    let ledger = session_text(&alone.0.join("home/sessions"))?;
+    assert!(ledger.contains("Nobody is attached to answer"), "{ledger}");
+    assert!(ledger.contains("Go on with Hold"), "{ledger}");
     Ok(())
 }
 

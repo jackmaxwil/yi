@@ -322,7 +322,10 @@ impl App {
         let mut calls: HashMap<&str, Value> = HashMap::new();
         for entry in entries {
             let Entry::Message {
-                message, timestamp, ..
+                message,
+                timestamp,
+                terminate,
+                ..
             } = entry
             else {
                 continue;
@@ -391,7 +394,8 @@ impl App {
                         details: Value::Null,
                     };
                     let details = details.clone().unwrap_or(Value::Null);
-                    self.settle_tool(cell, &text_of(content), *is_error, details);
+                    let terminate = *terminate == Some(true);
+                    self.settle_tool(cell, &text_of(content), *is_error, details, terminate);
                 }
                 _ => {}
             }
