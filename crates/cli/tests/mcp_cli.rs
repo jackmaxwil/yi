@@ -190,24 +190,33 @@ fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestRes
     Ok(())
 }
 
-/// Dies with a server that has no tools told `[…] 0 tools not printed` and sent to a tools-list
-/// that lists nothing: no tool was cut, so the row names no cut.
+/// Dies with a server that has no tools told `[…] 0 tools not printed`, or one that offers tools
+/// it did not list told nothing or a false count: the row names the call, never an unknown count.
 #[test]
-fn connect_to_a_server_without_tools_names_no_cut() -> TestResult {
+fn connect_names_the_tools_call_only_when_the_server_offers_tools() -> TestResult {
     let home = mcp_home()?;
     let server = fixture_server_path().display().to_string();
     std::fs::write(
         home.home.join(".yi/mcp.json"),
-        serde_json::to_string(&serde_json::json!({
-            "mcpServers": {"bare": {"command": "python3", "args": [server, "--no-tools"]}}
-        }))?,
+        serde_json::to_string(&serde_json::json!({"mcpServers": {
+            "bare": {"command": "python3", "args": [server, "--no-tools"]},
+            "flaky": {"command": "python3", "args": [server, "--tools-list-fails"]},
+        }}))?,
     )?;
-    let connect = yi_mcp(&home, &["connect", "bare", "@b"])?;
-    assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
+    let bare = yi_mcp(&home, &["connect", "bare", "@b"])?;
+    assert_eq!(bare.code, 0, "stderr: {}", bare.stderr);
     assert_eq!(
-        connect.stdout.trim(),
+        bare.stdout.trim(),
         "@b live · yi-fixture\ncapabilities: resources\n\
          instructions: Fixture server. The echo tool repeats input."
+    );
+    let flaky = yi_mcp(&home, &["connect", "flaky", "@f"])?;
+    assert_eq!(flaky.code, 0, "stderr: {}", flaky.stderr);
+    assert_eq!(
+        flaky.stdout.trim(),
+        "@f live · yi-fixture\ncapabilities: tools, resources, prompts\n\
+         instructions: Fixture server. The echo tool repeats input.\n\
+         […] the server offers tools; connect listed none · list them: yi mcp @f tools-list"
     );
     Ok(())
 }
