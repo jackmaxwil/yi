@@ -33,7 +33,7 @@ Internal deps are the allowlist in `scripts/guardrails/boundaries.toml` (YI_DESI
 | `yi-runtime` | `AgentSession` and the modules that compose the crates above (§4, §6, §10-§16) | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel, yi-browser | 45,704 |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon (§17.2) | yi-types, yi-runtime | 2,627 |
 | `yi-tui` | the ratatui solo chat (§17.3) | yi-types, yi-runtime, yi-orb | 12,657 |
-| `yi-console` | the multi-pane workspace, an ACP client of the daemon (§17.4) | yi-types, yi-tui, yi-browser | 7,555 |
+| `yi-console` | the multi-pane workspace, an ACP client of the daemon (§17.4); links `yi-runtime` through `yi-tui` | yi-types, yi-tui, yi-browser | 7,555 |
 | `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router (§17.4) | yi-types | 590 |
 | `yi-cli` | the `yi` binary: composition root, verbs, `yi rpc`, `yi ask` (§17.1) | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser | 4,556 |
 

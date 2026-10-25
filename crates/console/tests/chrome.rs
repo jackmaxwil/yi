@@ -145,6 +145,25 @@ fn a_pane_with_no_session_titles_itself_without_a_status_dot() -> TestResult {
     Ok(())
 }
 
+/// Dies with the pane calling the reveal pace solo-only, though every console chat takes it.
+#[test]
+fn the_pane_says_a_console_restart_applies_the_reveal_pace() -> TestResult {
+    let (mut app, pane) = console()?;
+    let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
+    let mut settings = Settings::new(None, yi_types::settings::TABS.len());
+    settings.rows = Some(yi_types::settings::rows());
+    app.state.panes.get_mut(&pane).ok_or("no pane")?.content =
+        PaneContent::Settings(Box::new(settings));
+    draw(&mut app, &mut terminal)?;
+    let screen: Vec<_> = (0..30).map(|y| row_text(&terminal, y)).collect();
+    let row = screen.iter().find(|text| text.contains("Reveal pace %"));
+    assert!(
+        row.is_some_and(|text| text.contains("next console")),
+        "{screen:#?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn hovering_a_control_lifts_it_and_only_a_new_target_redraws() -> TestResult {
     let (mut app, pane) = console()?;
