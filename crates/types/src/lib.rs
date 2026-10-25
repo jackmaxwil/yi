@@ -15,6 +15,9 @@ pub const PROVIDER_KEY_VARS: [(&str, &str); 5] = [
     ("laya", "LAYA_API_KEY"),
 ];
 
+/// Every provider, catalog and login request names Yi; ureq's default named the HTTP library.
+pub const USER_AGENT: &str = concat!("yi/", env!("CARGO_PKG_VERSION"));
+
 pub mod acp;
 pub mod advisor;
 pub mod backoff;

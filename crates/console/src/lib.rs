@@ -336,9 +336,7 @@ pub fn run_console(options: &ConsoleOptions, control: Option<Control>) -> i32 {
     stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = input.join();
     restore_terminal();
-    outbound.shutdown();
-    drop(events);
-    join_with_deadline(threads);
+    teardown(&mut app, &outbound, events, threads);
     code
 }
 
@@ -643,6 +641,18 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
 }
 
+fn teardown(
+    app: &mut App,
+    outbound: &Outbound,
+    events: std::sync::mpsc::Receiver<ClientEvent>,
+    threads: client::ClientThreads,
+) {
+    app.cancel_asks(outbound);
+    outbound.shutdown();
+    drop(events);
+    join_with_deadline(threads);
+}
+
 fn join_with_deadline(threads: client::ClientThreads) {
     let deadline = Instant::now() + Duration::from_secs(2);
     for handle in [threads.reader, threads.writer] {
@@ -807,9 +817,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
         }
     }
 
-    outbound.shutdown();
-    drop(events);
-    join_with_deadline(threads);
+    teardown(&mut app, &outbound, events, threads);
     exit_code
 }
 
