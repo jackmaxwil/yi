@@ -1526,6 +1526,34 @@ fn the_session_cache_rate_counts_children_and_resets_with_the_session() -> TestR
     Ok(())
 }
 
+/// Dies with `400% cached` on the footer: an upstream whose prompt count sits below its cache
+/// counts maps to a negative input, and the tally let it eat the cache reads it was summed with.
+#[test]
+fn a_negative_input_part_does_not_push_the_cache_rate_past_the_whole() -> TestResult {
+    let backend = VT100Backend::with_scrollback(254, 30, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = App::new(
+        options(),
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        254,
+    );
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let message = with_tokens(priced("one", 0.01), -225, 300);
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    let footer = contents.lines().find(|row| row.contains(" in / "));
+    assert!(
+        footer.is_some_and(|row| row.contains("100% cached")),
+        "the request held its 300 cache reads and nothing fresh: {footer:?}"
+    );
+    Ok(())
+}
+
 /// Strip `TestBackend`'s per-row quoting and the trailing blanks a terminal
 /// screen and a text dump disagree about, so the two can be compared at all.
 fn screen_lines(text: &str) -> Vec<String> {
