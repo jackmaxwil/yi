@@ -647,6 +647,7 @@ impl AgentSession {
         }
         let spills = self.spills.lock().ok().and_then(|dir| dir.clone());
         let selector = self.selector.lock().ok().and_then(|slot| slot.clone());
+        let hooks = crate::claude_hooks::Attached::of(permission.as_deref(), &cwd);
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -669,7 +670,8 @@ impl AgentSession {
                     .with_selector(selector.clone())
                     .with_transcript(self.store_handle())
                     .with_job_owner(self.shared.job_owner)
-                    .with_extensions(Some(self.ext_hook())),
+                    .with_extensions(Some(self.ext_hook()))
+                    .with_claude_hooks(hooks.clone()),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();

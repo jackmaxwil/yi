@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::claude_hooks::Verdict;
 use serde_json::{Map, Value};
 use tokio::sync::broadcast;
 use yi_permission::{
@@ -16,6 +17,8 @@ use yi_types::permission::{
     Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
 };
 
+mod hooked;
+pub(crate) use hooked::claude_dir;
 mod kept;
 mod late;
 use late::{Answered, Late};
@@ -91,6 +94,8 @@ pub struct PermissionBroker {
     walled: bool,
     /// Nobody is attached to answer a question, so a root's `ask_user` cannot end the run.
     unattended: bool,
+    /// Loaded once from the root's tree and shared down: a lane child reads the root's project.
+    claude_hooks: std::sync::OnceLock<Option<Arc<crate::claude_hooks::Hooks>>>,
 }
 
 pub struct CallOutcome {
@@ -227,7 +232,14 @@ impl PermissionBroker {
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
             walled: false,
             unattended: false,
+            claude_hooks: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn claude_hooks(&self) -> Option<Arc<crate::claude_hooks::Hooks>> {
+        (self.claude_hooks)
+            .get_or_init(|| crate::claude_hooks::Hooks::load(&self.cwd))
+            .clone()
     }
 
     pub fn set_journal(&self, journal: Journal) {
@@ -427,6 +439,7 @@ impl PermissionBroker {
         };
         profile.writable.extend_from_slice(widen);
         profile.deny_write.extend_from_slice(&wall.deny_write);
+        profile.deny_write.extend(claude_dir(Some(self)));
         profile.deny_read.extend_from_slice(&wall.deny_read);
         Some(profile)
     }
@@ -493,6 +506,17 @@ impl PermissionBroker {
         tool_call_id: &str,
         args: &Map<String, Value>,
         preview: Option<&str>,
+    ) -> CallOutcome {
+        let call = (tool_name, kind, irreversible, tool_call_id);
+        self.decide_hooked(call, args, preview, &Verdict::Silent)
+    }
+
+    pub(crate) fn decide_hooked(
+        &self,
+        (tool_name, kind, irreversible, tool_call_id): (&str, ToolKind, bool, &str),
+        args: &Map<String, Value>,
+        preview: Option<&str>,
+        hook: &Verdict,
     ) -> CallOutcome {
         let command = if tool_name == "bash" {
             args.get("command").and_then(Value::as_str)
@@ -563,6 +587,13 @@ impl PermissionBroker {
             &active_holds,
             &self.context,
         );
+        let judged = hooked::Judged {
+            call: &call,
+            config_rules: &self.config_rules,
+            session_rules: &session_rules,
+            holds: &active_holds,
+        };
+        let (decision, hook_answers) = self.hooked(decision, hook, &judged);
         // The session pass is the exact command an "always" kept, never a scope (review of #933).
         let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
@@ -608,6 +639,17 @@ impl PermissionBroker {
                 reviewable,
             } => (title, description.clone(), reviewable, description),
         };
+        if hook_answers {
+            let ask = PermissionAsk {
+                title: &title,
+                description: &description,
+                patch: preview,
+                changes: &targets,
+                grants: &[],
+                tool_call_id: Some(tool_call_id),
+            };
+            return self.hook_answered(&ask, &reason, command);
+        }
         let (containment, note) = self.approved_containment(command, refusal.as_ref());
         // An "always" on a widened retry keeps the directory, never a rule that would run the
         // command itself outside the sandbox.

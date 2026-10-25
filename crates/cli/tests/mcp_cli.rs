@@ -348,7 +348,7 @@ mod sealed_store {
                     .ok_or_else(|| format!("not an mcp url: {url}"))?;
                 let args =
                     ["--json", &format!("@{server}"), "resources-read", uri].map(str::to_owned);
-                match yi_mcp_cli::run(&args, None) {
+                match yi_mcp_cli::run(&args, None, None) {
                     0 => Ok(serde_json::Map::from_iter([(
                         "text".to_owned(),
                         "ok".into(),
@@ -437,4 +437,83 @@ mod sealed_store {
         assert_eq!(after, before, "the store must be untouched: {stdout}");
         Ok(())
     }
+}
+
+#[test]
+fn a_cells_mcp_call_runs_claude_code_hooks_under_its_mcp_name() -> TestResult {
+    let home = mcp_home()?;
+    let log = home.home.join("mcp-hook.jsonl");
+    let context = serde_json::json!({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "echo ctx"}});
+    let hooks = serde_json::json!({"hooks": {
+        "PreToolUse": [
+            {"matcher": "mcp__fixture__echo", "hooks": [{"type": "command", "command": format!("cat >> '{0}'; echo >> '{0}'", log.display())}]},
+            {"matcher": "mcp__fixture__add", "hooks": [{"type": "command", "command": "echo 'no adding' >&2; exit 2"}]}
+        ],
+        "PostToolUse": [{"matcher": "mcp__.*", "hooks": [{"type": "command", "command": format!("printf '%s' '{context}'")}]}]
+    }});
+    std::fs::create_dir_all(home.home.join(".claude"))?;
+    std::fs::write(
+        home.home.join(".claude/settings.json"),
+        serde_json::to_vec(&hooks)?,
+    )?;
+    let cwd = home.home.join("work");
+    std::fs::create_dir_all(&cwd)?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe { std::env::set_var("YI_CLAUDE_HOOKS", "1") };
+    let connect = yi_in(&home, &cwd, &["mcp", "connect", "fixture", "@s", "--json"])?;
+    assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
+    let echo = ["mcp", "@s", "tools-call", "echo", "message:=hi", "--json"];
+    let called = yi_in(&home, &cwd, &echo)?;
+    assert_eq!(called.code, 0, "stderr: {}", called.stderr);
+    let result: serde_json::Value = serde_json::from_str(called.stdout.trim())?;
+    assert_eq!(result["content"][0]["text"], "hi");
+    assert_eq!(
+        result["content"][1]["text"],
+        "[Claude Code hook context: echo ctx]"
+    );
+    let input: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&log)?.trim())?;
+    assert_eq!(input["tool_name"], "mcp__fixture__echo");
+    assert_eq!(input["tool_input"], serde_json::json!({"message": "hi"}));
+    let add = ["mcp", "@s", "tools-call", "add", "a:=2", "b:=40", "--json"];
+    let refused = yi_in(&home, &cwd, &add)?;
+    assert_eq!(refused.code, 3, "stdout: {}", refused.stdout);
+    assert!(refused.stderr.contains("no adding"), "{}", refused.stderr);
+    Ok(())
+}
+
+#[test]
+fn a_cells_mcp_call_names_the_claude_code_hooks_it_skipped() -> TestResult {
+    let home = mcp_home()?;
+    let http = serde_json::json!({"type": "http", "url": "http://localhost:1/hook"});
+    let user =
+        serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "mcp__.*", "hooks": [http]}]}});
+    std::fs::create_dir_all(home.home.join(".claude"))?;
+    std::fs::write(
+        home.home.join(".claude/settings.json"),
+        serde_json::to_vec(&user)?,
+    )?;
+    let cwd = home.home.join("work");
+    let deny = serde_json::json!({"type": "command", "command": "exit 2"});
+    let project =
+        serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "mcp__.*", "hooks": [deny]}]}});
+    std::fs::create_dir_all(cwd.join(".claude"))?;
+    std::fs::write(
+        cwd.join(".claude/settings.json"),
+        serde_json::to_vec(&project)?,
+    )?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe { std::env::set_var("YI_CLAUDE_HOOKS", "1") };
+    let connect = yi_in(&home, &cwd, &["mcp", "connect", "fixture", "@s", "--json"])?;
+    assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
+    let echo = ["mcp", "@s", "tools-call", "echo", "message:=hi", "--json"];
+    let called = yi_in(&home, &cwd, &echo)?;
+    assert_eq!(called.code, 0, "stderr: {}", called.stderr);
+    for notice in ["type http is not supported", "run `yi trust` in"] {
+        assert!(
+            called.stdout.contains(notice),
+            "{notice}: {}",
+            called.stdout
+        );
+    }
+    Ok(())
 }

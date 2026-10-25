@@ -44,6 +44,7 @@ pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
 pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> Result<(), String> {
+    crate::claude_hooks::guard_shell(check, cwd)?;
     let mut command = yi_tools::keyless_command("sh");
     command.arg("-c").arg(check).current_dir(cwd);
     let deadline = Instant::now()
@@ -71,7 +72,7 @@ pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> 
 pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
 
 /// # Errors
-/// The shell did not spawn. Runs `/bin/sh -c` with `env_clear()` plus the base allowlist.
+/// No spawn, or a Claude Code Bash hook refused it. `/bin/sh -c`, `env_clear()` plus the allowlist.
 pub(crate) fn run_check_in(
     cwd: &std::path::Path,
     command: &str,
@@ -80,6 +81,7 @@ pub(crate) fn run_check_in(
     deadline: Instant,
     stop: Option<&yi_tools::CancelFlag>,
 ) -> Result<yi_tools::CommandCapture, String> {
+    crate::claude_hooks::guard_shell(command, cwd)?;
     let mut shell = yi_tools::command("/bin/sh");
     shell.arg("-c").arg(command).current_dir(cwd).env_clear();
     for name in CHECKER_ENV_BASE

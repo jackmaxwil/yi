@@ -930,6 +930,7 @@ fn mcp_enabled() -> bool {
 }
 
 mod login;
+mod mcp_hooks;
 mod shells;
 use shells::{run_console_command, run_serve_command, run_tui_command};
 
@@ -948,7 +949,11 @@ fn mcp_fast_path() {
             .mcp
             .as_ref()
             .and_then(|mcp| mcp.token_store.as_deref());
-        std::process::exit(yi_mcp_cli::run(&raw, token_store));
+        let hooks = mcp_hooks::McpHooks::load();
+        let hooks = hooks
+            .as_ref()
+            .map(|hooks| hooks as &dyn yi_mcp_cli::CallHooks);
+        std::process::exit(yi_mcp_cli::run(&raw, token_store, hooks));
     }
 }
 

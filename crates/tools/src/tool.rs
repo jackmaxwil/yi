@@ -127,7 +127,19 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Each file this call would change, its text before and after, read without touching disk.
+    fn changes(&self, _input: &Map<String, Value>, _cwd: &std::path::Path) -> Vec<FileChange> {
+        Vec::new()
+    }
+
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput;
+}
+
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub path: std::path::PathBuf,
+    pub before: String,
+    pub after: String,
 }
 
 pub fn text_output(text: impl Into<String>) -> ToolOutput {
