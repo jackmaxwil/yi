@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use yi_tools::cut;
 use yi_types::channel::MESSAGE_MAX_BYTES;
 
 use super::channel::{Appended, Channel};
@@ -330,18 +331,23 @@ fn exec(command: &str, cwd: &Path) -> Value {
             if size <= MESSAGE_MAX_BYTES {
                 return data;
             }
-            // Invariant: the channel refuses a message past MESSAGE_MAX_BYTES whole, `ok` included;
-            // the view sits near that size before JSON adds bytes, so the head goes: verdicts end.
-            let (total, rerun) = (output.len(), crate::goal::rerun_in(cwd, command));
-            let row = |kept: usize| {
-                format!(
-                    "[… {kept} of {total} bytes kept (MESSAGE_MAX_BYTES {MESSAGE_MAX_BYTES}); the rest: bash ({rerun}) > exec.log 2>&1, then read exec.log]"
-                )
-            };
-            let probe = level(&format!("{}\n{output}", row(total)))
-                .to_string()
-                .len();
-            let from = output.ceil_char_boundary(probe.saturating_sub(MESSAGE_MAX_BYTES));
+            // Invariant: the channel refuses a message past MESSAGE_MAX_BYTES whole, `ok` included,
+            // counting bytes as sent (a quote two, a control byte six): the tail is walked as sent.
+            let total = output.len();
+            let next = yi_tools::rerun("bash", &crate::goal::rerun_in(cwd, command), "exec.log");
+            let cap = "MESSAGE_MAX_BYTES";
+            let row = |kept| cut(kept, total, "bytes kept", cap, MESSAGE_MAX_BYTES, &next);
+            let room = level(&format!("{}\n", row(total))).to_string().len();
+            let sent = |c: char| serde_json::to_string(&c).map_or(6, |s| s.len().saturating_sub(2));
+            let from = output
+                .char_indices()
+                .rev()
+                .scan(MESSAGE_MAX_BYTES.saturating_sub(room), |room, (at, c)| {
+                    *room = room.checked_sub(sent(c))?;
+                    Some(at)
+                })
+                .last()
+                .unwrap_or(output.len());
             let tail = output.get(from..).unwrap_or_default();
             level(&format!("{}\n{tail}", row(tail.len())))
         }
