@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use ratatui::text::Line;
+use crate::common::flat;
 use unicode_width::UnicodeWidthStr;
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::{KeyCodeValue, SingleKey};
@@ -14,18 +14,6 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
-}
-
-fn flat(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
 }
 
 fn key(code: KeyCodeValue) -> SingleKey {

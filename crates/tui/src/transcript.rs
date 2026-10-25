@@ -120,6 +120,11 @@ pub(crate) fn todo_finished(text: &str) -> Option<String> {
 }
 
 pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
+    if tool == "ask_user"
+        && let Some(question) = crate::question::Question::from_args(args)
+    {
+        return question.row();
+    }
     if tool == "edit" {
         let targets = args
             .get("patch")

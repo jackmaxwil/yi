@@ -1,5 +1,6 @@
 //! A child's question, stall and second run as the human sees them, and the reply box.
 use crate::common;
+use crate::common::flat;
 
 use std::error::Error;
 use std::sync::Arc;
@@ -57,14 +58,6 @@ fn update(status: ChildStatus, flag: Option<ChildFlag>) -> ChildUpdate {
         flag,
     }
 }
-
-fn flat(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
-        .collect()
-}
-
 /// Dies with the card reading only the child's status: a child blocked on a question drew as a
 /// plain running card, a stalled one the same, and a woken one stayed `done` in scrollback.
 #[test]

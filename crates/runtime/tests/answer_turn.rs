@@ -268,3 +268,50 @@ async fn input_typed_during_the_turn_opens_the_next_one() -> TestResult {
     );
     Ok(())
 }
+/// Dies with a persisted turn losing its terminate decision on resume: the entry the store
+/// holds for a turn-ending `answer` call carries the flag, so a resumed session reads the turn as ended.
+#[tokio::test]
+async fn a_turn_ending_answer_persists_its_terminate_flag() -> TestResult {
+    let root = Scratch::new("yi-answer-persist-terminate")?;
+    let store = memory_store();
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![
+        calls(vec![call(
+            "c1",
+            "todo",
+            json!({"op": "init", "items": ["write the note"]}),
+        )]),
+        says("Done."),
+        calls(vec![
+            call(
+                "c2",
+                "todo",
+                json!({"op": "done", "label": "write the note", "evidence": "`true` exit 0"}),
+            ),
+            call("c3", "answer", json!({"summary": "Wrote the note"})),
+        ]),
+        says("A second answer nobody asked for."),
+    ]);
+    let mut session = session(Arc::clone(&provider));
+    session.attach_store(Arc::clone(&store))?;
+    wired(&mut session, &root, provider);
+    session.prompt("write the note")?;
+    session.wait_idle().await;
+    let stored =
+        yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery::default())?;
+    let flag = (stored.iter()).find_map(|entry| match entry {
+        yi_types::entry::Entry::Message {
+            message: AgentMessage::ToolResult { tool_call_id, .. },
+            terminate,
+            ..
+        } if tool_call_id == "c3" => Some(*terminate),
+        _ => None,
+    });
+    assert_eq!(
+        flag,
+        Some(Some(true)),
+        "the persisted answer entry must carry terminate: Some(true), got {flag:?} in {} entries",
+        stored.len()
+    );
+    Ok(())
+}

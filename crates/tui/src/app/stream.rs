@@ -680,9 +680,7 @@ pub(super) fn fold_child(
         } => {
             fold(&mut state.streaming, assistant_message_event);
             if let Some(AgentMessage::Assistant { content, .. }) = &state.streaming {
-                state.cell.answer = Some(crate::cell::tail_bounded(crate::transcript::text_of(
-                    content,
-                )));
+                state.cell.keep_answer(crate::transcript::text_of(content));
                 return true;
             }
             false
@@ -745,7 +743,13 @@ impl App {
         };
         cell.elapsed_ms = elapsed;
         let text = text_of(&result.content);
-        self.settle_tool(cell, &text, is_error, result.details.clone());
+        self.settle_tool(
+            cell,
+            &text,
+            is_error,
+            result.details.clone(),
+            result.terminate == Some(true),
+        );
         self.commit_finished_tasks();
         self.intent = None;
     }
@@ -774,6 +778,7 @@ impl App {
         text: &str,
         is_error: bool,
         details: Value,
+        terminate: bool,
     ) {
         let is_error = yi_types::event::shown_failed(is_error, &details);
         cell.status = if is_error {
@@ -783,6 +788,10 @@ impl App {
         };
         cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
         cell.preview = result_preview(text, &details);
+        if cell.name == "ask_user" && !is_error && terminate {
+            cell.digest = None;
+            cell.preview = Vec::new();
+        }
         cell.details = details;
         // The HUD carries the list; a card per step was six cards a turn.
         if cell.name == "todo" && !is_error {

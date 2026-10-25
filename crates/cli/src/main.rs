@@ -445,7 +445,8 @@ fn build_session(
             session.events_sender(),
         )
         .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
-        .with_session_store(&default_session_dir(args)),
+        .with_session_store(&default_session_dir(args))
+        .with_unattended(unattended),
     );
     if prompts_close {
         broker.prompts_close_on_settle();
@@ -947,7 +948,8 @@ fn mcp_fast_path() {
             .mcp
             .as_ref()
             .and_then(|mcp| mcp.token_store.as_deref());
-        std::process::exit(yi_mcp_cli::run(&raw, token_store));
+        let version = env!("ARCHITECTURE_VERSION");
+        std::process::exit(yi_mcp_cli::run(&raw, token_store, version));
     }
 }
 

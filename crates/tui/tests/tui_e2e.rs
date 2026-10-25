@@ -1,10 +1,11 @@
 use crate::common;
 
+use crate::common::flat as flat_lines;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::VT100Backend;
+use crate::common::VT100Backend;
 
 use serde_json::{Map, Number};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
@@ -83,18 +84,6 @@ fn app() -> App {
         default_keymap(),
         80,
     )
-}
-
-fn flat_lines(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
 }
 
 #[test]

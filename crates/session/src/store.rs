@@ -127,11 +127,20 @@ impl SessionStore {
         lane: &str,
         message: AgentMessage,
     ) -> Result<String, SessionError> {
+        self.append_message_with_terminate(lane, message, None)
+    }
+
+    pub fn append_message_with_terminate(
+        &mut self,
+        lane: &str,
+        message: AgentMessage,
+        terminate: Option<bool>,
+    ) -> Result<String, SessionError> {
         let id = self.ids.next_id();
         let entry = Entry::Message {
             id: id.clone(),
             message,
-            terminate: None,
+            terminate,
             parent_id: None,
             seq: 0,
             timestamp: 0,
@@ -367,6 +376,28 @@ impl SessionStore {
             None => Ok(Vec::new()),
             Some(start) => self.state.find_entries_on_branch(&start, query, bounds),
         }
+    }
+
+    /// The first entry `visit` maps, from `lane`'s leaf toward the root, cloning none it passes.
+    /// Invariant: an entry is applied only after its parent and ids are unique, so the walk ends.
+    pub fn find_on_branch<T>(
+        &self,
+        lane: &str,
+        mut visit: impl FnMut(&Entry) -> Option<T>,
+    ) -> Option<T> {
+        let leaf = self.state.require_lane(lane).ok()??;
+        let mut entry = self.state.entry(&leaf)?;
+        loop {
+            if let Some(found) = visit(entry) {
+                return Some(found);
+            }
+            entry = self.state.entry(entry.parent_id()?)?;
+        }
+    }
+
+    /// The first entry `visit` maps, oldest first, cloning none it passes.
+    pub fn find_entry<T>(&self, visit: impl FnMut(&Entry) -> Option<T>) -> Option<T> {
+        self.state.entries().find_map(visit)
     }
 
     pub fn find_records(&self, query: &RecordQuery) -> Result<Vec<LaneRecord>, SessionError> {
