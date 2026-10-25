@@ -24,6 +24,7 @@ graph/refine.py              offline refiner for the procedural graph (D219): pr
 orient_census.py             read-only census of route telemetry and get_context packets in session files
 judge_replay.py              stage 0 judge replay over recorded sessions, read-only (D259); replay/ holds its prompts and schemas
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
+stops_on_fail.py             stops a run took while its last ipython cell printed FAIL, per root session (EXP-B3c)
 skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 search_gate.py               paired history-search gate (#1184): a fact printed only in a tool result, graded on the actor
@@ -214,6 +215,31 @@ covers the scenario schema and the census with no binary and no key. A
 real-model run refuses without `OPENROUTER_API_KEY` and without `--cap-usd`,
 naming the missing precondition and never a key value, and prints its
 `docs/eval-ledger.md` row.
+
+## Prefix capture
+
+```
+python3 evals/prefix_capture.py --binary target/debug/yi --checkout ~/Development/yi
+```
+
+What a Yi-on-Yi session reads before its first word, counted in a real run rather than built
+in a test. It clones the repo into an empty scratch directory and copies in what a clone omits:
+the checkout's untracked CLAUDE.md (or the one `--claude` names) and its gitignored skill
+directories (`.claude/skills`, `.pi/skills`, `.agents/skills`, `.yi/skills`), printing each
+copy. Then it runs `yi ask --model faux/faux-1` twice under a scratch HOME and the caller's
+PATH: once claiming a lane, once with `--here`. For each run it prints the bytes of every
+prompt slot and every instruction source in the session's opening `ext_state` entry, with the
+source's trust. A lane checks out tracked files only, so the copies reach the `--here` run
+alone. A CLAUDE.md with AGENTS.md's rules is deduped by content and never shows, so pass
+`--claude AGENTS.md` to measure a checkout whose CLAUDE.md was regenerated from .ruler. The
+scratch directory must be empty, because the checkpointer adds every file under the cwd. Zero
+spend; it rides no gate. `selftest.py::check_prefix_capture` pins the parse against
+`fixtures/replay/yi/`.
+
+The test-built counterpart is `report_the_prefix_size` in crates/runtime/tests/request_budget.rs.
+Its `ROLE_PREFIX` rows give each role's first request (root, leaf root child, leaf root child
+after the orchestrate trigger, reader, worker) in a bare, a lane and a main-checkout workspace,
+and check_request_budget.py ratchets the bare rows against `baselines/role_prefix.json`.
 
 ## Judge replay (D259)
 
@@ -577,6 +603,9 @@ python3 evals/kill.py report
   charged the whole cap, and a re-run is charged only the rows its own sweep appended. A
   subscription family's harbor spec is written unrun, because the sweep spends OpenRouter on
   its own model.
+- **EXP-B3c** is `evals/kill/x-b3c.py`, ladder step 6: the 12-task slice through the sweep,
+  read by `stops_on_fail.py`. Its Kimi family reads unrun until the sweep can carry a Kimi
+  route, so until then its verdict is KILL (GLM flash under 2 of 12 tasks) or UNRESOLVED.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
   `selftest.check_kill` pins all of this against a fake yi that replays recorded streams.
 
