@@ -124,6 +124,7 @@ fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
         tool.description(),
         yi_runtime::identity_fragment(),
         yi_runtime::doctrine_fragment(),
+        yi_runtime::delegation_fragment(),
     ]
     .join("\n");
     let pieces: Vec<&str> = text.split("rlm.").collect();
@@ -283,7 +284,7 @@ async fn cell(
     let (service, code) = (Arc::clone(service), code.to_owned());
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled, None)
+        KernelBridge::execute_cell(service.as_ref(), &code, "", &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?

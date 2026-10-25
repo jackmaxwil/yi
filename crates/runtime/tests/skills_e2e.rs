@@ -49,7 +49,7 @@ async fn cell(
     let code = code.into();
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled, None)
+        KernelBridge::execute_cell(service.as_ref(), &code, "", &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -118,7 +118,11 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         .unwrap_or_default();
         Box::pin(async move { Ok(reply) })
     });
-    yi_runtime::wiring::register_history_grep(&mut registry, session.store_handle());
+    yi_runtime::history::register_grep(
+        &mut registry,
+        session.store_handle(),
+        &yi_runtime::Wall::default(),
+    );
 
     let service = Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),

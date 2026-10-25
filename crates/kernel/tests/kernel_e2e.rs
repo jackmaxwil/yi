@@ -11,7 +11,7 @@ use yi_kernel::client::{
     AbortFlag, ExecuteOptions, HostFuture, HostHandlers, KernelManager, KernelOptions,
     KernelSnapshotConfig,
 };
-use yi_kernel::snapshot::{manifest_path_in, snapshot_path_in};
+use yi_kernel::snapshot::snapshot_path_in;
 use yi_types::image::{ImageDefect, image_defect};
 use yi_types::kernel::ExecuteStatus;
 
@@ -169,7 +169,7 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
 
     let echoed = kernel
         .execute(
-            "import rlm\nreply = await rlm.host_request('test.echo', {'value': 7})\nprint(reply['echoed']['value'])",
+            "import rlm\nreply = await rlm.host_request('test.echo', {'value': 7})\nprint(reply['echoed']['value'], sorted(reply['echoed']))",
             ExecuteOptions::default(),
         )
         .await?;
@@ -184,7 +184,11 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
             .map(|error| error.evalue.clone())
             .unwrap_or_default()
     );
-    assert_eq!(echoed.stdout.trim(), "7");
+    assert_eq!(
+        echoed.stdout.trim(),
+        "7 ['type', 'value']",
+        "the handler must receive the request as the cell sent it, with no key added"
+    );
 
     let unregistered = kernel
         .execute(
@@ -296,7 +300,6 @@ async fn an_over_cap_variable_is_serialized_once_not_every_checkpoint() -> TestR
     let dir = Scratch::new("yi-snap-overcap")?;
     let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
         path: snapshot_path_in(&dir),
-        manifest_path: manifest_path_in(&dir),
         max_bytes: None,
         max_variable_bytes: Some(1 << 20),
         debounce_ms: None,
@@ -329,7 +332,6 @@ async fn a_prune_keeps_an_over_cap_variable_that_shrank_in_place() -> TestResult
     let dir = Scratch::new("yi-snap-shrunk")?;
     let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
         path: snapshot_path_in(&dir),
-        manifest_path: manifest_path_in(&dir),
         max_bytes: None,
         max_variable_bytes: Some(1 << 20),
         debounce_ms: None,
@@ -493,7 +495,6 @@ async fn namespace_snapshot_revives_across_kernels() -> TestResult {
     let dir = Scratch::new("yi-snap-e2e")?;
     let config = KernelSnapshotConfig {
         path: snapshot_path_in(&dir),
-        manifest_path: manifest_path_in(&dir),
         max_bytes: None,
         max_variable_bytes: None,
         debounce_ms: None,
@@ -534,14 +535,14 @@ async fn namespace_snapshot_revives_across_kernels() -> TestResult {
         "IPython-injected names must never be snapshotted"
     );
     assert!(snapshot.bytes > 0 && config.path.is_file());
-    let held = std::fs::File::open(&config.manifest_path)?;
-    let before = std::fs::read(&config.manifest_path)?;
+    let held = std::fs::File::open(&config.path)?;
+    let before = std::fs::read(&config.path)?;
     first.execute("more = 1", ExecuteOptions::default()).await?;
     first.snapshot_state().await.ok_or("second snapshot")?;
     assert_ne!(
-        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&config.manifest_path)?),
+        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&config.path)?),
         std::os::unix::fs::MetadataExt::ino(&held.metadata()?),
-        "a reader holding the manifest must keep the old file, not see it rewritten in place"
+        "a reader holding the index must keep the old file, not see it rewritten in place"
     );
     let mut kept = Vec::new();
     std::io::Read::read_to_end(&mut &held, &mut kept)?;
@@ -574,7 +575,6 @@ async fn dispose_flushes_only_what_the_last_checkpoint_missed() -> TestResult {
     let dir = Scratch::new("yi-snap-settled")?;
     let config = KernelSnapshotConfig {
         path: snapshot_path_in(&dir),
-        manifest_path: manifest_path_in(&dir),
         max_bytes: None,
         max_variable_bytes: None,
         debounce_ms: Some(600_000),
@@ -595,10 +595,13 @@ async fn dispose_flushes_only_what_the_last_checkpoint_missed() -> TestResult {
     let second = manager_with_snapshot(Some(config.clone()))?;
     second.execute("y = 2", ExecuteOptions::default()).await?;
     second.dispose().await;
-    let manifest = std::fs::read_to_string(&config.manifest_path)?;
+
+    let third = manager_with_snapshot(Some(config.clone()))?;
+    let restore = third.restore_state().await.ok_or("restore result")?;
+    third.dispose().await;
     assert!(
-        manifest.contains("\"y\""),
-        "the cell after the checkpoint was lost: {manifest}"
+        restore.restored.contains(&"y".to_owned()),
+        "the cell after the checkpoint was lost: {restore:?}"
     );
     Ok(())
 }
@@ -608,7 +611,6 @@ async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResul
     let dir = Scratch::new("yi-prune-e2e")?;
     let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
         path: snapshot_path_in(&dir),
-        manifest_path: manifest_path_in(&dir),
         max_bytes: None,
         // Tiny cap so the test does not have to allocate 16 MiB.
         max_variable_bytes: Some(1_024),

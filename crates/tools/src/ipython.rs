@@ -29,6 +29,7 @@ pub trait KernelBridge: Send + Sync {
     fn execute_cell(
         &self,
         code: &str,
+        call_id: &str,
         cancelled: &CancelFlag,
         recovery_dir: Option<&Path>,
     ) -> Result<KernelCellOutcome, String>;
@@ -143,7 +144,9 @@ impl Tool for IpythonTool {
             Err(message) => return error_output(message),
         };
         let (cancelled, dir) = (&context.cancelled, context.recovery_dir.as_deref());
-        let outcome = self.bridge.execute_cell(code, cancelled, dir);
+        let outcome = self
+            .bridge
+            .execute_cell(code, &context.call_id, cancelled, dir);
         let (rows, dropped) = self
             .calls
             .as_ref()
@@ -243,29 +246,17 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
             data: attachment.data.clone(),
             mime_type: attachment.mime_type.clone(),
         }));
-    // A kernel edit becomes a real patch here, where every other patch is
-    // computed, rather than being reassembled by whoever renders it.
-    let diffs: Vec<Value> = result
-        .diffs
-        .iter()
-        .map(|diff| {
-            let patch = crate::diff::patch(&diff.old_str, &diff.new_str, Path::new(&diff.path));
-            json!({ "path": diff.path, "patch": detail_text(patch.as_str()) })
-        })
-        .collect();
     // The streams are carried apart from the joined text so a renderer can style stderr
     // and a traceback differently; the joined form stays the model's view.
     output.result.details = json!({
         "status": result.status,
         "durationMs": result.duration_ms,
-        "diffs": diffs,
         "attachments": result.attachments.len(),
         "attachmentMedia": checked.iter().map(|(attachment, defect)| if defect.is_none() {
             json!({ "mime_type": attachment.mime_type, "path": attachment.path })
         } else {
             json!(attachment)
         }).collect::<Vec<_>>(),
-        "sentAgentMessages": result.sent_agent_messages,
         "kernelRestarted": outcome.kernel_restarted,
         "code": detail_text(code),
         "stdout": detail_text(&result.stdout),

@@ -46,6 +46,7 @@ pub struct HistoryHit {
     pub entry_id: String,
     pub entry_type: String,
     pub snippet: String,
+    pub cut: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

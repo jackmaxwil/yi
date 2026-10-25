@@ -592,7 +592,7 @@ impl Builder<'_> {
     }
 }
 
-const TAB_STOP: usize = 4;
+pub(crate) const TAB_STOP: usize = 4;
 
 /// Incident: ratatui drops control characters, so a tab vanished with the indent it carried.
 fn expand_tabs(text: &str) -> String {
