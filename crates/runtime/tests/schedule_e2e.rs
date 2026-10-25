@@ -310,6 +310,25 @@ async fn a_leading_cron_sets_a_cron_heartbeat_shown_at_its_local_time() -> TestR
     Ok(())
 }
 
+#[test]
+fn a_multibyte_every_schedule_gets_the_grammar_refusal() -> TestResult {
+    let (_dir, store) = temp_store("multibyte")?;
+    let service = HeartbeatService::new(Arc::clone(&store), "/tmp");
+    service.bind_session("test".to_owned());
+    let refused = service.run("/heartbeat --every да watch it");
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|why| why.starts_with("Unsupported cron schedule")),
+        "{refused:?}"
+    );
+    assert!(
+        store.snapshot().jobs.is_empty(),
+        "a refused schedule was stored"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn heartbeat_surface_set_status_pause_clear_round_trip() -> TestResult {
     let (_dir, store) = temp_store("surface")?;
