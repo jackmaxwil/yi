@@ -13,6 +13,7 @@ pub(super) fn lines(
     records: &[JournalRecord],
     id: &PlanId,
     todo: &Todo,
+    inlined: Option<&Value>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     let schemas: Vec<_> = todo
@@ -28,18 +29,19 @@ pub(super) fn lines(
         .delegation
         .as_ref()
         .is_some_and(|delegation| delegation.output.is_some());
-    if declared || !schemas.is_empty() {
+    if inlined.is_none() && (declared || !schemas.is_empty()) {
         lines.push(
             "Answer with only a JSON value matching the schema: no prose and no fence around it."
                 .to_owned(),
         );
     }
     for schema in schemas {
-        let text = artifacts
-            .get(&schema.digest)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .map(|value| value.to_string())
+        let value = (artifacts.get(&schema.digest).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        if value.is_some() && value.as_ref() == inlined {
+            continue;
+        }
+        let text = (value.map(|value| value.to_string()))
             .filter(|text| text.chars().count() <= SCHEMA_CHARS);
         lines.push(match text {
             Some(text) => format!("Schema: {text}"),
