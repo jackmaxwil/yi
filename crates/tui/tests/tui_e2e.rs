@@ -46,6 +46,64 @@ fn faux_model() -> Model {
     }
 }
 
+/// Dies with the second Enter of two quick ones vanishing: the UI had not seen `AgentStart`, so it
+/// sent a prompt, the runtime answered busy, and the bridge dropped the refusal.
+#[test]
+fn a_prompt_met_by_a_busy_session_steers_the_run_instead_of_vanishing() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let _guard = runtime.enter();
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        ["first answer", "second answer"]
+            .map(|reply| {
+                yi_runtime::faux::faux_assistant_message(
+                    vec![yi_runtime::faux::faux_text(reply)],
+                    StopReason::Stop,
+                )
+            })
+            .to_vec(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: yi_runtime::ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let hold = &session.provider().faux_hold;
+    hold.arm("text_delta", 1);
+    assert_eq!(yi_tui::app::submit(&session, "first"), None);
+    wait_for("the first run to reach its hold", || hold.reached())?;
+
+    let notice = yi_tui::app::submit(&session, "second");
+    assert_eq!(
+        notice.as_deref(),
+        Some("a turn was already running · your message steers it")
+    );
+    assert!(hold.release());
+    wait_for("the steered message to be answered", || {
+        let said = format!("{:?}", session.messages());
+        said.contains("first answer") && said.contains("second answer")
+    })?;
+    Ok(())
+}
+
+fn wait_for(what: &str, mut ready: impl FnMut() -> bool) -> TestResult {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ready() {
+        if Instant::now() > deadline {
+            return Err(format!("timed out waiting for {what}").into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    Ok(())
+}
+
 fn faux_session(reply: &str) -> AgentSession {
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![yi_runtime::faux::faux_assistant_message(
@@ -159,7 +217,6 @@ fn a_diff_body_lands_on_a_real_screen_below_a_viewport_offset() -> TestResult {
     let cell = Cell::Tool(yi_tui::cell::ToolCell {
         name: "edit".to_owned(),
         call_id: String::new(),
-        intent: None,
         status: yi_tui::cell::ToolStatus::Done,
         summary: yi_tui::cell::ToolCell::summary_of("edit", "src/lib.rs"),
         digest: Some("updated; first change at line 2".to_owned()),
@@ -777,7 +834,7 @@ fn each_kind_of_work_puts_its_own_state_on_the_orb() -> TestResult {
     let cases = [
         ("read", OrbState::Reading),
         ("grep", OrbState::Searching),
-        ("fetch", OrbState::Browsing),
+        ("get_context", OrbState::Reading),
         ("edit", OrbState::Editing),
         ("bash", OrbState::Executing),
         ("ipython", OrbState::Computing),
@@ -2761,6 +2818,33 @@ fn the_local_port_answers_now_and_apply_is_the_only_writer() -> TestResult {
         "an empty tree source is a notice: {committed:?}"
     );
     Ok(())
+}
+
+/// Dies with a false row: Enter on the current leaf in `/tree` rewinds nothing (no abandoned
+/// branch), and the solo notice still told the person the conversation was rewound.
+#[test]
+fn a_rewind_onto_the_leaf_adds_no_notice_but_one_that_abandons_does() {
+    let mut app = app();
+    let mut said = |abandoned| {
+        let entries = Vec::new();
+        app.apply(yi_tui::port::Reply::Rewound {
+            entries,
+            unsent: None,
+            abandoned,
+        });
+        let rows = flat_lines(&app.take_commits());
+        rows.iter().any(|row| row.contains("conversation rewound"))
+    };
+    assert!(!said(None), "nothing was abandoned, so nothing was rewound");
+    let messages = vec![yi_runtime::session::user_input("ping")];
+    let stub = yi_runtime::BranchStub {
+        from_id: "leaf".to_owned(),
+        messages,
+    };
+    assert!(
+        said(Some(stub)),
+        "a rewind that left a branch says the files stayed"
+    );
 }
 
 /// The chat paints into any rectangle of a buffer: the status row lands on the rect's last

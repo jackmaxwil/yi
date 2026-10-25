@@ -641,11 +641,6 @@ fn schedule_reflow(app: &mut App) {
     if !change.changed && !app.reflow.reflow_needed_for_width(width) {
         return;
     }
-    if app.running {
-        // A rebuild now can only render the partial that exists now; the end of
-        // the stream has to repeat it from the settled text.
-        app.reflow.mark_resize_requested_during_stream();
-    }
     app.reflow
         .schedule_debounced(Some(width), std::time::Instant::now());
 }
@@ -667,9 +662,6 @@ fn run_reflow<B>(
     app.reflow.clear_pending_reflow();
     let target = u16::try_from(app.width).unwrap_or(u16::MAX);
     app.reflow.mark_reflowed_width(target);
-    if app.running {
-        app.reflow.mark_ran_during_stream();
-    }
     if app.history.is_empty() {
         return;
     }

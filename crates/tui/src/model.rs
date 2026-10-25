@@ -254,6 +254,13 @@ impl BottomView for ModelPopup {
         }
     }
 
+    fn paste(&mut self, text: &str) {
+        if self.stage.is_none() {
+            self.query.push_str(&crate::popup::one_line(text));
+            self.selected = 0;
+        }
+    }
+
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult {
         let last = self.rows().saturating_sub(1);
         let typing = self.stage.is_none();

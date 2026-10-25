@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.flock";
-const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS: u128 = 30_000;
 const SWEEP_AFTER_SECS: u64 = 86_400;
 
 fn bootstrap_lock_path(venv: &Path) -> PathBuf {
@@ -26,33 +25,6 @@ pub fn process_is_running(pid: u32) -> std::io::Result<bool> {
 #[cfg(not(unix))]
 pub fn process_is_running(_pid: u32) -> std::io::Result<bool> {
     Ok(true)
-}
-
-/// A probe that could not run says nothing of the holder: the lock's age decides, as for no pid.
-pub fn lock_is_stale(lock_dir: &Path, probe: Option<std::io::Result<bool>>) -> bool {
-    match probe {
-        Some(Ok(running)) => !running,
-        Some(Err(_)) | None => lock_missing_pid_is_stale(lock_dir),
-    }
-}
-
-pub fn read_lock_pid(lock_dir: &Path) -> Option<u32> {
-    let raw = std::fs::read_to_string(lock_dir.join("pid")).ok()?;
-    let pid: u32 = raw.trim().parse().ok()?;
-    (pid > 0).then_some(pid)
-}
-
-pub fn lock_missing_pid_is_stale(lock_dir: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(lock_dir) else {
-        return false;
-    };
-    let Ok(modified) = meta.modified() else {
-        return false;
-    };
-    modified
-        .elapsed()
-        .map(|age| age.as_millis() > BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS)
-        .unwrap_or(false)
 }
 
 /// A flock, so the OS releases it with its holder: a boot killed mid-build frees the lock to
