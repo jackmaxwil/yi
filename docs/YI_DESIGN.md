@@ -239,12 +239,16 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   extra }`. Settled by: D115, D337, D338
 
 ### 4.5 Interrupt
-- `abort` fires `InterruptSignal` (sets `fired`, bumps `epoch`, wakes waiters); a run clears
-  `fired` only if the epoch is the one read at admission. A streaming request ends with its
-  partial as `Aborted`; every call not yet run is answered `ToolErrorKind::Aborted` with its
-  start and end events; running tools see their cancel flag. A fired interrupt sends no further
-  request, a compaction summarizer's included: the run settles as an empty `Aborted` turn.
-- `cut` is a separate flag, set by the loop and read by provider pumps between SSE events.
+- `abort` fires `InterruptSignal` (bumps `epoch`, sets `fired` and the request's `cut`, wakes
+  waiters), so the provider stops on the wire at its next SSE event; a run clears `fired` only
+  if the epoch is the one read at admission. A streaming request ends with its partial as
+  `Aborted`, one waiting out a reasoning cut's drain included; every call not yet run is
+  answered `ToolErrorKind::Aborted` with its start and end events; running tools see their
+  cancel flag. A fired interrupt sends no further request, a compaction summarizer's included:
+  the run settles as an empty `Aborted` turn.
+- `cut` is one request's flag, set by the loop at a reasoning budget or deadline and by a fire,
+  and read by provider pumps between SSE events; each request opens with a fresh one, so a
+  later request never clears an earlier request's cut.
 - Owner: [`crates/loop/src/interrupt.rs`](../crates/loop/src/interrupt.rs); Settled by: D163, D245
 
 ## 5. Provider
@@ -283,12 +287,15 @@ The system prompt is a table of ranked slots plus a yard of fenced external text
 extension `Host` whose synchronous extensions turn session events into effects.
 
 - `PromptState::assemble` joins three blocks with `SYSTEM_BLOCK_SEPARATOR`: ranks ≤ `Doctrine`,
-  ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, the permission-mode
+  ranks > `Doctrine`, the yard. `ext::install` attaches identity, doctrine, `delegation` (Doctrine
+  rank, only when `can_delegate`), the permission-mode
   fragment, user system text and schema instruction (text compiled in from
   `crates/runtime/src/prompts/`); a headless ask (`yi ask` or bare prompt words) with no terminal on stdin also attaches
   `unattended` (Mode rank): nobody answers, hidden checks grade the task text, a check per
   requirement, one verifier cell before stopping. Then it registers `project-resources` (skills catalog), `pack`
-  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `plugins` (the card of each plugin found,
+  (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate` (only when `ExtOptions::can_delegate`, which a
+  child gets while its own depth is below `max_depth`; one the depth cap stops from spawning is
+  never sent the protocol), `plugins` (the card of each plugin found,
   §17.1), `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
@@ -310,7 +317,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
-  out-edges (8), guidance (160 B), pitfalls (3 × 120 B), and forbids self edges.
+  out-edges (8), guidance (160 B), and forbids self edges.
 - Levers: tunables are read via `levers::get()`, `DEFAULT` unless `init` (first statement of
   `build_session`) loaded `YI_LEVERS`, read only with `--eval`; a bad file is `refusal:config`.
 - Skills catalog: `window × 4 / 50` bytes, clamped 8-32 KiB; descriptions clip to 120, then 60
@@ -336,7 +343,8 @@ A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at sessio
 - `builtin_tools_with` builds `read edit write grep bash get_context`; `session_tools` adds exec
   tools from `~/.yi/tools` (`--schema`, JSON on stdin, exit ≠ 0 is an error); wiring pushes
   `ipython`, `annotate`, `plan`, `todo`, and `ask_user`. `check_request_budget.py` prices system block plus tool
-  table against a shrink-only baseline and locks a sha256 per tool in `tool_surface.json`.
+  table against a shrink-only baseline and locks each tool's text and sha256 in `tool_surface.json`;
+  a PR whose lock change only removes whole sentences from a key's old text owes no claims ledger.
 - Deferred guides: the table is byte-constant for a session, so the documentation is deferred,
   never the tool. `edit`, `plan`, `todo` and `ask_user` carry a summary, their full schema
   (`plan` without field prose below the top level) and `read("yi://tools/<name>")`, which serves
@@ -617,7 +625,11 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
-  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
+  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A `root` child the
+  depth cap leaves unable to spawn (its own depth has reached `max_depth`, so every one at the
+  default `rlm.maxDepth` of 1) is a leaf: no `orchestrate` protocol, and no `delegation` fragment,
+  which holds the working model's delegation rules, Planning's lift rule and the RLM children
+  bullet. A reader is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
@@ -628,8 +640,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
   partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
 - A worker (`role="worker"`, D334) is the same brief with writes: `prompts/worker.md`, the
-  permission mode, the project's instruction files and the language packs are its whole system
-  prompt, `tools` a subset of `read`, `grep`, `edit`, `write`, `bash` and `get_context` (the first
+  project's instruction files and the language packs are its whole system prompt (not the
+  permission mode; its wall and broker still bind it), `tools` a subset of `read`, `grep`, `edit`, `write`, `bash` and `get_context` (the first
   four by default), `turns` 12 (at most 40). Its writes pass its wall, the broker and the user's
   gate rules as a root child's do, reminder rules reach it, and it compacts. It holds a worker
   slot, may take `isolation`, and refuses `fork` and `check`.
@@ -824,7 +836,11 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
   and warms, `Drop` detaches; over a dirty tree `release` and `Drop` keep the session and branch, so
   the slot is that session's orphan. `discard` and `yi lanes reap` are the only tree wipes, and each
   counts the paths it dropped. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
-  `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2).
+  `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2). `merge_worktree`'s
+  optional `check` meets the host gate a spawn's check meets, then runs in the lane with a cleared
+  environment under the session deadline before the lane settles, so its unignored writes are
+  committed with the child's work; red or cut, the reply is `merged: false` with
+  `check: {exit, tail}` and the branch kept as a conflict keeps it, with no disposition recorded.
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
 - The warmer runs offline under Seatbelt, only for a lockfile hash a session already synced.
@@ -928,12 +944,12 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 
 ## 17. Surfaces
 ### 17.1 CLI
-`yi` is the binary of `yi-cli`. Arguments are hand-parsed with `lexopt`; there is no `--help`.
+`yi` is the binary of `yi-cli`. Arguments are hand-parsed with `lexopt` against one table of verbs and flags ([`commands.rs`](../crates/cli/src/commands.rs)): dispatch routes by it, the parser refuses a flag it lacks, `yi --help`, `-h` and a bare `yi help` print it and exit 0, and the shipped completions are checked against it.
 
 | Verb | What |
 |---|---|
-| `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask` |
-| `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
+| `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask`. A lone word one edit from a verb (four or five letters; two edits from six) is refused with the verb and `yi ask <word>`, and a verb that reads no words (`version`, `rpc`, `acp`, `doctor`, `gc`, `serve`, `console`; `undo` reads only `list`) refuses trailing ones; `console` and `serve` refuse `--thinking`, `--system`, `--schema` and `--deadline` (a headless console drive reads `--deadline`), which never reach their sessions |
+| `ask`, `rpc`, `acp`, `serve` | One headless run (plain text puts a blank line between one turn's text and the next; `--json` prints each event as a JSON line, and `--no-deltas` leaves out the `message_update` ones); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
@@ -1243,7 +1259,7 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
-| `check_request_budget` | system-prompt and tool-table bytes; tool-surface hashes (D188) | `request_budget.json`, `tool_surface.json` |
+| `check_request_budget` | system-prompt and tool-table bytes; tool-surface texts and hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
 | `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |

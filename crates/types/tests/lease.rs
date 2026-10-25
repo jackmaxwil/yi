@@ -73,3 +73,23 @@ fn a_child_trail_line_round_trips_and_a_newer_one_is_kept() -> TestResult {
     assert_eq!(newer, ChildTrail::Other);
     Ok(())
 }
+
+/// Dies with `spawnedBy` required or renamed: every spawn line an older host wrote stops
+/// decoding, or the cell a new line names is lost on the way back out.
+#[test]
+fn a_spawn_line_names_its_cell_and_an_older_line_still_decodes() -> TestResult {
+    use yi_types::subagent::ChildTrail;
+    let older = r#"{"event":"spawned","name":"guardrail-scout","id":"sub-82050ef6","session":"0199a1b2-c3d4","path":"children/sub-82050ef6/1791862782935_0199a1b2-c3d4.jsonl","brief":"5f2c9e"}"#;
+    let ChildTrail::Spawned(line) = serde_json::from_str(older)? else {
+        return Err("not a spawn line".into());
+    };
+    assert_eq!(line.spawned_by, None);
+    let newer = r#"{"event":"spawned","name":"guardrail-scout","id":"sub-82050ef6","session":"0199a1b2-c3d4","path":"children/sub-82050ef6/1791862782935_0199a1b2-c3d4.jsonl","brief":"5f2c9e","spawnedBy":"toolu_01VZ4hK2"}"#;
+    let parsed: ChildTrail = serde_json::from_str(newer)?;
+    let ChildTrail::Spawned(line) = &parsed else {
+        return Err("not a spawn line".into());
+    };
+    assert_eq!(line.spawned_by.as_deref(), Some("toolu_01VZ4hK2"));
+    assert_eq!(serde_json::to_string(&parsed)?, newer);
+    Ok(())
+}

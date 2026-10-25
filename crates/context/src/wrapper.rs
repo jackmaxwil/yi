@@ -80,9 +80,8 @@ pub fn internal_source(message: &AgentMessage) -> Option<&str> {
         return None;
     };
     let rest = text.strip_prefix("<yi_internal_context source=\"")?;
-    let end = rest.find('"')?;
-    text.ends_with("</yi_internal_context>")
-        .then_some(&rest[..end])
+    let (source, _) = rest.split_once('"')?;
+    text.ends_with("</yi_internal_context>").then_some(source)
 }
 
 /// Custom entry kinds that ride the §4.2 wrapper: rendered `<yi_internal_context source="…">`
