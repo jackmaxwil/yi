@@ -88,7 +88,7 @@ fn carried(summary: &str) -> &str {
         .filter_map(|tag| body.find(tag))
         .min()
         .unwrap_or(body.len());
-    body[..end].trim()
+    body.get(..end).unwrap_or(body).trim()
 }
 
 /// The earliest cut point from which the rest of `messages` fits `budget`.

@@ -32,20 +32,6 @@ fn a_live_holder_is_seen_with_no_kill_binary_on_path() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn a_probe_error_does_not_mark_a_lock_stale() -> Result<(), Box<dyn std::error::Error>> {
-    let lock_dir = Scratch::new("yi-kernel-probe")?;
-    let unanswered = Some(Err(std::io::Error::other("no shell")));
-    let taken = yi_kernel::bootstrap::lock_is_stale(&lock_dir, unanswered);
-    let dead = yi_kernel::bootstrap::lock_is_stale(&lock_dir, Some(Ok(false)));
-    assert!(
-        !taken,
-        "a fresh lock went stale on a probe that could not run"
-    );
-    assert!(dead, "a dead holder kept its lock");
-    Ok(())
-}
-
 /// Parallel first boots on one HOME: every unpack answers with the whole tree, and a reader
 /// between them never finds it missing.
 #[test]

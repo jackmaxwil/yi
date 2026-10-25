@@ -1,0 +1,3913 @@
+---------------------------------------------------------------------------
+RecursionError                            Traceback (most recent call last)
+Cell In[3], line 4
+      1 def f(n):
+      2     return f(n + 1)
+      3 
+----> 4 f(0)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+Cell In[3], line 2, in f(n)
+      1 def f(n):
+----> 2     return f(n + 1)
+
+RecursionError: maximum recursion depth exceeded

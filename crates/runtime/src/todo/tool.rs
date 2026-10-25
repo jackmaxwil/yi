@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, text_output};
-use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel, TodoStateName};
-use yi_types::todo::PhaseName;
+use yi_types::plan::doc::{BlockedOn, TODO_LABEL_MAX, Todo, TodoLabel, TodoStateName};
+use yi_types::todo::{PhaseName, TodoId};
 
 use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
@@ -115,13 +115,22 @@ fn named(args: &Map<String, Value>) -> Option<String> {
 
 fn label(args: &Map<String, Value>, op: &'static str) -> Result<TodoLabel, ArgError> {
     let needle = named(args).ok_or(ArgError::Missing { op, field: "label" })?;
-    Todo::from_text(&needle)
-        .map(|item| item.label)
-        .map_err(|cause| ArgError::Malformed {
-            op,
-            field: "label",
-            cause: cause.to_string(),
-        })
+    // A whole text past the cap names its row by that row's own digest label; a copied label (its
+    // `…` too) or an id-led line is cut plainly, and the lookup matches it against the note.
+    let (needle, _) = yi_types::todo::split_cited(needle.trim());
+    let id_led = (needle.split_once(' ')).is_some_and(|(id, _)| TodoId::parse(id).is_some());
+    let shown = needle.trim_end_matches('…').trim_end();
+    let label = if id_led || shown.chars().count() <= TODO_LABEL_MAX {
+        let head: String = needle.chars().take(TODO_LABEL_MAX).collect();
+        TodoLabel::new(head.trim_end())
+    } else {
+        Todo::from_text(needle).map(|item| item.label)
+    };
+    label.map_err(|cause| ArgError::Malformed {
+        op,
+        field: "label",
+        cause: cause.to_string(),
+    })
 }
 
 /// `items`, which the v4 sweep's models also sent as `todos`.
@@ -195,31 +204,6 @@ pub fn infer_op(args: &Map<String, Value>) -> Option<&'static str> {
     }
 }
 
-/// Incident: 17 v4 `done` calls leaked GLM's call markup, `{"done<arg_key>evidence": …}` or
-/// `{"done": "evidence</arg_key><arg_value>…"}`; the field reads back and `infer_op` finds the op.
-pub fn unleak(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
-    let mut fixed = Cow::Borrowed(args);
-    for (key, value) in args {
-        let leaked = match key.rsplit_once("<arg_key>") {
-            Some((_, field)) => Some((field, value.clone())),
-            None => value
-                .as_str()
-                .and_then(|text| text.split_once("</arg_key><arg_value>"))
-                .filter(|(field, _)| field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-                .map(|(field, rest)| (field, Value::String(rest.to_owned()))),
-        };
-        if let Some((field, value)) = leaked
-            && !field.is_empty()
-            && !fixed.contains_key(field)
-        {
-            let map = fixed.to_mut();
-            map.remove(key);
-            map.insert(field.to_owned(), value);
-        }
-    }
-    fixed
-}
-
 /// Incident: four F0e `done` calls wrote `{"done": "t3", …}`; for an op whose one argument is
 /// the item that has a single reading, so it becomes `op` plus `id` (#474).
 pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
@@ -245,8 +229,7 @@ pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
 }
 
 pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
-    let unleaked = unleak(args);
-    let args = &unkey_op(&unleaked);
+    let args = &unkey_op(args);
     let op = string(args, "op")
         .or_else(|| infer_op(args).map(str::to_owned))
         .ok_or(ArgError::NoOp)?;
