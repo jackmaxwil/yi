@@ -10,6 +10,11 @@ shrinks it in its own commit; the schema lock merges to the union, since shapes 
 import json, pathlib, sys
 
 
+def atom(value):
+    """A tool-surface lock value is a bare hash or `{hash, text}`: one unit, known by its hash."""
+    return value["hash"] if isinstance(value, dict) and "hash" in value else value
+
+
 def merge(ours, theirs, base=None):
     """Both sides parsed; the result is the one a re-measure can only shrink.
     Incident: a hash only main moved kept the branch's stale side, and #1110's fix hook refused it."""
@@ -20,9 +25,9 @@ def merge(ours, theirs, base=None):
             a, b = ours.get(key), theirs.get(key)
             if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
                 out[key] = max(a, b)
-            elif isinstance(a, dict) and isinstance(b, dict):
+            elif isinstance(a, dict) and isinstance(b, dict) and "hash" not in a:
                 out[key] = merge(a, b, base.get(key))
-            elif a is None or (a == base.get(key) and b is not None):
+            elif a is None or (atom(a) == atom(base.get(key)) and b is not None):
                 out[key] = b
             else:
                 out[key] = a
@@ -54,6 +59,11 @@ def selfcheck():
     surface = merge({"tool:bash": "old", "tool:plan": "ours"}, {"tool:bash": "main", "tool:plan": "old"},
                     {"tool:bash": "old", "tool:plan": "old"})
     assert surface == {"tool:bash": "main", "tool:plan": "ours"}, "a value only theirs moved is theirs"
+    entry = lambda hash_: {"hash": hash_, "text": f"text of {hash_}"}
+    mixed = {"ours entry, theirs bare": (entry("old"), "new", "old", "new"), "both entries, bare base": (entry("old"), entry("new"), "old", entry("new")),
+             "ours moved, theirs entry": ("new", entry("old"), "old", "new")}
+    for name, (a, b, base, want) in mixed.items():
+        assert merge({"tool:bash": a}, {"tool:bash": b}, {"tool:bash": base}) == {"tool:bash": want}, f"lock shapes meet: {name}"
     assert merge({"version": "0.142.0", "loc": 73264}, {"version": "0.142.0", "loc": 73264}) == {"version": "0.142.0", "loc": 73264}
     baselines = pathlib.Path(__file__).resolve().parent / "guardrails/baselines"
     drift = [p.name for p in sorted(baselines.glob("*.json")) + [baselines / "schemas.lock"]
