@@ -12,6 +12,7 @@ use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::default_keymap;
 use yi_types::entry::Entry;
+use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::subagent::{ChildActivity, ChildFlag, ChildId, ChildStatus, ChildUpdate};
 
@@ -115,6 +116,40 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
     assert!(
         second.iter().any(|line| line.contains("↳ Writer")),
         "its second answer commits a second card: {second:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a cut preview replacing the answer a card is streaming: the preview ends in a
+/// `… [kept N of M chars …]` row that is no part of the answer, so its head must still be found.
+#[test]
+fn a_card_keeps_its_streamed_answer_when_a_cut_preview_arrives() -> TestResult {
+    let mut app = app();
+    app.adopt(&update(ChildStatus::Running, None), None);
+    let answer = format!("{}and its closing words", "r\u{e9}ponse ".repeat(50));
+    app.reduce_child("sub-writer", AgentEvent::MessageStart { message: said("") });
+    app.reduce_child(
+        "sub-writer",
+        AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: answer.clone(),
+            },
+        },
+    );
+    let head: String = answer.chars().take(240).collect();
+    let total = answer.chars().count();
+    let preview = format!(
+        "{head}… [kept 240 of {total} chars · cap PREVIEW_CHARS = 240 · read history://writer]"
+    );
+    let mut next = update(ChildStatus::Running, None);
+    next.token_count += 50;
+    next.answer_preview = Some(preview);
+    app.reduce_child_update(&next);
+    let rows = common::live_rows(&mut app)?;
+    assert!(
+        rows.iter().any(|row| row.contains("and its closing words")),
+        "the card still shows the whole streamed answer: {rows:#?}"
     );
     Ok(())
 }

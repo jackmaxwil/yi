@@ -24,6 +24,7 @@ pub(crate) const CONTEXT_MAX_KEYS: usize = 8;
 pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
+const ROUTE: &str = "write a value to a file and give local://<path> in partition";
 
 pub(crate) type Retired = (
     String,
@@ -37,12 +38,19 @@ pub(crate) type Commit<'a> =
 /// so the list is capped: a degenerate child buys one refusal, not unbounded checks.
 pub(crate) const MAX_DISCOVERIES: usize = 16;
 
-fn clamp(text: &str, cap: usize) -> String {
+/// Invariant: a cut of a child's return ends in a row naming kept over total, its cap and the
+/// call for the rest; a `total` of `None` means the sender cut the text before counting it.
+fn cut(text: &str, cap: usize, total: Option<usize>, name: &str, next: &str) -> String {
     if text.chars().count() <= cap {
         return text.to_owned();
     }
+    let total = total.map_or_else(|| format!("over {cap}"), |total| total.to_string());
     let kept: String = text.chars().take(cap).collect();
-    format!("{kept}… [truncated to {cap} chars]")
+    format!("{kept}… [kept {cap} of {total} chars · cap {name} = {cap} · {next}]")
+}
+
+pub(crate) fn clamp(text: &str, cap: usize, name: &str, next: &str) -> String {
+    cut(text, cap, Some(text.chars().count()), name, next)
 }
 
 /// Incident: values arrive pre-serialized because a host-side kernel read would queue behind
@@ -60,14 +68,17 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
             entries.len()
         ));
     }
+    let counted = kwargs.get("context_chars").and_then(Value::as_object);
     let mut block = String::from("<parent_context>\n");
     for (name, value) in entries {
         let text = value
             .as_str()
             .map_or_else(|| value.to_string(), str::to_owned);
-        block.push_str(&format!("{name} = {}\n", clamp(&text, CONTEXT_VALUE_CAP)));
+        let total = counted.and_then(|chars| usize::try_from(chars.get(name)?.as_u64()?).ok());
+        let row = cut(&text, CONTEXT_VALUE_CAP, total, "mail.context_value", ROUTE);
+        block.push_str(&format!("{name} = {row}\n"));
     }
-    block = clamp(&block, CONTEXT_TOTAL_CAP);
+    block = clamp(&block, CONTEXT_TOTAL_CAP, "mail.context_total", ROUTE);
     block.push_str("</parent_context>");
     Ok(Some(block))
 }
@@ -678,12 +689,17 @@ impl SubagentHost {
             )
         };
         let json = Self::json_answer(&text);
+        let tail = || {
+            let next = format!("read history://{name} for the whole answer");
+            clamp(&text, RESULT_TAIL_CHARS, "RESULT_TAIL_CHARS", &next)
+        };
         if let Some(schema) = schema {
             let schema = crate::schema::Schema::from_value(schema.clone())
                 .map_err(|error| format!("child \"{target}\" schema rejected: {error}"))?;
             let value = json.clone().ok_or_else(|| {
                 format!(
-                    "child \"{target}\" answered with text, not JSON, and a schema was given so JSON is required:\n{text}"
+                    "child \"{target}\" answered with text, not JSON, and a schema was given so JSON is required:\n{}",
+                    tail()
                 )
             })?;
             schema
@@ -700,7 +716,7 @@ impl SubagentHost {
             let result = serde_json::from_str::<ChildResult>(text.trim()).map_err(|error| {
                 format!(
                     "child \"{target}\" was spawned with a check, so it owes a result object {{\"value\": …, \"discoveries\": [ … ]}}: {error}\nIts answer was:\n{}",
-                    clamp(&text, RESULT_TAIL_CHARS)
+                    tail()
                 )
             })?;
             if result.discoveries.len() > MAX_DISCOVERIES {

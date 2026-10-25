@@ -151,7 +151,10 @@ impl App {
             if let Some(preview) = &update.answer_preview {
                 let folded = state.cell.answer.as_deref().unwrap_or_default();
                 let folded = folded.split_whitespace().collect::<Vec<_>>().join(" ");
-                let head = preview.trim_end_matches('…');
+                // Invariant: a cut preview ends in a `… [kept N of M chars …]` row; its head precedes it.
+                let head = preview
+                    .split_once("… [")
+                    .map_or(preview.as_str(), |cut| cut.0);
                 if !folded.contains(head) {
                     state.cell.answer = Some(preview.clone());
                 }
