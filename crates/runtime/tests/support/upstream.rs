@@ -37,11 +37,16 @@ pub(crate) fn root_with(
     ext: bool,
     tools: Tools,
 ) -> Result<(AgentSession, Arc<SubagentHost>), Box<dyn Error>> {
-    let (cwd, home) = (scratch.join("ws"), scratch.join("home"));
-    std::fs::create_dir_all(&cwd)?;
-    std::fs::create_dir_all(&home)?;
-    std::fs::write(cwd.join("notes.txt"), "red sun\nblue sky\ngreen sea\n")?;
-    let provider = Arc::new(
+    let provider = stream(&model, port, long_cache)?;
+    root_at(scratch, model, provider, broker, ext, tools, 1)
+}
+
+pub(crate) fn stream(
+    model: &Model,
+    port: u16,
+    long_cache: bool,
+) -> Result<Arc<ProviderStream>, Box<dyn Error>> {
+    Ok(Arc::new(
         ProviderStream::new(Some(ROOT_ID.to_owned()))
             .with_auth(&model.provider, key())
             .with_long_cache(long_cache)
@@ -50,7 +55,23 @@ pub(crate) fn root_with(
                 None,
                 None,
             )?),
-    );
+    ))
+}
+
+/// [`root_with`] on a built provider at an `rlm.maxDepth` other than the default 1.
+pub(crate) fn root_at(
+    scratch: &Scratch,
+    model: Model,
+    provider: Arc<ProviderStream>,
+    broker: Option<Arc<yi_runtime::PermissionBroker>>,
+    ext: bool,
+    tools: Tools,
+    max_depth: u8,
+) -> Result<(AgentSession, Arc<SubagentHost>), Box<dyn Error>> {
+    let (cwd, home) = (scratch.join("ws"), scratch.join("home"));
+    std::fs::create_dir_all(&cwd)?;
+    std::fs::create_dir_all(&home)?;
+    std::fs::write(cwd.join("notes.txt"), "red sun\nblue sky\ngreen sea\n")?;
     let context_window = model.context_window;
     let mut session = AgentSession::new(
         SessionConfig {
@@ -72,6 +93,7 @@ pub(crate) fn root_with(
             schema_instruction: None,
             context_window,
             global_skills: Vec::new(),
+            can_delegate: true,
         });
         let slot = yi_runtime::ext::Slot::new(yi_runtime::ext::Rank::Mode, "unattended");
         host.attach(slot, yi_runtime::unattended_fragment().to_owned());
@@ -89,7 +111,7 @@ pub(crate) fn root_with(
             broker,
             tools,
             depth: 0,
-            max_depth: 1,
+            max_depth,
             rlm_dir: scratch.join("rlm"),
             family_dir: None,
             summarizer: None,
@@ -163,7 +185,8 @@ pub(crate) async fn body_asking(
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
     let status = yi_tools::command("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(["-c", "commit.gpgsign=false", "-C"])
         .arg(dir)
         .args(args)
         .output()?

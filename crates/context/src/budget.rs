@@ -37,15 +37,12 @@ pub fn fit(source: &str, budget: Bytes) -> Truncated {
             truncated: false,
         };
     }
-    let mut end = budget.0;
-    while end > 0 && !source.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
+    let end = source.floor_char_boundary(budget.0);
     let dropped = source.len().saturating_sub(end);
     Truncated {
         text: format!(
             "{}\n[... truncated: {dropped} bytes over budget ...]",
-            &source[..end]
+            source.get(..end).unwrap_or_default()
         ),
         truncated: true,
     }
