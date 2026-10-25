@@ -93,6 +93,7 @@ pub struct TaskState {
     /// The call id of the kernel cell that spawned the child, the one a finished card waits on.
     pub(crate) born_under: Option<String>,
     pub(crate) session: Option<yi_runtime::ChildFeed>,
+    pub(crate) rows: crate::cell::AnswerRows,
 }
 
 pub struct App {

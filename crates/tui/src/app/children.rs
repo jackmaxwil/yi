@@ -136,6 +136,7 @@ impl App {
                     finished: None,
                     born_under,
                     session,
+                    rows: crate::cell::AnswerRows::default(),
                 },
             );
             self.scheduler.request();
