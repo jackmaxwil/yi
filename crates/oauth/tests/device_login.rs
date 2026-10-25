@@ -366,6 +366,13 @@ fn a_profile_names_the_key_it_lacks_misspells_or_does_not_read() -> Res {
         text.contains("a profile of kind api-key reads no device_authorization, api_base"),
         "{text}"
     );
+    let text = refusal(&|profile: &mut Value| {
+        profile["api_base"] = json!("http://api.example.com/coding/v1");
+    })?;
+    assert!(
+        text.contains("kimi: `api_base` insecure endpoint refused: http://api.example.com/"),
+        "{text}"
+    );
     Ok(())
 }
 
