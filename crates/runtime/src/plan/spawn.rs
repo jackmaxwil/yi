@@ -1,6 +1,17 @@
+use std::path::Path;
+
 use serde_json::{Map, Value};
 use yi_types::plan::canonical::DIGEST_PREFIX;
-use yi_types::plan::doc::{AgentId, Check, Delegation, Isolation, TodoAddr};
+use yi_types::plan::contract::Decider;
+use yi_types::plan::doc::{AgentId, Check, Delegation, Isolation, Todo, TodoAddr};
+use yi_types::url::Scheme;
+
+use super::artifact::Artifacts;
+use super::output::OutputResolve;
+use crate::subagent::reader::Role;
+
+/// The routed reader's answer schema, carried from the spawn's start like the brief's lines.
+pub(super) const SCHEMA: &str = "reader_schema";
 
 /// A child is addressed by the todo it executes — its name is the todo
 /// address's URL path, so the live and reaped trace addresses need no map.
@@ -17,7 +28,48 @@ fn accept_line(accept: &Check) -> String {
     }
 }
 
-pub(super) fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
+/// A Reader runs as a reader child only when nothing it was given needs a root: no check, no
+/// isolation, read and grep alone, and a partition of files, which is all a reader can inline.
+pub(super) fn reads_only(delegation: &Delegation, cwd: &Path) -> bool {
+    let spec = &delegation.spec;
+    spec.role.as_deref() == Some("reader")
+        && !matches!(delegation.accept, Check::Command(_))
+        && matches!(spec.isolation, None | Some(Isolation::None))
+        && spec
+            .tools
+            .iter()
+            .all(|tool| Role::Reader.allowed_tools().contains(&tool.as_str()))
+        && delegation.context.iter().all(|url| match url.scheme() {
+            Scheme::Local => !cwd.join(url.path()).is_dir(),
+            scheme => !matches!(scheme.as_str(), "kernel" | "family"),
+        })
+}
+
+/// The declared output's schema, else the contract's schema item, as the JSON object it holds.
+pub(super) fn schema(
+    artifacts: &Artifacts,
+    todo: &Todo,
+    resolve: Option<&dyn OutputResolve>,
+) -> Option<Value> {
+    let output = todo.delegation.as_ref().and_then(|it| it.output.as_ref());
+    let text = match output {
+        Some(output) => resolve?.resolve(&output.schema).ok()??,
+        None => {
+            let digest = todo
+                .contract
+                .iter()
+                .flat_map(|contract| &contract.items)
+                .find_map(|item| match &item.decider {
+                    Decider::Schema { schema } => Some(&schema.digest),
+                    _ => None,
+                })?;
+            String::from_utf8(artifacts.get(digest).ok()?).ok()?
+        }
+    };
+    serde_json::from_str(&text).ok().filter(Value::is_object)
+}
+
+pub(super) fn brief(at: &TodoAddr, delegation: &Delegation, reader: bool) -> String {
     let mut lines = vec![format!(
         "Execute todo {:?} of plan {}.",
         at.todo.as_str(),
@@ -27,13 +79,15 @@ pub(super) fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
         lines.push(format!("Role: {role}"));
     }
     lines.push(accept_line(&delegation.accept));
-    if let Some(output) = &delegation.output {
+    if let Some(output) = &delegation.output
+        && !(reader && delegation.extra.contains_key(SCHEMA))
+    {
         lines.push(format!(
             "Answer with JSON matching the schema at {}",
             output.schema
         ));
     }
-    if !delegation.context.is_empty() {
+    if !delegation.context.is_empty() && !reader {
         lines.push("Context:".to_owned());
         for url in &delegation.context {
             lines.push(format!("- {url}"));
@@ -76,10 +130,24 @@ pub(super) fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
 pub(super) fn kwargs_of(
     agent: &AgentId,
     delegation: &Delegation,
+    reader: bool,
 ) -> Result<Map<String, Value>, String> {
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String(agent.as_str().to_owned()));
-    kwargs.insert("role".to_owned(), Value::from("root"));
+    kwargs.insert(
+        "role".to_owned(),
+        Value::from(if reader { "reader" } else { "root" }),
+    );
+    if reader {
+        let partition: Vec<String> = delegation.context.iter().map(ToString::to_string).collect();
+        kwargs.insert("partition".to_owned(), serde_json::json!(partition));
+        if !delegation.spec.tools.is_empty() {
+            kwargs.insert("tools".to_owned(), serde_json::json!(delegation.spec.tools));
+        }
+        if let Some(schema) = delegation.extra.get(SCHEMA) {
+            kwargs.insert("schema".to_owned(), schema.clone());
+        }
+    }
     if let Some(model) = &delegation.spec.model {
         kwargs.insert("model".to_owned(), Value::String(model.clone()));
     }
@@ -131,7 +199,7 @@ pub(super) fn kwargs_of(
 mod tests {
     use super::super::dispatch::tests::delegated;
     use super::*;
-    use yi_types::plan::doc::{PlanId, TodoLabel};
+    use yi_types::plan::doc::{OutputSchema, PlanId, TodoLabel};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -146,7 +214,7 @@ mod tests {
         let mut delegation = delegated("gateway")?.delegation.ok_or("delegated")?;
         for isolation in [None, Some(Isolation::None), Some(Isolation::Worktree)] {
             delegation.spec.isolation = isolation;
-            let brief = brief(&at, &delegation);
+            let brief = brief(&at, &delegation, false);
             assert!(brief.contains("Execute todo \"gateway\""), "{brief}");
             assert!(!brief.contains("submit"), "{brief}");
             assert!(
@@ -170,7 +238,7 @@ mod tests {
             super::super::declare::NOTE_REF.to_owned(),
             serde_json::json!({"digest": format!("sha256:{hex}"), "media_type": "text/markdown", "length": 2000}),
         );
-        let brief = brief(&at, &delegation);
+        let brief = brief(&at, &delegation, false);
         assert!(
             brief.contains(&format!("read plan://ship-the-thing/artifacts/{hex}")),
             "{brief}"
@@ -188,7 +256,7 @@ mod tests {
             deny_read: vec!["secrets/".to_owned()],
             deny_url: vec!["history://main".to_owned()],
         });
-        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation)?;
+        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation, false)?;
         assert_eq!(kwargs["deny_write"], serde_json::json!(["."]));
         assert_eq!(kwargs["deny_read"], serde_json::json!(["secrets/"]));
         assert_eq!(kwargs["deny_url"], serde_json::json!(["history://main"]));
@@ -198,7 +266,7 @@ mod tests {
             "the host reads the same keys it is handed"
         );
         delegation.spec.wall = None;
-        let bare = kwargs_of(&AgentId::new("reader-2")?, &delegation)?;
+        let bare = kwargs_of(&AgentId::new("reader-2")?, &delegation, false)?;
         assert!(!bare.contains_key("deny_write") && !bare.contains_key("deny_url"));
         Ok(())
     }
@@ -209,7 +277,7 @@ mod tests {
     fn kwargs_draw_the_specs_budget_as_the_childs_lease() -> TestResult {
         let mut delegation = delegated("read the docs")?.delegation.ok_or("delegated")?;
         delegation.spec.budget = Some(yi_types::plan::doc::TokenBudget(4_000));
-        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation)?;
+        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation, false)?;
         assert_eq!(kwargs["tokens"], serde_json::json!(4_000));
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
         assert_eq!(
@@ -218,7 +286,38 @@ mod tests {
             "the host reads the key it is handed"
         );
         delegation.spec.budget = None;
-        assert!(!kwargs_of(&AgentId::new("reader-2")?, &delegation)?.contains_key("tokens"));
+        assert!(!kwargs_of(&AgentId::new("reader-2")?, &delegation, false)?.contains_key("tokens"));
+        Ok(())
+    }
+
+    struct Served(&'static str);
+
+    impl OutputResolve for Served {
+        fn resolve(&self, _url: &yi_types::url::Url) -> Result<Option<String>, String> {
+            Ok(Some(self.0.to_owned()))
+        }
+    }
+
+    /// Dies with the declared output's branch dropped: a tool-declared Reader is sent no schema
+    /// though `done` validates against one; and a schema that is no object would refuse the spawn.
+    #[test]
+    fn a_declared_output_schema_is_the_routed_readers_schema() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-spawn-schema")?;
+        let store = super::super::store::PlanStore::open(dir.to_path_buf())?;
+        let artifacts = store.artifacts(&PlanId::new("read-the-notes")?);
+        let mut delegation = delegated("read")?.delegation.ok_or("delegated")?;
+        delegation.output = Some(OutputSchema {
+            schema: "local://answer.schema.json".parse()?,
+            extra: Map::new(),
+        });
+        let mut todo = Todo::pending(TodoLabel::new("read")?);
+        todo.delegation = Some(delegation);
+        let served = Served(r#"{"type": "object", "required": ["answer"]}"#);
+        assert_eq!(
+            schema(&artifacts, &todo, Some(&served)),
+            Some(serde_json::json!({"type": "object", "required": ["answer"]}))
+        );
+        assert_eq!(schema(&artifacts, &todo, Some(&Served("30"))), None);
         Ok(())
     }
 }

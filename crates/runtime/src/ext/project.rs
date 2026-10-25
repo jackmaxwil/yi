@@ -180,10 +180,11 @@ impl ProjectResources {
                 true => Trust::Granted,
                 false => self.gate.trust_of(&root, &source, &content),
             };
+            let next = format!("read {source} in full");
             let effect = Effect::AttachExternal {
+                text: yi_context::fit(&content, self.budget, &next).text,
                 source,
                 trust,
-                text: yi_context::fit(&content, self.budget).text,
             };
             let hash = content_hash(&instruction_text(&content));
             match seen.iter().find(|(seen_hash, _)| *seen_hash == hash) {

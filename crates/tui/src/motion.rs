@@ -50,15 +50,6 @@ impl Clock {
     }
 }
 
-/// Starburst. Every glyph is one cell wide — a width change would reflow the
-/// row on every frame.
-pub const THINKING_FRAMES: [char; 8] = ['✻', '✼', '❉', '❊', '✺', '✹', '✸', '✶'];
-
-/// How long each frame holds: the cycle accelerates and slows rather than
-/// ticking, so the dwell of frame `n` is not the dwell of frame `n + 1`.
-const DWELL_MS: [u128; 8] = [70, 110, 190, 230, 230, 190, 110, 70];
-pub const BREATH_CYCLE_MS: u128 = 1_200;
-
 /// A band swept across the text, phase taken from the process clock so two
 /// shimmering rows are never out of step.
 const SWEEP_MS: u128 = 2_000;
@@ -72,19 +63,6 @@ pub fn pulse_frame(elapsed_ms: u128) -> char {
         .get(step % PULSE_FRAMES.len())
         .copied()
         .unwrap_or('◆')
-}
-
-/// The glyph whose dwell window `elapsed_ms` falls into.
-pub fn thinking_glyph(elapsed_ms: u128) -> char {
-    let mut into = elapsed_ms % BREATH_CYCLE_MS;
-    for (index, glyph) in THINKING_FRAMES.iter().enumerate() {
-        let dwell = DWELL_MS.get(index).copied().unwrap_or(TICK_MS);
-        if into < dwell {
-            return *glyph;
-        }
-        into = into.saturating_sub(dwell);
-    }
-    THINKING_FRAMES.first().copied().unwrap_or('✻')
 }
 
 /// The band's weight at `column` as an alpha in `0..=FULL`, 0 outside it — the
