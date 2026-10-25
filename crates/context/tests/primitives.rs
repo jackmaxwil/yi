@@ -426,6 +426,37 @@ fn retention_floor_keeps_user_messages_newest_first_and_truncates_the_oldest() -
     Ok(())
 }
 
+fn floor_text(message: &AgentMessage) -> Result<&str, Box<dyn Error>> {
+    match message {
+        AgentMessage::User {
+            content: UserContent::Text(text),
+            ..
+        } => Ok(text),
+        _ => Err("expected a user text message".into()),
+    }
+}
+
+#[test]
+fn a_floor_cut_inside_a_multibyte_char_moves_to_the_char_boundary() -> TestResult {
+    let session = include_str!("../../tui/tests/fixtures/sessions/01a0648f.jsonl");
+    let line = session.lines().nth(35).ok_or("fixture line 35")?;
+    let entry: serde_json::Value = serde_json::from_str(line)?;
+    let recorded = entry["message"]["content"].as_str().ok_or("user text")?;
+    assert_eq!(recorded.find('…'), Some(170));
+    let survivors = retain_floor(&[user(recorded)], Tokens(39));
+    let expected = format!(
+        "{}\n[... 95 characters truncated ...]\n{}",
+        recorded.get(..78).ok_or("head")?,
+        recorded.get(173..).ok_or("tail")?
+    );
+    assert_eq!(floor_text(survivors.first().ok_or("survivor")?)?, expected);
+    let accented = format!("a{}", "é".repeat(20));
+    let survivors = retain_floor(&[user(&accented)], Tokens(3));
+    let kept = floor_text(survivors.first().ok_or("survivor")?)?;
+    assert_eq!(kept, "aéé\n[... 30 characters truncated ...]\nééé");
+    Ok(())
+}
+
 #[test]
 fn prepare_returns_none_when_there_is_nothing_to_summarize() -> TestResult {
     let branch = vec![message_entry("m1", 1, user("hi"))];
