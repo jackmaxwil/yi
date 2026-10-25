@@ -278,7 +278,7 @@ impl Resolver {
             hits.take(offset, || format!("{url}:{}:", at.saturating_add(1)), line);
         }
         let searched = format!("{} lines of {url}", text.lines().count());
-        let named = ("address grep", "the address for the whole line");
+        let named = ("address grep", "the address for its whole text");
         Ok(hits.close(offset, &searched, named))
     }
 }
@@ -288,13 +288,10 @@ pub(super) fn serve_grep(
     input: &Map<String, Value>,
     _context: &ToolContext,
 ) -> Option<ToolOutput> {
-    let path = input.get("path").and_then(Value::as_str)?;
+    let path = super::read::address(input)?;
     let url = match path.parse::<Url>() {
-        Ok(url) if path.contains("://") => url,
-        Err(error) if path.starts_with("history://") => {
-            return Some(error_output(format!("{path}: {error}")));
-        }
-        _ => return None,
+        Ok(url) => url,
+        Err(error) => return Some(error_output(format!("{path}: {error}"))),
     };
     if let Some(other) = input.keys().find(|key| !ARGS.contains(&key.as_str())) {
         return Some(error_output(format!(
@@ -312,8 +309,15 @@ pub(super) fn serve_grep(
         .and_then(|n| usize::try_from(n).ok())
         .unwrap_or(0);
     let hit = |line: &str| matcher.is_match(line);
-    let grepped = match url.scheme() {
-        Scheme::History => resolver.grep_history(&url, &hit, offset),
+    let pinned = (*url.scheme() == Scheme::Agent)
+        .then(|| resolver.log().pin_of(&url))
+        .flatten()
+        .filter(|pinned| *pinned.scheme() == Scheme::History);
+    let grepped = match (url.scheme(), pinned) {
+        (Scheme::History, _) => resolver.grep_history(&url, &hit, offset),
+        (_, Some(pinned)) => resolver
+            .admitted(&url)
+            .and_then(|_| resolver.grep_history(&pinned, &hit, offset)),
         _ => resolver.grep_text(&url, &hit, offset),
     };
     Some(match grepped {
