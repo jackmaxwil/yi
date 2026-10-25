@@ -252,7 +252,7 @@ fn a_shell_import_is_adopted_by_the_session_that_ran_it() -> TestResult {
 }
 
 /// A session whose engine starts a delegated todo: the child is a name, nothing runs.
-struct Hosted;
+pub(crate) struct Hosted;
 
 impl yi_runtime::plan::ops::Delegate for Hosted {
     fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {

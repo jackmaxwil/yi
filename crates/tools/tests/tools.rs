@@ -3978,3 +3978,325 @@ fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
     assert!(!single.text.contains("GREP_PER_FILE"), "{}", single.text);
     Ok(())
 }
+
+fn view_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}"))
+}
+
+fn view_in(
+    producer: yi_tools::Involuntary<'_>,
+    raw: &str,
+    dir: &std::path::Path,
+) -> yi_tools::Reduced {
+    yi_tools::view(producer, raw, "", 1, None, Some(&dir.join("spills")))
+}
+
+/// A `[… kept of total what (CAP limit); the rest: next]` row, as its parts.
+fn parse_cut(row: &str) -> Option<(usize, usize, &str, &str, usize, &str)> {
+    let inner = row.strip_prefix("[\u{2026} ")?.strip_suffix(']')?;
+    let (head, next) = inner.split_once("; the rest: ")?;
+    let (kept, rest) = head.split_once(" of ")?;
+    let (total, rest) = rest.split_once(' ')?;
+    let (what, cap) = rest.rsplit_once(" (")?;
+    let (cap, limit) = cap.strip_suffix(')')?.rsplit_once(' ')?;
+    let number = |text: &str| text.parse::<usize>().ok();
+    Some((
+        number(kept)?,
+        number(total)?,
+        what,
+        cap,
+        number(limit)?,
+        next,
+    ))
+}
+
+/// The file a cut's row names, whole: what the model's next call reads.
+fn recovered(text: &str, cap: &str) -> Result<String, Box<dyn Error>> {
+    let row = (text.lines().filter_map(parse_cut)).find(|cut| cut.3 == cap);
+    let below = text.lines().last().and_then(yi_tools::spill_path);
+    let path = match row.ok_or(text.to_owned())?.5 {
+        "read the full output named below" => below.map(|(_, path)| path),
+        next => next.strip_prefix("read "),
+    };
+    Ok(fs::read_to_string(path.ok_or(text.to_owned())?)?)
+}
+
+/// fixture | producer | command | verdict lines, each recorded from the producer it names.
+const VIEW_CORPUS: &str = "\
+view/recursion-traceback.txt|traceback||RecursionError: maximum recursion depth exceeded
+view/pandas-keyerror-traceback.txt|traceback||KeyError: 'total'
+reduce/compileall-one-syntax-error.txt|job|python3 -m compileall -f pkg|SyntaxError: invalid syntax
+reduce/pytest-verbose-one-failure.txt|job|python -m pytest|test_ledger.py::test_case_217 FAILED|AssertionError: ledger total drifted|1 failed, 399 passed
+view/pytest-300-one-deep-failure.txt|job|python3 -m pytest -v test_invoices.py|FAILED test_invoices.py::test_invoice_reconciles[187]|1 failed, 299 passed
+view/cargo-test-200-one-assert-eq.txt|cell|cargo test --color never|test tests::balance_137 ... FAILED|test result: FAILED. 200 passed; 1 failed
+view/make-build-error-last.txt|job|make|error: use of undeclared identifier 'undeclared_offset'|make: *** [build/unit_1700.o] Error 1
+reduce/red-workspace-build.txt|check|cargo build --workspace|error[E0308]: mismatched types|error: could not compile `b`
+view/list-repr-20000.txt|job|python3 dump.py|[0, 1, 2, 3, 4, 5
+view/table-3000-rows.txt|job|python3 report.py| row  expected  actual
+view/bash-cell-print.txt|cell|./records.sh|records written: 1000";
+
+/// The kill corpus: every real producer's verdict stays inline, nothing passes the ceiling, and
+/// each cut's row names a file holding every byte the cut dropped.
+#[test]
+fn every_involuntary_output_keeps_its_verdict_under_the_ceiling() -> TestResult {
+    use yi_tools::Involuntary::{Job, ShellCell, Traceback};
+    let dir = temp_dir("view-corpus")?;
+    for entry in VIEW_CORPUS.lines() {
+        let fields: Vec<&str> = entry.split('|').collect();
+        let &[name, kind, command, ref verdicts @ ..] = fields.as_slice() else {
+            return Err(format!("malformed corpus row {entry}").into());
+        };
+        let producer = match kind {
+            "traceback" => Traceback,
+            "cell" => ShellCell(command),
+            _ => Job(command),
+        };
+        let raw = fs::read_to_string(view_fixture(name))?;
+        let viewed = view_in(producer, &raw, &dir);
+        let text = &viewed.text;
+        assert!(
+            text.len() <= yi_tools::VIEW_CEILING,
+            "{name}: {} B",
+            text.len()
+        );
+        for verdict in verdicts {
+            let inline = text.lines().any(|line| line.contains(verdict));
+            assert!(inline, "{name} lost {verdict}: {text}");
+        }
+        if *text != raw {
+            let file = viewed.recovery.as_deref().and_then(yi_tools::spill_path);
+            let file = file.ok_or_else(|| format!("{name}: a cut with no file"))?.1;
+            assert_eq!(fs::read_to_string(file)?, raw, "{name}");
+        }
+    }
+    Ok(())
+}
+
+/// The ceiling at its limit passes the text whole; one byte past it cuts the middle, and the
+/// row names what it kept of 16,385 B, the cap, and the file or the rerun that returns it.
+#[test]
+fn the_view_ceiling_cuts_one_byte_past_it_and_names_the_rest() -> TestResult {
+    let dir = temp_dir("view-ceiling")?;
+    let text = |bytes: usize| {
+        let row = |n: usize| format!("row {n:03} é {}", "x".repeat(120));
+        let mut lines: Vec<String> = (0..120).map(row).collect();
+        // Spread over every line, so none passes the column clip.
+        let short = bytes - lines.join("\n").len();
+        for (at, line) in lines.iter_mut().enumerate() {
+            line.push_str(&"y".repeat(short / 120 + usize::from(at < short % 120)));
+        }
+        lines.join("\n")
+    };
+    let job = yi_tools::Involuntary::Job("cat out.txt");
+    let at = text(yi_tools::VIEW_CEILING);
+    let whole = view_in(job, &at, &dir);
+    assert_eq!((whole.text.as_str(), whole.recovery), (at.as_str(), None));
+    let over = text(yi_tools::VIEW_CEILING + 1);
+    let cut = view_in(job, &over, &dir);
+    assert!(
+        cut.text.len() <= yi_tools::VIEW_CEILING,
+        "{} B",
+        cut.text.len()
+    );
+    let row = (cut.text.lines().find_map(parse_cut)).ok_or_else(|| cut.text.clone())?;
+    let (kept, total, what, cap, limit, _) = row;
+    let named = (total, what, cap, limit);
+    assert_eq!(named, (16_385, "bytes kept", "VIEW_CEILING", 16_384));
+    let shown = |line: &&str| parse_cut(line).is_none() && !line.starts_with("[full output");
+    let shown: usize = cut.text.lines().filter(shown).map(str::len).sum();
+    assert!(kept >= shown && kept < total, "{kept} kept, {shown} shown");
+    assert_eq!(recovered(&cut.text, "VIEW_CEILING")?, over);
+    let pointer = cut.recovery.as_deref().unwrap_or_default();
+    assert!(cut.text.starts_with("row 000 é") && cut.text.ends_with(&format!("y\n{pointer}")));
+    // With no dir to keep the rest, the row names a rerun into a file, and the rerun returns it:
+    // a `%%bash` cell runs its body in bash, so the bash tool runs what either row names.
+    fs::write(dir.join("out.txt"), &over)?;
+    let cell = yi_tools::Involuntary::ShellCell("cat out.txt");
+    for (producer, how) in [(job, "bash "), (cell, "a %%bash cell running ")] {
+        fs::write(dir.join("view.log"), "")?;
+        let rerun = yi_tools::view(producer, &over, "", 0, None, None);
+        let next = (rerun.text.lines().find_map(parse_cut))
+            .ok_or(rerun.text.clone())?
+            .5;
+        let shell =
+            (next.strip_prefix(how)).and_then(|call| call.strip_suffix(", then read view.log"));
+        let command = args(&[("command", json!(shell.ok_or(next.to_owned())?))]);
+        let ran = BashTool::default().execute(command, &ToolContext::new(dir.to_path_buf()));
+        assert!(!ran.is_error, "{}", output_text(&ran));
+        assert_eq!(fs::read_to_string(dir.join("view.log"))?, over, "{how}");
+    }
+    Ok(())
+}
+
+/// A rerun row echoed the whole command: a 20,000-char command passed the ceiling and a
+/// `%%bash` heredoc made the row hundreds of lines. It names the first line, clipped.
+#[test]
+fn a_rerun_row_names_a_long_command_on_one_line() -> TestResult {
+    use yi_tools::Involuntary::{Job, ShellCell};
+    let raw: String = (0..400)
+        .map(|n| format!("record {n:04} {}\n", "x".repeat(60)))
+        .collect();
+    let long = "x".repeat(20_000);
+    let heredoc = format!("cat <<'EOF'\n{}EOF", "line\n".repeat(970));
+    for (name, producer) in [("long", Job(&long)), ("heredoc", ShellCell(&heredoc))] {
+        let viewed = yi_tools::view(producer, &raw, "", 0, None, None);
+        let bytes = viewed.text.len();
+        assert!(bytes <= yi_tools::VIEW_CEILING, "{name}: {bytes} B");
+        let row = viewed.text.lines().find_map(parse_cut);
+        let next = row
+            .ok_or_else(|| format!("no one-line row: {}", viewed.text))?
+            .5;
+        assert!(next.contains("the command that began "), "{next}");
+        assert!(next.ends_with(", then read view.log"), "{next}");
+    }
+    Ok(())
+}
+
+/// A cut landing inside a two-byte char moves to the char's edge: one line of `é` with no
+/// newline, padded so each end's cut falls on an odd and an even byte, keeps a head and a tail.
+#[test]
+fn a_cut_inside_a_two_byte_char_keeps_both_ends() -> TestResult {
+    for (pre, post) in [("", ""), ("a", ""), ("", "a")] {
+        let pad = (pre, post);
+        let raw = format!("{pre}{}{post}", "\u{e9}".repeat(20_000));
+        let job = yi_tools::Involuntary::Job("python3 dump.py");
+        let viewed = yi_tools::view(job, &raw, "", 0, None, None);
+        let lines: Vec<&str> = viewed.text.lines().collect();
+        let &[head, row, tail] = lines.as_slice() else {
+            return Err(format!("{pad:?}: {} lines", lines.len()).into());
+        };
+        assert!(viewed.text.len() <= yi_tools::VIEW_CEILING, "{pad:?}");
+        assert!(parse_cut(row).is_some(), "{row}");
+        assert!(head.len() > 4_096 && raw.starts_with(head), "{pad:?} head");
+        assert!(tail.len() > 2_048 && raw.ends_with(tail), "{pad:?} tail");
+    }
+    Ok(())
+}
+
+/// A 20,000-element list printed on one line was 128,891 B a line cap could not see; in the
+/// reducer foreground bash runs, a line at the clip passes and one char past it is clipped.
+#[test]
+fn a_line_past_the_clip_is_clipped_and_the_row_names_it() -> TestResult {
+    let dir = temp_dir("view-clip")?;
+    let repr = fs::read_to_string(view_fixture("view/list-repr-20000.txt"))?;
+    let chars: Vec<char> = repr.chars().collect();
+    // A row drops a line's trailing blank, so no line here ends on one.
+    let ends_clean = |chunk: &&[char]| chunk.last().is_some_and(|c| !c.is_whitespace());
+    let at_clip = chars.chunks(512).filter(ends_clean).take(17);
+    let mut lines: Vec<String> = at_clip.map(|chunk| chunk.iter().collect()).collect();
+    let long = (chars.get(17 * 512..).unwrap_or_default().windows(513)).find(ends_clean);
+    lines.push(long.ok_or("no 513-char line")?.iter().collect());
+    let raw = lines.join("\n");
+    let spills = dir.join("spills");
+    let viewed = yi_tools::reduce("python3 dump.py", &raw, "", 0, None, Some(&spills), None);
+    let text: Vec<&str> = viewed.text.lines().collect();
+    assert!(
+        text.iter()
+            .zip(&lines)
+            .take(17)
+            .all(|(shown, line)| shown == line)
+    );
+    let clipped = text.get(17).ok_or("no clipped line")?;
+    assert_eq!(clipped.chars().count(), 513, "{clipped}");
+    assert!(clipped.ends_with('\u{2026}'));
+    let row = text
+        .get(18)
+        .and_then(|row| parse_cut(row))
+        .ok_or(viewed.text.clone())?;
+    assert_eq!((row.0, row.1, row.3, row.4), (512, 513, "LINE_CLIP", 512));
+    assert_eq!(recovered(&viewed.text, "LINE_CLIP")?, raw);
+    let whole = yi_tools::reduce("python3 dump.py", &repr, "", 0, None, Some(&spills), None);
+    assert!(whole.text.len() < 1024, "{} B", whole.text.len());
+    Ok(())
+}
+
+/// A traceback under the floor is what the model reads today, byte for byte, and so is nothing.
+#[test]
+fn a_short_traceback_passes_the_view_byte_for_byte() -> TestResult {
+    let dir = temp_dir("view-floor")?;
+    let raw = fs::read_to_string(view_fixture("view/pandas-keyerror-traceback.txt"))?;
+    let viewed = view_in(yi_tools::Involuntary::Traceback, &raw, &dir);
+    assert_eq!(
+        (viewed.text.as_str(), viewed.recovery),
+        (raw.as_str(), None)
+    );
+    assert_eq!(view_in(yi_tools::Involuntary::Traceback, "", &dir).text, "");
+    // `print(list(range(1000)))`, one 4,890 B line: under the floor no line is clipped either.
+    let repr = fs::read_to_string(view_fixture("view/list-repr-20000.txt"))?;
+    let short = format!("{}]", repr.split(", 1000,").next().unwrap_or_default());
+    let viewed = view_in(
+        yi_tools::Involuntary::ShellCell("python3 dump.py"),
+        &short,
+        &dir,
+    );
+    assert_eq!((viewed.text.len(), viewed.text == short), (4_890, true));
+    assert!(!dir.join("spills").exists(), "a pass-through kept a file");
+    Ok(())
+}
+
+/// The case built to break a reducer: a 3,000-row table whose one wrong number, in row 1,500,
+/// says no keyword. It is not inline; the omitted row names its line, and read returns it.
+#[test]
+fn a_keyword_free_mismatch_is_reached_through_the_omitted_row() -> TestResult {
+    let dir = temp_dir("view-table")?;
+    let raw = fs::read_to_string(view_fixture("view/table-3000-rows.txt"))?;
+    let mismatch = |(_, row): &(usize, &str)| {
+        let cells: Vec<&str> = row.split_whitespace().collect();
+        cells.get(1) != cells.get(2)
+    };
+    let found = raw.lines().enumerate().skip(1).find(mismatch);
+    let (line, wrong) = found.map(|(at, row)| (at + 1, row)).ok_or("no mismatch")?;
+    let viewed = view_in(yi_tools::Involuntary::Job("python3 report.py"), &raw, &dir);
+    assert!(!viewed.text.contains(wrong), "{}", viewed.text);
+    let spans = viewed
+        .text
+        .lines()
+        .filter_map(yi_tools::reduce::omitted_span);
+    let named = spans
+        .into_iter()
+        .any(|(from, to)| (from..=to).contains(&line));
+    assert!(named, "no row names line {line}: {}", viewed.text);
+    let file = viewed.recovery.as_deref().and_then(yi_tools::spill_path);
+    let file = file.ok_or("no file")?.1;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("spills"));
+    let window = args(&[
+        ("path", json!(file)),
+        ("offset", json!(line)),
+        ("limit", json!(1)),
+    ]);
+    let read = output_text(&read_tool().execute(window, &context));
+    assert!(read.contains(&format!("{line}:{wrong}")), "{read}");
+    Ok(())
+}
+
+/// A spill past the read limit once gave a cut capture's numbering with nothing said; at the
+/// limit the file is read, one byte past it the row names the limit and the file.
+#[test]
+fn a_spill_past_the_read_limit_is_named_not_skipped() -> TestResult {
+    let dir = temp_dir("view-spill-limit")?;
+    let limit = 4 * 1024 * 1024;
+    for (size, named) in [(limit, false), (limit + 1, true)] {
+        let lines = (0..size / 18).map(|n| format!("step {n:07} done\n"));
+        let mut spill: String = lines.collect();
+        spill.push_str(&"z".repeat(size - spill.len()));
+        let path = dir.join(format!("spill-{size}.txt"));
+        fs::write(&path, &spill)?;
+        let pointer = format!("[full output: {}]", path.display());
+        let capture = spill.get(..20_000).ok_or("short spill")?;
+        let reduced = yi_tools::reduce("make", capture, "", 2, Some(&pointer), None, None);
+        let row = reduced.text.lines().find_map(parse_cut);
+        assert_eq!(row.is_some(), named, "{size}: {}", reduced.text);
+        if let Some((kept, total, _, cap, cap_limit, next)) = row {
+            assert_eq!(
+                (kept, total, cap, cap_limit),
+                (0, size, "SPILL_READ_LIMIT", limit)
+            );
+            assert_eq!(
+                next,
+                format!("read {} with offset and limit", path.display())
+            );
+        }
+    }
+    Ok(())
+}
