@@ -1927,6 +1927,79 @@ fn grep_cap_and_offset_footers_are_honest() -> TestResult {
     Ok(())
 }
 
+/// A page stops between hits once its rows hold PAGE_BYTES (51,200). A row is `a.txt:n:text` and
+/// a newline; a 101st line sized to land exactly on the cap ends the page, and one char fewer
+/// leaves a byte for the 102nd hit.
+#[test]
+fn a_grep_page_stops_on_its_byte_cap_between_hits() -> TestResult {
+    let cost = |n: usize, width: usize| "a.txt:".len() + n.to_string().len() + width + 2;
+    let used: usize = (1..=100).map(|n| cost(n, 500)).sum();
+    let exact = 51_200 - used - cost(101, 0);
+    let page = |last: usize, offset: u64| -> Result<String, Box<dyn Error>> {
+        let dir = temp_dir(&format!("grep-page-bytes-{last}"))?;
+        let line = |n: usize| {
+            let width = if n == 101 { last } else { 500 };
+            format!("needle {n:03} {}\n", "x".repeat(width - 11))
+        };
+        fs::write(dir.join("a.txt"), (1..=102).map(line).collect::<String>())?;
+        let input = args(&[("pattern", json!("needle")), ("offset", json!(offset))]);
+        Ok(output_text(
+            &GrepTool::default().execute(input, &ToolContext::new(dir.to_path_buf())),
+        ))
+    };
+    let cut = "[showing matches 1-101 of 102 (PAGE_BYTES 51200) \u{2014} continue with offset=101]";
+    assert_eq!(page(exact, 0)?.lines().last(), Some(cut));
+    assert_eq!(page(exact, 101)?.lines().count(), 1);
+    let under = page(exact - 1, 0)?;
+    assert_eq!(
+        (under.lines().count(), under.contains("[showing")),
+        (102, false)
+    );
+    Ok(())
+}
+
+/// Five recorded sessions, one compact JSON entry a line: 169 hits of 64,701 B under the 200-hit
+/// cap. Dies with all of them on one page.
+#[test]
+fn a_grep_page_over_recorded_long_lines_pages_exactly() -> TestResult {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/tests/fixtures/sessions");
+    let mut files: Vec<_> = fs::read_dir(&root)?.collect::<Result<_, _>>()?;
+    files.sort_by_key(fs::DirEntry::file_name);
+    let mut expected = Vec::new();
+    for file in &files {
+        let lines = fs::read_to_string(file.path())?.lines().count();
+        expected.extend((1..=lines).map(|n| format!("{}:{n}", file.file_name().to_string_lossy())));
+    }
+    let key = |row: &str| {
+        let (path, rest) = row.split_once(':').unwrap_or_default();
+        let n = rest.split(':').next().unwrap_or_default();
+        format!("{}:{n}", path.rsplit('/').next().unwrap_or_default())
+    };
+    let (grep, context) = (GrepTool::default(), ToolContext::new(root));
+    let (mut seen, mut pages) = (Vec::new(), 0);
+    loop {
+        let input = args(&[("pattern", json!("\"")), ("offset", json!(seen.len()))]);
+        let text = output_text(&grep.execute(input, &context));
+        seen.extend(text.lines().filter(|row| !row.starts_with('[')).map(key));
+        pages += 1;
+        let Some(more) = text.lines().find(|row| row.starts_with("[showing matches")) else {
+            break;
+        };
+        let next = format!(
+            "(PAGE_BYTES 51200) \u{2014} continue with offset={}]",
+            seen.len()
+        );
+        assert!(
+            more.ends_with(&next) && text.len() < 52_600,
+            "{more}: {}",
+            text.len()
+        );
+    }
+    assert!(pages > 1 && seen == expected, "{pages} pages");
+    Ok(())
+}
+
 /// Bash results carry a command category for `yi stats`.
 #[test]
 fn bash_details_carry_a_command_category() -> TestResult {

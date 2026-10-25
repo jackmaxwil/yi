@@ -929,7 +929,7 @@ fn a_ruler_pair_rides_once_and_whole() -> TestResult {
     let assembled = started(&project, &home).system_prompt();
     assert_eq!(assembled.matches("NEVER-RULE-AT-THE-END").count(), 1);
     assert!(
-        !assembled.contains("bytes over budget"),
+        !assembled.contains("(source budget"),
         "a 42 KB rules file loads whole"
     );
     Ok(())
