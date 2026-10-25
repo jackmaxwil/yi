@@ -1,5 +1,5 @@
-//! Cells the console runs on a session's kernel: what the queue admits, what a cancel
-//! reaches, what a close takes down.
+//! Cells the console runs on a session's kernel: what the queue admits, what a close
+//! takes down.
 
 use std::collections::HashMap;
 use std::sync::Arc;
