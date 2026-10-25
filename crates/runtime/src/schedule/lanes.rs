@@ -172,8 +172,8 @@ mod tests {
 
     use super::{HashMap, HashSet, JobStore, JoinSet, reap_lane};
 
-    /// Dies with the lane left busy for good, and with its failure printed to stderr, which tears
-    /// a raw-mode screen and reaches no model, or told to a session it is not.
+    /// Dies with the lane left busy for good, with its failure on stderr, where a raw-mode screen
+    /// tears and no model reads it, or with the notice sent to a session not the lane's own.
     #[tokio::test]
     async fn an_aborted_lane_frees_its_session_and_names_it_in_a_notice()
     -> Result<(), Box<dyn std::error::Error>> {
