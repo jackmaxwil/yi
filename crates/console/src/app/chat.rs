@@ -1,6 +1,7 @@
 //! Solo's chat bound to a pane: the `App` is built at bind time, fed the wire's events,
 //! and drained of what it asks its session — one place per direction.
 
+use std::collections::BTreeSet;
 use std::sync::mpsc::TryRecvError;
 
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -10,7 +11,7 @@ use yi_tui::input::handle_terminal_event;
 use yi_tui::{AskChoice, AskRequest, Command, Reply, TuiOptions, UiEvent};
 use yi_types::acp::{AcpExtensionUpdate, AcpPermissionParams, AcpSessionResult};
 use yi_types::entry::Entry;
-use yi_types::subagent::{ChildStatus, ChildUpdate};
+use yi_types::subagent::{ChildId, ChildStatus, ChildUpdate};
 
 use super::port::{
     Config, Decoded, PortRequest, RemotePort, Replay, config_of, decode, option_for,
@@ -29,7 +30,11 @@ const CHILD_ROW_CAP: usize = 32;
 
 /// A child first heard of at its end (retired before this console saw it run) gets no row;
 /// a full cache gives up its oldest finished row, never the new one.
-fn keep_child_row(rows: &mut Vec<ChildUpdate>, child: &ChildUpdate) {
+fn keep_child_row(
+    rows: &mut Vec<ChildUpdate>,
+    evicted: &mut BTreeSet<ChildId>,
+    child: &ChildUpdate,
+) {
     if let Some(slot) = rows.iter_mut().find(|row| row.id == child.id) {
         *slot = child.clone();
         return;
@@ -41,8 +46,9 @@ fn keep_child_row(rows: &mut Vec<ChildUpdate>, child: &ChildUpdate) {
     }
     if rows.len() >= CHILD_ROW_CAP {
         let oldest_finished = rows.iter().position(|row| !running(row)).unwrap_or(0);
-        rows.remove(oldest_finished);
+        evicted.insert(rows.remove(oldest_finished).id);
     }
+    evicted.remove(&child.id);
     rows.push(child.clone());
 }
 
@@ -262,7 +268,12 @@ impl App {
                 self.apply_config(id, &config, in_flight <= 1);
             }
             Decoded::Child(child) => {
-                keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
+                let evicted = self.state.children_evicted.entry(id.clone()).or_default();
+                keep_child_row(
+                    self.state.children.entry(id.clone()).or_default(),
+                    evicted,
+                    &child,
+                );
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
             }
             Decoded::Committed(entry) => {
@@ -919,17 +930,18 @@ mod tests {
     #[test]
     fn a_child_first_seen_at_its_end_gets_no_row_and_row_thirty_three_is_kept() {
         let mut rows = Vec::new();
-        keep_child_row(&mut rows, &update(99, ChildStatus::Error));
+        let mut evicted = BTreeSet::new();
+        keep_child_row(&mut rows, &mut evicted, &update(99, ChildStatus::Error));
         assert!(
             rows.is_empty(),
             "a retired stranger leaves no row: {rows:?}"
         );
         for id in 0..CHILD_ROW_CAP {
-            keep_child_row(&mut rows, &update(id, ChildStatus::Running));
+            keep_child_row(&mut rows, &mut evicted, &update(id, ChildStatus::Running));
         }
-        keep_child_row(&mut rows, &update(5, ChildStatus::Completed));
+        keep_child_row(&mut rows, &mut evicted, &update(5, ChildStatus::Completed));
         assert_eq!(rows.len(), CHILD_ROW_CAP, "an update replaces its own row");
-        keep_child_row(&mut rows, &update(32, ChildStatus::Running));
+        keep_child_row(&mut rows, &mut evicted, &update(32, ChildStatus::Running));
         assert_eq!(rows.len(), CHILD_ROW_CAP);
         assert!(
             rows.iter().any(|row| row.id.as_str() == "sub-32"),
