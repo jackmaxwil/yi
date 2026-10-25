@@ -355,7 +355,7 @@ async fn plan_op(
 }
 
 /// A child spawned for a todo: its agent id is the todo's own label.
-struct Named;
+pub(crate) struct Named;
 
 impl Delegate for Named {
     fn spawn(
@@ -375,7 +375,7 @@ impl Delegate for Named {
     }
 }
 
-fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Error>> {
+pub(crate) fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Error>> {
     Ok(yi_runtime::plan::ops::TodoSpec {
         label: TodoLabel::new(label)?,
         after: Vec::new(),
