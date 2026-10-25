@@ -953,7 +953,8 @@ fn mcp_fast_path() {
         let hooks = hooks
             .as_ref()
             .map(|hooks| hooks as &dyn yi_mcp_cli::CallHooks);
-        std::process::exit(yi_mcp_cli::run(&raw, token_store, hooks));
+        let version = env!("ARCHITECTURE_VERSION");
+        std::process::exit(yi_mcp_cli::run(&raw, token_store, hooks, version));
     }
 }
 
