@@ -140,7 +140,7 @@ const UNTRACKED_NOISE: [&str; 3] = [
     ":(exclude,glob)**/.pytest_cache/**",
 ];
 
-const KEPT_YOURS: &str = "Your uncommitted edits to the kept_yours paths stay in the working copy without the child's change to them, so `git diff HEAD` shows that change as removed and committing them would undo it; `git show HEAD:<path>` is the merged version to fold them into.";
+const KEPT_YOURS: &str = "Your uncommitted edits to the kept_yours paths stay in the working copy without the child's change to them, so `git diff HEAD` shows that change as removed and committing them would undo it; `git show HEAD:<path>` is the merged version to fold them into; a kept path missing from HEAD is one the child deleted, and it is untracked here.";
 
 /// Incident: uncommitted child work merged as nothing, so it is committed first. Free of the
 /// `Lane`, so a host reads it with the path cloned and no lock held across the git calls.
@@ -821,8 +821,8 @@ impl SubagentHost {
                         "conflict_provenance".to_owned(),
                         serde_json::to_value(conflicts).map_err(|error| error.to_string())?,
                     );
-                    // Invariant: the lane is already off the record, so `rlm.discard_worktree` would
-                    // answer "no worktree"; the branch is dropped with git.
+                    // Invariant: the lane is already off the record, so `rlm.discard_worktree`
+                    // would answer "no worktree"; the branch is dropped with git.
                     let kept = settled.candidate.branch.as_str();
                     reply.insert(
                         "next".to_owned(),
