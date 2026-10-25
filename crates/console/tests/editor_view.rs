@@ -197,6 +197,34 @@ fn a_tab_draws_to_its_stop_and_a_click_lands_on_the_character_drawn_there() -> T
     Ok(())
 }
 
+/// Dies with the cursor drawn on the character after an emoji with VS16 rather than past it:
+/// its chars sum to one cell where the buffer draws two.
+#[test]
+fn the_cursor_sits_past_an_emoji_drawn_two_cells_wide() -> TestResult {
+    let dir = crate::scratch::Scratch::new("yi-editor-emoji")?;
+    let path = dir.join("emoji.txt");
+    std::fs::write(&path, "a\u{2764}\u{fe0f}Q\n")?;
+    let (mut app, outbound) = console();
+    palette(&mut app, &outbound, &format!("e {}", path.display()));
+    key(
+        &mut app,
+        &outbound,
+        KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+    draw(&mut app, &mut terminal)?;
+    let buffer = terminal.backend().buffer();
+    let (x, y) = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .find(|&cell| buffer.cell(cell).is_some_and(|cell| cell.symbol() == "Q"))
+        .ok_or("no Q drawn")?;
+    let theme = app.theme;
+    let view = yi_console::render::compute_view(&mut app, terminal.get_frame().area(), &theme);
+    assert_eq!(view.editor_cursor, Some((x + 1, y)));
+    outbound.shutdown();
+    Ok(())
+}
+
 /// This repository's own source, `lines` long, ending on a line nothing else in it says.
 fn long_file(dir: &std::path::Path, lines: usize) -> Result<std::path::PathBuf, Box<dyn Error>> {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
@@ -220,28 +248,31 @@ fn long_file(dir: &std::path::Path, lines: usize) -> Result<std::path::PathBuf, 
     Ok(path)
 }
 
-/// Dies with a file past the cursor's u16 row opening anyway, where every jump below row
-/// 65,535 lands on it; at the limit the last line is still reached.
+/// Dies with a file past the cursor's u16 row index opening anyway, where every jump below row
+/// 65,535 lands on it, or with the last addressable line refused; at the limit it is reached.
 #[test]
-fn the_editor_opens_65535_lines_and_refuses_one_more_by_name() -> TestResult {
+fn the_editor_opens_65536_lines_and_refuses_one_more_by_name() -> TestResult {
     let dir = crate::scratch::Scratch::new("yi-editor-limit")?;
-    let (mut app, outbound) = console();
-    palette(
-        &mut app,
-        &outbound,
-        &format!("e {}", long_file(&dir, 65_535)?.display()),
-    );
-    palette(&mut app, &outbound, "/the line the find is for");
-    assert_eq!(editor(&app).map(|e| e.text.cursor()), Some((65_534, 3)));
     let (mut app, outbound) = console();
     palette(
         &mut app,
         &outbound,
         &format!("e {}", long_file(&dir, 65_536)?.display()),
     );
+    palette(&mut app, &outbound, "/the line the find is for");
+    assert_eq!(editor(&app).map(|e| e.text.cursor()), Some((65_535, 3)));
+    let (mut app, outbound) = console();
+    palette(
+        &mut app,
+        &outbound,
+        &format!("e {}", long_file(&dir, 65_537)?.display()),
+    );
     assert!(editor(&app).is_none(), "the longer file is refused");
     let banner = app.state.banner.clone().unwrap_or_default();
-    assert!(banner.contains("65,535-line editor limit"), "{banner}");
+    assert!(
+        banner.contains("65537 lines is over the 65,536-line editor limit"),
+        "{banner}"
+    );
     outbound.shutdown();
     Ok(())
 }

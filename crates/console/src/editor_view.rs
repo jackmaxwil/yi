@@ -3,7 +3,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use yi_tui::colors::Theme;
 
 use crate::model::Editor;
@@ -27,6 +27,7 @@ fn drawn_col(line: &str, index: usize) -> usize {
 }
 
 /// The char drawn under column `col` of `line`, or the line's end past its last char.
+/// ponytail: by char width, so a VS16 or ZWJ emoji before `col` shifts it; walk graphemes then.
 pub(crate) fn char_at(line: &str, col: usize) -> usize {
     let mut at: usize = 0;
     for (index, c) in line.chars().enumerate() {
@@ -54,10 +55,13 @@ fn expand(text: &str, mut at: usize) -> String {
 pub(crate) fn cursor_cell(editor: &Editor, inner: Rect) -> Option<(u16, u16)> {
     let (row, col) = editor.text.cursor();
     let line = editor.text.lines().get(row)?;
+    // Incident: an emoji with VS16 draws two cells where its chars sum to one; take the drawn
+    // prefix's width, as the buffer does.
+    let prefix: String = line.chars().take(col).collect();
     let x = inner
         .x
         .checked_add(u16::try_from(editor.gutter()).ok()?)?
-        .checked_add(u16::try_from(drawn_col(line, col)).ok()?)?;
+        .checked_add(u16::try_from(expand(&prefix, 0).width()).ok()?)?;
     let y = inner
         .y
         .checked_add(u16::try_from(row.checked_sub(editor.scroll_top)?).ok()?)?;

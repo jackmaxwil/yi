@@ -11,8 +11,8 @@ use crate::model::{Editor, PaneContent};
 use super::App;
 
 const MAX_EDITOR_BYTES: u64 = 8 * 1024 * 1024;
-/// Invariant: the text area's cursor jump takes a u16 row, so a longer file is refused.
-const MAX_EDITOR_LINES: usize = 65_535;
+/// Invariant: the text area's cursor jump takes a u16 row index, so a longer file is refused.
+const MAX_EDITOR_LINES: usize = 65_536;
 const DISK_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn mtime_of(path: &str) -> Option<SystemTime> {
@@ -37,7 +37,7 @@ pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
     let lines = source.lines().count();
     if lines > MAX_EDITOR_LINES {
         return Err(format!(
-            "{path}: {lines} lines is over the 65,535-line editor limit"
+            "{path}: {lines} lines is over the 65,536-line editor limit"
         ));
     }
     let mut text = TextArea::from(source.lines().map(str::to_owned).collect::<Vec<_>>());
