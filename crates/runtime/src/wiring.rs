@@ -244,6 +244,9 @@ impl RuntimeWiring {
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
         sandbox.host_owned.extend(self.sessions_dir.clone());
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
+        sandbox
+            .deny_write
+            .extend(crate::permission::claude_dir(self.broker.as_deref()));
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         if !self.wall.is_empty() {
             let roots = crate::tools::walled_roots(&self.wall, self.broker.as_deref());

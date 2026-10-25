@@ -436,6 +436,95 @@ listed, triggered, classified and read only where the repository holds that path
 
 - Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
 
+### 7.9 Claude Code hooks
+With `YI_CLAUDE_HOOKS=1`, Yi runs the `PreToolUse`, `PostToolUse` and `PostToolUseFailure` command
+hooks a Claude Code user configured, around every tool call the adapter runs (model and program
+calls, root sessions and children) and around a cell's MCP call inside `yi mcp @session tools-call`,
+named `mcp__<server>__<tool>` after the config entry. Shell the runtime runs for the model off the
+tool seam (goal and plan checks, a child result's check, a schedule's `exec://` source) passes the
+Bash PreToolUse hooks first, through a configuration loaded from that command's cwd: a deny or ask
+refuses it, and its notices and post hooks are not run. Shell a cell runs (`subprocess`, `!cmd`)
+passes no seam, so Bash hooks do not see it. The contract is code.claude.com/docs/en/hooks.
+
+**Configuration and trust.** The adapter's configuration loads and compiles once, when the root
+attaches its tools, and the permission broker carries the frozen copy to every child, so a child in a
+lane reads the root's project. The one-shot `yi mcp` loads it per call from its own cwd, and sends no
+session id or transcript path, which it does not know. Sources, in merge order: the managed policy
+(`/Library/Application Support/ClaudeCode/managed-settings.json` and `managed-settings.d/*.json`,
+`/etc/claude-code/` off macOS), `~/.claude/settings.json`, then `.claude/settings.json` and
+`.claude/settings.local.json` under the project (the git root of an inherited `CLAUDE_PROJECT_DIR`,
+else of the root session's cwd, so an agent Claude Code starts in a worktree reads the session's
+project), then each `YI_CLAUDE_HOOKS_FILES` entry: a plugin's install root, read at
+`hooks/hooks.json`, or a `hooks.json` whose plugin root is the parent of its `hooks/` dir.
+A project file that carries hooks runs only once `yi trust` granted its exact content, committed or
+not: hooks are host commands, outside the sandbox, so an edit after the grant is untrusted again, and
+an untrusted file is skipped with one notice naming `yi trust`; one with no hooks needs no grant. The
+project's `.claude` dir is denied to the sandbox's writes (bash and the kernel), and an in-process
+write under it is a question no hook allow answers, so the contained model cannot write the code the
+next hook runs. A script a handler names elsewhere is not covered. User, managed and listed plugin
+files are the user's own.
+`disableAllHooks` takes the highest-precedence value (managed, local, project, user); outside managed
+settings, `true` stops all but managed hooks, and `allowManagedHooksOnly` keeps managed hooks only.
+Configuration notices ride the session's first tool result once, and each `yi mcp` call's result.
+
+**Handlers.** Only `type: command` runs. Exec form (`args`) substitutes `${CLAUDE_PROJECT_DIR}` and
+`${CLAUDE_PLUGIN_ROOT}` into the command and each arg; shell form runs `/bin/sh -c`; both export the
+two variables. A hook inherits Yi's environment as Claude's does Claude's: the `OTEL_*` exporter
+variables are removed, and Yi's provider keys only under `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`.
+`CLAUDE_PLUGIN_DATA` is not set: Yi does not know
+a plugin's data dir. Matchers follow the doc's three forms, but the regex form is the Rust `regex`
+dialect (no lookaround, no backreferences), not JavaScript's. `if` takes one `Tool` or `Tool(glob)`
+rule, the glob matched as Yi's own permission rules match: against each subcommand of a Bash input
+past its `VAR=value` assignments, else the file path relative to the cwd; an input it cannot judge (a
+command substitution, a tool with no path) runs the hook, as Claude's does. Matching handlers run at
+once, for every file of a call at once, an identical settings handler once; the timeout (600 s
+default) and the session's interrupt both kill the process group, and stdin is written beside the
+drains, so a hook that never reads it still decides. These fail open, each skipped with the
+once-per-session notice: types `http`, `prompt`, `agent` and `mcp_tool`; an `if` that does not
+parse; `shell: powershell`; every non-tool event. `async` and `asyncRewake` handlers run detached,
+never decide, and their output is dropped: Yi has no next-turn delivery and cannot rewake. Only
+`asyncRewake` is held to its timeout, as in Claude; a detached hook outlives a Yi that exits.
+
+**Outcomes.** Exit 2 blocks (a pre hook denies with its stderr, a post or failure hook adds it as
+feedback); JSON is read only from stdout that is one `{…}` object, at any exit code, and on exit 2 it
+cannot lift the block; other stdout is ignored. A failure (no start, timeout, other exit without JSON,
+invalid JSON) is a notice, or blocks under `onFailure: block`. Stdout is parsed whole even when
+stderr passed its cap, so a noisy deny still denies. On exit 2 a post or failure hook's JSON block
+reason replaces its stderr. Pre verdicts combine deny > ask > allow; `defer` is ignored with a notice,
+its context and input with it, as Claude ignores one outside a single-call `-p` run, so the call goes
+on to the broker; the deprecated `approve`/`block` map to allow/deny. The broker still decides every
+call: an allow answers only the mode's own ask (journaled as answered by `claudeCodeHook`), never a
+configured ask rule's, a hold's or a write under `.claude`, stays contained where a sandbox exists,
+and never widens what the sandbox lets an in-process write reach; an ask goes to the person, never
+the classifier or reviewer, and refuses headless. `continue: false` denies the call or ends its
+result with `terminate`, which stops the loop once every call of the batch did. `updatedInput` maps back
+to Yi's arguments before the rules, wall and permission gates and is validated again; a shape that does
+not map exactly (a grep rewrite, a timeout that is no whole second, a multi-file edit, an edit whose
+span fields changed) refuses the call.
+`additionalContext` and block reasons are labelled rows on the result; `updatedToolOutput` replaces it
+where the shape is the tool's (Bash's `stdout`, a string for the text tools, any value for MCP).
+
+**Stdin.** Names map to `Bash`, `Read`, `Write`, `Edit`, `Grep` and `mcp__yi__<name>`; file paths are
+absolute and Bash's timeout is in ms; an argument with no Claude name keeps its Yi name, and an absent
+one is omitted. An edit's hooks run once per file its patch touches, as Claude's Edit input: the
+changed span of whole lines as `old_string` and `new_string`, `replace_all` false, and `patch` only
+when it is that one file's; a file Yi could not prepare gets its path and a notice. A grep with
+`replace` and `apply` is an `Edit` with the pattern as `old_string`, the replacement as
+`new_string`, `replace_all` and the search root as `file_path`. `tool_response` is the doc's object
+for Bash (`stdout` holding both streams as Yi shows them, `stderr` empty, `interrupted`, `isImage`)
+and Write (`filePath`); the doc is silent for the rest, so they get Yi's result text. A failure
+carries `error` (`Exit code N` first for bash) and `is_interrupt`; a child adds `agent_id`;
+`permission_mode` maps ask, auto and yolo to default, auto and bypassPermissions. Yi's own tools carry `mcp_server` `{name: yi, source: sdk}`, so a policy keyed on
+`source` tells them from a real server's. Not sent: `prompt_id`, `effort`, `agent_type`,
+`duration_ms`, `scratchpad_dir`, and `mcp_server` for a real server through `yi mcp`.
+Caps: each `tool_response` string at `RESPONSE_CAP` (64 KiB); hook text (context, reasons, stderr,
+`updatedToolOutput`, and a multi-file call's rows together) at `HOOK_TEXT_CAP` (10,000 characters,
+Claude's own), past which the whole text goes to a session spill file and a 2,000-character preview
+names it, as Claude's does; a hook's output streams at `HOOK_OUTPUT_CAP` (1 MiB), the cut naming the
+bytes written. Each cut is loud.
+
+- Owner: [`claude_hooks`](../crates/runtime/src/claude_hooks/mod.rs), [`tools.rs`](../crates/runtime/src/tools.rs), [`mcp_hooks.rs`](../crates/cli/src/mcp_hooks.rs).
+
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
 
@@ -1132,7 +1221,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests, the release digest | — |
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
-| `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools | the `grep` tool; the Age and break-property tables stay out | — |
+| `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools, runtime | the `grep` tool and Claude Code hook matchers; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, the uv archive, the release tarball and a tree plugin's zip (`yi plugin add chrome`), read in-tree rather than by `unzip`, which the CI image lacks | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
