@@ -344,18 +344,23 @@ impl App {
         self.split_with_anim(Direction::Horizontal);
         let opened = self.state.focused_pane_id().filter(|id| *id != home);
         if let Some(pane) = self.state.focused_pane_mut() {
-            pane.content = match (kind, session) {
-                (SideKind::Diff, Some(session)) => PaneContent::SessionDiff {
-                    session,
-                    scope: crate::model::ReviewScope::default(),
-                },
-                (_, session) => PaneContent::Notebook {
-                    session,
-                    full: false,
-                    drawn: None,
-                },
+            (pane.content, pane.scroll_from_bottom) = match (kind, session) {
+                (SideKind::Diff, Some(session)) => {
+                    let scope = crate::model::ReviewScope::default();
+                    (PaneContent::SessionDiff { session, scope }, usize::MAX)
+                }
+                (_, session) => {
+                    let (full, drawn) = (false, None);
+                    (
+                        PaneContent::Notebook {
+                            session,
+                            full,
+                            drawn,
+                        },
+                        0,
+                    )
+                }
             };
-            pane.scroll_from_bottom = 0;
         }
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);

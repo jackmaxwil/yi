@@ -533,12 +533,14 @@ fn pane_view_content(
         }
         PaneContent::Markdown { path, source } => {
             let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
-            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) =
+                crate::panes::windowed(&all, &mut pane.scroll_from_bottom, visible);
             (format!("¶ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Diff { path, source } => {
             let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
-            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) =
+                crate::panes::windowed(&all, &mut pane.scroll_from_bottom, visible);
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
@@ -569,7 +571,8 @@ fn pane_view_content(
                 usize::from(inner.width),
                 theme,
             );
-            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) =
+                crate::panes::windowed(&all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
         PaneContent::Notebook {
@@ -590,7 +593,8 @@ fn pane_view_content(
                 *drawn = Some((width, all));
             }
             let all = drawn.as_ref().map_or(&[][..], |(_, all)| all.as_slice());
-            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            let (lines, scroll) =
+                crate::panes::windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
     }
@@ -609,28 +613,6 @@ pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
         }
     }
     out
-}
-
-fn windowed(
-    all: &[Line<'static>],
-    from_bottom: &mut usize,
-    visible: usize,
-) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
-    let total = all.len();
-    // Scrolling past the top would bank rows a later scroll down must first spend.
-    *from_bottom = (*from_bottom).min(total.saturating_sub(visible));
-    let from_bottom = *from_bottom;
-    let top = total.saturating_sub(from_bottom).saturating_sub(visible);
-    let extent = (total > visible).then_some((total, top));
-    (window(all, from_bottom, visible), extent)
-}
-
-fn window(all: &[Line<'static>], from_bottom: usize, visible: usize) -> Vec<Line<'static>> {
-    let end = all.len().saturating_sub(from_bottom);
-    let start = end.saturating_sub(visible);
-    all.get(start..end)
-        .map(<[Line<'static>]>::to_vec)
-        .unwrap_or_default()
 }
 
 fn editor_cursor_cell(editor: &crate::model::Editor, inner: Rect) -> Option<(u16, u16)> {
