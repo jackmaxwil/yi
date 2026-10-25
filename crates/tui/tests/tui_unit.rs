@@ -2423,6 +2423,7 @@ fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
         error: Some("€".repeat(100)),
         spawn: None,
         answer: None,
+        answer_dropped: 0,
         activity: yi_types::subagent::ChildActivity::Waiting,
         flag: None,
     };
