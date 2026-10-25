@@ -1,7 +1,7 @@
 """EXP-S5-E2's score reader, its pre-registered verdict at each limit and its arm wiring: no model,
 no Docker, no Terminal-Bench task text. The verifier files are written by the tests with the keys and
 lines the real verifiers print, numbers only (case ids and sentences are task text)."""
-import importlib.util, json, os, shutil, sys, tempfile, unittest
+import importlib.util, json, os, re, shutil, sys, tempfile, unittest
 from fractions import Fraction
 from pathlib import Path
 from unittest import mock
@@ -194,6 +194,16 @@ class Arms(unittest.TestCase):
         for arm in E2.ARMS:
             self.assertIn(f"EVAL_ARM={arm}", argv[arm])
             self.assertIn(f"TBV4_ATTEMPTS={E2.REPEATS}", argv[arm])
+
+    def test_the_partition_is_copies_in_the_working_directory_not_a_path_outside_it(self):
+        # Failure: a local:// partition outside the parent's cwd is refused at spawn, and on all three
+        # images the rules sit outside it (/app/packet, /shared/rules; WORKDIR /workspace, /app).
+        for arm in ("workers", "kernel"):
+            text = E2.ARM_TEXT[arm]
+            self.assertIn("`cp <rules file> .`", text, arm)
+            self.assertLess(text.index("`cp <rules file> .`"), text.index("partition=RULES"), arm)
+            for address in re.findall(r"local://(\S*)", text):
+                self.assertFalse(address.startswith(("/", "..")), address)
 
 
 if __name__ == "__main__":
