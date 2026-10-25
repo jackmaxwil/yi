@@ -35,7 +35,7 @@ impl Role {
         }
     }
 
-    const fn allowed_tools(self) -> &'static [&'static str] {
+    pub(crate) const fn allowed_tools(self) -> &'static [&'static str] {
         match self {
             Self::Reader => &["read", "grep"],
             Self::Worker => &["read", "grep", "edit", "write", "bash", "get_context"],

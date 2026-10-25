@@ -8,6 +8,7 @@ use yi_types::url::Scheme;
 
 use super::artifact::Artifacts;
 use super::output::OutputResolve;
+use crate::subagent::reader::Role;
 
 /// The routed reader's answer schema, carried from the spawn's start like the brief's lines.
 pub(super) const SCHEMA: &str = "reader_schema";
@@ -37,7 +38,7 @@ pub(super) fn reads_only(delegation: &Delegation, cwd: &Path) -> bool {
         && spec
             .tools
             .iter()
-            .all(|tool| ["read", "grep"].contains(&tool.as_str()))
+            .all(|tool| Role::Reader.allowed_tools().contains(&tool.as_str()))
         && delegation.context.iter().all(|url| match url.scheme() {
             Scheme::Local => !cwd.join(url.path()).is_dir(),
             scheme => !matches!(scheme.as_str(), "kernel" | "family"),
@@ -78,7 +79,9 @@ pub(super) fn brief(at: &TodoAddr, delegation: &Delegation, reader: bool) -> Str
         lines.push(format!("Role: {role}"));
     }
     lines.push(accept_line(&delegation.accept));
-    if let Some(output) = &delegation.output {
+    if let Some(output) = &delegation.output
+        && !(reader && delegation.extra.contains_key(SCHEMA))
+    {
         lines.push(format!(
             "Answer with JSON matching the schema at {}",
             output.schema
