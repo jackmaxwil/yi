@@ -152,7 +152,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
 }
 
 /// One root session wired as `build_session` wires it once the session id is known.
-fn root_session(
+pub(crate) fn root_session(
     root: &std::path::Path,
     rlm: &str,
     family: &str,

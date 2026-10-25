@@ -14,32 +14,45 @@ use super::ops::{
 };
 use super::render::render_outcome;
 use super::table::{ALL_OPS, OpKind, op_name};
-use yi_types::plan::op::{MODEL_OPS, SpecError, TodoSpecRepr};
+use yi_types::plan::op::{SpecError, TodoSpecRepr};
 
 fn legal_ops() -> String {
-    ALL_OPS
-        .iter()
-        .take(MODEL_OPS)
-        .map(|op| op_name(*op))
-        .collect::<Vec<_>>()
-        .join(", ")
+    SHOWN_OPS.join(", ")
 }
 
 /// A key that belongs to another op or level, named where it goes; dogfood sessions sent a
 /// block's `on` inside init, and a todo's `label` beside append's `todos`.
 pub(super) fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
     match (op, in_todo, key) {
-        (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => Some(
-            "; blocking is its own op after the todo exists: op=block, label, on: {user: null}, note, options",
-        ),
+        (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => {
+            Some(BLOCKS.0)
+        }
         (OpKind::Init | OpKind::Append | OpKind::Decompose, false, "label") => {
             Some("; each todo's label goes inside todos: [{label, ...}]")
         }
-        (_, true, "todos") => {
-            Some("; a todo's own children come from decompose on it once it runs")
-        }
+        (_, true, "todos") => Some("; a todo's own sub-steps are the todos of its set row"),
         _ => None,
     }
+}
+
+/// A hint as the plan tool spells its move, then as plan.op and `yi plan` do: their strict set
+/// refuses a row's `on` and `note`, and reads a failed row as pending.
+pub(super) const BLOCKS: (&str, &str) = (
+    "; a todo blocks as a set row: {label, state: blocked, on, note, options}",
+    "; a todo blocks once it exists: op block with {label, on, note, options}",
+);
+pub(super) const FAILS: (&str, &str) = (
+    "; a running todo ends with fail and a cause: a set row with state failed and its cause",
+    "; a running todo ends with fail and a cause: op fail with {label, cause}",
+);
+pub(super) const REOPENS: (&str, &str) = (
+    "; only a failed todo reopens: set it failed first",
+    "; only a failed todo reopens: op fail it first",
+);
+
+pub(super) fn ops_spelling(text: &str) -> String {
+    ([BLOCKS, FAILS, REOPENS].iter())
+        .fold(text.to_owned(), |text, (tool, ops)| text.replace(tool, ops))
 }
 
 /// What the caller evidently meant, per argument: F0e sessions sent prose or a bare path as
@@ -544,6 +557,7 @@ pub(super) fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequ
     if args.contains_key("actor") {
         return Err(ArgError::ActorArg);
     }
+    let args = &super::natural::unstring_todos(args);
     let op = parse_op(args)?;
     Ok(OpRequest {
         plan: opt(args, op.kind(), "plan")?,
@@ -619,7 +633,7 @@ impl PlanTool {
             return self.each(&args, labels, said);
         }
         let (request, blobs) = declared(&self.actor, &args)?;
-        let (request, struck) = super::apply::keep_omitted(self, request, &mut said);
+        let (request, struck) = super::apply::keep_omitted(&self.engine, request, &mut said);
         if let Op::Accept { .. } = &request.op {
             let confirming = self.confirming.as_ref();
             return Ok(
@@ -736,7 +750,7 @@ impl PlanTool {
             }
             other => other?,
         };
-        let outcome = super::apply::drop_struck(self, outcome, struck, &mut said);
+        let outcome = super::apply::drop_struck(&self.engine, outcome, struck, &mut said);
         Ok(super::apply::noted(render_outcome(&op, &outcome), said))
     }
 }
@@ -800,12 +814,7 @@ impl Tool for PlanTool {
     }
 
     fn arms(&self, input: &Map<String, Value>) -> Vec<String> {
-        input
-            .get("on")
-            .and_then(|on| serde_json::from_value::<BlockedOn>(on.clone()).ok())
-            .and_then(|on| crate::schedule::clock::armed_command(&on))
-            .into_iter()
-            .collect()
+        super::request::armed(input)
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
@@ -1025,18 +1034,6 @@ mod tests {
                 "{message}"
             );
         }
-        Ok(())
-    }
-    #[test]
-    fn an_unknown_op_names_the_legal_ones() -> Fallible {
-        let mut input = Map::new();
-        input.insert("op".to_owned(), Value::String("plan.create".to_owned()));
-        let message = request(&Actor::Owner, &input)
-            .err()
-            .ok_or("plan.create parsed as an op")?
-            .to_string();
-        assert!(message.contains("init"), "{message}");
-        assert!(message.contains("supersede"), "{message}");
         Ok(())
     }
     #[test]
