@@ -165,18 +165,31 @@ fn budget_values(goal: &Goal) -> [(&'static str, String); 3] {
     ]
 }
 
-/// Invariant: the objective is user text and is filled last, so a `{{ token_budget }}`
-/// typed into it stays literal instead of being rewritten by a later pass.
+/// Invariant: one scan of the template, so a `{{ name }}` inside a value (the objective,
+/// check output, a plan label) is copied verbatim, never filled.
 fn fill(template: &str, goal: &Goal, extra: Vec<(&'static str, String)>) -> String {
     let mut values = budget_values(goal).to_vec();
     values.push(("time_used_seconds", goal.time_used_seconds.to_string()));
-    values.extend(extra);
     values.push(("objective", goal.objective.clone()));
-    values
-        .into_iter()
-        .fold(template.to_owned(), |text, (name, value)| {
-            text.replace(&format!("{{{{ {name} }}}}"), &value)
-        })
+    values.extend(extra);
+    let lookup = |name: &str| values.iter().find(|(key, _)| *key == name).map(|(_, v)| v);
+    let mut text = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some((head, tail)) = rest.split_once("{{ ") {
+        text.push_str(head);
+        let filled = tail
+            .split_once(" }}")
+            .and_then(|(name, after)| Some((lookup(name)?, after)));
+        let Some((value, after)) = filled else {
+            text.push_str("{{ ");
+            rest = tail;
+            continue;
+        };
+        text.push_str(value);
+        rest = after;
+    }
+    text.push_str(rest);
+    text
 }
 
 pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) -> String {
