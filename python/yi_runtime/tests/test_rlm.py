@@ -871,3 +871,23 @@ class ControlCommTests(unittest.TestCase):
         shell = mock.Mock(spec=[])
         with mock.patch.object(rlm, "get_ipython", lambda: shell):
             rlm._install_control_comm_handlers()
+
+
+class MergeWorktreeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_check_reaches_the_host_under_the_key_its_handler_reads(self) -> None:
+        sent = []
+
+        async def fake_host_request(kind, payload):
+            sent.append((kind, payload))
+            return {"merged": False}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            await rlm.merge_worktree("child", check="pytest -q")
+            await rlm.merge_worktree("child")
+        self.assertEqual(
+            sent,
+            [
+                ("rlm.merge_worktree", {"target": "child", "check": "pytest -q"}),
+                ("rlm.merge_worktree", {"target": "child"}),
+            ],
+        )

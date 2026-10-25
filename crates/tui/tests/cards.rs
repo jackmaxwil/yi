@@ -401,7 +401,7 @@ fn child_update(status: ChildStatus, answer_preview: Option<String>) -> ChildUpd
 #[test]
 fn a_feedless_childs_long_answer_keeps_its_tail_when_the_preview_arrives() -> TestResult {
     let mut app = app();
-    app.adopt(&child_update(ChildStatus::Running, None), None);
+    app.adopt(&child_update(ChildStatus::Running, None), None, None);
     let text: String = (0..3_000)
         .map(|n| format!("line {n} of a long report\n"))
         .collect();
@@ -895,5 +895,177 @@ fn a_first_step_keeps_the_box_height_and_a_narrow_box_keeps_both_steps() -> Test
         narrow.get(3).is_some_and(|r| r.contains("⚙ grep naïve")),
         "{narrow:#?}"
     );
+    Ok(())
+}
+
+/// The longest assistant text the recorded session holds, as a child's report would read.
+fn recorded_answer() -> Result<String, Box<dyn Error>> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sessions/01a0d6e4.jsonl"
+    );
+    let mut best = String::new();
+    for line in std::fs::read_to_string(path)?.lines() {
+        let entry: serde_json::Value = serde_json::from_str(line)?;
+        for block in entry["message"]["content"].as_array().into_iter().flatten() {
+            let text = block["text"].as_str().unwrap_or_default();
+            if entry["message"]["role"] == "assistant" && text.len() > best.len() {
+                best = text.to_owned();
+            }
+        }
+    }
+    Ok(best)
+}
+
+/// Dies with a card drawn from rows cached past an edit of the same length. The expected rows
+/// are the pre-cache `TaskCell::lines` output, recorded in fixtures/task-card-rows.json.
+#[test]
+fn a_cached_card_draws_the_rows_the_uncached_card_drew() -> TestResult {
+    use yi_types::subagent::ChildFlag;
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/task-card-rows.json"))?;
+    let answer = recorded_answer()?;
+    let asks = ChildFlag::NeedsYou {
+        note: "asks r1: which branch should I merge?".to_owned(),
+    };
+    let error = Some("provider error: 429 Too Many Requests".to_owned());
+    for (label, status, flag, error, dropped) in [
+        ("running", TaskStatus::Running, None, None, 0),
+        ("done", TaskStatus::Done, None, None, 0),
+        ("done-cut", TaskStatus::Done, None, None, 40_000),
+        ("failed", TaskStatus::Failed, None, error, 0),
+        ("flagged", TaskStatus::Running, Some(asks), None, 0),
+    ] {
+        for (name, mode) in [
+            ("normal", TranscriptMode::Normal),
+            ("thinking", TranscriptMode::Thinking),
+            ("verbose", TranscriptMode::Verbose),
+        ] {
+            let mut cell = TaskCell {
+                description: "guardrail-scout".to_owned(),
+                last_tool: Some("grep ratchet".to_owned()),
+                prev_tool: Some("read scripts/guardrails/check_growth.py".to_owned()),
+                toolcalls: 7,
+                tokens: 3516,
+                elapsed_ms: 2507,
+                error: error.clone(),
+                answer: Some(answer.replace('e', "o")),
+                answer_dropped: dropped,
+                flag: flag.clone(),
+                ..task(status, "")
+            };
+            let rows = yi_tui::cell::AnswerRows::default();
+            let _stale = cell.lines_at(2507, 100, &theme(), mode, 0, &rows);
+            cell.answer = Some(answer.clone());
+            let want: Vec<String> = expected[format!("{label}/{name}")]
+                .as_array()
+                .ok_or("no recorded rows")?
+                .iter()
+                .map(|row| row.as_str().unwrap_or_default().trim_end().to_owned())
+                .collect();
+            let warm = flat(&cell.lines_at(2507, 100, &theme(), mode, 0, &rows));
+            assert_eq!(warm, want, "{label}/{name}, cached");
+            assert_eq!(
+                flat(&cell.lines(100, &theme(), mode, 0)),
+                want,
+                "{label}/{name}"
+            );
+        }
+    }
+    Ok(())
+}
+
+const TAIL: &str = "\n\nThe ratchet in `check_growth.py` reads **the src baseline** and prices every line past the free band, so a landing names its number.\n\n```rust\nlet growth: i64 = measured - baseline;\n```";
+
+/// Dies with a live card left wrapped at its old width, or painted in its old palette, after a
+/// resize or a theme change: each key the cache holds rows under is drawn against the uncached rows.
+#[test]
+fn a_cached_card_redraws_when_the_width_or_theme_moves() -> TestResult {
+    let cell = TaskCell {
+        answer: Some(recorded_answer()? + TAIL),
+        elapsed_ms: 2507,
+        ..task(TaskStatus::Running, "")
+    };
+    let rows = yi_tui::cell::AnswerRows::default();
+    let mode = TranscriptMode::Normal;
+    let mut drawn = Vec::new();
+    for (width, theme) in [
+        (100, theme()),
+        (60, theme()),
+        (60, Theme::new(ColorTier::TrueColor, false)),
+        (60, Theme::new(ColorTier::Ansi256, false)),
+    ] {
+        let warm = cell.lines_at(2507, width, &theme, mode, 0, &rows);
+        assert_eq!(
+            warm,
+            cell.lines(width, &theme, mode, 0),
+            "{width} {:?}",
+            theme.dark
+        );
+        drawn.push(warm);
+    }
+    for pair in drawn.windows(2) {
+        assert!(pair.first() != pair.get(1), "each key draws different rows");
+    }
+    Ok(())
+}
+
+/// Dies with a running card at its 16 KiB cap frozen on the rows before its last delta: the cap
+/// holds the answer's length still while the text moves. A sibling's rows stay as they were.
+#[test]
+fn a_running_card_at_its_cap_draws_its_newest_rows_and_leaves_its_sibling_alone() -> TestResult {
+    let mut app = app();
+    let empty = yi_runtime::faux::faux_assistant_message(
+        vec![yi_runtime::faux::faux_text("")],
+        StopReason::Stop,
+    );
+    for id in ["sub-writer", "sub-reader"] {
+        let update = ChildUpdate {
+            id: ChildId(id.to_owned()),
+            name: id.to_owned(),
+            ..child_update(ChildStatus::Running, None)
+        };
+        app.adopt(&update, None, None);
+        let message = empty.clone();
+        app.reduce_child(id, AgentEvent::MessageStart { message });
+    }
+    let delta = |app: &mut App, id: &str, delta: String| {
+        let event = AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta,
+        };
+        app.reduce_child(
+            id,
+            AgentEvent::MessageUpdate {
+                assistant_message_event: event,
+            },
+        );
+    };
+    delta(
+        &mut app,
+        "sub-reader",
+        "the reader found one file".to_owned(),
+    );
+    let report: String = (0..1_000)
+        .map(|n| format!("line {n} of a long report\n"))
+        .collect();
+    delta(&mut app, "sub-writer", report);
+    let reader = |rows: &[String]| -> Vec<String> {
+        let rows = rows.iter().filter(|row| row.contains("the reader found"));
+        rows.cloned().collect()
+    };
+    let before = common::rows_sized(&mut app, 100, 40)?;
+    delta(
+        &mut app,
+        "sub-writer",
+        "line 1000 of a long report\n".to_owned(),
+    );
+    let after = common::rows_sized(&mut app, 100, 40)?;
+    assert!(
+        after.iter().any(|row| row.contains("line 1000 of")),
+        "{after:#?}"
+    );
+    assert_eq!(reader(&before), reader(&after));
+    assert_eq!(reader(&after).len(), 1, "{after:#?}");
     Ok(())
 }

@@ -890,6 +890,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let (tools_now, root) = (session.tools_handle(), wiring.parent_link.is_none());
     crate::kernel_tools::register(&mut registry, tools_now, Arc::clone(&calls), root);
     let service = wire_kernel(session, &wiring, registry);
+    host.attach_kernel(&service);
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);

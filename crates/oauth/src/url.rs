@@ -55,7 +55,7 @@ pub fn query_param(query: &str, name: &str) -> Option<String> {
     })
 }
 
-/// The inverse of `pkce::base64url_nopad`, for reading a JWT payload segment.
+/// The inverse of [`yi_types::encoding::base64url_nopad`], for reading a JWT payload segment.
 pub fn base64url_decode(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(text.len() * 3 / 4);
     let mut acc: u32 = 0;
