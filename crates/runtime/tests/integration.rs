@@ -6,12 +6,18 @@
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
 mod recorded;
+#[path = "../../types/tests/support/repo.rs"]
+mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/family.rs"]
 mod support;
+#[path = "support/upstream.rs"]
+mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/worktree.rs"]
+mod worktree;
 
 mod advisor_compaction;
 mod advisor_e2e;
@@ -52,6 +58,8 @@ mod lanes;
 mod levers;
 mod node;
 mod permission_scope;
+mod plan_authority;
+mod plan_capacity;
 mod plan_declare;
 mod plan_e2e;
 mod plan_fuzz;
@@ -65,6 +73,7 @@ mod plan_timer;
 mod plan_trace;
 mod plan_verify;
 mod plan_walkthrough;
+mod plan_worktree;
 mod plugin_tree;
 mod prompt_drift;
 mod prompts;

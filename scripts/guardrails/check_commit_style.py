@@ -4,9 +4,9 @@ judges a PR title, but from check_pr_metadata.py — `subject_errors` is the one
 implementation and CI imports it rather than re-deriving it.
 Incident: every commit across the five open PRs carried an assistant co-author
 trailer. Scans HEAD --not origin/main, so the landed history stays untouched."""
-import argparse, pathlib, re, subprocess, sys
+import argparse, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, fail
+from _common import base_commit, fail, git
 
 ASSISTANTS = ("claude", "anthropic", "copilot", "cursor", "codex", "gemini", "devin")
 NAMED = re.compile(r"\b(" + "|".join(ASSISTANTS) + r")\b", re.I)
@@ -22,10 +22,6 @@ TRAILER_OK = re.compile(r"^(Opt-(Run|Delta|Lever|Cases)|Signed-off-by)$", re.I)
 PLAN_TRAILER = re.compile(r"^plan://[a-z0-9.-]+/[^\s]+$")
 
 LIMIT = 72
-# Incident: the subject rules arrived on a lineage 62 commits ahead of main and
-# were retroactively red on four good sentences of 73-77 chars. The standard
-# starts here; the exclusion self-expires once this lineage lands on main.
-STANDARD_STARTS = "6ec141074c880c0fc2f1b4461faca1b1cbe06c35"
 PREFIX = "Ratchet: "
 GIT_NATIVE = re.compile(r"^(Merge|Revert)\b")
 OTHER_PREFIX = re.compile(r"^([A-Za-z][A-Za-z-]*)(\([^)]*\))?!?: ")
@@ -126,19 +122,6 @@ def selfcheck():
          "commit_style selfcheck")
 
 
-def git(*args):
-    return subprocess.run(
-        ("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False
-    )
-
-
-def upstream():
-    for ref in ("origin/main", "main"):
-        if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
-            return ref
-    return None
-
-
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--range", help="git revision range (default: HEAD --not origin/main)")
@@ -152,15 +135,13 @@ if __name__ == "__main__":
         span, hint = (args.range,), args.range
     else:
         hint = "origin/main"
-        base = upstream()
+        base = base_commit()[0]
         if base is None:
             print("FAIL commit_style")
             print("  no origin/main or main to compare against; a shallow clone cannot")
             print("  run this gate, and passing blind is what it exists to prevent")
             sys.exit(1)
         span = ("HEAD", "--not", base)
-        if git("rev-parse", "--verify", "--quiet", STANDARD_STARTS + "^{commit}").returncode == 0:
-            span += (STANDARD_STARTS,)
 
     log = git("log", f"--format={FORMAT}", *span)
     if log.returncode != 0:
