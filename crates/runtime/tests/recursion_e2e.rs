@@ -3206,12 +3206,21 @@ async fn a_context_count_of_the_wrong_shape_is_refused_not_ignored() -> TestResu
     Ok(())
 }
 
-/// Dies with the road the row names leading nowhere: a value past its cap, written to a file and
-/// given as `local://<path>` in `partition`, reaches the child whole.
+/// Dies with the road the row names leading nowhere: the address and kwarg read off a cut value's
+/// row, with the value written to that file, reach the child whole.
 #[tokio::test]
 async fn a_value_past_the_context_cap_reaches_a_child_whole_through_a_partition() -> TestResult {
-    let harness = harness(0, 1, "ok")?;
     let value = kernel_value(4_097, true);
+    let cut = scoped_brief(json!({ "board": value }), None).await?;
+    let row = context_row(&cut, "board")?;
+    let (address, kwarg) = (row.rsplit_once(" · write a value to a file and give "))
+        .and_then(|(_, road)| road.strip_suffix(']')?.split_once(" in "))
+        .ok_or(format!(
+            "the cut row names no road: {}",
+            row.chars().skip(4_096).collect::<String>()
+        ))?;
+    let address = address.replace("<path>", "board.json");
+    let harness = harness(0, 1, "ok")?;
     std::fs::write(harness.root.join("board.json"), &value)?;
     harness
         .host
@@ -3219,12 +3228,11 @@ async fn a_value_past_the_context_cap_reaches_a_child_whole_through_a_partition(
             harness.root.to_path_buf(),
             yi_runtime::Wall::default(),
         )));
-    let partition = json!(["local://board.json"]);
     harness
         .host
         .spawn(
             "read it".to_owned(),
-            protocol_kwargs("scoped", &[("partition", partition)]),
+            protocol_kwargs("scoped", &[(kwarg, json!([address]))]),
         )
         .map_err(|error| error.to_string())?;
     let brief = child_brief(&harness).await;

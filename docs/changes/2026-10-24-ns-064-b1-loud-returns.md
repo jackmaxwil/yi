@@ -1,7 +1,7 @@
 ---
 issue: Closes #1500, Refs #1442
 growth: +30 the one loud cut for a child's return (+28 in mailbox.rs: the row writer and its opener, the sender's character count read from context_chars and refused when it is of the wrong shape, and the refusal tail the two result refusals share), the context_chars entry in the rlm.run allowlist (+1) and the TUI's match of a cut preview's head (+3), less the preview's own cut branch (-2); weighed for deletion: the preview's separate ellipsis branch and the schema refusal's whole-text embed are gone, a second row writer for the context total was folded into the same clamp, and leaving the allowlist entry out was rejected because a refused kwarg would stop the kernel's count from ever arriving
-raise: comments +5, crate runtime +27, crate tui +3, tests +357
+raise: comments +5, crate runtime +27, crate tui +3, tests +365
 ---
 This is Bet 1 items 4 and 7 of Yi's next shape (B1-loud-returns): every cut of a child's return now says what it cut.
 
@@ -13,6 +13,6 @@ Four places shortened what a child sent its parent and said little or nothing ab
 
 The TUI reads a child's preview as the head of the answer it is already streaming and replaces its card's text only when that head is not found there. The cut row is no part of the answer, so the match stops at the last `CUT_ROW` in the preview. That is the one opener the runtime writes every cut row with and the card matches on, so the two cannot drift apart, and an answer holding a `… [` of its own in its first 240 chars is not cut short by it. Without the match, every long answer's card would have shown the 240-char preview and its row in place of the streamed text until the child finished. The change is a few lines in `tui/src/app/children.rs`; a TUI test streams a long answer and then delivers the cut preview, and streams `Done` and then delivers an uncut preview with a `… [` in it.
 
-The plan estimated tests +70 and the measurement is +357: six runtime tests and a helper (the context value at and one past its cap with the sender's count, without it, under it, on a non-ASCII value and on one whose byte 4,096 sits inside a two-byte char; a count of the wrong shape; the whole scope at and one past 16,384; the remedy for a cut value, run through a partition; the schema refusal at 2,000, 2,001 and 10,000 chars with its `history://` road fetched; the preview at 240 and 241 with its road fetched), whose fixtures are built to the shape the kernel's `_resolve_context` produces (a helper of about 15 lines), and the TUI test.
+The plan estimated tests +70 and the measurement is +365: six runtime tests and a helper (the context value at and one past its cap with the sender's count, without it, under it, on a non-ASCII value and on one whose byte 4,096 sits inside a two-byte char; a count of the wrong shape; the whole scope at and one past 16,384; the remedy read off a cut value's row and run through a partition; the schema refusal at 2,000, 2,001 and 10,000 chars with its `history://` road fetched; the preview at 240 and 241 with its road fetched), whose fixtures are built to the shape the kernel's `_resolve_context` produces (a helper of about 15 lines), and the TUI test.
 
 The feature-ledger row for the kernel and `rlm()` subagents says it, and names the runtime tests among its journeys.
