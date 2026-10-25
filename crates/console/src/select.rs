@@ -7,6 +7,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use yi_tui::card::RAIL;
 use yi_tui::cell::{CALLOUT_RAIL, GUTTER, USER_BAR};
+use yi_types::encoding::base64;
 
 use crate::app::App;
 use crate::layout::PaneId;
@@ -392,26 +393,6 @@ pub fn selected(
             _ => (None, None),
         }
     })
-}
-
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let byte = |n: usize| u32::from(chunk.get(n).copied().unwrap_or(0));
-        let packed = (byte(0) << 16) | (byte(1) << 8) | byte(2);
-        for slot in 0..4 {
-            let symbol = if slot <= chunk.len() {
-                let index = usize::try_from((packed >> (18 - 6 * slot)) & 63).unwrap_or(0);
-                ALPHABET.get(index).copied().unwrap_or(b'=')
-            } else {
-                b'='
-            };
-            out.push(char::from(symbol));
-        }
-    }
-    out
 }
 
 pub fn osc52(text: &str) -> String {

@@ -10,3 +10,4 @@ workspace = true
 
 [dependencies]
 miniz_oxide = { workspace = true }
+yi-types = { workspace = true }

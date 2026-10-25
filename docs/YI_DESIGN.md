@@ -49,7 +49,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-loop` | `run_loop`, `LoopConfig`, `AgentTool`, interrupt signal, tool-name repair | yi-types |
 | `yi-ai` | Provider streams, model catalog, retry, SSE | yi-types, yi-oauth |
 | `yi-oauth` | PKCE, loopback callback, token store, `login`/`logout` | yi-types |
-| `yi-orb` | Orb geometry and kitty-graphics painter | none |
+| `yi-orb` | Orb geometry and kitty-graphics painter | yi-types |
 | `yi-session` | Session store: JSONL and in-memory repos, ids, queries | yi-types |
 | `yi-context` | Token accounting, compaction cut point, context assembly | yi-types, yi-tools |
 | `yi-permission` | Modes, rules, command classifier, catastrophic denylist, review ledger | yi-types |
