@@ -12,6 +12,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::ProviderStream;
+use yi_runtime::environment::files_line;
 use yi_runtime::family::{MemberState, MemberView, children_line};
 use yi_runtime::todo::{Op, Target, TodoStore};
 use yi_types::kernel::{KernelRestoreResult, KernelSnapshotSkip};
@@ -76,9 +77,7 @@ async fn find_models_says_how_many_matches_the_limit_left_out() -> TestResult {
     let short = family.host.find_models("", total - 1);
     let kept = short["models"].as_array().ok_or("no models list")?.len();
     assert_eq!(kept, total - 1);
-    let text = short["cut"]
-        .as_str()
-        .ok_or("a cut listing carries no row")?;
+    let text = (short.get("cut").and_then(Value::as_str)).ok_or("a cut listing carries no row")?;
     let row = row_of(text)?;
     assert_eq!(
         (row.kept, row.total, row.what, row.cap, row.limit),
@@ -251,6 +250,43 @@ fn todo_error_lists_stop_at_the_cap_and_name_the_view_call() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_phase_list_stops_at_the_cap_and_names_the_view_call() -> TestResult {
+    for (count, cut) in [(12, false), (13, true)] {
+        let session = memory_store();
+        let store = TodoStore::new(Arc::new(move || Some(session.clone())), "main");
+        let phases = (0..count)
+            .map(|at| {
+                Ok((
+                    PhaseName::new(format!("Phase {at:02}"))?,
+                    vec![Todo::from_text(&format!("step {at:02}"))?],
+                ))
+            })
+            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+        store.apply(Op::Init { phases }, None)?;
+        let gone = Op::Drop {
+            target: Target::Phase(PhaseName::new("Nowhere")?),
+            reason: "gone".to_owned(),
+        };
+        let text = refusal(&store, gone)?;
+        assert!(text.contains("the list holds: \"Phase 00\""), "{text}");
+        assert_eq!(row_in(&text).is_some(), cut, "{count} phases: {text}");
+        if cut {
+            let row = row_of(&text)?;
+            assert_eq!(
+                (row.kept, row.total, row.what, row.cap, row.limit),
+                (12, 13, "phases", "LIST_ROWS", 12)
+            );
+            assert_eq!(row.next, "todo {\"op\": \"view\"}");
+            assert!(
+                text.contains("Phase 11") && !text.contains("Phase 12"),
+                "{text}"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn call(id: &str, tool: &str, args: Value) -> Content {
     faux_tool_call(id, tool, args.as_object().cloned().unwrap_or_default())
 }
@@ -364,6 +400,29 @@ async fn a_refused_answer_echoes_a_bounded_view_naming_the_held_file() -> TestRe
         "the file holds every line"
     );
 
+    let root = Scratch::new("yi-caps-answer-one-long-row")?;
+    let draft = "w".repeat(5000);
+    let echo = refused_echo(&root, &draft).await?;
+    let row = row_of(&echo)?;
+    assert_eq!(
+        (row.kept, row.total, row.next),
+        (
+            0,
+            1,
+            format!("read {} offset 1", held(&root).display()).as_str()
+        )
+    );
+    assert!(!echo.contains(&"w".repeat(100)), "{} B echoed", echo.len());
+    let lines: Vec<&str> = echo.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with("[\u{2026} 0 of 1"));
+    let above = at.and_then(|at| lines.get(at.checked_sub(1)?));
+    assert!(
+        above.is_some_and(|line| !line.is_empty()),
+        "no blank row above the cut row: {echo}"
+    );
+
     let root = Scratch::new("yi-caps-answer-report")?;
     let report = (0..600)
         .map(|at| format!("Row {at}: the wall-clock figure for run {at} was {at}.5 ms."))
@@ -449,16 +508,16 @@ fn the_memory_index_names_what_it_did_not_load() -> TestResult {
     assert!(row_in(&at).is_none(), "200 short notes load whole: {at}");
     let row = row_of(&over)?;
     assert_eq!(
-        (row.kept, row.total, row.cap, row.limit, row.next),
+        (row.kept, row.total, row.what, row.cap, row.limit, row.next),
         (
             200,
             201,
+            "notes loaded",
             "LOAD_LINES",
             200,
             "await memory.search(\"words\")"
         )
     );
-    assert!(row.what.contains("LOAD_BYTES 25000"), "{}", row.what);
 
     // An index line is 22 B and the hook, so a 227-char hook makes 250 B with its newline.
     let (at, over) = block_at(100, 227)?;
@@ -467,6 +526,48 @@ fn the_memory_index_names_what_it_did_not_load() -> TestResult {
         "100 lines are 25,000 B, the limit: {at}"
     );
     let row = row_of(&over)?;
-    assert_eq!((row.kept, row.total), (100, 101));
+    assert_eq!(
+        (row.kept, row.total, row.cap, row.limit),
+        (100, 101, "LOAD_BYTES", 25_000),
+        "the bytes cut here, so the bytes are named"
+    );
+    Ok(())
+}
+
+/// A directory of `visible` files and two dot-names.
+fn files_in(visible: usize) -> Result<Scratch, Box<dyn Error>> {
+    let dir = Scratch::new("yi-caps-files")?;
+    for at in 0..visible {
+        std::fs::write(dir.join(format!("f{at:02}.txt")), "x")?;
+    }
+    std::fs::write(dir.join(".git"), "x")?;
+    std::fs::write(dir.join(".env"), "x")?;
+    Ok(dir)
+}
+
+#[test]
+fn the_files_line_names_the_cap_and_the_hidden_names_it_skipped() -> TestResult {
+    let dir = files_in(20)?;
+    let at = files_line(&dir).ok_or("no files line")?;
+    assert!(row_in(&at).is_none(), "20 names are the limit: {at}");
+
+    std::fs::write(dir.join("f20.txt"), "x")?;
+    let over = files_line(&dir).ok_or("no files line")?;
+    let row = row_of(&over)?;
+    assert_eq!(
+        (row.kept, row.total, row.what, row.cap, row.limit, row.next),
+        (
+            20,
+            21,
+            "top-level names, 2 hidden skipped",
+            "FILES_SHOWN",
+            20,
+            "ls -A"
+        )
+    );
+    assert!(
+        over.contains("f19.txt") && !over.contains("f20.txt"),
+        "{over}"
+    );
     Ok(())
 }

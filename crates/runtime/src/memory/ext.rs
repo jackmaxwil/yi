@@ -139,18 +139,16 @@ pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
                 }
                 body.extend(scoped.lines.iter().cloned());
                 if scoped.not_loaded > 0 {
-                    let (shown, left) = (scoped.lines.len(), scoped.not_loaded);
-                    let what = format!("notes loaded within LOAD_BYTES {LOAD_BYTES}");
+                    let shown = scoped.lines.len();
+                    let (cap, limit) = if shown >= LOAD_LINES {
+                        ("LOAD_LINES", LOAD_LINES)
+                    } else {
+                        ("LOAD_BYTES", LOAD_BYTES)
+                    };
+                    let all = shown.saturating_add(scoped.not_loaded);
                     let next = "await memory.search(\"words\")";
-                    let all = shown.saturating_add(left);
-                    body.push(crate::listed::cut_row(
-                        shown,
-                        all,
-                        &what,
-                        "LOAD_LINES",
-                        LOAD_LINES,
-                        next,
-                    ));
+                    let row = crate::listed::cut_row(shown, all, "notes loaded", cap, limit, next);
+                    body.push(row);
                 }
             }
             Err(error) => body.push(format!("{label} notes not loaded: {error}")),

@@ -21,8 +21,8 @@ pub(crate) fn tool(handle: AnswerHandle, tools: &[Arc<dyn Tool>]) -> Arc<dyn Too
 }
 
 impl AnswerTool {
-    /// The draft written through `write`, so its tag anchors an `edit`, and its first
-    /// [`ANSWER_ECHO_BYTES`] of rows shown as `read` shows them; None with no spill dir or wall.
+    /// The draft written through `write`, so its tag anchors an `edit`, and the echo of its first
+    /// [`ANSWER_ECHO_BYTES`] of rows. None with no spill dir or when a wall refuses the write.
     fn hold_file(&self, draft: &str, context: &ToolContext) -> Option<(PathBuf, String)> {
         let stem = (context.transcript.as_ref()).and_then(|path| path.file_stem());
         let stem = stem.map_or_else(|| "draft".into(), |stem| stem.to_string_lossy());
@@ -48,8 +48,11 @@ impl AnswerTool {
         let next = format!("read {} offset {}", path.display(), kept.saturating_add(1));
         let (what, cap) = ("draft lines shown", "ANSWER_ECHO_BYTES");
         let row = crate::listed::cut_row(kept, all.len(), what, cap, ANSWER_ECHO_BYTES, &next);
-        let head: Vec<&str> = all.iter().take(kept).copied().collect();
-        Some((path, format!("{header}\n{}\n{row}", head.join("\n"))))
+        let mut shown: Vec<&str> = std::iter::once(header)
+            .chain(all.iter().take(kept).copied())
+            .collect();
+        shown.push(&row);
+        Some((path, shown.join("\n")))
     }
 }
 
