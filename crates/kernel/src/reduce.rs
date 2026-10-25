@@ -13,8 +13,8 @@ pub struct CellState {
     pub internal: bool,
     pub stdout: String,
     pub stderr: String,
-    pub stdout_truncated: bool,
-    pub stderr_truncated: bool,
+    pub stdout_chars: usize,
+    pub stderr_chars: usize,
     pub result: Option<String>,
     pub attachments: Vec<KernelAttachment>,
     pub status: ExecuteStatus,
@@ -29,8 +29,8 @@ impl CellState {
             internal,
             stdout: String::new(),
             stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
+            stdout_chars: 0,
+            stderr_chars: 0,
             result: None,
             attachments: Vec::new(),
             status: ExecuteStatus::Ok,
@@ -50,16 +50,40 @@ pub struct StreamChunk<'a> {
     pub text: &'a str,
 }
 
-fn append_capped(target: &mut String, truncated: &mut bool, text: &str, max_chars: usize) {
-    if target.chars().count() >= max_chars {
-        return;
-    }
+fn append_capped(target: &mut String, seen: &mut usize, text: &str, max_chars: usize) {
+    *seen = seen.saturating_add(text.chars().count());
     target.push_str(text);
-    let count = target.chars().count();
-    if count > max_chars {
-        *target = target.chars().take(max_chars).collect();
-        *truncated = true;
+    // Invariant: a char is at most 4 bytes, so past 8x the cap a trim always cuts and runs at
+    // most once per 4x the cap of new bytes; the held text stays bounded by the cap.
+    if target.len() > max_chars.saturating_mul(8) {
+        let (head, tail) = ends(target, max_chars);
+        *target = head + &tail;
     }
+}
+
+/// The first half of `max_chars` and the last of the rest, split on chars.
+fn ends(text: &str, max_chars: usize) -> (String, String) {
+    let half = max_chars / 2;
+    let count = text.chars().count();
+    let skip = count
+        .saturating_sub(max_chars.saturating_sub(half))
+        .max(half);
+    (
+        text.chars().take(half).collect(),
+        text.chars().skip(skip).collect(),
+    )
+}
+
+/// `text` whole when its `seen` chars fit, else its two ends around the row naming the cut.
+fn keep_ends(text: String, seen: usize, max_chars: usize) -> String {
+    if seen <= max_chars {
+        return text;
+    }
+    let (head, tail) = ends(&text, max_chars);
+    let kept = head.chars().count().saturating_add(tail.chars().count());
+    format!(
+        "{head}\n[\u{2026} {kept} of {seen} chars kept, the middle cut (DEFAULT_MAX_OUTPUT_CHARS {max_chars}); the rest: read the full output file named below, or with none rerun the cell writing it to a file and read that]\n{tail}"
+    )
 }
 
 pub enum AttachmentParse {
@@ -94,8 +118,8 @@ pub fn parent_msg_id(message: &JupyterMessage) -> Option<&str> {
     message.parent_header.get("msg_id").and_then(Value::as_str)
 }
 
-/// Fold one iopub message into the active cell (design §9). `on_stream` sees uncapped chunks:
-/// the UI gets everything, only the model-facing capture is capped.
+/// Fold one iopub message into the active cell (design §9). `on_stream` sees every stream chunk
+/// and the displayed value (named `execute_result`) uncapped; only the model's capture is capped.
 pub fn reduce(
     cell: &mut CellState,
     message: &JupyterMessage,
@@ -116,13 +140,13 @@ pub fn reduce(
             match name {
                 "stdout" => append_capped(
                     &mut cell.stdout,
-                    &mut cell.stdout_truncated,
+                    &mut cell.stdout_chars,
                     text,
                     cell.max_chars,
                 ),
                 "stderr" => append_capped(
                     &mut cell.stderr,
-                    &mut cell.stderr_truncated,
+                    &mut cell.stderr_chars,
                     text,
                     cell.max_chars,
                 ),
@@ -141,6 +165,12 @@ pub fn reduce(
                 .and_then(Value::as_str)
             {
                 cell.result = Some(text.to_owned());
+                if let Some(on_stream) = on_stream.as_mut() {
+                    on_stream(StreamChunk {
+                        name: "execute_result",
+                        text,
+                    });
+                }
             }
             Reduction::Continue
         }
@@ -190,22 +220,11 @@ pub fn reduce(
 
 pub fn finish(cell: CellState, duration_ms: u64, aborted: bool) -> ExecuteResult {
     let max_chars = cell.max_chars;
-    let truncation = format!("\n[... output truncated at {max_chars} chars ...]");
-    let mut stdout = cell.stdout;
-    let mut stderr = cell.stderr;
-    if cell.stdout_truncated {
-        stdout.push_str(&truncation);
-    }
-    if cell.stderr_truncated {
-        stderr.push_str(&truncation);
-    }
-    let result = cell.result.map(|result| {
-        if result.chars().count() > max_chars {
-            let capped: String = result.chars().take(max_chars).collect();
-            format!("{capped}{truncation}")
-        } else {
-            result
-        }
+    let stdout = keep_ends(cell.stdout, cell.stdout_chars, max_chars);
+    let stderr = keep_ends(cell.stderr, cell.stderr_chars, max_chars);
+    let result = (cell.result).map(|result| {
+        let seen = result.chars().count();
+        keep_ends(result, seen, max_chars)
     });
     let status = if aborted {
         ExecuteStatus::Aborted
