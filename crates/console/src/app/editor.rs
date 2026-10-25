@@ -23,7 +23,7 @@ fn short(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-pub(super) fn load(path: &str) -> Result<Editor, String> {
+pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
     let size = std::fs::metadata(path)
         .map_err(|error| format!("{path}: {error}"))?
         .len();
@@ -57,6 +57,7 @@ pub(super) fn load(path: &str) -> Result<Editor, String> {
         // Invariant: a file mixing endings saves with the one most of its lines use.
         crlf: source.matches("\r\n").count().saturating_mul(2) > source.matches('\n').count(),
         final_newline: source.ends_with('\n'),
+        workdir,
     })
 }
 
@@ -103,7 +104,7 @@ impl Editor {
     }
 
     fn reload(&mut self) -> Result<(), String> {
-        let fresh = load(&self.path)?;
+        let fresh = load(&self.path, self.workdir.clone())?;
         let (row, col) = self.text.cursor();
         self.text = fresh.text;
         self.crlf = fresh.crlf;
@@ -199,8 +200,8 @@ impl Editor {
 }
 
 impl App {
-    pub(super) fn open_editor(&mut self, path: &str) {
-        match load(path) {
+    pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
+        match load(path, workdir) {
             Ok(editor) => {
                 if let Some(pane) = self.state.focused_pane_mut() {
                     pane.content = PaneContent::Editor(editor);

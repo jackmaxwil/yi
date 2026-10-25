@@ -304,11 +304,13 @@ impl App {
             }
             (Verb::Inspect, _) => {
                 let source = inspect(entry);
+                let workdir = self.session_dir();
                 let opened = self.beside(
                     pane,
                     PaneContent::Markdown {
                         path: format!("entry {id}"),
                         source,
+                        workdir,
                         drawn: None,
                     },
                 );

@@ -781,6 +781,35 @@ fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
     ran
 }
 
+/// Dies with the second palette path opening the main checkout's copy: the editor or viewer the
+/// first one opened holds no session, so the next relative path fell back to the root.
+#[test]
+fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult {
+    let lane = lane_dir();
+    std::fs::create_dir_all(&lane)?;
+    std::fs::write(lane.join("a.txt"), "lane copy a\n")?;
+    std::fs::write(lane.join("b.txt"), "lane copy b\n")?;
+    std::fs::write(lane.join("c.md"), "lane notes\n")?;
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("_yi/seen", seen_ok),
+    ];
+    let ran = run(
+        "lane-panes",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy a\n\
+         key alt-/\ntype e b.txt\nkey enter\nwait-frame 3000 1 lane copy b\n\
+         key alt-/\ntype md c.md\nkey enter\nwait-frame 3000 lane notes\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy a\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&lane);
+    ran
+}
+
 /// Dies with `e ~/x.txt` reported as no such file: the path was joined to the root verbatim.
 #[test]
 fn e_opens_a_path_under_home() -> TestResult {
