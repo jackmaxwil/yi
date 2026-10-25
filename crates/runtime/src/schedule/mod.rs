@@ -536,8 +536,8 @@ pub struct HeartbeatService {
     gate: Option<std::sync::Arc<GateFn>>,
     /// Bound to a store every session of this process shares, so a halt reaches them all.
     interned: bool,
-    /// Invariant: held from wiring, and across a rebind, until the lane is in, so a sibling
-    /// leaving cannot stop the timer.
+    /// Invariant: this session owns its interned timer from wiring until [`HeartbeatService::end`],
+    /// so neither a sibling leaving nor a rebind's gap between lanes can stop it.
     wiring: std::sync::Mutex<Option<std::sync::Arc<shared::SharedSchedule>>>,
 }
 
@@ -641,32 +641,25 @@ impl HeartbeatService {
             .session_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let hold = lock_or_poisoned(&self.wiring)
-            .take()
-            .or_else(|| shared::held(&self.store()));
         if *bound != session_id {
             self.withdraw(bound.as_str());
         }
-        let left = match &self.durable {
+        match &self.durable {
             Some((root, runtime)) if yi_session::validate_session_id(&session_id).is_ok() => {
                 let _timer_spawns_here = runtime.enter();
                 let path = root.join(&session_id).join("scheduled-jobs.json");
                 let shared = shared::intern(path, |hub| self.lane_into(hub, &session_id));
-                let store = std::sync::Arc::clone(&shared.store);
-                let left = std::mem::replace(&mut *lock_or_poisoned(&self.store), store);
+                *lock_or_poisoned(&self.store) = std::sync::Arc::clone(&shared.store);
                 *lock_or_poisoned(&self.hub) = Some(std::sync::Arc::clone(&shared.hub));
+                *lock_or_poisoned(&self.wiring) = Some(shared);
                 self.ensure_mailbox(&session_id);
-                Some(left)
             }
             _ => {
                 if let Some(hub) = self.hub() {
                     self.lane_into(&hub, &session_id);
                 }
-                None
             }
-        };
-        drop(hold);
-        left.iter().for_each(shared::release);
+        }
         *bound = session_id;
     }
 
@@ -724,10 +717,9 @@ impl HeartbeatService {
     /// and every later write through this service is refused instead of persisting a stale ledger.
     pub(crate) fn end(&self) {
         let mut bound = lock_or_poisoned(&self.session_id);
-        lock_or_poisoned(&self.wiring).take();
         self.withdraw(&bound);
         bound.clear();
-        shared::release(&self.store());
+        lock_or_poisoned(&self.wiring).take();
     }
 }
 
