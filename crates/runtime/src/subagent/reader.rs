@@ -189,10 +189,7 @@ pub fn session(
         provider,
     );
     if reader.role == Role::Worker {
-        let mode = broker
-            .as_ref()
-            .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode());
-        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT, mode));
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT));
         child.enable_compaction();
     }
     child.set_turn_cap(reader.turns);
