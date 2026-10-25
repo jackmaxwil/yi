@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::string_slice)]
 
 pub mod advisor;
 pub mod affordance;
@@ -114,6 +115,11 @@ pub fn identity_fragment() -> &'static str {
 /// Stable text: it rides the cached prefix, so every byte is paid per turn.
 pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
+}
+
+/// Attached only where [`ext::ExtOptions::can_delegate`]: a leaf never reads it.
+pub fn delegation_fragment() -> &'static str {
+    include_str!("prompts/delegation.md")
 }
 
 /// Rides the system prompt only when no asker is wired, so no person can answer.
