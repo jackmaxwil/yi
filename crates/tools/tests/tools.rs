@@ -4248,7 +4248,7 @@ view/bash-cell-print.txt|cell|./records.sh|records written: 1000";
 /// each cut's row names a file holding every byte the cut dropped.
 #[test]
 fn every_involuntary_output_keeps_its_verdict_under_the_ceiling() -> TestResult {
-    use yi_tools::Involuntary::{Check, Job, ShellCell, Traceback};
+    use yi_tools::Involuntary::{Job, ShellCell, Traceback};
     let dir = temp_dir("view-corpus")?;
     for entry in VIEW_CORPUS.lines() {
         let fields: Vec<&str> = entry.split('|').collect();
@@ -4258,7 +4258,6 @@ fn every_involuntary_output_keeps_its_verdict_under_the_ceiling() -> TestResult 
         let producer = match kind {
             "traceback" => Traceback,
             "cell" => ShellCell(command),
-            "check" => Check(command),
             _ => Job(command),
         };
         let raw = fs::read_to_string(view_fixture(name))?;
