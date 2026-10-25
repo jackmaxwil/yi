@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod cursor;
+pub mod device;
 pub mod flow;
 pub mod loopback;
 pub mod pkce;
