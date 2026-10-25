@@ -38,11 +38,26 @@ fn last_tool_of(session: &ChildFeed) -> Option<String> {
 }
 
 impl App {
+    /// A `/new` or a rewind drops every card with the transcript it belonged to.
+    pub(crate) fn reset_transcript(&mut self) {
+        self.history.clear();
+        self.pending_commit.clear();
+        self.reset_live();
+        self.live_tools.clear();
+        self.user_turns = 0;
+        self.retired_tasks.extend(self.task_order.drain(..));
+        self.tasks.clear();
+        self.committed_tasks.clear();
+        self.dropped_tasks = 0;
+        self.focused = None;
+    }
+
     /// Invariant: the roster is the truth a card is reconciled against. A card still running
     /// that the roster no longer lists ends as `gone`, which heals every lost update.
     pub fn sync_children(&mut self, children: &[yi_runtime::ChildView]) {
         for child in children {
-            self.adopt(&child.update, Some(child.session.clone()));
+            let spawned_by = child.spawned_by.as_deref();
+            self.adopt(&child.update, Some(child.session.clone()), spawned_by);
             let Some(state) = self.tasks.get_mut(child.update.id.as_str()) else {
                 continue;
             };
@@ -81,9 +96,22 @@ impl App {
     }
 
     /// A child seen for the first time gets its task cell; every sighting updates it.
-    pub fn adopt(&mut self, update: &ChildUpdate, session: Option<ChildFeed>) {
+    /// `spawned_by` is the spawning cell's call id when the host recorded one.
+    pub fn adopt(
+        &mut self,
+        update: &ChildUpdate,
+        session: Option<ChildFeed>,
+        spawned_by: Option<&str>,
+    ) {
         let id = update.id.as_str().to_owned();
+        let running = matches!(update.status, ChildStatus::Running | ChildStatus::Other(_));
+        if !running && self.retired_tasks.contains(&id) {
+            return;
+        }
+        self.retired_tasks.remove(&id);
         if !self.tasks.contains_key(&id) {
+            // Invariant: a feed comes only with the roster's record, where no cell means none ran.
+            let (spawn, born_under) = self.spawned_under(spawned_by, session.is_some());
             self.task_order.push(id.clone());
             self.tasks.insert(
                 id.clone(),
@@ -99,7 +127,7 @@ impl App {
                         tokens: 0,
                         elapsed_ms: 0,
                         error: None,
-                        spawn: self.spawning_cell(),
+                        spawn,
                         answer: None,
                         answer_dropped: 0,
                         activity: update.activity,
@@ -107,8 +135,9 @@ impl App {
                     },
                     started: self.clock.now(),
                     finished: None,
-                    born_under: self.spawning_call(),
+                    born_under,
                     session,
+                    rows: crate::cell::AnswerRows::default(),
                 },
             );
             self.scheduler.request();
@@ -184,23 +213,42 @@ impl App {
     /// The spawning cell is an ordering hint, not a gate: a finished card waits only on the
     /// one cell it was born under, so a lost cell end cannot hold every other card.
     pub(super) fn commit_finished_tasks(&mut self) {
-        for id in self.task_order.clone() {
-            let Some(state) = self.tasks.get(&id) else {
-                continue;
-            };
-            let under_live_cell = state.born_under.as_deref().is_some_and(|call| {
-                self.live_tools
-                    .iter()
-                    .any(|tool| tool.call_id == call && tool.status != ToolStatus::Done)
+        while let Some(id) = self.task_order.iter().find(|id| self.ready(id)).cloned() {
+            let cell = self.tasks.get_mut(&id).map(|state| {
+                state.rows = crate::cell::AnswerRows::default();
+                Cell::Task(state.cell.clone())
             });
-            let cell = state.cell.clone();
-            if under_live_cell
-                || cell.status == TaskStatus::Running
-                || !self.committed_tasks.insert(id)
-            {
-                continue;
+            self.committed_tasks.insert(id);
+            if let Some(cell) = cell {
+                self.commit_cell(&cell);
             }
-            self.commit_cell(&Cell::Task(cell));
         }
+        while self.committed_tasks.len() > crate::agents::FINISHED_CARDS {
+            let focused = self.focused.as_ref();
+            let Some(at) = (self.task_order.iter())
+                .position(|id| self.committed_tasks.contains(id) && focused != Some(id))
+            else {
+                break;
+            };
+            let id = self.task_order.remove(at);
+            self.tasks.remove(&id);
+            self.committed_tasks.remove(&id);
+            self.retired_tasks.insert(id);
+            self.dropped_tasks = self.dropped_tasks.saturating_add(1);
+        }
+    }
+
+    fn ready(&self, id: &str) -> bool {
+        let Some(state) = self.tasks.get(id) else {
+            return false;
+        };
+        let under_live_cell = state.born_under.as_deref().is_some_and(|call| {
+            self.live_tools
+                .iter()
+                .any(|tool| tool.call_id == call && tool.status != ToolStatus::Done)
+        });
+        !under_live_cell
+            && state.cell.status != TaskStatus::Running
+            && !self.committed_tasks.contains(id)
     }
 }

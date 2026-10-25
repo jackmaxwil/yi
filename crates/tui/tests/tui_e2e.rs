@@ -1837,7 +1837,11 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
             .map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let children = host.children_view();
+            // The host here has no kernel; a wired one reads the running cell's id from its slot.
+            let mut children = host.children_view();
+            children
+                .iter_mut()
+                .for_each(|c| c.spawned_by = Some("c1".to_owned()));
             app.sync_children(&children);
             if children
                 .iter()
@@ -1973,7 +1977,7 @@ fn a_pane_that_collapses_its_seam_still_ends_on_the_status_row() -> TestResult {
     outgrow_the_pane(&mut app);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     let done = reader("reader-g1", yi_runtime::ChildStatus::Completed, 1);
-    app.adopt(&done, None);
+    app.adopt(&done, None, None);
     app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
         message: yi_runtime::faux::faux_assistant_message(
             vec![yi_runtime::faux::faux_text("")],
@@ -2012,6 +2016,7 @@ fn a_pane_ending_on_a_run_of_boxes_still_ends_on_the_status_row() -> TestResult 
             app.adopt(
                 &reader(&format!("reader-g{n}"), ChildStatus::Completed, 1),
                 None,
+                None,
             );
         }
         let mut at = scroll;
@@ -2026,7 +2031,7 @@ fn a_pane_ending_on_a_run_of_boxes_still_ends_on_the_status_row() -> TestResult 
         );
         if scroll > 0 {
             let late = reader("reader-late", ChildStatus::Completed, 1);
-            app.adopt(&late, None);
+            app.adopt(&late, None, None);
             let held = pane_rows_scrolled(&mut app, height, &mut at);
             assert_eq!(
                 held, rows,
@@ -2047,7 +2052,7 @@ fn a_pane_keeps_one_blank_between_a_finished_box_and_its_running_sibling() -> Te
     outgrow_the_pane(&mut app);
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     for id in ["reader-g1", "reader-g2"] {
-        app.adopt(&reader(id, ChildStatus::Running, 1), None);
+        app.adopt(&reader(id, ChildStatus::Running, 1), None, None);
     }
     app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 1));
     let rows = pane_rows(&mut app, 30);
@@ -2076,6 +2081,7 @@ fn a_reader_that_finishes_first_stays_one_blank_above_its_running_sibling() -> T
         .map(|id| yi_runtime::ChildView {
             update: reader(id, ChildStatus::Running, 0),
             session: yi_runtime::ChildFeed::of(Arc::new(faux_session("read it"))),
+            spawned_by: None,
         })
         .collect();
     app.sync_children(&roster);
@@ -2146,7 +2152,7 @@ fn eight_running_readers_stack_one_blank_apart_with_their_previous_step() -> Tes
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     for (index, (path, pattern)) in steps.iter().enumerate() {
         let id = format!("reader-g{}", index + 1);
-        app.adopt(&reader(&id, ChildStatus::Running, 2), None);
+        app.adopt(&reader(&id, ChildStatus::Running, 2), None, None);
         let calls = [
             ("read", serde_json::json!({ "path": path })),
             ("grep", serde_json::json!({ "pattern": pattern })),
@@ -2193,7 +2199,7 @@ fn a_committed_box_keeps_one_blank_row_above_a_one_row_cell() -> TestResult {
             app.set_pane();
         }
         app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-        app.adopt(&reader("reader-g1", ChildStatus::Running, 0), None);
+        app.adopt(&reader("reader-g1", ChildStatus::Running, 0), None, None);
         app.reduce_child_update(&reader("reader-g1", ChildStatus::Completed, 2));
         app.commit_cell(&Cell::Footer {
             text: "computed 1 · ran 3 · 24s".to_owned(),
@@ -3138,6 +3144,7 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
             flag: None,
         },
         session: yi_runtime::ChildFeed::of(session),
+        spawned_by: None,
     }];
     let mut app = app();
     app.sync_children(&roster);
@@ -3188,6 +3195,214 @@ fn a_finished_card_commits_under_a_live_cell() -> TestResult {
     assert!(
         committed.iter().any(|line| line.contains("╭─ ↳ Trace sub")),
         "the finished card commits though a cell is still live: {committed:?}"
+    );
+    Ok(())
+}
+
+fn kernel_cell_end(id: &str, code: &str) -> yi_types::event::AgentEvent {
+    yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: id.to_owned(),
+        tool_name: "ipython".to_owned(),
+        result: yi_types::event::ToolResult {
+            content: vec![yi_types::message::Content::Text {
+                text: "ok".to_owned(),
+                text_signature: None,
+            }],
+            details: serde_json::json!({ "code": code, "stdout": "ok\n" }),
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    }
+}
+
+/// Dies with the card placed by timing: a child the first cell spawned, first seen by the
+/// roster while the second cell runs, waited on the second and committed under it.
+#[test]
+fn a_card_lands_under_the_cell_its_record_names() -> TestResult {
+    let (first, second) = ("h = await rlm.run('trace')", "await asyncio.sleep(600)");
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    app.reduce_agent(kernel_cell("c1", first));
+    app.reduce_agent(kernel_cell_end("c1", first));
+    app.reduce_agent(kernel_cell("c2", second));
+    app.sync_children(&[yi_runtime::ChildView {
+        update: reader("trace-0a1b2c3d", yi_runtime::ChildStatus::Completed, 1),
+        session: yi_runtime::ChildFeed::of(Arc::new(faux_session("traced"))),
+        spawned_by: Some("c1".to_owned()),
+    }]);
+    app.reduce_agent(kernel_cell_end("c2", second));
+    let committed = flat_lines(&app.take_commits());
+    let at = |needle: &str| committed.iter().position(|line| line.contains(needle));
+    let (cell1, card, cell2) = (at(first), at("╭─ ↳ Trace"), at(second));
+    assert!(
+        cell1 < card && card < cell2 && cell1.is_some(),
+        "the card sits between its own cell and the next: {committed:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a recorded no-cell spawn pinned by timing: a plan-dispatched child first seen while
+/// an unrelated cell runs waited on that cell, so its finished card stayed out of scrollback.
+#[test]
+fn a_card_whose_record_names_no_cell_waits_on_none() -> TestResult {
+    let cell = "await asyncio.sleep(600)";
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    app.reduce_agent(kernel_cell("c1", cell));
+    app.sync_children(&[yi_runtime::ChildView {
+        update: reader("plan-0a1b2c3d", yi_runtime::ChildStatus::Completed, 1),
+        session: yi_runtime::ChildFeed::of(Arc::new(faux_session("planned"))),
+        spawned_by: None,
+    }]);
+    let committed = flat_lines(&app.take_commits());
+    assert!(
+        committed.iter().any(|line| line.contains("╭─ ↳ Plan")),
+        "the card commits while the unrelated cell still runs: {committed:?}"
+    );
+    Ok(())
+}
+
+const CHILDREN_CORPUS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/sessions/01a13357.jsonl"
+);
+
+/// The child the recorded session spawned, read off its trail line: its name and its id.
+fn recorded_child() -> Result<(String, String), Box<dyn Error>> {
+    for line in std::fs::read_to_string(CHILDREN_CORPUS)?.lines() {
+        let row: serde_json::Value = serde_json::from_str(line)?;
+        let data = &row["data"];
+        if row["customType"] == "child" && data["event"] == "spawned" {
+            let field = |key: &str| data[key].as_str().map(str::to_owned).ok_or("no field");
+            return Ok((field("name")?, field("id")?));
+        }
+    }
+    Err("the session has no spawn line".into())
+}
+
+/// The recorded session replayed, then a roster of its child under `n` ids, the last `done` done.
+fn family(n: usize, done: usize) -> Result<(App, Vec<yi_runtime::ChildView>), Box<dyn Error>> {
+    let (name, id) = recorded_child()?;
+    let mut app = app();
+    common::replay_stream(&mut app, std::path::Path::new(CHILDREN_CORPUS))?;
+    let roster = (0..n)
+        .map(|i| {
+            let status = if i >= n - done {
+                yi_runtime::ChildStatus::Completed
+            } else {
+                yi_runtime::ChildStatus::Running
+            };
+            yi_runtime::ChildView {
+                update: yi_runtime::ChildUpdate {
+                    name: name.clone(),
+                    ..reader(&format!("{id}{i:02}"), status, 1)
+                },
+                session: yi_runtime::ChildFeed::of(Arc::new(faux_session("scouted"))),
+                spawned_by: None,
+            }
+        })
+        .collect();
+    Ok((app, roster))
+}
+
+/// The `/agents` popup's child rows and its cap row, read off a screen tall enough for all.
+fn agents_rows(app: &mut App) -> Result<(Vec<String>, Option<String>), Box<dyn Error>> {
+    app.open_agents();
+    let rows = common::rows_sized(app, 140, 80)?;
+    let children = rows
+        .iter()
+        .filter(|row| row.starts_with(" ├─ ") || row.starts_with(" └─ "))
+        .cloned()
+        .collect();
+    Ok((
+        children,
+        rows.into_iter().find(|row| row.starts_with("[…] agents")),
+    ))
+}
+
+/// Dies with the cards kept across `/new` and a rewind: `/agents`, the focus cycle and every
+/// child's session feed stayed with the old transcript's children.
+#[test]
+fn a_new_session_and_a_rewind_drop_the_old_cards() -> TestResult {
+    for fresh in [true, false] {
+        let (mut app, roster) = family(2, 1)?;
+        app.sync_children(&roster);
+        let done = roster.last().map(|c| c.update.id.as_str().to_owned());
+        app.set_focus(done.clone());
+        app.apply(if fresh {
+            yi_tui::port::Reply::Fresh {
+                name: "fresh".to_owned(),
+            }
+        } else {
+            yi_tui::port::Reply::Rewound {
+                entries: Vec::new(),
+                unsent: None,
+                abandoned: None,
+            }
+        });
+        assert_eq!(app.focused(), None, "focus left the dropped card");
+        let (rows, _) = agents_rows(&mut app)?;
+        assert!(rows.is_empty(), "no card outlives the reset: {rows:?}");
+        app.sync_children(&roster);
+        let (rows, _) = agents_rows(&mut app)?;
+        assert_eq!(rows.len(), 1, "only the running child comes back: {rows:?}");
+        assert!(rows.iter().all(|row| row.contains('◐')), "{rows:?}");
+    }
+    Ok(())
+}
+
+/// Dies with a raw `⚑ [subagent …]` notice for a child whose card the cap dropped: the late
+/// completion mail was swallowed only while its card still lived.
+#[test]
+fn a_dropped_cards_late_mail_stays_quiet() -> TestResult {
+    let (mut app, roster) = family(40, 40)?;
+    app.sync_children(&roster);
+    app.take_commits();
+    for child in [roster.first(), roster.last()].into_iter().flatten() {
+        let (name, id) = (&child.update.name, child.update.id.as_str());
+        let mail = format!("[subagent {name} ({id}) completed]\nLast answer: done");
+        app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+            message: yi_types::message::AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                &mail,
+                0,
+            ),
+        });
+        let rows = common::flat(&app.take_commits());
+        assert!(rows.is_empty(), "{id}: {rows:?}");
+    }
+    Ok(())
+}
+
+/// Dies with no cap on finished cards: each kept its child's whole session alive and every
+/// child update walked them all. At the cap nothing is said; one past it, the oldest goes.
+#[test]
+fn the_thirty_third_finished_card_drops_the_oldest_and_says_so() -> TestResult {
+    let (mut app, roster) = family(34, 32)?;
+    app.sync_children(&roster);
+    let (rows, cap) = agents_rows(&mut app)?;
+    assert_eq!((rows.len(), cap), (34, None), "{rows:?}");
+    let (mut app, roster) = family(34, 33)?;
+    app.sync_children(&roster);
+    let (rows, cap) = agents_rows(&mut app)?;
+    assert_eq!(rows.len(), 33, "the oldest finished card went: {rows:?}");
+    assert!(
+        rows.iter().filter(|row| row.contains('◐')).count() == 1,
+        "{rows:?}"
+    );
+    assert_eq!(
+        cap.as_deref().map(str::trim_end),
+        Some(
+            "[…] agents: 32 of 33 finished shown · cap 32 finished children · older cards are in the transcript"
+        )
+    );
+    app.sync_children(&roster);
+    assert_eq!(
+        agents_rows(&mut app)?.0.len(),
+        33,
+        "the roster does not revive it"
     );
     Ok(())
 }
