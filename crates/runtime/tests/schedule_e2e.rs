@@ -1831,3 +1831,114 @@ fn resume_after_a_halt_lifts_the_halt_and_leaves_a_paused_job_paused() -> TestRe
     );
     Ok(())
 }
+
+/// Dies with an idle mailbox claiming and recording every tick: two fsynced rewrites of the
+/// ledger per cadence per durable root, with nothing to deliver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_mailbox_tick_writes_no_ledger_file() -> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let root = Scratch::new("yi-idle-mail")?;
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-idle-mail".to_owned());
+    let id = "idle-mail-1";
+    let session = wired_root(&root, "unused")?;
+    session.attach_store(repo.create(CreateOptions {
+        id: Some(id.to_owned()),
+        ..CreateOptions::default()
+    })?)?;
+    let store = session.heartbeat_service().ok_or("no clock wired")?.store();
+    let (tick, start) = (200, yi_session::now_ms());
+    store.mutate(|state| {
+        for job in state.jobs.iter_mut().filter(|job| job.channel.is_some()) {
+            job.schedule.interval_ms = Some(tick);
+            job.next_run_at = Some(start);
+        }
+    });
+    let path = root
+        .join("sessions/schedules")
+        .join(id)
+        .join("scheduled-jobs.json");
+    let stamp = |path: &std::path::Path| {
+        std::fs::metadata(path).map(|meta| (meta.ino(), meta.mtime(), meta.mtime_nsec()))
+    };
+    let mut seen = HashSet::from([stamp(&path)?]);
+    let five_ticks = start.saturating_add(tick * 5);
+    let armed = |store: &JobStore| {
+        let jobs = store.snapshot().jobs;
+        let mut mail = jobs.iter().filter(|job| job.channel.is_some());
+        match (mail.next(), mail.next()) {
+            (Some(job), None) => job.next_run_at,
+            _ => None,
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while armed(&store).is_none_or(|at| at < five_ticks) && std::time::Instant::now() < deadline {
+        seen.insert(stamp(&path)?);
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    seen.insert(stamp(&path)?);
+
+    assert!(
+        armed(&store).is_some_and(|at| at >= five_ticks),
+        "the mailbox never ticked five times: {:?}",
+        store.snapshot().jobs
+    );
+    assert_eq!(
+        seen.len(),
+        1,
+        "five idle mailbox ticks rewrote the ledger: {seen:?}"
+    );
+    assert!(
+        store.snapshot().dispatches.is_empty(),
+        "an idle tick left a claim"
+    );
+    Ok(())
+}
+
+/// Dies with a ledger write failure printed to stderr, which tears a raw-mode screen and reaches
+/// no model, and with one notice per failed write while the disk stays broken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ledger_that_cannot_be_written_reaches_the_session_once() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let root = Scratch::new("yi-ledger-unwritable")?;
+    let sessions = root.join("sessions");
+    std::fs::create_dir_all(&sessions)?;
+    // A file where the schedules directory goes (ENOTDIR): CI runs as root, past any chmod.
+    std::fs::write(sessions.join("schedules"), "not a directory")?;
+    let mut repo = JsonlRepo::new(sessions, "/tmp/yi-ledger-unwritable".to_owned());
+    let session = wired_root(&root, "noted")?;
+    session.attach_store(repo.create(CreateOptions {
+        id: Some("unwritable-1".to_owned()),
+        ..CreateOptions::default()
+    })?)?;
+    let clock = session.heartbeat_service().ok_or("no clock wired")?;
+    clock.run("/heartbeat every 1h write the stand-up notes")?;
+    clock.run("/heartbeat pause")?;
+
+    session.prompt("is the clock set?")?;
+    session.wait_idle().await;
+
+    let told: Vec<String> = session
+        .messages()
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } if text.contains("scheduled-jobs.json") => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    let [notice] = told.as_slice() else {
+        return Err(format!("three failed writes, one notice: {told:#?}").into());
+    };
+    assert!(
+        notice.contains("not written") && notice.contains("a restart loses them"),
+        "{notice}"
+    );
+    assert!(
+        answered(&session, "noted"),
+        "the turn carrying the notice never ran"
+    );
+    Ok(())
+}
