@@ -4,16 +4,15 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use yi_oauth::flow;
 use yi_oauth::registry::{self, CodeLogin, Login, OauthCode};
 use yi_oauth::store::{self, Credential, Kind, Store};
 
-type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
+mod common;
+use common::{Res, Seen};
 
 fn spec(port: u16) -> OauthCode {
     OauthCode {
@@ -53,65 +52,13 @@ fn expired_credential() -> Credential {
     }
 }
 
-/// A token endpoint that answers `hits` requests with `body` and counts them. The
-/// request is read to the end of its headers and the write side shut down before the
-/// socket drops: closing with unread request bytes RSTs the response on macOS.
-fn serve_tokens(body: String, hits: usize) -> Res<(u16, Arc<AtomicUsize>)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let count = Arc::new(AtomicUsize::new(0));
-    let seen = Arc::clone(&count);
-    std::thread::spawn(move || {
-        for _ in 0..hits {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            seen.fetch_add(1, Ordering::SeqCst);
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-            let mut request = Vec::new();
-            let mut buf = [0u8; 4096];
-            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => request.extend_from_slice(&buf[..n]),
-                }
-            }
-            // A form body follows the headers; drain it to its content-length. A bare read
-            // here sat out the whole 5 s timeout whenever the body came with the headers.
-            let head = request
-                .windows(4)
-                .position(|w| w == b"\r\n\r\n")
-                .map_or(request.len(), |i| i + 4);
-            let body_len = String::from_utf8_lossy(&request[..head])
-                .lines()
-                .find_map(|line| {
-                    let line = line.to_ascii_lowercase();
-                    line.strip_prefix("content-length:")?
-                        .trim()
-                        .parse::<usize>()
-                        .ok()
-                })
-                .unwrap_or(0);
-            while request.len() < head + body_len {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => request.extend_from_slice(&buf[..n]),
-                }
-            }
-            let _ = stream.write_all(
-                format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-                .as_bytes(),
-            );
-            let _ = stream.shutdown(std::net::Shutdown::Write);
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-            while stream.read(&mut buf).map(|n| n > 0).unwrap_or(false) {}
-        }
-    });
-    Ok((port, count))
+/// A token endpoint that answers `hits` requests with `body` and logs each one it read.
+fn serve_tokens(body: String, hits: usize) -> Res<(u16, Seen)> {
+    common::serve(vec![(200, Value::String(body)); hits])
+}
+
+fn count(seen: &Seen) -> Res<usize> {
+    Ok(seen.lock().map_err(|_| "poisoned")?.len())
 }
 
 fn store(tag: &str) -> Store {
@@ -135,7 +82,7 @@ fn an_expired_token_refreshes_and_rotates() -> Res {
     let live = flow::live_oauth(&spec(port), &store, None)?;
     assert_eq!(live.access, "new-access");
     assert_eq!(live.refresh.as_deref(), Some("new-refresh"));
-    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(count(&hits)?, 1);
     // And it persisted: the next load is the rotated token.
     let on_disk = store.load("fixture").ok_or("saved")?;
     assert_eq!(on_disk.access, "new-access");
@@ -184,7 +131,7 @@ fn a_live_token_makes_no_network_call() -> Res {
     let live = flow::live_oauth(&spec(port), &store, None)?;
     assert_eq!(live.access, "old-access");
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(hits.load(Ordering::SeqCst), 0, "no refresh, no request");
+    assert_eq!(count(&hits)?, 0, "no refresh, no request");
     Ok(())
 }
 
@@ -232,11 +179,7 @@ fn concurrent_expired_reads_refresh_once() -> Res {
     for thread in threads {
         assert_eq!(thread.join().unwrap()?, "new-access");
     }
-    assert_eq!(
-        hits.load(Ordering::SeqCst),
-        1,
-        "the lock funnels the refresh"
-    );
+    assert_eq!(count(&hits)?, 1, "the lock funnels the refresh");
     Ok(())
 }
 
