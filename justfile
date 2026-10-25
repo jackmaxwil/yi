@@ -117,13 +117,13 @@ lane name:
       exit 1
     fi
 
-# Tier 3, every version tag: check the tag against Cargo.toml, then the artifact.
+# Tier 3, every version tag: check the tag against the version of record, then the artifact.
 prerelease version:
     #!/usr/bin/env bash
     set -euo pipefail
-    declared=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+    declared=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import forge_tracking; print(forge_tracking.version())')
     if [ "{{version}}" != "$declared" ]; then
-      echo "tag {{version}} disagrees with Cargo.toml $declared"
+      echo "tag {{version}} disagrees with docs/ARCHITECTURE.md $declared"
       exit 1
     fi
     just package "{{version}}"
