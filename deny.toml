@@ -36,7 +36,6 @@ deny = [
 # both collapse when ratatui's pins catch up (D41, §18.4 tui).
 skip = [
   { crate = "syn" },
-  { crate = "windows-sys" },
   { crate = "thiserror" },
   { crate = "thiserror-impl" },
   { crate = "getrandom" },

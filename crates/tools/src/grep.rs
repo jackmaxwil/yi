@@ -328,7 +328,7 @@ fn collect(
     let (cwd, deny, gate) = (&context.cwd, &context.deny_read, context.read_gate());
     // A program reads the value, not the page, so only the fuse bounds what it collects.
     let (cap, byte_cap) = match context.program {
-        true => (usize::MAX, yi_types::tool_value::PROGRAM_FUSE_BYTES),
+        true => (usize::MAX, context.fuse.bytes),
         false => (COLLECTION_CAP, COLLECTION_BYTE_CAP),
     };
     let mut search_file = |path: &Path| -> bool {
@@ -861,14 +861,11 @@ fn walled_write(
     ))
 }
 
-fn cut_notices(collected: &Collected, context_asked: usize, program: bool) -> Vec<String> {
+fn cut_notices(collected: &Collected, context_asked: usize, context: &ToolContext) -> Vec<String> {
     let mut rows = collected.walled.notices();
     if collected.collection_capped {
-        let cap = match program {
-            true => format!(
-                "the {} MiB program fuse",
-                yi_types::tool_value::PROGRAM_FUSE_BYTES >> 20
-            ),
+        let cap = match context.program {
+            true => format!("the {} MiB program fuse", context.fuse.bytes >> 20),
             false => COLLECTION_CAP.to_string(),
         };
         rows.push(format!(
@@ -1093,7 +1090,7 @@ impl Tool for GrepTool {
         }
         let swept = (!context.program).then(|| self.sweep_row(&input, offset, &collected));
         rows.extend(swept.flatten());
-        let notices = cut_notices(&collected, context_asked, context.program);
+        let notices = cut_notices(&collected, context_asked, context);
         rows.extend(notices.iter().cloned());
         if let Some(asked) = context_ignored {
             rows.push(format!(
@@ -1118,7 +1115,7 @@ impl Tool for GrepTool {
             "files": collected.files.len(),
             "collectionCapped": collected.collection_capped,
         });
-        let value = || program_value(&collected, &notices, &options, offset);
+        let value = || program_value(&collected, &notices, &options, offset, context.fuse.items);
         output.value = context.program.then(value);
         output
     }
@@ -1126,11 +1123,16 @@ impl Tool for GrepTool {
 
 /// Every hit collected from `paged` on, whole lines in walk order, with every row naming what
 /// the walk or the item fuse left out.
-fn program_value(collected: &Collected, notices: &[String], options: &Options, at: usize) -> Value {
+fn program_value(
+    collected: &Collected,
+    notices: &[String],
+    options: &Options,
+    at: usize,
+    fuse: usize,
+) -> Value {
     // In the count and files modes `offset` pages files, so the value starts at the first match.
     let paged = (!options.count && !options.files_only).then_some(at);
     let offset = paged.unwrap_or_default();
-    let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
     let (mut matches, mut skipped, mut more) = (Vec::new(), 0_usize, false);
     'files: for file in &collected.files {
         let skip_here = file.hits.len().min(offset.saturating_sub(skipped));

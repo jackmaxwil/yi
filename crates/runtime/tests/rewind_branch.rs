@@ -253,3 +253,44 @@ async fn a_branch_summary_call_is_booked_in_the_session_cost_total() -> TestResu
     assert!((total - 0.25).abs() < 1e-9, "{total}");
     Ok(())
 }
+
+/// Dies with the history shrunk under a streaming turn: the unfixed rewind re-attached the
+/// store mid-reply and the turn went on writing into messages it no longer owned.
+#[tokio::test]
+async fn a_rewind_while_a_turn_streams_is_refused_until_it_ends() -> TestResult {
+    let seeded = seeded("rewind-running").await?;
+    let target = first_reply_id(&seeded.store).ok_or("no assistant entry to rewind onto")?;
+    seeded.provider.queue_faux(vec![faux_assistant_message(
+        vec![faux_text("third reply")],
+        StopReason::Stop,
+    )]);
+    seeded.provider.faux_hold.arm("text_delta", 1);
+    seeded.session.prompt("third ask")?;
+    for _ in 0..500 {
+        if seeded.provider.faux_hold.reached() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(seeded.provider.faux_hold.reached(), "the stream never held");
+    let live = seeded.session.messages();
+    let lane = yi_session::lock_session(&seeded.store).leaf_id("main")?;
+
+    let refused = yi_runtime::rewind_to(&seeded.session, &target);
+    assert_eq!(
+        refused.err().as_deref(),
+        Some("the current turn is still running")
+    );
+    assert_eq!(seeded.session.messages(), live, "the live history stands");
+    assert_eq!(
+        yi_session::lock_session(&seeded.store).leaf_id("main")?,
+        lane,
+        "the lane did not move"
+    );
+
+    assert!(seeded.provider.faux_hold.release());
+    seeded.session.wait_idle().await;
+    let rewound = yi_runtime::rewind_to(&seeded.session, &target)?;
+    assert_eq!(rewound.leaf.as_deref(), Some(target.as_str()));
+    Ok(())
+}
