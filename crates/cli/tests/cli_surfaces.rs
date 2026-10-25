@@ -327,13 +327,15 @@ fn bash_true(id: &str) -> yi_types::message::Content {
     yi_runtime::faux::faux_tool_call(id, "bash", args)
 }
 
-/// A session the store wrote: a turn that said `Let me look.` and ran bash, then one that said `Done.`.
+const ANSWER: &str = "Done. The file holds three lines and no tabs.";
+
+/// A session the store wrote: a turn that said `Let me look.` and ran bash, then one that said [`ANSWER`].
 fn recorded_two_turns(workspace: &Workspace) -> Result<String, Box<dyn Error>> {
     use yi_runtime::faux::faux_text;
     use yi_types::message::StopReason::{Stop, ToolUse};
     let turns = [
         (vec![faux_text("Let me look."), bash_true("c0")], ToolUse),
-        (vec![faux_text("Done.")], Stop),
+        (vec![faux_text(ANSWER)], Stop),
     ];
     let script = turns_script(workspace, "two-turns", &turns)?;
     let recorded = ask(workspace, "look", &["--faux", &script])?;
@@ -352,16 +354,13 @@ fn a_turn_that_said_text_ends_with_a_blank_line_before_the_next_turns_text() -> 
     let turns = [
         (vec![faux_text("A."), bash_true("c0")], ToolUse),
         (vec![bash_true("c1")], ToolUse),
-        (vec![faux_text("C.")], Stop),
+        (vec![faux_text(ANSWER)], Stop),
     ];
     let silent = turns_script(&workspace, "silent-middle", &turns)?;
     let recorded = recorded_two_turns(&workspace)?;
-    for (script, want) in [
-        (recorded, "Let me look.\n\nDone.\n"),
-        (silent, "A.\n\nC.\n"),
-    ] {
+    for (script, before) in [(recorded, "Let me look.\n\n"), (silent, "A.\n\n")] {
         let said = ask(&workspace, "look", &["--faux", &script])?;
-        assert_eq!(stdout(&said), want, "{said:?}");
+        assert_eq!(stdout(&said), format!("{before}{ANSWER}\n"), "{said:?}");
     }
     Ok(())
 }
@@ -387,8 +386,13 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     assert_eq!(lean.last().map(String::as_str), Some("agent_end"));
 
     let plain = ask(&workspace, "look", &["--faux", &recorded, "--no-deltas"])?;
+    let bare = workspace.yi(&["stats", "--no-deltas"])?;
     let other = workspace.yi(&["stats", "--json", "--no-deltas"])?;
-    for (run, said) in [(plain, "needs --json"), (other, "not applied by yi stats")] {
+    for (run, said) in [
+        (plain, "needs `yi ask --json`"),
+        (bare, "needs `yi ask --json`"),
+        (other, "not applied by yi stats"),
+    ] {
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
         assert_eq!(
             (run.status.code(), stderr.contains(said)),
