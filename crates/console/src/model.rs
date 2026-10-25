@@ -324,20 +324,23 @@ pub struct SessionDiff {
     pub why_due: Option<(String, Vec<u32>)>,
     /// The title a second `l` lands under; any other key clears it.
     pub land_armed: Option<String>,
+    pub dropped_at_turn: BTreeMap<String, u64>,
 }
 
-const MAX_DIFF_FILES: usize = 512;
-const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_DIFF_FILES: usize = 512;
+pub const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 impl SessionDiff {
     pub fn insert(&mut self, path: String, file: FileDiff) {
+        self.dropped_at_turn.remove(&path);
         self.files.retain(|(existing, _)| *existing != path);
         self.files.push((path, file));
         while self.files.len() > MAX_DIFF_FILES || self.bytes() > MAX_DIFF_BYTES {
             if self.files.len() <= 1 {
                 break;
             }
-            self.files.remove(0);
+            let (gone, file) = self.files.remove(0);
+            self.dropped_at_turn.insert(gone, file.turn);
         }
     }
 
@@ -444,6 +447,8 @@ pub struct ConsoleState {
     pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     pub folded: std::collections::BTreeSet<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
+    pub children_evicted:
+        BTreeMap<SessionId, std::collections::BTreeSet<yi_types::subagent::ChildId>>,
     pub parked: BTreeMap<SessionId, Box<Chat>>,
     pub chrome: crate::browser::Chrome,
     pub browser_placed: BTreeMap<PaneId, crate::placed::Placed>,
@@ -489,6 +494,7 @@ impl ConsoleState {
             session_options: BTreeMap::new(),
             folded: std::collections::BTreeSet::new(),
             children: BTreeMap::new(),
+            children_evicted: BTreeMap::new(),
             parked: BTreeMap::new(),
             chrome: crate::browser::Chrome::default(),
             browser_placed: BTreeMap::new(),
