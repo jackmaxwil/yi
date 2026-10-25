@@ -11,10 +11,10 @@ use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::args::Args;
 use crate::memory::rank::{Bm25, tokens};
+use yi_session::SNIPPET_CHARS;
 
 const PAGE: usize = 8;
-const PAGE_MAX: usize = 32;
-const SNIPPET_CHARS: usize = 160;
+const PAGE_MAX: usize = yi_session::GREP_PAGE_MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unit {
@@ -270,25 +270,6 @@ pub fn units_of(file: &Path) -> Vec<Unit> {
     units
 }
 
-fn snippet(text: &str, query: &str) -> String {
-    let lower = text.to_lowercase();
-    let first = tokens(query)
-        .iter()
-        .filter_map(|token| lower.find(token.as_str()))
-        .min()
-        .unwrap_or(0);
-    let at = lower
-        .char_indices()
-        .take_while(|(byte, _)| *byte < first)
-        .count();
-    let start = at.saturating_sub(SNIPPET_CHARS / 2);
-    text.chars()
-        .skip(start)
-        .take(SNIPPET_CHARS)
-        .collect::<String>()
-        .replace('\n', " ")
-}
-
 #[derive(Default)]
 pub struct Corpus {
     dirs: Mutex<BTreeMap<PathBuf, Belongs>>,
@@ -360,49 +341,140 @@ pub fn search_reply(
     let limit = limit.clamp(1, PAGE_MAX);
     let units: Vec<&Unit> = units.iter().flat_map(|file| file.iter()).collect();
     let ranked = Bm25::new(units.iter().map(|unit| unit.text.as_str())).rank(query);
-    let total = ranked.len();
-    let hits: Vec<Value> = ranked
-        .iter()
-        .skip(offset)
-        .take(limit)
+    let words = tokens(query);
+    let rows = (ranked.iter().skip(offset).take(limit))
         .filter_map(|(at, _)| units.get(*at).copied())
         .map(|unit| {
-            let mut item = Map::new();
-            item.insert("session".to_owned(), Value::from(unit.session.as_str()));
-            item.insert("entryId".to_owned(), Value::from(unit.entry.as_str()));
-            item.insert("type".to_owned(), Value::from(unit.kind));
-            item.insert(
-                "snippet".to_owned(),
-                Value::from(snippet(&unit.text, query)),
-            );
-            item.insert(
-                "url".to_owned(),
-                Value::from(format!("history://{}/{}", unit.session, unit.entry)),
-            );
-            Value::Object(item)
+            let (text, cut) = yi_session::snippet(&unit.text, words.iter().map(String::as_str));
+            let url = format!("history://{}/{}", unit.session, unit.entry);
+            let snippet = (text.replace('\n', " "), cut);
+            hit(Some(&unit.session), (&unit.entry, unit.kind), snippet, url)
         })
         .collect();
-    let mut notices = Vec::new();
-    let next = offset.saturating_add(hits.len());
-    if next < total {
-        notices.push(format!(
-            "[{} of {total} hits · limit {limit} (at most {PAGE_MAX}) · compact.search({}, limit={limit}, offset={next}) for the next]",
-            hits.len(),
-            Value::from(query)
-        ));
-    }
-    if skipped > 0 {
-        notices.push(format!(
+    let unsearched = (skipped > 0).then(|| {
+        format!(
             "[{skipped} session directories were not searched: their checkout is gone, so their repository is unknown]"
-        ));
+        )
+    });
+    let call = ("compact.search", query);
+    paged_reply(rows, ranked.len(), (offset, limit), call, unsearched, false)
+}
+
+fn hit(
+    session: Option<&str>,
+    (entry, kind): (&str, &str),
+    (snippet, cut): (String, bool),
+    url: String,
+) -> Value {
+    let head = session.map(|session| ("session", session));
+    let rest = [
+        ("entryId", entry),
+        ("type", kind),
+        ("snippet", &snippet),
+        ("url", &url),
+    ];
+    let keyed = head.into_iter().chain(rest);
+    let mut row: Map<String, Value> = keyed.map(|(key, text)| (key.into(), text.into())).collect();
+    if cut {
+        row.insert("cut".to_owned(), Value::Bool(true));
     }
+    Value::Object(row)
+}
+
+fn paged_reply(
+    rows: Vec<Value>,
+    total: usize,
+    (offset, limit): (usize, usize),
+    (verb, query): (&str, &str),
+    tail: Option<String>,
+    walled: bool,
+) -> Map<String, Value> {
+    let (kept, cap) = (rows.len(), limit.clamp(1, PAGE_MAX));
+    let after = offset.saturating_add(kept);
+    let cut = rows.iter().filter(|row| row.get("cut").is_some()).count();
+    let notices: Vec<String> = [
+        (after < total).then(|| {
+            let quoted = Value::from(query);
+            format!("[{kept} of {total} hits · limit {cap} (at most {PAGE_MAX}) · {verb}({quoted}, limit={cap}, offset={after}) for the next]")
+        }),
+        (cut > 0).then(|| {
+            let rest = match walled {
+                true => "this reader's wall denies history://, so the rest of a cut hit is out of reach",
+                false => "rlm.fetch(hit[\"url\"]) reads a cut hit whole",
+            };
+            format!("[{cut} of {kept} snippets cut to {SNIPPET_CHARS} chars (SNIPPET_CHARS) · {rest}]")
+        }),
+        tail,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let mut reply = Map::new();
-    reply.insert("hits".to_owned(), Value::from(hits));
+    reply.insert("hits".to_owned(), Value::from(rows));
     reply.insert("total".to_owned(), Value::from(total));
     if !notices.is_empty() {
         reply.insert("notice".to_owned(), Value::from(notices.join("\n")));
     }
     reply
+}
+
+fn page_of(payload: &Map<String, Value>) -> (usize, usize) {
+    let number = |key: &str, default: usize| {
+        (payload.u64_of(key)).map_or(default, |n| usize::try_from(n).unwrap_or(default))
+    };
+    (number("offset", 0), number("limit", PAGE))
+}
+
+fn grep_reply(
+    hits: &[yi_session::HistoryHit],
+    total: usize,
+    pattern: &str,
+    offset: usize,
+    limit: usize,
+    walled: bool,
+) -> Map<String, Value> {
+    let rows = (hits.iter())
+        .map(|found| {
+            let url = format!("history://{}/{}", crate::fetch::SELF, found.entry_id);
+            let snippet = (found.snippet.clone(), found.cut);
+            hit(None, (&found.entry_id, &found.entry_type), snippet, url)
+        })
+        .collect();
+    let call = ("compact.recall", pattern);
+    paged_reply(rows, total, (offset, limit), call, None, walled)
+}
+
+pub fn register_grep(
+    registry: &mut crate::kernel::HostRegistry,
+    handle: crate::goal::StoreHandle,
+    wall: &crate::wall::Wall,
+) {
+    let own = format!("history://{}", crate::fetch::SELF).parse::<yi_types::url::Url>();
+    let walled = own.map_or(wall.denies_history(), |own| {
+        wall.check_url(&own, Path::new("")).is_some()
+    });
+    registry.register("history.grep", move |payload| {
+        let handle = Arc::clone(&handle);
+        Box::pin(async move {
+            let pattern = payload
+                .str_of("pattern")
+                .map(str::trim)
+                .filter(|pattern| !pattern.is_empty())
+                .ok_or_else(|| "history.grep requires a \"pattern\" argument".to_owned())?
+                .to_owned();
+            let (offset, limit) = page_of(&payload);
+            let page = tokio::task::spawn_blocking(move || {
+                let shared = handle()
+                    .ok_or_else(|| "history.grep: missing an attached session store".to_owned())?;
+                let store = yi_session::lock_session(&shared);
+                Ok::<_, String>((store.grep_page(&pattern, offset, limit), pattern))
+            })
+            .await
+            .map_err(|error| format!("history.grep task failed: {error}"))??;
+            let ((hits, total), pattern) = page;
+            Ok(grep_reply(&hits, total, &pattern, offset, limit, walled))
+        })
+    });
 }
 
 pub fn register(registry: &mut crate::kernel::HostRegistry, sessions_dir: PathBuf, cwd: PathBuf) {
@@ -416,12 +488,7 @@ pub fn register(registry: &mut crate::kernel::HostRegistry, sessions_dir: PathBu
                 .filter(|query| !query.is_empty())
                 .ok_or_else(|| "history.search requires a \"query\" argument".to_owned())?
                 .to_owned();
-            let number = |key: &str, default: usize| {
-                payload
-                    .u64_of(key)
-                    .map_or(default, |n| usize::try_from(n).unwrap_or(default))
-            };
-            let (offset, limit) = (number("offset", 0), number("limit", PAGE));
+            let (offset, limit) = page_of(&payload);
             tokio::task::spawn_blocking(move || {
                 let found = corpus.sessions(&sessions_dir, &cwd);
                 let units = corpus.units(&found.files);
@@ -533,6 +600,9 @@ mod tests {
         let entry = reply["hits"][0]["entryId"].as_str().unwrap().to_owned();
         assert_eq!(reply["hits"][0]["url"], format!("history://s-lane/{entry}"));
         assert_eq!(reply["total"], 2, "{reply:?}");
+        let row = reply["hits"][0].as_object().into_iter();
+        let keys: Vec<&str> = row.flat_map(|row| row.keys().map(String::as_str)).collect();
+        assert_eq!(keys, ["session", "entryId", "type", "snippet", "url"]);
         assert_eq!(
             reply["notice"],
             "[1 session directories were not searched: their checkout is gone, so their repository is unknown]"
@@ -578,6 +648,78 @@ mod tests {
         let units = corpus.units(&[file]);
         assert_eq!(search_reply(&units, "alpha", 0, 8, 0)["total"], 0);
         assert_eq!(search_reply(&units, "gamma", 0, 8, 0)["total"], 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_cut_grep_page_names_the_call_for_the_next_page() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut store = yi_session::SessionStore::in_memory(yi_types::wire::SessionMetadata {
+            id: "s".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        });
+        for turn in 0..10 {
+            store.append_compaction(
+                "main",
+                format!("the ö needle, turn {turn}"),
+                Vec::new(),
+                1,
+                None,
+            )?;
+        }
+        let (hits, total) = store.grep_page("Needle", 0, 8);
+        let reply = grep_reply(&hits, total, "Needle", 0, 8, false);
+        assert_eq!(reply["total"], 10);
+        assert_eq!(
+            reply["notice"],
+            "[8 of 10 hits · limit 8 (at most 32) · compact.recall(\"Needle\", limit=8, offset=8) for the next]"
+        );
+        let (rest, total) = store.grep_page("Needle", 8, 8);
+        let last = grep_reply(&rest, total, "Needle", 8, 8, false);
+        assert_eq!(last["hits"].as_array().map(Vec::len), Some(2));
+        assert!(last.get("notice").is_none(), "{last:?}");
+        let (clamped, total) = store.grep_page("needle", 0, 500);
+        let wide = grep_reply(&clamped, total, "needle", 0, 500, false);
+        assert_eq!(wide["hits"].as_array().map(Vec::len), Some(10));
+        assert!(wide.get("notice").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_page_at_the_limit_has_no_notice_and_one_past_it_names_the_next_offset()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-history-limit")?;
+        let cwd = root.join("cwd");
+        fs::create_dir_all(&cwd)?;
+        for (count, more) in [(PAGE_MAX, false), (PAGE_MAX + 1, true)] {
+            let said: Vec<Value> = (0..count)
+                .map(|n| user(&format!("note {n} on the limit")))
+                .collect();
+            let sessions = root.join(format!("sessions-{count}"));
+            session(&sessions, &cwd, "s-one", &said);
+            let file = find_session(&sessions, &cwd, "s-one").ok_or("no session file")?;
+            let units = Corpus::default().units(std::slice::from_ref(&file));
+            let found = search_reply(&units, "limit", 0, PAGE_MAX, 0);
+            let (hits, total) = yi_session::load_session(&file)?.grep_page("limit", 0, PAGE_MAX);
+            for (reply, call) in [
+                (found, "search"),
+                (
+                    grep_reply(&hits, total, "limit", 0, PAGE_MAX, false),
+                    "recall",
+                ),
+            ] {
+                let next = format!("compact.{call}(\"limit\", limit=32, offset=32)");
+                let want = more.then(|| {
+                    Value::from(format!(
+                        "[32 of 33 hits · limit 32 (at most 32) · {next} for the next]"
+                    ))
+                });
+                assert_eq!(reply["total"], count, "{call}");
+                assert_eq!(reply.get("notice"), want.as_ref(), "{call} at {count}");
+            }
+        }
         Ok(())
     }
 }
