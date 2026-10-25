@@ -183,11 +183,14 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
         if let Some(state) = app.tasks.get(id)
             && !app.committed_tasks.contains(id)
         {
-            let mut cell = state.cell.clone();
-            if state.finished.is_none() {
-                cell.elapsed_ms = elapsed_ms(state.started, app.clock.now());
-            }
-            let rows = cell.lines(content_width, theme, app.mode, spinner);
+            let elapsed = match state.finished {
+                None => elapsed_ms(state.started, app.clock.now()),
+                Some(_) => state.cell.elapsed_ms,
+            };
+            let (mode, rows) = (app.mode, &state.rows);
+            let rows = state
+                .cell
+                .lines_at(elapsed, content_width, theme, mode, spinner, rows);
             join_live(&mut live_lines, !app.pane && app.last_commit_blank, rows);
         }
     }

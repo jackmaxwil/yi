@@ -720,6 +720,37 @@ pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
 
 const ANSWER_CAP: usize = 16 * 1024;
 
+/// Incident: every running card rendered its whole answer each frame to keep four rows, 12 ms a
+/// frame for eight cards in the dist build. The rows are kept until the answer or width changes.
+#[derive(Default)]
+pub struct AnswerRows(std::sync::Mutex<Option<KeptRows>>);
+
+type KeptRows = (usize, ColorTier, bool, String, Vec<Line<'static>>);
+
+impl AnswerRows {
+    fn window<R>(
+        &self,
+        answer: &str,
+        width: usize,
+        theme: &Theme,
+        pick: impl FnOnce(&[Line<'static>]) -> R,
+    ) -> R {
+        let mut held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fresh = held.as_ref().is_some_and(|(w, tier, dark, source, _)| {
+            (*w, *tier, *dark) == (width, theme.tier, theme.dark) && source == answer
+        });
+        if !fresh {
+            let rows = markdown::render(answer, width.saturating_sub(6), theme).into_iter();
+            let rows = rows.skip_while(|line| line.spans.is_empty()).collect();
+            *held = Some((width, theme.tier, theme.dark, answer.to_owned(), rows));
+        }
+        pick(held.as_ref().map_or(&[], |(.., rows)| rows.as_slice()))
+    }
+}
+
 impl TaskCell {
     /// A repeated call is the same step, so it does not push itself into the previous row.
     pub fn step(&mut self, tool: String) {
@@ -744,6 +775,20 @@ impl TaskCell {
         theme: &Theme,
         mode: TranscriptMode,
         spinner_phase: usize,
+    ) -> Vec<Line<'static>> {
+        let fresh = AnswerRows::default();
+        self.lines_at(self.elapsed_ms, width, theme, mode, spinner_phase, &fresh)
+    }
+
+    /// [`Self::lines`] at `elapsed_ms`, its answer rows read through `rows`.
+    pub fn lines_at(
+        &self,
+        elapsed_ms: u64,
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+        spinner_phase: usize,
+        rows: &AnswerRows,
     ) -> Vec<Line<'static>> {
         let activity = activity_label(self.activity);
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
@@ -772,7 +817,7 @@ impl TaskCell {
             usize::try_from(self.toolcalls).unwrap_or(usize::MAX),
             "tool call",
         );
-        let elapsed = elapsed_label(self.elapsed_ms);
+        let elapsed = elapsed_label(elapsed_ms);
         let title = format!("{glyph} {name}{hash} · {state} {elapsed} · {calls}");
         let mut body = Vec::new();
         if let Some((_, _, note)) = flagged {
@@ -805,14 +850,22 @@ impl TaskCell {
             )));
         }
         let answer = self.answer.as_deref().filter(|a| !a.trim().is_empty());
-        let rows: Vec<Line<'static>> = answer
-            .map(|a| markdown::render(a, width.saturating_sub(6), theme))
-            .unwrap_or_default()
-            .into_iter()
-            .skip_while(|line| line.spans.is_empty())
-            .collect();
-        let total = rows.len();
         let running = self.status == TaskStatus::Running;
+        let window = |total: usize| match (running, mode) {
+            (true, _) => (total.saturating_sub(4), 4),
+            (false, TranscriptMode::Verbose) => (0, total),
+            (false, _) => (0, 3),
+        };
+        let (total, rows): (usize, Vec<Line<'static>>) = match answer {
+            Some(answer) => rows.window(answer, width, theme, |rows| {
+                let (skip, take) = window(rows.len());
+                (
+                    rows.len(),
+                    rows.iter().skip(skip).take(take).cloned().collect(),
+                )
+            }),
+            None => (0, Vec::new()),
+        };
         if self.answer_dropped > 0 && !running {
             let kept = answer.map_or(0, str::len);
             let all = kept.saturating_add(self.answer_dropped);
@@ -822,26 +875,16 @@ impl TaskCell {
             );
             body.push(Line::from(Span::styled(said, theme.dim_style())));
         }
-        let (skip, take) = match (running, mode) {
-            (true, _) => (total.saturating_sub(4), 4),
-            (false, TranscriptMode::Verbose) => (0, total),
-            (false, _) => (0, 3),
-        };
-        let len = total.saturating_sub(skip).min(take);
-        body.extend(
-            rows.into_iter()
-                .skip(skip)
-                .take(take)
-                .enumerate()
-                .map(|(index, line)| {
-                    let age = if running {
-                        len.saturating_sub(index).saturating_sub(1)
-                    } else {
-                        0
-                    };
-                    fade(line, age, len, theme)
-                }),
-        );
+        let (skip, take) = window(total);
+        let len = rows.len();
+        body.extend(rows.into_iter().enumerate().map(|(index, line)| {
+            let age = if running {
+                len.saturating_sub(index).saturating_sub(1)
+            } else {
+                0
+            };
+            fade(line, age, len, theme)
+        }));
         if total > skip.saturating_add(take) {
             let more = format!("… {} more lines", total.saturating_sub(take));
             body.push(Line::from(Span::styled(more, theme.dim_style())));
