@@ -3066,6 +3066,37 @@ fn context_row<'a>(brief: &'a str, name: &str) -> Result<&'a str, String> {
     (brief.lines().find(|line| line.starts_with(&head))).ok_or(format!("no {name} row: {brief:?}"))
 }
 
+/// The road a loud `row` names, read off the row as the model would: the `history://` address in
+/// it serves the child's `answer`, as its JSONL transcript escapes it, live and after the reap.
+fn history_holds(harness: &Harness, name: &str, row: &str, answer: &str) -> TestResult {
+    let (_, tail) = row
+        .split_once("read history://")
+        .ok_or("the row names no address")?;
+    let child: String = tail
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_'))
+        .collect();
+    let url: yi_types::url::Url = format!("history://{child}").parse()?;
+    let desk =
+        yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&harness.host), None, &harness.root);
+    let resolver =
+        yi_runtime::fetch::Resolver::new(harness.root.to_path_buf(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(desk));
+    let escaped = serde_json::to_string(answer)?;
+    let needle = escaped.trim_matches('"');
+    for reaped in [false, true] {
+        if reaped {
+            harness.host.reap(name)?;
+        }
+        let served = resolver.fetch(&url)?.text;
+        assert!(
+            served.contains(needle),
+            "{url} lacks the answer (reaped: {reaped}): {served:.400}"
+        );
+    }
+    Ok(())
+}
+
 /// The brief of a child spawned with `context` as the kernel sends it, and its `context_chars`.
 async fn scoped_brief(context: Value, counted: Option<Value>) -> Result<String, String> {
     let harness = harness(0, 1, "ok").map_err(|error| error.to_string())?;
@@ -3125,6 +3156,81 @@ async fn a_context_value_cut_names_what_was_kept_and_the_way_to_pass_the_rest() 
     assert!(
         accent.starts_with(&format!("accent = {head}… [kept 4096 of 4097 chars")),
         "a non-ASCII value is cut on a char boundary: {accent:?}"
+    );
+
+    let mid = format!("x{}", "\u{e9}".repeat(4_096));
+    let brief = scoped_brief(
+        json!({"low": kernel_value(4_097, true), "mid": mid}),
+        Some(json!({"low": 10, "mid": 4_097})),
+    )
+    .await?;
+    let low = context_row(&brief, "low")?;
+    assert!(
+        low.contains("kept 4096 of over 4096 chars") && !low.contains("of 10 chars"),
+        "a count under the chars received is not believed: {}",
+        low.chars().skip(4_090).collect::<String>()
+    );
+    let head: String = mid.chars().take(4_096).collect();
+    assert!(
+        context_row(&brief, "mid")?.starts_with(&format!("mid = {head}… [kept 4096 of 4097 chars")),
+        "byte 4096 sits inside a two-byte char and the cut does not panic there"
+    );
+    Ok(())
+}
+
+/// Dies with a count of the wrong shape ignored: a scalar or a float count is the sender's bug,
+/// and a row that quietly says `over 4096` hides it from the one run that could fix it.
+#[tokio::test]
+async fn a_context_count_of_the_wrong_shape_is_refused_not_ignored() -> TestResult {
+    for counted in [
+        json!(10_000),
+        json!([4_097]),
+        json!({"a": 1.5}),
+        json!({"a": -1}),
+        json!({"a": "9"}),
+    ] {
+        let refused = scoped_brief(json!({"a": "x"}), Some(counted.clone()))
+            .await
+            .err()
+            .ok_or(format!("{counted} was admitted"))?;
+        assert!(
+            refused.contains("context_chars must be an object of variable name to char count"),
+            "{counted}: {refused}"
+        );
+    }
+    let brief = scoped_brief(json!({"a": "x"}), Some(Value::Null)).await?;
+    assert!(
+        brief.contains("a = x\n"),
+        "a null count is no count: {brief:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the road the row names leading nowhere: a value past its cap, written to a file and
+/// given as `local://<path>` in `partition`, reaches the child whole.
+#[tokio::test]
+async fn a_value_past_the_context_cap_reaches_a_child_whole_through_a_partition() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    let value = kernel_value(4_097, true);
+    std::fs::write(harness.root.join("board.json"), &value)?;
+    harness
+        .host
+        .set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
+            harness.root.to_path_buf(),
+            yi_runtime::Wall::default(),
+        )));
+    let partition = json!(["local://board.json"]);
+    harness
+        .host
+        .spawn(
+            "read it".to_owned(),
+            protocol_kwargs("scoped", &[("partition", partition)]),
+        )
+        .map_err(|error| error.to_string())?;
+    let brief = child_brief(&harness).await;
+    assert!(
+        brief.contains(&value),
+        "the partition carries the value whole: {brief:.300}"
     );
     Ok(())
 }
@@ -3198,6 +3304,7 @@ async fn a_schema_refusal_carries_the_head_of_the_answer_and_names_the_rest() ->
                 "{chars}: names {fact:?}: {refused:?}"
             );
         }
+        history_holds(&harness, "reader", &refused, answer)?;
     }
     Ok(())
 }
@@ -3248,6 +3355,7 @@ async fn a_child_answer_preview_past_its_cap_names_the_transcript_that_holds_the
         ] {
             assert!(preview.contains(fact), "names {fact:?}: {preview:?}");
         }
+        history_holds(&harness, "answerer", &preview, answer)?;
     }
     Ok(())
 }

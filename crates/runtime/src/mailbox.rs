@@ -25,6 +25,7 @@ pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
 const ROUTE: &str = "write a value to a file and give local://<path> in partition";
+const COUNT_SHAPE: &str = "rlm.run context_chars must be an object of variable name to char count";
 
 pub(crate) type Retired = (
     String,
@@ -38,15 +39,22 @@ pub(crate) type Commit<'a> =
 /// so the list is capped: a degenerate child buys one refusal, not unbounded checks.
 pub(crate) const MAX_DISCOVERIES: usize = 16;
 
-/// Invariant: a cut of a child's return ends in a row naming kept over total, its cap and the
-/// call for the rest; a `total` of `None` means the sender cut the text before counting it.
+/// Invariant: every cut of a child's return ends in a row that opens with this, so a reader of
+/// a cut preview (the TUI card) finds where the answer's own text stops.
+pub const CUT_ROW: &str = "… [kept ";
+
+/// Invariant: a cut ends in a row naming kept over total, its cap and the call for the rest; a
+/// `total` that is `None` or under the chars received is not believed and reads `over <cap>`.
 fn cut(text: &str, cap: usize, total: Option<usize>, name: &str, next: &str) -> String {
-    if text.chars().count() <= cap {
+    let seen = text.chars().count();
+    if seen <= cap {
         return text.to_owned();
     }
-    let total = total.map_or_else(|| format!("over {cap}"), |total| total.to_string());
+    let total = total
+        .filter(|total| *total >= seen)
+        .map_or_else(|| format!("over {cap}"), |total| total.to_string());
     let kept: String = text.chars().take(cap).collect();
-    format!("{kept}… [kept {cap} of {total} chars · cap {name} = {cap} · {next}]")
+    format!("{kept}{CUT_ROW}{cap} of {total} chars · cap {name} = {cap} · {next}]")
 }
 
 pub(crate) fn clamp(text: &str, cap: usize, name: &str, next: &str) -> String {
@@ -56,6 +64,11 @@ pub(crate) fn clamp(text: &str, cap: usize, name: &str, next: &str) -> String {
 /// Incident: values arrive pre-serialized because a host-side kernel read would queue behind
 /// the cell awaiting this reply; the caps re-apply because that python is semi-trusted.
 pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String>, String> {
+    let counted = match kwargs.get("context_chars") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(chars)) if chars.values().all(Value::is_u64) => Some(chars),
+        Some(_) => return Err(COUNT_SHAPE.to_owned()),
+    };
     let Some(value) = kwargs.get("context").filter(|value| !value.is_null()) else {
         return Ok(None);
     };
@@ -68,7 +81,6 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
             entries.len()
         ));
     }
-    let counted = kwargs.get("context_chars").and_then(Value::as_object);
     let mut block = String::from("<parent_context>\n");
     for (name, value) in entries {
         let text = value
