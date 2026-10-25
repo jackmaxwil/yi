@@ -835,6 +835,50 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
     Ok(())
 }
 
+/// Dies with a long todo that shares its head with another unnamable by its own text, or with a
+/// resent render re-cutting the `…` row into a new label that no longer carries its note.
+#[test]
+fn two_todos_sharing_a_long_head_are_named_whole_and_resent_as_they_are() -> TestResult {
+    let (_root, session) = session("shared-head")?;
+    let tool = TodoTool::new(store_for(&session));
+    let head = "read the record (architecture, design doc, git log, changelog, gate recipe, last";
+    let texts = [
+        format!("{head} release notes"),
+        format!("{head} incident log"),
+    ];
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "init", "items": [&texts[0], &texts[1]]}),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "start", "label": &texts[1]}));
+    assert!(!is_error, "the whole text names its own row: {text}");
+    let rows = |list: &TodoList| -> Vec<(String, Option<String>, String)> {
+        let note = |item: &Todo| item.note.as_ref().map(|note| note.as_str().to_owned());
+        let state = |item: &Todo| TodoStateName::of(&item.state).to_string();
+        (list.items())
+            .map(|item| (item.label.to_string(), note(item), state(item)))
+            .collect()
+    };
+    let before = rows(&latest_record(&session).ok_or("no record")?.list);
+    assert_eq!(
+        before.get(1).map(|row| row.2.as_str()),
+        Some("running"),
+        "{before:#?}"
+    );
+    let rendered: Vec<&str> = (text.lines())
+        .filter(|line| line.trim_start().starts_with("- ["))
+        .collect();
+    let (is_error, text) = call(&tool, json!({"op": "set", "list": rendered.join("\n")}));
+    assert!(!is_error, "{text}");
+    let after = rows(&latest_record(&session).ok_or("no record")?.list);
+    assert_eq!(
+        after, before,
+        "the render sent back is the list it rendered: {text}"
+    );
+    Ok(())
+}
+
 /// Dies with the options dropped between the call and the list a parent reads, or with a two-option
 /// question refused instead of asked open: the child's own list is where `needs_you` is read from.
 #[test]
