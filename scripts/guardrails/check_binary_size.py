@@ -11,39 +11,40 @@ from _common import BASE, DIST_BIN, ROOT, fail, fork, no_fork, scratch_repo
 import check_changes
 
 HARD_CAP_BYTES = 9_437_184  # 9 MiB: D249 set 8, raised for the console workbench (#1354)
+# Incident: the forge's first Linux dist build of a 8,554,224-byte macOS tree measured 13,220,280
+# bytes, past the macOS cap, so the Linux binary is held under a cap of its own.
+HARD_CAP_LINUX_BYTES = 14_680_064  # 14 MiB
 # Incident: 71 of 150 ratchet commits moved the baseline by 256 bytes or less, build-to-build
 # jitter rather than growth, so a fixed 16 KiB allowance past the baseline is not a ratchet.
 JITTER = 16_384
-CAP = re.compile(r"^HARD_CAP_BYTES = ([\d_]+)", re.M)
+CAP = re.compile(r"^(HARD_CAP(?:_LINUX)?_BYTES) = ([\d_]+)", re.M)
 SELF = "scripts/guardrails/check_binary_size.py"
 
 
 def baseline(system=None):
     """D70: the macOS file counts a Mach-O arm64 binary, so a Linux host is ratcheted on its own."""
     linux = (system or platform.system()) == "Linux"
-    return BASE / ("binary_size_budget_linux.json" if linux else "binary_size_budget.json")
+    return BASE / ("binary_size_budget_linux.json" if linux else "binary_size_budget.json"), (HARD_CAP_LINUX_BYTES if linux else HARD_CAP_BYTES)
 
 
 def problems(size, budget, hard_cap=HARD_CAP_BYTES, name="binary_size_budget.json"):
     errs = []
     if budget > hard_cap:
-        errs.append(f"{name} max_bytes {budget} > hard cap {hard_cap} bytes (9 MiB)")
+        errs.append(f"{name} max_bytes {budget} > hard cap {hard_cap} bytes")
     if size > hard_cap:
-        errs.append(f"dist binary {size} > hard cap {hard_cap} bytes (9 MiB)")
+        errs.append(f"dist binary {size} > hard cap {hard_cap} bytes")
     elif size > budget + JITTER:
         errs.append(f"dist binary {size} > {budget} + {JITTER} bytes ({name})")
     return errs
 
 
 def cap_errors(was, now, decisions):
-    if was is not None and now > was and not decisions:
-        return [f"HARD_CAP_BYTES {was} -> {now}: a raise needs a `decision:` line in this branch's change file"]
-    return []
+    return [f"{name} {was[name]} -> {cap}: a raise needs a `decision:` line in this branch's change file"
+            for name, cap in now.items() if not decisions and cap > was.get(name, cap)]
 
 
-def fork_cap(base):
-    found = CAP.search(check_changes.at(base, SELF) or "")
-    return int(found.group(1).replace("_", "")) if found else None
+def caps(text):
+    return {name: int(value.replace("_", "")) for name, value in CAP.findall(text or "")}
 
 
 def scratch_cases():
@@ -72,6 +73,10 @@ def scratch_cases():
         out = verdict()
         if out.returncode != 0:
             bad.append(f"a cap raised with a decision read red: {out.stdout.strip()}")
+        gate.write_text(gate.read_text().replace("HARD_CAP_BYTES = 10_485_760", "HARD_CAP_BYTES = 10_000", 1))
+        out, mac = verdict(), verdict("Darwin")
+        if out.returncode != 0 or "dist binary 20000 > hard cap 10000 bytes" not in mac.stdout:
+            bad.append(f"a macOS cap under the binary read {out.returncode} on Linux, on macOS: {mac.stdout.strip()}")
     return bad
 
 
@@ -80,10 +85,10 @@ def selfcheck():
     cap = 1_000_000
     # a baseline hand-edited above the cap fails even though no binary was measured over it
     errs = problems(500_000, 2_000_000, hard_cap=cap)
-    assert errs == [f"binary_size_budget.json max_bytes 2000000 > hard cap {cap} bytes (9 MiB)"], errs
+    assert errs == [f"binary_size_budget.json max_bytes 2000000 > hard cap {cap} bytes"], errs
     # the cap catches an over-cap size even with a compliant baseline at the cap itself
     errs = problems(1_500_000, cap, hard_cap=cap)
-    assert errs == [f"dist binary 1500000 > hard cap {cap} bytes (9 MiB)"], errs
+    assert errs == [f"dist binary 1500000 > hard cap {cap} bytes"], errs
     # under the cap, the ordinary per-PR ratchet still fires on its own
     errs = problems(900_000, 800_000, hard_cap=cap)
     assert errs == ["dist binary 900000 > 800000 + 16384 bytes (binary_size_budget.json)"], errs
@@ -98,8 +103,11 @@ def selfcheck():
     assert HARD_CAP_BYTES == 9 * 1_048_576
     assert problems(0, HARD_CAP_BYTES + 1)[0].startswith("binary_size_budget.json max_bytes")
     assert problems(0, HARD_CAP_BYTES) == []
-    assert baseline("Linux").name == "binary_size_budget_linux.json" and baseline("Darwin").name == "binary_size_budget.json"
-    assert cap_errors(8, 9, []) and not cap_errors(8, 9, ["a | b | c"]) and not cap_errors(9, 9, []) and not cap_errors(None, 9, [])
+    assert baseline("Linux")[0].name == "binary_size_budget_linux.json" and baseline("Darwin")[0].name == "binary_size_budget.json"
+    was = {"HARD_CAP_BYTES": 8}
+    assert cap_errors(was, {"HARD_CAP_BYTES": 9}, []) and not cap_errors(was, {"HARD_CAP_BYTES": 9}, ["a | b | c"])
+    assert not cap_errors(was, {"HARD_CAP_BYTES": 8}, []) and not cap_errors({}, {"HARD_CAP_BYTES": 9}, [])
+    assert caps(pathlib.Path(__file__).read_text()) == {"HARD_CAP_BYTES": HARD_CAP_BYTES, "HARD_CAP_LINUX_BYTES": HARD_CAP_LINUX_BYTES}
     bad = scratch_cases()
     assert not bad, bad
     print("ok   binary_size selfcheck")
@@ -113,14 +121,14 @@ def main(argv):
     if base is None:
         no_fork("binary_size")
     decisions = [d for _, fields in check_changes.pending(base) for d in fields["decision"]]
-    errs = cap_errors(fork_cap(base), HARD_CAP_BYTES, decisions)
+    errs = cap_errors(caps(check_changes.at(base, SELF)), caps(pathlib.Path(__file__).read_text()), decisions)
     if not DIST_BIN.exists():
         fail(errs + [f"{DIST_BIN} missing - run: scripts/build_dist.sh"], "binary_size")
     size = DIST_BIN.stat().st_size
-    path = baseline()
+    path, cap = baseline()
     budget = json.loads(path.read_text())["max_bytes"]
-    errs += problems(size, budget, name=path.name)
-    fail(errs, f"binary_size ({size} bytes; {path.name} {budget} + {JITTER}, cap {HARD_CAP_BYTES})")
+    errs += problems(size, budget, hard_cap=cap, name=path.name)
+    fail(errs, f"binary_size ({size} bytes; {path.name} {budget} + {JITTER}, cap {cap})")
     return 0
 
 
