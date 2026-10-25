@@ -204,6 +204,12 @@ pub(crate) fn notebook_cells<'a>(
     notebooks.get(session).map_or(&[][..], Vec::as_slice)
 }
 
+/// Invariant: rows drawn under a key (the width, and for Review its scope, note and the diff's
+/// revision), redrawn only when the key moves; a new pane content starts with none.
+pub type Drawn<K, V = Rows> = Option<(K, V)>;
+pub type Rows = Vec<ratatui::text::Line<'static>>;
+pub type ReviewKey = (usize, ReviewScope, String, u64);
+
 /// What a pane shows: the provider seam — a new kind is a new variant plus
 /// its render arm, nothing else.
 pub enum PaneContent {
@@ -214,10 +220,14 @@ pub enum PaneContent {
     Markdown {
         path: String,
         source: String,
+        workdir: String,
+        drawn: Drawn<usize>,
     },
     Diff {
         path: String,
         source: String,
+        workdir: String,
+        drawn: Drawn<usize>,
     },
     Notebook {
         session: Option<SessionId>,
@@ -228,6 +238,7 @@ pub enum PaneContent {
     SessionDiff {
         session: SessionId,
         scope: ReviewScope,
+        drawn: Drawn<ReviewKey, (String, Rows)>,
     },
     Terminal(Box<crate::pty::Pty>),
     Editor(Editor),
@@ -245,6 +256,9 @@ pub struct Editor {
     pub lang: Option<String>,
     pub primed: Option<(usize, yi_tui::highlight::Lang)>,
     pub last_cursor: (usize, usize),
+    pub crlf: bool,
+    pub final_newline: bool,
+    pub workdir: String,
 }
 
 impl Editor {
@@ -324,20 +338,24 @@ pub struct SessionDiff {
     pub why_due: Option<(String, Vec<u32>)>,
     /// The title a second `l` lands under; any other key clears it.
     pub land_armed: Option<String>,
+    pub rev: u64,
+    pub dropped_at_turn: BTreeMap<String, u64>,
 }
 
-const MAX_DIFF_FILES: usize = 512;
-const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_DIFF_FILES: usize = 512;
+pub const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 impl SessionDiff {
     pub fn insert(&mut self, path: String, file: FileDiff) {
+        self.dropped_at_turn.remove(&path);
         self.files.retain(|(existing, _)| *existing != path);
         self.files.push((path, file));
         while self.files.len() > MAX_DIFF_FILES || self.bytes() > MAX_DIFF_BYTES {
             if self.files.len() <= 1 {
                 break;
             }
-            self.files.remove(0);
+            let (gone, file) = self.files.remove(0);
+            self.dropped_at_turn.insert(gone, file.turn);
         }
     }
 
@@ -389,6 +407,15 @@ impl Pane {
             | PaneContent::Browser(_) => None,
         }
     }
+
+    pub fn take_ask(&mut self) -> Option<PendingAsk> {
+        match &mut self.content {
+            PaneContent::Session {
+                chat: Some(chat), ..
+            } => chat.ask.take(),
+            _ => None,
+        }
+    }
 }
 
 pub struct Tab {
@@ -435,9 +462,12 @@ pub struct ConsoleState {
     pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
     pub folded: std::collections::BTreeSet<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
+    pub children_evicted:
+        BTreeMap<SessionId, std::collections::BTreeSet<yi_types::subagent::ChildId>>,
     pub parked: BTreeMap<SessionId, Box<Chat>>,
     pub chrome: crate::browser::Chrome,
     pub browser_placed: BTreeMap<PaneId, crate::placed::Placed>,
+    pub home: Option<String>,
 }
 
 impl ConsoleState {
@@ -480,9 +510,11 @@ impl ConsoleState {
             session_options: BTreeMap::new(),
             folded: std::collections::BTreeSet::new(),
             children: BTreeMap::new(),
+            children_evicted: BTreeMap::new(),
             parked: BTreeMap::new(),
             chrome: crate::browser::Chrome::default(),
             browser_placed: BTreeMap::new(),
+            home: None,
             quit: false,
         }
     }
@@ -704,12 +736,18 @@ impl ConsoleState {
         Some(new_id)
     }
 
-    pub fn close_focused_pane(&mut self) -> Option<PaneId> {
+    pub fn close_focused_pane(&mut self) -> Option<Pane> {
         let tab = self.tabs.get_mut(self.active_tab)?;
         let closed = tab.layout.close_focused()?;
         tab.zoomed = false;
-        self.panes.remove(&closed);
-        Some(closed)
+        self.panes.remove(&closed)
+    }
+
+    pub fn take_asks(&mut self) -> Vec<String> {
+        let waiting = self.orphan_asks.drain(..).map(|(id, _)| id);
+        let held = (self.panes.values_mut().filter_map(Pane::take_ask))
+            .chain(self.parked.values_mut().filter_map(|chat| chat.ask.take()));
+        waiting.chain(held.map(|ask| ask.request_id)).collect()
     }
 
     pub fn new_tab(&mut self) {

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use super::{DeliverFn, JobStore, RunOutcome, Scheduler};
 
@@ -50,6 +50,7 @@ impl DeliveryHub {
         u64::try_from(changed).unwrap_or(u64::MAX)
     }
 
+    #[cfg(test)]
     fn lane_count(&self) -> usize {
         lock_lanes(&self.lanes).len()
     }
@@ -81,18 +82,24 @@ fn lock_lanes<T: ?Sized>(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn intern_map() -> &'static Mutex<HashMap<PathBuf, Arc<SharedSchedule>>> {
-    static MAP: OnceLock<Mutex<HashMap<PathBuf, Arc<SharedSchedule>>>> = OnceLock::new();
+/// Invariant: the map only points at a timer; the sessions wired or bound to it own it, so it
+/// stops when the last of them ends, even while a halt or poke walk still holds a clone.
+fn intern_map() -> &'static Mutex<HashMap<PathBuf, Weak<SharedSchedule>>> {
+    static MAP: OnceLock<Mutex<HashMap<PathBuf, Weak<SharedSchedule>>>> = OnceLock::new();
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) fn halt_all(on: bool, now: u64) -> (u64, u64) {
-    let all: Vec<Arc<SharedSchedule>> = intern_map()
+fn live() -> Vec<Arc<SharedSchedule>> {
+    intern_map()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
-        .map(Arc::clone)
-        .collect();
+        .filter_map(Weak::upgrade)
+        .collect()
+}
+
+pub(crate) fn halt_all(on: bool, now: u64) -> (u64, u64) {
+    let all = live();
     all.iter().fold((0, 0), |(jobs, sessions), shared| {
         let (held, stopped) = super::clock::halt_store(&shared.store, Some(&shared.hub), on, now);
         (jobs.saturating_add(held), sessions.saturating_add(stopped))
@@ -111,12 +118,7 @@ pub(crate) fn poke_now(path: &std::path::Path) {
 }
 
 fn due(path: &std::path::Path, paced: bool) {
-    let all: Vec<Arc<SharedSchedule>> = intern_map()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .values()
-        .map(Arc::clone)
-        .collect();
+    let all = live();
     let reads = |job: &yi_types::schedule::Job| {
         super::claimable(job)
             && job
@@ -147,10 +149,11 @@ pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<Sha
     let mut map = intern_map()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = map.get(&path) {
+    if let Some(existing) = map.get(&path).and_then(Weak::upgrade) {
         prime(&existing.hub);
-        return Arc::clone(existing);
+        return existing;
     }
+    map.retain(|_, shared| shared.strong_count() > 0);
     let store = Arc::new(JobStore::open(path.clone()));
     let hub = Arc::new(DeliveryHub::new());
     prime(&hub);
@@ -170,15 +173,17 @@ pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<Sha
         hub,
         _scheduler: scheduler,
     });
-    map.insert(path, Arc::clone(&shared));
+    map.insert(path, Arc::downgrade(&shared));
     shared
 }
 
-pub(crate) fn release(store: &Arc<JobStore>) {
-    intern_map()
+pub(crate) fn held(store: &Arc<JobStore>) -> Option<Arc<SharedSchedule>> {
+    let map = intern_map()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|_, shared| !Arc::ptr_eq(&shared.store, store) || shared.hub.lane_count() > 0);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.values()
+        .filter_map(Weak::upgrade)
+        .find(|shared| Arc::ptr_eq(&shared.store, store))
 }
 
 #[cfg(test)]
@@ -403,6 +408,155 @@ mod tests {
         assert!(
             state.dispatches.is_empty(),
             "a dead session's job was claimed"
+        );
+        Ok(())
+    }
+
+    fn wired(path: &std::path::Path, lane: Arc<DeliverFn>) -> Service {
+        let shared = intern(path.to_path_buf(), |_| {});
+        Service::new(Arc::clone(&shared.store), "/tmp")
+            .with_lane(Arc::clone(&shared.hub), lane)
+            .interned()
+    }
+
+    fn ran() -> Arc<DeliverFn> {
+        Arc::new(|_, _| Ok(RunOutcome::Ran))
+    }
+
+    #[tokio::test]
+    async fn a_departed_child_leaves_the_interned_timer_nothing_to_hold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-departed")?;
+        let path = dir.join("scheduled-jobs.json");
+        let (a, b) = (wired(&path, ran()), wired(&path, ran()));
+        a.bind_session("a".to_owned());
+        b.bind_session("b".to_owned());
+        let store = Arc::downgrade(&a.store());
+
+        drop((a, b));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.upgrade().is_some() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            store.upgrade().is_none(),
+            "two departed children left their store and timer interned"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_wired_session_that_never_binds_still_releases_the_timer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-unbound-wired")?;
+        let a = wired(&dir.join("scheduled-jobs.json"), ran());
+        let store = Arc::downgrade(&a.store());
+
+        drop(a);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.upgrade().is_some() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            store.upgrade().is_none(),
+            "a session whose attach failed after wiring left its timer interned"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_walk_in_flight_as_the_last_session_leaves_still_lets_the_timer_go()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-walked")?;
+        let a = wired(&dir.join("scheduled-jobs.json"), ran());
+        a.bind_session("a".to_owned());
+        let walking = held(&a.store()).ok_or("the wired session holds no timer")?;
+        let timer = Arc::downgrade(&walking);
+
+        a.end();
+        drop(walking);
+
+        assert!(
+            timer.upgrade().is_none(),
+            "a poke walking the map as the last session left kept its timer interned"
+        );
+        drop(a);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_sibling_still_bound_keeps_the_timer_and_it_still_delivers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("yi-hub-sibling")?;
+        let path = dir.join("scheduled-jobs.json");
+        let (sent, mut delivered) = tokio::sync::mpsc::unbounded_channel();
+        let lane = |sent: tokio::sync::mpsc::UnboundedSender<String>| -> Arc<DeliverFn> {
+            Arc::new(move |job, _| {
+                let _ = sent.send(job.session_id.clone());
+                Ok(RunOutcome::Ran)
+            })
+        };
+        let (a, b) = (wired(&path, ran()), wired(&path, lane(sent.clone())));
+        a.bind_session("a".to_owned());
+        b.bind_session("b".to_owned());
+        let set = crate::schedule::parse_heartbeat_command("/heartbeat every 10s watch it")?;
+        let due = |service: &Service| -> Result<(), String> {
+            service.apply(&set, yi_session::now_ms())?;
+            service.store().mutate(|state| {
+                for job in &mut state.jobs {
+                    job.next_run_at = Some(1);
+                }
+            });
+            Ok(())
+        };
+
+        drop(a);
+        due(&b)?;
+        let first = tokio::time::timeout(Duration::from_secs(25), delivered.recv())
+            .await
+            .map_err(|_| "a leaving stopped the timer b is still bound to")?;
+        assert_eq!(first.as_deref(), Some("b"));
+
+        let c = wired(&path, lane(sent));
+        drop(b);
+        c.bind_session("c".to_owned());
+        due(&c)?;
+        let next = tokio::time::timeout(Duration::from_secs(25), delivered.recv())
+            .await
+            .map_err(|_| "the last lane leaving stopped the timer c was wired to")?;
+        assert_eq!(next.as_deref(), Some("c"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_durable_bind_releases_the_ledger_it_left() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = Scratch::new("yi-hub-durable")?;
+        let (wiring_path, root) = (dir.join("scheduled-jobs.json"), dir.join("schedules"));
+        let root_session = wired(&wiring_path, ran()).durable(root.clone());
+        let wired_to = root_session.store();
+        root_session.bind_session("a".to_owned());
+        assert!(
+            held(&wired_to).is_none(),
+            "a durable root kept the ledger it was wired to"
+        );
+        assert!(
+            held(&root_session.store()).is_some(),
+            "a durable root let go of the ledger it is bound to"
+        );
+        let first = root_session.store();
+        root_session.bind_session("b".to_owned());
+        assert!(held(&first).is_none(), "a rebind kept the ledger it left");
+
+        let pending = wired(&wiring_path, ran());
+        wired(&wiring_path, ran())
+            .durable(root)
+            .bind_session("c".to_owned());
+        assert!(
+            held(&pending.store()).is_some(),
+            "a durable bind stopped the timer a wired sibling is about to join"
         );
         Ok(())
     }
