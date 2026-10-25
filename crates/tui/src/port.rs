@@ -384,7 +384,6 @@ impl App {
                     let cell = ToolCell {
                         name: tool_name.clone(),
                         call_id: tool_call_id.clone(),
-                        intent: None,
                         status: ToolStatus::Running,
                         summary: ToolCell::summary_of(tool_name, &arg_summary(tool_name, args)),
                         digest: None,
