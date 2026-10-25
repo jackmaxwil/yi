@@ -322,19 +322,28 @@ fn exec(command: &str, cwd: &Path) -> Value {
     match yi_tools::run_captured(shell, None, &cancelled, yi_tools::OUTPUT_CAP) {
         Ok(capture) if capture.exit_code == Some(0) => json!({"ok": true, "exit": 0}),
         Ok(capture) => {
-            let output = crate::goal::check_view(command, &capture);
-            let data = json!({"ok": false, "exit": capture.exit_code, "output": output});
-            // Invariant: the channel refuses a message past MESSAGE_MAX_BYTES whole, `ok` included,
-            // and the view's own text can sit at that size before JSON adds its bytes.
+            let output = crate::goal::check_view(command, cwd, None, &capture);
+            let level =
+                |output: &str| json!({"ok": false, "exit": capture.exit_code, "output": output});
+            let data = level(&output);
             let size = data.to_string().len();
             if size <= MESSAGE_MAX_BYTES {
                 return data;
             }
-            let next = format!("bash ({command}) > exec.log 2>&1, then read exec.log");
-            let row = format!(
-                "[… 0 of {size} bytes kept (MESSAGE_MAX_BYTES {MESSAGE_MAX_BYTES}); the rest: {next}]"
-            );
-            json!({"ok": false, "exit": capture.exit_code, "output": row})
+            // Invariant: the channel refuses a message past MESSAGE_MAX_BYTES whole, `ok` included;
+            // the view sits near that size before JSON adds bytes, so the head goes: verdicts end.
+            let (total, rerun) = (output.len(), crate::goal::rerun_in(cwd, command));
+            let row = |kept: usize| {
+                format!(
+                    "[… {kept} of {total} bytes kept (MESSAGE_MAX_BYTES {MESSAGE_MAX_BYTES}); the rest: bash ({rerun}) > exec.log 2>&1, then read exec.log]"
+                )
+            };
+            let probe = level(&format!("{}\n{output}", row(total)))
+                .to_string()
+                .len();
+            let from = output.ceil_char_boundary(probe.saturating_sub(MESSAGE_MAX_BYTES));
+            let tail = output.get(from..).unwrap_or_default();
+            level(&format!("{}\n{tail}", row(tail.len())))
         }
         Err(error) => json!({"ok": false, "output": format!("did not run: {error}")}),
     }
