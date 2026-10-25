@@ -462,7 +462,7 @@ fn start(
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
     reaper: Reaper,
-    sweep: Option<&str>,
+    placed: Option<(&str, &str)>,
     spill_dir: Option<&Path>,
 ) -> (
     JobId,
@@ -478,13 +478,13 @@ fn start(
         Arc::clone(&live),
         Arc::clone(&kill),
     );
-    let text = shell_command.to_owned();
-    let sweep = sweep.map(str::to_owned);
+    let text = placed.map_or(shell_command, |(run, _)| run).to_owned();
+    let sweep = placed.map(|(_, sweep)| sweep.to_owned());
     let dir = cwd.to_path_buf();
     let spill_dir = spill_dir.map(Path::to_path_buf);
     let outer = Arc::clone(cancelled);
     let flag: CancelFlag = Arc::new(move || kill.load(Ordering::SeqCst) || outer());
-    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", shell_command]));
+    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", &text]));
     std::thread::spawn(move || {
         let mut process = match &wrapped {
             Some((program, args)) => {
@@ -567,14 +567,14 @@ pub fn spawn_job(
 }
 
 /// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
-/// a command keeps running as a job, killed by an interrupt or at `timeout` from its start.
+/// a command keeps running as a job, killed at an interrupt or `timeout`; `placed` runs in its stead.
 pub fn run_or_background(
     shell_command: &str,
     context: &crate::tool::ToolContext,
     background_after: Option<Duration>,
     timeout: Duration,
     sandbox: Option<&crate::sandbox::Sandbox>,
-    sweep: Option<&str>,
+    placed: Option<(&str, &str)>,
 ) -> Result<Run, String> {
     let begun = std::time::Instant::now();
     let (id, receiver) = start(
@@ -587,7 +587,7 @@ pub fn run_or_background(
             reported: true,
             owner: context.job_owner,
         },
-        sweep,
+        placed,
         context.recovery_dir.as_deref(),
     );
     let background = background_after.filter(|limit| *limit < timeout);
@@ -919,10 +919,10 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with the kill row or the colour strip dropped from the view: the row is the only
+    /// place the model learns a job's group may still run, and the colour reached it raw.
     #[test]
     fn a_failed_group_kill_is_named_in_the_job_report() -> Fallible {
-        // A group that survives its kill holds the pipes past the grace, so only this late
-        // report can say why.
         let id = registry().insert(
             "sleep 300",
             (Path::new("."), None),
@@ -933,7 +933,7 @@ mod tests {
         registry().finish(
             id,
             CommandCapture {
-                stdout: "partial".to_owned(),
+                stdout: "\x1b[31mpartial\x1b[0m".to_owned(),
                 stderr: String::new(),
                 exit_code: None,
                 cancelled: true,
@@ -951,6 +951,8 @@ mod tests {
             "{}",
             report.output
         );
+        let row = "[group kill failed: /bin/sh: No such file or directory]";
+        assert_eq!(report.view(), format!("partial\n{row}"));
         Ok(())
     }
 

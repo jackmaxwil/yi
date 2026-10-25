@@ -937,6 +937,31 @@ fn a_backgrounded_jobs_report_names_its_spill() -> TestResult {
     Ok(())
 }
 
+/// Dies with the container wrapper kept as the job's text: its headline named `docker exec`
+/// and the reducer read `docker`, not the model's `cargo`, so a cargo job lost its filter.
+#[test]
+fn a_container_job_keeps_the_models_command_and_runs_the_placed_one() -> TestResult {
+    let dir = temp_dir("jobs-placed")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let (after, limit) = (
+        Some(std::time::Duration::from_millis(50)),
+        std::time::Duration::from_secs(60),
+    );
+    let placed = Some(("sleep 0.3; printf placed", "true"));
+    let run = yi_tools::run_or_background("cargo test", &context, after, limit, None, placed)?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the placed command did not become a job".into());
+    };
+    yi_tools::jobs::registry().wait_settled(Some(id), limit);
+    let report = yi_tools::jobs::registry().release(id)?;
+    assert_eq!(
+        report.headline(),
+        format!("job {id} finished (exit 0): cargo test")
+    );
+    assert_eq!(report.view(), "placed");
+    Ok(())
+}
+
 #[test]
 fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
@@ -1164,6 +1189,34 @@ fn a_job_whose_build_errors_last_keeps_the_error_and_names_the_spill() -> TestRe
     assert!(
         kept == Some(fs::read(&recorded)?),
         "the named file is not the whole build"
+    );
+    Ok(())
+}
+
+/// A cut capture no file holds, foreground and as a job: one `[capture cut: …]` row each, and the
+/// job's view passes the ceiling by that row alone, since the row is appended after the view.
+#[test]
+fn a_cut_capture_with_no_file_says_so_once_on_both_paths() -> TestResult {
+    let dir = temp_dir("cut-no-file")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let print = "awk 'BEGIN{for(i=0;i<4000;i++) print \"0123456789\"}'";
+    let foreground = BashTool::default().execute(args(&[("command", json!(print))]), &context);
+    let job = output_text(&polled_job(&format!("sleep 0.5; {print}"), &mut context)?);
+    for text in [output_text(&foreground), job.clone()] {
+        let rows: Vec<&str> = (text.lines())
+            .filter(|line| line.starts_with("[capture cut: kept 30000 of 44000 bytes"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{text}");
+        assert!(text.ends_with("; no file kept the rest]"), "{text}");
+        assert!(!text.contains("[output truncated]"), "{text}");
+    }
+    let (_, body) = job.split_once('\n').ok_or("no headline")?;
+    let row = body.lines().last().unwrap_or_default();
+    assert!(body.contains("(VIEW_CEILING 16384)"), "{body}");
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING + 1 + row.len(),
+        "{} B: {body}",
+        body.len()
     );
     Ok(())
 }
