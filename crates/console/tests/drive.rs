@@ -4945,9 +4945,8 @@ fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
     Ok(())
 }
 
-/// The recording's edit as the worker streamed it live: a running todo, turn one editing, then a
-/// second turn that edits nothing.
-fn live_edit_then_an_empty_turn() -> Vec<Value> {
+/// The recording's edit as the worker streamed it live: a running todo and turn one editing.
+fn live_edit_turn() -> Vec<Value> {
     let edit = recorded(EDIT_SESSION)
         .into_iter()
         .find(|e| e["message"]["toolName"] == "edit");
@@ -4967,13 +4966,12 @@ fn live_edit_then_an_empty_turn() -> Vec<Value> {
                    "kind": "edit", "status": "completed", "rawOutput": details}),
         ),
         state("idle"),
-        state("running"),
-        state("idle"),
     ]);
     frames
 }
 
-/// What a reconnect replays of that work: the recording, then the second prompt.
+/// What a reconnect replays of that work: the recording, then a second prompt typed while the
+/// console was away, whose turn edited nothing.
 fn resume_both_turns(frame: &Value) -> Vec<Value> {
     let mut entries = recorded(EDIT_SESSION);
     entries.push(entry("e-turn2", None, 99, &user_message("and again")));
@@ -4984,7 +4982,7 @@ fn resume_both_turns(frame: &Value) -> Vec<Value> {
 fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Error>> {
     let mut fixture = session_fixture();
     fixture.extend([
-        Step::Push(live_edit_then_an_empty_turn),
+        Step::Push(live_edit_turn),
         Step::Expect("_yi/tracked", tracked_yes),
         Step::Close,
         Step::Accept,
@@ -5001,8 +4999,8 @@ fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Er
     )
 }
 
-/// Dies with `Review · turn · 1 file` after a reconnect: the full replay stamped the edit with the
-/// turn the console was in, and the second turn edited nothing.
+/// Dies with `Review · turn · 1 file` after a reconnect: the console kept the turn it saw live, or
+/// stamped the edit with it, though the replayed second turn edited nothing.
 #[test]
 fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestResult {
     let frame = review_after_a_reconnect(
