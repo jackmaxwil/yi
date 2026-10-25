@@ -16,12 +16,12 @@ import os, pathlib, re, shutil, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "scripts/guardrails")]
 import adr
-from check_changes import DECISIONS, DIR, VERSION, parse, table
+from _common import BLOB_ALLOW as ALLOW, BLOB_CAP as CAP
+from check_changes import DECISIONS, DIR, VERSION, changelog_rows, parse, table
 
 ARCH, LOG, INDEX = "docs/ARCHITECTURE.md", "docs/CHANGELOG.md", "docs/solutions/README.md"
 LOG_HEADER = "| ver | date | change |"
 ROW_ID = re.compile(r"^\| D(\d+) \|")
-CAP, ALLOW = 512_000, "scripts/guardrails/baselines/blob_allowlist.txt"
 
 
 def git(root, *args):
@@ -202,7 +202,7 @@ def verify(tmp, recorded, bad):
         if not prose.startswith(fields["body"]) or cites not in prose[len(fields["body"]):] or fields.get("issue", "") not in prose:
             bad.append(f"{version}'s row is {len(cells)} cells, prose {prose[-60:]!r}: not {name}'s body citing {cites} {fields.get('issue')}")
     newest = sorted(recorded.values(), reverse=True)
-    rows = [line.split(" | ")[:2] for line in lines if re.match(r"^\| \d+\.\d+\.\d+ \|", line)]
+    rows = [line.split(" | ")[:2] for line in changelog_rows(views[LOG])]
     if [v[2:] for v, _ in rows[:len(newest)]] != [v for v, _ in newest] or VERSION.search(views[ARCH]).group(1) != newest[0][0]:
         bad.append(f"version {VERSION.search(views[ARCH]).group(1)}, changelog rows {rows[:len(newest)]}: not {newest[0][0]} newest first")
     ids = [f"D{m.group(1)}" for row in table(views[ARCH], DECISIONS) if (m := ROW_ID.match(row))]
@@ -219,7 +219,8 @@ def selfcheck():
     real = landed(ROOT, PIN)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-"))
     bad = []
-    run = lambda *a: subprocess.run((sys.executable,) + a, cwd=tmp, capture_output=True, text=True)
+    # Incident: CI writes bytecode, so the scratch repo showed __pycache__ as untracked and every clean-tree check failed.
+    run = lambda *a: subprocess.run((sys.executable, "-B") + a, cwd=tmp, capture_output=True, text=True)
     status = lambda: git(tmp, "status", "--porcelain")
     gate = lambda: run("scripts/guardrails/check_changes.py")
 

@@ -316,7 +316,7 @@ fn the_files_line_lists_the_top_level_and_caps_at_twenty() -> TestResult {
     let line = files_line(&dir).ok_or("a populated dir has a files line")?;
     assert!(line.starts_with("files: a-sub/ f00.txt f01.txt"), "{line}");
     assert!(
-        line.ends_with(" …(+5)"),
+        line.contains("f18.txt") && !line.contains("f19.txt"),
         "25 names, {FILES_SHOWN} shown: {line}"
     );
     assert!(!line.contains(".hidden"));

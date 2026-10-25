@@ -358,6 +358,10 @@ pub struct JobStore {
     path: std::path::PathBuf,
     state: std::sync::Mutex<ScheduleState>,
     changed: std::sync::Arc<tokio::sync::Notify>,
+    hub: Option<std::sync::Arc<shared::DeliveryHub>>,
+    /// The write error its sessions were last told of, so a ledger that stays unwritable tells
+    /// them once; a write that succeeds clears it.
+    failed: std::sync::Mutex<Option<String>>,
 }
 
 fn lock_or_poisoned<T>(state: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -378,6 +382,19 @@ impl JobStore {
             path,
             state: std::sync::Mutex::new(state),
             changed: std::sync::Arc::new(tokio::sync::Notify::new()),
+            hub: None,
+            failed: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn with_hub(mut self, hub: std::sync::Arc<shared::DeliveryHub>) -> Self {
+        self.hub = Some(hub);
+        self
+    }
+
+    fn notify(&self, session_id: Option<&str>, text: &str) {
+        if let Some(hub) = &self.hub {
+            hub.notify(session_id, text);
         }
     }
 
@@ -400,18 +417,21 @@ impl JobStore {
                 .filter_map(|job| Some((job.id.clone(), job.channel.as_ref()?.path.clone())))
                 .collect()
         };
-        let (result, ended) = {
+        let (result, ended, failed) = {
             let mut state = lock_or_poisoned(&self.state);
             let before = reading(&state);
             let result = action(&mut state);
-            self.persist(&state);
+            let failed = self.persist(&state);
             let after = reading(&state);
             let ended: Vec<(String, String)> = before
                 .into_iter()
                 .filter(|job| !after.contains(job))
                 .collect();
-            (result, ended)
+            (result, ended, failed)
         };
+        if let Some(text) = failed {
+            self.notify(None, &text);
+        }
         // Invariant: a channel job that ends by any path drops its ack, so a finished wait or a
         // cancelled subscription never holds its channel's truncation back.
         for (id, path) in ended {
@@ -422,17 +442,31 @@ impl JobStore {
         result
     }
 
-    fn persist(&self, state: &ScheduleState) {
-        let Ok(text) = serde_json::to_string_pretty(state) else {
-            return;
-        };
+    /// Invariant: an idle channel tick re-arms in memory only; the next real write carries it,
+    /// and a restart re-derives it, so the worst a crash costs is one idle tick fired again.
+    fn rearm_idle(&self, now: u64, busy: &HashSet<String>) {
+        let mut state = lock_or_poisoned(&self.state);
+        for job in &mut state.jobs {
+            if is_due_job(job, now) && !busy.contains(&job.session_id) && channel::idle(job) {
+                job.next_run_at = next_run_at_for_schedule(&job.schedule, now).ok().flatten();
+            }
+        }
+    }
+
+    /// `Some` is a notice the ledger's sessions have not had yet.
+    fn persist(&self, state: &ScheduleState) -> Option<String> {
+        let text = serde_json::to_string_pretty(state).ok()?;
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let write = yi_session::replace_file(&self.path, text.as_bytes());
-        if let Err(error) = write {
-            eprintln!("scheduled-jobs.json write failed: {error}");
-        }
+        let error = (yi_session::replace_file(&self.path, text.as_bytes()).err()).map(|error| {
+            format!(
+                "[heartbeat ledger {} not written: {error}; schedule changes hold in memory only and a restart loses them]",
+                self.path.display()
+            )
+        });
+        let told = std::mem::replace(&mut *lock_or_poisoned(&self.failed), error.clone());
+        error.filter(|text| told.as_ref() != Some(text))
     }
 }
 
@@ -495,6 +529,7 @@ pub struct HeartbeatService {
     durable: Option<(std::path::PathBuf, tokio::runtime::Handle)>,
     deliver: Option<std::sync::Arc<DeliverFn>>,
     stop: Option<std::sync::Arc<shared::StopFn>>,
+    notice: Option<std::sync::Arc<shared::NoticeFn>>,
     words: Option<crate::goal::StoreHandle>,
     /// The machine's channel buffers, `<sessions>/channels/`.
     channels: Option<std::path::PathBuf>,
@@ -516,6 +551,7 @@ impl HeartbeatService {
             durable: None,
             deliver: None,
             stop: None,
+            notice: None,
             words: None,
             channels: None,
             gate: None,
@@ -541,6 +577,11 @@ impl HeartbeatService {
 
     pub fn with_stop(mut self, stop: std::sync::Arc<dyn Fn(bool) -> bool + Send + Sync>) -> Self {
         self.stop = Some(stop);
+        self
+    }
+
+    pub(crate) fn with_notice(mut self, notice: std::sync::Arc<shared::NoticeFn>) -> Self {
+        self.notice = Some(notice);
         self
     }
 
@@ -629,6 +670,9 @@ impl HeartbeatService {
             hub.register(session_id.to_owned(), std::sync::Arc::clone(deliver));
             if let Some(stop) = &self.stop {
                 hub.register_stop(session_id.to_owned(), std::sync::Arc::clone(stop));
+            }
+            if let Some(notice) = &self.notice {
+                hub.register_notice(session_id.to_owned(), std::sync::Arc::clone(notice));
             }
         }
     }
@@ -858,5 +902,46 @@ impl HeartbeatService {
     /// Parses and applies one `/heartbeat` line, the entry point RPC, ACP and slash share (§15.2).
     pub fn run(&self, line: &str) -> Result<String, String> {
         parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scratch::Scratch;
+
+    /// Dies with a flapping disk told once for the store's whole life: a write that succeeds
+    /// clears the told error, and a different error is told again.
+    #[test]
+    fn a_ledger_error_is_told_again_after_a_success_or_when_it_changes() -> std::io::Result<()> {
+        let dir = Scratch::new("yi-ledger-flap")?;
+        let parent = dir.join("schedules");
+        let store = JobStore::open(parent.join("scheduled-jobs.json"));
+        let state = ScheduleState::default();
+        std::fs::write(&parent, "a file where the directory goes")?;
+        let not_dir = store.persist(&state);
+        let again = store.persist(&state);
+        std::fs::remove_file(&parent)?;
+        let healed = store.persist(&state);
+        std::fs::remove_dir_all(&parent)?;
+        std::fs::write(&parent, "a file where the directory goes")?;
+        let relapse = store.persist(&state);
+        std::fs::remove_file(&parent)?;
+        std::fs::create_dir_all(parent.join("scheduled-jobs.json/held"))?;
+        let is_dir = store.persist(&state);
+
+        assert!(
+            not_dir
+                .as_ref()
+                .is_some_and(|text| text.contains("not written"))
+        );
+        assert_eq!(again, None, "the same error was told twice");
+        assert_eq!(healed, None, "a write that succeeded was told as a failure");
+        assert_eq!(relapse, not_dir, "a failure after a success went untold");
+        assert!(
+            is_dir.is_some() && is_dir != not_dir,
+            "a changed error went untold: {is_dir:?}"
+        );
+        Ok(())
     }
 }
