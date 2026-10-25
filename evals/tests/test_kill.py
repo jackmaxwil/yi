@@ -6,6 +6,7 @@ from pathlib import Path
 EVALS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALS))
 import kill  # noqa: E402
+import trials  # noqa: E402
 
 EVENTS = EVALS / "fixtures" / "ask_events.jsonl"
 # Main's binary against a 127.0.0.1 fake answering Moonshot's exceeded_current_quota_error 429.
@@ -32,6 +33,7 @@ elif argv[:1] == ["ask"]:
     token = home / ".yi" / "providers" / "tokens" / "kimi.json"
     asked = sum(1 for line in open(log) if '"ask"' in line) if log.exists() else 0
     note(ask=os.getcwd(), home=str(home), venvs=venvs, git=Path(".git").is_dir(),
+         config=json.loads((home / ".yi" / "config.json").read_text()),
          token=json.loads(token.read_text()) if token.exists() else None,
          mode=oct(token.stat().st_mode & 0o777) if token.exists() else None)
     if os.environ.get("FAKE_WRITE"):
@@ -46,7 +48,8 @@ elif argv[:1] == ["ask"]:
 
 ROUTES = {"routes": {
     "kimi": {"model": "kimi/k3.1", "kind": "subscription", "enabled": True, "confirmed": True},
-    "flash": {"model": "openrouter/z-ai/glm-5.3-flash", "kind": "openrouter", "enabled": True, "confirmed": True},
+    "flash": {"model": "openrouter/z-ai/glm-5.3-flash", "kind": "openrouter", "enabled": True, "confirmed": True,
+              "routing": {"ignore": ["inference-net"]}},
     "dark": {"model": "openrouter/deepseek/nope", "kind": "openrouter", "enabled": True, "confirmed": False}}}
 
 MODULE = '''THRESHOLD = "fixture"
@@ -196,7 +199,7 @@ class Ledger(unittest.TestCase):
                 thread.join()
             holder.wait()
             with kill.ledger() as (rows, _):
-                spent, open_, _ = kill.state(rows)
+                spent, open_, *_ = kill.state(rows)
             self.assertIn("other", open_, "the other process's reserve must be on the ledger")
             self.assertLessEqual(sum(m for *_, m in open_.values()), kill.micro(30.0), open_)
             self.assertEqual(sum(key is not None for key in keys), 8, "5 + 8 x 3 is 29; a ninth would be 32")
@@ -244,6 +247,8 @@ class Ledger(unittest.TestCase):
             self.assertEqual(code, 2, out)
             self.assertIn("route dark (openrouter/deepseek/nope) is not confirmed", out)
             self.assertEqual(r.ledger(), [], "a dry run writes nothing")
+            code, out = quiet(["run", "named", "--binary", str(r.yi), "--dry", "--family", "flash"])
+            self.assertEqual((code, out.strip()), (2, "refused: named has no family flash; its families are dark"))
 
     def test_dry_plans_both_families_and_refuses_a_slug_the_central_catalog_lacks(self):
         with rig() as r:
@@ -342,15 +347,35 @@ class Quota(unittest.TestCase):
             r.kimi_login(expires_in=10 ** 9)
             r.streams(QUOTA, EVENTS)
             self.usage(self.NOW + 3600)
-            r.module("parked", ["kimi"], {"kimi": 0.5})
+            r.module("parked", ["kimi", "flash"], {"kimi": 0.5, "flash": 0.2})
             until = datetime.datetime.fromtimestamp(self.NOW + 1800, datetime.timezone.utc).isoformat()
-            code, out = quiet(["run", "parked", "--binary", str(r.yi), "--until", until])
+            code, out = quiet(["run", "parked", "--binary", str(r.yi), "--until", until, "--family", "kimi"])
             self.assertEqual(code, 1, out)
             self.assertIn("parked kimi: 0 runs, $0.0000, 1 not run, needs $0.50", out)
-            self.assertEqual(quiet(["report"])[1].strip(), "parked: unrun: needs $0.50")
+            self.assertEqual(quiet(["report"])[1].strip(), "parked: unrun: needs $0.70")
+            code, out = quiet(["run", "parked", "--binary", str(r.yi), "--family", "flash"])
+            self.assertEqual((code, out.strip()), (2, "refused: parked runs kimi before flash"), "Kimi never ran")
+
+    def test_a_quota_that_never_resets_is_not_run_and_never_judged(self):
+        with rig() as r:
+            r.kimi_login(expires_in=10 ** 9)
+            r.streams(QUOTA)
+            os.environ["FAKE_USAGE"] = "{}"
+            r.module("dead", ["kimi"], {"kimi": 0.5})
+            code, out = quiet(["run", "dead", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (1, "dead kimi: 0 runs, $0.0000, 1 not run, needs $0.50: quota "
+                                                      "exhausted and `yi catalog usage kimi` gave no reset"))
+            self.assertEqual(quiet(["report"])[1].strip(), "dead: unrun: needs $0.50")
 
 
 class Isolation(unittest.TestCase):
+    def test_a_route_s_routing_reaches_the_run_home_config_verbatim(self):
+        with rig() as r:
+            r.streams(EVENTS)
+            kill.ask("t", "flash", r.spec, str(r.yi), 1.0)
+            configs = [n["config"] for n in r.notes() if "ask" in n]
+            self.assertEqual(configs, [{"telemetry": {"enabled": True}, "routing": {"ignore": ["inference-net"]}}])
+
     def test_two_runs_at_once_get_cloned_venvs_their_own_clones_and_no_refresh_token(self):
         posts = []
 
@@ -434,14 +459,22 @@ class Runs(unittest.TestCase):
             sweep = [sys.executable, "-c", (
                 "import json, os, sys\n"
                 "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP']}\n"
-                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'w').write(json.dumps(row))\n"),
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write(json.dumps(row) + '\\n')\n"),
                 str(kill.TRIALS)]
             row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
             filed = json.loads((kill.TRIALS / "ns-tb-flash-one.jsonl").read_text())
             self.assertEqual((row["status"], row["chargedUsd"], filed["cap"]), ("ok", 0.12, "1.00"), row)
+            again = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            self.assertEqual((again["chargedUsd"], again["trials"]), (0.12, 1), "a re-run pays only its own rows")
             silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
             self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
             self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
+
+    def test_the_sweep_cap_is_the_lower_of_the_trials_cap_and_the_reserve_handed_down(self):
+        with tempfile.TemporaryDirectory() as store:
+            own, _ = trials.caps("ns-x", 1, store=store, now=0)
+            self.assertEqual(trials.caps("ns-x", 1, store=store, now=0, at_most=0.35), (0.35, None))
+            self.assertEqual(trials.caps("ns-x", 1, store=store, now=0, at_most=own + 5), (own, None))
 
 
 class Report(unittest.TestCase):
