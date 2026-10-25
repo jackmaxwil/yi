@@ -414,6 +414,9 @@ pub fn prepare(
         session,
         ClaimBase::Commit(generation.base.as_str().to_owned()),
     )?;
+    // Invariant: a claim keeps an unmerged branch, but a staging branch holds no one's only copy.
+    let base = ["reset", "-q", "--hard", generation.base.as_str()];
+    git_by(lane.path(), &base, deadline)?;
     let message = format!(
         "Integrate {} onto {}",
         candidate.short(),
@@ -614,13 +617,20 @@ fn changed_files(
     let range = format!("{from}...{}", candidate.commit.as_str());
     let args = ["diff", "--numstat", "-z", "--no-renames", range.as_str()];
     let numstat = git_capped(parent, &args, deadline, usize::MAX)?;
-    let files = numstat.split('\0').filter_map(|record| {
-        let mut parts = record.splitn(3, '\t');
-        let added = parts.next()?.parse().unwrap_or(0u64);
-        let removed = parts.next()?.parse().unwrap_or(0u64);
-        Some(json!({"path": parts.next()?, "added": added, "removed": removed}))
+    let rows = nul_lines(&numstat);
+    let files = rows.iter().filter_map(|row| {
+        let (path, added, removed) = numstat_row(row)?;
+        Some(json!({"path": path, "added": added, "removed": removed}))
     });
     Ok(Value::Array(files.collect()))
+}
+
+/// One `diff --numstat` row as path, added, removed; a binary file's `-` counts read as 0.
+pub(crate) fn numstat_row(row: &str) -> Option<(&str, u64, u64)> {
+    let mut parts = row.splitn(3, '\t');
+    let added = parts.next()?.parse().unwrap_or(0);
+    let removed = parts.next()?.parse().unwrap_or(0);
+    Some((parts.next()?, added, removed))
 }
 
 fn nul_lines(text: &str) -> Vec<String> {
