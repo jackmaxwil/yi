@@ -191,7 +191,7 @@ fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestRes
 }
 
 /// Dies with a server that has no tools told `[…] 0 tools not printed`, or one that offers tools
-/// but fails tools/list told nothing: the row names the call only when the server offers tools.
+/// it did not list told nothing or a false count: the row names the call, never an unknown count.
 #[test]
 fn connect_names_the_tools_call_only_when_the_server_offers_tools() -> TestResult {
     let home = mcp_home()?;
@@ -216,7 +216,7 @@ fn connect_names_the_tools_call_only_when_the_server_offers_tools() -> TestResul
         flaky.stdout.trim(),
         "@f live · yi-fixture\ncapabilities: tools, resources, prompts\n\
          instructions: Fixture server. The echo tool repeats input.\n\
-         […] 0 tools not printed · list them: yi mcp @f tools-list"
+         […] the server offers tools; connect listed none · list them: yi mcp @f tools-list"
     );
     Ok(())
 }
