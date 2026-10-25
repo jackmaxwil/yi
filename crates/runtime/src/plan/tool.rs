@@ -14,30 +14,23 @@ use super::ops::{
 };
 use super::render::render_outcome;
 use super::table::{ALL_OPS, OpKind, op_name};
-use yi_types::plan::op::{MODEL_OPS, SpecError, TodoSpecRepr};
+use yi_types::plan::op::{SpecError, TodoSpecRepr};
 
 fn legal_ops() -> String {
-    ALL_OPS
-        .iter()
-        .take(MODEL_OPS)
-        .map(|op| op_name(*op))
-        .collect::<Vec<_>>()
-        .join(", ")
+    SHOWN_OPS.join(", ")
 }
 
 /// A key that belongs to another op or level, named where it goes; dogfood sessions sent a
 /// block's `on` inside init, and a todo's `label` beside append's `todos`.
 pub(super) fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
     match (op, in_todo, key) {
-        (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => Some(
-            "; blocking is its own op after the todo exists: op=block, label, on: {user: null}, note, options",
-        ),
+        (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => {
+            Some("; a todo blocks as a set row: {label, state: blocked, on, note, options}")
+        }
         (OpKind::Init | OpKind::Append | OpKind::Decompose, false, "label") => {
             Some("; each todo's label goes inside todos: [{label, ...}]")
         }
-        (_, true, "todos") => {
-            Some("; a todo's own children come from decompose on it once it runs")
-        }
+        (_, true, "todos") => Some("; a todo's own sub-steps are the todos of its set row"),
         _ => None,
     }
 }
@@ -1020,18 +1013,6 @@ mod tests {
                 "{message}"
             );
         }
-        Ok(())
-    }
-    #[test]
-    fn an_unknown_op_names_the_legal_ones() -> Fallible {
-        let mut input = Map::new();
-        input.insert("op".to_owned(), Value::String("plan.create".to_owned()));
-        let message = request(&Actor::Owner, &input)
-            .err()
-            .ok_or("plan.create parsed as an op")?
-            .to_string();
-        assert!(message.contains("init"), "{message}");
-        assert!(message.contains("supersede"), "{message}");
         Ok(())
     }
     #[test]

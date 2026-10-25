@@ -74,12 +74,10 @@ pub struct Outcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlanOpError {
-    #[error(
-        "no plan is open; open one with init (a goal and todos), or with a set that names a goal"
-    )]
+    #[error("no plan is open; open one with a set that names a goal and its todos")]
     NoPlan,
     #[error(
-        "plan {id} already exists and is open; view it, append to it, or supersede its todos (in the kernel, Plan.attach resumes it)"
+        "plan {id} already exists and is open; view it, or send set with the rows that change (in the kernel, Plan.attach resumes it)"
     )]
     PlanExists { id: PlanId },
     #[error("no todo labelled {label:?} in plan {plan}")]
@@ -101,7 +99,7 @@ pub enum PlanOpError {
     #[error("reorder names {got} labels; a full permutation of all {expected} is required")]
     NotAPermutation { got: usize, expected: usize },
     #[error(
-        "sub-plan {plan} cannot open a child plan (DepthExhausted): decompose goes one level deep, so append the steps to {plan} instead"
+        "sub-plan {plan} cannot open a child plan (DepthExhausted): a row's todos go one level deep, so set the steps as rows of {plan} instead"
     )]
     DepthExhausted { plan: PlanId },
     #[error(
@@ -264,84 +262,6 @@ pub enum PlanOpError {
 impl From<super::journal::JournalError> for PlanOpError {
     fn from(error: super::journal::JournalError) -> Self {
         Self::Store(StoreError::Journal(error))
-    }
-}
-
-impl PlanOpError {
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::NoPlan => "no_plan",
-            Self::PlanExists { .. } => "plan_exists",
-            Self::UnknownLabel { .. } => "unknown_label",
-            Self::NotOwner { .. } => "not_owner",
-            Self::IllegalStep { .. } => "illegal_step",
-            Self::UnknownState { .. } => "unknown_state",
-            Self::LabelNotUnique { .. } => "label_not_unique",
-            Self::Invalid { .. } => "invalid",
-            Self::NotAPermutation { .. } => "not_a_permutation",
-            Self::DepthExhausted { .. } => "depth_exhausted",
-            Self::SpawnCeilingExhausted { .. } => "spawn_ceiling_exhausted",
-            Self::RetriesExhausted { .. } => "retries_exhausted",
-            Self::AttemptsExhausted { .. } => "attempts_exhausted",
-            Self::UnmetEdge { .. } => "unmet_edge",
-            Self::Admission(_) => "admission",
-            Self::NotActive { .. } => "not_active",
-            Self::SpawnFailed { .. } => "spawn_failed",
-            Self::ReapFailed { .. } => "reap_failed",
-            Self::EphemeralTerminal { .. } => "ephemeral_terminal",
-            Self::MissingDeclaredOutput { .. } => "missing_declared_output",
-            Self::UnresolvedOutput { .. } => "unresolved_output",
-            Self::UnusableSchema { .. } => "unusable_schema",
-            Self::OutputMismatch { .. } => "output_mismatch",
-            Self::StaleRevision { .. } => "stale_revision",
-            Self::RequestIdReused { .. } => "request_id_reused",
-            Self::RecordedRefusal { .. } => "recorded_refusal",
-            Self::NeedsReconciliation { .. } => "needs_reconciliation",
-            Self::StartWithoutSpawn { .. } => "start_without_spawn",
-            Self::SubplanUndecided { .. } => "subplan_undecided",
-            Self::NotJournaled { .. } => "not_journaled",
-            Self::NotReconcilable { .. } => "not_reconcilable",
-            Self::Refused { .. } => "refused",
-            Self::Stale { .. } => "stale",
-            Self::ContractDrift { .. } => "contract_drift",
-            Self::AcceptanceUnavailable { .. } => "acceptance_unavailable",
-            Self::PhaseMissing { .. } => "phase_missing",
-            Self::MergeFailed { .. } => "merge_failed",
-            Self::NoVerifiedCompletion { .. } => "no_verified_completion",
-            Self::UnservedOutput { .. } => "unserved_output",
-            Self::UnservedSchema { .. } => "unserved_schema",
-            Self::OutputRequired { .. } => "output_required",
-            Self::Contract { .. } => "contract",
-            Self::Verification { .. } => "verification",
-            Self::WrongAttempt { .. } => "wrong_attempt",
-            Self::NotRunningBy { .. } => "not_running_by",
-            Self::Program { .. } => "program",
-            Self::Import(_) => "import",
-            Self::Serialize(_) | Self::Canonical(_) => "serialize",
-            Self::Reduce(_) => "reduce",
-            Self::Store(_) => "store",
-            Self::Doc(_) => "doc",
-        }
-    }
-
-    /// `Refused` and `Stale` are recorded by the done path itself; an unserved product and a
-    /// verification that could not run are the host's failures, so they charge no refusal.
-    pub(super) fn is_recordable(&self) -> bool {
-        !matches!(
-            self,
-            Self::Store(_)
-                | Self::Serialize(_)
-                | Self::Canonical(_)
-                | Self::Reduce(_)
-                | Self::RecordedRefusal { .. }
-                | Self::RequestIdReused { .. }
-                | Self::Refused { .. }
-                | Self::Stale { .. }
-                | Self::UnservedOutput { .. }
-                | Self::UnservedSchema { .. }
-                | Self::Verification { .. }
-                | Self::MergeFailed { .. }
-        )
     }
 }
 

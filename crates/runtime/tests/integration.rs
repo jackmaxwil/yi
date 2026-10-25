@@ -55,6 +55,7 @@ mod permission_scope;
 mod plan_arms;
 mod plan_declare;
 mod plan_e2e;
+mod plan_errors;
 mod plan_fuzz;
 mod plan_import;
 mod plan_journal;

@@ -111,12 +111,16 @@ pub const STEPS: &[Step] = &[
 pub(super) fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
     match (op, from) {
         (OpKind::Done, TodoStateName::Pending) => {
-            "; start it first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
+            "; set it running first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
         }
-        (OpKind::Drop, TodoStateName::Running) => "; a running todo ends with fail and a cause",
+        (OpKind::Drop, TodoStateName::Running) => {
+            "; a running todo ends with fail and a cause: a set row with state failed and its cause"
+        }
         (OpKind::Fail, TodoStateName::Pending) => "; a pending todo that will not run is dropped",
-        (OpKind::Retry, TodoStateName::Pending) => "; it has not failed, so start it",
-        (OpKind::Retry, TodoStateName::Running) => "; retry takes a failed todo: fail it first",
+        (OpKind::Retry, TodoStateName::Pending) => "; it has not failed, so set it running",
+        (OpKind::Retry, TodoStateName::Running) => {
+            "; only a failed todo reopens: set it failed first"
+        }
         _ => "",
     }
 }
