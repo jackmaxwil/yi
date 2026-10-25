@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use proptest::prelude::{Just, Strategy, any, prop, prop_oneof};
 use proptest::test_runner::{Config, RngSeed, TestCaseError, TestRunner};
-use yi_runtime::plan::journal::{Fs, RealFs};
+use yi_runtime::journal::{Fs, RealFs};
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };
@@ -710,7 +710,7 @@ impl Case {
             } = &todo.state
             {
                 let root = root_of(id)?;
-                let journal = yi_runtime::plan::journal::Journal::open(
+                let journal = yi_runtime::journal::Journal::open(
                     self.store.journal_path(&root),
                     Arc::new(RealFs),
                 );

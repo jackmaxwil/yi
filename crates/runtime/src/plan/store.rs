@@ -12,8 +12,8 @@ use yi_types::plan::doc::{DocError, GoalText, JournalMark, Plan, PlanId};
 use yi_types::plan::ledger::{AttemptId, JournalRecord, PlanOpRecord, RequestId, Seq};
 
 use super::artifact::{ArtifactError, Artifacts};
-use super::journal::{Fs, Journal, JournalError, RealFs, has_record};
 use super::state::{KIND_IMPORT, ReduceError, RootState, apply, root_of};
+use crate::journal::{Fs, Journal, JournalError, RealFs, has_record};
 use crate::lease::Clock;
 
 /// Invariant: the checkpoint byte cap is checked before the atomic replace and never trimmed

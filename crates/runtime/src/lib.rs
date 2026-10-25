@@ -18,6 +18,7 @@ pub mod gate;
 pub mod goal;
 pub mod history;
 pub mod host;
+pub mod journal;
 pub mod kernel;
 mod kernel_bootstrap;
 mod kernel_doctor;

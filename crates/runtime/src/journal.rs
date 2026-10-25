@@ -1,4 +1,4 @@
-//! `ops.jsonl`, the plan journal (plan section 5.3): one canonical record per line, digest chained.
+//! `ops.jsonl` of a plan or a memory store: one canonical record per line, digest chained.
 
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};

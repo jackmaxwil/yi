@@ -25,7 +25,6 @@ pub mod dispatch;
 pub mod done;
 pub mod finish;
 pub mod import;
-pub mod journal;
 pub mod judge;
 mod kinds;
 pub mod ledger;

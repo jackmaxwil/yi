@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use proptest::prelude::{Strategy, any, prop};
 use proptest::test_runner::{Config, TestRunner};
 use serde_json::Value;
-use yi_runtime::plan::journal::{Damage, Fs, Journal, JournalError, RECORD_CAP, RealFs};
+use yi_runtime::journal::{Damage, Fs, Journal, JournalError, RECORD_CAP, RealFs};
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };

@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use yi_types::plan::doc::PlanId;
 use yi_types::plan::ledger::Seq;
 
-use super::journal::{Damage, Journal, Reading};
 use super::state::{RootState, reduce};
 use super::store::StoreError;
+use crate::journal::{Damage, Journal, Reading};
 
 pub struct Reduced {
     pub reading: Reading,

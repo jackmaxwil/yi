@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use yi_types::plan::doc::{AgentId, PlanId, TodoLabel, TodoState};
 use yi_types::plan::ledger::{EffectId, JournalRecord};
 
-use super::journal::Damage;
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Resolution};
 use super::state::{IntentOutcome, RootState, SUBMITTED_KEY, root_of};
 use super::store::{PlanStore, StoreError};
+use crate::journal::Damage;
 use yi_types::plan::doc::TouchCount;
 use yi_types::plan::ledger::RequestId;
 

@@ -31,10 +31,10 @@ fn canonical(error: impl std::fmt::Debug) -> StoreError {
     }
 }
 
-fn journal(error: crate::plan::journal::JournalError) -> StoreError {
+fn journal(error: crate::journal::JournalError) -> StoreError {
     match error {
-        crate::plan::journal::JournalError::Io { source, .. }
-        | crate::plan::journal::JournalError::Sync { source, .. } => io(JOURNAL)(source),
+        crate::journal::JournalError::Io { source, .. }
+        | crate::journal::JournalError::Sync { source, .. } => io(JOURNAL)(source),
         other => canonical(other),
     }
 }
@@ -75,9 +75,9 @@ impl<'a> Journal<'a> {
         self.dir.join(OBJECTS).join(hash.hex())
     }
 
-    fn log(&self) -> crate::plan::journal::Journal {
-        let fs = std::sync::Arc::new(crate::plan::journal::RealFs);
-        crate::plan::journal::Journal::open(self.dir.join(JOURNAL), fs)
+    fn log(&self) -> crate::journal::Journal {
+        let fs = std::sync::Arc::new(crate::journal::RealFs);
+        crate::journal::Journal::open(self.dir.join(JOURNAL), fs)
     }
 
     /// A line that is not a record marks the journal broken and replay reads on past it; a torn

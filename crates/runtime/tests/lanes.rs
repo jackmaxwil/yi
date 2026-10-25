@@ -1296,6 +1296,7 @@ mod accept {
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
+    use yi_runtime::journal::{Journal, RealFs};
     use yi_runtime::lane::settle::Candidate;
     use yi_runtime::plan::acceptance::{
         Candidate as Proven, KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_DISPOSITION,
@@ -1303,7 +1304,6 @@ mod accept {
         KIND_INTEGRATION_VERIFIED, Phase, Quiescence, Verified, phase_of,
     };
     use yi_runtime::plan::capacity::Purpose;
-    use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::ops::{
         Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError,
     };
