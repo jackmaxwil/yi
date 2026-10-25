@@ -149,12 +149,7 @@ fn tool_result_message(finalized: &Finalized) -> AgentMessage {
         content: finalized.result.content.clone(),
         details: Some(finalized.result.details.clone()),
         usage: finalized.result.usage.clone(),
-        added_tool_names: finalized
-            .result
-            .added_tool_names
-            .as_ref()
-            .filter(|names| !names.is_empty())
-            .cloned(),
+        added_tool_names: None,
         is_error: finalized.is_error,
         timestamp: 0,
     }
@@ -476,8 +471,8 @@ async fn drain_to_done(
 }
 
 pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
-pub const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
-pub const STREAM_RETRY_AT: u32 = 1;
+const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
+const STREAM_RETRY_AT: u32 = 1;
 
 /// A stream that was generating, died on the wire or ended on an in-band error chunk, and
 /// showed nothing; a synthesized error with zero usage never went to a provider.
@@ -524,7 +519,7 @@ fn stream_retry(error: Option<&str>) -> AgentMessage {
 }
 
 pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
-pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns. Nothing is changing. Write the final answer now; call no tools.";
+const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns. Nothing is changing. Write the final answer now; call no tools.";
 pub const REPEAT_STEER_AT: u32 = 3;
 pub const REPEAT_STOP_AT: u32 = 6;
 const REPEAT_WINDOW: usize = 6;

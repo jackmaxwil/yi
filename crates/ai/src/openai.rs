@@ -17,7 +17,6 @@ const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasonin
 #[derive(Debug, Clone, Default)]
 pub struct OpenAiOptions {
     pub max_tokens: Option<u64>,
-    pub temperature: Option<f64>,
     pub reasoning_effort: Option<Effort>,
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
@@ -362,9 +361,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
-    }
-    if let Some(temperature) = options.temperature {
-        params["temperature"] = json!(temperature);
     }
     if let Some(tools) = &context.tools
         && !tools.is_empty()

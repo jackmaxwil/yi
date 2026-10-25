@@ -457,18 +457,6 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             raw_input: Some(args.clone()),
             ..AcpToolCallUpdate::default()
         })],
-        AgentEvent::ToolExecutionUpdate {
-            tool_call_id,
-            partial_result,
-            ..
-        } => vec![AcpSessionUpdate::ToolCallContentChunk {
-            tool_call_id: tool_call_id.clone(),
-            content: AcpToolContent::Content {
-                content: AcpContentBlock::Text {
-                    text: text_of(&partial_result.content),
-                },
-            },
-        }],
         AgentEvent::ToolExecutionEnd {
             tool_call_id,
             tool_name,
@@ -528,7 +516,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         AgentEvent::LandingState { landing } => {
             object_extension("_yi/landing", serde_json::to_value(landing))
         }
-        AgentEvent::Wait { .. } => Vec::new(),
+        AgentEvent::ToolExecutionUpdate { .. } | AgentEvent::Wait { .. } => Vec::new(),
     }
 }
 

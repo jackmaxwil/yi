@@ -959,7 +959,7 @@ an unknown method −32601, bad JSON −32700.
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
 | `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A prompt is answered `{messageId}` once it is inserted, the id its `user_message` carries; a busy session queues it as a follow-up (§4.3), and one still queued at close gets −32800; text and `resource_link` blocks reach the model; config writes carry `type: "id"`, config ids `mode`, `model`, `thought_level` |
-| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; a hunk's blame chain; a session slash verb |
+| `_yi/kernel_execute`, `_yi/tracked`, `_yi/branch_diff`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/fork{entryId, position}` | worker | A new session branched `before` an entry (answered with the prompt to ask again in `_meta.yi.prefill`) or `at` it, attached beside the source, which keeps its own branch; any other position is refused by name (`AcpForkParams`) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |

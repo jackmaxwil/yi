@@ -14,7 +14,6 @@ const INVALID_PARAMS: i64 = -32602;
 const BUSY: i64 = -32000;
 
 pub struct UserCell {
-    pub call_id: String,
     pub cancelled: Arc<AtomicBool>,
     pub task: JoinHandle<()>,
 }
@@ -47,17 +46,6 @@ impl UserCells {
             .entry(session.to_owned())
             .or_default()
             .push(cell);
-    }
-
-    pub fn cancel(&mut self, session: &str, call_id: &str) -> bool {
-        let Some(cells) = self.by_session.get_mut(session) else {
-            return false;
-        };
-        let Some(cell) = cells.iter().find(|cell| cell.call_id == call_id) else {
-            return false;
-        };
-        cell.cancelled.store(true, Ordering::SeqCst);
-        true
     }
 
     /// The flag first, so a cell past its abort point still stops; then the handle, so

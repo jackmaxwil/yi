@@ -60,13 +60,6 @@ struct Morph {
 }
 
 impl Orb {
-    pub fn showing(state: Option<OrbState>) -> Self {
-        Self {
-            now: state,
-            ..Self::default()
-        }
-    }
-
     pub fn at_rest(&self, want: Option<OrbState>) -> bool {
         self.now.is_none() && want.is_none() && self.next.is_none() && self.morph.is_none()
     }
