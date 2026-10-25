@@ -886,56 +886,40 @@ impl SubagentHost {
         Ok((key, record, settled))
     }
 
-    /// Invariant: promotion runs at reap whatever the outcome, so the last product reaches
-    /// the owner's transcript before the slot frees and no live child dangles.
+    /// Invariant: a reap names the kept transcript, never its text, so an ending costs the
+    /// owner one line on every later request and the product is one read away.
     pub fn reap(&self, target: &str) -> Result<Harvest, String> {
         let (_key, record, _settled) = self.retire(target)?;
-        let answer = last_assistant_text(&record.session.messages());
-        let body = match (&record.error, &answer) {
-            (Some(error), Some(answer)) => {
-                format!(
-                    "failed: {error}\nlast product:\n{}",
-                    clamp(answer, RESULT_TAIL_CHARS)
-                )
-            }
-            (Some(error), None) => format!("failed: {error}"),
-            (None, Some(answer)) => clamp(answer, RESULT_TAIL_CHARS),
-            (None, None) => "(no product)".to_owned(),
-        };
+        let produced = last_assistant_text(&record.session.messages()).is_some();
         let name = record.session_name.clone();
-        if let Some(store) = record.session.store() {
-            self.reaped.keep(name.clone(), store);
+        let kept = (record.session.store())
+            .map(|store| self.reaped.keep(name.clone(), store))
+            .is_some();
+        let held = self.harvests.lock().is_ok_and(|held| held.contains(&name));
+        if !held {
+            let status = crate::family::read_exit(record.exit).status;
+            let status = status.as_str();
+            let address = if kept {
+                format!("its transcript is history://{name}")
+            } else {
+                "it kept no transcript".to_owned()
+            };
+            (self.options.report)(
+                AgentMessage::Custom {
+                    custom_type: "reap".to_owned(),
+                    content: UserContent::Text(format!("reaped {name} ({status}): {address}")),
+                    display: true,
+                    details: Some(json!({
+                        "child": name,
+                        "status": status,
+                        "error": record.error,
+                    })),
+                    timestamp: yi_session::now_ms(),
+                },
+                true,
+            );
         }
-        let block = format!("<reaped_child from=\"{name}\">\n{body}\n</reaped_child>");
-        let harvested = self.harvests.lock().is_ok_and(|mut held| {
-            held.get_mut(&name)
-                .map(|slot| *slot = Some(block.clone()))
-                .is_some()
-        });
-        if harvested {
-            return Ok(Harvest {
-                name,
-                produced: answer.is_some(),
-            });
-        }
-        (self.options.report)(
-            AgentMessage::Custom {
-                custom_type: "reap".to_owned(),
-                content: UserContent::Text(block),
-                display: true,
-                details: Some(json!({
-                    "child": name,
-                    "status": crate::family::read_exit(record.exit).status.as_str(),
-                    "error": record.error,
-                })),
-                timestamp: yi_session::now_ms(),
-            },
-            true,
-        );
-        Ok(Harvest {
-            name,
-            produced: answer.is_some(),
-        })
+        Ok(Harvest { name, produced })
     }
 }
 
