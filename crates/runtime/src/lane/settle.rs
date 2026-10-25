@@ -74,14 +74,7 @@ impl Settled {
     /// The `Discarded` path: the branch goes, so the caller has already pinned what it keeps;
     /// one `settle` deleted already (a no-op child's tip is on main) is the outcome asked for.
     pub fn discard(self) -> Result<Candidate, LaneError> {
-        let refname = format!("refs/heads/{}", self.candidate.branch.as_str());
-        let present = git_by(
-            &self.pool.repo,
-            &["rev-parse", "--verify", "-q", &refname],
-            None,
-        )
-        .is_ok();
-        if present {
+        if self.branch_kept() {
             git_by(
                 &self.pool.repo,
                 &["branch", "-q", "-D", self.candidate.branch.as_str()],
@@ -89,6 +82,13 @@ impl Settled {
             )?;
         }
         Ok(self.candidate)
+    }
+
+    /// False once the release deleted the branch, its tip already on main.
+    fn branch_kept(&self) -> bool {
+        let refname = format!("refs/heads/{}", self.candidate.branch.as_str());
+        let verify = ["rev-parse", "--verify", "-q", refname.as_str()];
+        git_by(&self.pool.repo, &verify, None).is_ok()
     }
 }
 
@@ -797,14 +797,15 @@ impl SubagentHost {
         }
         let (lane, name) = self.take_settled_worktree(target)?;
         let pool = lane.pool().clone();
-        let quiescence = quiescence_of_jobs(lane.path());
         let deadline = self.deadline();
+        let budget = Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
         let red = check
-            .map(|check| red_check(&lane, check, deadline))
+            .map(|check| red_check(lane.path(), check, deadline, budget))
             .transpose()?
             .flatten();
+        let quiescence = quiescence_of_jobs(lane.path());
         // Invariant: a cut check spent the deadline, and the settle after it still keeps the work.
-        let deadline = deadline.filter(|_| red.is_none());
+        let deadline = deadline.filter(|_| !red.as_ref().is_some_and(|(red, _)| red.cancelled));
         let settled = lane
             .settle(&quiescence, deadline)
             .map_err(|unsettled| unsettled.error().to_string())?;
@@ -813,16 +814,22 @@ impl SubagentHost {
         let files = changed_files(&parent, &settled.candidate, deadline)
             .map_err(|error| error.to_string())?;
         reply.insert("files".to_owned(), files);
-        if let Some(verdict) = red {
+        if let Some((capture, cap)) = red {
             let kept = settled.candidate.branch.as_str();
-            reply.insert("merged".to_owned(), Value::Bool(false));
-            reply.insert("check".to_owned(), verdict);
-            reply.insert(
-                "next".to_owned(),
-                json!(format!(
-                    "The check failed, so this checkout is unchanged and the child's lane is released; its work is kept on branch {kept}. `git merge {kept}` lands it anyway, and `git branch -D {kept}` drops it."
-                )),
+            let commit = settled.candidate.commit.as_str();
+            let rerun = format!(
+                "`git worktree add --detach <dir> {commit}` and run the check there for the rest"
             );
+            reply.insert("merged".to_owned(), Value::Bool(false));
+            reply.insert("check".to_owned(), verdict(&capture, &cap, &rerun));
+            let next = if settled.branch_kept() {
+                format!(
+                    "The check failed, so this checkout is unchanged and the child's lane is released; its work is kept on branch {kept}. `git merge {kept}` lands it anyway, and `git branch -D {kept}` drops it."
+                )
+            } else {
+                "The check failed, so this checkout is unchanged and the child's lane is released; the child left no commit main lacks, so no branch was kept.".to_owned()
+            };
+            reply.insert("next".to_owned(), json!(next));
             return Ok(reply);
         }
         let mut moved: Option<(Sha, Sha)> = None;
@@ -953,17 +960,30 @@ impl SubagentHost {
     }
 }
 
-/// A hand-back's `check` in the lane, under the session deadline (ten minutes with none); `None`
-/// is a pass, otherwise its `{exit, tail}`.
-fn red_check(lane: &Lane, check: &str, deadline: Option<Instant>) -> Result<Option<Value>, String> {
-    let budget = Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
+/// A hand-back's `check` in the lane, under the session deadline or `budget` with none; `None`
+/// is a pass, otherwise the capture and the cap that bounded it.
+fn red_check(
+    path: &Path,
+    check: &str,
+    deadline: Option<Instant>,
+    budget: Duration,
+) -> Result<Option<(yi_tools::CommandCapture, String)>, String> {
     let until = deadline.or_else(|| Instant::now().checked_add(budget));
     let until = until.unwrap_or_else(Instant::now);
-    let capture = crate::goal::run_check_in(lane.path(), check, &[], None, until, None)?;
+    let capture = crate::goal::run_check_in(path, check, &[], None, until, None)?;
     if capture.exit_code == Some(0) && !capture.cancelled {
         return Ok(None);
     }
-    let tail = crate::goal::output_tail(&capture);
+    let cap = deadline.map_or_else(
+        || format!("the {} ms check timeout", budget.as_millis()),
+        |_| "the session deadline".to_owned(),
+    );
+    Ok(Some((capture, cap)))
+}
+
+/// A red check's `{exit, tail}`, each cut a row naming its cap and `rerun`, the call for the rest.
+fn verdict(capture: &yi_tools::CommandCapture, cap: &str, rerun: &str) -> Value {
+    let tail = crate::goal::output_tail(capture);
     let total = [&capture.stdout, &capture.stderr]
         .iter()
         .filter(|out| !out.trim().is_empty())
@@ -971,21 +991,50 @@ fn red_check(lane: &Lane, check: &str, deadline: Option<Instant>) -> Result<Opti
         .sum::<usize>()
         .saturating_sub(1);
     let kept = tail.chars().count();
-    let rerun = "`git switch` to the kept branch and run the check for the rest";
-    let cap = deadline.map_or_else(
-        || format!("the {} ms check timeout", budget.as_millis()),
-        |_| "the session deadline".to_owned(),
-    );
+    let limit = crate::goal::CHECK_TAIL_CHARS;
     let timed_out = capture
         .cancelled
         .then(|| format!("[… cut at {cap}; {rerun}]\n"));
-    let trimmed = (kept < total).then(|| format!("[… last {kept} of {total} chars; {rerun}]\n"));
-    let cut: String = timed_out.into_iter().chain(trimmed).collect();
+    let captured = capture.cut_row().map(|row| format!("{row}\n"));
+    let of = if capture.truncated {
+        " the capture kept"
+    } else {
+        ""
+    };
+    let trimmed = (kept < total).then(|| {
+        format!("[… last {kept} of {total} chars{of} (CHECK_TAIL_CHARS {limit}); {rerun}]\n")
+    });
+    let cut: String = timed_out
+        .into_iter()
+        .chain(captured)
+        .chain(trimmed)
+        .collect();
     let exit = capture.exit_code.filter(|_| !capture.cancelled);
-    Ok(Some(json!({"exit": exit, "tail": format!("{cut}{tail}")})))
+    json!({"exit": exit, "tail": format!("{cut}{tail}")})
 }
 
 /// A slot path under the pool, so a staging lane can be named in a record without its host path.
 pub fn slot_url(slot: super::SlotIndex) -> String {
     format!("lane://{slot}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn a_check_with_no_session_deadline_is_cut_at_its_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let budget = Duration::from_millis(300);
+        let red = super::red_check(&std::env::temp_dir(), "sleep 30", None, budget)?;
+        let (capture, cap) = red.ok_or("a cut check passed")?;
+        let verdict = super::verdict(&capture, &cap, "rerun");
+        assert!(verdict["exit"].is_null(), "{verdict}");
+        let tail = verdict["tail"].as_str().unwrap_or_default();
+        assert!(
+            tail.starts_with("[… cut at the 300 ms check timeout; rerun]"),
+            "{tail}"
+        );
+        Ok(())
+    }
 }
