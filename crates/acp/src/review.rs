@@ -57,12 +57,7 @@ pub(crate) fn restore_before(
     entry_id: &str,
     cwd: &Path,
 ) -> Result<(yi_runtime::Rewound, String), (i64, String)> {
-    if session.status() == yi_runtime::Status::Running {
-        return Err((
-            INVALID_PARAMS,
-            "the current turn is still running".to_owned(),
-        ));
-    }
+    yi_runtime::ensure_idle(session).map_err(|error| (INVALID_PARAMS, error))?;
     let store = session.store().ok_or((
         INVALID_PARAMS,
         "no store to read checkpoints from".to_owned(),

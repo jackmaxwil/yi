@@ -479,7 +479,15 @@ fn shown_children<'a>(app: &'a App, id: &SessionId) -> (Vec<&'a ChildUpdate>, us
         StatusMark::Working | StatusMark::DoneUnseen | StatusMark::Unknown => 3,
         StatusMark::Idle => 4,
     });
-    let more = children.len().saturating_sub(CHILD_ROWS);
+    let evicted = app
+        .state
+        .children_evicted
+        .get(id)
+        .map_or(0, |gone| gone.len());
+    let more = children
+        .len()
+        .saturating_add(evicted)
+        .saturating_sub(CHILD_ROWS);
     children.truncate(CHILD_ROWS);
     (children, more)
 }
