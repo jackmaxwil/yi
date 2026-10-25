@@ -7,6 +7,7 @@ use yi_types::model::Model;
 
 use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
+use crate::rules::RuleEngine;
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
@@ -352,9 +353,10 @@ fn wire_schedule(
                     .unwrap_or(&wiring.rlm_dir)
                     .join("channels"),
             )
-            .with_gate(crate::tools::heartbeat_gate(
+            .with_gate(crate::tools::host_gate(
                 wiring,
                 session.rules_handle(),
+                RuleEngine::check_tool,
                 wiring.own_paths(session),
             ))
             .interned();
@@ -985,6 +987,10 @@ fn subagent_host(
     }));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
+    let (handle, own) = (session.rules_handle(), wiring.own_paths(session));
+    let gate = |scan| crate::tools::host_gate(wiring, handle.clone(), scan, own.clone());
+    let gates = (gate(RuleEngine::check_tool), gate(RuleEngine::recheck_tool));
+    host.check_gate.get_or_init(|| gates);
     let counted = Arc::downgrade(&host);
     session.set_waits(Arc::new(move || {
         let host = counted.upgrade();
