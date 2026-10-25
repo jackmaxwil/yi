@@ -11,8 +11,8 @@ from _common import BASE, DIST_BIN, ROOT, fail, fork, no_fork, scratch_repo
 import check_changes
 
 HARD_CAP_BYTES = 9_437_184  # 9 MiB: D249 set 8, raised for the console workbench (#1354)
-# Incident: the forge's first Linux dist build of a 8,554,224-byte macOS tree measured 13,220,280
-# bytes, past the macOS cap, so the Linux binary is held under a cap of its own.
+# Incident: the forge's first Linux dist build measured 13,220,280 bytes for a tree macOS builds at
+# 8,554,224, past the macOS cap, so the Linux binary is held under a cap of its own.
 HARD_CAP_LINUX_BYTES = 14_680_064  # 14 MiB
 # Incident: 71 of 150 ratchet commits moved the baseline by 256 bytes or less, build-to-build
 # jitter rather than growth, so a fixed 16 KiB allowance past the baseline is not a ratchet.
