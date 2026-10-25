@@ -6,6 +6,7 @@ from pathlib import Path
 EVALS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALS))
 import kill  # noqa: E402
+import trials  # noqa: E402
 
 EVENTS = EVALS / "fixtures" / "ask_events.jsonl"
 # Main's binary against a 127.0.0.1 fake answering Moonshot's exceeded_current_quota_error 429.
@@ -32,6 +33,7 @@ elif argv[:1] == ["ask"]:
     token = home / ".yi" / "providers" / "tokens" / "kimi.json"
     asked = sum(1 for line in open(log) if '"ask"' in line) if log.exists() else 0
     note(ask=os.getcwd(), home=str(home), venvs=venvs, git=Path(".git").is_dir(),
+         config=json.loads((home / ".yi" / "config.json").read_text()),
          token=json.loads(token.read_text()) if token.exists() else None,
          mode=oct(token.stat().st_mode & 0o777) if token.exists() else None)
     sys.stderr.write("fake stderr: " + "x" * 3000 + " the tail\n")
@@ -44,7 +46,8 @@ elif argv[:1] == ["ask"]:
 
 ROUTES = {"routes": {
     "kimi": {"model": "kimi/k3.1", "kind": "subscription", "enabled": True, "confirmed": True},
-    "flash": {"model": "openrouter/z-ai/glm-5.3-flash", "kind": "openrouter", "enabled": True, "confirmed": True},
+    "flash": {"model": "openrouter/z-ai/glm-5.3-flash", "kind": "openrouter", "enabled": True, "confirmed": True,
+              "routing": {"ignore": ["inference-net"]}},
     "dark": {"model": "openrouter/deepseek/nope", "kind": "openrouter", "enabled": True, "confirmed": False}}}
 
 MODULE = '''THRESHOLD = "fixture"
@@ -169,6 +172,25 @@ class Ledger(unittest.TestCase):
                 unrun = [row["why"] for row in r.ledger() if row["kind"] == "unrun"]
                 self.assertEqual(unrun, [] if runs else ["needs $0.28, $0.27 left of $30"])
 
+    def test_a_reserve_whose_runner_died_is_closed_by_hand_at_its_full_reserve(self):
+        with rig() as r:
+            r.module("hung", ["flash"], {"flash": 0.4})
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead.wait()
+            with kill.ledger() as (_, write):
+                write({"kind": "reserve", "key": "hung/flash/dead", "test": "hung", "family": "flash", "usd": 0.4,
+                       "pid": dead.pid})
+                write({"kind": "reserve", "key": "hung/flash/live", "test": "hung", "family": "flash", "usd": 0.3,
+                       "pid": os.getpid()})
+            self.assertEqual(quiet(["budget", "--close", "hung/flash/live"]),
+                             (2, f"refused: hung/flash/live's runner, pid {os.getpid()}, is alive and settles it itself\n"))
+            code, out = quiet(["budget", "--close", "hung/flash/dead"])
+            self.assertEqual(code, 0, out)
+            shown = json.loads(out)
+            self.assertEqual((shown["spentUsd"], shown["heldUsd"], shown["open"]), (0.4, 0.3, ["hung/flash/live"]))
+            self.assertEqual(quiet(["budget", "--close", "hung/flash/dead"])[0], 2, "a closed reserve closes once")
+            self.assertEqual(quiet(["report"])[1].strip(), "hung: unrun: needs $0.40", "a closed reserve never ran")
+
     def test_twelve_threads_and_another_process_never_reserve_past_the_cap(self):
         with rig() as r:
             path = r.root / "next-shape" / "ledger.jsonl"
@@ -194,7 +216,7 @@ class Ledger(unittest.TestCase):
                 thread.join()
             holder.wait()
             with kill.ledger() as (rows, _):
-                spent, open_, _ = kill.state(rows)
+                spent, open_, *_ = kill.state(rows)
             self.assertIn("other", open_, "the other process's reserve must be on the ledger")
             self.assertLessEqual(sum(m for *_, m in open_.values()), kill.micro(30.0), open_)
             self.assertEqual(sum(key is not None for key in keys), 8, "5 + 8 x 3 is 29; a ninth would be 32")
@@ -242,6 +264,8 @@ class Ledger(unittest.TestCase):
             self.assertEqual(code, 2, out)
             self.assertIn("route dark (openrouter/deepseek/nope) is not confirmed", out)
             self.assertEqual(r.ledger(), [], "a dry run writes nothing")
+            code, out = quiet(["run", "named", "--binary", str(r.yi), "--dry", "--family", "flash"])
+            self.assertEqual((code, out.strip()), (2, "refused: named has no family flash; its families are dark"))
 
     def test_dry_plans_both_families_and_refuses_a_slug_the_central_catalog_lacks(self):
         with rig() as r:
@@ -340,15 +364,45 @@ class Quota(unittest.TestCase):
             r.kimi_login(expires_in=10 ** 9)
             r.streams(QUOTA, EVENTS)
             self.usage(self.NOW + 3600)
-            r.module("parked", ["kimi"], {"kimi": 0.5})
+            r.module("parked", ["kimi", "flash"], {"kimi": 0.5, "flash": 0.2})
             until = datetime.datetime.fromtimestamp(self.NOW + 1800, datetime.timezone.utc).isoformat()
-            code, out = quiet(["run", "parked", "--binary", str(r.yi), "--until", until])
+            code, out = quiet(["run", "parked", "--binary", str(r.yi), "--until", until, "--family", "kimi"])
             self.assertEqual(code, 1, out)
             self.assertIn("parked kimi: 0 runs, $0.0000, 1 not run, needs $0.50", out)
-            self.assertEqual(quiet(["report"])[1].strip(), "parked: unrun: needs $0.50")
+            self.assertEqual(quiet(["report"])[1].strip(), "parked: unrun: needs $0.70")
+            code, out = quiet(["run", "parked", "--binary", str(r.yi), "--family", "flash"])
+            self.assertEqual((code, out.strip()), (2, "refused: parked runs kimi before flash"), "Kimi never ran")
+
+    def test_a_quota_that_never_resets_is_not_run_and_never_judged(self):
+        with rig() as r:
+            r.kimi_login(expires_in=10 ** 9)
+            r.streams(QUOTA)
+            os.environ["FAKE_USAGE"] = "{}"
+            r.module("dead", ["kimi"], {"kimi": 0.5})
+            code, out = quiet(["run", "dead", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (1, "dead kimi: 0 runs, $0.0000, 1 not run, needs $0.50: quota "
+                                                      "exhausted and `yi catalog usage kimi` gave no reset"))
+            self.assertEqual(quiet(["report"])[1].strip(), "dead: unrun: needs $0.50")
+
+    def test_a_paid_family_that_meets_a_quota_429_is_not_run_and_never_judged(self):
+        with rig() as r:
+            r.streams(QUOTA, EVENTS)
+            r.module("paidq", ["flash"], {"flash": 0.2})
+            code, out = quiet(["run", "paidq", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (1, "paidq flash: 0 runs, $0.0000, 1 not run, "
+                                                      "needs $0.20: the quota stayed exhausted"))
+            self.assertEqual(len([n for n in r.notes() if "ask" in n]), 1, "a paid route is never parked or retried")
+            self.assertEqual(quiet(["report"])[1].strip(), "paidq: unrun: needs $0.20")
 
 
 class Isolation(unittest.TestCase):
+    def test_a_route_s_routing_reaches_the_run_home_config_verbatim(self):
+        with rig() as r:
+            r.streams(EVENTS)
+            kill.ask("t", "flash", r.spec, str(r.yi), 1.0)
+            configs = [n["config"] for n in r.notes() if "ask" in n]
+            self.assertEqual(configs, [{"telemetry": {"enabled": True}, "routing": {"ignore": ["inference-net"]}}])
+
     def test_two_runs_at_once_get_cloned_venvs_their_own_clones_and_no_refresh_token(self):
         posts = []
 
@@ -423,14 +477,48 @@ class Runs(unittest.TestCase):
             sweep = [sys.executable, "-c", (
                 "import json, os, sys\n"
                 "row = {'costUsd': 0.12, 'cap': os.environ['TBV4_HARD_CAP']}\n"
-                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'w').write(json.dumps(row))\n"),
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write(json.dumps(row) + '\\n')\n"),
                 str(kill.TRIALS)]
             row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
             filed = json.loads((kill.TRIALS / "ns-tb-flash-one.jsonl").read_text())
             self.assertEqual((row["status"], row["chargedUsd"], filed["cap"]), ("ok", 0.12, "1.00"), row)
+            again = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            self.assertEqual((again["chargedUsd"], again["trials"]), (0.12, 1), "a re-run pays only its own rows")
             silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
             self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
             self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
+
+    def test_an_old_corrupt_line_is_skipped_and_a_torn_one_this_sweep_filed_charges_the_cap(self):
+        with rig() as r:
+            kill.TRIALS.mkdir()
+            (kill.TRIALS / "ns-tb-flash-one.jsonl").write_text('{"costUsd": 0.5}\n{"costUsd": 0.1\n[1]\n')
+            sweep = [sys.executable, "-c", (
+                "import json, os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "json.dumps({'costUsd': 0.12}) + '\\n')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            self.assertEqual((row["status"], row["trials"], row["chargedUsd"]), ("ok", 1, 0.12), row)
+            torn = [sys.executable, "-c", (
+                "import os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "'{\"costUsd\": 0.2}\\n{\"costUsd\": 0.3')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": torn}, 0.8)
+            self.assertEqual((row["trials"], row["unreadable"], row["chargedUsd"]), (1, 1, 0.8),
+                             "a torn final append is charged the cap and named, never dropped")
+            self.assertIn("1 line(s) this sweep filed", row["why"])
+            fused = [sys.executable, "-c", (
+                "import os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "'{\"costUsd\": 0.4}\\n{\"costUsd\": 0.1}\\n')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": fused}, 0.9)
+            self.assertEqual((row["trials"], "unreadable" in row, row["chargedUsd"]), (2, False, 0.5),
+                             "a re-run's first row never fuses onto the torn line the last sweep left")
+
+    def test_the_sweep_cap_is_the_lower_of_the_trials_cap_and_the_reserve_handed_down(self):
+        with tempfile.TemporaryDirectory() as store:
+            own, _ = trials.caps("ns-x", 1, store=store, now=0)
+            self.assertEqual(trials.caps("ns-x", 1, store=store, now=0, at_most=0.35), (0.35, None))
+            self.assertEqual(trials.caps("ns-x", 1, store=store, now=0, at_most=own + 5), (own, None))
 
 
 class Report(unittest.TestCase):

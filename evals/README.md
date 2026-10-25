@@ -548,7 +548,7 @@ subscription. then $30 openrouter cap").
 
 ```
 python3 evals/kill.py run <test> --binary <yi> [--family F] [--until ISO] [--dry]
-python3 evals/kill.py budget
+python3 evals/kill.py budget [--close KEY]
 python3 evals/kill.py report
 ```
 
@@ -556,7 +556,8 @@ python3 evals/kill.py report
   text), `FAMILIES` (routes, run in order, Kimi first), `PREDICTED_USD` (`{family: dollars}`,
   the reserve), `STEP` (its place on the ladder), an optional `DEADLINE`, `runs()` and
   `verdict(rows)`. There is no shared registry, so the units that own tests never collide.
-  `verdict()` sees only rows that ran; a row with status `unrun` or `crash` never reaches it.
+  `verdict()` sees only rows that ran; a row with status `unrun`, `crash` or `quota` never
+  reaches it.
 - **Routes** live in `evals/kill/providers.json`. A route is refused by name, `--dry` included,
   when it is disabled, when its slug was never confirmed, or when its slug is missing from the
   central catalog that every run HOME copies. The OpenRouter Kimi route ships disabled. The
@@ -568,8 +569,10 @@ python3 evals/kill.py report
   within $30: dollars spent, every open reserve, the reserves of earlier ladder steps not yet
   settled, and its own reserve. Otherwise it is written unrun, naming the dollars it needed. A
   paid family runs only after the families listed before it have settled with at least one
-  row that did not crash. The Kimi subscription has a $0 reserve and is never refused by the
-  dollar cap.
+  row that ran: a family whose rows were all unrun, crashed or quota-dead keeps it refused.
+  The Kimi subscription has a $0 reserve and is never refused by the dollar cap. A reserve
+  whose runner died hard (kill -9, a crash) stays open; `budget --close KEY` charges it in full
+  and closes it, and refuses while the reserve's pid is still alive.
 - **One budgeted `ask()`.** Each run gets a fresh HOME and a fresh `git clone --shared` under
   `~/Development/yi-runs/<test>/<run>`, never `/tmp`, because the checkpointer git-adds the cwd.
   The HOME is seeded with an APFS clone of one prebuilt kernel venv per binary (`yi doctor
@@ -583,7 +586,8 @@ python3 evals/kill.py report
   family. Each row keeps the last 2,000 characters of yi's stderr.
 - **Quota.** A 429 naming an exhausted quota parks every Kimi run until the reset that
   `yi catalog usage kimi` reports. A reset past the test's deadline writes the run unrun with
-  its estimated OpenRouter cost.
+  its estimated OpenRouter cost. A quota still exhausted after three parks, or one with no
+  reset to read, is a `quota` row: not run, with its estimate, and never judged.
 - **Owner setup, once,** with `K=~/Development/yi-runs/next-shape/kimi-home`. Yi ships no
   Kimi client id, so copy the OAuth profile first: `mkdir -p $K/.yi/oauth && cp
   ~/.yi/oauth/kimi.json $K/.yi/oauth/`. Then `HOME=$K yi login kimi --no-browser`, `HOME=$K
@@ -597,8 +601,11 @@ python3 evals/kill.py report
 - **Harbor tests** must call `tbv4_sweep.sh --runner`: only that mode files the rows they are
   charged. The runner hands down `TBV4_HARD_CAP` as what is left of the reserve, and the sweep
   takes the lower of that and its own stage and week caps. A sweep that filed no rows is
-  charged the whole cap. A subscription family's harbor spec is written unrun, because the
-  sweep spends OpenRouter on its own model.
+  charged the whole cap, and a re-run is charged only the rows its own sweep appended. A line
+  the sweep appended that does not parse (a torn final write) also charges the whole cap, and
+  the row names it as `unreadable`; the next sweep ends that line first, so its rows never fuse
+  onto it. A subscription family's harbor spec is written unrun, because the sweep spends
+  OpenRouter on its own model.
 - **EXP-B3c** is `evals/kill/x-b3c.py`, ladder step 6: the 12-task slice through the sweep,
   read by `stops_on_fail.py`. Its Kimi family reads unrun until the sweep can carry a Kimi
   route, so until then its verdict is KILL (GLM flash under 2 of 12 tasks) or UNRESOLVED.
