@@ -9,6 +9,7 @@ import json
 import sys
 
 CLIENT = {}
+NO_TOOLS = "--no-tools" in sys.argv
 
 TOOLS = [
     {
@@ -37,11 +38,11 @@ def result_for(method, params):
         CLIENT.update(params.get("clientInfo") or {})
         return {
             "protocolVersion": params.get("protocolVersion", "2025-06-18"),
-            "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+            "capabilities": {"resources": {}} if NO_TOOLS else {"tools": {}, "resources": {}, "prompts": {}},
             "serverInfo": {"name": "yi-fixture", "version": "1.0.0"},
             "instructions": "Fixture server. The echo tool repeats input.",
         }
-    if method == "tools/list":
+    if method == "tools/list" and not NO_TOOLS:
         return {"tools": TOOLS}
     if method == "tools/call":
         name = params.get("name")

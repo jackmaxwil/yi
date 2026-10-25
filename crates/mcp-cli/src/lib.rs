@@ -148,11 +148,38 @@ fn do_connect(
                 return fail(&error, 3);
             }
             let _ = store.write_snapshot(&name, &snapshot_from(&connected));
-            output::emit(
-                &json!({"session": format!("@{name}"), "state": "live", "server": connected}),
-                flags.json,
-                flags.max_chars,
-            );
+            let shown = if flags.json {
+                json!({"session": format!("@{name}"), "state": "live", "server": connected})
+            } else {
+                let tools = connected
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                let noun = if tools == 1 { "tool" } else { "tools" };
+                let server =
+                    (record.server_name.as_deref()).map_or_else(String::new, |n| format!(" · {n}"));
+                let capabilities = (connected.get("capabilities").and_then(Value::as_object))
+                    .map(|found| found.keys().cloned().collect::<Vec<_>>().join(", "));
+                let facts = [
+                    ("capabilities", capabilities),
+                    ("instructions", record.instructions.clone()),
+                ]
+                .into_iter()
+                .filter_map(|(label, text)| {
+                    text.filter(|text| !text.is_empty())
+                        .map(|text| format!("\n{label}: {text}"))
+                })
+                .collect::<String>();
+                let cut = if tools > 0 {
+                    format!(
+                        "\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
+                    )
+                } else {
+                    String::new()
+                };
+                Value::String(format!("@{name} live{server}{facts}{cut}"))
+            };
+            output::emit(&shown, flags.json, flags.max_chars);
             0
         }
         Err(error) => {
@@ -315,7 +342,7 @@ pub fn run(raw_args: &[String], configured_token_store: Option<&str>, version: &
     let _already_set = TOKEN_STORE.set(configured_token_store.map(str::to_owned));
     let parsed = match args::parse(raw_args) {
         Ok(parsed) => parsed,
-        Err(error) => return fail(&format!("{error}\n\n{HELP}"), 2),
+        Err(error) => return fail(&format!("{error} · run: yi mcp help"), 2),
     };
     let mut store = SessionsStore::open(sessions::mcp_root(&home_dir()));
     match parsed.command {
