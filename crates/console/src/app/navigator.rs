@@ -124,7 +124,7 @@ impl App {
             return true;
         }
         if let Some(("e", path)) = query.split_once(' ') {
-            self.open_editor(&resolve(path.trim()));
+            self.open_editor(&resolve(path.trim()), dir);
             return true;
         }
         let (kind, path) = match query.split_once(' ') {
@@ -139,12 +139,14 @@ impl App {
                         PaneContent::Markdown {
                             path,
                             source,
+                            workdir: dir,
                             drawn: None,
                         }
                     } else {
                         PaneContent::Diff {
                             path,
                             source,
+                            workdir: dir,
                             drawn: None,
                         }
                     };

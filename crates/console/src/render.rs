@@ -536,6 +536,7 @@ fn pane_view_content(
             path,
             source,
             drawn,
+            ..
         } => {
             let all = cached(drawn, width, || {
                 yi_tui::markdown::render(source, width, theme)
@@ -547,6 +548,7 @@ fn pane_view_content(
             path,
             source,
             drawn,
+            ..
         } => {
             let all = cached(drawn, width, || {
                 diffview::render(source, width, theme, DiffBudget::FULL)

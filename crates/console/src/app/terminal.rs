@@ -29,7 +29,15 @@ impl App {
     }
 
     pub(super) fn session_dir(&self) -> String {
-        let session = self.state.focused_session();
+        let session = match self.state.focused_pane().map(|pane| &pane.content) {
+            Some(
+                PaneContent::Editor(crate::model::Editor { workdir, .. })
+                | PaneContent::Markdown { workdir, .. }
+                | PaneContent::Diff { workdir, .. },
+            ) => return workdir.clone(),
+            Some(PaneContent::SessionDiff { session, .. }) => Some(session.clone()),
+            _ => self.state.focused_session(),
+        };
         let workdir = session
             .as_ref()
             .and_then(|id| self.state.chat(id))

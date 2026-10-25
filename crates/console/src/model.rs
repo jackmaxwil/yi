@@ -220,11 +220,13 @@ pub enum PaneContent {
     Markdown {
         path: String,
         source: String,
+        workdir: String,
         drawn: Drawn<usize>,
     },
     Diff {
         path: String,
         source: String,
+        workdir: String,
         drawn: Drawn<usize>,
     },
     Notebook {
@@ -256,6 +258,7 @@ pub struct Editor {
     pub last_cursor: (usize, usize),
     pub crlf: bool,
     pub final_newline: bool,
+    pub workdir: String,
 }
 
 impl Editor {

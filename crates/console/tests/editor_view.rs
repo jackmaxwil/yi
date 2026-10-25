@@ -30,6 +30,7 @@ fn commented_file(rows: usize) -> Editor {
         lang: Some("rs".to_owned()),
         crlf: false,
         final_newline: true,
+        workdir: "/repo".to_owned(),
     }
 }
 
