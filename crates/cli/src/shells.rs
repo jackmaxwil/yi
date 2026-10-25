@@ -13,15 +13,9 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         eprintln!("error: yi tui needs a terminal (use `yi ask` when piping)");
         return 2;
     }
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let (ask_tx, ask_rx) = std::sync::mpsc::channel::<yi_tui::AskRequest>();
     let asker: yi_runtime::Asker =
@@ -152,7 +146,7 @@ fn control(args: &Args) -> Result<Option<yi_tui::drive::Control>, i32> {
 fn leave_lane(session: &yi_runtime::AgentSession) {
     let lane = session.lane();
     if let Some(line) = lane.as_ref().and_then(|lane| lane.describe()) {
-        eprintln!("\x1b[2m{line}\x1b[0m");
+        crate::tty::eprint_dim(&line);
     }
     release_lane(lane.as_deref());
 }
@@ -223,16 +217,10 @@ pub fn daemon_socket(args: &Args) -> std::path::PathBuf {
     )
 }
 
-pub fn run_serve_command(args: &Args, version: &str) -> i32 {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+pub fn run_serve_command(args: &Args) -> i32 {
+    let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            std::process::exit(1);
-        }
+        Err(code) => return code,
     };
     let socket = daemon_socket(args);
     let worker_args = serve_flags(args);
@@ -243,7 +231,7 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
         yi_acp::daemon::DaemonOptions {
             socket,
             worker_args,
-            agent_version: version.to_owned(),
+            agent_version: env!("ARCHITECTURE_VERSION").to_owned(),
             home: crate::home().to_path_buf(),
         },
         runtime,
@@ -421,10 +409,8 @@ pub(crate) fn session_extensions(
         home: crate::home().to_path_buf(),
         mode: args.mode,
         user_system: args.system.clone(),
-        schema_instruction: args
-            .schema
-            .as_deref()
-            .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
+        schema_instruction: crate::schema(args)
+            .and_then(Result::ok)
             .map(|schema| schema.instruction()),
         global_skills: crate::config()
             .skills
