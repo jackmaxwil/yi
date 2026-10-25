@@ -364,7 +364,7 @@ impl App {
                             scope,
                             drawn,
                         },
-                        usize::MAX,
+                        crate::panes::TOP,
                     )
                 }
                 (_, session) => {
