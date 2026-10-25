@@ -2,16 +2,22 @@
 //! with the branch kept; plus the staging merge and the generation-checked publication.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
 use yi_types::plan::op::Choice;
 
 use super::{
-    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView, capture,
+    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView,
+    capture_named,
 };
 use crate::subagent::{ChildRecord, SubagentHost};
+
+/// Invariant: held from the generation read through publication, so two hand-backs in this
+/// process never race on the parent checkout; across processes only the generation check guards.
+pub(crate) static INTEGRATION: Mutex<()> = Mutex::new(());
 
 /// The jobs registry's answer for `root`: every backgrounded command still running under
 /// the lane path. A child's foreground command has returned by the time it can ask.
@@ -96,16 +102,28 @@ fn past(deadline: Option<Instant>) -> Result<(), LaneError> {
 /// `git` under the caller's deadline as well as the lane's own: a settle step cannot outlive
 /// the run it belongs to (D177).
 fn git_by(cwd: &Path, args: &[&str], deadline: Option<Instant>) -> Result<String, LaneError> {
+    git_capped(cwd, args, deadline, yi_tools::OUTPUT_CAP)
+}
+
+fn git_capped(
+    cwd: &Path,
+    args: &[&str],
+    deadline: Option<Instant>,
+    cap: usize,
+) -> Result<String, LaneError> {
     past(deadline)?;
     let own = Duration::from_millis(GIT_TIMEOUT_MS);
     let budget = deadline.map_or(own, |at| {
         own.min(at.saturating_duration_since(Instant::now()))
     });
-    capture(cwd, "git", args, budget).map_err(|output| LaneError::Git {
-        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-        exit_code: None,
-        output,
-    })
+    let label = format!("git {}", args.join(" "));
+    capture_named(cwd, &label, "git", args, budget, cap, None)
+        .map(|capture| capture.stdout)
+        .map_err(|output| LaneError::Git {
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            exit_code: None,
+            output,
+        })
 }
 
 fn sha_of(text: &str) -> Result<Sha, LaneError> {
@@ -122,6 +140,8 @@ const UNTRACKED_NOISE: [&str; 3] = [
     ":(exclude,glob)**/.pytest_cache/**",
 ];
 
+const KEPT_YOURS: &str = "Your uncommitted edits to the kept_yours paths stay in the working copy without the child's change to them, so `git diff HEAD` shows that change as removed and committing them would undo it; `git show HEAD:<path>` is the merged version to fold them into; a kept path missing from HEAD is one the child deleted, and it is untracked here.";
+
 /// Incident: uncommitted child work merged as nothing, so it is committed first. Free of the
 /// `Lane`, so a host reads it with the path cloned and no lock held across the git calls.
 pub fn candidate_of(
@@ -133,7 +153,7 @@ pub fn candidate_of(
     deadline: Option<Instant>,
 ) -> Result<Candidate, LaneError> {
     quiet(quiescence)?;
-    let status = git_by(path, &["status", "--porcelain"], deadline)?;
+    let status = git_by(path, &super::STATUS, deadline)?;
     if !status.trim().is_empty() {
         git_by(
             path,
@@ -274,7 +294,7 @@ impl Staging {
 
     pub fn release(mut self) -> Result<(), LaneError> {
         match self.lane.take() {
-            Some(lane) => lane.discard(),
+            Some(lane) => lane.discard().map(drop),
             None => Ok(()),
         }
     }
@@ -401,6 +421,9 @@ pub fn prepare(
         session,
         ClaimBase::Commit(generation.base.as_str().to_owned()),
     )?;
+    // Invariant: a claim keeps an unmerged branch, but a staging branch holds no one's only copy.
+    let base = ["reset", "-q", "--hard", generation.base.as_str()];
+    git_by(lane.path(), &base, deadline)?;
     let message = format!(
         "Integrate {} onto {}",
         candidate.short(),
@@ -450,8 +473,15 @@ pub fn prepare(
 /// What publishing found: the parent at the prepared generation, or moved past it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Publish {
-    Published { at: Sha, how: Published },
-    Moved { expected: Sha, found: Sha },
+    Published {
+        at: Sha,
+        how: Published,
+        kept: Vec<String>,
+    },
+    Moved {
+        expected: Sha,
+        found: Sha,
+    },
 }
 
 /// Publish `integrated` onto the parent while its HEAD still names `expected`, else `Moved`. A
@@ -492,6 +522,7 @@ pub fn publish(
         return Ok(Publish::Published {
             at: integrated.clone(),
             how: Published::FastForward,
+            kept: Vec::new(),
         });
     };
     let again = generation_of(parent, deadline)?;
@@ -545,11 +576,9 @@ pub fn publish(
     )?;
     // The checkout follows the ref on every path the user did not touch: the tree first, while
     // the old index names the deleted paths; then the index. ponytail: argv, ARG_MAX ceiling.
-    let untouched: Vec<&str> = changed
-        .iter()
-        .filter(|path| !dirty.contains(path))
-        .map(String::as_str)
-        .collect();
+    let (kept, untouched): (Vec<&String>, Vec<&String>) =
+        changed.iter().partition(|path| dirty.contains(path));
+    let untouched: Vec<&str> = untouched.into_iter().map(String::as_str).collect();
     if !untouched.is_empty() {
         let source = format!("--source={}", integrated.as_str());
         let mut args = vec!["restore", "-q", &source, "--worktree", "--"];
@@ -569,6 +598,7 @@ pub fn publish(
     Ok(Publish::Published {
         at: integrated.clone(),
         how: Published::RefOnly,
+        kept: kept.into_iter().cloned().collect(),
     })
 }
 
@@ -588,6 +618,33 @@ fn in_progress(top: &Path, deadline: Option<Instant>) -> Result<bool, LaneError>
     ]
     .iter()
     .any(|name| git_dir.join(name).exists()))
+}
+
+/// Invariant: uncapped, since [`git_by`]'s 30 KB cut splices an omitted-bytes row into the list.
+/// A `{path, added, removed}` per file against the base, else the merge base with `parent` HEAD.
+fn changed_files(
+    parent: &Path,
+    candidate: &Candidate,
+    deadline: Option<Instant>,
+) -> Result<Value, LaneError> {
+    let from = candidate.base.as_ref().map_or("HEAD", Sha::as_str);
+    let range = format!("{from}...{}", candidate.commit.as_str());
+    let args = ["diff", "--numstat", "-z", "--no-renames", range.as_str()];
+    let numstat = git_capped(parent, &args, deadline, usize::MAX)?;
+    let rows = nul_lines(&numstat);
+    let files = rows.iter().filter_map(|row| {
+        let (path, added, removed) = numstat_row(row)?;
+        Some(json!({"path": path, "added": added, "removed": removed}))
+    });
+    Ok(Value::Array(files.collect()))
+}
+
+/// One `diff --numstat` row as path, added, removed; a binary file's `-` counts read as 0.
+pub(crate) fn numstat_row(row: &str) -> Option<(&str, u64, u64)> {
+    let mut parts = row.splitn(3, '\t');
+    let added = parts.next()?.parse().unwrap_or(0);
+    let removed = parts.next()?.parse().unwrap_or(0);
+    Some((parts.next()?, added, removed))
 }
 
 fn nul_lines(text: &str) -> Vec<String> {
@@ -747,8 +804,12 @@ impl SubagentHost {
             .map_err(|unsettled| unsettled.error().to_string())?;
         let mut reply = settled.candidate.as_reply();
         let parent = self.options.cwd.clone();
+        let files = changed_files(&parent, &settled.candidate, deadline)
+            .map_err(|error| error.to_string())?;
+        reply.insert("files".to_owned(), files);
         let mut moved: Option<(Sha, Sha)> = None;
         for _attempt in 0..2 {
+            let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
             let generation = generation_of(&parent, deadline).map_err(|error| error.to_string())?;
             let session = format!("stage-{name}");
             let prepared = prepare(
@@ -770,6 +831,15 @@ impl SubagentHost {
                         "conflict_provenance".to_owned(),
                         serde_json::to_value(conflicts).map_err(|error| error.to_string())?,
                     );
+                    // Invariant: the lane is already off the record, so `rlm.discard_worktree`
+                    // would answer "no worktree"; the branch is dropped with git.
+                    let kept = settled.candidate.branch.as_str();
+                    reply.insert(
+                        "next".to_owned(),
+                        json!(format!(
+                            "This checkout is unchanged and the child's lane is released; its work is kept on branch {kept}. `git merge {kept}` here stops at the conflicts listed, to resolve and commit, and `git branch -D {kept}` drops the work."
+                        )),
+                    );
                     return Ok(reply);
                 }
                 Prepared::Merged(staging) => staging,
@@ -785,7 +855,7 @@ impl SubagentHost {
             .map_err(|error| error.to_string())?;
             staging.release().map_err(|error| error.to_string())?;
             match published {
-                Publish::Published { at, how } => {
+                Publish::Published { at, how, kept } => {
                     reply.insert("merged".to_owned(), Value::Bool(true));
                     reply.insert(
                         "integrated".to_owned(),
@@ -795,6 +865,10 @@ impl SubagentHost {
                         "published".to_owned(),
                         serde_json::to_value(how).map_err(|error| error.to_string())?,
                     );
+                    if how == Published::RefOnly {
+                        reply.insert("kept_yours".to_owned(), json!(kept));
+                        reply.insert("next".to_owned(), json!(KEPT_YOURS));
+                    }
                     let _merged_branch_goes_with_the_slot = git_by(
                         pool.repo(),
                         &["branch", "-q", "-d", settled.candidate.branch.as_str()],

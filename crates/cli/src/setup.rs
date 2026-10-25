@@ -9,6 +9,7 @@ const PROVIDERS: [(&str, &str); 3] = [
     ("openrouter", "openrouter/anthropic/claude-sonnet-5"),
 ];
 pub(crate) const LAYA_VENV: &str = ".local/share/laya-venv";
+const LAYA: &str = "laya[serve]==0.3.21";
 const CLASSIFIER_URL: &str = "http://127.0.0.1:8000";
 const CHECKPOINT: &str = "english";
 
@@ -232,17 +233,13 @@ fn install_laya(venv: &Path) -> Result<(), String> {
                 "install".into(),
                 "--python".into(),
                 python.into(),
-                "laya[serve]==0.3.21".into(),
+                LAYA.into(),
             ],
         ]
     } else {
         [
             vec!["python3".into(), "-m".into(), "venv".into(), venv.into()],
-            vec![
-                venv.join("bin/pip").into(),
-                "install".into(),
-                "laya[serve]==0.3.21".into(),
-            ],
+            vec![venv.join("bin/pip").into(), "install".into(), LAYA.into()],
         ]
     };
     for step in steps {

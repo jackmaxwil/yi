@@ -113,14 +113,13 @@ fn read_spill(kept: &str) -> Result<String, Option<String>> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The closed list of output the model did not choose to read whole: a finished job's report and
-/// poll body, a cell traceback, `%%bash` and `!cmd` output, a host-run check's tail.
+/// The closed list of output the model did not choose to read whole: a bash command's (a job's
+/// report and poll body, a host-run check's tail), a cell traceback, `%%bash` and `!cmd` output.
 #[derive(Debug, Clone, Copy)]
 pub enum Involuntary<'a> {
     Job(&'a str),
     Traceback,
     ShellCell(&'a str),
-    Check(&'a str),
 }
 
 pub const VIEW_CEILING: usize = ERROR_BYTES;
@@ -136,9 +135,9 @@ pub fn view(
     kept: Option<&str>,
     tee_dir: Option<&Path>,
 ) -> Reduced {
-    use Involuntary::{Check, Job, ShellCell, Traceback};
+    use Involuntary::{Job, ShellCell, Traceback};
     let command = match producer {
-        Job(command) | ShellCell(command) | Check(command) => command,
+        Job(command) | ShellCell(command) => command,
         Traceback => "",
     };
     let reduced = reduce(command, stdout, stderr, exit_code, kept, tee_dir, None);
@@ -173,7 +172,7 @@ pub fn view(
             "an ipython cell running {LAST_TRACEBACK}, which prints this exception again in Python's own format"
         ),
         (None, ShellCell(command)) => rerun("a %%bash cell running", command),
-        (None, Job(command) | Check(command)) => rerun("bash", command),
+        (None, Job(command)) => rerun("bash", command),
     };
     let mut text = ceiling(body, reduced.raw_bytes, room(pointer.as_deref()), &next);
     if let Some(note) = &pointer {

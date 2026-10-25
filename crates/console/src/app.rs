@@ -50,7 +50,7 @@ pub enum RequestKind {
     Prompt,
     Cancel,
     Seen,
-    Tracked(SessionId, Vec<String>),
+    Tracked(SessionId, Vec<String>, bool),
     BranchDiff(SessionId),
     Why(SessionId),
     Slash(SessionId),
@@ -189,6 +189,9 @@ impl App {
         method: &str,
         params: Value,
     ) {
+        if !self.connected() {
+            return self.note(&format!("not connected — {method} not sent"));
+        }
         self.next_request = self.next_request.wrapping_add(1);
         let id = self.next_request;
         if outbound.send(&frame(Some(id), method, params)) {
@@ -365,6 +368,7 @@ impl App {
         match event {
             ClientEvent::Connected => {
                 self.state.link = Link::Connected;
+                self.state.banner = None;
                 self.pending.clear();
                 self.send_request(
                     outbound,
@@ -514,7 +518,9 @@ impl App {
                 self.merge_daemon_list(&result);
                 self.sync_chat_names();
             }
-            RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
+            RequestKind::Tracked(session, paths, open) => {
+                self.absorb_tracked(&session, &paths, &result, open)
+            }
             RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
             RequestKind::Why(session) => self.absorb_why(&session, &result),
             RequestKind::SetConfig(_)
@@ -727,6 +733,7 @@ impl App {
                 .is_some_and(|row| row.status == SessionStatus::Working);
             if status == SessionStatus::Working && !was_working {
                 self.state.children.remove(&id);
+                self.state.children_evicted.remove(&id);
             }
             // A pane the user is looking at needs no unseen shout.
             if focused && status == SessionStatus::DoneUnseen {
@@ -750,21 +757,7 @@ impl App {
         }
         self.absorb_edit(outbound, &id, &update);
         self.absorb_kernel(&id, &update);
-        if matches!(update, AcpSessionUpdate::ToolCallUpdate(_))
-            && apply_notebook(self.state.notebooks.entry(id.clone()).or_default(), &update)
-        {
-            for (pane_id, pane) in &mut self.state.panes {
-                if pane.session() == Some(&id)
-                    && let PaneContent::Notebook { drawn, .. } = &mut pane.content
-                {
-                    *drawn = None;
-                    pane.scroll_from_bottom = 0;
-                    if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
-                        *seen = Instant::now();
-                    }
-                }
-            }
-        }
+        self.fill_notebook(&id, &update);
     }
 
     fn mark_seen(&mut self, outbound: &Outbound, session: &SessionId) {
@@ -860,11 +853,14 @@ impl App {
         match action {
             Action::SplitRight => self.split_with_anim(Direction::Horizontal),
             Action::SplitDown => self.split_with_anim(Direction::Vertical),
-            Action::ClosePane => {
-                if self.state.close_focused_pane().is_none() {
-                    self.note("last pane — alt+q quits");
+            Action::ClosePane => match self.state.close_focused_pane() {
+                None => self.note("last pane — alt+q quits"),
+                Some(mut pane) => {
+                    if let Some(ask) = pane.take_ask() {
+                        self.cancel_ask(outbound, ask.request_id);
+                    }
                 }
-            }
+            },
             Action::Zoom => {
                 if let Some(tab) = self.state.tab_mut() {
                     tab.zoomed = !tab.zoomed;
@@ -1023,11 +1019,17 @@ impl App {
                 self.dirty = true;
             }
             CtEvent::Mouse(mouse) => self.mouse_event(outbound, mouse),
-            CtEvent::Paste(text) => {
-                if self.state.zone == Zone::Panes && matches!(self.state.mode, Mode::Normal) {
+            CtEvent::Paste(text) => match &mut self.state.mode {
+                Mode::Navigator { query, selected } => {
+                    query.extend(text.chars().filter(|c| !c.is_control()));
+                    *selected = 0;
+                    self.dirty = true;
+                }
+                Mode::Normal if self.state.zone == Zone::Panes => {
                     self.chat_event(CtEvent::Paste(text));
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -1148,4 +1150,3 @@ mod terminal;
 pub(crate) use chat::{card_ids, orb_ids};
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;
-use notebook::apply_notebook;
