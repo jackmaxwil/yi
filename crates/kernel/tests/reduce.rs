@@ -22,7 +22,7 @@ fn message(msg_type: &str, parent: &str, content: Value) -> JupyterMessage {
 }
 
 fn cell(max_chars: usize) -> CellState {
-    CellState::new("req".to_owned(), "code".to_owned(), max_chars, false)
+    CellState::new("req".to_owned(), max_chars, false)
 }
 
 #[test]

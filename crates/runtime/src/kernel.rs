@@ -201,21 +201,15 @@ pub struct KernelServiceOptions {
     pub per_session_state: bool,
 }
 
-/// A session's snapshot files in `base`, prefixed with its id.
-pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, PathBuf) {
-    let (snapshot, manifest) = (
-        yi_kernel::snapshot::snapshot_path_in(base),
-        yi_kernel::snapshot::manifest_path_in(base),
-    );
-    let prefixed = |path: PathBuf, id: &str| {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-        name.map_or(path.clone(), |name| base.join(format!("{id}.{name}")))
-    };
-    match key {
-        Some(id) if !id.is_empty() => (prefixed(snapshot, id), prefixed(manifest, id)),
-        _ => (snapshot, manifest),
+/// A session's snapshot index in `base`, prefixed with its id.
+pub fn snapshot_path(base: &std::path::Path, key: Option<&str>) -> PathBuf {
+    let snapshot = yi_kernel::snapshot::snapshot_path_in(base);
+    let name = snapshot
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    match (key, name) {
+        (Some(id), Some(name)) if !id.is_empty() => base.join(format!("{id}.{name}")),
+        _ => snapshot,
     }
 }
 
@@ -380,10 +374,6 @@ impl KernelService {
         if let Some(path) = yi_tools::plugin::search_path(&self.options.home) {
             env.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
         }
-        // Set but never read by Python; the host-side depth check is
-        // authoritative (design §9).
-        env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));
-        env.push(("RLM_MAX_DEPTH".to_owned(), "1".to_owned()));
         env
     }
 
@@ -413,16 +403,14 @@ impl KernelService {
         if wrap.is_none() && self.own_paths.is_some() {
             return Err(crate::gate::WALLED_KERNEL_UNCONFINED.to_owned());
         }
-        let snapshot = state.as_deref().map(|dir| {
-            let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
-            yi_kernel::client::KernelSnapshotConfig {
-                path,
-                manifest_path,
+        let snapshot = state
+            .as_deref()
+            .map(|dir| yi_kernel::client::KernelSnapshotConfig {
+                path: snapshot_path(dir, key.as_deref()),
                 max_bytes: None,
                 max_variable_bytes: None,
                 debounce_ms: None,
-            }
-        });
+            });
         let mut slot = self.manager.lock().await;
         let booting = !slot
             .as_ref()
@@ -849,8 +837,8 @@ mod tests {
     #[test]
     fn a_snapshot_is_keyed_by_its_session() {
         let base = std::path::Path::new("/tmp/sessions");
-        let (keyed, manifest) = super::snapshot_paths(base, Some("01a0"));
-        let (bare, _) = super::snapshot_paths(base, None);
+        let keyed = super::snapshot_path(base, Some("01a0"));
+        let bare = super::snapshot_path(base, None);
         assert_eq!(
             keyed.parent(),
             Some(base),
@@ -861,9 +849,8 @@ mod tests {
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("01a0."))
         );
-        assert!(manifest.to_string_lossy().ends_with(".json"));
         assert_eq!(bare, yi_kernel::snapshot::snapshot_path_in(base));
-        assert_eq!(super::snapshot_paths(base, Some("")).0, bare);
+        assert_eq!(super::snapshot_path(base, Some("")), bare);
     }
 
     use super::*;

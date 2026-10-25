@@ -9,7 +9,6 @@ use crate::{ATTACHMENT_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS};
 #[derive(Debug)]
 pub struct CellState {
     pub request_msg_id: String,
-    pub code: String,
     pub max_chars: usize,
     pub internal: bool,
     pub stdout: String,
@@ -23,10 +22,9 @@ pub struct CellState {
 }
 
 impl CellState {
-    pub fn new(request_msg_id: String, code: String, max_chars: usize, internal: bool) -> Self {
+    pub fn new(request_msg_id: String, max_chars: usize, internal: bool) -> Self {
         Self {
             request_msg_id,
-            code,
             max_chars,
             internal,
             stdout: String::new(),
