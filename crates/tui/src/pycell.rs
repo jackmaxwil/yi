@@ -4,7 +4,6 @@ use serde_json::Value;
 
 use crate::cell::{ToolCell, ToolStatus, TranscriptMode, spinner_frame};
 use crate::colors::Theme;
-use crate::diffview::{self, DiffBudget};
 use crate::highlight;
 use crate::transcript::show_controls;
 use crate::wrap::wrap_line;
@@ -286,32 +285,6 @@ pub fn traceback_of(details: &Value) -> String {
     format!("{ename}: {evalue}")
 }
 
-/// The kernel's own file edits: a cell that wrote three files earns three diffs, the same
-/// rows an `edit` would. The patch is computed in `yi-tools`; this only renders it.
-fn diff_lines(
-    details: &Value,
-    width: usize,
-    theme: &Theme,
-    budget: DiffBudget,
-) -> Vec<Line<'static>> {
-    let Some(diffs) = details.get("diffs").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for diff in diffs {
-        let Some(patch) = diff.get("patch").and_then(Value::as_str) else {
-            continue;
-        };
-        let path = diff.get("path").and_then(Value::as_str).unwrap_or("(cell)");
-        out.push(Line::from(Span::styled(
-            format!("{BODY_INDENT}╰─ {path}"),
-            theme.muted_style(),
-        )));
-        out.extend(diffview::render(patch, width, theme, budget));
-    }
-    out
-}
-
 /// A failed cell shows its source and its traceback in every mode: a reader who
 /// cannot see why the kernel raised cannot act on it.
 pub fn lines(
@@ -346,12 +319,6 @@ pub fn lines(
     }
     let inner = crate::card::body_width(width);
     let mut out = Vec::new();
-    let budget = if expanded {
-        DiffBudget::FULL
-    } else {
-        DiffBudget::NORMAL
-    };
-    out.extend(diff_lines(&cell.details, inner, theme, budget));
     let card = |body| {
         crate::card::card(
             Line::from(spans.clone()),

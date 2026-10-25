@@ -28,7 +28,7 @@ impl App {
             *scope = scope.next();
         }
         let scope = *scope;
-        let diff = self.state.diffs.entry(session.clone()).or_default();
+        let diff = self.diff_mut(&session);
         let armed = diff.land_armed.take();
         // Invariant: the list the selection indexes can shrink under it (a scope switch, a
         // refresh), so every use clamps, as the view that draws the `▸` does.
@@ -50,8 +50,7 @@ impl App {
                 let chosen = files.into_iter().nth(diff.selected);
                 if let Some((path, patch)) = chosen {
                     let lines = crate::render::hunk_lines(&patch);
-                    self.state.diffs.entry(session.clone()).or_default().why_due =
-                        Some((path, lines));
+                    self.diff_mut(&session).why_due = Some((path, lines));
                 }
             }
             KeyCode::Char('l') => match armed {
@@ -75,11 +74,7 @@ impl App {
                     .and_then(|row| row.name.clone())
                 {
                     Some(title) => {
-                        self.state
-                            .diffs
-                            .entry(session.clone())
-                            .or_default()
-                            .land_armed = Some(title);
+                        self.diff_mut(&session).land_armed = Some(title);
                     }
                     None => self.note("this session has no title yet: /land <title> in its chat"),
                 },
@@ -90,11 +85,7 @@ impl App {
     }
 
     pub(super) fn refresh_branch(&mut self, session: &SessionId) {
-        self.state
-            .diffs
-            .entry(session.clone())
-            .or_default()
-            .branch_due = true;
+        self.diff_mut(session).branch_due = true;
     }
 
     pub(super) fn ask_branches(&mut self, outbound: &crate::client::Outbound) {
@@ -175,25 +166,19 @@ impl App {
                 "  […] {kept} of {total} hunks asked (_yi/why answers {cap} a call); the next: yi why {path}:{next}"
             ));
         }
-        self.state
-            .diffs
-            .entry(session.clone())
-            .or_default()
-            .why
-            .insert(path.to_owned(), lines);
+        self.diff_mut(session).why.insert(path.to_owned(), lines);
         self.dirty = true;
     }
 
     pub(super) fn absorb_branch(&mut self, session: &SessionId, result: &Value) {
-        self.state.diffs.entry(session.clone()).or_default().branch =
-            serde_json::from_value(result.clone()).ok();
+        self.diff_mut(session).branch = serde_json::from_value(result.clone()).ok();
         self.dirty = true;
     }
 
     pub(super) fn absorb_review(&mut self, session: &SessionId, update: &AcpSessionUpdate) {
         match update {
             AcpSessionUpdate::StateUpdate(yi_types::acp::AcpState::Running) => {
-                let diff = self.state.diffs.entry(session.clone()).or_default();
+                let diff = self.diff_mut(session);
                 diff.turn = diff.turn.saturating_add(1);
             }
             AcpSessionUpdate::StateUpdate(yi_types::acp::AcpState::Idle { .. }) => {
@@ -210,7 +195,7 @@ impl App {
                 ..
             }) if title == "read" => {
                 if let Some(path) = input.get("path").and_then(Value::as_str) {
-                    let reads = &mut self.state.diffs.entry(session.clone()).or_default().reads;
+                    let reads = &mut self.diff_mut(session).reads;
                     let count = reads.entry(path.to_owned()).or_default();
                     *count = count.saturating_add(1);
                 }
