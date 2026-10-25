@@ -733,6 +733,7 @@ impl App {
                 .is_some_and(|row| row.status == SessionStatus::Working);
             if status == SessionStatus::Working && !was_working {
                 self.state.children.remove(&id);
+                self.state.children_evicted.remove(&id);
             }
             // A pane the user is looking at needs no unseen shout.
             if focused && status == SessionStatus::DoneUnseen {
