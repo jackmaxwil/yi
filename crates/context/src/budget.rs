@@ -31,8 +31,8 @@ pub struct Truncated {
 }
 
 /// Head-truncates a source to its byte budget and ends it in a [`Cut`] row: a silently clipped
-/// source reads as complete to the model. The fence above the text names the source to read.
-pub fn fit(source: &str, budget: Bytes) -> Truncated {
+/// source reads as complete to the model. `next` is the call that gets the rest of this source.
+pub fn fit(source: &str, budget: Bytes, next: &str) -> Truncated {
     if source.len() <= budget.0 {
         return Truncated {
             text: source.to_owned(),
@@ -46,7 +46,7 @@ pub fn fit(source: &str, budget: Bytes) -> Truncated {
         what: "bytes kept",
         cap: "source budget",
         limit: budget.0,
-        next: "read the source in full",
+        next,
     };
     Truncated {
         text: format!("{}\n{row}", source.get(..kept).unwrap_or_default()),

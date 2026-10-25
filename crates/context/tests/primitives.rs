@@ -577,22 +577,23 @@ fn window_chain_advances_ids() -> TestResult {
 #[test]
 fn a_source_past_its_budget_is_cut_on_a_char_and_names_the_budget() -> TestResult {
     let source = format!("a{}", "\u{e9}".repeat(4));
-    let (at, past) = (fit(&source, Bytes(9)), fit(&source, Bytes(8)));
+    let next = "read AGENTS.md in full";
+    let (at, past) = (fit(&source, Bytes(9), next), fit(&source, Bytes(8), next));
     assert!(!at.truncated && at.text == source && past.truncated);
     assert_eq!(
         past.text,
-        "a\u{e9}\u{e9}\u{e9}\n[\u{2026} 7 of 9 bytes kept (source budget 8); the rest: read the source in full]"
+        "a\u{e9}\u{e9}\u{e9}\n[\u{2026} 7 of 9 bytes kept (source budget 8); the rest: read AGENTS.md in full]"
     );
     Ok(())
 }
 
-/// docs/YI_DESIGN.md at the fork: 106,740 B of non-ASCII prose, the shape of an instruction file
-/// over the 49,152 B project budget.
+/// The first 59,995 B of docs/YI_DESIGN.md at the fork, frozen: non-ASCII prose, the shape of an
+/// instruction file over the 49,152 B project budget.
 #[test]
 fn a_project_instruction_file_over_its_budget_names_what_it_kept() -> TestResult {
-    let source = include_str!("../../../docs/YI_DESIGN.md");
+    let source = include_str!("fixtures/design-head.md");
     let budget = yi_context::SourceBudgets::default().project_instructions;
-    let fitted = fit(source, budget).text;
+    let fitted = fit(source, budget, "read AGENTS.md in full").text;
     let (kept, row) = fitted.rsplit_once('\n').ok_or("no row")?;
     assert!(source.starts_with(kept) && kept.len() <= budget.0 && kept.len() + 4 > budget.0);
     let said = format!(

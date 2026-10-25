@@ -134,7 +134,7 @@ fn try_parse_recovery_header(line: &str, cwd: Option<&Path>) -> Option<RawSectio
 
 const HEADER_ECHO: usize = 120;
 
-/// Invariant: a header error echoes at most `HEADER_ECHO` chars of the line and says when it cut.
+/// Invariant: a header error echoes at most [`HEADER_ECHO`] chars of the line and says when it cut.
 fn echo(line: &str) -> String {
     let (head, cut) = crate::tool::clip(line, HEADER_ECHO);
     let note = cut.then(|| format!(" (first {HEADER_ECHO} of {} chars)", line.chars().count()));
