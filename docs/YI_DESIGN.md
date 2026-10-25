@@ -59,7 +59,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-runtime` | `AgentSession` and everything that composes the crates above | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel, yi-browser |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon | yi-types, yi-runtime |
 | `yi-tui` | The ratatui shell | yi-types, yi-runtime, yi-orb |
-| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui, yi-browser |
+| `yi-console` | The multi-pane workspace, an ACP client of the daemon; links `yi-runtime` through `yi-tui` | yi-types, yi-tui, yi-browser |
 | `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router | yi-types |
 | `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser |
 
@@ -71,7 +71,11 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
   `Result` in its public API is `AgentTool::validate`.
 - `yi-runtime` is the only non-test constructor of `LoopConfig`.
 - Surfaces (`yi-acp`, `yi-tui`, `yi-console`, `yi-cli`) never depend on `yi-tools`, `yi-ai` or
-  `yi-permission`; `yi-console` does not depend on `yi-runtime`.
+  `yi-permission`. `yi-console` declares no `yi-runtime` dependency, yet its build contains
+  `yi-runtime`, because `yi-tui` depends on it. The seam that would cut that path runs through
+  `yi-tui`, between the pane engine the console reuses and the in-process shell that hosts an
+  `AgentSession` (`SessionPort` for `AgentSession` in `port.rs`, `app/bridge.rs`); engine files
+  call `yi_runtime` helpers too, so the cut moves those. It is not made.
 - Only `yi-cli` depends on `yi-mcp-cli`.
 - `yi-browser` starts the user's Chrome, through `yi __fds`, and runs `yi plugin add chrome`
   when there is none, for the console's browser pane; `yi-runtime` depends on it only to retain
@@ -247,7 +251,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
 - Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
   `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
-  any other api is faux. Catalog:
+  `kimi` models take any of the first three by their listed `protocol`, Moonshot's wire rules
+  derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
@@ -559,8 +564,8 @@ A persistent IPython process per session that reaches the host only through host
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and
   `<name>.json` `{name, owner, at, bytes, type, serializer}`; `get` and `ls` read them.
 - Kernel env: `YI_BIN`, `RLM_SESSION_DIR` (sessions dir for a root, the child's dir otherwise),
-  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`, `RLM_DEPTH`, `RLM_MAX_DEPTH` (unread).
-- Snapshot: `<kernel dir>/<store id>.kernel-state.{dill,json}` is an index over per-variable blobs in
+  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`.
+- Snapshot: `<kernel dir>/<store id>.kernel-state.dill` is an index over per-variable blobs in
   `<store id>.kernel-state.blobs/`; only changed variables are rewritten. Dilled 1.5 s after an `ok`
   cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable.
 - Owner: [`kernel/src/client.rs`](../crates/kernel/src/client.rs),
@@ -724,7 +729,8 @@ applies and journals. A todo's contract decides when it is done.
 - Todos are addressed by label; `after` edges order siblings, carry no data, are acyclic; ready is
   derived, never stored. A non-Active plan admits `view` alone (Done: also `retry`, `program`).
 - `Actor::User` is minted only by `authority::confirmed`, from a permission prompt a tty process
-  holds, for one request, valid 300 s. `yi plan` and the serve worker refuse user-only ops.
+  holds, for one request, valid while the plan revision it named still holds, with no time window.
+  `yi plan` and the serve worker refuse user-only ops.
 - Owner: [`crates/runtime/src/plan/ops.rs`](../crates/runtime/src/plan/ops.rs) (legality:
   `table.rs`).
 
@@ -810,10 +816,14 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
 - The pool is `~/.yi/lanes/<hash>/<n>`, keyed by the common git dir; `pool.lock` serializes
   claims; a slot is live iff a process holds its `.held` flock.
 - A claim resets the slot to `origin/main` (else `main`, `HEAD`, or a given commit), checks out
-  `yi/<session>` and locks the worktree `session:<id>`. With `lanes.slots` unset it never refuses.
-- A resumed session reclaims its slot; a dead holder's clean slot with its branch in `main` is free.
-- Every hand-back takes `self`: `discard` deletes the branch, `release` detaches and warms, `Drop`
-  detaches. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
+  `yi/<session>` and locks the worktree `session:<id>`; a `yi/<session>` holding commits the base
+  lacks is checked out as it stands, never reset. With `lanes.slots` unset it never refuses.
+- A resumed session takes its own slot before any free one; a dead holder's clean slot with its
+  branch in `main` is free. A dirty tree is never free, with a session recorded or without one.
+- Every hand-back takes `self`: `discard` cleans the tree and deletes the branch, `release` detaches
+  and warms, `Drop` detaches; over a dirty tree `release` and `Drop` keep the session and branch, so
+  the slot is that session's orphan. `discard` and `yi lanes reap` are the only tree wipes, and each
+  counts the paths it dropped. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
   `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2).
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
@@ -971,7 +981,7 @@ an unknown method −32601, bad JSON −32700.
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
-`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame; a root's
+`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, at most 512 entries and 8 MiB per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
 `_yi/committed{entry}` (`AcpCommitted`: each user or assistant message as saved, so a client can act on a reply it
 watched stream), `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
@@ -1023,7 +1033,8 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 
 ### 17.4 Console
 `yi-console` is the workspace shell: an ACP client of the daemon (§17.2) on the alternate screen
-with mouse capture. It depends on `yi-types` and `yi-tui` only.
+with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, and through
+`yi-tui` its build links `yi-runtime` (§2).
 
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
@@ -1159,11 +1170,13 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 |---|---|---|---|
 | direct deps | 23 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 176 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 8,388,960 bytes, a measured ratchet under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| dist binary | 8,521,200 bytes on macOS arm64, a measured ratchet that passes growth up to a fixed 16,384-byte jitter allowance past it, under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) that moves only with a `decision:` line | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json`; on Linux `baselines/binary_size_budget_linux.json` (13,220,280 at the first forge build) under its own 14 MiB cap |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
-The binary and startup gates run only after a local dist build; a failed build fails both. Under
-`--fast` and when `CI` is set they are skipped by a printed line (D68, D70, D91).
+The binary and startup gates run only after a dist build; a failed build fails both. Under
+`--fast` both are skipped by a printed line. When `CI` is set startup is skipped (D68), and the
+dist build and the binary gate run only on a Linux host, against the Linux baseline: the forge's
+guardrails lane measures every pull request (revises D70 and D91).
 
 ## 19. Code style (HAR)
 The enforced rules for Rust in `crates/`; production lines precede a file's first `#[cfg(test)]`.
@@ -1221,9 +1234,9 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
-| `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json`, `startup_ms_budget.json` |
+| `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |
 | `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 lines; a function ≤ 150 lines, counted by braces; per-crate `src/` lines ≤ the fork point's plus `raise: crate <name> +N` | the fork point |
-| `check_duplication` | no 15-line normalized window repeated across production `.rs` | — |
+| `check_duplication` | no 15-line normalized window repeated across production `.rs`, and no 6-line one across `crates/*/src/**/*.md` and shipped `SKILL.md` files, `yi:schema` blocks skipped | — |
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |

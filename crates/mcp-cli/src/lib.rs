@@ -101,6 +101,7 @@ fn do_connect(
     profile: Option<&str>,
     no_profile: bool,
     flags: &Flags,
+    version: &str,
 ) -> i32 {
     let (entry_name, spec) = match config::resolve_server(server, &home_dir()) {
         Ok(found) => found,
@@ -127,7 +128,7 @@ fn do_connect(
             .insert("noProfile".to_owned(), Value::Bool(true));
     }
     let _ = store.upsert(&record);
-    match client::one_shot_with_auth(&spec, Op::Discover, auth) {
+    match client::one_shot_with_auth(&spec, Op::Discover, auth, version) {
         Ok(connected) => {
             record.state = McpSessionState::Live;
             record.protocol_version = connected
@@ -169,13 +170,14 @@ fn do_connect(
                         .map(|text| format!("\n{label}: {text}"))
                 })
                 .collect::<String>();
-                let cut = if tools > 0 {
-                    format!(
-                        "\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
-                    )
-                } else {
-                    String::new()
-                };
+                let cut = match tools {
+                    0 if connected.pointer("/capabilities/tools").is_none() => None,
+                    0 => Some("the server offers tools; connect listed none".to_owned()),
+                    n => Some(format!("{n} {noun} not printed")),
+                }
+                .map_or_else(String::new, |what| {
+                    format!("\n[…] {what} · list them: yi mcp @{name} tools-list")
+                });
                 Value::String(format!("@{name} live{server}{facts}{cut}"))
             };
             output::emit(&shown, flags.json, flags.max_chars);
@@ -227,7 +229,13 @@ fn find_tool(listing: &Value, name: &str) -> Option<Value> {
         })
 }
 
-fn do_session_op(store: &mut SessionsStore, session: &str, op: SessionOp, flags: &Flags) -> i32 {
+fn do_session_op(
+    store: &mut SessionsStore,
+    session: &str,
+    op: SessionOp,
+    flags: &Flags,
+    version: &str,
+) -> i32 {
     let record = match store.get(session) {
         Some(record) => record,
         None => {
@@ -257,7 +265,7 @@ fn do_session_op(store: &mut SessionsStore, session: &str, op: SessionOp, flags:
         }
     };
     let run = |store: &mut SessionsStore, client_op: Op| -> Result<Value, String> {
-        let result = client::one_shot_with_auth(&spec, client_op, auth.clone());
+        let result = client::one_shot_with_auth(&spec, client_op, auth.clone(), version);
         let state = match &result {
             Ok(_) => McpSessionState::Live,
             Err(error) if error.contains(http::UNAUTHORIZED_MARKER) => {
@@ -331,7 +339,7 @@ fn do_grep(
 
 /// Entry point for the `yi mcp` subcommand. The `mcp.enabled` gate lives in
 /// the caller (yi-cli) — this crate assumes it was consulted.
-pub fn run(raw_args: &[String], configured_token_store: Option<&str>) -> i32 {
+pub fn run(raw_args: &[String], configured_token_store: Option<&str>, version: &str) -> i32 {
     let _already_set = TOKEN_STORE.set(configured_token_store.map(str::to_owned));
     let parsed = match args::parse(raw_args) {
         Ok(parsed) => parsed,
@@ -359,6 +367,7 @@ pub fn run(raw_args: &[String], configured_token_store: Option<&str>) -> i32 {
             profile.as_deref(),
             no_profile,
             &parsed.flags,
+            version,
         ),
         Command::Login {
             server,
@@ -439,7 +448,7 @@ pub fn run(raw_args: &[String], configured_token_store: Option<&str>) -> i32 {
                 let server = record.name.clone();
                 let _ = store.set_state(&session, McpSessionState::Connecting);
                 let spec = record.spec;
-                match client::one_shot(&spec, Op::Discover) {
+                match client::one_shot(&spec, Op::Discover, version) {
                     Ok(connected) => {
                         let _ = store.set_state(&session, McpSessionState::Live);
                         let _ = store.write_snapshot(&session, &snapshot_from(&connected));
@@ -465,6 +474,8 @@ pub fn run(raw_args: &[String], configured_token_store: Option<&str>) -> i32 {
             let names = store.names();
             do_grep(&store, &names, &pattern, max_results, &parsed.flags)
         }
-        Command::Session { session, op } => do_session_op(&mut store, &session, op, &parsed.flags),
+        Command::Session { session, op } => {
+            do_session_op(&mut store, &session, op, &parsed.flags, version)
+        }
     }
 }
