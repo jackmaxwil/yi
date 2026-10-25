@@ -208,3 +208,79 @@ fn a_shell_cell_keeps_its_failing_test_and_summary_inline() -> TestResult {
     assert_eq!(text.matches(&pointer).count(), 1, "{text}");
     Ok(())
 }
+
+fn ran_cell(
+    stdout: &str,
+    stderr: &str,
+    notes: Vec<String>,
+) -> serde_json::Result<KernelCellOutcome> {
+    let result = serde_json::from_value(serde_json::json!({
+        "stdout": stdout, "stderr": stderr, "status": "ok", "durationMs": 1,
+    }))?;
+    Ok(KernelCellOutcome {
+        result,
+        kernel_restarted: false,
+        notes,
+    })
+}
+
+/// IPython's `!cmd` never raises on a non-zero exit, so a failing `!cargo test` arrives as an ok
+/// cell; its merged streams come back CRLF from the pty, and the failing test still reads inline.
+#[test]
+fn a_bang_cargo_test_keeps_its_failing_test_inline() -> TestResult {
+    let dir = temp_dir("cell-bang-cargo")?;
+    let raw = std::fs::read_to_string(view_fixture("view/cargo-test-3000-cell-spill.txt"))?;
+    let crlf = raw.replace('\n', "\r\n");
+    let spill = dir.join("0c0b5a7f6d5e4f3a2b1c0d9e8f7a6b5c.txt");
+    std::fs::write(&spill, &crlf)?;
+    let head: String = crlf.chars().take(65_536).collect();
+    let stdout = format!("{head}\n[... output truncated at 65536 chars ...]");
+    let pointer = format!("[full output: {}]", spill.display());
+    let outcome = ran_cell(&stdout, "", vec![pointer])?;
+    let code = "!cargo test --color never";
+    let text = output_text(&yi_tools::cell_output(code, outcome, Some(&dir)));
+    assert!(text.len() <= yi_tools::VIEW_CEILING, "{} B", text.len());
+    for verdict in [
+        "    tests::balance_1370",
+        "  left: 4110",
+        "test result: FAILED.",
+    ] {
+        assert!(
+            text.lines().any(|line| line.starts_with(verdict)),
+            "lost {verdict}: {text}"
+        );
+    }
+    Ok(())
+}
+
+/// A shell cell under the reducer's floor reads as the two streams always read, labels and all.
+#[test]
+fn a_small_shell_cell_reads_as_before() -> TestResult {
+    let outcome = ran_cell("hi\n", "oops\n", Vec::new())?;
+    let text = output_text(&yi_tools::cell_output(
+        "%%bash\necho hi; echo oops >&2",
+        outcome,
+        None,
+    ));
+    assert_eq!(text, "hi\n\nstderr:\noops\n");
+    Ok(())
+}
+
+/// What Python prints the model chose to print: 30 KB, past the view's ceiling, comes back whole,
+/// also when a line of the cell opens with `!=`.
+#[test]
+fn a_python_print_is_read_as_printed() -> TestResult {
+    let printed = std::fs::read_to_string(view_fixture("view/bash-cell-print.txt"))?;
+    let continued = "mask = (\n    df.a\n    != df.b\n)\nprint(table)";
+    for code in ["print(table)", continued] {
+        let outcome = ran_cell(&printed, "", Vec::new())?;
+        let text = output_text(&yi_tools::cell_output(code, outcome, None));
+        assert!(
+            text == printed,
+            "{code:?}: {} of {} B",
+            text.len(),
+            printed.len()
+        );
+    }
+    Ok(())
+}

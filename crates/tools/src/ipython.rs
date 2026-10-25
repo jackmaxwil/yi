@@ -94,6 +94,7 @@ fn shell_cell(code: &str) -> Option<String> {
     let escaped: Vec<&str> = code
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix('!'))
+        .filter(|rest| !rest.starts_with('='))
         .collect();
     (!escaped.is_empty()).then(|| escaped.join("\n"))
 }
@@ -182,7 +183,8 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome, dir: Option<&Path>) -
     }
     if let Some(command) = shell_cell(code).filter(|_| !sections.is_empty()) {
         let kept = (notes.iter().find(|note| spill_path(note).is_some())).map(String::as_str);
-        let (exit, streams) = (i32::from(result.error.is_some()), sections.join("\n"));
+        let exit = i32::from(result.error.is_some() || !code.trim_start().starts_with("%%bash"));
+        let streams = sections.join("\n");
         let shell = view(ShellCell(&command), &streams, "", exit, kept, dir);
         notes.retain(|note| shell.recovery.as_ref() != Some(note));
         sections = vec![shell.text];
