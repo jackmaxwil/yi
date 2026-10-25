@@ -522,7 +522,7 @@ subscription. then $30 openrouter cap").
 
 ```
 python3 evals/kill.py run <test> --binary <yi> [--family F] [--until ISO] [--dry]
-python3 evals/kill.py budget
+python3 evals/kill.py budget [--close KEY]
 python3 evals/kill.py report
 ```
 
@@ -544,7 +544,9 @@ python3 evals/kill.py report
   settled, and its own reserve. Otherwise it is written unrun, naming the dollars it needed. A
   paid family runs only after the families listed before it have settled with at least one
   row that ran: a family whose rows were all unrun, crashed or quota-dead keeps it refused.
-  The Kimi subscription has a $0 reserve and is never refused by the dollar cap.
+  The Kimi subscription has a $0 reserve and is never refused by the dollar cap. A reserve
+  whose runner died hard (kill -9, a crash) stays open; `budget --close KEY` charges it in full
+  and closes it, and refuses while the reserve's pid is still alive.
 - **One budgeted `ask()`.** Each run gets a fresh HOME and a fresh `git clone --shared` under
   `~/Development/yi-runs/<test>/<run>`, never `/tmp`, because the checkpointer git-adds the cwd.
   The HOME is seeded with an APFS clone of one prebuilt kernel venv per binary (`yi doctor
@@ -573,7 +575,9 @@ python3 evals/kill.py report
 - **Harbor tests** must call `tbv4_sweep.sh --runner`: only that mode files the rows they are
   charged. The runner hands down `TBV4_HARD_CAP` as what is left of the reserve, and the sweep
   takes the lower of that and its own stage and week caps. A sweep that filed no rows is
-  charged the whole cap, and a re-run is charged only the rows its own sweep appended. A
+  charged the whole cap, and a re-run is charged only the rows its own sweep appended. A line
+  the sweep appended that does not parse (a torn final write) also charges the whole cap, and
+  the row names it as `unreadable`. A
   subscription family's harbor spec is written unrun, because the sweep spends OpenRouter on
   its own model.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
