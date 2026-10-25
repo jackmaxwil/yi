@@ -118,7 +118,11 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         .unwrap_or_default();
         Box::pin(async move { Ok(reply) })
     });
-    yi_runtime::wiring::register_history_grep(&mut registry, session.store_handle());
+    yi_runtime::history::register_grep(
+        &mut registry,
+        session.store_handle(),
+        &yi_runtime::Wall::default(),
+    );
 
     let service = Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
@@ -443,7 +447,7 @@ fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestRes
         );
     }
     assert!(clipped.text.len() <= 8_192);
-    assert!(!clipped.text.contains("[... truncated"), "{}", clipped.text);
+    assert!(!clipped.text.contains("(source budget"), "{}", clipped.text);
 
     let tight =
         yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(2_048)).ok_or("no catalog")?;
@@ -454,6 +458,10 @@ fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestRes
         "the last name rides the more line: {}",
         tight.text
     );
+    let floor =
+        yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(300)).ok_or("no catalog")?;
+    let row = r#"(source budget 300); the rest: read("yi://skills/<name>") for one skill]"#;
+    assert!(floor.text.ends_with(row), "{}", floor.text);
     assert_eq!(
         yi_runtime::skills::catalog_budget(128_000),
         yi_runtime::Bytes(10_240)

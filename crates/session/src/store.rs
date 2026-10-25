@@ -345,16 +345,22 @@ impl SessionStore {
         let mut total = 0usize;
         let mut hits = Vec::new();
         for entry in self.state.entries() {
-            let lowered = searchable_text(entry).to_lowercase();
-            if !lowered.contains(&lowered_needle) {
+            let text = searchable_text(entry);
+            if !text.to_lowercase().contains(&lowered_needle) {
                 continue;
             }
             total = total.saturating_add(1);
             if total > offset && hits.len() < limit {
+                let line = (text.lines())
+                    .find(|line| line.to_lowercase().contains(&lowered_needle))
+                    .or_else(|| text.lines().next())
+                    .unwrap_or("");
+                let (snippet, cut) = snippet(line, [lowered_needle.as_str()]);
                 hits.push(HistoryHit {
                     entry_id: entry.id().to_owned(),
                     entry_type: entry.type_name().to_owned(),
-                    snippet: snippet(&lowered, &lowered_needle),
+                    snippet,
+                    cut,
                 });
             }
         }
@@ -433,7 +439,7 @@ impl SessionStore {
     }
 }
 
-const SNIPPET_CHARS: usize = 160;
+pub const SNIPPET_CHARS: usize = 160;
 pub const GREP_PAGE_MAX: usize = 32;
 
 fn searchable_text(entry: &Entry) -> String {
@@ -444,18 +450,25 @@ fn searchable_text(entry: &Entry) -> String {
     }
 }
 
-fn snippet(lowered: &str, lowered_needle: &str) -> String {
-    let line = lowered
-        .lines()
-        .find(|line| line.contains(lowered_needle))
-        .or_else(|| lowered.lines().next())
-        .unwrap_or("");
-    if line.chars().count() <= SNIPPET_CHARS {
-        return line.to_owned();
+/// `text` in its own case, cut to [`SNIPPET_CHARS`] around the first needle; the flag says cut.
+pub fn snippet<'a>(text: &str, needles: impl IntoIterator<Item = &'a str>) -> (String, bool) {
+    if text.chars().nth(SNIPPET_CHARS).is_none() {
+        return (text.to_owned(), false);
     }
-    let char_pos = line.find(lowered_needle).map_or(0, |byte| {
-        line.char_indices().take_while(|(i, _)| *i < byte).count()
-    });
-    let start = char_pos.saturating_sub(SNIPPET_CHARS / 2);
-    line.chars().skip(start).take(SNIPPET_CHARS).collect()
+    let lowered = text.to_lowercase();
+    let first = (needles.into_iter())
+        .filter_map(|needle| lowered.find(&needle.to_lowercase()))
+        .min()
+        .unwrap_or(0);
+    // Invariant: lowercasing resizes some chars ('İ' becomes two), so `first` is a byte of
+    // `lowered`; count the chars of `text` whose lowercase ends at or before it.
+    let mut bytes = 0usize;
+    let at = (text.chars())
+        .take_while(|c| {
+            bytes = bytes.saturating_add(c.to_lowercase().map(char::len_utf8).sum::<usize>());
+            bytes <= first
+        })
+        .count();
+    let start = at.saturating_sub(SNIPPET_CHARS / 2);
+    (text.chars().skip(start).take(SNIPPET_CHARS).collect(), true)
 }

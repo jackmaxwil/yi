@@ -8,7 +8,9 @@ use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::{compat_bool, developer_role, nested_reasoning, replays_reasoning_content};
+use crate::compat::{
+    compat_bool, developer_role, moonshot, nested_reasoning, replays_reasoning_content,
+};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::{system_text, transform_messages};
 
@@ -72,9 +74,9 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
             })
             .collect()
     };
-    if let Some(separator) = id.find('|') {
-        let call_id = sanitize(&id[..separator]);
-        let item_id = sanitize(&id[separator.saturating_add(1)..]);
+    if let Some((call, item)) = id.split_once('|') {
+        let call_id = sanitize(call);
+        let item_id = sanitize(item);
         let combined = if item_id.is_empty() {
             call_id.clone()
         } else {
@@ -344,7 +346,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         params["store"] = json!(false);
     }
     if let Some(session_id) = &options.session_id {
-        if model.base_url.contains("api.openai.com") {
+        if model.base_url.contains("api.openai.com") || moonshot(model) {
             params["prompt_cache_key"] = json!(session_id);
         } else if model.base_url.contains("openrouter.ai") {
             params["session_id"] = json!(session_id);
@@ -424,6 +426,23 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
                     json!({"effort": off.and_then(Value::as_str).unwrap_or("none")});
             }
             None => {}
+        }
+    } else if moonshot(model) {
+        let can_stop = !matches!(
+            model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get("off")),
+            Some(Value::Null)
+        );
+        match options
+            .reasoning_effort
+            .map(|effort| mapped_effort(model, effort))
+        {
+            Some(Some("on")) => params["thinking"] = json!({"type": "enabled"}),
+            Some(Some(effort)) => params["thinking"] = json!({"type": "enabled", "effort": effort}),
+            None if can_stop => params["thinking"] = json!({"type": "disabled"}),
+            Some(None) | None => {}
         }
     } else if let Some(effort) = options.reasoning_effort
         && let Some(mapped) = mapped_effort(model, effort)

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::string_slice)]
 
 pub mod anthropic;
 pub mod auth;
@@ -8,6 +9,7 @@ pub mod compat;
 pub mod cursor;
 pub mod decide;
 pub mod faux;
+pub mod kimi;
 pub use yi_types::json_salvage;
 pub mod leak;
 pub mod openai;
