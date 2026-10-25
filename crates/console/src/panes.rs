@@ -476,8 +476,8 @@ pub fn notebook_lines(
             let cap = format!("notebook keeps {} per cell", crate::model::IMAGES_PER_CELL);
             out.push(cap_row(&what, &cap, "the transcript holds them", theme));
         }
-        for image in &cell.images {
-            let kb = image.len().saturating_mul(3) / 4 / 1024;
+        for bytes in &cell.image_bytes {
+            let kb = bytes.saturating_mul(3) / 4 / 1024;
             out.push(Line::styled(format!("  ▲ image · {kb} KB png"), teal));
         }
         out.push(Line::default());

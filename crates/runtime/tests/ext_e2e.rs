@@ -964,9 +964,24 @@ fn a_ruler_pair_rides_once_and_whole() -> TestResult {
     let assembled = started(&project, &home).system_prompt();
     assert_eq!(assembled.matches("NEVER-RULE-AT-THE-END").count(), 1);
     assert!(
-        !assembled.contains("bytes over budget"),
+        !assembled.contains("(source budget"),
         "a 42 KB rules file loads whole"
     );
+    Ok(())
+}
+
+#[test]
+fn an_instruction_file_over_its_budget_names_the_read_that_gets_the_rest() -> TestResult {
+    let dir = Scratch::new("yi-ext-agents-over")?;
+    let home = dir.join("home");
+    let project = dir.join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    repo(&project)?;
+    std::fs::write(project.join("AGENTS.md"), "- a rule line\n".repeat(4_300))?;
+    let assembled = started(&project, &home).system_prompt();
+    let row = "(source budget 49152); the rest: read AGENTS.md in full]";
+    assert!(assembled.contains(row), "{assembled}");
     Ok(())
 }
 

@@ -230,7 +230,9 @@ async fn a_plan_reader_with_a_schema_contract_runs_as_a_reader_and_is_accepted()
     assert!(
         !question.contains("Context:")
             && question
-                .contains("Reply with one JSON object matching this schema:\n{\"properties\""),
+                .contains("Reply with one JSON object matching this schema:\n{\"properties\"")
+            && question.matches(answer).count() == 1
+            && !question.contains("no fence"),
         "{question}"
     );
     Ok(())
