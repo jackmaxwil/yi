@@ -345,10 +345,8 @@ pub fn branch_diff_capped(root: &Path, cap: usize) -> Option<yi_types::lane::Bra
     let files: Vec<(String, u64, u64)> = listed
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(3, '\t');
-            let added = parts.next()?.parse().unwrap_or(0);
-            let removed = parts.next()?.parse().unwrap_or(0);
-            Some((parts.next()?.to_owned(), added, removed))
+            let (path, added, removed) = crate::lane::settle::numstat_row(line)?;
+            Some((path.to_owned(), added, removed))
         })
         .collect();
     let mut patch = whole(&["diff", "--no-color", &base, "HEAD"])?.stdout;

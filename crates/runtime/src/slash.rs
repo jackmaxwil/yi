@@ -22,8 +22,8 @@ pub fn split(line: &str) -> (&str, &str) {
 }
 
 pub fn undo(session: &AgentSession, cwd: &std::path::Path) -> String {
-    if session.status() == crate::Status::Running {
-        return "/undo: the current turn is still running; stop it first".to_owned();
+    if let Err(error) = crate::ensure_idle(session) {
+        return format!("/undo: {error}; stop it first");
     }
     let Some(store) = session.store() else {
         return "/undo: this session has no store to read checkpoints from".to_owned();

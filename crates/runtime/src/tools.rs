@@ -183,7 +183,7 @@ fn walled_root_refusal(
     // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
     let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
     for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
-        let glued = word.find('/').filter(|at| *at > 0).map(|at| &word[at..]);
+        let glued = (word.find('/').filter(|at| *at > 0)).and_then(|at| word.get(at..));
         for spelled in std::iter::once(word).chain(glued) {
             let head: String = (spelled.split_inclusive('/'))
                 .take_while(|part| !part.contains(['*', '?', '[']))
@@ -497,6 +497,7 @@ impl ToolAdapter {
             call_id: tool_call_id.to_owned(),
             job_owner: self.job_owner,
             program,
+            fuse: yi_tools::Fuse::PROGRAM,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
