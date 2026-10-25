@@ -512,6 +512,7 @@ fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> Strin
     note
 }
 
+use crate::panes::{cached, windowed};
 pub use crate::panes::{hunk_lines, review_files, review_view};
 
 fn pane_view_content(
@@ -522,25 +523,35 @@ fn pane_view_content(
     close_hint: &str,
 ) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
     let (diffs, sessions) = (view.diffs, view.sessions);
-    let visible = usize::from(inner.height);
+    let (visible, width) = (usize::from(inner.height), usize::from(inner.width));
     match &mut pane.content {
         PaneContent::Session { session, .. } => {
             let title = session.as_ref().map_or_else(
                 || "❯ no session".to_owned(),
-                |id| format!("❯ {}", label_of(sessions, id, usize::from(inner.width))),
+                |id| format!("❯ {}", label_of(sessions, id, width)),
             );
             (title, Vec::new(), None)
         }
-        PaneContent::Markdown { path, source } => {
-            let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
-            let (lines, scroll) =
-                crate::panes::windowed(&all, &mut pane.scroll_from_bottom, visible);
+        PaneContent::Markdown {
+            path,
+            source,
+            drawn,
+        } => {
+            let all = cached(drawn, width, || {
+                yi_tui::markdown::render(source, width, theme)
+            });
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (format!("¶ {}", short_path(path)), lines, scroll)
         }
-        PaneContent::Diff { path, source } => {
-            let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
-            let (lines, scroll) =
-                crate::panes::windowed(&all, &mut pane.scroll_from_bottom, visible);
+        PaneContent::Diff {
+            path,
+            source,
+            drawn,
+        } => {
+            let all = cached(drawn, width, || {
+                diffview::render(source, width, theme, DiffBudget::FULL)
+            });
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
@@ -554,7 +565,6 @@ fn pane_view_content(
                 .as_ref()
                 .and_then(|id| view.options.get(id));
             let options = options.map_or(&[][..], Vec::as_slice);
-            let width = usize::from(inner.width);
             let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
             ("Settings".to_owned(), lines, None)
         }
@@ -562,18 +572,22 @@ fn pane_view_content(
             let (title, lines) = pty.view(inner, &mut pane.scroll_from_bottom);
             (title, lines, None)
         }
-        PaneContent::SessionDiff { session, scope } => {
+        PaneContent::SessionDiff {
+            session,
+            scope,
+            drawn,
+        } => {
             let note = view.notes.get(session).map_or("", String::as_str);
-            let (title, all) = review_view(
-                diffs.get(session),
+            let diff = diffs.get(session);
+            let key = (
+                width,
                 *scope,
-                note,
-                usize::from(inner.width),
-                theme,
+                note.to_owned(),
+                diff.map_or(0, |diff| diff.rev),
             );
-            let (lines, scroll) =
-                crate::panes::windowed(&all, &mut pane.scroll_from_bottom, visible);
-            (title, lines, scroll)
+            let (title, all) = cached(drawn, key, || review_view(diff, *scope, note, width, theme));
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            (title.clone(), lines, scroll)
         }
         PaneContent::Notebook {
             session,
@@ -582,19 +596,15 @@ fn pane_view_content(
         } => {
             let title = session.as_ref().map_or_else(
                 || "▤ notebook".to_owned(),
-                |id| format!("▤ {}", label_of(sessions, id, usize::from(inner.width))),
+                |id| format!("▤ {}", label_of(sessions, id, width)),
             );
-            let width = usize::from(inner.width);
-            if drawn.as_ref().is_none_or(|(at, _)| *at != width) {
+            let all = cached(drawn, width, || {
                 let cells = session.as_ref().map_or(&[][..], |id| {
                     crate::model::notebook_cells(view.notebooks, id)
                 });
-                let all = crate::panes::notebook_lines(cells, width, *full, theme, close_hint);
-                *drawn = Some((width, all));
-            }
-            let all = drawn.as_ref().map_or(&[][..], |(_, all)| all.as_slice());
-            let (lines, scroll) =
-                crate::panes::windowed(all, &mut pane.scroll_from_bottom, visible);
+                crate::panes::notebook_lines(cells, width, *full, theme, close_hint)
+            });
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
     }

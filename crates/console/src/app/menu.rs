@@ -309,6 +309,7 @@ impl App {
                     PaneContent::Markdown {
                         path: format!("entry {id}"),
                         source,
+                        drawn: None,
                     },
                 );
                 // The pane clamps the offset, so the largest one opens it at its top.

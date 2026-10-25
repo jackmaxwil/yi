@@ -193,6 +193,18 @@ pub fn review_view(
     (title, lines)
 }
 
+pub(crate) fn cached<K: PartialEq, V>(
+    drawn: &mut crate::model::Drawn<K, V>,
+    key: K,
+    draw: impl FnOnce() -> V,
+) -> &V {
+    let fresh = match drawn.take() {
+        Some((at, rows)) if at == key => (at, rows),
+        _ => (key, draw()),
+    };
+    &drawn.insert(fresh).1
+}
+
 /// Invariant: `usize::MAX` holds a view at its top while its rows grow, and a scroll down from
 /// there leaves MAX less the rows, counted down from the top until the next draw.
 pub(crate) fn windowed(

@@ -358,6 +358,7 @@ fn a_framed_pane_keeps_one_blank_column_inside_its_border() -> TestResult {
     slot.content = PaneContent::Markdown {
         path: "/repo/NOTES.md".to_owned(),
         source: "hello".to_owned(),
+        drawn: None,
     };
     let mut terminal = Terminal::new(TestBackend::new(140, 30))?;
     draw(&mut app, &mut terminal)?;
