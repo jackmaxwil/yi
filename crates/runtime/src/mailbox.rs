@@ -746,6 +746,7 @@ impl SubagentHost {
         };
         // One check run per named todo, however many rows name it.
         let mut adjudged: HashMap<&yi_types::plan::TaskId, Option<String>> = HashMap::new();
+        let mut shown = std::collections::HashSet::new();
         for row in discoveries {
             let named = row.violates_check_of.as_ref().and_then(|id| {
                 plan.as_ref()
@@ -779,8 +780,13 @@ impl SubagentHost {
                         map.insert("task".to_owned(), Value::String(id.as_str().to_owned()));
                         map.insert("evidence".to_owned(), Value::String(evidence.clone()));
                     }
+                    let shown_text = if shown.insert(id) {
+                        evidence
+                    } else {
+                        "(the same evidence as the first row naming this task, above)".to_owned()
+                    };
                     format!(
-                        "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{evidence}",
+                        "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{shown_text}",
                         row.text,
                         id.as_str()
                     )
