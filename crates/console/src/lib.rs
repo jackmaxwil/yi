@@ -9,6 +9,7 @@ pub mod avatar;
 pub mod browser;
 mod chrome;
 pub mod client;
+mod editor_view;
 mod header;
 pub mod keys;
 pub mod kitty;
