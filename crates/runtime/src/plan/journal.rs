@@ -230,6 +230,34 @@ impl Journal {
         }
     }
 
+    /// The last line, read from the end: none when the file is absent or empty, when it does
+    /// not end in a newline, or when its last line is past [`RECORD_CAP`].
+    pub fn tail(&self) -> Result<Option<Vec<u8>>, JournalError> {
+        let mut file = match std::fs::File::open(&self.path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(io_at(&self.path)(source)),
+        };
+        let len = file.metadata().map_err(io_at(&self.path))?.len();
+        let window = len.min(
+            u64::try_from(RECORD_CAP)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        );
+        file.seek(SeekFrom::Start(len.saturating_sub(window)))
+            .map_err(io_at(&self.path))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(io_at(&self.path))?;
+        let Some(body) = bytes.strip_suffix(b"\n") else {
+            return Ok(None);
+        };
+        Ok(match body.iter().rposition(|byte| *byte == b'\n') {
+            Some(at) => body.get(at.saturating_add(1)..).map(<[u8]>::to_vec),
+            None if window == len => Some(body.to_vec()),
+            None => None,
+        })
+    }
+
     pub fn read(&self) -> Result<Reading, JournalError> {
         let lines = self.lines()?;
         let mut records: Vec<JournalRecord> = Vec::new();

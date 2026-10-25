@@ -17,6 +17,7 @@ pub mod artifact;
 pub(crate) mod ask;
 pub mod authority;
 mod brief;
+pub mod cache;
 pub mod capacity;
 pub mod covers;
 pub mod declare;

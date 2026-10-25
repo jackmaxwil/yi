@@ -7,7 +7,7 @@ use yi_types::plan::ledger::{EffectId, JournalRecord};
 
 use super::journal::Damage;
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Resolution};
-use super::state::{IntentOutcome, RootState, SUBMITTED_KEY, reduce, root_of};
+use super::state::{IntentOutcome, RootState, SUBMITTED_KEY, root_of};
 use super::store::{PlanStore, StoreError};
 use yi_types::plan::doc::TouchCount;
 use yi_types::plan::ledger::RequestId;
@@ -57,29 +57,12 @@ pub fn reconstruct(
     root: &PlanId,
 ) -> Result<(RootState, Vec<JournalRecord>, Option<PathBuf>), StoreError> {
     let journal = store.journal(root);
-    let reading = journal.read()?;
-    let torn = match reading.damage {
-        None => None,
-        Some(Damage::TornTail { offset, .. }) => Some(journal.set_aside(offset, &store.nonce())?),
-        Some(Damage::Corrupt {
-            offset,
-            seq,
-            reason,
-            ..
-        }) => {
-            return Err(StoreError::RecoveryRequired {
-                root: root.clone(),
-                seq: seq.map(|seq| seq.get()),
-                offset,
-                reason,
-            });
-        }
+    let reduced = super::cache::reduced(&journal, root)?;
+    let torn = match &reduced.reading.damage {
+        Some(Damage::TornTail { offset, .. }) => Some(journal.set_aside(*offset, &store.nonce())?),
+        _ => None,
     };
-    let state = reduce(&reading.records).map_err(|source| StoreError::Reduce {
-        root: root.clone(),
-        source,
-    })?;
-    Ok((state, reading.records, torn))
+    Ok((reduced.state.clone(), reduced.reading.records.clone(), torn))
 }
 
 pub fn reconcile(state: &RootState, liveness: &dyn Liveness) -> Vec<Finding> {

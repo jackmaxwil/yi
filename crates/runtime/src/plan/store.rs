@@ -12,8 +12,8 @@ use yi_types::plan::doc::{DocError, GoalText, JournalMark, Plan, PlanId};
 use yi_types::plan::ledger::{AttemptId, JournalRecord, PlanOpRecord, RequestId, Seq};
 
 use super::artifact::{ArtifactError, Artifacts};
-use super::journal::{Damage, Fs, Journal, JournalError, RealFs, has_record};
-use super::state::{KIND_IMPORT, ReduceError, RootState, apply, reduce, root_of};
+use super::journal::{Fs, Journal, JournalError, RealFs, has_record};
+use super::state::{KIND_IMPORT, ReduceError, RootState, apply, root_of};
 use crate::lease::Clock;
 
 /// Invariant: the checkpoint byte cap is checked before the atomic replace and never trimmed
@@ -333,12 +333,18 @@ impl PlanStore {
             path: path.clone(),
             detail: format!("not JSON: {error}"),
         })?;
-        let schema = serde_json::from_str(PLAN_SCHEMA)
-            .map_err(|error| error.to_string())
-            .and_then(crate::schema::Schema::from_value)
+        static SCHEMA: std::sync::OnceLock<Result<crate::schema::Schema, String>> =
+            std::sync::OnceLock::new();
+        let schema = SCHEMA
+            .get_or_init(|| {
+                serde_json::from_str(PLAN_SCHEMA)
+                    .map_err(|error| error.to_string())
+                    .and_then(crate::schema::Schema::from_value)
+            })
+            .as_ref()
             .map_err(|detail| StoreError::Schema {
                 path: path.clone(),
-                detail,
+                detail: detail.clone(),
             })?;
         schema
             .validate(&value)
@@ -364,23 +370,10 @@ impl PlanStore {
             }
             Err(error) => return Err(error),
         };
-        let reading = self.journal(&root).read()?;
+        let reduced = super::cache::reduced(&self.journal(&root), &root)?;
+        let (reading, state) = (&reduced.reading, &reduced.state);
         // Invariant: damage is judged before the record count, or a damaged first record
         // would hand back the unverified checkpoint as if the chain had been consulted.
-        if let Some(Damage::Corrupt {
-            offset,
-            seq,
-            reason,
-            ..
-        }) = reading.damage
-        {
-            return Err(StoreError::RecoveryRequired {
-                root,
-                seq: seq.map(Seq::get),
-                offset,
-                reason,
-            });
-        }
         if reading.records.is_empty() {
             let Some(checkpoint) = checkpoint else {
                 return Err(StoreError::Missing {
@@ -390,10 +383,6 @@ impl PlanStore {
             };
             return Err(self.detached(id, &root, &checkpoint));
         }
-        let state = reduce(&reading.records).map_err(|source| StoreError::Reduce {
-            root: root.clone(),
-            source,
-        })?;
         let Some(reduced) = state.plans.get(id) else {
             if checkpoint.is_none() {
                 return Err(StoreError::Missing {
@@ -415,7 +404,7 @@ impl PlanStore {
             return Ok(checkpoint);
         }
         if let Ok(_lease) = self.lease() {
-            self.checkpoint_family(&state)?;
+            self.checkpoint_family(state)?;
         }
         let mut plan = reduced.clone();
         plan.journal = mark;
