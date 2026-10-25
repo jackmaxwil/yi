@@ -154,6 +154,102 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
     Ok(())
 }
 
+/// Dies with `connect` printing the server's whole tool catalog, schemas and all, to a model that
+/// only asked to connect: the row now names the call that lists them, and that call works. Dies
+/// too with the instructions the server wrote for the model, and the capability names that say
+/// whether `resources-list` and `prompts-list` mean anything, left out of what it prints.
+#[test]
+fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestResult {
+    let home = mcp_home()?;
+    let connect = yi_mcp(&home, &["connect", "fixture", "@s"])?;
+    assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
+    assert_eq!(
+        connect.stdout.trim(),
+        "@s live · yi-fixture\ncapabilities: tools, resources, prompts\n\
+         instructions: Fixture server. The echo tool repeats input.\n\
+         […] 2 tools not printed · list them: yi mcp @s tools-list"
+    );
+    let call = connect.stdout.trim().rsplit_once("list them: yi mcp ");
+    let args: Vec<&str> = call.ok_or("no call named")?.1.split_whitespace().collect();
+    let listed = yi_mcp(&home, &args)?;
+    assert_eq!(listed.code, 0, "stderr: {}", listed.stderr);
+    for needle in ["\"echo\"", "\"add\"", "inputSchema"] {
+        assert!(
+            listed.stdout.contains(needle),
+            "{needle}: {}",
+            listed.stdout
+        );
+    }
+    let kernel = yi_mcp(&home, &["connect", "fixture", "@k", "--json"])?;
+    let document: serde_json::Value = serde_json::from_str(kernel.stdout.trim())?;
+    assert_eq!(
+        document["server"]["tools"].as_array().map(Vec::len),
+        Some(2)
+    );
+
+    Ok(())
+}
+
+/// Dies with a server that has no tools told `[…] 0 tools not printed`, or one that offers tools
+/// it did not list told nothing or a false count: the row names the call, never an unknown count.
+#[test]
+fn connect_names_the_tools_call_only_when_the_server_offers_tools() -> TestResult {
+    let home = mcp_home()?;
+    let server = fixture_server_path().display().to_string();
+    std::fs::write(
+        home.home.join(".yi/mcp.json"),
+        serde_json::to_string(&serde_json::json!({"mcpServers": {
+            "bare": {"command": "python3", "args": [server, "--no-tools"]},
+            "flaky": {"command": "python3", "args": [server, "--tools-list-fails"]},
+        }}))?,
+    )?;
+    let bare = yi_mcp(&home, &["connect", "bare", "@b"])?;
+    assert_eq!(bare.code, 0, "stderr: {}", bare.stderr);
+    assert_eq!(
+        bare.stdout.trim(),
+        "@b live · yi-fixture\ncapabilities: resources\n\
+         instructions: Fixture server. The echo tool repeats input."
+    );
+    let flaky = yi_mcp(&home, &["connect", "flaky", "@f"])?;
+    assert_eq!(flaky.code, 0, "stderr: {}", flaky.stderr);
+    assert_eq!(
+        flaky.stdout.trim(),
+        "@f live · yi-fixture\ncapabilities: tools, resources, prompts\n\
+         instructions: Fixture server. The echo tool repeats input.\n\
+         […] the server offers tools; connect listed none · list them: yi mcp @f tools-list"
+    );
+    Ok(())
+}
+
+/// Dies with a one-word mistake printing 1,521 bytes of help: the error stays one line and names
+/// the call that prints the rest.
+#[test]
+fn a_bad_flag_prints_one_line_and_the_named_help_call_prints_the_help() -> TestResult {
+    let home = mcp_home()?;
+    let bad = yi_mcp(&home, &["connect", "fixture", "--bogus"])?;
+    assert_eq!(bad.code, 2);
+    assert_eq!(
+        bad.stderr.trim(),
+        "error: unknown option --bogus · run: yi mcp help"
+    );
+    assert!(
+        bad.stderr.len() < 200,
+        "{} B: {}",
+        bad.stderr.len(),
+        bad.stderr
+    );
+    assert!(bad.stdout.is_empty(), "{}", bad.stdout);
+    let help = yi_mcp(&home, &["help"])?;
+    assert_eq!(help.code, 0);
+    assert!(
+        help.stdout
+            .contains("Exit codes: 0 ok, 1 grep-no-match, 2 usage, 3 server failure"),
+        "{}",
+        help.stdout
+    );
+    Ok(())
+}
+
 #[test]
 fn schema_snapshot_flags_breaking_changes() -> TestResult {
     let home = mcp_home()?;
