@@ -9,13 +9,10 @@ pub fn truncate_chars(text: &str, max_chars: Option<usize>) -> String {
     if text.len() <= max {
         return text.to_owned();
     }
-    let mut end = max;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = text.floor_char_boundary(max);
     format!(
         "{}\n[... truncated, {} of {} chars shown; use --json for full output ...]",
-        &text[..end],
+        text.get(..end).unwrap_or_default(),
         end,
         text.len()
     )
