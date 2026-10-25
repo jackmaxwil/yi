@@ -64,8 +64,8 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     Ok(())
 }
 
-/// A rewind has to be visible: the undone exchange leaves the transcript and
-/// the message it undid comes back to the composer unsent.
+/// A rewind has to be visible: the undone exchange leaves the transcript, the
+/// message it undid comes back to the composer unsent, and a row says the files stayed.
 #[test]
 fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     let dir = Scratch::new("yi-tui-rewind")?;
@@ -100,6 +100,8 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
             &keys.display().to_string(),
             "--frames",
             &frames.display().to_string(),
+            "--size",
+            "160x30",
             "first question",
         ])
         .env("HOME", &home)
@@ -118,6 +120,17 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     assert!(
         final_frame.contains("first question"),
         "the kept turn stays: {final_frame}"
+    );
+    let notice = final_frame
+        .lines()
+        .map(|row| row.trim_matches(|c: char| !c.is_alphanumeric()))
+        .find(|row| row.starts_with("conversation rewound"));
+    assert_eq!(
+        notice,
+        Some(
+            "conversation rewound; files stay as the abandoned branch left them; /undo restores the last turn's edits"
+        ),
+        "the solo rewind says it never touched the files: {final_frame}"
     );
     assert!(
         !final_frame.contains("┃   second question"),
