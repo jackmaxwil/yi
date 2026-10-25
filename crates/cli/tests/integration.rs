@@ -10,6 +10,8 @@ mod config_option;
 mod daemon;
 #[path = "support/prompt_slots.rs"]
 mod prompt_slots_support;
+#[path = "../../types/tests/support/recorded_read.rs"]
+mod recorded_read;
 #[path = "../../types/tests/support/repo.rs"]
 mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
