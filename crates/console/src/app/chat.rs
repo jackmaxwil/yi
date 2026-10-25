@@ -221,7 +221,7 @@ impl App {
                 });
             }
             Decoded::Gap => self.heal(outbound, id),
-            Decoded::Replay(replay, entries) => self.absorb_replay(id, &replay, entries),
+            Decoded::Replay(replay, entries) => self.absorb_replay(outbound, id, &replay, entries),
             Decoded::Goal(goal) => {
                 for chat in self.state.chats_mut(id) {
                     chat.port.set_goal(goal.clone());
@@ -302,7 +302,13 @@ impl App {
         }
     }
 
-    fn absorb_replay(&mut self, id: &SessionId, replay: &Replay, entries: Vec<Entry>) {
+    fn absorb_replay(
+        &mut self,
+        outbound: &Outbound,
+        id: &SessionId,
+        replay: &Replay,
+        entries: Vec<Entry>,
+    ) {
         if replay.leaf.is_some() && yi_types::trace::enabled() {
             let mut args = serde_json::Map::new();
             args.insert("session".to_owned(), json!(id.0));
@@ -314,6 +320,9 @@ impl App {
         }
         self.seq.insert(id.clone(), None);
         self.replayed.insert(id.clone());
+        if replay.child.is_none() {
+            self.absorb_history(outbound, id, &entries, replay.from == 0);
+        }
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
             row.name = Some(name.clone());
         }
@@ -482,11 +491,24 @@ impl App {
     fn answer_ask(&mut self, outbound: &Outbound, ask: PendingAsk, choice: Option<AskChoice>) {
         // A popup that closed without a verdict is a rejection, never a hung worker.
         let option = option_for(choice.unwrap_or(AskChoice::Reject), &ask.options);
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": ask.request_id,
-            "result": {"outcome": {"outcome": "selected", "optionId": option}},
-        });
+        let outcome = json!({"outcome": "selected", "optionId": option});
+        self.reply_ask(outbound, ask.request_id, outcome);
+    }
+
+    /// Incident: an ask lived only in its pane's chat, so a closed pane or a quit left the
+    /// worker blocked on an answer nobody could give; the worker reads `cancelled` as a refusal.
+    pub(super) fn cancel_ask(&mut self, outbound: &Outbound, request_id: String) {
+        self.reply_ask(outbound, request_id, json!({"outcome": "cancelled"}));
+    }
+
+    pub fn cancel_asks(&mut self, outbound: &Outbound) {
+        for request_id in self.state.take_asks() {
+            self.cancel_ask(outbound, request_id);
+        }
+    }
+
+    fn reply_ask(&mut self, outbound: &Outbound, request_id: String, outcome: Value) {
+        let response = json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}});
         if !outbound.send(&response) {
             self.note("send failed: permission answer not delivered");
         }
@@ -672,9 +694,6 @@ impl App {
         let id = session.0.as_str();
         match command {
             Command::Prompt(text) => {
-                if !self.connected() {
-                    return self.note("not connected — prompt not sent");
-                }
                 self.send_request(
                     outbound,
                     RequestKind::Prompt,

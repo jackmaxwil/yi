@@ -392,6 +392,15 @@ impl Pane {
             | PaneContent::Browser(_) => None,
         }
     }
+
+    pub fn take_ask(&mut self) -> Option<PendingAsk> {
+        match &mut self.content {
+            PaneContent::Session {
+                chat: Some(chat), ..
+            } => chat.ask.take(),
+            _ => None,
+        }
+    }
 }
 
 pub struct Tab {
@@ -710,12 +719,18 @@ impl ConsoleState {
         Some(new_id)
     }
 
-    pub fn close_focused_pane(&mut self) -> Option<PaneId> {
+    pub fn close_focused_pane(&mut self) -> Option<Pane> {
         let tab = self.tabs.get_mut(self.active_tab)?;
         let closed = tab.layout.close_focused()?;
         tab.zoomed = false;
-        self.panes.remove(&closed);
-        Some(closed)
+        self.panes.remove(&closed)
+    }
+
+    pub fn take_asks(&mut self) -> Vec<String> {
+        let waiting = self.orphan_asks.drain(..).map(|(id, _)| id);
+        let held = (self.panes.values_mut().filter_map(Pane::take_ask))
+            .chain(self.parked.values_mut().filter_map(|chat| chat.ask.take()));
+        waiting.chain(held.map(|ask| ask.request_id)).collect()
     }
 
     pub fn new_tab(&mut self) {
