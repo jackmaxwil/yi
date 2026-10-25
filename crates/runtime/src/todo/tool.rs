@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, text_output};
 use yi_types::plan::doc::{BlockedOn, TODO_LABEL_MAX, Todo, TodoLabel, TodoStateName};
-use yi_types::todo::PhaseName;
+use yi_types::todo::{PhaseName, TodoId};
 
 use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
@@ -115,10 +115,18 @@ fn named(args: &Map<String, Value>) -> Option<String> {
 
 fn label(args: &Map<String, Value>, op: &'static str) -> Result<TodoLabel, ArgError> {
     let needle = named(args).ok_or(ArgError::Missing { op, field: "label" })?;
-    // A name, never a new row's text: a long one is cut plainly and matched against the note.
+    // A whole text past the cap names its row by that row's own digest label; a copied label (its
+    // `…` too) or an id-led line is cut plainly, and the lookup matches it against the note.
     let (needle, _) = yi_types::todo::split_cited(needle.trim());
-    let head: String = needle.chars().take(TODO_LABEL_MAX).collect();
-    TodoLabel::new(head.trim_end()).map_err(|cause| ArgError::Malformed {
+    let id_led = (needle.split_once(' ')).is_some_and(|(id, _)| TodoId::parse(id).is_some());
+    let shown = needle.trim_end_matches('…').trim_end();
+    let label = if id_led || shown.chars().count() <= TODO_LABEL_MAX {
+        let head: String = needle.chars().take(TODO_LABEL_MAX).collect();
+        TodoLabel::new(head.trim_end())
+    } else {
+        Todo::from_text(needle).map(|item| item.label)
+    };
+    label.map_err(|cause| ArgError::Malformed {
         op,
         field: "label",
         cause: cause.to_string(),
