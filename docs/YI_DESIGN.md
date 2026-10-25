@@ -862,7 +862,9 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   survive a restart; a child's is its runtime directory's. Each is interned by path, one timer each.
 - A claim is persisted before delivery and re-arms `next_run_at` from claim time; the ticks it
   stands for are counted, and `catchUp` (`once`, `skip`, `all`) decides their todos. Recovery marks
-  open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s.
+  open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s. A failed
+  ledger write is one notice to the ledger's sessions until a write succeeds or the error changes;
+  a failed lane tells its own session.
 - A tick appends one session todo: the label or instruction plus `@ <tick>`, the instruction as
   its note, the setup's `user://<n>` as intent, a `clock` stamp; `overlap` (`skip`, `buffer_one`,
   `allow`) bounds the open todos one job may hold. The wake names the address and the todo only.
@@ -885,7 +887,8 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   ack, refuses `data` over 16 KiB by name, and truncates past retention only behind the slowest ack.
   It is never authority once delivered: the target's log is written first, then the ack.
 - A channel job carries `channel: {address, path, filter?, batch?}` and ticks on its cadence (60 s
-  unasked); a landing message pokes it due. It filters on the host, creates one todo per batch
+  unasked); a landing message pokes it due, and a tick on a channel no adapter feeds with nothing
+  past its ack re-arms in memory, with no claim and no ledger write. It filters on the host, creates one todo per batch
   (stamped `channel: {job, ids}`) or unblocks its waiter, and wakes with the messages fenced as data.
   `External {probe}` is an `exec` wait on `ok=true`. [`plan/timer.rs`](../crates/runtime/src/plan/timer.rs)
   runs only leases, stuck children and the dispatch backstop.
@@ -932,7 +935,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask` |
 | `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
-| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog |
+| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
@@ -1152,7 +1155,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `rustix` | `fs`, `std`, `stdio`; `pty`, `termios`, `process` in console; `process` in browser (`geteuid`, `test_kill_process`) | permission, browser, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
-Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
+Dev: `vt100`, `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
 `macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
