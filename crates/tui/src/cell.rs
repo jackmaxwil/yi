@@ -103,6 +103,7 @@ pub struct TaskCell {
     // running when a child appears made it, and a child born outside one carries None.
     pub spawn: Option<String>,
     pub answer: Option<String>,
+    pub answer_dropped: usize,
     pub activity: ChildActivity,
     pub flag: Option<ChildFlag>,
 }
@@ -702,12 +703,24 @@ pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
     }
 }
 
+const ANSWER_CAP: usize = 16 * 1024;
+
 impl TaskCell {
     /// A repeated call is the same step, so it does not push itself into the previous row.
     pub fn step(&mut self, tool: String) {
         if self.last_tool.as_ref() != Some(&tool) {
             self.prev_tool = self.last_tool.replace(tool);
         }
+    }
+
+    /// A child's prose is retained state it controls; the card keeps the last 16 KiB.
+    pub fn keep_answer(&mut self, text: String) {
+        let cut = text.len().saturating_sub(ANSWER_CAP);
+        let start = (text.char_indices().map(|(index, _)| index))
+            .find(|index| *index >= cut)
+            .unwrap_or(text.len());
+        self.answer_dropped = start;
+        self.answer = Some(text.get(start..).unwrap_or_default().to_owned());
     }
 
     pub fn lines(
@@ -785,6 +798,15 @@ impl TaskCell {
             .collect();
         let total = rows.len();
         let running = self.status == TaskStatus::Running;
+        if self.answer_dropped > 0 && !running {
+            let kept = answer.map_or(0, str::len);
+            let all = kept.saturating_add(self.answer_dropped);
+            let cap = ANSWER_CAP / 1024;
+            let said = format!(
+                "[…] kept the last {kept} of {all} B · card cap {cap} KiB · alt-↓ opens the child"
+            );
+            body.push(Line::from(Span::styled(said, theme.dim_style())));
+        }
         let (skip, take) = match (running, mode) {
             (true, _) => (total.saturating_sub(4), 4),
             (false, TranscriptMode::Verbose) => (0, total),
@@ -810,19 +832,6 @@ impl TaskCell {
             body.push(Line::from(Span::styled(more, theme.dim_style())));
         }
         boxed(&title, body, width, Style::default().fg(tone))
-    }
-}
-
-/// A child's prose is retained state it controls; the card keeps the last 16 KB.
-pub fn tail_bounded(text: String) -> String {
-    let cut = text.len().saturating_sub(16 * 1024);
-    match text
-        .char_indices()
-        .map(|(index, _)| index)
-        .find(|i| *i >= cut)
-    {
-        Some(start) if cut > 0 => text.get(start..).unwrap_or_default().to_owned(),
-        _ => text,
     }
 }
 

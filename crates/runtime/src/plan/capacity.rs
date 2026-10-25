@@ -3,15 +3,7 @@
 
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::{Duration, Instant};
-
-/// Lane slots held back from workers for one acceptance. Its candidate check and its staging
-/// merge run in order, never together (section 6.6), so one slot serves both.
-pub const VERIFICATION_RESERVE: u8 = 1;
-
-/// How long a reservation waits for the reserve before it refuses: two candidates verified
-/// at once take turns rather than one of them failing (plan section 6.3, bounded backoff).
-pub const RESERVE_WAIT: Duration = Duration::from_secs(30);
+use std::time::Instant;
 
 /// What a reservation is for. Charging verification against the worker share is exactly how
 /// retained workers come to occupy every slot their own verification needs.
@@ -74,12 +66,13 @@ pub struct Capacity {
 }
 
 impl Capacity {
-    /// The split of a pool of `slots` lanes. A pool too small to split leaves each side one,
-    /// and the pool's own `PoolFull` catches the overcommit.
+    /// Incident: one verification lane bounced each concurrent acceptance outlasting its wait,
+    /// so a quarter of the pool, one to four lanes, verifies; the pool refuses overcommit.
     pub fn for_slots(slots: u8) -> Arc<Self> {
+        let verification_cap = (slots / 4).clamp(1, 4);
         Arc::new(Self {
-            worker_cap: slots.saturating_sub(VERIFICATION_RESERVE).max(1),
-            verification_cap: VERIFICATION_RESERVE,
+            worker_cap: slots.saturating_sub(verification_cap).max(1),
+            verification_cap,
             held: Mutex::new(Held::default()),
             released: Condvar::new(),
         })
@@ -209,6 +202,7 @@ impl super::ops::PlanEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use yi_types::plan::doc::{AgentId, Delegation, TodoAddr, TodoLabel};
     use yi_types::url::Url;
 
@@ -277,7 +271,7 @@ mod tests {
         for _ in 0..10 {
             let held = capacity.reserve(Purpose::Verification)?;
             let waiter = Arc::clone(&capacity);
-            let until = Instant::now() + RESERVE_WAIT;
+            let until = Instant::now() + Duration::from_secs(30);
             let taken =
                 std::thread::spawn(move || waiter.reserve_within(Purpose::Verification, until));
             std::thread::sleep(Duration::from_millis(5));
