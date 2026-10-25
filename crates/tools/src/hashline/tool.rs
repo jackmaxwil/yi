@@ -423,7 +423,7 @@ impl HashlineReadTool {
                 matches.push(path.to_path_buf());
             }
             let room = match context.program {
-                true => matches.len() <= yi_types::tool_value::PROGRAM_FUSE_ITEMS,
+                true => matches.len() <= context.fuse.items,
                 false => matches.len() < GLOB_FILES_CAP,
             };
             room && !(context.cancelled)()
@@ -438,7 +438,8 @@ impl HashlineReadTool {
             return error_output(rows.join("\n"));
         }
         if context.program {
-            return super::values::program_glob(pattern, &matches, &root, &walled.notices());
+            let fuse = context.fuse.items;
+            return super::values::program_glob(pattern, &matches, &root, &walled.notices(), fuse);
         }
         let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
             format!(
@@ -615,8 +616,9 @@ impl HashlineReadTool {
         // A program's open window runs to the end: the page is the model's cap, not its.
         let to_end =
             found.is_none() && !input.contains_key("limit") && !input.contains_key("ranges");
-        let program = (context.program)
-            .then(|| super::values::program_lines(&all_lines[..line_count], to_end, &windows));
+        let program = (context.program).then(|| {
+            super::values::program_lines(&all_lines[..line_count], to_end, &windows, context.fuse)
+        });
         let mut state = lock_state(&self.state);
         let tag = state.snapshots.record(&canonical, &normalized, Some(&seen));
         if let Some((lines, _)) = &program {
