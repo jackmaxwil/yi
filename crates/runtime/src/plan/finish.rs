@@ -58,7 +58,7 @@ fn failed_items(verdict: &Verdict) -> String {
 }
 
 impl PlanEngine {
-    /// A cause past `CAUSE_CHARS` keeps its whole text as a plan artifact, named at the cut.
+    /// A cause past [`CAUSE_CHARS`] keeps its whole text as a plan artifact, named at the cut.
     fn clip(&self, plan: &PlanId, text: String) -> String {
         let all = text.chars().count();
         if all <= CAUSE_CHARS {
