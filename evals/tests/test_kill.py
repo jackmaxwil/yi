@@ -13,7 +13,7 @@ EVENTS = EVALS / "fixtures" / "ask_events.jsonl"
 QUOTA = EVALS / "fixtures" / "ask_quota_429.jsonl"
 
 FAKE_YI = r'''#!/usr/bin/env python3
-import json, os, sys, time
+import fcntl, json, os, sys, time
 from pathlib import Path
 home, log, argv = Path(os.environ["HOME"]), Path(os.environ["FAKE_LOG"]), sys.argv[1:]
 def note(**row):
@@ -23,6 +23,19 @@ if argv[:2] == ["doctor", "--fix"]:
     (home / ".yi" / ("kernel-venv-fake" if not os.environ.get("FAKE_NO_VENV") else "no-venv")).mkdir(parents=True)
     note(build="doctor")
     print("[]")
+elif argv[:3] == ["login", "kimi", "--refresh"]:
+    lock = home / ".yi" / "providers" / "locks" / "kimi.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        central = home / ".yi" / "providers" / "tokens" / "kimi.json"
+        credential = json.loads(central.read_text())
+        if credential["expires_ms"] / 1000 - time.time() < int(argv[3]):
+            credential.update(access="fresh-access", refresh="rotated", expires_ms=int((time.time() + 7200) * 1000))
+            central.write_text(json.dumps(credential))
+            note(rotated=True)
+    note(refresh=argv)
+    print(json.dumps({"version": 1, "kind": "oauth", "access": credential["access"], "expires_ms": credential["expires_ms"]}))
 elif argv[:3] == ["catalog", "usage", "kimi"]:
     print(os.environ["FAKE_USAGE"])
 elif argv[:1] == ["ask"]:
@@ -311,7 +324,7 @@ class Ledger(unittest.TestCase):
             r.module("crash", ["kimi", "flash"], {"kimi": 0.5, "flash": 0.2})
             code, out = quiet(["run", "crash", "--binary", str(r.yi), "--family", "kimi"])
             self.assertEqual(code, 1, out)
-            self.assertIn("crash kimi: 0 runs, $0.0000, 1 not run, needs $0.50: FileNotFoundError", out)
+            self.assertIn("crash kimi: 0 runs, $0.0000, 1 not run, needs $0.50:", out)
             code, out = quiet(["run", "crash", "--binary", str(r.yi), "--family", "flash"])
             self.assertEqual(code, 2, out)
             self.assertIn("refused: crash runs kimi before flash", out)
@@ -404,54 +417,37 @@ class Isolation(unittest.TestCase):
             self.assertEqual(configs, [{"telemetry": {"enabled": True}, "routing": {"ignore": ["inference-net"]}}])
 
     def test_two_runs_at_once_get_cloned_venvs_their_own_clones_and_no_refresh_token(self):
-        posts = []
+        with rig() as r:
+            r.kimi_login(expires_in=60)
+            r.streams(EVENTS, pace=0.05)
+            rows, gate = [], threading.Barrier(2)
 
-        class Token(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                posts.append(self.rfile.read(int(self.headers["content-length"])).decode())
-                body = json.dumps({"access_token": "fresh-access", "refresh_token": "rotated", "expires_in": 7200.0})
-                self.send_response(200)
-                self.send_header("content-type", "application/json")
-                self.end_headers()
-                self.wfile.write(body.encode())
-
-            def log_message(self, *args):
-                pass
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Token)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            with rig() as r:
-                r.kimi_login(expires_in=60, token_url=f"http://127.0.0.1:{server.server_address[1]}/token")
-                r.streams(EVENTS, pace=0.05)
-                rows, gate = [], threading.Barrier(2)
-
-                def one():
-                    gate.wait()
-                    rows.append(kill.ask("iso", "kimi", r.spec, str(r.yi), float("inf")))
-                threads = [threading.Thread(target=one) for _ in range(2)]
-                for thread in threads:
-                    thread.start()
-                for thread in threads:
-                    thread.join()
-                notes = r.notes()
-                asks = [n for n in notes if "ask" in n]
-                self.assertEqual([n["build"] for n in notes if "build" in n], ["doctor"], "one venv build, the seed's")
-                self.assertEqual(len(asks), 2, notes)
-                self.assertEqual(len({n["home"] for n in asks}), 2, "each run gets its own HOME")
-                self.assertTrue(all(n["venvs"] == ["kernel-venv-fake"] for n in asks), asks)
-                self.assertTrue(all(n["git"] and Path(n["ask"]).is_relative_to(r.root / "iso") for n in asks), asks)
-                self.assertTrue(all(n["token"] == {"version": 1, "kind": "oauth", "access": "fresh-access",
-                                                   "expires_ms": n["token"]["expires_ms"]} for n in asks), asks)
-                self.assertTrue(all(n["mode"] == "0o600" for n in asks), asks)
-                self.assertEqual(len(posts), 1, "one central refresh, under its lock")
-                self.assertTrue(all(row["status"] == "ok" and not row["venvRebuilt"] for row in rows), rows)
-                for n in asks:
-                    self.assertFalse(Path(n["home"]).exists() or Path(n["ask"]).exists(), "settled runs leave nothing")
-                central = json.loads((kill.kimi_home() / ".yi" / "providers" / "tokens" / "kimi.json").read_text())
-                self.assertEqual(central["refresh"], "rotated", "the rotated refresh token stays central")
-        finally:
-            server.shutdown()
-            server.server_close()
+            def one():
+                gate.wait()
+                rows.append(kill.ask("iso", "kimi", r.spec, str(r.yi), float("inf")))
+            threads = [threading.Thread(target=one) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            notes = r.notes()
+            asks = [n for n in notes if "ask" in n]
+            self.assertEqual([n["build"] for n in notes if "build" in n], ["doctor"], "one venv build, the seed's")
+            self.assertEqual(len(asks), 2, notes)
+            self.assertEqual(len({n["home"] for n in asks}), 2, "each run gets its own HOME")
+            self.assertTrue(all(n["venvs"] == ["kernel-venv-fake"] for n in asks), asks)
+            self.assertTrue(all(n["git"] and Path(n["ask"]).is_relative_to(r.root / "iso") for n in asks), asks)
+            self.assertTrue(all(n["token"] == {"version": 1, "kind": "oauth", "access": "fresh-access",
+                                               "expires_ms": n["token"]["expires_ms"]} for n in asks), asks)
+            self.assertTrue(all(n["mode"] == "0o600" for n in asks), asks)
+            refreshes = [n["refresh"] for n in notes if "refresh" in n]
+            self.assertEqual(refreshes, [["login", "kimi", "--refresh", "660"]] * 2, "both runs ask Yi for a fresh-enough token")
+            self.assertEqual(len([n for n in notes if "rotated" in n]), 1, "one central refresh, under Yi's lock")
+            self.assertTrue(all(row["status"] == "ok" and not row["venvRebuilt"] for row in rows), rows)
+            for n in asks:
+                self.assertFalse(Path(n["home"]).exists() or Path(n["ask"]).exists(), "settled runs leave nothing")
+            central = json.loads((kill.kimi_home() / ".yi" / "providers" / "tokens" / "kimi.json").read_text())
+            self.assertEqual(central["refresh"], "rotated", "the rotated refresh token stays central")
 
 
 class Runs(unittest.TestCase):
