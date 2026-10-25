@@ -449,7 +449,10 @@ pub fn register_grep(
     handle: crate::goal::StoreHandle,
     wall: &crate::wall::Wall,
 ) {
-    let walled = wall.denies_history();
+    let own = format!("history://{}", crate::fetch::SELF).parse::<yi_types::url::Url>();
+    let walled = own.map_or(wall.denies_history(), |own| {
+        wall.check_url(&own, Path::new("")).is_some()
+    });
     registry.register("history.grep", move |payload| {
         let handle = Arc::clone(&handle);
         Box::pin(async move {
