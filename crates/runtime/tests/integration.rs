@@ -6,6 +6,8 @@
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
 mod recorded;
+#[path = "../../types/tests/support/repo.rs"]
+mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/family.rs"]

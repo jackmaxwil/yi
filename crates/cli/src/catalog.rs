@@ -20,7 +20,7 @@ pub(crate) fn clock() -> std::time::SystemTime {
 fn walled(provider: &str) -> Option<String> {
     let wall = yi_runtime::Wall::default();
     let workspace = std::env::current_dir().unwrap_or_default();
-    [yi_runtime::MODELS_DEV]
+    [yi_runtime::MODELS_DEV.to_owned()]
         .into_iter()
         .chain(yi_runtime::catalog_list_url(provider))
         .filter_map(|target| target.parse::<yi_types::url::Url>().ok())
@@ -90,7 +90,9 @@ pub(crate) fn run(args: &Args) -> i32 {
                 }
                 // A provider with no list adapter is bundled by design; there is
                 // nothing to fetch, and the run has not failed.
-                if yi_runtime::catalog_list_url(provider).is_none() {
+                if yi_runtime::catalog_list_url(provider).is_none()
+                    && !yi_runtime::catalog_needs_credential(provider)
+                {
                     println!("{provider:<width$} bundled only");
                     continue;
                 }
@@ -119,8 +121,34 @@ pub(crate) fn run(args: &Args) -> i32 {
             }
             code
         }
+        Some("usage") => {
+            let only = words.next();
+            if only != Some("kimi") {
+                eprintln!(
+                    "usage: yi catalog usage kimi (not {:?})",
+                    only.unwrap_or("")
+                );
+                return 2;
+            }
+            let Some(key) = yi_ai_key("kimi") else {
+                eprintln!("error: {}", yi_runtime::auth::missing_message("kimi"));
+                return 1;
+            };
+            match proxy_from_env()
+                .and_then(|proxy| yi_runtime::kimi_usages(key.expose(), proxy.as_ref()))
+            {
+                Ok(line) => {
+                    println!("{line}");
+                    0
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    1
+                }
+            }
+        }
         Some(other) => {
-            eprintln!("usage: yi catalog [refresh [provider]] (not {other:?})");
+            eprintln!("usage: yi catalog [refresh [provider] | usage kimi] (not {other:?})");
             2
         }
     }

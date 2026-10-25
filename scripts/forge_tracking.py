@@ -44,7 +44,10 @@ def git(*args):
 def version():
     """The version in docs/ARCHITECTURE.md's header — the one the merge shipped."""
     header = (ROOT / "docs/ARCHITECTURE.md").read_text()
-    return re.search(r"^version:\s*(\S+)", header, re.M).group(1)
+    found = re.search(r"^version:\s*(\S+)", header, re.M)
+    if not found:
+        sys.exit("docs/ARCHITECTURE.md has no `version:` line")
+    return found.group(1)
 
 
 def points(issue):
