@@ -21,7 +21,7 @@ ledger is ~/Development/yi-runs/next-shape/ledger.jsonl, flock'd and shared by e
 Stdlib only.
 """
 import argparse, contextlib, datetime, fcntl, hashlib, importlib.util, json, os, shutil
-import subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
+import subprocess, sys, threading, time, uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -166,30 +166,14 @@ def write_0600(path, value):
     os.replace(tmp, path)
 
 
-def access_token(provider, need_sec):
-    """The central credential's access token, refreshed under the lock yi's own refresh takes
-    when it would expire inside need_sec. Copies of a rotating refresh token in parallel HOMEs
-    would invalidate each other, so a run HOME gets the access token alone."""
-    yi = kimi_home() / ".yi"
-    path = yi / "providers" / "tokens" / f"{provider}.json"
-    with flocked(yi / "providers" / "locks" / f"{provider}.lock"):
-        cred = json.loads(path.read_text())
-        if cred.get("expires_ms") and cred["expires_ms"] / 1000 - clock() < need_sec:
-            profile = json.loads((yi / "oauth" / f"{provider}.json").read_text())
-            form = {"grant_type": "refresh_token", "refresh_token": cred["refresh"], "client_id": profile["client_id"]}
-            if profile.get("client_secret"):
-                form["client_secret"] = profile["client_secret"]
-            request = urllib.request.Request(profile["token"], data=urllib.parse.urlencode(form).encode(),
-                                             headers={"Accept": "application/json"})
-            with urllib.request.urlopen(request, timeout=60) as response:
-                got = json.load(response)
-            cred = {**cred, "access": got["access_token"], "refresh": got.get("refresh_token") or cred["refresh"],
-                    "expires_ms": int((clock() + float(got["expires_in"])) * 1000)}
-            write_0600(path, cred)
-    left = cred["expires_ms"] / 1000 - clock() if cred.get("expires_ms") else float("inf")
-    if left < need_sec:
-        raise RuntimeError(f"the {provider} access token lives {left:.0f} s and a run needs {need_sec} s")
-    return {"version": 1, "kind": "oauth", "access": cred["access"], "expires_ms": cred.get("expires_ms", 0)}
+def access_token(binary, provider, need_sec):
+    """Yi owns the central refresh grant, lock and private store; stdout never carries the refresh token."""
+    done = subprocess.run([binary, "login", provider, "--refresh", str(need_sec)],
+                          env={**os.environ, "HOME": str(kimi_home())}, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=120)
+    if done.returncode:
+        raise RuntimeError(done.stderr.strip() or f"yi login {provider} --refresh exited {done.returncode}")
+    return json.loads(done.stdout)
 
 
 _SEEDS, _SEEDS_LOCK = {}, threading.Lock()
@@ -230,7 +214,7 @@ def seed_home(home, binary, route, need_sec):
             write_0600(yi / "providers" / "tokens" / token.name, json.loads(token.read_text()))
     if not paid(route):
         provider = route["model"].split("/", 1)[0]
-        write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(provider, need_sec))
+        write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(binary, provider, need_sec))
         (yi / "oauth").mkdir()
         shutil.copy(central / "oauth" / f"{provider}.json", yi / "oauth" / f"{provider}.json")
 
