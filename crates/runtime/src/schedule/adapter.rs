@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use yi_types::channel::MESSAGE_MAX_BYTES;
 
 use super::channel::{Appended, Channel};
 
@@ -318,13 +319,23 @@ fn exec(command: &str, cwd: &Path) -> Value {
         .checked_add(Duration::from_millis(EXEC_TIMEOUT_MS))
         .unwrap_or_else(Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    match yi_tools::run_captured(shell, None, &cancelled, 30_000) {
+    match yi_tools::run_captured(shell, None, &cancelled, yi_tools::OUTPUT_CAP) {
         Ok(capture) if capture.exit_code == Some(0) => json!({"ok": true, "exit": 0}),
-        Ok(capture) => json!({
-            "ok": false,
-            "exit": capture.exit_code,
-            "output": crate::goal::output_tail(&capture),
-        }),
+        Ok(capture) => {
+            let output = crate::goal::check_view(command, &capture);
+            let data = json!({"ok": false, "exit": capture.exit_code, "output": output});
+            // Invariant: the channel refuses a message past MESSAGE_MAX_BYTES whole, `ok` included,
+            // and the view's own text can sit at that size before JSON adds its bytes.
+            let size = data.to_string().len();
+            if size <= MESSAGE_MAX_BYTES {
+                return data;
+            }
+            let next = format!("bash ({command}) > exec.log 2>&1, then read exec.log");
+            let row = format!(
+                "[… 0 of {size} bytes kept (MESSAGE_MAX_BYTES {MESSAGE_MAX_BYTES}); the rest: {next}]"
+            );
+            json!({"ok": false, "exit": capture.exit_code, "output": row})
+        }
         Err(error) => json!({"ok": false, "output": format!("did not run: {error}")}),
     }
 }

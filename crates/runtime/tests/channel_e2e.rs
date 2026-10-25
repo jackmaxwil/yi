@@ -392,6 +392,61 @@ async fn a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix()
     Ok(())
 }
 
+/// A real `pytest -v` run (#1153), 32,955 B: the view cuts it to 16 KiB, which JSON passes.
+const RED_PYTEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+);
+
+/// The first message a red `exec://` check leaves in a fresh channel.
+async fn first_red_message(name: &str, body: &str) -> Result<serde_json::Value, Box<dyn Error>> {
+    let dir = Scratch::new(name)?;
+    script(&dir, "red.sh", body)?;
+    let channel = Channel::at(dir.join("channels/red.jsonl"));
+    let address = "exec://./red.sh?every=1s";
+    channel.open(address, None)?;
+    adapter::ensure(address, &channel, &dir, 1_000, true)?;
+    assert!(wait_until(8_000, || !channel.entries().is_empty()).await);
+    let entry = channel.entries().remove(0);
+    adapter::halt(true);
+    adapter::halt(false);
+    assert_eq!(entry.refused, None, "the channel refused the red level");
+    Ok(entry.data)
+}
+
+/// Dies with the view's 16 KiB text pushing a red level past the channel cap: the message is
+/// refused whole, so a filter on `ok=false` never matches and the todo is never made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_past_the_channel_cap_keeps_its_level_and_names_the_rest() -> TestResult {
+    let data =
+        first_red_message("yi-channel-bigred", &format!("cat '{RED_PYTEST}'; exit 1")).await?;
+    assert_eq!((&data["ok"], &data["exit"]), (&false.into(), &1.into()));
+    let output = data["output"].as_str().ok_or("no output")?;
+    assert!(
+        output.contains("MESSAGE_MAX_BYTES 16384); the rest: bash (./red.sh) > exec.log 2>&1"),
+        "{output}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_message_is_whole_at_the_channel_cap_and_cut_one_byte_past_it() -> TestResult {
+    let bare = serde_json::json!({"ok": false, "exit": 1, "output": ""})
+        .to_string()
+        .len();
+    let fill = MESSAGE_MAX_BYTES - bare;
+    let printing = |bytes: usize| format!("head -c {bytes} /dev/zero | tr '\\0' x; exit 1");
+    let at = first_red_message("yi-channel-atcap", &printing(fill)).await?;
+    assert_eq!(at["output"].as_str().map(str::len), Some(fill));
+    let past = first_red_message("yi-channel-pastcap", &printing(fill + 1)).await?;
+    let row = past["output"].as_str().ok_or("no output")?;
+    assert!(
+        row.starts_with("[… 0 of 16385 bytes kept (MESSAGE_MAX_BYTES 16384)"),
+        "{row}"
+    );
+    Ok(())
+}
+
 /// Dies with the host restarting forever (no intensity) and with a dead adapter leaving its
 /// subscription active and silent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
