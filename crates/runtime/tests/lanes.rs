@@ -48,8 +48,8 @@ use yi_runtime::lane::settle::{
     Held, Prepared, Publish, Published, Quiescence, Unsettled, generation_of, prepare, publish,
 };
 use yi_runtime::lane::{
-    BranchName, ClaimBase, DEFAULT_SLOTS, Head, LaneError, Pool, SlotIndex, SlotView, TreeState,
-    head, toolchain,
+    BranchName, ClaimBase, DEFAULT_SLOTS, Head, Lane, LaneError, Pool, SlotIndex, SlotView,
+    TreeState, head, toolchain,
 };
 use yi_types::lane::PrNumber;
 
@@ -339,8 +339,6 @@ fn an_orphan_with_nothing_main_lacks_is_a_free_slot() -> TestResult {
     let lane = pool.claim("pid-2", ClaimBase::Main)?;
     std::fs::write(lane.path().join("draft.txt"), "unsaved\n")?;
     drop(lane);
-    git(&rig.repo, &["branch", "-q", "yi/pid-2", "main"])?;
-    orphan(&pool, slot, "pid-2")?;
     let refused = pool.claim("s-late", ClaimBase::Main);
     assert!(
         matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
@@ -486,7 +484,8 @@ fn forge_replies_parse_to_typed_numbers_and_slugs() {
 fn the_warmer_refuses_a_lockfile_no_session_synced() -> TestResult {
     let rig = Rig::new("warm")?;
     std::fs::write(rig.repo.join("Cargo.lock"), "# lock\n")?;
-    git(&rig.repo, &["add", "Cargo.lock"])?;
+    std::fs::write(rig.repo.join(".gitignore"), "/target\n")?;
+    git(&rig.repo, &["add", "Cargo.lock", ".gitignore"])?;
     git(&rig.repo, &["commit", "-qm", "lock"])?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-warm", ClaimBase::Main)?;
@@ -511,6 +510,19 @@ fn the_warmer_refuses_a_lockfile_no_session_synced() -> TestResult {
         state.warm.is_some(),
         "the release started a warm with a receipt"
     );
+    let built = pool
+        .dir()
+        .join(slot.to_string())
+        .join("target/debug/libyi.rlib");
+    std::fs::create_dir_all(built.parent().ok_or("a parent")?)?;
+    std::fs::write(&built, "warm\n")?;
+    let next = pool.claim("s-next", ClaimBase::Main)?;
+    assert_eq!(
+        next.slot(),
+        slot,
+        "ignored build output leaves the slot free"
+    );
+    assert!(built.is_file(), "and warm");
     Ok(())
 }
 
@@ -564,6 +576,268 @@ fn head_reads_a_branch_a_detached_sha_and_refuses_garbage() -> TestResult {
     Ok(())
 }
 
+/// Claims `s-one` on a one-slot pool and leaves an edit to a tracked file and an untracked
+/// non-ASCII file in it: the uncommitted work a quit must not hand to the next claim.
+fn dirty_lane(rig: &Rig) -> Result<(Pool, Lane, PathBuf, PathBuf), Box<dyn Error>> {
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let (readme, note) = dirty(lane.path())?;
+    Ok((pool, lane, readme, note))
+}
+
+fn dirty(tree: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    let (readme, note) = (tree.join("README.md"), tree.join("notes-é.txt"));
+    std::fs::write(&readme, "edited, not committed\n")?;
+    std::fs::write(&note, "brouillon\n")?;
+    Ok((readme, note))
+}
+
+fn assert_kept_from_the_next_claim(pool: &Pool, readme: &Path, note: &Path) -> TestResult {
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read_to_string(readme)?, "edited, not committed\n");
+    assert!(note.is_file(), "the untracked file survived the claim");
+    Ok(())
+}
+
+/// Incident: a clean quit cleared a dirty slot's session, and the next claim ran
+/// `checkout -f -B` and `clean -qfd` over the only copy of the work.
+#[test]
+fn a_clean_quit_keeps_uncommitted_work_from_the_next_claim() -> TestResult {
+    let rig = Rig::new("quit-dirty")?;
+    let (pool, lane, readme, note) = dirty_lane(&rig)?;
+    assert_eq!(lane.release()?.to_string(), "2 uncommitted paths");
+    assert_kept_from_the_next_claim(&pool, &readme, &note)?;
+    let views = pool.list()?;
+    assert!(
+        matches!(&views[..], [SlotView::Orphan { holder, .. }] if holder.session == "s-one"),
+        "{views:?}"
+    );
+    let back = pool.claim("s-one", ClaimBase::Main)?;
+    assert!(
+        back.path().join("notes-é.txt").is_file(),
+        "its session resumes it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dropped_lane_keeps_its_dirty_tree() -> TestResult {
+    let rig = Rig::new("drop-dirty")?;
+    let (pool, lane, readme, note) = dirty_lane(&rig)?;
+    drop(lane);
+    assert_kept_from_the_next_claim(&pool, &readme, &note)?;
+    let back = pool.claim("s-one", ClaimBase::Main)?;
+    assert!(
+        back.path().join("notes-é.txt").is_file(),
+        "its session resumes it"
+    );
+    Ok(())
+}
+
+/// An older binary's release detached the slot, deleted the merged branch and cleared the
+/// session whatever the tree held: a clean release with the work written after is that shape.
+#[test]
+fn a_slot_an_older_binary_released_dirty_is_never_wiped() -> TestResult {
+    let rig = Rig::new("old-release")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let tree = lane.path().to_path_buf();
+    drop(lane);
+    let (readme, note) = dirty(&tree)?;
+    assert_kept_from_the_next_claim(&pool, &readme, &note)?;
+    let text = format_lanes(&pool.list()?, None);
+    let line = text.lines().next().unwrap_or_default();
+    assert!(
+        line.starts_with("lane 0: left by no session on (detached) · 1 modified, 1 untracked, 0 ahead, 0 behind · ")
+            && line.ends_with(" — reap discards the uncommitted paths"),
+        "the refusal's listing names the slot it counted: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reap_discards_a_dirty_tree_and_says_how_much() -> TestResult {
+    let rig = Rig::new("reap-dirty")?;
+    let (pool, lane, readme, note) = dirty_lane(&rig)?;
+    let slot = lane.slot();
+    lane.release()?;
+    let message = pool.reap(slot)?;
+    assert!(
+        message.contains("2 uncommitted paths discarded"),
+        "{message}"
+    );
+    let next = pool.claim("s-two", ClaimBase::Main)?;
+    assert_eq!(next.slot(), slot);
+    assert_eq!(git(next.path(), &["status", "--porcelain"])?, "");
+    assert_eq!(std::fs::read_to_string(&readme)?, "base\n");
+    assert!(!note.exists(), "the reap discarded the untracked file");
+    Ok(())
+}
+
+/// A status list past the capture cap is counted as a floor, never as the whole: 1,500
+/// twenty-byte rows are exactly the cap, and one byte more cuts the list.
+#[test]
+fn a_reap_past_the_status_cap_says_at_least() -> TestResult {
+    let rig = Rig::new("reap-cap")?;
+    let pool = rig.pool(1)?;
+    for (session, longer) in [("s-at", None), ("s-past", Some(0))] {
+        let lane = pool.claim(session, ClaimBase::Main)?;
+        for n in 0..1_500 {
+            let name = match longer {
+                Some(at) if at == n => format!("{n:017}"),
+                _ => format!("{n:016}"),
+            };
+            std::fs::write(lane.path().join(name), "")?;
+        }
+        let slot = lane.slot();
+        lane.release()?;
+        let message = pool.reap(slot)?;
+        match longer {
+            None => assert!(
+                message.starts_with("lane 0 freed; 1500 uncommitted paths discarded; branch"),
+                "{message}"
+            ),
+            Some(_) => {
+                let floor = message
+                    .strip_prefix("lane 0 freed; at least ")
+                    .and_then(|rest| rest.split_once(' '))
+                    .and_then(|(n, _)| n.parse::<usize>().ok())
+                    .ok_or(format!("no floor: {message}"))?;
+                assert!((1_490..1_500).contains(&floor), "{message}");
+                assert!(
+                    message.contains(
+                        " uncommitted paths (status read 30000 of 30001 bytes, OUTPUT_CAP 30000) discarded; branch"
+                    ),
+                    "{message}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A resume finds its own slot first: a lower slot freed meanwhile is not where its work is.
+#[test]
+fn a_resume_takes_its_own_dirty_slot_over_a_lower_free_one() -> TestResult {
+    for commit in [false, true] {
+        let rig = Rig::new(if commit {
+            "resume-own-commit"
+        } else {
+            "resume-own"
+        })?;
+        let pool = rig.pool(2)?;
+        let low = pool.claim("s-a", ClaimBase::Main)?;
+        let mine = pool.claim("s-b", ClaimBase::Main)?;
+        let slot = mine.slot();
+        if commit {
+            std::fs::write(mine.path().join("done.txt"), "committed\n")?;
+            git(mine.path(), &["add", "done.txt"])?;
+            git(mine.path(), &["commit", "-qm", "done"])?;
+        }
+        std::fs::write(mine.path().join("work.txt"), "only copy\n")?;
+        mine.release()?;
+        low.release()?;
+        let back = pool.claim("s-b", ClaimBase::Main)?;
+        assert_eq!(back.slot(), slot, "commit={commit}");
+        assert!(back.path().join("work.txt").is_file(), "commit={commit}");
+        assert_eq!(back.path().join("done.txt").is_file(), commit);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_discard_says_what_it_dropped_and_frees_the_slot() -> TestResult {
+    let rig = Rig::new("discard-dirty")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("draft-é.txt"), "unsaved\n")?;
+    assert_eq!(lane.discard()?.to_string(), "1 uncommitted path");
+    let next = pool.claim("s-two", ClaimBase::Main)?;
+    assert_eq!(git(next.path(), &["status", "--porcelain"])?, "");
+    Ok(())
+}
+
+/// Incident: `status.showUntrackedFiles=no` hid new files from the dirty read, so a quit
+/// over them cleared the session and the next claim cleaned them away.
+#[test]
+fn a_quit_over_new_files_keeps_them_under_a_quiet_status_config() -> TestResult {
+    let rig = Rig::new("quiet-status")?;
+    git(&rig.repo, &["config", "status.showUntrackedFiles", "no"])?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let note = lane.path().join("notes-é.txt");
+    std::fs::write(&note, "brouillon\n")?;
+    lane.release()?;
+    let refused = pool.claim("s-two", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
+        "{refused:?}"
+    );
+    assert!(note.is_file());
+    Ok(())
+}
+
+/// Incident: the same quiet config read a child's new files as no work, so its candidate
+/// was the base commit and the files were cleaned when the slot was handed back.
+#[test]
+fn a_candidate_commits_new_files_under_a_quiet_status_config() -> TestResult {
+    let rig = Rig::new("quiet-candidate")?;
+    git(&rig.repo, &["config", "status.showUntrackedFiles", "no"])?;
+    let lane = rig.pool(1)?.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("notes-é.txt"), "brouillon\n")?;
+    let candidate = lane.candidate(&quiet(), None)?;
+    let files = git(
+        lane.path(),
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--name-only",
+            "--format=",
+            candidate.commit.as_str(),
+        ],
+    )?;
+    assert_eq!(files, "notes-é.txt");
+    Ok(())
+}
+
+/// Incident: a resume claimed a free slot and `-B` reset its own unmerged branch to `main`.
+#[test]
+fn a_resumed_session_after_a_clean_quit_keeps_its_commits() -> TestResult {
+    let rig = Rig::new("quit-commits")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("work.txt"), "committed\n")?;
+    git(lane.path(), &["add", "work.txt"])?;
+    git(lane.path(), &["commit", "-qm", "work"])?;
+    let tip = git(lane.path(), &["rev-parse", "HEAD"])?;
+    lane.release()?;
+    let other = pool.claim("s-two", ClaimBase::Main)?;
+    let free = other.slot();
+    let fresh = pool.claim("s-one", ClaimBase::Main)?;
+    assert_ne!(fresh.slot(), free, "the resume made a fresh slot");
+    assert_eq!(
+        git(fresh.path(), &["rev-parse", "HEAD"])?,
+        tip,
+        "fresh slot"
+    );
+    fresh.release()?;
+    other.release()?;
+    let reused = pool.claim("s-one", ClaimBase::Main)?;
+    assert_eq!(reused.slot(), free, "the resume reused a free slot");
+    assert_eq!(
+        git(reused.path(), &["rev-parse", "HEAD"])?,
+        tip,
+        "reused slot"
+    );
+    assert!(reused.path().join("work.txt").is_file());
+    Ok(())
+}
+
 /// The listing says what a reap would lose before anyone types it: an untracked path
 /// on a merged branch is named, and a clean merged slot is the next claim's.
 #[test]
@@ -572,17 +846,11 @@ fn a_listing_says_what_a_reap_would_lose() -> TestResult {
     let pool = rig.pool(2)?;
     let dirty = pool.claim("s-dirty", ClaimBase::Main)?;
     std::fs::write(dirty.path().join("scratch.txt"), "only copy\n")?;
-    let dirty_slot = dirty.slot();
     drop(dirty);
-    // A merged branch goes at release; the crash left it, so it is put back as the crash would.
-    git(
-        &pool.dir().join(dirty_slot.to_string()),
-        &["branch", "-q", "yi/s-dirty", "HEAD"],
-    )?;
-    orphan(&pool, dirty_slot, "s-dirty")?;
     let clean = pool.claim("s-clean", ClaimBase::Main)?;
     let clean_slot = clean.slot();
     drop(clean);
+    // A merged branch goes at release; the crash left it, so it is put back as the crash would.
     git(
         &pool.dir().join(clean_slot.to_string()),
         &["branch", "-q", "yi/s-clean", "HEAD"],
@@ -703,6 +971,42 @@ fn handle_for(
             let _ = tx.send(format!("{message:?}"));
         });
     (LaneHandle::new(lane, None, land_command, events, steer), rx)
+}
+
+/// The `/discard` reply names the branch and how many uncommitted paths went with it.
+#[test]
+fn a_discard_reply_counts_the_paths_it_dropped() -> TestResult {
+    let rig = Rig::new("discard-reply")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    dirty(lane.path())?;
+    let (handle, _steers) = handle_for(Some(lane), None);
+    assert_eq!(
+        handle.discard()?,
+        "discarded yi/s-one; 2 uncommitted paths discarded; the transcript is kept"
+    );
+    Ok(())
+}
+
+/// A quit over a dirty tree prints where the work stayed and the one call that discards it;
+/// a clean quit prints nothing.
+#[test]
+fn a_quit_over_a_dirty_tree_says_where_the_work_stays() -> TestResult {
+    let rig = Rig::new("quit-reply")?;
+    let pool = rig.pool(2)?;
+    let lane = pool.claim("s-one", ClaimBase::Main)?;
+    let path = yi_runtime::lane::land::tilde(lane.path());
+    dirty(lane.path())?;
+    let (handle, _steers) = handle_for(Some(lane), None);
+    assert_eq!(
+        handle.release()?,
+        Some(format!(
+            "lane 0 kept: 2 uncommitted paths in {path}; `yi lanes reap 0` discards them"
+        ))
+    );
+    let (clean, _steers) = handle_for(Some(pool.claim("s-two", ClaimBase::Main)?), None);
+    assert_eq!(clean.release()?, None);
+    Ok(())
 }
 
 /// The status row's lane label is the repo's name alone: the slot number the console's `_yi/workdir`
