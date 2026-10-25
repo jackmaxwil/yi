@@ -27,6 +27,40 @@ fn identity_names_every_tool_the_session_registers() -> TestResult {
     Ok(())
 }
 
+/// A leaf root child keeps the kernel-or-bash teaching and Planning's conduct and loses the
+/// delegation rules and the lift rule; the root reads all four.
+#[test]
+fn a_leaf_is_taught_no_delegation_and_the_root_all_of_it() -> TestResult {
+    let dir = crate::scratch::Scratch::new("yi-leaf-doctrine")?;
+    let prompt = |can_delegate: bool| {
+        let mut host = yi_runtime::ext::install(yi_runtime::ExtOptions {
+            cwd: dir.to_path_buf(),
+            home: dir.to_path_buf(),
+            mode: yi_runtime::PermissionMode::Auto,
+            user_system: String::new(),
+            schema_instruction: None,
+            context_window: 128_000,
+            global_skills: Vec::new(),
+            can_delegate,
+        });
+        host.start(None, false);
+        host.system_prompt()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let (root, leaf) = (prompt(true), prompt(false));
+    for kept in ["Bash or the kernel", "Ground unknowns by exploring"] {
+        assert!(root.contains(kept), "the root lost {kept}");
+        assert!(leaf.contains(kept), "the leaf lost {kept}");
+    }
+    for taught in ["Solo, readers, or writers", "Lift todos into the plan tool"] {
+        assert!(root.contains(taught), "the root lost {taught}");
+        assert!(!leaf.contains(taught), "the leaf is taught {taught}");
+    }
+    Ok(())
+}
+
 #[test]
 fn every_flag_the_prompt_names_for_grep_is_in_its_schema() -> TestResult {
     let grep = builtin_tools()
