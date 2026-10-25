@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use ratatui::buffer::Buffer;
@@ -7,6 +8,8 @@ use ratatui::style::Modifier;
 use ratatui::widgets::Widget;
 use tui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthChar;
+
+use crate::transcript::show_controls;
 
 struct HistorySearch {
     original: String,
@@ -44,25 +47,10 @@ impl Default for Composer {
     }
 }
 
-/// Paste sanitization: CRLF and CR become LF, tabs expand to three spaces, other controls
-/// drop. NFC normalization is dropped — it needs a Unicode tables dep.
-pub fn sanitize_paste(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                out.push('\n');
-            }
-            '\t' => out.push_str("   "),
-            c if c.is_control() && c != '\n' => {}
-            c => out.push(c),
-        }
-    }
-    out
+/// Invariant: a paste reaches the model as typed, tabs and escapes included, so only line
+/// endings change here; the box draws the rest through [`show_controls`].
+pub fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 const MARKER_LINES: usize = 10;
@@ -309,7 +297,7 @@ impl Composer {
         let mut used = 0;
         let mut to = start;
         for ch in text.chars().skip(start).take(limit.saturating_sub(start)) {
-            used += ch.width().unwrap_or(0);
+            used += cell_width(ch);
             if used > x {
                 break;
             }
@@ -325,7 +313,7 @@ impl Composer {
     }
 
     pub fn handle_paste(&mut self, raw: &str) {
-        let text = sanitize_paste(raw);
+        let text = normalize_newlines(raw);
         let lines = text.split('\n').count();
         if lines > MARKER_LINES || text.chars().count() > MARKER_CHARS {
             self.paste_counter += 1;
@@ -499,10 +487,17 @@ impl Composer {
                 if index == cursor && col == cursor_col {
                     cell_style = cell_style.patch(cursor_style);
                 }
+                let mut utf8 = [0; 4];
+                let plain = &*ch.encode_utf8(&mut utf8);
+                let shown = if ch.is_control() {
+                    Cow::Owned(show_controls(plain))
+                } else {
+                    Cow::Borrowed(plain)
+                };
                 let (next, _) = buffer.set_stringn(
                     x,
                     y,
-                    ch.encode_utf8(&mut [0; 4]),
+                    shown,
                     usize::from(inner.right().saturating_sub(x)),
                     cell_style,
                 );
@@ -530,16 +525,11 @@ fn wrap(lines: &[String], width: usize) -> Vec<(usize, usize, usize)> {
     for (line, text) in lines.iter().enumerate() {
         let (mut start, mut used, mut space) = (0, 0, None);
         for (at, ch) in text.chars().enumerate() {
-            let cells = ch.width().unwrap_or(0);
+            let cells = cell_width(ch);
             if used + cells > width && at > start {
                 let cut = space.filter(|&cut| cut > start).unwrap_or(at);
                 rows.push((line, start, cut));
-                used = text
-                    .chars()
-                    .skip(cut)
-                    .take(at - cut)
-                    .filter_map(|c| c.width())
-                    .sum();
+                used = text.chars().skip(cut).take(at - cut).map(cell_width).sum();
                 start = cut;
                 space = None;
             }
@@ -553,6 +543,16 @@ fn wrap(lines: &[String], width: usize) -> Vec<(usize, usize, usize)> {
     rows
 }
 
+/// Invariant: the width [`show_controls`] gives the char, or wrapping and the cursor drift from
+/// the row the render draws.
+fn cell_width(ch: char) -> usize {
+    match ch {
+        '\t' => crate::markdown::TAB_STOP,
+        c if c.is_control() => 1,
+        c => c.width().unwrap_or(0),
+    }
+}
+
 fn cursor_row(rows: &[(usize, usize, usize)], line: usize, col: usize) -> usize {
     rows.iter()
         .rposition(|&(l, start, _)| l == line && start <= col)
@@ -564,7 +564,7 @@ fn width_of(text: Option<&String>, from: usize, to: usize) -> usize {
         text.chars()
             .skip(from)
             .take(to.saturating_sub(from))
-            .filter_map(|c| c.width())
+            .map(cell_width)
             .sum()
     })
 }
@@ -628,7 +628,7 @@ fn clear_line(textarea: &mut TextArea<'_>) -> bool {
 impl crate::app::App {
     /// Invariant: a quote lands whole on its own lines; a long one never folds into a paste marker.
     pub fn quote(&mut self, text: &str) {
-        let quoted: String = sanitize_paste(text)
+        let quoted: String = normalize_newlines(text)
             .lines()
             .map(|line| format!("> {line}\n"))
             .collect();

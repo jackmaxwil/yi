@@ -13,7 +13,6 @@ use zeromq::ZmqMessage;
 use crate::bootstrap::{BootstrapOptions, ProgressFn, ensure_kernel_python};
 use crate::connection::{has_resolved_ports, make_connection, random_hex, read_connection_info};
 use crate::framing::{build_message, encode};
-use crate::journal::record_orphan_process_state;
 use crate::reduce::CellState;
 use crate::{
     DEFAULT_MAX_OUTPUT_CHARS, HOST_REQUEST_DISPOSE_TIMEOUT_MS, KERNEL_ABORT_GRACE_MS,
@@ -85,7 +84,6 @@ pub trait HostHandlers: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct KernelSnapshotConfig {
     pub path: PathBuf,
-    pub manifest_path: PathBuf,
     pub max_bytes: Option<u64>,
     pub max_variable_bytes: Option<u64>,
     pub debounce_ms: Option<u64>,
@@ -168,12 +166,8 @@ pub(crate) struct Inner {
     pub(crate) pending_control: Mutex<HashMap<String, (String, oneshot::Sender<()>)>>,
     pub(crate) comm_targets: Mutex<HashMap<String, String>>,
     pub(crate) handled_host_comm_ids: Mutex<HashSet<String>>,
-    // Source of the most recently started cell, retained after it finishes so rlm.run spawns
-    // from detached asyncio tasks can still attribute their spawning program.
-    pub(crate) last_cell_code: Mutex<Option<String>>,
     pub(crate) kernel_stderr: Mutex<String>,
     pub(crate) in_flight_host: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
-    pub(crate) child_pid: Mutex<Option<u32>>,
     pub(crate) snapshot: Option<KernelSnapshotConfig>,
     pub(crate) snapshot_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) checkpoints: crate::snapshot::Checkpoints,
@@ -292,17 +286,9 @@ fn spawn_kernel_process(
     if let Some(path) = shadow_debugpy(connection_path, existing) {
         command.env("PYTHONPATH", path);
     }
-    let child = command
+    command
         .spawn()
-        .map_err(|error| format!("failed to spawn ipykernel: {error}"))?;
-    let pid = child.id();
-    if let (Some(pid), Ok(mut slot)) = (pid, inner.child_pid.lock()) {
-        *slot = Some(pid);
-    }
-    if let Some(pid) = pid {
-        record_orphan_process_state(pid, true, now_iso());
-    }
-    Ok(child)
+        .map_err(|error| format!("failed to spawn ipykernel: {error}"))
 }
 
 pub(crate) fn zmq_message(frames: Vec<Vec<u8>>) -> Option<ZmqMessage> {
@@ -441,10 +427,8 @@ impl Inner {
                 }
                 let duration =
                     u64::try_from(current.started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let cell = std::mem::replace(
-                    &mut current.cell,
-                    CellState::new(String::new(), String::new(), 0, true),
-                );
+                let cell =
+                    std::mem::replace(&mut current.cell, CellState::new(String::new(), 0, true));
                 let result = crate::reduce::finish(cell, duration, aborted);
                 if let Some(tx) = current.result_tx.take() {
                     resolved = Some((tx, Ok(result)));
@@ -556,10 +540,8 @@ impl KernelManager {
                 pending_control: Mutex::new(HashMap::new()),
                 comm_targets: Mutex::new(HashMap::new()),
                 handled_host_comm_ids: Mutex::new(HashSet::new()),
-                last_cell_code: Mutex::new(None),
                 kernel_stderr: Mutex::new(String::new()),
                 in_flight_host: Mutex::new(Vec::new()),
-                child_pid: Mutex::new(None),
                 snapshot: options.snapshot,
                 snapshot_timer: Mutex::new(None),
                 checkpoints: crate::snapshot::Checkpoints::default(),
@@ -901,12 +883,7 @@ impl KernelManager {
                 ));
             }
             *active = Some(Active {
-                cell: CellState::new(
-                    request_id.clone(),
-                    code.to_owned(),
-                    max_chars,
-                    options.internal,
-                ),
+                cell: CellState::new(request_id.clone(), max_chars, options.internal),
                 started: std::time::Instant::now(),
                 on_stream: options.on_stream,
                 abort: options.abort.clone(),
@@ -916,11 +893,6 @@ impl KernelManager {
         }
         if let Some(on_request) = options.on_request {
             on_request(&request_id);
-        }
-        if !options.internal
-            && let Ok(mut last) = inner.last_cell_code.lock()
-        {
-            *last = Some(code.to_owned());
         }
 
         let internal = options.internal;
@@ -1065,14 +1037,6 @@ impl KernelManager {
         if !inner.stale(generation) {
             inner.cleanup_resources();
         }
-    }
-
-    pub fn last_cell_code(&self) -> Option<String> {
-        self.inner
-            .last_cell_code
-            .lock()
-            .ok()
-            .and_then(|last| last.clone())
     }
 }
 

@@ -464,15 +464,15 @@ fn render_with(
     Line::from(spans)
 }
 
-/// Spinner + the current tool's `i` intent + interrupt hint.
+/// Spinner + the working label + interrupt hint.
 pub fn working_line(
-    intent: Option<&str>,
+    label: Option<&str>,
     spinner_phase: usize,
     esc_armed: bool,
     theme: &Theme,
 ) -> Line<'static> {
     let glyph = spinner_frame(spinner_phase);
-    let text = intent.unwrap_or("Working…");
+    let text = label.unwrap_or("Working…");
     let hint = if esc_armed {
         "esc again to interrupt"
     } else {

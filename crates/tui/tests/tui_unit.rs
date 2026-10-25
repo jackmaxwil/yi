@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier, name_accent};
-use yi_tui::composer::{Composer, sanitize_paste};
+use yi_tui::composer::Composer;
 use yi_tui::frame::FrameScheduler;
 use yi_tui::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey, default_keymap};
 use yi_tui::status::StatusInput;
@@ -98,6 +98,19 @@ fn keymap_round_trips_and_overrides() -> TestResult {
     Ok(())
 }
 
+/// Dies with a space-separated binding accepted and never fired: nothing resolved a chord, so
+/// `ctrl-x ctrl-e` sat in the map doing nothing and the config said it was bound.
+#[test]
+fn a_chord_in_the_keys_config_is_refused_naming_it() -> TestResult {
+    let mut map = default_keymap();
+    let refused = map
+        .apply_overrides(vec![("ctrl-x ctrl-e", "external-editor")])
+        .err()
+        .ok_or("the chord was accepted")?;
+    assert!(refused.contains("ctrl-x ctrl-e"), "{refused}");
+    Ok(())
+}
+
 #[test]
 fn paste_atoms_collapse_and_expand_exactly() -> TestResult {
     let mut composer = Composer::default();
@@ -135,10 +148,16 @@ fn paste_expansion_is_single_pass_and_longest_label_first() -> TestResult {
     Ok(())
 }
 
+/// Dies with a paste rewritten before the model reads it: the tab became three spaces and the
+/// escape was dropped, so a Makefile recipe or a terminal capture reached the prompt as other text.
 #[test]
-fn sanitize_paste_strips_control_keeps_newlines() -> TestResult {
-    let out = sanitize_paste("a\r\nb\x1b[31mc\td");
-    assert_eq!(out, "a\nb[31mc   d");
+fn a_paste_is_kept_byte_for_byte_but_for_its_carriage_returns() -> TestResult {
+    let mut composer = Composer::default();
+    composer.handle_paste("all:\r\n\tcc -o app\x1b[31m main.c\r\t./app\x07");
+    assert_eq!(
+        composer.take_submission().as_deref(),
+        Some("all:\n\tcc -o app\x1b[31m main.c\n\t./app\x07")
+    );
     Ok(())
 }
 
@@ -1551,14 +1570,13 @@ fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
     ToolCell {
         name: name.to_owned(),
         call_id: String::new(),
-        intent: None,
         status: if failed {
             ToolStatus::Failed
         } else {
             ToolStatus::Done
         },
         summary: ToolCell::summary_of(name, ""),
-        digest: ToolCell::digest_of(name, result, failed),
+        digest: ToolCell::digest_of(name, result, &serde_json::Value::Null, failed),
         preview: result.lines().map(str::to_owned).collect(),
         elapsed_ms: 0,
         calls: 1,
@@ -1589,7 +1607,6 @@ fn a_finished_tool_states_its_outcome_without_switching_modes() -> TestResult {
             "src/a.rs:3:hit\nsrc/a.rs-4-ctx\nsrc/b.rs:9:hit",
             "2 hits",
         ),
-        ("glob", "src/a.rs\nsrc/b.rs", "2 files"),
         (
             "write",
             "Wrote 36 bytes to /tmp/x",
@@ -2050,32 +2067,6 @@ fn the_reflow_debounce_rebuilds_once_at_the_settled_width() -> TestResult {
     assert!(!state.reflow_needed_for_width(72));
     // A terminal that settles on its real size after the rebuild still gets one.
     assert!(state.reflow_needed_for_width(74));
-    Ok(())
-}
-
-#[test]
-fn a_resize_during_a_stream_forces_one_repair_after_it_settles() -> TestResult {
-    use std::time::Instant;
-    use yi_tui::reflow::ReflowState;
-
-    let mut state = ReflowState::default();
-    assert!(!state.take_stream_finish_needed());
-
-    // A rebuild that ran mid-stream could only render the partial that existed
-    // then, so the finished text has to be rebuilt once more.
-    state.note_width(100);
-    state.schedule_debounced(Some(80), Instant::now());
-    state.mark_ran_during_stream();
-    assert!(state.take_stream_finish_needed());
-    assert!(
-        !state.take_stream_finish_needed(),
-        "draining: one episode forces at most one repair"
-    );
-
-    // The other half: the width changed while streaming but the debounce never
-    // fired, so nothing rebuilt and the flag is the only record.
-    state.mark_resize_requested_during_stream();
-    assert!(state.take_stream_finish_needed());
     Ok(())
 }
 
@@ -2668,7 +2659,6 @@ fn a_call_head_splits_its_path_into_context_and_name() -> TestResult {
     let cell = ToolCell {
         name: "read".to_owned(),
         call_id: "t1".to_owned(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("read", "crates/tui/src/app.rs"),
         digest: None,
@@ -2781,32 +2771,6 @@ fn prose_marks_a_path_split_across_text_events_whole() -> TestResult {
     Ok(())
 }
 
-/// A URL always holds a slash, so the path split shadowed the fetch hue.
-#[test]
-fn a_fetch_head_colours_its_url_whole() -> TestResult {
-    let theme = theme();
-    let cell = ToolCell {
-        name: "fetch".to_owned(),
-        call_id: "t1".to_owned(),
-        intent: None,
-        status: ToolStatus::Done,
-        summary: ToolCell::summary_of("fetch", "https://docs.rs/syntect/latest"),
-        digest: None,
-        preview: Vec::new(),
-        elapsed_ms: 0,
-        calls: 1,
-        details: serde_json::Value::Null,
-    };
-    let lines = cell.lines(80, &theme, TranscriptMode::Thinking, 0);
-    let url = lines
-        .iter()
-        .flat_map(|l| &l.spans)
-        .find(|s| s.content.as_ref() == "https://docs.rs/syntect/latest")
-        .ok_or(format!("{lines:?}"))?;
-    assert_eq!(url.style.fg, Some(theme.blue5));
-    Ok(())
-}
-
 /// A code line flushed without its newline, the live tail of every streaming fence, took
 /// prose colouring; a capitalised `.js` file is still a file.
 #[test]
@@ -2860,5 +2824,27 @@ fn a_table_is_found_by_every_rule_spelling_and_ends_where_markdown_ends_it() -> 
             "{committed:?}"
         );
     }
+    Ok(())
+}
+
+/// Dies with a draft other users can read and a predictable name: a link planted at
+/// `yi-compose-<pid>.md` on a shared temp directory had the draft written through it.
+#[test]
+fn the_compose_draft_is_private_new_and_never_written_through_a_link() -> TestResult {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new("yi-compose-draft")?;
+    let sentinel = dir.join("sentinel");
+    std::fs::write(&sentinel, "keep")?;
+    let planted = dir.join(format!("yi-compose-{}.md", std::process::id()));
+    std::os::unix::fs::symlink(&sentinel, &planted)?;
+    let (first, mut file) = yi_tui::editor::draft_file(&dir)?;
+    file.write_all(b"the draft")?;
+    let (second, _) = yi_tui::editor::draft_file(&dir)?;
+    assert_eq!(std::fs::read_to_string(&sentinel)?, "keep");
+    assert_eq!(std::fs::read_to_string(&first)?, "the draft");
+    assert_ne!(first, second, "every call makes a new file");
+    let mode = std::fs::metadata(&first)?.permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the draft is the user's alone: {mode:o}");
     Ok(())
 }

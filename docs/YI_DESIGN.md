@@ -564,8 +564,8 @@ A persistent IPython process per session that reaches the host only through host
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and
   `<name>.json` `{name, owner, at, bytes, type, serializer}`; `get` and `ls` read them.
 - Kernel env: `YI_BIN`, `RLM_SESSION_DIR` (sessions dir for a root, the child's dir otherwise),
-  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`, `RLM_DEPTH`, `RLM_MAX_DEPTH` (unread).
-- Snapshot: `<kernel dir>/<store id>.kernel-state.{dill,json}` is an index over per-variable blobs in
+  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`.
+- Snapshot: `<kernel dir>/<store id>.kernel-state.dill` is an index over per-variable blobs in
   `<store id>.kernel-state.blobs/`; only changed variables are rewritten. Dilled 1.5 s after an `ok`
   cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable.
 - Owner: [`kernel/src/client.rs`](../crates/kernel/src/client.rs),
@@ -862,7 +862,9 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   survive a restart; a child's is its runtime directory's. Each is interned by path, one timer each.
 - A claim is persisted before delivery and re-arms `next_run_at` from claim time; the ticks it
   stands for are counted, and `catchUp` (`once`, `skip`, `all`) decides their todos. Recovery marks
-  open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s.
+  open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s. A failed
+  ledger write is one notice to the ledger's sessions until a write succeeds or the error changes;
+  a failed lane tells its own session.
 - A tick appends one session todo: the label or instruction plus `@ <tick>`, the instruction as
   its note, the setup's `user://<n>` as intent, a `clock` stamp; `overlap` (`skip`, `buffer_one`,
   `allow`) bounds the open todos one job may hold. The wake names the address and the todo only.
@@ -885,7 +887,8 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
   ack, refuses `data` over 16 KiB by name, and truncates past retention only behind the slowest ack.
   It is never authority once delivered: the target's log is written first, then the ack.
 - A channel job carries `channel: {address, path, filter?, batch?}` and ticks on its cadence (60 s
-  unasked); a landing message pokes it due. It filters on the host, creates one todo per batch
+  unasked); a landing message pokes it due, and a tick on a channel no adapter feeds with nothing
+  past its ack re-arms in memory, with no claim and no ledger write. It filters on the host, creates one todo per batch
   (stamped `channel: {job, ids}`) or unblocks its waiter, and wakes with the messages fenced as data.
   `External {probe}` is an `exec` wait on `ok=true`. [`plan/timer.rs`](../crates/runtime/src/plan/timer.rs)
   runs only leases, stuck children and the dispatch backstop.
@@ -932,7 +935,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask` |
 | `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
-| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog |
+| `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
@@ -976,7 +979,7 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/pin{sessionId, pinned, cwd?}` | daemon | Pin a session to the top of the console's sidebar or unpin it, answered `{pinnedMs}`; the ledger keeps the pin's time, which orders the pinned list, and `session/list` carries it as `_meta.yi.pinnedMs`; `cwd` makes the ledger row of a session only the worker listed |
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
-| `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
+| `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch`; a client that closes the pane holding an ask, or quits, answers `cancelled`, which the worker takes as a refusal |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
@@ -1067,7 +1070,9 @@ with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, an
   session with no git base shows its own edits). Each file names the todo that was running when
   it changed, reads that changed nothing are counted, the header carries the claims and the
   landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
-  worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal.
+  worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal. A resumed
+  session's replay fills Review's edits and reads, and the notebook's cells, as live frames do; a
+  replay from entry 0 counts the turns itself and restarts the notebook.
 - ⌘Y (⌥y) opens a terminal pane beside the focused one, running `$SHELL` in the focused
   session's working directory (its lane worktree once `_yi/workdir` names one), else the
   console's root. The PTY is the console's own: no daemon state, nothing on the socket. The
@@ -1150,7 +1155,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `rustix` | `fs`, `std`, `stdio`; `pty`, `termios`, `process` in console; `process` in browser (`geteuid`, `test_kill_process`) | permission, browser, console | `unlinkat` through the parent the read gate opened with no link on its path, so a parent swapped to a link after the judgement deletes nothing behind it (#964); the terminal pane's PTY pair, its window size, `setsid` and `TIOCSCTTY` in the `yi __pty` shim, and the SIGHUP to a closed pane's process group (#1378); `dup2` in `yi __fds`, which puts Chrome's CDP pipe on fds 3 and 4 without a `pre_exec` (#1379); 0.38, the version crossterm already links | an `unsafe` libc call (breaks `forbid(unsafe_code)`); `/dev/fd/N/name` (macOS resolves no name under a directory descriptor); `chdir` into the parent (process-wide); `portable-pty` (wraps libc in unsafe and spawns through `pre_exec`) |
 | `vt100` | — | console (tui: dev) | the terminal pane's screen: a parsed cell grid with attributes, scrollback, DECCKM and bracketed-paste state (#1378) | `alacritty_terminal` (an event loop and a larger tree); a hand-rolled VT parser |
 
-Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
+Dev: `vt100`, `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
 `macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
@@ -1168,11 +1173,13 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 |---|---|---|---|
 | direct deps | 23 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 176 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 8,388,960 bytes, a measured ratchet under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| dist binary | 8,521,200 bytes on macOS arm64, a measured ratchet that passes growth up to a fixed 16,384-byte jitter allowance past it, under a hard cap of 9,437,184 (9 MiB; D249 set 8 MiB) that moves only with a `decision:` line | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json`; on Linux `baselines/binary_size_budget_linux.json` (13,220,280 at the first forge build) under its own 14 MiB cap |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
-The binary and startup gates run only after a local dist build; a failed build fails both. Under
-`--fast` and when `CI` is set they are skipped by a printed line (D68, D70, D91).
+The binary and startup gates run only after a dist build; a failed build fails both. Under
+`--fast` both are skipped by a printed line. When `CI` is set startup is skipped (D68), and the
+dist build and the binary gate run only on a Linux host, against the Linux baseline: the forge's
+guardrails lane measures every pull request (revises D70 and D91).
 
 ## 19. Code style (HAR)
 The enforced rules for Rust in `crates/`; production lines precede a file's first `#[cfg(test)]`.
@@ -1230,9 +1237,9 @@ baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` recor
 | `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
 | `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
-| `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json`, `startup_ms_budget.json` |
+| `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json` (`binary_size_budget_linux.json` on Linux), `startup_ms_budget.json` |
 | `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 lines; a function ≤ 150 lines, counted by braces; per-crate `src/` lines ≤ the fork point's plus `raise: crate <name> +N` | the fork point |
-| `check_duplication` | no 15-line normalized window repeated across production `.rs` | — |
+| `check_duplication` | no 15-line normalized window repeated across production `.rs`, and no 6-line one across `crates/*/src/**/*.md` and shipped `SKILL.md` files, `yi:schema` blocks skipped | — |
 | `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |

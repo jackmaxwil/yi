@@ -11,29 +11,18 @@
 
 use crate::compaction_faux::{faux_model, sse_reply};
 use crate::scratch::Scratch;
+use crate::upstream::{ROOT_ID, body_asking, root_with, stand_in};
 
 use std::error::Error;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::{Arc, mpsc};
 
 use serde_json::{Map, Value, json};
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost};
+use yi_runtime::{AgentSession, SubagentHost};
 use yi_types::message::AgentMessage;
 use yi_types::model::Model;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-const ROOT_ID: &str = "root-7";
-
-fn key() -> yi_runtime::auth::Resolved {
-    yi_runtime::auth::Resolved {
-        secret: yi_runtime::auth::Secret::new("sk-test".to_owned()),
-        kind: yi_runtime::auth::AuthKind::ApiKey,
-        org: None,
-        expires: None,
-        headers: Vec::new(),
-    }
-}
 
 pub(crate) fn route(id: &str, api: &str, provider: &str, base_url: &str) -> Model {
     let mut model = faux_model(200_000);
@@ -49,70 +38,15 @@ pub(crate) fn root(
     port: u16,
     long_cache: bool,
 ) -> Result<(AgentSession, Arc<SubagentHost>), Box<dyn Error>> {
-    root_with(scratch, model, port, long_cache, None)
-}
-
-pub(crate) fn root_with(
-    scratch: &Scratch,
-    model: Model,
-    port: u16,
-    long_cache: bool,
-    broker: Option<Arc<yi_runtime::PermissionBroker>>,
-) -> Result<(AgentSession, Arc<SubagentHost>), Box<dyn Error>> {
-    let (cwd, home) = (scratch.join("ws"), scratch.join("home"));
-    std::fs::create_dir_all(&cwd)?;
-    std::fs::create_dir_all(&home)?;
-    std::fs::write(cwd.join("notes.txt"), "red sun\nblue sky\ngreen sea\n")?;
-    let provider = Arc::new(
-        ProviderStream::new(Some(ROOT_ID.to_owned()))
-            .with_auth(&model.provider, key())
-            .with_long_cache(long_cache)
-            .with_proxy(yi_ai::request::ProxyConfig::from_values(
-                Some(&format!("http://127.0.0.1:{port}")),
-                None,
-                None,
-            )?),
-    );
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: String::new(),
-            model,
-            thinking_level: None,
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-        },
-        Arc::clone(&provider),
-    );
-    let host = yi_runtime::attach_runtime(
-        &mut session,
-        yi_runtime::RuntimeWiring {
-            provider,
-            system_prompt: String::new(),
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-            cwd,
-            home: home.clone(),
-            lane_slots: 1,
-            broker,
-            tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
-            rlm_dir: scratch.join("rlm"),
-            family_dir: None,
-            summarizer: None,
-            advisor: None,
-            auto_review: None,
-            plan_stale_turns: None,
-            plans_dir: Some(scratch.join("plans")),
-            parent_link: None,
-            wall: yi_runtime::Wall::default(),
-            auto_background: None,
-            deadline: None,
-            kernel_prewarm: false,
-            mcp_read: None,
-            sessions_dir: None,
-            kernels: yi_runtime::fetch::KernelServiceMap::new(),
-        },
-    );
-    Ok((session, host))
+    root_with(
+        scratch,
+        model,
+        port,
+        long_cache,
+        None,
+        false,
+        Arc::new(yi_tools::builtin_tools),
+    )
 }
 
 /// A tool-less reader over `notes.txt`; `readers` is the count `rlm.run` sends for a fan-out.
@@ -129,57 +63,6 @@ fn reader_over(url: &str, question: &str, readers: Option<u64>) -> (String, Map<
         question.to_owned(),
         kwargs.as_object().cloned().unwrap_or_default(),
     )
-}
-
-/// Every request body, sent on as it arrives, each answered with `reply`. A reader's finish
-/// wakes the root, whose own requests come here too, so bodies are found by what they ask.
-pub(crate) fn stand_in(reply: String) -> std::io::Result<(u16, mpsc::Receiver<Value>)> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let (sender, bodies) = mpsc::channel();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut reader = BufReader::new(stream);
-            let mut length = 0usize;
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-                line.clear();
-            }
-            let mut body = vec![0u8; length];
-            let _ = reader.read_exact(&mut body);
-            let _ = sender.send(serde_json::from_slice(&body).unwrap_or(Value::Null));
-            let _ = write!(
-                reader.into_inner(),
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
-                reply.len()
-            );
-        }
-    });
-    Ok((port, bodies))
-}
-
-/// The first body that asks `question`, waiting up to ten seconds for it.
-pub(crate) async fn body_asking(
-    bodies: &mut Vec<Value>,
-    from: &mpsc::Receiver<Value>,
-    question: &str,
-) -> Result<Value, Box<dyn Error>> {
-    for _ in 0..200 {
-        bodies.extend(from.try_iter());
-        if let Some(body) = bodies
-            .iter()
-            .find(|body| body.to_string().contains(question))
-        {
-            return Ok(body.clone());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    Err(format!("no request asked {question}: {bodies:?}").into())
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -58,7 +58,7 @@ build-dist:
 
 # No build-dist dependency: the aggregator is the one place that knows whether
 # binary_size and startup will run at all, so it owns the LTO build they read
-# (D91). CI skips both, and paid 2-3 min a job for a binary nothing measured.
+# (D91). CI skips startup, and builds the binary only on Linux to measure it there.
 guardrails *flags:
     bash scripts/guardrails/check_guardrails.sh "$@"
 

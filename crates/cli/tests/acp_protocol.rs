@@ -754,7 +754,7 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
         app.reduce_agent(event);
     }
     assert!(!app.is_running(), "solo's reducer must see the turn end");
-    assert!(app.has_run(), "solo's reducer must see the turn start");
+    assert!(app.turn_idle(), "solo's reducer must see the turn start");
     let text: String = app
         .reflowed(200)
         .iter()
@@ -886,6 +886,81 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     assert_eq!(
         after[0]["params"]["update"]["leafId"], response["result"]["leafId"],
         "the replay after a rewind names the same leaf the result does"
+    );
+    client.finish()
+}
+
+/// Dies with the history replaced under a turn: a `_yi/rewind` without `files` reached the
+/// session while its bash call ran, and only the `files` form answered `still running`. The
+/// bash ask may land before a reply (no sandbox off macOS), so each reply is read allowing it.
+#[test]
+fn a_rewind_is_refused_while_a_turn_runs_a_tool() -> TestResult {
+    let dir = temp_dir("rewind-running")?;
+    let go = dir.join("go");
+    let wait = format!(
+        "i=0; until [ -e {} ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done",
+        go.display()
+    );
+    let script = faux_script(
+        &dir,
+        &[
+            json!({"text": "first answer"}),
+            json!({"tool": "bash", "args": {"command": wait}}),
+            json!({"text": "done"}),
+        ],
+    )?;
+    let mut client = AcpClient::spawn_with(&dir, &["--model", "faux/faux-1", "--faux", &script])?;
+    let session_id = strict_session(&mut client, &dir)?;
+    prompt(
+        &mut client,
+        "first",
+        &session_id,
+        json!([{"type": "text", "text": "first turn"}]),
+    )?;
+    let first = read_allowing(&mut client, is_idle)?;
+    let asked = committed(&first)?
+        .first()
+        .map(|entry| entry.id().to_owned())
+        .ok_or("no committed entry")?;
+    prompt(
+        &mut client,
+        "second",
+        &session_id,
+        json!([{"type": "text", "text": "wait for it"}]),
+    )?;
+    read_allowing(&mut client, |frame| {
+        frame["params"]["update"]["sessionUpdate"] == "tool_call_update"
+            && frame["params"]["update"]["status"] == "in_progress"
+    })?;
+
+    for (id, files) in [("plain", false), ("files", true)] {
+        let params = json!({"sessionId": session_id, "entryId": asked, "files": files});
+        client
+            .send(&json!({"jsonrpc": "2.0", "id": id, "method": "_yi/rewind", "params": params}))?;
+        let frames = read_allowing(&mut client, |frame| {
+            frame["id"] == id && frame.get("method").is_none()
+        })?;
+        let answer = frames.last().ok_or("no rewind response")?;
+        assert_eq!(answer["error"]["code"], -32602, "{id}: {answer}");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("still running")),
+            "{id}: {answer}"
+        );
+    }
+
+    std::fs::write(&go, "")?;
+    read_allowing(&mut client, is_idle)?;
+    let rewound = client.request(
+        "after",
+        "_yi/rewind",
+        json!({"sessionId": session_id, "entryId": asked}),
+    )?;
+    let answer = rewound.last().ok_or("no rewind response")?;
+    assert_eq!(
+        answer["result"]["unsent"], "first turn",
+        "the turn ended, so the rewind lands: {answer}"
     );
     client.finish()
 }

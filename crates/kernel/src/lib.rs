@@ -4,7 +4,6 @@ pub mod bootstrap;
 pub mod client;
 pub mod connection;
 pub mod framing;
-pub mod journal;
 mod lock;
 pub mod pinned;
 mod probe;

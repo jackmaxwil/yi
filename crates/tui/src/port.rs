@@ -462,7 +462,6 @@ impl App {
                     let cell = ToolCell {
                         name: tool_name.clone(),
                         call_id: tool_call_id.clone(),
-                        intent: None,
                         status: ToolStatus::Running,
                         summary: ToolCell::summary_of(tool_name, &arg_summary(tool_name, args)),
                         digest: None,
@@ -513,6 +512,11 @@ impl App {
                     && self.composer.is_empty()
                 {
                     self.composer.set_text(&text);
+                }
+                if !self.pane && self.pending_summary.is_some() {
+                    self.notice(
+                        "conversation rewound; files stay as the abandoned branch left them; /undo restores the last turn's edits",
+                    );
                 }
             }
             Reply::Fresh { name } => {

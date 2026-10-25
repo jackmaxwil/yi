@@ -4,7 +4,10 @@ system block plus the tool table are what every turn pays before the
 conversation starts, and the surface a model reads is locked so a PR that
 changes it owes the sections check_pr_metadata.py names. Measured by
 `yi-runtime`'s request_budget test, which owns the fixture: the table is the
-one a session registers, so the lock pins what a model call can name."""
+one a session registers, so the lock pins what a model call can name. Each
+role's first request in a bare workspace (root, leaf root child, reader,
+worker) is ratcheted too: the root's prompt alone let a child prefix grow
+unseen."""
 import hashlib
 import json
 import pathlib
@@ -18,6 +21,10 @@ from _common import ROOT, BASE, fail  # noqa: E402
 from pr_body import LOCK_MISSING, surface_diff  # noqa: E402
 
 LOCK = BASE / "tool_surface.json"
+ROLES = BASE / "role_prefix.json"
+BARE_ROLES = ("root", "leaf", "leaf_orchestrate", "reader", "worker")
+ROLE_LINE = re.compile(
+    r"^ROLE_PREFIX workspace=(\w+) role=(\w+) system=\d+ tools=\d+ total=(\d+)", re.M)
 
 
 def measure():
@@ -40,7 +47,26 @@ def measure():
             surface[record["key"]] = hashlib.sha256(record["text"].encode()).hexdigest()
     if not surface:
         fail(["request_budget test printed no TOOL_SURFACE lines"], "request_budget")
-    return (tuple(int(found.group(n)) for n in (1, 2, 3)), surface)
+    return (tuple(int(found.group(n)) for n in (1, 2, 3)), surface, role_rows(out.stdout))
+
+
+def role_rows(stdout):
+    return {(ws, role): int(total) for ws, role, total in ROLE_LINE.findall(stdout)}
+
+
+def role_problems(budget, rows):
+    """Only the bare rows gate: the lane and main rows read this repo's own instruction
+    files at test time, which CI checks out differently (no CLAUDE.md)."""
+    errs = []
+    for role in BARE_ROLES:
+        got, limit = rows.get(("bare", role)), budget.get(role)
+        if got is None:
+            errs.append(f"request_budget test printed no ROLE_PREFIX line for the bare {role}")
+        elif limit is None:
+            errs.append(f"role_prefix.json has no {role}: rerun --update in its own Ratchet commit")
+        elif got > limit:
+            errs.append(f"bare {role} prefix {got} > budget {limit}")
+    return errs
 
 
 def surface_delta(lock, surface):
@@ -83,6 +109,21 @@ def selfcheck():
     assert "changed —" in problems[0] and "added tool:write" in problems[0], problems
     assert "removed tool:read" in problems[0], problems
     assert any("--update" in line for line in problems), "the error carries the fix"
+    budget = dict.fromkeys(BARE_ROLES, 100)
+    rows = {("bare", role): 100 for role in BARE_ROLES}
+    assert role_problems(budget, rows) == []
+    over = role_problems(budget, {**rows, ("bare", "reader"): 101})
+    assert over == ["bare reader prefix 101 > budget 100"], over
+    gone = dict(rows)
+    del gone[("bare", "worker")]
+    assert any("bare worker" in line for line in role_problems(budget, gone)), "a lost row fails"
+    unnamed = {role: 100 for role in BARE_ROLES if role != "leaf"}
+    assert any("role_prefix.json has no leaf" in line for line in role_problems(unnamed, rows)), \
+        "a role the baseline does not name fails, naming the fix"
+    wide = {**rows, ("lane", "root"): 10**6, ("main", "reader"): 10**6}
+    assert role_problems(budget, wide) == [], "a lane or main row never gates"
+    parsed = role_rows("ROLE_PREFIX workspace=main role=leaf system=3 tools=4 total=7 claude=absent\n")
+    assert parsed == {("main", "leaf"): 7}, parsed
     print("ok   request_budget selfcheck")
 
 
@@ -91,13 +132,15 @@ def main(argv):
         selfcheck()
         return 0
     budget = json.loads((BASE / "request_budget.json").read_text())
-    (system, tools, total), surface = measure()
+    (system, tools, total), surface, rows = measure()
     lock = json.loads(LOCK.read_text()) if LOCK.exists() else None
 
     if "--update" in argv:
         (BASE / "request_budget.json").write_text(
             json.dumps({"system": system, "tools": tools, "total": total}, indent=2) + "\n")
         LOCK.write_text(json.dumps(surface, indent=2, sort_keys=True) + "\n")
+        bare = {role: rows[("bare", role)] for role in BARE_ROLES if ("bare", role) in rows}
+        ROLES.write_text(json.dumps(bare, indent=2, sort_keys=True) + "\n")
         print(f"ok   request_budget updated to {total} bytes, {len(surface)} surface keys")
         return 0
 
@@ -105,6 +148,7 @@ def main(argv):
             for name, got in (("system", system), ("tools", tools), ("total", total))
             if got > budget[name]]
     errs += surface_problems(lock, surface)
+    errs += role_problems(json.loads(ROLES.read_text()) if ROLES.exists() else {}, rows)
     fail(errs, f"request_budget ({total}/{budget['total']} bytes: system {system}, tools {tools})")
     return 0
 
