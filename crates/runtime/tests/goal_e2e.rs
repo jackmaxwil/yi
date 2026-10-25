@@ -5,9 +5,10 @@ use scratch::Scratch;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use serde_json::Number;
+use serde_json::{Number, json};
 use yi_ai::anthropic::Mapper;
 use yi_ai::faux::{faux_assistant_message, faux_text};
+use yi_ai::openai::ChunkMapper;
 use yi_ai::sse::SseDecoder;
 
 use yi_loop::ExecutionMode;
@@ -246,6 +247,17 @@ fn mapped(sse: &str) -> Result<AgentMessage, Box<dyn Error>> {
     }
 }
 
+fn goal_after(
+    service: &GoalService,
+    store: &yi_session::SharedSession,
+    reply: &AgentMessage,
+) -> Result<Goal, Box<dyn Error>> {
+    service.observe(&yi_types::event::AgentEvent::MessageEnd {
+        message: reply.clone(),
+    });
+    Ok(yi_session::lock_session(store).goal().ok_or("goal")?)
+}
+
 #[test]
 fn a_cached_reply_costs_the_goal_its_fresh_tokens_and_not_its_cache_reads() -> TestResult {
     let (_plans, (service, store, _delivered)) = service_with_plans()?;
@@ -259,26 +271,45 @@ fn a_cached_reply_costs_the_goal_its_fresh_tokens_and_not_its_cache_reads() -> T
         (500, 9000, 300)
     );
     assert_eq!(usage.context(), 9500, "the request held the cached prefix");
-    let goal_after = |reply: &AgentMessage| -> Result<Goal, Box<dyn Error>> {
-        service.observe(&yi_types::event::AgentEvent::MessageEnd {
-            message: reply.clone(),
-        });
-        Ok(yi_session::lock_session(&store).goal().ok_or("goal")?)
-    };
-    let first = goal_after(&reply)?;
+    let first = goal_after(&service, &store, &reply)?;
     assert_eq!(first.tokens_used, 800, "input 500 + output 300");
     assert_eq!(first.status, GoalStatus::Active);
-    let second = goal_after(&reply)?;
+    let second = goal_after(&service, &store, &reply)?;
     assert_eq!(second.tokens_used, 1600);
     assert_eq!(second.status, GoalStatus::BudgetLimited);
     Ok(())
 }
 
+/// The OpenAI mapper takes the cache counts off `prompt_tokens`, so a low prompt maps negative.
 #[test]
-fn a_negative_usage_part_never_takes_tokens_back() {
-    let mut usage = Usage::zero();
-    (usage.input, usage.cache_write, usage.output) = (-1, 25, 300);
-    assert_eq!(usage.fresh(), 325, "a -1 sentinel does not eat the reply");
+fn a_prompt_count_below_its_cache_counts_still_costs_the_goal_its_reply() -> TestResult {
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
+    service.create("odd gateway", Some(1000), None, None)?;
+    let mut mapper = ChunkMapper::new(&faux_model());
+    let _ = mapper.push_chunk(&json!({
+        "id": "chatcmpl-1",
+        "choices": [{"delta": {"content": "Checked."}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 300, "cache_write_tokens": 25}
+        }
+    }));
+    let Some(yi_types::event::AssistantMessageEvent::Done { message: reply, .. }) =
+        mapper.finish().pop()
+    else {
+        return Err("the chunk did not finish".into());
+    };
+    let AgentMessage::Assistant { usage, .. } = &reply else {
+        return Err("not an assistant message".into());
+    };
+    assert_eq!(usage.input, -225, "the mapper emits a negative input");
+    let used = goal_after(&service, &store, &reply)?.tokens_used;
+    assert_eq!(
+        used, 55,
+        "cache writes 25 + output 30; the negative input takes nothing"
+    );
+    Ok(())
 }
 
 #[tokio::test]

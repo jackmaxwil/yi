@@ -182,7 +182,7 @@ impl Usage {
         }
     }
 
-    /// What the reply newly cost: `input` already excludes cache reads, so none is subtracted.
+    /// What the reply newly cost; stream mappers report `input` net of cache reads, so none is subtracted.
     pub fn fresh(&self) -> u64 {
         clamped_sum([self.input, self.cache_write, self.output])
     }
