@@ -394,10 +394,12 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     let plain = ask(&workspace, "look", &["--faux", &recorded, "--no-deltas"])?;
     let bare = workspace.yi(&["stats", "--no-deltas"])?;
     let other = workspace.yi(&["stats", "--json", "--no-deltas"])?;
+    let console = workspace.yi(&["--json", "--no-deltas"])?;
     for (run, said) in [
         (plain, "needs `yi ask --json`"),
         (bare, "needs `yi ask --json`"),
         (other, "needs `yi ask --json`"),
+        (console, "needs `yi ask --json`"),
     ] {
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
         assert_eq!(
