@@ -2142,7 +2142,6 @@ mod contracts {
     use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::tool::PlanTool;
     use yi_runtime::plan::verify::Verifier;
-    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
     use yi_runtime::subagent::DEFAULT_MAX_CHILDREN;
     use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
     use yi_tools::Tool;
@@ -3412,20 +3411,8 @@ mod contracts {
 
     /// The process that owns the prompt, answering `answer` to every ask.
     fn confirmer(rig: &Rig, answer: AskOutcome) -> Result<Confirmer, Box<dyn Error>> {
-        let sessions = rig._temp.join("sessions");
-        std::fs::create_dir_all(&sessions)?;
-        let mut repo = JsonlRepo::new(sessions, rig.ws.to_string_lossy().into_owned());
-        let store = repo.create(CreateOptions::default())?;
         let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| answer);
-        let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
-        let broker = Arc::new(PermissionBroker::new(
-            PermissionMode::Ask,
-            rig.ws.clone(),
-            Vec::new(),
-            Some(asker),
-            events,
-        ));
-        Ok(Confirmer { broker, store })
+        crate::plan_authority::confirmer(&rig._temp, &rig.ws, asker)
     }
 
     /// Each prompt's description, in the order the person was asked.
@@ -4570,6 +4557,40 @@ mod contracts {
         Ok(())
     }
 
+    // Dies with the done path's verification request named per effect: the effect id's length
+    // comes off the longest request id a client may send, and a done at the old limit fails.
+    #[test]
+    fn a_done_request_id_at_the_limit_is_verified() -> TestResult {
+        use yi_types::plan::ledger::{ID_MAX_BYTES, RequestId};
+        let rig = rig("yi-done-request-limit", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "true", "writer")?;
+        init(&rig.engine, vec![contracted("check it", contract)?])?;
+        start(&rig.engine, &plan, "check it")?;
+        let done_as = |bytes: usize| -> Result<Outcome, Box<dyn Error>> {
+            let op = Op::Done {
+                label: TodoLabel::new("check it")?,
+                output: None,
+            };
+            Ok(rig.engine.apply(OpRequest {
+                request_id: Some(RequestId::new("r".repeat(bytes))?),
+                ..at(&plan, op)
+            })?)
+        };
+        let limit = ID_MAX_BYTES - "/verify".len();
+        assert!(done_as(limit + 1).is_err(), "a derived id past the cap");
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "check it")?.state,
+            TodoState::Running { .. }
+        ));
+        done_as(limit)?;
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "check it")?.state,
+            TodoState::Done { .. }
+        ));
+        Ok(())
+    }
+
     // Dies with `Purpose::Verification` being its own counter (capacity.rs): charge the
     // candidate check against the worker share and the workers a parent retains own every lane
     // their own verification needs, so the plan stops with every todo running. The engine
@@ -4608,9 +4629,11 @@ mod contracts {
             usize::from(slots) - share,
             "the lanes the workers did not get are the verification's"
         );
-        // With every worker lane held, the verification a retained worker's own candidate
-        // needs still reserves, and a second one waits its turn: one candidate at a time.
-        let verifying = capacity.reserve(Purpose::Verification)?;
+        // With every worker lane held, the verifications retained workers' own candidates need
+        // still reserve, up to the share, and one past it waits its turn.
+        let verifying: Vec<_> = (0..capacity.cap(Purpose::Verification))
+            .map(|_| capacity.reserve(Purpose::Verification))
+            .collect::<Result<_, _>>()?;
         assert!(capacity.reserve(Purpose::Verification).is_err());
         drop(verifying);
         drop(held);

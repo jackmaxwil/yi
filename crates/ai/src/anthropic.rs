@@ -792,7 +792,12 @@ fn run_request(
         oauth,
         settle: _,
     } = wire;
-    let url = format!("{}/v1/messages", model.base_url);
+    let beta = if crate::compat::moonshot(model) {
+        "?beta=true"
+    } else {
+        ""
+    };
+    let url = format!("{}/v1/messages{beta}", model.base_url);
     let base = if oauth {
         vec![
             ("authorization", format!("Bearer {api_key}")),
