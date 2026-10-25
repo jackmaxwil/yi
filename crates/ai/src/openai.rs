@@ -75,9 +75,9 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
             })
             .collect()
     };
-    if let Some(separator) = id.find('|') {
-        let call_id = sanitize(&id[..separator]);
-        let item_id = sanitize(&id[separator.saturating_add(1)..]);
+    if let Some((call, item)) = id.split_once('|') {
+        let call_id = sanitize(call);
+        let item_id = sanitize(item);
         let combined = if item_id.is_empty() {
             call_id.clone()
         } else {
