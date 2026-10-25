@@ -443,8 +443,10 @@ async fn ended(
     Err(format!("no ending line for {label}").into())
 }
 
-fn delegated(label: &str) -> Value {
-    json!({"label": label, "delegation": {"spec": {"role": "worker"}, "accept": {"command": "true"}}})
+fn delegated(label: &str, check: &str) -> Value {
+    let item = json!({"id": "tests", "critical": true, "weight": 1, "decider": {"cmd": check}});
+    json!({"label": label, "delegation": {"spec": {"role": "worker"}, "accept": {"command": "true"}},
+        "contract": {"class": "inline", "items": [item]}})
 }
 
 /// Dies with the reap block back on the verdict: the owner's line carries 2,000 chars of the
@@ -453,8 +455,7 @@ fn delegated(label: &str) -> Value {
 async fn a_failed_plan_childs_ending_is_one_short_line_naming_its_transcript() -> TestResult {
     let root = Scratch::new("yi-plan-ending-failed")?;
     let (session, provider) = wired(&root)?;
-    let op =
-        json!({"op": "init", "goal": "land the patch", "todos": [delegated("write the patch")]});
+    let op = json!({"op": "init", "goal": "land the patch", "todos": [delegated("write the patch", "true")]});
     let line = ended(
         &session,
         &provider,
@@ -495,8 +496,7 @@ async fn fetched(session: &AgentSession, url: &str) -> Result<String, Box<dyn Er
 async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> TestResult {
     let root = Scratch::new("yi-plan-ending-addresses")?;
     let (session, provider) = wired(&root)?;
-    let init =
-        json!({"op": "init", "goal": "ship the widget", "todos": [delegated("cut the seam")]});
+    let init = json!({"op": "init", "goal": "ship the widget", "todos": [delegated("cut the seam", "echo 12 passed")]});
     let accepted = ended(
         &session,
         &provider,
@@ -505,7 +505,7 @@ async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> Te
         reply("the cut holds at the parser seam"),
     )
     .await?;
-    let append = json!({"op": "append", "todos": [delegated("write the patch")]});
+    let append = json!({"op": "append", "todos": [delegated("write the patch", "true")]});
     let failed = ended(
         &session,
         &provider,
@@ -514,10 +514,25 @@ async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> Te
         hung_up(&paragraph()),
     )
     .await?;
+    let append =
+        json!({"op": "append", "todos": [delegated("check the seam", "echo broken; exit 1")]});
+    let rejected = ended(
+        &session,
+        &provider,
+        append,
+        "check the seam",
+        reply("the seam check found a gap"),
+    )
+    .await?;
     let mut schemes = Vec::new();
-    for (line, needle) in [(&accepted, "parser seam"), (&failed, "beim Lexer")] {
+    let lines = [
+        (&accepted, "parser seam"),
+        (&failed, "beim Lexer"),
+        (&rejected, "found a gap"),
+    ];
+    for (line, needle) in lines {
         let addresses = line
-            .split([' ', '(', ')', ',', ';'])
+            .split([' ', '\n', '(', ')', ',', ';'])
             .filter(|word| word.contains("://"));
         for address in addresses {
             schemes.extend(
@@ -533,8 +548,17 @@ async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> Te
                 json!({"path": address, "pattern": needle}),
             )
             .await?;
-            let hit = hits.lines().any(|row| row.starts_with(address));
-            assert!(!refused && hit, "grep {address}: {hits}");
+            let at = hits.lines().find(|row| !row.starts_with('['));
+            let at = at.and_then(|row| row.split(' ').next()).unwrap_or_default();
+            let opens = match address.starts_with("plan://") {
+                true => at.starts_with(address),
+                false if at.starts_with("history://") => {
+                    let (entry, _) = call(&session, "read", json!({"path": at})).await?;
+                    entry.contains(needle)
+                }
+                false => false,
+            };
+            assert!(!refused && opens, "grep {address}: {hits}");
             let text = fetched(&session, address).await?;
             assert!(text.contains(needle), "rlm.fetch {address}: {text}");
         }
@@ -542,8 +566,8 @@ async fn every_address_a_finish_line_prints_opens_in_read_grep_and_fetch() -> Te
     schemes.sort();
     assert_eq!(
         schemes,
-        ["agent", "history", "plan"],
-        "{accepted}\n{failed}"
+        ["agent", "history", "history", "plan"],
+        "{accepted}\n{failed}\n{rejected}"
     );
     if let Some(kernel) = session.kernel_service() {
         kernel.dispose().await;

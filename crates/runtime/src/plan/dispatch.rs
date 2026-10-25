@@ -512,7 +512,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_ready_todo_dispatches_a_child_and_reap_promotes_its_product() -> TestResult {
+    async fn a_ready_todo_dispatches_a_child_and_reap_names_its_transcript() -> TestResult {
         let rig = rig("the seam is cut and holds")?;
         let out = rig.engine.apply(owner(Op::Init {
             goal: GoalText::new("ship the widget")?,

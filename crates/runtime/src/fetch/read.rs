@@ -72,7 +72,7 @@ fn capped(url: &Url, served_by: &str, text: String) -> String {
     )
 }
 
-fn address(input: &Map<String, Value>) -> Option<&str> {
+pub(super) fn address(input: &Map<String, Value>) -> Option<&str> {
     let path = input.get("path")?.as_str()?;
     let (scheme, _) = path.split_once("://")?;
     (!scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_lowercase())).then_some(path)

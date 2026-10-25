@@ -364,8 +364,20 @@ fn an_address_grep_names_its_page_and_line_cuts_one_past_each_limit() -> TestRes
         notices,
         [
             "[… hits 1-40 of 41 in 41 lines of local://past.txt · address grep page 40 · grep again with offset=40]",
-            "[… a hit line is cut at 200 chars (LINE_CHARS) · read the address for the whole line]",
+            "[… a hit line is cut at 200 chars (LINE_CHARS) · read the address for its whole text]",
         ]
+    );
+    let (paged, _) = grep("paged.txt", 41, 200, 0)?;
+    let paged: Vec<&str> = paged.lines().skip(40).collect();
+    assert!(
+        paged.len() == 1 && paged[0].contains("address grep page 40"),
+        "{paged:?}"
+    );
+    let (clipped, _) = grep("clipped.txt", 40, 201, 0)?;
+    let clipped: Vec<&str> = clipped.lines().skip(40).collect();
+    assert!(
+        clipped.len() == 1 && clipped[0].contains("(LINE_CHARS)"),
+        "{clipped:?}"
     );
     let (rest, _) = grep("past.txt", 41, 201, 40)?;
     assert!(rest.starts_with("local://past.txt:41: hit "), "{rest}");

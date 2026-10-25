@@ -242,7 +242,7 @@ impl PlanEngine {
             ids => format!("\nNot passed, and not covered by this: {}.", ids.join(", ")),
         };
         format!(
-            ". The engine ran these checks and they passed, so do not run them again:{lines}{short}"
+            "\nThe engine ran these checks and they passed, so do not run them again:{lines}{short}"
         )
     }
 
@@ -263,6 +263,7 @@ impl PlanEngine {
             self.leave(held, &error, &format!("its fail was refused: {error}"));
             return format!("{said}; its fail was refused: {error}");
         }
+        let said = format!("{said}{}", self.last_of(held));
         if !retry || self.retried(held) {
             return said;
         }
