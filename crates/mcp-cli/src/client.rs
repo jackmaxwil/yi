@@ -111,21 +111,21 @@ fn result_of(mut reply: Value, method: &str) -> Result<Value, String> {
     }
 }
 
-fn initialize_params() -> Value {
+fn initialize_params(version: &str) -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": {},
         "clientInfo": {
             "name": "yi",
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": version,
         },
     })
 }
 
 /// One-shot execution (design §7.6): connect, negotiate, run the op, exit.
 /// No resident process, no sockets held after return.
-pub fn one_shot(spec: &McpServerSpec, op: Op) -> Result<Value, String> {
-    one_shot_with_auth(spec, op, None)
+pub fn one_shot(spec: &McpServerSpec, op: Op, version: &str) -> Result<Value, String> {
+    one_shot_with_auth(spec, op, None, version)
 }
 
 /// Same, with a Bearer token attached to every HTTP request (stdio ignores it).
@@ -133,6 +133,7 @@ pub fn one_shot_with_auth(
     spec: &McpServerSpec,
     op: Op,
     auth_token: Option<String>,
+    version: &str,
 ) -> Result<Value, String> {
     let mut transport = match spec {
         McpServerSpec::Stdio { command, args, env } => {
@@ -140,13 +141,13 @@ pub fn one_shot_with_auth(
         }
         McpServerSpec::Http { url } => Transport::Http(HttpTransport::new(url, auth_token)),
     };
-    let outcome = negotiate_and_run(&mut transport, op);
+    let outcome = negotiate_and_run(&mut transport, op, version);
     transport.close();
     outcome
 }
 
-fn negotiate_and_run(transport: &mut Transport, op: Op) -> Result<Value, String> {
-    let info = transport.request(INITIALIZE_ID, "initialize", initialize_params())?;
+fn negotiate_and_run(transport: &mut Transport, op: Op, version: &str) -> Result<Value, String> {
+    let info = transport.request(INITIALIZE_ID, "initialize", initialize_params(version))?;
     transport.notify("notifications/initialized")?;
     match op {
         Op::Ping => Ok(json!({
@@ -198,7 +199,7 @@ mod tests {
 
     #[test]
     fn initialize_advertises_the_carried_version_and_names_yi() {
-        let params = initialize_params();
+        let params = initialize_params("9.9.9");
         assert_eq!(
             params.pointer("/protocolVersion").and_then(Value::as_str),
             Some("2025-11-25")
