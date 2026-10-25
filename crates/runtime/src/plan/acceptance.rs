@@ -945,9 +945,11 @@ impl PlanEngine {
                     self.dispose(txn, &plan_id, &todo, by, op)?;
                 }
             }
+            // A reader's partition is inlined at spawn, so no fetch row could show it was read.
             let supplied = todo
                 .delegation
                 .as_ref()
+                .filter(|delegation| !super::spawn::reads_only(delegation, &self.cwd))
                 .map(|delegation| delegation.context.clone())
                 .unwrap_or_default();
             let last =
