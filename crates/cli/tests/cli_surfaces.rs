@@ -1592,6 +1592,46 @@ fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult 
     Ok(())
 }
 
+/// Every axis `yi stats --by` accepts, read from its own refusal, is named by `yi --help` and by
+/// the zsh and fish descriptions; the name check above passes when both sides omit one.
+#[test]
+fn help_and_completions_name_every_stats_axis_the_parser_accepts() -> TestResult {
+    let workspace = Workspace::new("stats-axes")?;
+    let refusal = workspace.yi(&["stats", "--by", "nope"])?;
+    assert_eq!(refusal.status.code(), Some(2));
+    let refusal = String::from_utf8_lossy(&refusal.stderr).into_owned();
+    let axes: Vec<&str> = refusal
+        .split_once("wants ")
+        .map(|(_, list)| {
+            list.split([',', ' ', '\n'])
+                .filter(|word| !word.is_empty() && *word != "or")
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(axes.len() >= 5, "refusal lists the axes: {refusal}");
+    let help = stdout(&workspace.yi(&["--help"])?);
+    let shipped = |name: &str| {
+        std::fs::read_to_string(format!(
+            "{}/../../completions/yi.{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+    };
+    let (zsh, fish) = (shipped("zsh")?, shipped("fish")?);
+    let rows = [
+        help.lines()
+            .find(|line| line.trim_start().starts_with("--by ")),
+        zsh.lines().find(|line| line.contains("'--by[")),
+        fish.lines().find(|line| line.contains(" -l by ")),
+    ];
+    for row in rows {
+        let row = row.ok_or("a --by row in help, zsh and fish")?;
+        for axis in &axes {
+            assert!(row.contains(axis), "{row:?} omits the axis {axis}");
+        }
+    }
+    Ok(())
+}
+
 /// The bound is by length, each tier at its limit and one past it: `doctr` and `dotcor` are refused
 /// at one and two edits from `doctor`; `dctr`, `dxxxor` and the three-letter `wha` still ask.
 #[test]

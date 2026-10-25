@@ -63,7 +63,7 @@ _yi() {
         '--session[resume this session]:id:'
         '--schema[answer JSON valid against this schema]:schema:_files'
         '--since[after stats: fold the sessions of this window]:span:'
-        '--by[after stats: group by model, upstream, day or prices]:axis:'
+        '--by[after stats: group by model, upstream, day, prices or plan]:axis:'
         '--top[after stats: list the n costliest sessions]:n:'
     )
     _arguments -C $flags '1: :->command' '*:: :->rest'
