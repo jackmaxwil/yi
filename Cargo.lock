@@ -2312,6 +2312,7 @@ name = "yi-orb"
 version = "0.2.0"
 dependencies = [
  "miniz_oxide",
+ "yi-types",
 ]
 
 [[package]]
