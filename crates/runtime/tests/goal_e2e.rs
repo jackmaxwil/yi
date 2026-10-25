@@ -1,3 +1,4 @@
+use crate::RED_PYTEST;
 use crate::own::own;
 use crate::scratch;
 use scratch::Scratch;
@@ -465,12 +466,6 @@ fn a_red_check_prints_no_provider_key() -> TestResult {
     );
     Ok(())
 }
-
-/// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict last.
-const RED_PYTEST: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
-);
 
 /// The refusal of a check run in a scratch directory that lives as long as the first value.
 fn refusal_in(check: &str) -> Result<(Scratch, String), Box<dyn Error>> {
