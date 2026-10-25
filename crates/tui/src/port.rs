@@ -557,7 +557,7 @@ pub fn tick(
             crate::app::UiEvent::Children(children) => app.sync_children(&children),
             crate::app::UiEvent::ChildUpdates(updates) => {
                 for update in &updates {
-                    app.adopt(update, None);
+                    app.adopt(update, None, None);
                 }
             }
             crate::app::UiEvent::Ask(ask) => app.open_approval(ask),
