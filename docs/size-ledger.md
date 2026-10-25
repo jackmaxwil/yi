@@ -2,7 +2,9 @@
 
 One row per change that moves the shipped binary: its measured dist size, `yi --version`
 startup and direct/transitive dependency counts. Measured on macOS arm64 with the pinned
-toolchain (`rust-toolchain.toml`), profile `dist`. A dependency added under YI_DESIGN.md §18.1
+toolchain (`rust-toolchain.toml`), profile `dist`. The forge's guardrails lane also builds the
+Linux glibc binary on every pull request and holds it to `binary_size_budget_linux.json`;
+a row measured there says Linux. A dependency added under YI_DESIGN.md §18.1
 lands with its row in the same commit; the budgets are §18.6.
 
 | date | change | dist binary (bytes) | `yi --version` (ms) | deps direct/transitive |

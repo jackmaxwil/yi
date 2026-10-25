@@ -8,7 +8,9 @@ Exits on stdin EOF.
 import json
 import sys
 
+CLIENT = {}
 NO_TOOLS = "--no-tools" in sys.argv
+LIST_FAILS = "--tools-list-fails" in sys.argv
 
 TOOLS = [
     {
@@ -34,13 +36,14 @@ TOOLS = [
 
 def result_for(method, params):
     if method == "initialize":
+        CLIENT.update(params.get("clientInfo") or {})
         return {
             "protocolVersion": params.get("protocolVersion", "2025-06-18"),
             "capabilities": {"resources": {}} if NO_TOOLS else {"tools": {}, "resources": {}, "prompts": {}},
             "serverInfo": {"name": "yi-fixture", "version": "1.0.0"},
             "instructions": "Fixture server. The echo tool repeats input.",
         }
-    if method == "tools/list" and not NO_TOOLS:
+    if method == "tools/list" and not (NO_TOOLS or LIST_FAILS):
         return {"tools": TOOLS}
     if method == "tools/call":
         name = params.get("name")
@@ -51,6 +54,9 @@ def result_for(method, params):
         if name == "add":
             total = arguments.get("a", 0) + arguments.get("b", 0)
             return {"content": [{"type": "text", "text": str(total)}], "isError": False}
+        if name == "client_info":  # unlisted on purpose: tools-list stays echo + add
+            text = f"{CLIENT.get('name')} {CLIENT.get('version')}"
+            return {"content": [{"type": "text", "text": text}], "isError": False}
         return {"content": [{"type": "text", "text": f"no such tool {name}"}], "isError": True}
     if method == "resources/list":
         return {"resources": [{"uri": "note://alpha", "name": "alpha"}]}
