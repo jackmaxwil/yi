@@ -385,13 +385,19 @@ fn no_deltas_drops_the_message_update_lines_and_only_those() -> TestResult {
     assert_eq!(lean, kept);
     assert_eq!(lean.last().map(String::as_str), Some("agent_end"));
 
+    let mut argv = vec!["--faux", recorded.as_str()];
+    argv.extend("--model faux/faux-1 --json --no-deltas look on".split(' '));
+    let asked = workspace.yi(&argv)?;
+    assert_eq!(asked.status.code(), Some(0), "{asked:?}");
+    assert!(!stdout(&asked).contains("message_update"), "{asked:?}");
+
     let plain = ask(&workspace, "look", &["--faux", &recorded, "--no-deltas"])?;
     let bare = workspace.yi(&["stats", "--no-deltas"])?;
     let other = workspace.yi(&["stats", "--json", "--no-deltas"])?;
     for (run, said) in [
         (plain, "needs `yi ask --json`"),
         (bare, "needs `yi ask --json`"),
-        (other, "not applied by yi stats"),
+        (other, "needs `yi ask --json`"),
     ] {
         let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
         assert_eq!(

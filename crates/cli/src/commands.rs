@@ -151,9 +151,6 @@ const UNREAD: &[(&str, &str)] = &[
 ];
 
 fn unread(verb: &str, args: &Args) -> Option<(&'static str, &'static str)> {
-    if args.no_deltas && verb != "ask" {
-        return Some(("no-deltas", "pass it to `yi ask --json`"));
-    }
     let reads_deadline = verb == "console" && args.headless;
     UNREAD.iter().copied().find(|(flag, _)| {
         matches!(verb, "console" | "serve")

@@ -208,7 +208,8 @@ fn inert_flags(args: &Args) -> Result<(), lexopt::Error> {
             format!("{flag} needs --headless").into(),
         ));
     }
-    if args.no_deltas && !args.json {
+    let other_verb = args.command != "ask" && crate::commands::find(&args.command).is_some();
+    if args.no_deltas && (!args.json || other_verb) {
         return Err(lexopt::Error::Custom(
             "--no-deltas needs `yi ask --json`".into(),
         ));
