@@ -204,6 +204,12 @@ pub(crate) fn notebook_cells<'a>(
     notebooks.get(session).map_or(&[][..], Vec::as_slice)
 }
 
+/// Invariant: rows drawn under a key (the width, and for Review its scope, note and the diff's
+/// revision), redrawn only when the key moves; a new pane content starts with none.
+pub type Drawn<K, V = Rows> = Option<(K, V)>;
+pub type Rows = Vec<ratatui::text::Line<'static>>;
+pub type ReviewKey = (usize, ReviewScope, String, u64);
+
 /// What a pane shows: the provider seam — a new kind is a new variant plus
 /// its render arm, nothing else.
 pub enum PaneContent {
@@ -214,10 +220,12 @@ pub enum PaneContent {
     Markdown {
         path: String,
         source: String,
+        drawn: Drawn<usize>,
     },
     Diff {
         path: String,
         source: String,
+        drawn: Drawn<usize>,
     },
     Notebook {
         session: Option<SessionId>,
@@ -228,6 +236,7 @@ pub enum PaneContent {
     SessionDiff {
         session: SessionId,
         scope: ReviewScope,
+        drawn: Drawn<ReviewKey, (String, Rows)>,
     },
     Terminal(Box<crate::pty::Pty>),
     Editor(Editor),
@@ -326,6 +335,7 @@ pub struct SessionDiff {
     pub why_due: Option<(String, Vec<u32>)>,
     /// The title a second `l` lands under; any other key clears it.
     pub land_armed: Option<String>,
+    pub rev: u64,
 }
 
 const MAX_DIFF_FILES: usize = 512;

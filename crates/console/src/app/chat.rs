@@ -851,6 +851,7 @@ mod tests {
             focused.content = PaneContent::SessionDiff {
                 session: session.clone(),
                 scope: ReviewScope::Session,
+                drawn: None,
             };
         }
         let diff = app.state.diffs.entry(session.clone()).or_default();

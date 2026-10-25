@@ -87,6 +87,14 @@ fn is_side(content: &PaneContent, session: &SessionId) -> bool {
 }
 
 impl App {
+    /// Invariant: every write to a session's diff comes through here, so its revision is what
+    /// tells a drawn Review its rows went stale.
+    pub(super) fn diff_mut(&mut self, session: &SessionId) -> &mut crate::model::SessionDiff {
+        let diff = self.state.diffs.entry(session.clone()).or_default();
+        diff.rev = diff.rev.wrapping_add(1);
+        diff
+    }
+
     pub(super) fn absorb_edit(
         &mut self,
         outbound: &Outbound,
@@ -125,11 +133,7 @@ impl App {
             turn: replayed
                 .unwrap_or_else(|| self.state.diffs.get(session).map_or(0, |diff| diff.turn)),
         };
-        self.state
-            .diffs
-            .entry(session.clone())
-            .or_default()
-            .insert(path.clone(), file);
+        self.diff_mut(session).insert(path.clone(), file);
         self.editors_touched(Some(&path));
         Some(path)
     }
@@ -175,8 +179,8 @@ impl App {
                 self.fill_notebook(session, &update);
             }
         }
-        if let Some(diff) = self.state.diffs.get_mut(session) {
-            diff.turn = turn;
+        if self.state.diffs.contains_key(session) {
+            self.diff_mut(session).turn = turn;
         }
         if !edited.is_empty() {
             self.track(outbound, session, edited.into_iter().collect(), false);
@@ -192,7 +196,8 @@ impl App {
     ) {
         let flags = result.get("tracked").and_then(Value::as_array);
         let mut any = false;
-        if let Some(diff) = self.state.diffs.get_mut(session) {
+        if self.state.diffs.contains_key(session) {
+            let diff = self.diff_mut(session);
             for (index, path) in paths.iter().enumerate() {
                 let tracked = flags
                     .and_then(|flags| flags.get(index))
@@ -347,7 +352,15 @@ impl App {
             (pane.content, pane.scroll_from_bottom) = match (kind, session) {
                 (SideKind::Diff, Some(session)) => {
                     let scope = crate::model::ReviewScope::default();
-                    (PaneContent::SessionDiff { session, scope }, usize::MAX)
+                    let drawn = None;
+                    (
+                        PaneContent::SessionDiff {
+                            session,
+                            scope,
+                            drawn,
+                        },
+                        usize::MAX,
+                    )
                 }
                 (_, session) => {
                     let (full, drawn) = (false, None);

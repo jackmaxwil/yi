@@ -162,9 +162,13 @@ fn alt(app: &mut yi_console::app::App, outbound: &yi_console::client::Outbound, 
     app.handle_event(outbound, ratatui::crossterm::event::Event::Key(key));
 }
 
-/// The visible rows of the pane whose title starts with `title`, at 100 by 16.
 fn pane_rows(app: &mut yi_console::app::App, title: &str) -> Vec<String> {
-    let area = ratatui::layout::Rect::new(0, 0, 100, 16);
+    pane_rows_at(app, title, (100, 16))
+}
+
+/// The visible rows of the pane whose title starts with `title`, in a frame of `size`.
+fn pane_rows_at(app: &mut yi_console::app::App, title: &str, size: (u16, u16)) -> Vec<String> {
+    let area = ratatui::layout::Rect::new(0, 0, size.0, size.1);
     let theme = app.theme;
     let view = yi_console::render::compute_view(app, area, &theme);
     let pane = view.panes.iter().find(|pane| pane.title.starts_with(title));
@@ -175,17 +179,7 @@ fn pane_rows(app: &mut yi_console::app::App, title: &str) -> Vec<String> {
 /// and the key hint sat above the window, and `↓` moved a selection nobody could see.
 #[test]
 fn a_review_taller_than_its_pane_opens_on_its_file_list() {
-    let (mut app, outbound) = console();
-    let session = SessionId("s-a".to_owned());
-    if let Some(pane) = app.state.focused_pane_mut() {
-        pane.content = PaneContent::Session {
-            session: Some(session.clone()),
-            chat: None,
-        };
-    }
-    app.state.zone = Zone::Panes;
-    app.state.diffs.insert(session, multifile_diff());
-    alt(&mut app, &outbound, 'g');
+    let (mut app, outbound) = review_app();
     let rows = pane_rows(&mut app, "Review");
     let files = [
         "crates/console/src/app/chat.rs",
@@ -245,6 +239,76 @@ fn a_markdown_viewer_opens_on_its_first_page() {
         scrolled.first(),
         rows.get(3),
         "the first scroll moves three rows down"
+    );
+    outbound.shutdown();
+}
+
+/// A console showing the fixture's six edits in an open Review pane.
+fn review_app() -> (yi_console::app::App, yi_console::client::Outbound) {
+    let (mut app, outbound) = console();
+    let session = SessionId("s-a".to_owned());
+    if let Some(pane) = app.state.focused_pane_mut() {
+        pane.content = PaneContent::Session {
+            session: Some(session.clone()),
+            chat: None,
+        };
+    }
+    app.state.zone = Zone::Panes;
+    app.state.diffs.insert(session, multifile_diff());
+    alt(&mut app, &outbound, 'g');
+    (app, outbound)
+}
+
+fn tool_frame(update: serde_json::Value) -> yi_console::client::ClientEvent {
+    yi_console::client::ClientEvent::Frame(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {"sessionId": "s-a", "update": update},
+    }))
+}
+
+/// Dies with a Review that kept rows drawn for another width or scope, or for the diff before
+/// the agent's next edit or read landed: drawn once, its rows must still be the ones it shows.
+#[test]
+fn a_reviews_rows_follow_its_width_its_scope_and_each_new_edit() {
+    let (mut warm, outbound) = review_app();
+    let mut pressed = 0;
+    for (width, presses) in [(100, 0), (60, 0), (60, 1), (100, 2), (60, 2)] {
+        let (mut cold, cold_out) = review_app();
+        for _ in 0..presses {
+            press(&mut cold, &cold_out, KeyCode::Char('s'));
+        }
+        for _ in pressed..presses {
+            press(&mut warm, &outbound, KeyCode::Char('s'));
+        }
+        pressed = presses;
+        let rows = pane_rows_at(&mut warm, "Review", (width, 40));
+        assert_eq!(
+            rows,
+            pane_rows_at(&mut cold, "Review", (width, 40)),
+            "{width} {presses}"
+        );
+        cold_out.shutdown();
+    }
+    let edit = serde_json::json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e1", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": "--- a/src/new.rs\n+++ b/src/new.rs\n@@ -0,0 +1 @@\n+fn new() {}\n",
+                      "added": 1, "removed": 0}});
+    warm.reduce_client(&outbound, tool_frame(edit));
+    let rows = pane_rows_at(&mut warm, "Review", (60, 40));
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("● src/new.rs  +1 −0")),
+        "{rows:#?}"
+    );
+    let read = serde_json::json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "r1", "title": "read", "kind": "read", "status": "completed",
+        "rawInput": {"path": "src/only_read.rs"}});
+    warm.reduce_client(&outbound, tool_frame(read));
+    let rows = pane_rows_at(&mut warm, "Review", (60, 40));
+    assert!(
+        rows.iter().any(|row| row == "○ 1 file read only"),
+        "{rows:#?}"
     );
     outbound.shutdown();
 }

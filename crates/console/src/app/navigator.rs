@@ -136,9 +136,17 @@ impl App {
             Ok(source) => {
                 if let Some(pane) = self.state.focused_pane_mut() {
                     pane.content = if kind {
-                        PaneContent::Markdown { path, source }
+                        PaneContent::Markdown {
+                            path,
+                            source,
+                            drawn: None,
+                        }
                     } else {
-                        PaneContent::Diff { path, source }
+                        PaneContent::Diff {
+                            path,
+                            source,
+                            drawn: None,
+                        }
                     };
                     pane.scroll_from_bottom = usize::MAX;
                 }
