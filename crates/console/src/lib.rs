@@ -48,7 +48,7 @@ use yi_tui::term::ControlPictures;
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
 use crate::layout::PaneId;
-use crate::model::{Link, SessionId, SessionStatus};
+use crate::model::{Link, SessionStatus};
 
 pub use title::{TitleOptions, UnknownScene};
 use title::{title_playing, title_tick};
@@ -406,7 +406,7 @@ fn step_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     theme: &Theme,
     scheduler: &mut yi_tui::frame::FrameScheduler,
-    orb_owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    orb_owners: &mut crate::app::ids::Owners,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     if scheduler.should_draw(Instant::now()) {
@@ -433,10 +433,13 @@ fn present<B: Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     theme: &Theme,
-    orb_owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    orb_owners: &mut crate::app::ids::Owners,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     let _ = out.execute(ratatui::crossterm::terminal::BeginSynchronizedUpdate);
+    if app.kitty {
+        crate::app::ids::lease(app, orb_owners, out);
+    }
     let drawn = draw(app, terminal, theme);
     if app.kitty {
         place_avatars(app, out);
@@ -503,32 +506,11 @@ fn chat_wake(app: &App) -> Duration {
 /// hold one placed frame. Incident: a closed or switched pane kept its orb.
 fn place_chat_orbs(
     app: &mut App,
-    owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    owners: &mut crate::app::ids::Owners,
     out: &mut impl std::io::Write,
 ) {
     use crate::model::PaneContent;
-    owners.retain(|pane, owner| {
-        let kept = app
-            .state
-            .panes
-            .get(pane)
-            .is_some_and(|pane| match &pane.content {
-                PaneContent::Session {
-                    session,
-                    chat: Some(_),
-                } => session == owner,
-                _ => false,
-            });
-        if !kept {
-            for id in crate::app::orb_ids(*pane)
-                .into_iter()
-                .chain(crate::app::card_ids(*pane))
-            {
-                let _ = yi_tui::orb::kitty::delete_id(out, id);
-            }
-        }
-        kept
-    });
+    crate::app::ids::lease(app, owners, out);
     let focused = app.state.focused_pane_id();
     let shown = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
@@ -545,13 +527,11 @@ fn place_chat_orbs(
         .collect();
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
-            session,
-            chat: Some(chat),
+            chat: Some(chat), ..
         } = &mut pane.content
         else {
             continue;
         };
-        owners.entry(*id).or_insert_with(|| session.clone());
         if shown.contains(id) {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb, Some(*id) == focused);
             yi_tui::question::tick(&chat.app, out, &mut chat.card);
@@ -1162,7 +1142,7 @@ mod tests {
     #[test]
     fn a_session_name_cannot_end_the_window_title() -> Result<(), Box<dyn std::error::Error>> {
         let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
-        let id = SessionId("s-evil".to_owned());
+        let id = crate::model::SessionId("s-evil".to_owned());
         app.state.upsert_row(crate::model::SessionRow {
             id: id.clone(),
             root: "/repo".to_owned(),
