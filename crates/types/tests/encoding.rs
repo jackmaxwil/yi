@@ -3,7 +3,7 @@ use std::error::Error;
 use sha2::Digest;
 use yi_types::encoding::{base64, base64url_nopad};
 
-// Python 3.14 base64.b64encode and urlsafe_b64encode, `=` stripped: hex input, standard, url.
+// Python 3.14 base64.b64encode and urlsafe_b64encode: hex input, standard, url column unpadded.
 const PYTHON: &str = include_str!("fixtures/base64-python-v1.tsv");
 
 #[test]
@@ -19,7 +19,9 @@ fn both_encoders_match_python_on_every_tail_length() -> Result<(), Box<dyn Error
         assert_eq!(base64(&bytes), standard, "standard, input {hex}");
         assert_eq!(base64url_nopad(&bytes), url, "url-safe, input {hex}");
     }
-    assert_eq!(PYTHON.lines().count(), 11);
+    assert_eq!(PYTHON.lines().count(), 10);
+    assert_eq!(base64(b""), "");
+    assert_eq!(base64url_nopad(b""), "");
     Ok(())
 }
 
