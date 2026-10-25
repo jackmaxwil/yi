@@ -6,8 +6,6 @@
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
 mod recorded;
-#[path = "../../types/tests/support/repo.rs"]
-mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/family.rs"]
@@ -58,21 +56,25 @@ mod lanes;
 mod levers;
 mod node;
 mod permission_scope;
+mod plan_arms;
 mod plan_authority;
 mod plan_capacity;
 mod plan_declare;
 mod plan_e2e;
+mod plan_errors;
 mod plan_fuzz;
 mod plan_import;
 mod plan_journal;
 mod plan_ledger;
 mod plan_ops;
 mod plan_program;
+mod plan_readers;
 mod plan_recovery;
 mod plan_timer;
 mod plan_trace;
 mod plan_verify;
 mod plan_walkthrough;
+mod plan_why;
 mod plan_worktree;
 mod plugin_tree;
 mod prompt_drift;

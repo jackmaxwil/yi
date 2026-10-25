@@ -346,15 +346,14 @@ impl SessionStore {
         let mut hits = Vec::new();
         for entry in self.state.entries() {
             let text = searchable_text(entry);
-            if !text.to_lowercase().contains(&lowered_needle) {
+            let lowered = text.to_lowercase();
+            if !lowered.contains(&lowered_needle) {
                 continue;
             }
             total = total.saturating_add(1);
             if total > offset && hits.len() < limit {
-                let line = (text.lines())
-                    .find(|line| line.to_lowercase().contains(&lowered_needle))
-                    .or_else(|| text.lines().next())
-                    .unwrap_or("");
+                let at = (lowered.lines()).position(|line| line.contains(&lowered_needle));
+                let line = text.lines().nth(at.unwrap_or(0)).unwrap_or("");
                 let (snippet, cut) = snippet(line, [lowered_needle.as_str()]);
                 hits.push(HistoryHit {
                     entry_id: entry.id().to_owned(),

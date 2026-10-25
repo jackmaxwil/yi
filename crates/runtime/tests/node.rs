@@ -380,7 +380,7 @@ fn docker_here(test: &str) -> bool {
     }
 }
 
-fn git_repo(label: &str) -> Result<Scratch, Box<dyn Error>> {
+pub(crate) fn git_repo(label: &str) -> Result<Scratch, Box<dyn Error>> {
     let repo = Scratch::new(label)?;
     for args in [
         &["init", "-q", "-b", "main"][..],
