@@ -432,5 +432,6 @@ pub(crate) fn session_extensions(
             .as_ref()
             .and_then(|skills| skills.global.clone())
             .unwrap_or_default(),
+        can_delegate: true,
     })
 }
