@@ -57,7 +57,7 @@ async fn program_records_source_before_the_first_effect() -> Fallible {
     let delegate = Arc::new(Counting::default());
     let engine = Arc::new(PlanEngine::new(store.clone(), delegate.clone()));
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, None, &mut registry);
     let worker = json!({"spec": {"role": "writer"}, "accept": {"stated": "it works"}});
     // Held behind an inline todo, so the engine's start is an effect of a later op.
     let todos = json!([

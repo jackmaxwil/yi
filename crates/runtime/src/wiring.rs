@@ -56,6 +56,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
             global_skills: Vec::new(),
+            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         let host = attach_runtime(
             &mut child,
@@ -573,7 +574,8 @@ fn wire_plan_request(
     if wiring.depth == 0 {
         todos.set_carry(crate::todo::mirror::carry(Arc::downgrade(&engine)));
     }
-    crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
+    let gate = session.heartbeat_service().and_then(|beat| beat.gate());
+    crate::plan::request::register(Arc::clone(&engine), actor.clone(), gate, registry);
     Some((engine, actor, todos))
 }
 

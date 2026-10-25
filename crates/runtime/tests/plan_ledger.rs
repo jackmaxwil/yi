@@ -21,7 +21,7 @@ use yi_types::url::Url;
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[derive(Default)]
-struct Recorder(Mutex<Vec<PlanOpRecord>>);
+pub(crate) struct Recorder(pub(crate) Mutex<Vec<PlanOpRecord>>);
 
 impl OpSink for Recorder {
     fn record(&self, record: PlanOpRecord) -> Result<(), String> {
