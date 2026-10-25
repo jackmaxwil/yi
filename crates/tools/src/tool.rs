@@ -207,15 +207,15 @@ pub(crate) fn clip(line: &str, cols: usize) -> (String, bool) {
 }
 
 /// A loud cut's row: kept of what existed, the cap that cut it, and the call that gets the rest.
-pub(crate) fn cut(
+pub fn cut(
     kept: usize,
     total: usize,
     what: &str,
     cap: &str,
     limit: usize,
-    next: &str,
+    next_call: &str,
 ) -> String {
-    format!("[\u{2026} {kept} of {total} {what} ({cap} {limit}); the rest: {next}]")
+    format!("[\u{2026} {kept} of {total} {what} ({cap} {limit}); the rest: {next_call}]")
 }
 
 pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
