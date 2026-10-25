@@ -22,6 +22,7 @@ EVALS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALS))
 
 import axes  # noqa: E402
+import stops_on_fail  # noqa: E402
 
 THRESHOLD = ("BUILD iff on K3.1 mean(K - W) >= 0.20 with one-sided 95% LB > 0, K passes >= W passes and "
              "K >= solo, then on flash mean >= 0.10 and passes >= W; KILL otherwise; UNRESOLVED if SD(d) > "
@@ -97,11 +98,6 @@ def tally(trial):
     return None
 
 
-def is_root(session):
-    with session.open(errors="replace") as handle:
-        return not json.loads(handle.readline()).get("parentSessionId")
-
-
 def trial_row(trial, run):
     """One trial: its score and pass, the parent's peak context and the children's input tokens
     (a session records tokens, not request bytes)."""
@@ -109,7 +105,7 @@ def trial_row(trial, run):
     peak = child_input = children = 0
     for session in axes.scored_sessions(trial):
         row = axes.score(session, trial)
-        if is_root(session):
+        if stops_on_fail.is_root(session):
             peak = max(peak, row["peakContextTokens"] or 0)
         else:
             children += 1
