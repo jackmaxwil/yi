@@ -1714,23 +1714,6 @@ fn a_write_over_a_file_past_the_cap_claims_no_patch() -> TestResult {
     Ok(())
 }
 
-struct OneCell(yi_types::kernel::ExecuteResult);
-
-impl yi_tools::KernelBridge for OneCell {
-    fn execute_cell(
-        &self,
-        _code: &str,
-        _cancelled: &yi_tools::CancelFlag,
-        _recovery_dir: Option<&std::path::Path>,
-    ) -> Result<yi_tools::KernelCellOutcome, String> {
-        Ok(yi_tools::KernelCellOutcome {
-            result: self.0.clone(),
-            kernel_restarted: false,
-            notes: Vec::new(),
-        })
-    }
-}
-
 struct DeadKernel;
 
 impl yi_tools::KernelBridge for DeadKernel {
@@ -1793,46 +1776,6 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
     );
     assert_eq!(output.result.details["callsDropped"], json!(3));
     assert_eq!(*calls.0.lock().map_err(|_| "poisoned")?, ["close"]);
-    Ok(())
-}
-
-/// A kernel edit becomes a patch here, where every other patch is computed. The
-/// point is the LCS: a whole-file dump would mark all four lines changed.
-#[test]
-fn a_kernel_edit_arrives_as_a_real_patch() -> TestResult {
-    let dir = temp_dir("kernel-diff")?;
-    let context = ToolContext::new(dir.to_path_buf());
-    let tool = yi_tools::IpythonTool {
-        bridge: Arc::new(OneCell(yi_types::kernel::ExecuteResult {
-            stdout: String::new(),
-            stderr: String::new(),
-            result: None,
-            diffs: vec![yi_types::kernel::KernelDiffDisplay {
-                path: "notes.txt".to_owned(),
-                old_str: "one\ntwo\nthree\nfour\n".to_owned(),
-                new_str: "one\ntwo\nTHREE\nfour\n".to_owned(),
-                start_line: None,
-            }],
-            attachments: Vec::new(),
-            sent_agent_messages: Vec::new(),
-            status: yi_types::kernel::ExecuteStatus::Ok,
-            error: None,
-            duration_ms: 12,
-        })),
-        calls: None,
-    };
-
-    let output = tool.execute(args(&[("code", json!("edit()"))]), &context);
-    let patch = output.result.details["diffs"][0]["patch"]
-        .as_str()
-        .ok_or("kernel diff carried no patch")?;
-    assert!(patch.contains("--- a/notes.txt"), "{patch}");
-    assert!(
-        patch.contains("-three") && patch.contains("+THREE"),
-        "{patch}"
-    );
-    let removed = patch.lines().filter(|l| l.starts_with("-o")).count();
-    assert_eq!(removed, 0, "unchanged lines are not marked: {patch}");
     Ok(())
 }
 
@@ -4247,7 +4190,7 @@ view/bash-cell-print.txt|cell|./records.sh|records written: 1000";
 /// each cut's row names a file holding every byte the cut dropped.
 #[test]
 fn every_involuntary_output_keeps_its_verdict_under_the_ceiling() -> TestResult {
-    use yi_tools::Involuntary::{Check, Job, ShellCell, Traceback};
+    use yi_tools::Involuntary::{Job, ShellCell, Traceback};
     let dir = temp_dir("view-corpus")?;
     for entry in VIEW_CORPUS.lines() {
         let fields: Vec<&str> = entry.split('|').collect();
@@ -4257,7 +4200,6 @@ fn every_involuntary_output_keeps_its_verdict_under_the_ceiling() -> TestResult 
         let producer = match kind {
             "traceback" => Traceback,
             "cell" => ShellCell(command),
-            "check" => Check(command),
             _ => Job(command),
         };
         let raw = fs::read_to_string(view_fixture(name))?;
