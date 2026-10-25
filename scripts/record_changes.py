@@ -219,7 +219,8 @@ def selfcheck():
     real = landed(ROOT, PIN)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-record-"))
     bad = []
-    run = lambda *a: subprocess.run((sys.executable,) + a, cwd=tmp, capture_output=True, text=True)
+    # Incident: CI writes bytecode, so the scratch repo showed __pycache__ as untracked and every clean-tree check failed.
+    run = lambda *a: subprocess.run((sys.executable, "-B") + a, cwd=tmp, capture_output=True, text=True)
     status = lambda: git(tmp, "status", "--porcelain")
     gate = lambda: run("scripts/guardrails/check_changes.py")
 
