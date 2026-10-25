@@ -633,7 +633,8 @@ Python oracles and fail every other variant of theirs (run 2026-10-24); cumulati
 verifier needs Chromium and was not run, so a variant there no browser test fails still counts.
 The env images lack Playwright, so a layout check that needs a browser fails everywhere; the
 prompt says there is no browser. Checks that crash or time out on the oracle add one failing check,
-and a docker fault (exit 125 to 127, or no docker at all) scores nothing and caches nothing.
+and a docker fault (exit 125 to 127, a tree the image would not take, or no docker at all) scores
+nothing and caches nothing.
 `report` scores a run the first time it sees it, which takes minutes for cumulative-layout-shift.
 A task is open when its run did not happen, was cut (budget, quota, error), could not be scored,
 or named `ref/benchmarks` in its events, where the oracle lives. KILL needs a family to fail a bar
