@@ -80,7 +80,7 @@ use yi_types::url::Url;
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[derive(Default)]
-struct Stub {
+pub(crate) struct Stub {
     next: AtomicU32,
     reaps: AtomicU32,
     fail_reap: AtomicBool,

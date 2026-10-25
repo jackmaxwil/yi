@@ -589,7 +589,7 @@ impl Builder<'_> {
     }
 }
 
-const TAB_STOP: usize = 4;
+pub(crate) const TAB_STOP: usize = 4;
 
 /// The cells `ch` draws at column `at`: a tab runs to the next four-column stop.
 pub fn cell_width(ch: char, at: usize) -> usize {

@@ -1,14 +1,22 @@
 //! Cross-session spend: every assistant reply under a sessions directory, read off the JSONL
 //! ledgers themselves. No index and no collector; the files are the ledger.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
+use yi_types::plan::canonical::sorted;
+use yi_types::plan::doc::OWNER_AGENT;
+use yi_types::plan::ledger::{JournalRecord, PLAN_OP_ENTRY_TYPE, PlanOpRecord};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
+use crate::plan::journal::{Journal, RealFs};
+use crate::plan::ops::{CLASSIFIER_ACTOR, ENGINE_AGENT, HOST_ACTOR};
+use crate::plan::state::{KIND_DONE_REFUSED, KIND_VERIFICATION_STALE};
+use crate::plan::store::JOURNAL_NAME;
 use crate::schedule::Zone;
 
 pub use yi_session::now_ms;
@@ -41,14 +49,71 @@ impl Request {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ActorClass {
+    Owner,
+    Engine,
+    Child,
+    Other,
+}
+
+impl ActorClass {
+    /// Invariant: the engine stamps a `user://` citation, `classifier` or `host` for the
+    /// approvers; every other word that is not the owner or the engine names a child.
+    fn of(actor: &str) -> Self {
+        match actor {
+            OWNER_AGENT => Self::Owner,
+            ENGINE_AGENT => Self::Engine,
+            CLASSIFIER_ACTOR | HOST_ACTOR => Self::Other,
+            word if word.starts_with("user://") => Self::Other,
+            _ => Self::Child,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Engine => "engine",
+            Self::Child => "child",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Scan {
     pub requests: Vec<Request>,
     pub files: usize,
     /// Files whose header would not read: none of their replies are in `requests`.
     pub unreadable: usize,
-    /// Lines naming an assistant that did not parse as a session entry.
+    /// Lines naming an assistant or a plan op that did not parse.
     pub bad_lines: usize,
+    /// Applied plan ops by (op, who applied it); an op the table rejected reads `<op> (rejected)`.
+    pub plan_ops: BTreeMap<(String, ActorClass), u64>,
+    pub journals: usize,
+    plan_seen: HashSet<String>,
+}
+
+impl Scan {
+    /// Invariant: a journal record, its session mirror and a fork's copy are one op and count once,
+    /// though the journal sorts a record's keys and the mirror keeps the order it was stamped in.
+    fn add_plan_op(&mut self, record: &PlanOpRecord, since_ms: u64) {
+        if record.at < since_ms
+            || !serde_json::to_value(record)
+                .is_ok_and(|value| self.plan_seen.insert(sorted(&value).to_string()))
+        {
+            return;
+        }
+        let op = match (record.is_refusal(), record.op.as_str()) {
+            (true, KIND_DONE_REFUSED | KIND_VERIFICATION_STALE) | (false, _) => record.op.clone(),
+            (true, rejected) => format!("{rejected} (rejected)"),
+        };
+        let count = self
+            .plan_ops
+            .entry((op, ActorClass::of(&record.actor)))
+            .or_insert(0);
+        *count = count.saturating_add(1);
+    }
 }
 
 fn jsonl_files(dir: &Path, since_ms: u64, out: &mut Vec<PathBuf>) {
@@ -103,6 +168,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
     files.sort();
     let mut scan = Scan::default();
     let mut seen = HashSet::new();
+    let plan_op = format!("\"customType\":\"{PLAN_OP_ENTRY_TYPE}\"");
     for path in files {
         let text = std::fs::read(&path)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -122,7 +188,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 part == "children" || part.starts_with("sub-")
             })
         });
-        for line in lines.filter(|line| line.contains("\"assistant\"")) {
+        for line in lines.filter(|line| line.contains("\"assistant\"") || line.contains(&plan_op)) {
             if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
                 continue;
             }
@@ -133,6 +199,24 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                     continue;
                 }
             };
+            if let Mutation::Entry {
+                entry: Entry::Custom {
+                    custom_type, data, ..
+                },
+                ..
+            } = &parsed
+            {
+                if custom_type == PLAN_OP_ENTRY_TYPE {
+                    match data
+                        .clone()
+                        .and_then(|data| serde_json::from_value::<PlanOpRecord>(data).ok())
+                    {
+                        Some(record) => scan.add_plan_op(&record, since_ms),
+                        None => scan.bad_lines = scan.bad_lines.saturating_add(1),
+                    }
+                }
+                continue;
+            }
             let Mutation::Entry {
                 entry:
                     Entry::Message {
@@ -176,6 +260,33 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
         }
     }
     scan
+}
+
+/// Adds the plan journals under `plans` (`<plans>/<root>/ops.jsonl`) to `scan.plan_ops`: a session
+/// file mirrors only the ops its own engine emitted, so delegations and rejected ops live here.
+pub fn fold_journals(scan: &mut Scan, plans: &Path, since_ms: u64) {
+    let mut files = Vec::new();
+    jsonl_files(plans, since_ms, &mut files);
+    files.retain(|path| path.file_name().is_some_and(|name| name == JOURNAL_NAME));
+    for path in files {
+        let Ok(read) = Journal::open(path, Arc::new(RealFs)).lines() else {
+            scan.unreadable = scan.unreadable.saturating_add(1);
+            continue;
+        };
+        scan.journals = scan.journals.saturating_add(1);
+        let torn = usize::from(read.torn.is_some());
+        scan.bad_lines = scan.bad_lines.saturating_add(torn);
+        for bytes in read
+            .lines
+            .into_iter()
+            .map(|line| line.bytes.unwrap_or_default())
+        {
+            match serde_json::from_slice::<JournalRecord>(&bytes) {
+                Ok(journaled) => scan.add_plan_op(&journaled.record, since_ms),
+                Err(_) => scan.bad_lines = scan.bad_lines.saturating_add(1),
+            }
+        }
+    }
 }
 
 /// Local midnight at or before `now_ms`, as UTC milliseconds.
