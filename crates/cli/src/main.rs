@@ -36,6 +36,10 @@ use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
 #[derive(Clone)]
+#[cfg_attr(
+    not(feature = "tui"),
+    expect(dead_code, reason = "the drive flags feed the TUI only")
+)]
 struct Args {
     command: String,
     model: String,
@@ -54,19 +58,13 @@ struct Args {
     socket: Option<String>,
     headless: bool,
     solo: bool,
-    #[cfg(feature = "tui")]
     keys: Option<String>,
-    #[cfg(feature = "tui")]
     control: Option<String>,
-    #[cfg(feature = "tui")]
     frames: Option<String>,
     faux: Option<String>,
-    #[cfg(feature = "tui")]
     record: Option<String>,
-    #[cfg(feature = "tui")]
     snap: Option<String>,
     /// `--size COLSxROWS`: the headless screen, 80x24 when absent.
-    #[cfg(feature = "tui")]
     size: Option<(u16, u16)>,
     /// An eval harness launched this run: `YI_LEVERS` is read, and nothing else (D220).
     eval: bool,
@@ -102,7 +100,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut lanes = false;
     let mut solo = false;
     let mut keys = None;
-    #[cfg(feature = "tui")]
     let mut control = None;
     let mut frames = None;
     let mut faux = None;
@@ -136,7 +133,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("lanes") => lanes = true,
             Long("solo") => solo = true,
             Long("keys") => keys = Some(parser.value()?.string()?),
-            #[cfg(feature = "tui")]
             Long("control") => control = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
             Long("faux") => faux = Some(parser.value()?.string()?),
@@ -210,18 +206,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         socket,
         headless,
         solo,
-        #[cfg(feature = "tui")]
         keys,
-        #[cfg(feature = "tui")]
         control,
-        #[cfg(feature = "tui")]
         frames,
         faux,
-        #[cfg(feature = "tui")]
         record,
-        #[cfg(feature = "tui")]
         snap,
-        #[cfg(feature = "tui")]
         size,
         eval,
         deadline,
@@ -806,16 +796,6 @@ fn attach_store(
     let _span = yi_types::trace::span("attach_store.repin");
     repin(args, session);
     Ok(id)
-}
-
-/// The exact command that brings this session back, printed only for a session
-/// that recorded something: resuming an empty one reads as a broken suggestion.
-#[cfg(feature = "tui")]
-fn print_resume_hint(session: &AgentSession, id: &str) {
-    if session.messages().is_empty() {
-        return;
-    }
-    eprintln!("\n\x1b[2mResume this session with `yi --session {id}`\x1b[0m");
 }
 
 /// Checkpoints (§7.7) restore the files the last turn changed, from the cwd's leaf session.

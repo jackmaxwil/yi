@@ -5,7 +5,7 @@ use crate::Args;
 #[cfg(feature = "tui")]
 use crate::{
     Resume, attach_store, build_session, config, default_session_dir, effective_cwd, exit_refused,
-    print_resume_hint, release_lane, session_target,
+    release_lane, session_target,
 };
 
 #[cfg(feature = "tui")]
@@ -147,6 +147,16 @@ fn control(args: &Args) -> Result<Option<yi_tui::drive::Control>, i32> {
             eprintln!("error: --control {path}: {error}");
             2
         })
+}
+
+/// The exact command that brings this session back, printed only for a session
+/// that recorded something: resuming an empty one reads as a broken suggestion.
+#[cfg(feature = "tui")]
+fn print_resume_hint(session: &yi_runtime::AgentSession, id: &str) {
+    if session.messages().is_empty() {
+        return;
+    }
+    eprintln!("\n\x1b[2mResume this session with `yi --session {id}`\x1b[0m");
 }
 
 /// The quit line says where the work is before the slot is handed back.
