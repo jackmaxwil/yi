@@ -11,6 +11,8 @@ use crate::model::{Editor, PaneContent};
 use super::App;
 
 const MAX_EDITOR_BYTES: u64 = 8 * 1024 * 1024;
+/// Invariant: the text area's cursor jump takes a u16 row, so a longer file is refused.
+const MAX_EDITOR_LINES: usize = 65_535;
 const DISK_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn mtime_of(path: &str) -> Option<SystemTime> {
@@ -32,6 +34,12 @@ pub(super) fn load(path: &str) -> Result<Editor, String> {
         ));
     }
     let source = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+    let lines = source.lines().count();
+    if lines > MAX_EDITOR_LINES {
+        return Err(format!(
+            "{path}: {lines} lines is over the 65,535-line editor limit"
+        ));
+    }
     let mut text = TextArea::from(source.lines().map(str::to_owned).collect::<Vec<_>>());
     text.set_cursor_line_style(ratatui::style::Style::default());
     Ok(Editor {
@@ -245,28 +253,23 @@ impl App {
         };
         let (row, col) = editor.text.cursor();
         let lines = editor.text.lines();
-        let hit = lines
-            .iter()
-            .enumerate()
-            .skip(row)
-            .chain(lines.iter().enumerate().take(row))
-            .find_map(|(index, line)| {
-                let from = if index == row {
-                    col.saturating_add(1)
-                } else {
-                    0
-                };
-                let head: String = line.chars().take(from).collect();
-                line.get(head.len()..)?.find(pattern).map(|at| {
-                    (
-                        index,
-                        head.chars().count()
-                            + line
-                                .get(..head.len() + at)
-                                .map_or(0, |s| s.chars().count() - head.chars().count()),
-                    )
-                })
-            });
+        let rows = lines.iter().enumerate();
+        let after = rows.clone().skip(row).map(|(index, line)| {
+            let from = if index == row {
+                col.saturating_add(1)
+            } else {
+                0
+            };
+            (index, line, from)
+        });
+        let wrapped = rows
+            .take(row.saturating_add(1))
+            .map(|(i, line)| (i, line, 0));
+        let hit = after.chain(wrapped).find_map(|(index, line, from)| {
+            let skip: usize = line.chars().take(from).map(char::len_utf8).sum();
+            let at = skip.checked_add(line.get(skip..)?.find(pattern)?)?;
+            Some((index, line.get(..at)?.chars().count()))
+        });
         let outcome = match hit {
             Some((line, column)) if !pattern.is_empty() => {
                 editor.jump(line, column);
