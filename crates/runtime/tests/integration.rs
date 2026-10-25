@@ -6,6 +6,8 @@
 mod own;
 #[path = "../../types/tests/support/recorded.rs"]
 mod recorded;
+#[path = "../../types/tests/support/repo.rs"]
+mod repo;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 #[path = "support/family.rs"]
@@ -14,6 +16,8 @@ mod support;
 mod upstream;
 #[path = "../../types/tests/support/usage_record.rs"]
 mod usage_record;
+#[path = "support/worktree.rs"]
+mod worktree;
 
 mod advisor_compaction;
 mod advisor_e2e;
@@ -54,6 +58,8 @@ mod lanes;
 mod levers;
 mod node;
 mod permission_scope;
+mod plan_authority;
+mod plan_capacity;
 mod plan_declare;
 mod plan_e2e;
 mod plan_fuzz;
@@ -67,6 +73,7 @@ mod plan_timer;
 mod plan_trace;
 mod plan_verify;
 mod plan_walkthrough;
+mod plan_worktree;
 mod plugin_tree;
 mod prompt_drift;
 mod prompts;
@@ -98,3 +105,10 @@ mod todo_mirror;
 mod undo_to;
 mod wall_e2e;
 mod worker_prompt;
+
+/// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict
+/// last, past the view's 16 KiB ceiling and, as JSON, past a channel message's cap.
+pub const RED_PYTEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+);

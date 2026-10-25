@@ -24,9 +24,19 @@ pub struct Rewound {
     pub abandoned: Option<BranchStub>,
 }
 
+/// Invariant: a rewind re-attaches the store, replacing the history a running turn is writing, so
+/// it is refused until the turn ends. A caller that touches files first asks here before it does.
+pub fn ensure_idle(session: &AgentSession) -> Result<(), String> {
+    if session.status() == Status::Running {
+        return Err("the current turn is still running".to_owned());
+    }
+    Ok(())
+}
+
 /// Selecting a user message rewinds to its *parent*: the point of picking your
 /// own message is to stand where you were before you sent it.
 pub fn rewind_to(session: &AgentSession, entry_id: &str) -> Result<Rewound, String> {
+    ensure_idle(session)?;
     let store = session.store().ok_or("no session store")?;
     let entry = yi_session::lock_session(&store)
         .entry(entry_id)

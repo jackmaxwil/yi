@@ -14,7 +14,10 @@ pub fn decide(
 ) -> Result<DecisionResponse, String> {
     let url = format!("{}/v1/systemone", base_url.trim_end_matches('/'));
     let body = serde_json::to_string(request).map_err(|error| error.to_string())?;
-    let agent = ureq::AgentBuilder::new().timeout(deadline).build();
+    let agent = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
+        .timeout(deadline)
+        .build();
     let mut call = agent.post(&url).set("content-type", "application/json");
     if let Some(key) = key {
         call = call.set("authorization", &format!("Bearer {key}"));

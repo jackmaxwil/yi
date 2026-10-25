@@ -3,16 +3,18 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Usage};
 use yi_types::plan::canonical::sorted;
 use yi_types::plan::doc::OWNER_AGENT;
-use yi_types::plan::ledger::{JournalRecord, PLAN_OP_ENTRY_TYPE, PlanOpRecord};
+use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
 use crate::cache_miss::diagnostic_detail;
-use crate::plan::ops::ENGINE_AGENT;
+use crate::plan::journal::{Damage, Journal, RealFs};
+use crate::plan::ops::{CLASSIFIER_ACTOR, ENGINE_AGENT, HOST_ACTOR};
 use crate::plan::state::{KIND_DONE_REFUSED, KIND_VERIFICATION_STALE};
 use crate::plan::store::JOURNAL_NAME;
 use crate::schedule::Zone;
@@ -62,7 +64,7 @@ impl ActorClass {
         match actor {
             OWNER_AGENT => Self::Owner,
             ENGINE_AGENT => Self::Engine,
-            "classifier" | "host" => Self::Other,
+            CLASSIFIER_ACTOR | HOST_ACTOR => Self::Other,
             word if word.starts_with("user://") => Self::Other,
             _ => Self::Child,
         }
@@ -102,7 +104,7 @@ impl Scan {
         {
             return;
         }
-        let op = match (record.extra.contains_key("refusal"), record.op.as_str()) {
+        let op = match (record.is_refusal(), record.op.as_str()) {
             (true, KIND_DONE_REFUSED | KIND_VERIFICATION_STALE) | (false, _) => record.op.clone(),
             (true, rejected) => format!("{rejected} (rejected)"),
         };
@@ -166,6 +168,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
     files.sort();
     let mut scan = Scan::default();
     let mut seen = HashSet::new();
+    let plan_op = format!("\"customType\":\"{PLAN_OP_ENTRY_TYPE}\"");
     for path in files {
         let text = std::fs::read(&path)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -185,9 +188,7 @@ pub fn scan(dir: &Path, since_ms: u64) -> Scan {
                 part == "children" || part.starts_with("sub-")
             })
         });
-        for line in
-            lines.filter(|line| line.contains("\"assistant\"") || line.contains(PLAN_OP_ENTRY_TYPE))
-        {
+        for line in lines.filter(|line| line.contains("\"assistant\"") || line.contains(&plan_op)) {
             if entry_stamp(line).is_some_and(|stamp| stamp > 0 && stamp < since_ms) {
                 continue;
             }
@@ -268,16 +269,19 @@ pub fn fold_journals(scan: &mut Scan, plans: &Path, since_ms: u64) {
     jsonl_files(plans, since_ms, &mut files);
     files.retain(|path| path.file_name().is_some_and(|name| name == JOURNAL_NAME));
     for path in files {
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let read = Journal::open(path, Arc::new(RealFs)).read();
+        let Some((records, torn)) = read.ok().and_then(|read| match read.damage {
+            None => Some((read.records, 0)),
+            Some(Damage::TornTail { .. }) => Some((read.records, 1)),
+            Some(Damage::Corrupt { .. }) => None,
+        }) else {
             scan.unreadable = scan.unreadable.saturating_add(1);
             continue;
         };
         scan.journals = scan.journals.saturating_add(1);
-        for line in text.lines() {
-            match serde_json::from_str::<JournalRecord>(line) {
-                Ok(journaled) => scan.add_plan_op(&journaled.record, since_ms),
-                Err(_) => scan.bad_lines = scan.bad_lines.saturating_add(1),
-            }
+        scan.bad_lines = scan.bad_lines.saturating_add(torn);
+        for journaled in &records {
+            scan.add_plan_op(&journaled.record, since_ms);
         }
     }
 }

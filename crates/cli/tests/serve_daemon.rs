@@ -513,6 +513,13 @@ fn two_clients_both_stream_one_session() -> TestResult {
         };
         first.read_until(is_chunk)?;
         second.read_until(is_chunk)?;
+        use std::os::unix::fs::PermissionsExt;
+        let log = std::fs::metadata(socket.with_extension("worker.log"))?;
+        assert_eq!(
+            log.permissions().mode() & 0o777,
+            0o600,
+            "worker stderr, which carries kernel and tool output, is owner-only"
+        );
         Ok(())
     })();
 
