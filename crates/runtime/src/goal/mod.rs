@@ -1,5 +1,3 @@
-pub mod template;
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -167,10 +165,34 @@ fn budget_values(goal: &Goal) -> [(&'static str, String); 3] {
     ]
 }
 
-pub fn continuation_text(
-    goal: &Goal,
-    plan: Option<&yi_types::plan::doc::Plan>,
-) -> Result<String, template::TemplateError> {
+/// Invariant: one scan of the template, so a `{{ name }}` inside a value (the objective,
+/// check output, a plan label) is copied verbatim, never filled.
+fn fill(template: &str, goal: &Goal, extra: Vec<(&'static str, String)>) -> String {
+    let mut values = budget_values(goal).to_vec();
+    values.push(("time_used_seconds", goal.time_used_seconds.to_string()));
+    values.push(("objective", goal.objective.clone()));
+    values.extend(extra);
+    let lookup = |name: &str| values.iter().find(|(key, _)| *key == name).map(|(_, v)| v);
+    let mut text = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some((head, tail)) = rest.split_once("{{ ") {
+        text.push_str(head);
+        let filled = tail
+            .split_once(" }}")
+            .and_then(|(name, after)| Some((lookup(name)?, after)));
+        let Some((value, after)) = filled else {
+            text.push_str("{{ ");
+            rest = tail;
+            continue;
+        };
+        text.push_str(value);
+        rest = after;
+    }
+    text.push_str(rest);
+    text
+}
+
+pub fn continuation_text(goal: &Goal, plan: Option<&yi_types::plan::doc::Plan>) -> String {
     let check_status = goal
         .check_failure
         .as_ref()
@@ -185,32 +207,19 @@ pub fn continuation_text(
             format!("Plan state:\n{text}\n")
         }
     });
-    let mut values = vec![
-        ("objective", goal.objective.clone()),
+    let extra = vec![
         ("check_status", check_status),
         ("plan_frontier", plan_frontier),
     ];
-    values.extend(budget_values(goal));
-    template::render(CONTINUATION_TEMPLATE, values)
+    fill(CONTINUATION_TEMPLATE, goal, extra)
 }
 
-pub fn budget_limit_text(goal: &Goal) -> Result<String, template::TemplateError> {
-    let [used, budget, _remaining] = budget_values(goal);
-    template::render(
-        BUDGET_LIMIT_TEMPLATE,
-        vec![
-            ("objective", goal.objective.clone()),
-            ("time_used_seconds", goal.time_used_seconds.to_string()),
-            used,
-            budget,
-        ],
-    )
+pub fn budget_limit_text(goal: &Goal) -> String {
+    fill(BUDGET_LIMIT_TEMPLATE, goal, Vec::new())
 }
 
-pub fn objective_updated_text(goal: &Goal) -> Result<String, template::TemplateError> {
-    let mut values = vec![("objective", goal.objective.clone())];
-    values.extend(budget_values(goal));
-    template::render(OBJECTIVE_UPDATED_TEMPLATE, values)
+pub fn objective_updated_text(goal: &Goal) -> String {
+    fill(OBJECTIVE_UPDATED_TEMPLATE, goal, Vec::new())
 }
 
 fn goal_prompt_message(text: String) -> AgentMessage {
@@ -460,9 +469,10 @@ impl GoalService {
         goal.check_failure = None;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
-        if let Ok(text) = objective_updated_text(&goal) {
-            (self.deliver)(goal_prompt_message(text), DeliveryMode::Steer);
-        }
+        (self.deliver)(
+            goal_prompt_message(objective_updated_text(&goal)),
+            DeliveryMode::Steer,
+        );
         if let Ok(mut deferred) = self.deferred.lock() {
             *deferred = false;
         }
@@ -546,8 +556,11 @@ impl GoalService {
         }
         // One-shot by construction: the Active→BudgetLimited transition
         // happens exactly once per goal.
-        if crossed && let Ok(text) = budget_limit_text(&goal) {
-            (self.deliver)(goal_prompt_message(text), DeliveryMode::Steer);
+        if crossed {
+            (self.deliver)(
+                goal_prompt_message(budget_limit_text(&goal)),
+                DeliveryMode::Steer,
+            );
         }
     }
 
@@ -575,9 +588,7 @@ impl GoalService {
         if !goal.status.is_active() {
             return;
         }
-        let Ok(text) = continuation_text(&goal, self.read_plan().ok().as_ref()) else {
-            return;
-        };
+        let text = continuation_text(&goal, self.read_plan().ok().as_ref());
         Self::set_flag(&self.pending, true);
         (self.deliver)(goal_prompt_message(text), DeliveryMode::FollowUp);
     }

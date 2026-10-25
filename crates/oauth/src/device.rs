@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::Result;
-use crate::flow::{http_agent, open_url, parse_tokens};
+use crate::flow::{http_agent, open_url, parse_tokens, seconds};
 use crate::registry::OauthCode;
 use crate::store::Credential;
 use crate::url::https_or_local;
@@ -28,12 +28,6 @@ fn post(agent: &ureq::Agent, url: &str, fields: &[(&str, &str)]) -> Result<(u16,
     ))
 }
 
-fn seconds(body: &Value, key: &str) -> Option<Duration> {
-    body.get(key)
-        .and_then(Value::as_f64)
-        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
-}
-
 /// RFC 8628. `sleep` is the only clock: the deadline counts the waits it was handed.
 pub fn login(
     spec: &OauthCode,
@@ -49,19 +43,20 @@ pub fn login(
     }
     let (status, grant) = post(&agent, device_authorization, &fields)?;
     let text = |key: &str| grant.get(key).and_then(Value::as_str);
-    let printable = |code: &&str| !code.chars().any(char::is_control);
-    let (Some(device_code), Some(user_code)) =
-        (text("device_code"), text("user_code").filter(printable))
-    else {
+    let printable = |shown: &&str| !shown.chars().any(char::is_control);
+    let (Some(device_code), Some(user_code), Some(uri)) = (
+        text("device_code"),
+        text("user_code").filter(printable),
+        text("verification_uri_complete")
+            .or(text("verification_uri"))
+            .filter(printable),
+    ) else {
         return Err(format!(
             "{}: device authorization failed: status {status}: {grant}",
             spec.id
         )
         .into());
     };
-    let uri = text("verification_uri_complete")
-        .or(text("verification_uri"))
-        .ok_or("device authorization names no verification_uri")?;
     https_or_local(uri)?;
     open_url(uri, no_browser);
     println!("Confirm the code {user_code} in the browser.");
