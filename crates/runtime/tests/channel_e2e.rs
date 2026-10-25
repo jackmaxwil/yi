@@ -1,6 +1,7 @@
 //! Channels (plan section 3.5, D287): a durable buffer the home orders, subscriptions that
 //! create or unblock todos from it, and supervised adapters that feed it.
 
+use crate::RED_PYTEST;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -391,6 +392,106 @@ async fn a_red_ci_script_makes_one_todo_and_its_green_message_unblocks_the_fix()
     timer.stop();
     assert!(unblocked, "the green message never unblocked the fix");
     assert!(told, "the unblock's wake did not carry the green message");
+    Ok(())
+}
+
+/// The first message a red `exec://` check leaves in a fresh channel.
+async fn first_red_message(name: &str, body: &str) -> Result<serde_json::Value, Box<dyn Error>> {
+    red_message_of(name, body, "./red.sh").await
+}
+
+async fn red_message_of(
+    name: &str,
+    body: &str,
+    command: &str,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let dir = Scratch::new(name)?;
+    script(&dir, "red.sh", body)?;
+    let channel = Channel::at(dir.join("channels/red.jsonl"));
+    let address = format!("exec://{command}?every=1s");
+    let address = address.as_str();
+    channel.open(address, None)?;
+    adapter::ensure(address, &channel, &dir, 1_000, true)?;
+    assert!(wait_until(8_000, || !channel.entries().is_empty()).await);
+    let entry = channel.entries().remove(0);
+    adapter::halt(true);
+    adapter::halt(false);
+    assert_eq!(entry.refused, None, "the channel refused the red level");
+    Ok(entry.data)
+}
+
+/// Dies with the view's 16 KiB text pushing a red level past the channel cap: the message is
+/// refused whole, so a filter on `ok=false` never matches and the todo is never made. Dies too
+/// with the fix dropping the output whole: the verdict sits at the end and must survive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_past_the_channel_cap_keeps_its_level_and_its_verdict() -> TestResult {
+    let data =
+        first_red_message("yi-channel-bigred", &format!("cat '{RED_PYTEST}'; exit 1")).await?;
+    assert_eq!((&data["ok"], &data["exit"]), (&false.into(), &1.into()));
+    let output = data["output"].as_str().ok_or("no output")?;
+    let row = "bytes kept (MESSAGE_MAX_BYTES 16384); the rest: bash (cd '";
+    for kept in [
+        row,
+        "&& ./red.sh) > exec.log 2>&1, then read exec.log]",
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+        "[capture cut: kept 30000 of 32955 bytes (OUTPUT_CAP 30000 per stream)",
+    ] {
+        assert!(output.contains(kept), "{kept}: {output:.400}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_message_is_whole_at_the_channel_cap_and_cut_one_byte_past_it() -> TestResult {
+    let bare = serde_json::json!({"ok": false, "exit": 1, "output": ""})
+        .to_string()
+        .len();
+    let fill = MESSAGE_MAX_BYTES - bare;
+    let printing = |bytes: usize| format!("head -c {bytes} /dev/zero | tr '\\0' x; exit 1");
+    let at = first_red_message("yi-channel-atcap", &printing(fill)).await?;
+    assert_eq!(at["output"].as_str().map(str::len), Some(fill));
+    let past = first_red_message("yi-channel-pastcap", &printing(fill + 1)).await?;
+    let cut = past["output"].as_str().ok_or("no output")?;
+    let total = fill + 1;
+    assert!(
+        cut.starts_with("[… ")
+            && cut.contains(&format!(" of {total} bytes kept (MESSAGE_MAX_BYTES 16384)")),
+        "{cut:.400}"
+    );
+    assert!(cut.ends_with('x'), "the end of the output is the part kept");
+    Ok(())
+}
+
+/// Dies with the exec row embedding a multi-line command whole: the rerun spills past the row's
+/// line, where the view's own row names such a command by the line it began with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_past_the_cap_names_a_multi_line_command_by_its_first_line() -> TestResult {
+    let body = format!("cat '{RED_PYTEST}'; exit 1");
+    let data = red_message_of("yi-channel-twolines", &body, "./red.sh\n# a second line").await?;
+    let output = data["output"].as_str().ok_or("no output")?;
+    let row = output.lines().next().unwrap_or_default();
+    let tail = ", its output sent to exec.log, then read exec.log]";
+    let named = row.contains("the command that began cd '") && row.ends_with(tail);
+    assert!(named, "{row}");
+    Ok(())
+}
+
+/// Dies with the cut measured on the JSON-escaped message and applied to the raw output: a quote
+/// costs two bytes as sent, so a quote-dense view cut that way kept nothing, verdict included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_exec_of_escape_dense_output_keeps_its_verdict_under_the_cap() -> TestResult {
+    let quotes = "\"".repeat(48);
+    let body = format!(
+        "yes '{quotes}' | head -n 400; echo 'FAILED test_quote - VERDICT red'; echo '{quotes}'; exit 1"
+    );
+    let data = first_red_message("yi-channel-quotes", &body).await?;
+    assert!(data.to_string().len() <= MESSAGE_MAX_BYTES);
+    let output = data["output"].as_str().ok_or("no output")?;
+    assert!(
+        output.contains("FAILED test_quote - VERDICT red"),
+        "{output:.400}"
+    );
     Ok(())
 }
 

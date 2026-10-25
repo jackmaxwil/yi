@@ -28,6 +28,7 @@ mod kernel_variables;
 pub mod lane;
 pub mod lease;
 pub mod levers;
+mod listed;
 mod mail;
 pub mod mailbox;
 pub mod memory;
@@ -115,6 +116,11 @@ pub fn identity_fragment() -> &'static str {
 /// Stable text: it rides the cached prefix, so every byte is paid per turn.
 pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
+}
+
+/// Attached only where [`ext::ExtOptions::can_delegate`]: a leaf never reads it.
+pub fn delegation_fragment() -> &'static str {
+    include_str!("prompts/delegation.md")
 }
 
 /// Rides the system prompt only when no asker is wired, so no person can answer.

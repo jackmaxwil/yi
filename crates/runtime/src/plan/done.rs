@@ -678,10 +678,8 @@ impl PlanEngine {
             let note = if escalated {
                 format!("a verdict escalated to you: {}", verdict.lines())
             } else {
-                format!(
-                    "{refusal_cap} refused verdicts; the last: {}",
-                    verdict.lines()
-                )
+                let last = crate::goal::evidence_repeat(&verdict.lines());
+                format!("{refusal_cap} refused verdicts; the last: {last}")
             };
             let block = Op::Block {
                 label: label.clone(),

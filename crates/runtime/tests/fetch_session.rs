@@ -466,6 +466,7 @@ fn a_session_is_read_by_name_across_repositories_and_a_shared_name_lists_its_own
             .to_string_lossy()
             .into_owned(),
         brief: String::new(),
+        spawned_by: None,
     });
     let trail = serde_json::to_value(spawned)?;
     yi_session::lock_session(&ops_root).append_custom(
@@ -817,6 +818,7 @@ fn a_spawn_record_cannot_point_a_read_outside_its_roots_directory() -> TestResul
             session: "elsewhere".to_owned(),
             path,
             brief: String::new(),
+            spawned_by: None,
         });
         yi_session::lock_session(&ops).append_custom(
             "main",

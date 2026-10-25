@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 pub const MAX_EDGES: usize = 400;
 pub const MAX_OUT_EDGES: usize = 8;
 pub const MAX_GUIDANCE_BYTES: usize = 160;
-pub const MAX_PITFALLS: usize = 3;
-pub const MAX_PITFALL_BYTES: usize = 120;
 
 /// Invariant: a fact a seam asserts is spelled once here and the table below admits that same
 /// spelling, so a mistyped fact cannot compile into a line that silently never fires.
@@ -33,18 +31,13 @@ pub const PREDICATES: &[(&str, &str)] = &[
         RESULT_ERROR,
         "denied not_found invalid_args aborted stale_tag noop_loop stale verdict tool_error",
     ),
-    ("output_capped", ""),
-    ("todo_open", ""),
     (TODO_STATE, "running pending blocked"),
-    ("plan_ready_nonempty", ""),
     (
         CHILD_STATE,
         "queued running finished failed needs_you stuck repossession_pending",
     ),
     ("blocked_on", "user child external"),
-    ("worktree_unmerged", ""),
     ("done_refused", ""),
-    ("inbox_nonempty", ""),
     (COROUTINE_UNAWAITED, ""),
     (METHOD_AWAITED, ""),
     (LISTING_NAME_MISSED, ""),
@@ -103,10 +96,7 @@ pub enum NodeKind {
 #[serde(rename_all = "snake_case")]
 pub enum Relation {
     Then,
-    Instead,
-    Before,
     AfterError,
-    AfterRefusal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,8 +114,6 @@ pub struct Edge {
     pub to: String,
     pub condition: Predicate,
     pub guidance: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pitfalls: Vec<String>,
     pub weight: u32,
 }
 
@@ -175,13 +163,6 @@ impl Graph {
             }
             if edge.guidance.is_empty() || edge.guidance.len() > MAX_GUIDANCE_BYTES {
                 return Err("guidance_size");
-            }
-            let pitfalls_fit = edge
-                .pitfalls
-                .iter()
-                .all(|pitfall| pitfall.len() <= MAX_PITFALL_BYTES);
-            if edge.pitfalls.len() > MAX_PITFALLS || !pitfalls_fit {
-                return Err("pitfalls_size");
             }
             if !reached.contains(edge.to.as_str()) {
                 return Err("unreachable");
