@@ -6,15 +6,10 @@ use yi_types::schedule::{CronSchedule, ScheduleKind};
 use super::{ONE_MINUTE_MS, ONE_SECOND_MS, Zone};
 
 fn strip_matching_quotes(value: &str) -> &str {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2
-        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
-            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
-    {
-        &value[1..value.len() - 1]
-    } else {
-        value
-    }
+    ['"', '\'']
+        .iter()
+        .find_map(|quote| value.strip_prefix(*quote)?.strip_suffix(*quote))
+        .unwrap_or(value)
 }
 
 fn normalize_cron_alias(text: &str) -> &str {
@@ -32,9 +27,8 @@ pub(super) fn split_amount_unit(text: &str) -> Option<(u64, &str)> {
     if digits_end == 0 {
         return None;
     }
-    let amount: u64 = text[..digits_end].parse().ok()?;
-    let unit = text[digits_end..].trim();
-    Some((amount, unit))
+    let (amount, unit) = text.split_at_checked(digits_end)?;
+    Some((amount.parse().ok()?, unit.trim()))
 }
 
 pub(super) const MINUTE_UNITS: [&str; 5] = ["m", "min", "mins", "minute", "minutes"];

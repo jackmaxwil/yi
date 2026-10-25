@@ -342,6 +342,11 @@ impl PlanTreeView {
         }
     }
 
+    pub(crate) fn paste(&mut self, text: &str) {
+        self.query.push_str(&crate::popup::one_line(text));
+        self.reselect();
+    }
+
     /// Invariant: the selection is an index into every row, so a filter that
     /// hides it must move it or the cursor renders nowhere.
     fn reselect(&mut self) {
