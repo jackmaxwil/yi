@@ -116,6 +116,7 @@ class Judge(unittest.TestCase):
         self.assertEqual(word({"kimi": kimi, "glm-flash": edge}), "BUILD")
         self.assertEqual(word({"kimi": kimi, "glm-flash": family([12] * 8 + [11], [10] * 9, [5] * 9)}), "KILL")
         self.assertEqual(word({"kimi": kimi}), "UNRESOLVED")
+        self.assertTrue(E2.decide({"kimi": kimi})[1].endswith("; K3.1 cleared and flash is not settled"))
         killed = family([12] * 9, [10] * 9, [5] * 9)
         self.assertEqual(word({"kimi": killed, "glm-flash": edge}), "KILL", "K3.1 under 0.2 kills whatever flash says")
         self.assertEqual(word({"glm-flash": edge}), "UNRESOLVED", "flash alone cannot build it")
