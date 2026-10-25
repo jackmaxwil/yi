@@ -150,7 +150,7 @@ for label, on in [
     );
     let outcome = tokio::task::spawn_blocking(move || {
         let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-        yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &code, &cancelled, None)
+        yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &code, "", &cancelled, None)
     })
     .await??;
     let printed = format!("{}{}", outcome.result.stdout, outcome.result.stderr);
