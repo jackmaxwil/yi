@@ -425,8 +425,13 @@ fn count(text: &str) -> Option<u32> {
     text.trim().parse::<u32>().ok()
 }
 
-fn tree_state(path: &Path, base: Option<&Sha>, deadline: std::time::Instant) -> TreeState {
-    let Ok(status) = probe_git(path, &STATUS, deadline) else {
+fn tree_state(
+    path: &Path,
+    status: Result<String, String>,
+    base: Option<&Sha>,
+    deadline: std::time::Instant,
+) -> TreeState {
+    let Ok(status) = status else {
         return TreeState::Unread { step: "status" };
     };
     let (mut modified, mut untracked) = (0_u32, 0_u32);
@@ -632,11 +637,12 @@ impl Pool {
             }
             let state = self.read_state(slot)?;
             let (_guard, live) = self.probe(slot)?;
-            let holder = |session: String| {
+            let status = || probe_git(&path, &STATUS, deadline);
+            let holder = |session: String, status| {
                 let branch = head(&path).ok().and_then(|head| head.branch().cloned());
                 Holder {
                     session,
-                    tree: tree_state(&path, base.as_ref(), deadline),
+                    tree: tree_state(&path, status, base.as_ref(), deadline),
                     age: branch
                         .as_ref()
                         .and_then(|branch| age_of(&path, branch, deadline)),
@@ -646,33 +652,30 @@ impl Pool {
             views.push(match (live, state.session) {
                 (Some(session), _) => SlotView::Held {
                     slot,
-                    holder: holder(session),
+                    holder: holder(session, status()),
                     path,
                 },
                 (None, Some(session)) => SlotView::Orphan {
                     slot,
-                    holder: holder(session),
+                    holder: holder(session, status()),
                     path,
                 },
-                // Invariant: only a status read dirty makes an orphan; the claim decides an unread one.
-                (None, None)
-                    if probe_git(&path, &STATUS, deadline)
-                        .is_ok_and(|status| !status.trim().is_empty()) =>
-                {
-                    SlotView::Orphan {
+                (None, None) => match status() {
+                    // Invariant: only a status read dirty makes an orphan; the claim decides an unread one.
+                    Ok(dirty) if !dirty.trim().is_empty() => SlotView::Orphan {
                         slot,
-                        holder: holder(String::new()),
+                        holder: holder(String::new(), Ok(dirty)),
                         path,
-                    }
-                }
-                (None, None) => SlotView::Idle {
-                    slot,
-                    path,
-                    warm: state.warm.as_ref().is_some_and(|warm| {
-                        state.base.as_deref() == Some(warm.base.as_str())
-                            && state.lockfile.as_deref() == Some(warm.lockfile.as_str())
-                    }),
-                    base: state.base,
+                    },
+                    _ => SlotView::Idle {
+                        slot,
+                        path,
+                        warm: state.warm.as_ref().is_some_and(|warm| {
+                            state.base.as_deref() == Some(warm.base.as_str())
+                                && state.lockfile.as_deref() == Some(warm.lockfile.as_str())
+                        }),
+                        base: state.base,
+                    },
                 },
             });
         }
