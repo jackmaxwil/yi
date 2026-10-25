@@ -18,7 +18,7 @@ use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn yi_plan(root: &Scratch, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+pub(crate) fn yi_plan(root: &Scratch, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the surface under test is the spawned binary's argv, exit code and streams"
@@ -36,7 +36,7 @@ fn yi_plan(root: &Scratch, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     Ok(command.output()?)
 }
 
-fn streams(output: &Output) -> String {
+pub(crate) fn streams(output: &Output) -> String {
     format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),

@@ -32,6 +32,7 @@ mod kimi_login;
 mod mcp_cli;
 mod mcp_oauth;
 mod monkey;
+mod plan_cli;
 mod plan_ops;
 mod python_client;
 mod rpc_protocol;

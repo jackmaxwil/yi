@@ -75,7 +75,7 @@ impl Applied {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SubmitError {
-    #[error("{0}")]
+    #[error("{}", super::tool::ops_spelling(&.0.to_string()))]
     Arg(#[from] ArgError),
     #[error(
         "{op} needs the user's confirmation, and nothing in this session can ask for it: say in your answer what you ran and its exit line, and leave the todo open"
@@ -85,7 +85,7 @@ pub enum SubmitError {
     Declined { op: &'static str, plan: PlanId },
     #[error("the confirmation could not be cited: {0}")]
     Citation(String),
-    #[error(transparent)]
+    #[error("{}", super::tool::ops_spelling(&.0.to_string()))]
     Op(#[from] PlanOpError),
 }
 
@@ -130,7 +130,7 @@ pub fn submit(
     request.expected_revision = expected_revision;
     let Err(refused) = check_actor(actor, &request.op) else {
         let op = request.op.clone();
-        let outcome = engine.apply(request)?;
+        let outcome = super::apply::apply_set(engine, request, &[])?;
         return Ok(Applied { op, outcome });
     };
     if *actor != Actor::Owner {
