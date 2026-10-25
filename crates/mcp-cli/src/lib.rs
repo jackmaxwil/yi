@@ -169,7 +169,7 @@ fn do_connect(
                         .map(|text| format!("\n{label}: {text}"))
                 })
                 .collect::<String>();
-                let cut = if tools > 0 {
+                let cut = if tools > 0 || connected.pointer("/capabilities/tools").is_some() {
                     format!(
                         "\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
                     )
