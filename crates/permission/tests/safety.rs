@@ -1,8 +1,8 @@
 use std::error::Error;
 
 use yi_permission::{
-    Class, Parsed, Verdict, classify, command_segments, host_need, needs_host, parse,
-    refused_scopes, verdict, write_targets,
+    Class, Parsed, Verdict, classify, command_segments, host_need, parse, refused_scopes, verdict,
+    write_targets,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -443,6 +443,11 @@ fn write_targets_keep_what_the_splitter_skips() {
 /// `rm` stay inside it.
 #[test]
 fn only_network_and_install_approvals_need_the_host() {
+    let needs_host = |command: &str| {
+        command_segments(command)
+            .iter()
+            .any(|argv| host_need(argv).is_some())
+    };
     for command in [
         "curl -o out.json https://example.invalid/x",
         "git push --force origin main",

@@ -6,7 +6,6 @@ use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, Too
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, Ttl, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::{normalize_anthropic_tool_call_id, transform_messages};
 
@@ -27,7 +26,6 @@ pub enum Thinking {
 #[derive(Debug, Clone, Default)]
 pub struct AnthropicOptions {
     pub max_tokens: Option<u64>,
-    pub temperature: Option<f64>,
     pub thinking: Thinking,
     /// Interactive sessions hold the system breakpoints for an hour (D116); the history
     /// breakpoints' TTL is `LlmContext::cache_ttl`.
@@ -300,13 +298,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     });
     if !context.system_prompt.is_empty() {
         params["system"] = Value::Array(system_blocks(&context.system_prompt));
-    }
-    let supports_temperature = compat_bool(model, "supportsTemperature", true);
-    if let Some(temperature) = options.temperature
-        && options.thinking == Thinking::Off
-        && supports_temperature
-    {
-        params["temperature"] = json!(temperature);
     }
     if let Some(tools) = &context.tools
         && !tools.is_empty()

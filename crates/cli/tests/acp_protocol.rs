@@ -1792,3 +1792,32 @@ fn a_committed_answer_forks_into_a_session_that_ends_at_it() -> TestResult {
     );
     Ok(())
 }
+
+/// No client cancels a user cell by call id (`Yi.close` waits instead), so a worker answers
+/// the method like any name it does not know.
+#[test]
+fn a_kernel_cancel_frame_is_an_unknown_method() -> TestResult {
+    let dir = temp_dir("kernel-cancel")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    let params = json!({"sessionId": session_id, "callId": "user-1"});
+    let refused = client.request("3", "_yi/kernel_cancel", params)?;
+    let refused = refused.last().ok_or("no response")?;
+    assert_eq!(refused["error"]["code"], -32601, "{refused}");
+    assert_eq!(
+        refused["error"]["message"], "unknown method _yi/kernel_cancel",
+        "{refused}"
+    );
+    client.finish()?;
+    Ok(())
+}

@@ -29,6 +29,21 @@ fn every_state() -> Vec<Option<OrbState>> {
     ]
 }
 
+/// An orb already looping `state` at the top of its cycle. The first frame spans the rest
+/// pose's whole lead, so the morph starts on a step boundary however long the pairing takes.
+fn showing(state: OrbState) -> Result<Orb, Box<dyn Error>> {
+    let mut orb = Orb::default();
+    let _ = orb.frame(Duration::from_millis(100), Some(state));
+    for _ in 0..30_000 {
+        if orb.holding(state) {
+            return Ok(orb);
+        }
+        let _ = orb.frame(Duration::from_secs_f64(0.0625), Some(state));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Err("the orb never settled".into())
+}
+
 fn visible(point: &Point) -> bool {
     point.alpha > 0.02
 }
@@ -109,7 +124,7 @@ fn a_change_waits_for_the_next_exit_then_lands_on_the_entry_pose() -> TestResult
     let step = 0.0625;
     let dt = Duration::from_secs_f64(step);
     let reading = |t: f64| render(&pose(Some(OrbState::Reading), t));
-    let mut orb = Orb::showing(Some(OrbState::Reading));
+    let mut orb = showing(OrbState::Reading)?;
     let mut clock = 0.0;
     while clock < 24.5 {
         clock += step;
@@ -159,11 +174,8 @@ fn a_change_waits_for_the_next_exit_then_lands_on_the_entry_pose() -> TestResult
 }
 
 #[test]
-fn a_long_gap_between_frames_advances_the_orb_one_step() {
-    let (mut idle, mut busy) = (
-        Orb::showing(Some(OrbState::Thinking)),
-        Orb::showing(Some(OrbState::Thinking)),
-    );
+fn a_long_gap_between_frames_advances_the_orb_one_step() -> TestResult {
+    let (mut idle, mut busy) = (showing(OrbState::Thinking)?, showing(OrbState::Thinking)?);
     // A surface that stopped repainting can hand the orb minutes at once.
     let after_gap = idle.frame(Duration::from_secs(90), Some(OrbState::Thinking));
     let after_step = busy.frame(Duration::from_millis(100), Some(OrbState::Thinking));
@@ -171,6 +183,7 @@ fn a_long_gap_between_frames_advances_the_orb_one_step() {
         same(&after_gap, &after_step),
         "a 90 s gap moves the orb no further than one step"
     );
+    Ok(())
 }
 
 #[test]
