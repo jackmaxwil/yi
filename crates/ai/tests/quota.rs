@@ -3,13 +3,15 @@
 //! and OpenAI's documented `insufficient_quota` error.
 
 use std::error::Error;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
 use yi_ai::kimi::usage_line;
 use yi_ai::retry::quota_exhausted;
+
+use crate::loopback::read_request;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -27,17 +29,7 @@ fn refusing(body: &'static str) -> std::io::Result<(u16, Arc<AtomicUsize>)> {
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut reader = BufReader::new(stream);
-            let mut length = 0usize;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let _ = reader.read_exact(&mut vec![0; length]);
+            let _ = read_request(&mut reader);
             counted.fetch_add(1, Ordering::SeqCst);
             let reply = format!(
                 "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",

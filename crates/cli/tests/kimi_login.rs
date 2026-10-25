@@ -3,13 +3,14 @@
 //! answered on 2026-10-24 (crates/ai/tests/fixtures/kimi-*-2026-10-24.*), scrubbed of the token.
 
 use std::error::Error;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
+use crate::loopback::read_request;
 use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -39,26 +40,11 @@ fn fake_kimi(denied: bool) -> std::io::Result<(u16, Seen)> {
         let mut chats = 0usize;
         for stream in listener.incoming().flatten() {
             let mut reader = BufReader::new(stream);
-            let mut head = String::new();
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            let request = read_request(&mut reader);
+            let Some((start, head)) = request.split_once("\r\n") else {
                 continue;
-            }
-            let start = line.trim().to_owned();
-            let mut length = 0usize;
-            loop {
-                let mut header = String::new();
-                if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
-                    break;
-                }
-                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-                head.push_str(&header);
-            }
-            let mut body = vec![0; length];
-            let _ = reader.read_exact(&mut body);
-            head.push_str(&String::from_utf8_lossy(&body));
+            };
+            let (start, head) = (start.to_owned(), head.to_owned());
             let path = start
                 .split_whitespace()
                 .nth(1)
