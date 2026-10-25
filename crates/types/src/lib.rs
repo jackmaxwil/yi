@@ -29,7 +29,6 @@ pub mod event;
 pub mod fetch;
 pub mod goal;
 pub mod graph;
-pub mod harness;
 pub mod image;
 pub mod install;
 pub mod json_salvage;
