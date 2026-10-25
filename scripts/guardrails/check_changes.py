@@ -13,7 +13,8 @@ Header keys, each optional:
   growth: +212 <memo>           net src growth past the free band, and what was weighed for deletion
   raise: tests +140, comments +12, over-cap +1, crate runtime +60
   decision: <decision> | <why> | <reversible via>      repeatable; numbered by the recorder
-The recorder adds `version:` and `decisions:` when it records the file."""
+scripts/record_changes.py adds `version:` and `decisions:` when it records the file, and its own
+diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
 import functools, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail, fork, git, no_fork, scratch_repo
@@ -147,6 +148,18 @@ def tree_edits(base):
     return errs
 
 
+def recorded(base):
+    """The recorder's own diff is the one a branch may carry into the views: every path it writes
+    from the fork's tree holds exactly that text here, and nothing else under those paths changed."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import record_changes
+    writes, fork_names = record_changes.expected_at(ROOT, base), held(base)
+    changed = {p for p in git("diff", "--name-only", "--no-renames", base, "--", "docs/CHANGELOG.md", "docs/ARCHITECTURE.md",
+                              "docs/solutions", DIR).stdout.split() if not p.startswith(f"{DIR}/") or p[len(DIR) + 1:] in fork_names}
+    return bool(writes) and changed <= writes.keys() and all(
+        (ROOT / p).is_file() and (ROOT / p).read_text() == text for p, text in writes.items())
+
+
 def file_errors(names_texts, recorded=()):
     errs = []
     for name, text in names_texts:
@@ -265,8 +278,8 @@ def main():
         no_fork("changes")
     views = ("docs/CHANGELOG.md", "docs/ARCHITECTURE.md")
     errs = file_errors(files(), held(base))
-    errs += view_edits({p: at(base, p) for p in views}, {p: (ROOT / p).read_text() for p in views})
-    errs += tree_edits(base)
+    edits = view_edits({p: at(base, p) for p in views}, {p: (ROOT / p).read_text() for p in views}) + tree_edits(base)
+    errs += edits if edits and not recorded(base) else []
     fail(errs, f"changes ({len(pending(base))} pending in this branch, fork {base[:8]})")
 
 
