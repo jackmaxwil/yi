@@ -1,4 +1,5 @@
 use crate::scratch;
+use crate::upstream::git;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -948,25 +949,6 @@ fn an_instruction_file_over_its_budget_names_the_read_that_gets_the_rest() -> Te
     let row = "(source budget 49152); the rest: read AGENTS.md in full]";
     assert!(assembled.contains(row), "{assembled}");
     Ok(())
-}
-
-fn git(dir: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
-    let status = yi_tools::command("git")
-        .current_dir(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .status()?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| format!("git {args:?}").into())
 }
 
 #[test]

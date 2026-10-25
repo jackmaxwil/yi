@@ -9,7 +9,9 @@ status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; ope
 ## Changelog
 
 Moved to [CHANGELOG.md](CHANGELOG.md). The `version:` above and that file's
-top row are the same version; both are written on main from `docs/changes/`.
+top row are the same version; both are written on main from `docs/changes/` by
+`scripts/record_changes.py`, postmerge's `record` job, which is off until the repository
+variable `RECORD_CHANGES` reads `on`. Until it runs, a `decision:` line has no D-number.
 
 ## Crates (17) and line budgets
 
