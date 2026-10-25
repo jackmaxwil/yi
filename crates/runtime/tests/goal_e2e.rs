@@ -1,3 +1,4 @@
+use crate::RED_PYTEST;
 use crate::own::own;
 use crate::scratch;
 use scratch::Scratch;
@@ -360,6 +361,129 @@ fn a_red_check_prints_no_provider_key() -> TestResult {
     Ok(())
 }
 
+/// The refusal of a check run in a scratch directory that lives as long as the first value.
+fn refusal_in(check: &str) -> Result<(Scratch, String), Box<dyn Error>> {
+    let (root, (service, _store, _delivered)) = service_with_plans()?;
+    service.create("check output", None, Some(check.to_owned()), None)?;
+    Ok((root, service.update("complete").err().ok_or("must reject")?))
+}
+
+fn refusal_of(check: &str) -> Result<String, Box<dyn Error>> {
+    Ok(refusal_in(check)?.1)
+}
+
+#[test]
+fn a_red_check_keeps_its_verdict_and_names_the_cut() -> TestResult {
+    let error = refusal_of(&format!("cat '{RED_PYTEST}'; exit 1"))?;
+    for verdict in [
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+        "collected 400 items",
+    ] {
+        assert!(error.contains(verdict), "{verdict}: {error}");
+    }
+    assert!(
+        error.contains("bytes kept (VIEW_CEILING 16384); the rest: bash ("),
+        "{error}"
+    );
+    let total = std::fs::metadata(RED_PYTEST)?.len();
+    let capture = format!("kept 30000 of {total} bytes (OUTPUT_CAP 30000 per stream)");
+    assert!(
+        error.contains(&capture),
+        "the capture's own cut is named too: {error}"
+    );
+    assert!(
+        error.len() < yi_tools::VIEW_CEILING + 1024,
+        "{}",
+        error.len()
+    );
+    Ok(())
+}
+
+/// Runs the call a cut row names, from a scratch directory that is not where the check ran.
+fn rerun_log(refusal: &str) -> Result<(Option<i32>, Vec<u8>), Box<dyn Error>> {
+    let (_, rest) = refusal.split_once("the rest: bash ").ok_or(refusal)?;
+    let (call, _) = rest.split_once(" > view.log 2>&1").ok_or(rest)?;
+    let dir = Scratch::new("yi-goal-rerun")?;
+    let script = format!("{call} > view.log 2>&1");
+    let mut bash = yi_tools::command("bash");
+    bash.args(["-c", &script]).current_dir(&*dir);
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let rerun = yi_tools::run_captured(bash, None, &never, yi_tools::OUTPUT_CAP)?;
+    Ok((rerun.exit_code, std::fs::read(dir.join("view.log"))?))
+}
+
+#[test]
+fn the_rerun_a_cut_row_names_writes_the_full_output_to_its_file() -> TestResult {
+    let (_root, refusal) = refusal_in(&format!("cat '{RED_PYTEST}'; exit 1"))?;
+    let (code, log) = rerun_log(&refusal)?;
+    assert_eq!(code, Some(1), "the check's own exit survives the rerun");
+    assert_eq!(log, std::fs::read(RED_PYTEST)?);
+    Ok(())
+}
+
+/// Dies with the row naming the command alone: a check that ran in a child's lane or a
+/// `cwd_subdir` reran in the reader's tree, where a relative path finds nothing or another file.
+#[test]
+fn a_relative_check_reruns_where_it_ran_not_where_it_is_read() -> TestResult {
+    let (root, (service, _store, _delivered)) = service_with_plans()?;
+    std::fs::write(
+        root.join("noisy.sh"),
+        format!("cat '{RED_PYTEST}'; exit 1\n"),
+    )?;
+    service.create("relative", None, Some("sh ./noisy.sh".to_owned()), None)?;
+    let refusal = service.update("complete").err().ok_or("must reject")?;
+    let (code, log) = rerun_log(&refusal)?;
+    assert_eq!(code, Some(1), "{refusal:.300}");
+    assert_eq!(log, std::fs::read(RED_PYTEST)?);
+    Ok(())
+}
+
+/// Dies with the stored failure being the whole view: it is printed again by every continuation.
+#[test]
+fn a_later_copy_of_a_long_failure_keeps_its_verdict_and_names_the_cut() -> TestResult {
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
+    let check = format!("cat '{RED_PYTEST}'; exit 1");
+    service.create("long failure", None, Some(check), None)?;
+    let refusal = service.update("complete").err().ok_or("must reject")?;
+    assert!(
+        refusal.contains("collected 400 items"),
+        "the first copy is whole"
+    );
+    let goal = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    let text = continuation_text(&goal, None);
+    for shown in [
+        "1 failed, 399 passed",
+        "bytes kept (REPEAT_BYTES 2000); the rest: the refusal that first carried this output",
+        "goal check `cat '",
+    ] {
+        assert!(text.contains(shown), "{shown}: {text:.600}");
+    }
+    assert!(!text.contains("collected 400 items"), "{text:.600}");
+    let stored = goal.check_failure.as_deref().unwrap_or_default();
+    assert!(
+        stored.len() < 2_600 && refusal.len() > 16_000,
+        "{}",
+        stored.len()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_checks_output_is_whole_at_the_ceiling_and_cut_one_byte_past_it() -> TestResult {
+    let ceiling = yi_tools::VIEW_CEILING;
+    let printing = |bytes: usize| format!("head -c {bytes} /dev/zero | tr '\\0' x; exit 1");
+    let at = refusal_of(&printing(ceiling))?;
+    assert!(at.contains(&"x".repeat(ceiling)) && !at.contains("VIEW_CEILING"));
+    let past = refusal_of(&printing(ceiling + 1))?;
+    assert!(
+        past.contains("of 16385 bytes kept (VIEW_CEILING 16384)"),
+        "{past}"
+    );
+    assert!(!past.contains(&"x".repeat(ceiling + 1)));
+    Ok(())
+}
+
 #[test]
 fn check_gate_passes_and_clears_the_failure() -> TestResult {
     let (_plans, (service, store, _delivered)) = service_with_plans()?;
@@ -461,6 +585,31 @@ fn rows_naming_one_task_adjudicate_on_a_single_check_run() -> TestResult {
         1,
         "three rows naming t1 must cost one check run, not one each"
     );
+    Ok(())
+}
+
+/// Dies with every row printing the check's whole evidence: three rows on one red task were
+/// three copies of a 16 KiB view.
+#[test]
+fn rows_naming_one_red_task_print_its_evidence_once() -> TestResult {
+    let (plans, (service, store, _delivered)) = service_with_plans()?;
+    service.create("ship the fix", None, None, None)?;
+    seed_plan(&plans, &format!("cat '{RED_PYTEST}'; exit 1"))?;
+    own(&store, "hold-the-invariant")?;
+    let handle = store_handle(&store);
+    for fingerprint in ["aaa", "bbb", "ccc"] {
+        let mut row = high_row();
+        row.fingerprint = fingerprint.to_owned();
+        record_discovery(&handle, &row)?;
+    }
+    let error = service.update("complete").err().ok_or("must refuse")?;
+    for fingerprint in ["aaa", "bbb", "ccc"] {
+        let named = format!("undrained HIGH discovery {fingerprint}");
+        assert!(error.contains(&named), "{named}: {error:.300}");
+    }
+    assert_eq!(error.matches("collected 400 items").count(), 1);
+    let later = "(the same evidence as the first row naming this task, above)";
+    assert_eq!(error.matches(later).count(), 2);
     Ok(())
 }
 
