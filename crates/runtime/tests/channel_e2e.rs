@@ -1200,11 +1200,12 @@ fn claim_on_disk(ledger: &Path, job: &Job) -> bool {
         .is_some_and(|disk| disk.dispatches.iter().any(|claim| claim.job_id == job.id))
 }
 
-/// Dies with the idle peek reading a letter another process appended as nothing to deliver, and
-/// with a delivery that runs before its claim is on disk.
+/// Dies with the idle peek reading a letter another process appended as nothing to deliver, with
+/// a delivery before its claim is on disk, and with a mailbox acked to its newest letter re-claimed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_letter_appended_by_another_process_is_delivered_with_its_claim_already_on_disk()
 -> TestResult {
+    use std::os::unix::fs::MetadataExt;
     let dir = Scratch::new("yi-channel-peek")?;
     let path = dir.join("channels/mail-peer.jsonl");
     let channel = Channel::at(&path);
@@ -1237,6 +1238,11 @@ async fn a_letter_appended_by_another_process_is_delivered_with_its_claim_alread
         serde_json::json!({"body": "hello"}),
     )?;
     let delivered = wait_until(10_000, || seen.lock().is_ok_and(|seen| !seen.is_empty())).await;
+    wait_until(10_000, || store.snapshot().dispatches.is_empty()).await;
+    let ino = || std::fs::metadata(dir.join("scheduled-jobs.json")).map(|meta| meta.ino());
+    let (acked, five_ticks) = (ino()?, yi_session::now_ms().saturating_add(1_000));
+    let armed = |job: &Job| job.next_run_at >= Some(five_ticks);
+    let ticked = wait_until(10_000, || store.snapshot().jobs.iter().all(armed)).await;
     timer.stop();
 
     assert_eq!(idle, 0, "an empty mailbox was delivered to");
@@ -1249,6 +1255,9 @@ async fn a_letter_appended_by_another_process_is_delivered_with_its_claim_alread
         seen.iter().all(|on_disk| *on_disk),
         "a delivery began before its claim was on disk: {seen:?}"
     );
+    assert!(ticked, "the acked mailbox stopped ticking");
+    assert_eq!(seen.len(), 1, "an acked mailbox was claimed again");
+    assert_eq!(ino()?, acked, "idle ticks after an ack rewrote the ledger");
     Ok(())
 }
 

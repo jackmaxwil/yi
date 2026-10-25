@@ -853,7 +853,8 @@ a todo or unblocks one and wakes the session, and the woken agent decides what t
 - A claim is persisted before delivery and re-arms `next_run_at` from claim time; the ticks it
   stands for are counted, and `catchUp` (`once`, `skip`, `all`) decides their todos. Recovery marks
   open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s. A failed
-  ledger write is one notice to the ledger's sessions until a write succeeds; a failed lane, its own.
+  ledger write is one notice to the ledger's sessions until a write succeeds or the error changes;
+  a failed lane tells its own session.
 - A tick appends one session todo: the label or instruction plus `@ <tick>`, the instruction as
   its note, the setup's `user://<n>` as intent, a `clock` stamp; `overlap` (`skip`, `buffer_one`,
   `allow`) bounds the open todos one job may hold. The wake names the address and the todo only.

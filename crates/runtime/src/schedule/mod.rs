@@ -912,3 +912,44 @@ impl HeartbeatService {
         parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scratch::Scratch;
+
+    /// Dies with a flapping disk told once for the store's whole life: a write that succeeds
+    /// clears the told error, and a different error is told again.
+    #[test]
+    fn a_ledger_error_is_told_again_after_a_success_or_when_it_changes() -> std::io::Result<()> {
+        let dir = Scratch::new("yi-ledger-flap")?;
+        let parent = dir.join("schedules");
+        let store = JobStore::open(parent.join("scheduled-jobs.json"));
+        let state = ScheduleState::default();
+        std::fs::write(&parent, "a file where the directory goes")?;
+        let not_dir = store.persist(&state);
+        let again = store.persist(&state);
+        std::fs::remove_file(&parent)?;
+        let healed = store.persist(&state);
+        std::fs::remove_dir_all(&parent)?;
+        std::fs::write(&parent, "a file where the directory goes")?;
+        let relapse = store.persist(&state);
+        std::fs::remove_file(&parent)?;
+        std::fs::create_dir_all(parent.join("scheduled-jobs.json/held"))?;
+        let is_dir = store.persist(&state);
+
+        assert!(
+            not_dir
+                .as_ref()
+                .is_some_and(|text| text.contains("not written"))
+        );
+        assert_eq!(again, None, "the same error was told twice");
+        assert_eq!(healed, None, "a write that succeeded was told as a failure");
+        assert_eq!(relapse, not_dir, "a failure after a success went untold");
+        assert!(
+            is_dir.is_some() && is_dir != not_dir,
+            "a changed error went untold: {is_dir:?}"
+        );
+        Ok(())
+    }
+}
