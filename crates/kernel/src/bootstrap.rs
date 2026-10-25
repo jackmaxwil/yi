@@ -4,9 +4,7 @@ use sha2::{Digest, Sha256};
 use yi_types::kernel::BootstrapVersion;
 
 pub(crate) use crate::lock::acquire_bootstrap_lock;
-pub use crate::lock::{
-    lock_is_stale, lock_missing_pid_is_stale, process_is_running, read_lock_pid, remove_stale_venvs,
-};
+pub use crate::lock::{process_is_running, remove_stale_venvs};
 
 pub const BOOTSTRAP_SCHEMA: u64 = 1;
 const PYTHON_VERSION: &str = "3.11";
