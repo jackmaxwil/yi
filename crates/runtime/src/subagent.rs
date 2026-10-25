@@ -11,6 +11,7 @@ pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, Chi
 
 use crate::mail::Draft;
 use crate::mailbox::{ParentLink, timeout_of};
+use crate::schedule::GateFn;
 use crate::session::AgentSession;
 
 mod build;
@@ -239,6 +240,9 @@ pub struct SubagentHost {
     pub(crate) mailboxes: std::sync::OnceLock<PathBuf>,
     pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
     pub(crate) leads: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
+    /// Invariant: a `check` runs `sh -c` on the host at `rlm.result`, so the host gate judges it
+    /// at spawn, then again as the same attempt before it runs, since a rule can arrive between.
+    pub(crate) check_gate: std::sync::OnceLock<(Arc<GateFn>, Arc<GateFn>)>,
 }
 
 impl SubagentHost {
@@ -479,6 +483,7 @@ impl SubagentHost {
             mailboxes: std::sync::OnceLock::new(),
             partitions: Mutex::default(),
             leads: Mutex::default(),
+            check_gate: std::sync::OnceLock::new(),
         }
     }
 
@@ -676,6 +681,12 @@ impl SubagentHost {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
                 self.options.depth, self.options.max_depth
+            ));
+        }
+        let gate = self.check_gate.get().map(|gates| &gates.0);
+        if let Some(refused) = (check.as_deref()).and_then(|check| gate?(check)) {
+            return Err(format!(
+                "the check is refused before it runs on the host: {refused}"
             ));
         }
         let mut cast = self.cast(&kwargs)?;
