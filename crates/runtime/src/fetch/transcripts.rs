@@ -150,36 +150,41 @@ impl Resolver {
         self.locate(url).map_err(|error| error.to_string())
     }
 
-    /// Invariant: a wall names a session one way and a read may name it another, so the read
-    /// is judged as its id, its name as an address resolves it (lowercase) and its name as typed.
     pub(super) fn spellings_walled(
         &self,
         url: &Url,
         session: &yi_session::SharedSession,
         entry: Option<&str>,
     ) -> Result<(), FetchError> {
-        let (id, name) = {
-            let store = yi_session::lock_session(session);
-            (store.metadata().id.clone(), store.name())
-        };
-        let slug = name.as_deref().map(crate::history::slug);
-        let dashed = name
-            .as_deref()
-            .map(|name| name.trim().replace(char::is_whitespace, "-"));
         let tail = entry.map(|entry| format!("/{entry}")).unwrap_or_default();
-        for spelling in std::iter::once(id).chain(slug).chain(dashed) {
-            let Ok(other) = format!("history://{spelling}{tail}").parse::<Url>() else {
-                continue;
-            };
-            if let Some(refusal) = self.wall().check_url(&other, &self.workspace) {
-                return Err(FetchError::Denied {
-                    url: url.to_string(),
-                    refusal,
-                });
-            }
-        }
-        Ok(())
+        let store = yi_session::lock_session(session);
+        let refusal = spelling_refused(&self.wall(), &store, &tail);
+        refusal.map_or(Ok(()), |refusal| {
+            Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal,
+            })
+        })
     }
+}
+
+/// Invariant: a wall names a session one way and a read may name it another, so the read
+/// is judged as its id, its name as an address resolves it (lowercase) and its name as typed.
+pub(crate) fn spelling_refused(
+    wall: &Wall,
+    store: &yi_session::SessionStore,
+    tail: &str,
+) -> Option<String> {
+    let name = store.name();
+    let slug = name.as_deref().map(crate::history::slug);
+    let dashed = name
+        .as_deref()
+        .map(|name| name.trim().replace(char::is_whitespace, "-"));
+    let spellings = std::iter::once(store.metadata().id.clone())
+        .chain(slug)
+        .chain(dashed);
+    (spellings.filter_map(|spelling| format!("history://{spelling}{tail}").parse::<Url>().ok()))
+        .find_map(|other| wall.check_url(&other, Path::new("")))
 }
 
 /// Candidates a shared name lists before a `[…]` row names the rest.
