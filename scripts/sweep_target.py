@@ -16,12 +16,13 @@ from pathlib import Path
 ROOT = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
 # The resolutions a gate or the dev loop builds: the workspace tests, the shipped-tables
-# check (D263's alone-resolution), `just dev`, and clippy. Anything else is stale.
+# check (D263's alone-resolution), `just dev`, and both clippy lanes. Anything else is stale.
 PASSES = [
     ["cargo", "test", "--workspace", "--no-run"],
     ["cargo", "test", "-p", "yi-cli", "-p", "yi-tui", "-p", "yi-tools", "--test", "integration", "--no-run"],
     ["cargo", "build", "-p", "yi-cli"],
     ["cargo", "clippy", "--workspace", "--all-targets"],
+    ["cargo", "clippy", "-p", "yi-cli", "--no-default-features"],
 ]
 HASH = re.compile(r"-([0-9a-f]{16})(?:\.|$)")
 

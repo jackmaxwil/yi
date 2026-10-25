@@ -176,6 +176,8 @@ fi
 drain
 
 if [ "$DIST" -gt 0 ]; then
+  # A stand-in binary, so the startup gate is proved able to fail on each entry before it judges.
+  [ -n "${CI:-}" ] || after "$PY" scripts/guardrails/check_startup.py --selfcheck || FAILED=$((FAILED + 1))
   if [ "$(cat "$OUT/$DIST.rc")" = 0 ]; then
     after "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
     [ -n "${CI:-}" ] || after "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
