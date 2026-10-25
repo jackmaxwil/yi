@@ -4205,10 +4205,13 @@ fn rewind_first(frame: &Value) -> Vec<Value> {
     if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e1"}) {
         return refuse(frame, "wrong rewind");
     }
-    vec![ok(
-        frame,
-        json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
-    )]
+    vec![
+        replay("s-alpha", &[], 0, None),
+        ok(
+            frame,
+            json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
+        ),
+    ]
 }
 
 /// Rewind ▸ Conversation sends the clicked prompt's entry, and the prompt comes back to edit.
@@ -4216,13 +4219,18 @@ fn rewind_first(frame: &Value) -> Vec<Value> {
 fn rewind_to_here_rewinds_to_the_clicked_prompt() -> TestResult {
     let mut steps = opened_unicode();
     steps.push(Step::Expect("_yi/rewind", rewind_first));
-    run(
+    let frame = run_frames(
         "menu-rewind",
         steps,
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          mouse right 25 2\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
          wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 rewound prompt\nquit\n",
-    )
+    )?;
+    assert!(
+        !frame.contains("conversation rewound"),
+        "the menu already asked about files, so a pane adds no solo notice:\n{frame}"
+    );
+    Ok(())
 }
 
 /// Inspect opens the entry beside the chat: its id and the message as the ledger holds it.
