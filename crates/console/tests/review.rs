@@ -214,25 +214,35 @@ fn a_review_taller_than_its_pane_opens_on_its_file_list() {
     outbound.shutdown();
 }
 
-/// Dies with a README opened through `md` showing its last page first; the first scroll down
-/// from the top must move the view, not spend itself on the pin.
-#[test]
-fn a_markdown_viewer_opens_on_its_first_page() {
+/// A console with `query` run in its palette, its pane focused.
+fn palette_app(query: &str) -> (yi_console::app::App, yi_console::client::Outbound) {
     let (mut app, outbound) = console();
-    let readme = concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md");
     app.state.zone = Zone::Panes;
     alt(&mut app, &outbound, '/');
-    for c in format!("md {readme}").chars() {
+    for c in query.chars() {
         press(&mut app, &outbound, KeyCode::Char(c));
     }
     press(&mut app, &outbound, KeyCode::Enter);
+    (app, outbound)
+}
+
+const README: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md");
+
+/// Dies with a README opened through `md` showing its last page first; the first scroll down
+/// from the top must move the view, not spend itself on the pin.
+#[test]
+fn a_markdown_viewer_opens_on_its_first_page() -> Result<(), Box<dyn std::error::Error>> {
+    let (mut app, outbound) = palette_app(&format!("md {README}"));
     let rows = pane_rows(&mut app, "¶ README.md");
-    let row = |at: usize| rows.get(at).map_or("", String::as_str);
-    assert_eq!(row(0), "Yi", "{rows:#?}");
-    assert!(
-        row(3).starts_with("A coding agent in one Rust binary"),
-        "{rows:#?}"
-    );
+    let width = rows
+        .iter()
+        .map(|row| row.chars().count())
+        .max()
+        .unwrap_or(0);
+    let source = std::fs::read_to_string(README)?;
+    let all = text(&yi_tui::markdown::render(&source, width, &app.theme));
+    assert_eq!(rows.first(), all.first(), "{rows:#?}");
+    assert!(all.len() > rows.len(), "the README is taller than the pane");
     alt(&mut app, &outbound, 'j');
     let scrolled = pane_rows(&mut app, "¶ README.md");
     assert_eq!(
@@ -241,6 +251,35 @@ fn a_markdown_viewer_opens_on_its_first_page() {
         "the first scroll moves three rows down"
     );
     outbound.shutdown();
+    Ok(())
+}
+
+/// Dies with a viewer's rows kept from the width it was first drawn at: after a split or a
+/// resize the README and the patch drew wrapped for the old width.
+#[test]
+fn a_viewers_rows_follow_its_width() {
+    let diff = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/review-multifile.diff"
+    );
+    for (query, title) in [
+        (format!("md {README}"), "¶ README.md"),
+        (format!("diff {diff}"), "Δ review-multifile.diff"),
+    ] {
+        let (mut warm, outbound) = palette_app(&query);
+        for width in [100, 60, 100] {
+            let (mut cold, cold_out) = palette_app(&query);
+            let rows = pane_rows_at(&mut warm, title, (width, 40));
+            assert!(!rows.is_empty(), "{title} drew nothing");
+            assert_eq!(
+                rows,
+                pane_rows_at(&mut cold, title, (width, 40)),
+                "{title} {width}"
+            );
+            cold_out.shutdown();
+        }
+        outbound.shutdown();
+    }
 }
 
 /// A console showing the fixture's six edits in an open Review pane.
