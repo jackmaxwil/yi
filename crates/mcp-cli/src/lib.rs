@@ -169,13 +169,14 @@ fn do_connect(
                         .map(|text| format!("\n{label}: {text}"))
                 })
                 .collect::<String>();
-                let cut = if tools > 0 || connected.pointer("/capabilities/tools").is_some() {
-                    format!(
-                        "\n[…] {tools} {noun} not printed · list them: yi mcp @{name} tools-list"
-                    )
-                } else {
-                    String::new()
-                };
+                let cut = match tools {
+                    0 if connected.pointer("/capabilities/tools").is_none() => None,
+                    0 => Some("the server offers tools; connect listed none".to_owned()),
+                    n => Some(format!("{n} {noun} not printed")),
+                }
+                .map_or_else(String::new, |what| {
+                    format!("\n[…] {what} · list them: yi mcp @{name} tools-list")
+                });
                 Value::String(format!("@{name} live{server}{facts}{cut}"))
             };
             output::emit(&shown, flags.json, flags.max_chars);
