@@ -274,13 +274,7 @@ fn fence_lines(
     let columns = |line: &str| {
         line.chars()
             .take_while(|ch| matches!(ch, ' ' | '\t' | '>'))
-            .fold(0, |at, ch| {
-                if ch == '\t' {
-                    at + TAB_STOP - at % TAB_STOP
-                } else {
-                    at + 1
-                }
-            })
+            .fold(0, |at: usize, ch| at.saturating_add(cell_width(ch, at)))
     };
     let marker = opener
         .trim_start_matches([' ', '\t', '>'])
