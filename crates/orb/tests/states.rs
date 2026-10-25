@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use yi_orb::stage::{blend, matching};
 use yi_orb::states::spec;
-use yi_orb::{Orb, OrbFrame, OrbState, Point, pose, render};
+use yi_orb::{Orb, OrbState, Point, pose, render};
+#[path = "support/frames.rs"]
+mod support;
+use support::same;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -61,16 +64,6 @@ fn seen_step(a: &[Point], b: &[Point]) -> (f64, f64) {
     };
     let (ab, ba) = (one_way(a, b), one_way(b, a));
     (ab.0.max(ba.0), ab.1.max(ba.1))
-}
-
-fn same(a: &OrbFrame, b: &OrbFrame) -> bool {
-    a.dots.len() == b.dots.len()
-        && a.dots.iter().zip(&b.dots).all(|(p, q)| {
-            (p.x - q.x).abs() < 1e-6
-                && (p.y - q.y).abs() < 1e-6
-                && (p.r - q.r).abs() < 1e-6
-                && (p.a - q.a).abs() < 1e-6
-        })
 }
 
 #[test]

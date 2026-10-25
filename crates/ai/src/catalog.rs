@@ -12,14 +12,16 @@ const OPENROUTER_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openrou
 const CODEX_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai-codex.zz"));
 const GOOGLE_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/google.zz"));
 const CURSOR_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cursor.zz"));
+const KIMI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kimi.zz"));
 
-pub const PROVIDERS: [&str; 6] = [
+pub const PROVIDERS: [&str; 7] = [
     "anthropic",
     "openai",
     "openrouter",
     "openai-codex",
     "google",
     "cursor",
+    "kimi",
 ];
 
 /// A fetched file's top-level `"schema"`. One under another is stale and rewritten by the next
@@ -66,6 +68,7 @@ impl Catalog {
             CODEX_DATA,
             GOOGLE_DATA,
             CURSOR_DATA,
+            KIMI_DATA,
         ]) {
             let source = format!("bundled {provider}.json");
             match miniz_oxide::inflate::decompress_to_vec_zlib(packed) {
@@ -105,6 +108,11 @@ impl Catalog {
                 }
             };
             for (id, entry) in by_model {
+                // A refresh writes an entry it could not map as its reason, so doctor names it.
+                if let Value::String(reason) = &entry {
+                    self.rejected.push(format!("{source}: {id}: {reason}"));
+                    continue;
+                }
                 match serde_json::from_value::<Model>(entry) {
                     Ok(model) => {
                         self.models
