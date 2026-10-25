@@ -41,7 +41,7 @@ pub use process::{
     CommandCapture, OUTPUT_CAP, command, edit_file, git_root, keyless_command, run_captured,
     spill_path,
 };
-pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, view};
+pub use reduce::{Involuntary, Reduced, VIEW_CEILING, reduce, rerun, view};
 pub use sandbox::{
     Sandbox, SandboxRefusal, denial_hint, exit_zero_note, kernel_cell_note, nested_sandbox_note,
     outcome_note, sandbox_refusal,
