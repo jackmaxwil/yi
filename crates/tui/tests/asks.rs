@@ -65,7 +65,7 @@ fn update(status: ChildStatus, flag: Option<ChildFlag>) -> ChildUpdate {
 #[test]
 fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
     let mut app = app();
-    app.adopt(&update(ChildStatus::Running, None), None);
+    app.adopt(&update(ChildStatus::Running, None), None, None);
     let note = "asks writer-1: Which file name? notes.md or hello.txt";
     let asking = Some(ChildFlag::NeedsYou {
         note: note.to_owned(),
@@ -136,7 +136,7 @@ fn a_card_keeps_its_streamed_answer_unless_the_preview_holds_more() -> TestResul
     let natural = "Done… [see notes] and the closing words";
     for (streamed, preview) in [(long.as_str(), cut.as_str()), ("Done", natural)] {
         let mut app = app();
-        app.adopt(&update(ChildStatus::Running, None), None);
+        app.adopt(&update(ChildStatus::Running, None), None, None);
         app.reduce_child("sub-writer", AgentEvent::MessageStart { message: said("") });
         app.reduce_child(
             "sub-writer",
@@ -249,7 +249,7 @@ fn asks(id: &str) -> Option<ChildFlag> {
 #[test]
 fn a_draft_answers_the_question_open_when_it_started() -> TestResult {
     let mut app = app();
-    app.adopt(&update(ChildStatus::Running, None), None);
+    app.adopt(&update(ChildStatus::Running, None), None, None);
     app.set_focus(Some("sub-writer".to_owned()));
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let key = |c| {

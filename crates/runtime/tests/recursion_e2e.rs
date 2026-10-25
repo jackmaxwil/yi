@@ -2635,7 +2635,7 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
     );
     let merged = harness
         .host
-        .merge_worktree("mutator")
+        .merge_worktree("mutator", None)
         .map_err(|error| error.to_string())?;
     assert_eq!(merged["merged"], true);
     assert_eq!(
@@ -2809,6 +2809,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         cell_ceiling: None,
     }));
 
+    harness.host.attach_kernel(&service);
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
     let spawn_cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);
@@ -2817,6 +2818,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "h = await rlm.run('greet the parent', name='helper')\nprint(h.rlm_child_id.startswith('sub-'), h.name, h.model)",
+                "call-spawn",
                 &cancelled,
                 None,
             )
@@ -2830,6 +2832,26 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         spawn_cell.result.stderr
     );
 
+    let spawned_by = harness
+        .host
+        .children_view()
+        .first()
+        .and_then(|c| c.spawned_by.clone());
+    assert_eq!(spawned_by.as_deref(), Some("call-spawn"));
+    harness.host.spawn(
+        "outside any cell".to_owned(),
+        kwargs(&[("name", "outside")]),
+    )?;
+    let outside = (harness.host.children_view().into_iter())
+        .find(|child| child.update.name == "outside")
+        .map(|child| child.spawned_by);
+    assert_eq!(
+        outside,
+        Some(None),
+        "a spawn after the cell ended names no cell"
+    );
+    harness.host.delete("outside")?;
+
     let list_cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);
         let cancelled = Arc::clone(&cancelled);
@@ -2837,6 +2859,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "import asyncio\nfor _ in range(100):\n    subs = await rlm.list_subagents()\n    if subs and subs[0].status == 'completed':\n        break\n    await asyncio.sleep(0.05)\nprint(subs[0].session_name, subs[0].status)",
+                "",
                 &cancelled,
                 None,
             )
@@ -2857,6 +2880,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\ntry:\n    await rlm.request('helper', 'ping?', timeout=1)\nexcept RuntimeError as error:\n    asked = 'no reply to parent-' in str(error)\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'], asked)",
+                "",
                 &cancelled,
                 None,
             )
@@ -2880,6 +2904,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "gone = await rlm.delete_subagent('helper')\nprint(gone.rlm_child_id.startswith('sub-'), len(await rlm.list_subagents()))",
+                "",
                 &cancelled,
                 None,
             )
@@ -2900,6 +2925,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "try:\n    await rlm.run('too deep', junk=1)\nexcept RuntimeError as e:\n    print(f'refused: {e}')",
+                "",
                 &cancelled,
                 None,
             )
@@ -2922,6 +2948,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "board = {'grid': [1, 2, 3]}\nsecret = 'never scoped'\nscoped = await rlm.run('use the board', name='scoped', context_keys=['board'])\ntry:\n    await rlm.run('and this', name='nope', context_keys=['absent'])\nexcept KeyError as e:\n    print(f'keyerror: {e}')\nprint([s.session_name for s in await rlm.list_subagents()])",
+                "",
                 &cancelled,
                 None,
             )
@@ -3710,6 +3737,70 @@ async fn a_gated_host_still_runs_an_allowed_check_and_holds_a_red_one() -> TestR
     assert!(
         error.contains("check is red") && error.contains("exited 3"),
         "the refusal carries the check's own evidence: {error}"
+    );
+    Ok(())
+}
+
+/// Dies with a merge's check reaching the host past the gate: a sandboxed auto session only
+/// contains `rm -rf ..`, so it is refused before it runs and the lane is still there to merge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merge_check_the_gate_refuses_never_runs() -> TestResult {
+    use yi_kernel::client::HostHandlers as _;
+    let root = gate_rule_root("yi-merge-check-gate", None)?;
+    let project = root.join("project");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["commit", "-q", "--allow-empty", "-m", "base"],
+    ] {
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        let ran = yi_tools::command("git")
+            .current_dir(&project)
+            .args(identity)
+            .args(args)
+            .status()?;
+        assert!(ran.success(), "git {args:?}");
+    }
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![project.clone()],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
+    let asked = kwargs(&[("name", "lane"), ("isolation", "worktree")]);
+    let reply = host
+        .spawn("land the fix".to_owned(), asked)
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let mut registry = yi_runtime::HostRegistry::default();
+    host.register(&mut registry);
+    let marker = root.join("check-marker");
+    let check = format!("touch {}; rm -rf ..", marker.display());
+    let mut merges = Vec::new();
+    for asked in [
+        json!({"target": "lane", "check": check}),
+        json!({"target": "lane"}),
+    ] {
+        let asked = asked.as_object().cloned().unwrap_or_default();
+        let merge = registry
+            .dispatch("rlm.merge_worktree", asked)
+            .ok_or("no handler")?;
+        merges.push(merge.await);
+    }
+    let refusal = merges.first().and_then(|merged| merged.as_ref().err());
+    let refusal = refusal.ok_or_else(|| format!("a refused check must not merge: {merges:?}"))?;
+    assert!(
+        refusal.contains("refused before it runs on the host"),
+        "{refusal}"
+    );
+    assert!(!marker.exists(), "the refused check never ran");
+    let merged = merges.get(1).and_then(|merged| merged.as_ref().ok());
+    assert_eq!(
+        merged.map(|reply| &reply["merged"]),
+        Some(&json!(true)),
+        "{merges:?}"
     );
     Ok(())
 }
@@ -4704,6 +4795,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
                 "h = await rlm.run('hold on', name='doomed')\nd = await rlm.delete_subagent(h)\nprint(d.session_name, d.status)",
+                "",
                 &cancelled,
                 None,
             )

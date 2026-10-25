@@ -317,9 +317,7 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
         });
-        if let Ok(line) = serde_json::to_string(&value) {
-            println!("{line}");
-        }
+        crate::print_json(&value);
         return 0;
     }
     println!("session {id}");

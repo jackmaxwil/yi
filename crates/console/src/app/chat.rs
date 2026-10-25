@@ -22,10 +22,6 @@ use crate::keys::Action;
 use crate::layout::PaneId;
 use crate::model::{Chat, PaneContent, PendingAsk, SessionId, SessionRow};
 
-const ORB_ID_BASE: u32 = 7800;
-/// Below every other kitty id (the solo orb's 7601 is the lowest) for the first 200 panes.
-const CARD_ID_BASE: u32 = 7200;
-
 const CHILD_ROW_CAP: usize = 32;
 
 /// A child first heard of at its end (retired before this console saw it run) gets no row;
@@ -52,31 +48,21 @@ fn keep_child_row(
     rows.push(child.clone());
 }
 
-pub(crate) fn orb_ids(pane: PaneId) -> [u32; 2] {
-    let base = ORB_ID_BASE.saturating_add(pane.raw().saturating_mul(2));
-    [base, base.saturating_add(1)]
-}
-
-/// Incident: one id pair for every pane let a hidden pane's card delete the focused pane's.
-pub(crate) fn card_ids(pane: PaneId) -> [u32; 2] {
-    let base = CARD_ID_BASE.saturating_add(pane.raw().saturating_mul(2));
-    [base, base.saturating_add(1)]
-}
-
 impl App {
-    pub(super) fn chat_for(&mut self, pane_id: PaneId, session: &SessionId) -> Box<Chat> {
+    pub(super) fn chat_for(&mut self, session: &SessionId) -> Box<Chat> {
         match self.state.parked.remove(session) {
             Some(mut chat) => {
-                chat.orb = yi_tui::orb::Tick::with_ids(orb_ids(pane_id));
+                chat.orb = yi_tui::orb::Tick::default();
                 chat.logos = yi_tui::logos::Tick::default();
-                chat.card = yi_tui::question::CardTick::with_ids(card_ids(pane_id));
+                chat.card = yi_tui::question::CardTick::default();
+                chat.slot = None;
                 chat
             }
-            None => self.make_chat(pane_id, session),
+            None => self.make_chat(session),
         }
     }
 
-    pub(super) fn make_chat(&self, pane_id: PaneId, session: &SessionId) -> Box<Chat> {
+    pub(super) fn make_chat(&self, session: &SessionId) -> Box<Chat> {
         let row = self.state.sessions.get(session);
         let options = TuiOptions {
             model: yi_tui::model::model_or_stub("", ""),
@@ -98,10 +84,11 @@ impl App {
         Box::new(Chat {
             app,
             port: RemotePort::default(),
-            orb: yi_tui::orb::Tick::with_ids(orb_ids(pane_id)),
+            orb: yi_tui::orb::Tick::default(),
             phase: 0,
             logos: yi_tui::logos::Tick::default(),
-            card: yi_tui::question::CardTick::with_ids(card_ids(pane_id)),
+            card: yi_tui::question::CardTick::default(),
+            slot: None,
             ask: None,
             events: std::sync::mpsc::channel(),
             commands: command_channel(),
@@ -221,7 +208,7 @@ impl App {
                 });
             }
             Decoded::Gap => self.heal(outbound, id),
-            Decoded::Replay(replay, entries) => self.absorb_replay(id, &replay, entries),
+            Decoded::Replay(replay, entries) => self.absorb_replay(outbound, id, &replay, entries),
             Decoded::Goal(goal) => {
                 for chat in self.state.chats_mut(id) {
                     chat.port.set_goal(goal.clone());
@@ -302,7 +289,13 @@ impl App {
         }
     }
 
-    fn absorb_replay(&mut self, id: &SessionId, replay: &Replay, entries: Vec<Entry>) {
+    fn absorb_replay(
+        &mut self,
+        outbound: &Outbound,
+        id: &SessionId,
+        replay: &Replay,
+        entries: Vec<Entry>,
+    ) {
         if replay.leaf.is_some() && yi_types::trace::enabled() {
             let mut args = serde_json::Map::new();
             args.insert("session".to_owned(), json!(id.0));
@@ -314,6 +307,9 @@ impl App {
         }
         self.seq.insert(id.clone(), None);
         self.replayed.insert(id.clone());
+        if replay.child.is_none() {
+            self.absorb_history(outbound, id, &entries, replay.from == 0);
+        }
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
             row.name = Some(name.clone());
         }
@@ -482,11 +478,24 @@ impl App {
     fn answer_ask(&mut self, outbound: &Outbound, ask: PendingAsk, choice: Option<AskChoice>) {
         // A popup that closed without a verdict is a rejection, never a hung worker.
         let option = option_for(choice.unwrap_or(AskChoice::Reject), &ask.options);
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": ask.request_id,
-            "result": {"outcome": {"outcome": "selected", "optionId": option}},
-        });
+        let outcome = json!({"outcome": "selected", "optionId": option});
+        self.reply_ask(outbound, ask.request_id, outcome);
+    }
+
+    /// Incident: an ask lived only in its pane's chat, so a closed pane or a quit left the
+    /// worker blocked on an answer nobody could give; the worker reads `cancelled` as a refusal.
+    pub(super) fn cancel_ask(&mut self, outbound: &Outbound, request_id: String) {
+        self.reply_ask(outbound, request_id, json!({"outcome": "cancelled"}));
+    }
+
+    pub fn cancel_asks(&mut self, outbound: &Outbound) {
+        for request_id in self.state.take_asks() {
+            self.cancel_ask(outbound, request_id);
+        }
+    }
+
+    fn reply_ask(&mut self, outbound: &Outbound, request_id: String, outcome: Value) {
+        let response = json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}});
         if !outbound.send(&response) {
             self.note("send failed: permission answer not delivered");
         }
@@ -500,7 +509,7 @@ impl App {
             self.state.panes.get(&pane_id).map(|pane| &pane.content),
             Some(PaneContent::Session { session: Some(bound), chat: Some(_) }) if bound == session
         );
-        let fresh = (!keep).then(|| self.chat_for(pane_id, session));
+        let fresh = (!keep).then(|| self.chat_for(session));
         let Some(pane) = self.state.panes.get_mut(&pane_id) else {
             return;
         };
@@ -672,9 +681,6 @@ impl App {
         let id = session.0.as_str();
         match command {
             Command::Prompt(text) => {
-                if !self.connected() {
-                    return self.note("not connected — prompt not sent");
-                }
                 self.send_request(
                     outbound,
                     RequestKind::Prompt,
@@ -843,6 +849,7 @@ mod tests {
             focused.content = PaneContent::SessionDiff {
                 session: session.clone(),
                 scope: ReviewScope::Session,
+                drawn: None,
             };
         }
         let diff = app.state.diffs.entry(session.clone()).or_default();
@@ -964,8 +971,7 @@ mod tests {
         let mut app = App::new("/r".to_owned(), theme);
         app.state.chat_pace = 100;
         let session = SessionId("s-a".to_owned());
-        let pane = app.state.focused_pane_id().ok_or("a pane")?;
-        let chat = app.make_chat(pane, &session);
+        let chat = app.make_chat(&session);
         if let Some(focused) = app.state.focused_pane_mut() {
             focused.content = PaneContent::Session {
                 session: Some(session.clone()),
@@ -1016,7 +1022,7 @@ mod tests {
             .ok_or("no split")?;
         for (pane, id) in [(left, "s-a"), (right, "s-b")] {
             let session = SessionId(id.to_owned());
-            let chat = app.make_chat(pane, &session);
+            let chat = app.make_chat(&session);
             if let Some(slot) = app.state.panes.get_mut(&pane) {
                 slot.content = PaneContent::Session {
                     session: Some(session),
@@ -1032,8 +1038,15 @@ mod tests {
         let mut owners = std::collections::HashMap::new();
         crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
         let written = String::from_utf8_lossy(&out);
+        let orb_ids = |pane| {
+            owners
+                .get(&pane)
+                .and_then(|(_, slot)| *slot)
+                .map(crate::app::ids::orb_ids)
+        };
         for pane in [left, right] {
             let placed = orb_ids(pane)
+                .unwrap_or_default()
                 .iter()
                 .any(|id| written.contains(&format!("a=p,i={id},")));
             assert!(placed, "pane {} has no mark: {written:?}", pane.raw());
@@ -1049,9 +1062,10 @@ mod tests {
             .reduce_agent(yi_types::event::AgentEvent::AgentStart);
         std::thread::sleep(yi_tui::orb::FRAME * 2);
         out.clear();
+        let right_ids = orb_ids(right).ok_or("no slot")?;
         crate::present(&mut app, &mut terminal, &theme, &mut owners, &mut out)?;
         let written = String::from_utf8_lossy(&out);
-        for id in orb_ids(right) {
+        for id in right_ids {
             assert!(
                 !written.contains(&format!("a=t,i={id},")),
                 "the unfocused pane retransmitted its mark: {written:?}"
@@ -1080,8 +1094,7 @@ mod tests {
         app.kitty = true;
         app.state.zone = crate::model::Zone::Panes;
         let session = SessionId("s-a".to_owned());
-        let pane = app.state.focused_pane_id().ok_or("a pane")?;
-        let chat = app.make_chat(pane, &session);
+        let chat = app.make_chat(&session);
         if let Some(focused) = app.state.focused_pane_mut() {
             focused.content = PaneContent::Session {
                 session: Some(session.clone()),

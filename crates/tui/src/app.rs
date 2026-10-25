@@ -23,9 +23,8 @@ use crate::orb;
 use crate::popup::ListPopup;
 use crate::port::SessionPort;
 use crate::term;
-use crate::transcript::{arg_summary, intent_of, result_preview, text_of, thinking_of, user_text};
+use crate::transcript::{arg_summary, result_preview, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
-use yi_orb::OrbState;
 pub enum UiEvent {
     Agent(AgentEvent),
     Child { child_id: String, event: AgentEvent },
@@ -91,9 +90,10 @@ pub struct TaskState {
     pub(crate) started: Instant,
     /// When the child reached a terminal state, so the strike can sweep.
     pub(crate) finished: Option<Instant>,
-    /// The call id of the kernel cell running when the child appeared, if one was.
+    /// The call id of the kernel cell that spawned the child, the one a finished card waits on.
     pub(crate) born_under: Option<String>,
     pub(crate) session: Option<yi_runtime::ChildFeed>,
+    pub(crate) rows: crate::cell::AnswerRows,
 }
 
 pub struct App {
@@ -160,9 +160,12 @@ pub struct App {
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
     pub(crate) committed_tasks: HashSet<String>,
+    /// Cards dropped by a reset or the finished-card cap: their late mail stays quiet, and the
+    /// roster brings one back only running.
+    pub(crate) retired_tasks: HashSet<String>,
+    pub(crate) dropped_tasks: usize,
     pub(crate) steering: Vec<String>,
     pub(crate) running: bool,
-    pub(crate) intent: Option<String>,
     pub(crate) esc_armed_at: Option<Instant>,
     pub(crate) last_esc_at: Option<Instant>,
     pub(crate) ctrl_c_at: Option<Instant>,
@@ -172,7 +175,7 @@ pub struct App {
     seen_turn: bool,
     /// Incident: a submitted prompt reaches the runtime thread over a channel, so the UI can
     /// look idle after Enter; a script checking only `running` opened the tree mid-write.
-    submitted_turns: u64,
+    awaited: Vec<String>,
     started_turns: u64,
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
@@ -190,7 +193,6 @@ pub struct App {
     pub(crate) started_at: Instant,
     pub(crate) clock: crate::motion::Clock,
     pub(crate) quit: bool,
-    exit_code: i32,
     pub(crate) options: TuiOptions,
     pub(crate) status_name_hidden: bool,
     pub(crate) branch: Option<String>,
@@ -228,11 +230,12 @@ mod bridge;
 mod children;
 mod clock;
 mod stream;
+mod working;
 
 pub use crate::frame::next_spinner_wake;
 pub(crate) use asks::mail_source;
-pub use bridge::forward;
 pub(crate) use bridge::spawn_runtime_bridge;
+pub use bridge::{forward, submit};
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
@@ -289,9 +292,10 @@ impl App {
             tasks: HashMap::new(),
             task_order: Vec::new(),
             committed_tasks: HashSet::new(),
+            retired_tasks: HashSet::new(),
+            dropped_tasks: 0,
             steering: Vec::new(),
             running: false,
-            intent: None,
             esc_armed_at: None,
             last_esc_at: None,
             ctrl_c_at: None,
@@ -300,7 +304,7 @@ impl App {
             asked: Vec::new(),
             hud_hidden: false,
             seen_turn: false,
-            submitted_turns: 0,
+            awaited: Vec::new(),
             started_turns: 0,
             user_turns: 0,
             mode: TranscriptMode::default(),
@@ -315,7 +319,6 @@ impl App {
             started_at: Instant::now(),
             clock: crate::motion::Clock::Real,
             quit: false,
-            exit_code: 0,
             options,
             status_name_hidden: false,
             branch: None,
@@ -380,8 +383,8 @@ impl App {
         self.quit
     }
 
-    pub(crate) fn note_submission(&mut self) {
-        self.submitted_turns = self.submitted_turns.saturating_add(1);
+    pub(crate) fn note_submission(&mut self, text: &str) {
+        self.awaited.push(text.to_owned());
     }
 
     pub fn open_approval(&mut self, ask: AskRequest) {
@@ -522,14 +525,6 @@ impl App {
         self.write_cell(cell);
     }
 
-    /// `Awaiting` while the permission gate holds the call.
-    pub fn live_tool_status(&self, tool_call_id: &str) -> Option<ToolStatus> {
-        self.live_tools
-            .iter()
-            .find(|tool| tool.call_id == tool_call_id)
-            .map(|tool| tool.status)
-    }
-
     /// The call id is the only handle a permission event carries.
     fn set_awaiting(&mut self, tool_call_id: &str, status: ToolStatus) {
         if let Some(cell) = self
@@ -613,109 +608,12 @@ impl App {
             .0
     }
 
-    pub(crate) fn reset_transcript(&mut self) {
-        self.history.clear();
-        self.pending_commit.clear();
-        self.reset_live();
-        self.live_tools.clear();
-        self.user_turns = 0;
-    }
-
     pub fn take_title(&mut self) -> Option<String> {
         self.pending_title.take()
     }
 
     pub fn cwd(&self) -> &str {
         &self.options.cwd
-    }
-
-    pub fn working_label(&self) -> Option<String> {
-        let state = self.orb_state()?;
-        let waiting = self
-            .wait
-            .as_ref()
-            .filter(|_| self.running)
-            .map(|(wait, since)| {
-                let now = self.clock.now();
-                crate::pen::wait_label(wait, *since, now, &self.selection.model.provider)
-            });
-        Some(
-            waiting
-                .or_else(|| self.intent.clone())
-                .unwrap_or_else(|| state.label().to_owned()),
-        )
-    }
-
-    pub fn orb_state(&self) -> Option<OrbState> {
-        if matches!(
-            self.bottom,
-            Some(Bottom::Approval(..) | Bottom::Question(..))
-        ) {
-            return Some(OrbState::Listening);
-        }
-        if !self.running {
-            return None;
-        }
-        match self.wait.as_ref().map(|(wait, _)| wait) {
-            Some(yi_types::event::Wait::Retry { .. }) => return Some(OrbState::Stalled),
-            Some(yi_types::event::Wait::Compaction { .. }) => return Some(OrbState::Condensing),
-            Some(yi_types::event::Wait::KernelBoot { .. }) => return Some(OrbState::KernelBoot),
-            None => {}
-        }
-        if let Some(tool) = self
-            .live_tools
-            .iter()
-            .rev()
-            .find(|t| t.status == ToolStatus::Running)
-        {
-            return Some(self.tool_state(&tool.name));
-        }
-        if let Some(pen) = &self.pen {
-            return Some(self.tool_state(&pen.name));
-        }
-        let children = self
-            .tasks
-            .values()
-            .filter(|s| s.cell.status == TaskStatus::Running)
-            .count();
-        if children > 0 {
-            return Some(OrbState::Delegating {
-                children: u8::try_from(children).unwrap_or(u8::MAX),
-            });
-        }
-        if !self.live_markdown.is_empty() {
-            return Some(OrbState::Composing);
-        }
-        if !self.live_thought.is_empty() {
-            return Some(OrbState::Thinking);
-        }
-        // Incident: a read or a todo update ends in milliseconds, far inside one exit's lead, so
-        // its state never showed; the last tool holds the orb until the model streams again.
-        Some(
-            self.last_tool
-                .as_deref()
-                .map_or(OrbState::Awaiting, |name| self.tool_state(name)),
-        )
-    }
-
-    fn tool_state(&self, name: &str) -> OrbState {
-        match name {
-            "read" | "ls" | "document" | "get_context" => OrbState::Reading,
-            "grep" | "glob" | "find" => OrbState::Searching,
-            "web_search" | "fetch" => OrbState::Browsing,
-            "edit" | "write" => OrbState::Editing,
-            "bash" => OrbState::Executing,
-            "ipython" => OrbState::Computing,
-            "todo" | "plan" => {
-                let progress = self.todos.as_ref().map(|todos| todos.progress());
-                let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
-                OrbState::Planning {
-                    done: progress.map_or(0, |p| count(p.done)),
-                    total: progress.map_or(0, |p| count(p.total)),
-                }
-            }
-            _ => OrbState::Working,
-        }
     }
 
     /// Changed, or its spinner stepped, since the last call: a host loop repaints on this.
@@ -731,7 +629,6 @@ impl App {
             AgentEvent::AgentStart => self.start_turn(),
             AgentEvent::AgentEnd { .. } => {
                 self.running = false;
-                self.intent = None;
                 self.wait = None;
                 self.pen = None;
                 self.esc_armed_at = None;
@@ -757,9 +654,7 @@ impl App {
                 match attribution {
                     Attribution::Unproven | Attribution::Host(_) => {
                         let carded = text.starts_with("[subagent ")
-                            && self
-                                .tasks
-                                .keys()
+                            && (self.tasks.keys().chain(&self.retired_tasks))
                                 .any(|id| text.contains(&format!("({id})")));
                         if !carded {
                             self.commit_cell(&Cell::Notice { text });
@@ -768,6 +663,9 @@ impl App {
                     Attribution::User | Attribution::Task => {
                         if let Some(at) = self.steering.iter().position(|queued| *queued == text) {
                             self.steering.remove(at);
+                        }
+                        if let Some(at) = self.awaited.iter().position(|sent| *sent == text) {
+                            self.awaited.remove(at);
                         }
                         self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -819,14 +717,12 @@ impl App {
                 tool_name,
                 args,
             } => {
-                self.intent = intent_of(&args);
                 self.note_question(&tool_name, &args);
                 self.tool_started
                     .insert(tool_call_id.clone(), self.clock.now());
                 self.live_tools.push(ToolCell {
                     name: tool_name.clone(),
                     call_id: tool_call_id.clone(),
-                    intent: self.intent.clone(),
                     status: ToolStatus::Running,
                     summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
                     digest: None,
@@ -960,12 +856,12 @@ impl App {
                 let cell = Cell::Tool(ToolCell {
                     name: tool_name.clone(),
                     call_id: String::new(),
-                    intent: None,
                     status: ToolStatus::Done,
                     summary: ToolCell::summary_of(&tool_name, ""),
                     digest: ToolCell::digest_of(
                         &tool_name,
                         &text,
+                        &result.details,
                         yi_types::event::shown_failed(is_error, &result.details),
                     ),
                     preview: result_preview(&text, &result.details),
@@ -1119,7 +1015,7 @@ pub fn run_tui(
 
     app.load_history(&mut port);
     if let Some(prompt) = app.options.initial_prompt.clone() {
-        app.note_submission();
+        app.note_submission(&prompt);
         let _ = cmd_tx.send(Command::Prompt(prompt));
     }
 
@@ -1195,5 +1091,5 @@ pub fn run_tui(
     drop(terminal);
     drop(guard);
     let _ = runtime_thread.join();
-    app.exit_code
+    0
 }
