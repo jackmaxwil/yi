@@ -12,8 +12,8 @@ use crate::tool::{
 };
 
 const PAGE_CAP: usize = 200;
-/// Bytes of rows a page holds before it stops between hits: 200 hits of 512 columns, or 20 whole
-/// blocks, had no bound. One hit's window may pass it, so a page always advances.
+/// Invariant: a page stops between hits, so one hit's window may pass this cap and a page always
+/// advances. 200 hits of 512 columns, or 20 whole blocks, had no byte bound before it.
 const PAGE_BYTES: usize = 50 * 1024;
 const COLLECTION_CAP: usize = 2_000;
 /// The hit cap bounds rows, not bytes: one minified file with a single hit
@@ -494,13 +494,12 @@ impl GrepTool {
         let prefix = if mint && self.hashline.is_some() {
             0
         } else {
-            file.display.len() + 1
+            file.display.len().saturating_add(1)
         };
         for &index in page_hits {
             if *room == 0 {
                 break;
             }
-            rendered = rendered.saturating_add(1);
             let span = block
                 .then(|| {
                     crate::hashline::patcher::block_resolver(&BlockResolverRequest {
@@ -539,7 +538,11 @@ impl GrepTool {
                 };
                 let number = row.saturating_add(1) as u64;
                 let (shown, clipped) = crate::tool::clip(text, LINE_CLIP);
-                *room = room.saturating_sub(prefix + number.to_string().len() + shown.len() + 2);
+                let spent = prefix
+                    .saturating_add(number.to_string().len())
+                    .saturating_add(shown.len())
+                    .saturating_add(2);
+                *room = room.saturating_sub(spent);
                 if !clipped {
                     seen.push(number);
                 }
@@ -550,6 +553,7 @@ impl GrepTool {
                 });
             }
             emitted = Some(hi.saturating_add(1));
+            rendered = rendered.max(page_hits.partition_point(|&hit| hit <= hi.max(index)));
         }
         let rows = match self.hashline.as_ref().filter(|_| mint) {
             // A tagged file anchors an edit directly; a bare one names itself
@@ -1101,14 +1105,16 @@ impl Tool for GrepTool {
                 rows.extend(drawn);
             }
             shown = taken;
-            if shown > 0 && offset.saturating_add(shown) < collected.total {
-                let cap = (room == 0).then(|| format!(" (PAGE_BYTES {PAGE_BYTES})"));
+            let next = offset.saturating_add(shown);
+            if shown > 0 && next < collected.total {
+                let (name, limit) = match (room, block) {
+                    (0, _) => ("PAGE_BYTES", PAGE_BYTES),
+                    (_, true) => ("BLOCK_PAGE_CAP", BLOCK_PAGE_CAP),
+                    (_, false) => ("PAGE_CAP", PAGE_CAP),
+                };
+                let first = offset.saturating_add(1);
                 rows.push(format!(
-                    "[showing matches {}-{} of {total_label}{} — continue with offset={}]",
-                    offset + 1,
-                    offset + shown,
-                    cap.unwrap_or_default(),
-                    offset + shown
+                    "[showing matches {first}-{next} of {total_label} ({name} {limit}) — continue with offset={next}]"
                 ));
             }
         }
