@@ -21,6 +21,7 @@ mod auto_review;
 mod branch_diff;
 mod breakpoints;
 mod cache_miss;
+mod caps_runtime;
 mod channel_e2e;
 mod child_trail;
 mod child_transcript;

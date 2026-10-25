@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Activity;
-use super::store::{IndexLine, Store, StoreError, global_dir, loaded, repo_dir};
+use super::store::{
+    IndexLine, LOAD_BYTES, LOAD_LINES, Store, StoreError, global_dir, loaded, repo_dir,
+};
 use crate::ext::{Effect, Event, EventMask, Extension, StartReason, Trust};
 
 const SOURCE: &str = "memory";
@@ -137,7 +139,18 @@ pub fn block(home: &Path, cwd: &Path) -> (String, Summary) {
                 }
                 body.extend(scoped.lines.iter().cloned());
                 if scoped.not_loaded > 0 {
-                    body.push(format!("+{} not loaded", scoped.not_loaded));
+                    let (shown, left) = (scoped.lines.len(), scoped.not_loaded);
+                    let what = format!("notes loaded within LOAD_BYTES {LOAD_BYTES}");
+                    let next = "await memory.search(\"words\")";
+                    let all = shown.saturating_add(left);
+                    body.push(crate::listed::cut_row(
+                        shown,
+                        all,
+                        &what,
+                        "LOAD_LINES",
+                        LOAD_LINES,
+                        next,
+                    ));
                 }
             }
             Err(error) => body.push(format!("{label} notes not loaded: {error}")),
