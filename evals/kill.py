@@ -354,15 +354,16 @@ def ask(test, family, spec, binary, stop_usd, until=None, estimate_usd=0.0, ceil
     return row
 
 
-def tail_of(path):
-    """(bytes, whether the last byte is not a newline); a store is never read whole to learn it."""
+def torn_tail(path):
+    """Whether a store's last line lacks its newline, read from the end: a store is never read whole."""
     try:
         with open(path, "rb") as handle:
-            size = handle.seek(0, os.SEEK_END)
-            handle.seek(max(size - 1, 0))
-            return size, size > 0 and handle.read(1) != b"\n"
+            if handle.seek(0, os.SEEK_END) == 0:
+                return False
+            handle.seek(-1, os.SEEK_END)
+            return handle.read(1) != b"\n"
     except OSError:
-        return 0, False
+        return False
 
 
 def harbor(test, family, spec, stop_usd):
@@ -375,12 +376,14 @@ def harbor(test, family, spec, stop_usd):
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
     rows, bad = yi_usage.json_lines(store)
-    size, ragged = tail_of(store)
+    if torn_tail(store):
+        # As skill_labels.py does: end a killed sweep's torn line, or this sweep's first row fuses onto it.
+        with store.open("a") as sink:
+            sink.write("\n")
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
     after, bad_after = yi_usage.json_lines(store)
-    # A first row appended onto an earlier sweep's torn last line fuses with it and stays one bad line.
-    filed, torn = after[len(rows):], bad_after - bad + (ragged and tail_of(store)[0] > size)
+    filed, torn = after[len(rows):], bad_after - bad
     # A line this sweep filed that does not parse is spend nobody can read: charge the cap.
     charged = sum(trials.cost(row) for row in filed) if filed and not torn else stop_usd
     row = {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",

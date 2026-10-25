@@ -576,8 +576,9 @@ python3 evals/kill.py report
   charged. The runner hands down `TBV4_HARD_CAP` as what is left of the reserve, and the sweep
   takes the lower of that and its own stage and week caps. A sweep that filed no rows is
   charged the whole cap, and a re-run is charged only the rows its own sweep appended. A line
-  the sweep appended that does not parse (a torn final write, or a re-run's first row fused
-  onto one) also charges the whole cap, and the row names it as `unreadable`. A
+  the sweep appended that does not parse (a torn final write) also charges the whole cap, and
+  the row names it as `unreadable`; the next sweep ends that line first, so its rows never fuse
+  onto it. A
   subscription family's harbor spec is written unrun, because the sweep spends OpenRouter on
   its own model.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
