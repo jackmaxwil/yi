@@ -45,7 +45,7 @@ fn console() -> Result<(App, PaneId), Box<dyn Error>> {
     Ok((app, pane))
 }
 
-fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> TestResult {
+pub(crate) fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> TestResult {
     let theme = theme();
     terminal.draw(|frame| {
         let mut view = yi_console::render::compute_view(app, frame.area(), &theme);
@@ -55,7 +55,7 @@ fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> TestResult {
     Ok(())
 }
 
-fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
+pub(crate) fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
     let buffer = terminal.backend().buffer();
     (0..buffer.area.width)
         .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))

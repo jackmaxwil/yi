@@ -74,12 +74,11 @@ impl Drag {
     pub fn follow(&mut self, pinned: Option<usize>, before: Option<usize>, after: Option<usize>) {
         // Incident: a press on a view held at its top anchored at the pin, and the first scroll
         // turned the pin into a row offset, so the copy repeated its opening rows.
-        let half = usize::MAX / 2;
         if let (Some(pin), Some(now)) = (pinned, before)
-            && usize::MAX - pin < half
-            && now < half
+            && let Some(down) = crate::panes::down_from_top(pin)
+            && crate::panes::down_from_top(now).is_none()
         {
-            self.rebase(pin, now.saturating_add(usize::MAX - pin));
+            self.rebase(pin, now.saturating_add(down));
         }
         if let (Some(before), Some(after)) = (before, after)
             && after > before

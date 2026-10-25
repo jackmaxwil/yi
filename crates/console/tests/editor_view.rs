@@ -10,6 +10,8 @@ use yi_console::app::MouseKind;
 use yi_console::model::Editor;
 use yi_tui::highlight::Token;
 
+use crate::chrome::{draw, row_text};
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn commented_file(rows: usize) -> Editor {
@@ -137,22 +139,6 @@ fn editor(app: &yi_console::app::App) -> Option<&Editor> {
         yi_console::model::PaneContent::Editor(editor) => Some(editor),
         _ => None,
     }
-}
-
-fn draw(app: &mut yi_console::app::App, terminal: &mut Terminal<TestBackend>) -> TestResult {
-    let theme = app.theme;
-    terminal.draw(|frame| {
-        let mut view = yi_console::render::compute_view(app, frame.area(), &theme);
-        yi_console::render::render(app, frame, &mut view, &theme);
-    })?;
-    Ok(())
-}
-
-fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
-    let buffer = terminal.backend().buffer();
-    (0..buffer.area.width)
-        .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
-        .collect()
 }
 
 /// The screen row holding `needle` and the column where it starts, in cells.
