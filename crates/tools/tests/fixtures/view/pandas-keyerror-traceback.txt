@@ -1,0 +1,49 @@
+---------------------------------------------------------------------------
+KeyError                                  Traceback (most recent call last)
+File ~/.yi/kernel-venv-aa885b65/lib/python3.13/site-packages/pandas/core/indexes/base.py:3816, in Index.get_loc(self, key)
+   3815 try:
+-> 3816     return self._engine.get_loc(casted_key)
+   3817 except KeyError as err:
+
+File pandas/_libs/index.pyx:172, in pandas._libs.index.IndexEngine.get_loc()
+--> 172 'Could not get source, probably due dynamically evaluated source code.'
+File pandas/_libs/index.pyx:201, in pandas._libs.index.IndexEngine.get_loc()
+--> 201 'Could not get source, probably due dynamically evaluated source code.'
+File pandas/_libs/hashtable_class_helper.pxi:7726, in pandas._libs.hashtable.PyObjectHashTable.get_item()
+-> 7726 'Could not get source, probably due dynamically evaluated source code.'
+File pandas/_libs/hashtable_class_helper.pxi:7734, in pandas._libs.hashtable.PyObjectHashTable.get_item()
+-> 7734 'Could not get source, probably due dynamically evaluated source code.'
+KeyError: 'total'
+
+The above exception was the direct cause of the following exception:
+
+KeyError                                  Traceback (most recent call last)
+Cell In[5], line 3
+      1 import pandas as pd
+      2 df = pd.DataFrame({'price': [1.5, 2.0, 3.25], 'qty': [4, 5, 6]})
+----> 3 df['total']
+
+File ~/.yi/kernel-venv-aa885b65/lib/python3.13/site-packages/pandas/core/frame.py:4330, in DataFrame.__getitem__(self, key)
+   4326 
+   4327         if is_single_key:
+   4328             if self.columns.nlevels > 1:
+   4329                 return self._getitem_multilevel(key)
+-> 4330             indexer = self.columns.get_loc(key)
+   4331             if is_integer(indexer):
+   4332                 indexer = [indexer]  # type: ignore[assignment]
+   4333         else:
+
+File ~/.yi/kernel-venv-aa885b65/lib/python3.13/site-packages/pandas/core/indexes/base.py:3823, in Index.get_loc(self, key)
+   3818     if isinstance(casted_key, slice) or (
+   3819         isinstance(casted_key, abc.Iterable)
+   3820         and any(isinstance(x, slice) for x in casted_key)
+   3821     ):
+   3822         raise InvalidIndexError(key) from err
+-> 3823     raise KeyError(key) from err
+   3824 except TypeError:
+   3825     # If we have a listlike key, _check_indexing_error will raise
+   3826     #  InvalidIndexError. Otherwise we fall through and re-raise
+   3827     #  the TypeError.
+   3828     self._check_indexing_error(key)
+
+KeyError: 'total'
