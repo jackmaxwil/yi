@@ -125,7 +125,10 @@ fn oauth_code(id: &str, file: ProfileFile) -> Result<Kind> {
         json_token: file.json_token,
         stream_headers: pairs(&file.stream_headers),
         refresh_headers: pairs(&file.refresh_headers),
-        api_base: file.api_base,
+        api_base: (file.api_base)
+            .map(|base| crate::url::https_or_local(&base).map(|()| base))
+            .transpose()
+            .map_err(|error| format!("{id}: `api_base` {error}"))?,
         login,
     })))
 }
