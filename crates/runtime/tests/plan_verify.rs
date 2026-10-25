@@ -296,7 +296,7 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
             "looks like a secret",
         ),
         (
-            manifest("true", 1000, &["YI_VERIFY_TEST_UNSET_NAME"]),
+            manifest("true", 1000, &["VERIFY_TEST_UNSET_NAME"]),
             "holds no",
         ),
         (
