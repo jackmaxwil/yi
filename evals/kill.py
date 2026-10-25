@@ -387,7 +387,8 @@ def harbor(test, family, spec, stop_usd):
     # A line this sweep filed that does not parse is spend nobody can read: charge the cap.
     charged = sum(trials.cost(row) for row in filed) if filed and not torn else stop_usd
     row = {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
-           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
+           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6),
+           "jobs": sorted({r["job"] for r in filed if r.get("job")})}
     if torn:
         row.update(unreadable=torn, why=f"{torn} line(s) this sweep filed in {store.name} do not parse; charged its cap")
     return row

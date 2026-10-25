@@ -1,11 +1,13 @@
 """The stops-over-FAIL counter and EXP-B3c's verdict, over sessions the real binary wrote under
 faux/faux-1 (evals/fixtures/stops_on_fail): no model, no TB task text."""
-import importlib.util, json, os, shutil, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, shutil, sys, tempfile, unittest
 from pathlib import Path
 
 EVALS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALS))
+sys.path.insert(0, str(EVALS / "drivers"))
 import stops_on_fail  # noqa: E402
+import trials  # noqa: E402
 
 # Two ipython cells, then a final reply: `fail` ends on `FAIL R2` after an all-PASS cell, `pass`
 # the reverse, so a counter reading any cell but the last inverts both. `refused` stops over FAIL,
@@ -52,32 +54,46 @@ class StopsOnFail(unittest.TestCase):
 
     def test_the_verdict_keeps_at_two_tasks_per_family_kills_at_one_and_waits_for_a_short_family(self):
         with tempfile.TemporaryDirectory() as tmp:
-            saved = os.environ.get("TBV4_RUNS_ROOT")
-            os.environ["TBV4_RUNS_ROOT"] = tmp
+            lines = FAIL.read_text().splitlines()
+            child = "\n".join([json.dumps({**json.loads(lines[0]), "parentSessionId": "root"}), *lines[1:]]) + "\n"
+
+            def run(name, failing, tasks=B3C.SLICE, sweep="job"):
+                job = Path(tmp) / name / sweep
+                shutil.rmtree(job, ignore_errors=True)
+                for n, task in enumerate(tasks):
+                    sessions = job / f"{task}__x{n}" / "agent" / "yi" / "sessions"
+                    sessions.mkdir(parents=True)
+                    (sessions.parents[2] / "result.json").write_text(json.dumps({"task_name": f"terminal-bench/{task}"}))
+                    shutil.copy(FAIL if n < failing else PASS, sessions / "s.jsonl")
+                    (sessions / "child.jsonl").write_text(child)
+                return {"family": name, "run": name, "jobs": [str(job)]}
+            self.assertEqual(B3C.verdict([run("kimi", 2), run("glm-flash", 2)]), "KEEP: kimi 2/12 tasks, glm-flash 2/12 tasks")
+            self.assertTrue(B3C.verdict([run("kimi", 2), run("glm-flash", 1)]).startswith("KILL: "))
+            refused = {"family": "glm-flash", "run": "refused-before-harbor", "status": "error", "jobs": []}
+            self.assertEqual(B3C.verdict([run("kimi", 2), refused]), "UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0 tasks")
+            self.assertTrue(B3C.verdict([run("kimi", 2)]).startswith("UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0"))
+            self.assertEqual(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 2)]),
+                             "UNRESOLVED: kimi 2/11 tasks, glm-flash 2/12 tasks")
+            self.assertTrue(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 1)]).startswith("KILL: "))
+            # A re-run under the same run id: each task reads its latest sweep, so two sweeps never sum.
+            first, again = run("glm-flash", 2, sweep="old"), run("glm-flash", 0, B3C.SLICE[1:2], sweep="new")
+            self.assertEqual(B3C.verdict([run("kimi", 2), first, again]), "KILL: kimi 2/12 tasks, glm-flash 1/12 tasks")
+
+    def test_a_filed_trial_row_names_the_job_the_verdict_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            trial = job / f"{B3C.SLICE[0]}__x0"
+            (trial / "agent" / "yi" / "sessions").mkdir(parents=True)
+            (trial / "result.json").write_text(json.dumps({"task_name": f"terminal-bench/{B3C.SLICE[0]}"}))
+            shutil.copy(FAIL, trial / "agent" / "yi" / "sessions" / "s.jsonl")
+            saved, trials.STORE = trials.STORE, Path(tmp) / "store"
             try:
-                lines = FAIL.read_text().splitlines()
-                child = "\n".join([json.dumps({**json.loads(lines[0]), "parentSessionId": "root"}), *lines[1:]]) + "\n"
-
-                def run(name, failing, tasks=B3C.SLICE):
-                    shutil.rmtree(Path(tmp) / name, ignore_errors=True)
-                    for n, task in enumerate(tasks):
-                        sessions = Path(tmp) / name / "job" / f"{task}__x{n}" / "agent" / "yi" / "sessions"
-                        sessions.mkdir(parents=True)
-                        (sessions.parents[2] / "result.json").write_text(json.dumps({"task_name": f"terminal-bench/{task}"}))
-                        shutil.copy(FAIL if n < failing else PASS, sessions / "s.jsonl")
-                        (sessions / "child.jsonl").write_text(child)
-                    return {"family": name, "run": name}
-                self.assertEqual(B3C.verdict([run("kimi", 2), run("glm-flash", 2)]), "KEEP: kimi 2/12 tasks, glm-flash 2/12 tasks")
-                self.assertTrue(B3C.verdict([run("kimi", 2), run("glm-flash", 1)]).startswith("KILL: "))
-                refused = {"family": "glm-flash", "run": "refused-before-harbor", "status": "error"}
-                self.assertEqual(B3C.verdict([run("kimi", 2), refused]), "UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0 tasks")
-                self.assertTrue(B3C.verdict([run("kimi", 2)]).startswith("UNRESOLVED: kimi 2/12 tasks, glm-flash 0/0"))
-                self.assertEqual(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 2)]),
-                                 "UNRESOLVED: kimi 2/11 tasks, glm-flash 2/12 tasks")
-                self.assertTrue(B3C.verdict([run("kimi", 2, B3C.SLICE[:11]), run("glm-flash", 1)]).startswith("KILL: "))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(trials.main(["rows", str(job), "--run-id", "r"]), 0)
             finally:
-                os.environ.pop("TBV4_RUNS_ROOT") if saved is None else os.environ.update(TBV4_RUNS_ROOT=saved)
-
+                trials.STORE = saved
+            filed = [json.loads(line) for line in (Path(tmp) / "store" / "r.jsonl").read_text().splitlines()]
+            self.assertEqual(B3C.tasks_on_fail(sorted({row["job"] for row in filed})), {B3C.SLICE[0]: 1})
 
 if __name__ == "__main__":
     unittest.main()

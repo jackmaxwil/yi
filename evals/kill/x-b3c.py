@@ -3,7 +3,7 @@
 One fresh trial per task of the 12-task TB4 slice on main's binary, per family; a task counts
 when any stop in its root session was taken over a FAIL line (evals/stops_on_fail.py).
 """
-import json, os, sys, tempfile
+import json, sys, tempfile
 from pathlib import Path
 
 EVALS = Path(__file__).resolve().parents[1]
@@ -32,16 +32,11 @@ def runs():
                                        "--runner", str(overrides), *SLICE]}]
 
 
-def runs_root():
-    """Where tbv4_sweep.sh --runner keeps a run's trials, by its own rule."""
-    return Path(os.environ.get("TBV4_RUNS_ROOT") or Path.home() / "Development" / "yi-runs")
-
-
-def tasks_on_fail(run):
-    """{task: stops taken over a FAIL} for every slice task with a root session in the run."""
-    found, trials = {}, runs_root() / run
-    # Incident: a sweep refused before harbor starts (no key, docker down) never makes its run dir.
-    for row in stops_on_fail.rows([trials] if trials.is_dir() else []):
+def tasks_on_fail(jobs):
+    """{task: stops taken over a FAIL} for every slice task with a root session in the harbor
+    jobs one sweep filed rows from (kill.py's row names them), so a re-run never reads an older one."""
+    found = {}
+    for row in stops_on_fail.rows(jobs):
         if row["task"] in SLICE:
             found[row["task"]] = found.get(row["task"], 0) + row["stopsOnFail"]
     return found
@@ -51,8 +46,7 @@ def verdict(rows):
     """KILL as soon as one finished family is under KEEP_AT, since KEEP needs every family."""
     per = {family: {} for family in FAMILIES}
     for row in rows:
-        if row.get("run"):
-            per.setdefault(row["family"], {}).update(tasks_on_fail(row["run"]))
+        per.setdefault(row["family"], {}).update(tasks_on_fail(row.get("jobs") or []))
     hits = {family: sum(1 for n in per[family].values() if n) for family in FAMILIES}
     lines = ", ".join(f"{family} {hits[family]}/{len(per[family])} tasks" for family in FAMILIES)
     done = [family for family in FAMILIES if len(per[family]) >= len(SLICE)]
