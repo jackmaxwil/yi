@@ -449,6 +449,7 @@ The harness's names, not the binary's. `check_env_surface.py` scans
 | `EVAL_BINARY` | harbor adapter | local x86_64 musl build, uploaded into the container |
 | `EVAL_BINARY_URL` | harbor, pier adapters | release URL to `curl`; pier's install spec is lowered into a Dockerfile and needs it |
 | `EVAL_ROUTING` | `run.py`, harbor adapter | OpenRouter provider object, see [Task runner](#task-runner) |
+| `EVAL_ARM_FILE` | harbor adapter | a text file appended to every trial's instruction after the budget rewrite: the one thing two arms of an A/B differ in. Its hash rides the fingerprint as `+arm<sha12>`; a named file that is missing stops the trial. `EVAL_ARM` (the row label) is the sweep's own |
 | `EVAL_TIMEOUT_MULT` | harbor adapter, drivers | the trial's share of the task timeout (E12); rides the fingerprint as `+t<mult>` |
 | `EVAL_SUITE_REV` | harbor adapter, drivers | the dataset digest in the fingerprint |
 | `YI_LEVERS` | the binary, under `--eval` only; `run.py`, `surface.py` and the harbor adapter (E16) pass it on | lever overrides (D220); declared in `scripts/guardrails/baselines/env_vars.json` |
@@ -578,6 +579,16 @@ python3 evals/kill.py report
   its own model.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
   `selftest.check_kill` pins all of this against a fake yi that replays recorded streams.
+- **`kill/s5-kc-ab.py` (EXP-S5-E2)** runs three arms (solo; a parent with gathered `worker`
+  children; the same with `root` children, which keep a kernel) over heat-pump-warranty,
+  legacy-utility-triage and medical-claims-processing, three repeats each, one sweep per arm.
+  `python3 evals/kill/s5-kc-ab.py precheck` runs the zero-spend oracle and nop passes and prints
+  each verifier's count; `table` prints one row per trial with its score, pass, the parent's peak
+  context and its children's input tokens. The pre-registered score is the ctrf tally, but only
+  medical-claims-processing writes a ctrf (one test that passes whatever the agent did), so the score
+  is the verifier's own count: `trace_results.json`'s cases, else the `Scoring: X/Y lines correct` line.
+  Run it on an x86 host: on an arm64 Mac the amd64 images run emulated, medical-claims-processing's
+  browser sidecar never turned healthy and legacy-utility-triage's oracle could not commit through the GUI.
 
 ## Fixtures
 

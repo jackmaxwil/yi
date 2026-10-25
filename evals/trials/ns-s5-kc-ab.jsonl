@@ -1,0 +1,7 @@
+{"agent": "nop", "errored": false, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": [0, 20, "trace_results.json"], "task": "heat-pump-warranty"}
+{"agent": "nop", "errored": false, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": [0, 19, "trace_results.json"], "task": "legacy-utility-triage"}
+{"agent": "nop", "errored": true, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": null, "task": "medical-claims-processing"}
+{"agent": "oracle", "errored": false, "host": "arm64", "kind": "precheck", "reward": 1.0, "tally": [20, 20, "trace_results.json"], "task": "heat-pump-warranty"}
+{"agent": "oracle", "errored": false, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": [0, 19, "trace_results.json"], "task": "legacy-utility-triage"}
+{"agent": "oracle", "errored": true, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": null, "task": "medical-claims-processing"}
+{"agent": "verifier-image", "errored": false, "host": "arm64", "kind": "precheck", "reward": 0.0, "tally": [0, 116, "test-stdout.txt"], "task": "medical-claims-processing"}
