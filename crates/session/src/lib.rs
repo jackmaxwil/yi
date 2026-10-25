@@ -24,4 +24,4 @@ pub use query::{
     LanePointer, LogOptions, RecordQuery, SessionMetadata, SessionStats,
 };
 pub use repo::{MemRepo, SessionRepo, SharedSession, lock_session, open_shared};
-pub use store::{GREP_PAGE_MAX, SessionStore};
+pub use store::{GREP_PAGE_MAX, SNIPPET_CHARS, SessionStore, snippet};

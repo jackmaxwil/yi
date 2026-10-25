@@ -15,8 +15,8 @@ ADRS = ROOT / "docs/solutions/adr"
 INDEX_LINE = re.compile(r"^- \[D(\d+)\]\(adr/d\1\.md\)")
 
 
-def row(number):
-    for line in ARCH.read_text().splitlines():
+def row(number, arch=ARCH):
+    for line in arch.read_text().splitlines():
         if line.startswith(f"| D{number} |"):
             cells = [cell.strip() for cell in line.strip().strip("|").split(" | ")]
             if len(cells) == 4:
