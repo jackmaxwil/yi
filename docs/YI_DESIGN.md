@@ -236,11 +236,12 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 
 ### 4.5 Interrupt
 - `abort` fires `InterruptSignal` (bumps `epoch`, sets `fired` and the request's `cut`, wakes
-  waiters), so the provider stops on the wire at its next SSE event; a run clears
-  `fired` only if the epoch is the one read at admission. A streaming request ends with its
-  partial as `Aborted`, one waiting out a reasoning cut's drain included; every call not yet run is answered `ToolErrorKind::Aborted` with its
-  start and end events; running tools see their cancel flag. A fired interrupt sends no further
-  request, a compaction summarizer's included: the run settles as an empty `Aborted` turn.
+  waiters), so the provider stops on the wire at its next SSE event; a run clears `fired` only
+  if the epoch is the one read at admission. A streaming request ends with its partial as
+  `Aborted`, one waiting out a reasoning cut's drain included; every call not yet run is
+  answered `ToolErrorKind::Aborted` with its start and end events; running tools see their
+  cancel flag. A fired interrupt sends no further request, a compaction summarizer's included:
+  the run settles as an empty `Aborted` turn.
 - `cut` is one request's flag, set by the loop at a reasoning budget or deadline and by a fire,
   and read by provider pumps between SSE events; each request opens with a fresh one, so a
   later request never clears an earlier request's cut.

@@ -102,9 +102,8 @@ async fn an_abort_during_the_cut_drain_returns_at_once() {
     assert!(!turns.iter().any(|turn| turn == LENGTH_REDRIVE_CUSTOM_TYPE));
 }
 
-/// Each round snapshots the epoch, then a reset and a fire start together on two spinning
-/// threads, the reset a little later each round; the fire came after the snapshot, so it must
-/// survive whichever side wins.
+/// Each round snapshots the epoch, then a reset and a fire race on two spinning threads; the
+/// fire came after the snapshot, so it must survive whichever side wins.
 #[test]
 fn a_fire_racing_a_reset_is_never_lost() {
     const ROUNDS: usize = 100_000;
