@@ -640,8 +640,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
   partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
 - A worker (`role="worker"`, D334) is the same brief with writes: `prompts/worker.md`, the
-  permission mode, the project's instruction files and the language packs are its whole system
-  prompt, `tools` a subset of `read`, `grep`, `edit`, `write`, `bash` and `get_context` (the first
+  project's instruction files and the language packs are its whole system prompt (not the
+  permission mode; its wall and broker still bind it), `tools` a subset of `read`, `grep`, `edit`, `write`, `bash` and `get_context` (the first
   four by default), `turns` 12 (at most 40). Its writes pass its wall, the broker and the user's
   gate rules as a root child's do, reminder rules reach it, and it compacts. It holds a worker
   slot, may take `isolation`, and refuses `fork` and `check`.
@@ -949,7 +949,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | Verb | What |
 |---|---|
 | `yi` / `yi <words>` | TTY: bare opens `console` (`tui` with `--solo`); words open `tui` with that prompt. No TTY: bare prints a verb banner; words run `ask`. A lone word one edit from a verb (four or five letters; two edits from six) is refused with the verb and `yi ask <word>`, and a verb that reads no words (`version`, `rpc`, `acp`, `doctor`, `gc`, `serve`, `console`; `undo` reads only `list`) refuses trailing ones; `console` and `serve` refuse `--thinking`, `--system`, `--schema` and `--deadline` (a headless console drive reads `--deadline`), which never reach their sessions |
-| `ask`, `rpc`, `acp`, `serve` | One headless run (`--json` prints each event as a JSON line); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
+| `ask`, `rpc`, `acp`, `serve` | One headless run (plain text puts a blank line between one turn's text and the next; `--json` prints each event as a JSON line, and `--no-deltas` leaves out the `message_update` ones); a JSON-lines loop on stdio; one ACP worker on stdio; the ACP daemon (§17.2) |
 | `console`, `tui` | The workspace shell (§17.4), starting a detached `serve` when none answers; the solo chat (§17.3) |
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed. `stats --since <span> --by model\|upstream\|day [--top N]` folds every session, children and legacy `rlm-*/sub-*` files included, into requests, billed dollars, hit rate, reads per write, write share, reasoning share and prompt p50/p90; `stats --by prices` fits each (model, upstream) route's price per million tokens from the replies' billed totals (30 replies at least) and marks drift past 20% from the catalog; `stats --by plan` counts every applied plan-engine op by kind and actor class from the sessions' `plan_op` entries and the plans directory's `ops.jsonl` journals, with totals for delegations, acceptances, `done_refused` and retries |
 | `lanes [reap <slot>]`, `gc [--fix]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); the retention sweep (§7.7); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |

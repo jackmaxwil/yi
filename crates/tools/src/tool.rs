@@ -224,7 +224,7 @@ pub(crate) fn clip(line: &str, cols: usize) -> (String, bool) {
 }
 
 /// A loud cut's row: kept of what existed, the cap that cut it, and the call that gets the rest.
-pub fn cut(
+pub fn cut_row(
     kept: usize,
     total: usize,
     what: &str,
