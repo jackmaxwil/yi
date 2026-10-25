@@ -49,8 +49,8 @@ pub struct Orb {
 }
 
 struct Next {
-    to: Option<OrbState>,
     at: f64,
+    key: Key,
     job: Option<Pairing>,
 }
 
@@ -104,19 +104,22 @@ impl Orb {
                         return render(&pose(self.now, self.clock));
                     }
                     let from = pose(self.now, next.at);
-                    let target = pose(next.to, 0.0);
+                    let target = pose(next.key.2, 0.0);
                     let perm = next
                         .job
                         .and_then(|cell| cell.get().cloned().flatten())
                         .filter(|perm| perm.len() == target.len())
                         .unwrap_or_else(|| {
                             SOLVED.fetch_add(1, Ordering::Relaxed);
-                            matching(&from, &target)
+                            let perm = matching(&from, &target);
+                            let cell = Arc::new(OnceLock::from(Some(perm.clone())));
+                            pairings().insert(next.key, cell);
+                            perm
                         });
                     let t = self.clock + dt - next.at;
                     let frame = render(&blend(&from, &target, &perm, t / MORPH));
                     self.morph = Some(Morph {
-                        to: next.to,
+                        to: next.key.2,
                         from,
                         target,
                         perm,
@@ -138,7 +141,7 @@ impl Orb {
             self.next = None;
             return;
         }
-        if self.next.as_ref().is_some_and(|next| next.to == want) {
+        if self.next.as_ref().is_some_and(|next| next.key.2 == want) {
             return;
         }
         let at = exit_after(self.now, self.clock + LEAD);
@@ -169,7 +172,7 @@ impl Orb {
             }
         };
         drop(table);
-        self.next = Some(Next { to: want, at, job });
+        self.next = Some(Next { at, key, job });
     }
 }
 

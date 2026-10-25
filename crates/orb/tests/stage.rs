@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use yi_orb::stage::{blend, matching, pairings_solved};
 use yi_orb::{Orb, OrbFrame, OrbState, Point, pose, render};
+#[path = "support/frames.rs"]
+mod support;
 
 const STEP: f64 = 0.0625;
 /// Reading leaves at every quarter of its eight-second loop: asked at once it exits at 2 s, asked
@@ -41,15 +43,9 @@ fn solo((_, exit): (f64, f64), to: OrbState) -> Vec<OrbFrame> {
 }
 
 fn drew(frames: &[OrbFrame], morph: &[OrbFrame]) -> bool {
-    morph.iter().all(|want| {
-        frames.iter().any(|got| {
-            got.dots.len() == want.dots.len()
-                && got.dots.iter().zip(&want.dots).all(|(p, q)| {
-                    (p.x - q.x).abs() + (p.y - q.y).abs() + (p.r - q.r).abs() + (p.a - q.a).abs()
-                        < 1e-9
-                })
-        })
-    })
+    morph
+        .iter()
+        .all(|want| frames.iter().any(|got| support::same(got, want)))
 }
 
 #[test]
