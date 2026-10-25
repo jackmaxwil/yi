@@ -743,7 +743,7 @@ pub(crate) fn wire_job_completions(session: &AgentSession) {
     tokio::spawn(crate::session::until(job_settled(), move || {
         let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
         let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), &report.output);
+            let (job, headline, body) = (report.id, report.headline(), report.view());
             let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
             let unread: crate::session::StillNews =
                 Arc::new(move || !yi_tools::jobs::registry().delivered(job));
