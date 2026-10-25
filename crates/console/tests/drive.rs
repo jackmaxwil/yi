@@ -4541,6 +4541,50 @@ fn quitting_cancels_the_approval_a_pane_holds() -> TestResult {
     )
 }
 
+/// Dies with the worker waiting on a console that left: the ask's pane had moved to another
+/// session, and the parked chat holding it was dropped on quit.
+#[test]
+fn quitting_cancels_the_approval_a_parked_chat_holds() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Outcome("cancelled"));
+    run(
+        "quit-cancels-parked-ask",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 rm -rf target\n\
+         key alt-/\n\
+         wait-frame 3000 Command Palette\n\
+         type beta\n\
+         wait-frame 3000 › beta\n\
+         key enter\n\
+         wait-frame 5000 !rm -rf target\n\
+         key alt-q\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+/// Dies with the worker waiting on a console that left: the ask came for a session no pane
+/// showed, and it was still waiting for one at quit.
+#[test]
+fn quitting_cancels_the_approval_no_pane_took() -> TestResult {
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Push(permission_request),
+        Step::Outcome("cancelled"),
+    ];
+    run(
+        "quit-cancels-orphan-ask",
+        fixture,
+        "wait-frame 5000 needs your a\n\
+         key alt-q\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
 /// Dies with `request timed out: Cancel` ten seconds after the keypress: the writer queue took
 /// the frame while the link was down, and nothing was ever sent.
 #[test]
@@ -4992,6 +5036,40 @@ fn a_resumed_sessions_last_edit_is_in_its_turn_scope() -> TestResult {
     let frame = run_frames(
         "replay-review-turn",
         replayed_session(resume_edit_session),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 greet takes one\nkey alt-g\n\
+         wait-frame 3000 Review\nkey s\nwait-frame 3000 Review · turn\nquit\n",
+    )?;
+    let row = row_holding(&frame, "Review · turn")?;
+    assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
+    Ok(())
+}
+
+/// The edit recording with the kernel recording's subagent notice after its edit: the host wrote
+/// it mid-turn there, between a tool result and the next call, unattributed.
+fn resume_edit_then_a_host_notice(frame: &Value) -> Vec<Value> {
+    let mut entries = recorded(EDIT_SESSION);
+    let notice = recorded(KERNEL_SESSION).into_iter().find(|e| {
+        e["message"]["content"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("[subagent"))
+    });
+    let after_edit = entries
+        .iter()
+        .position(|e| e["message"]["toolName"] == "edit")
+        .map_or(entries.len(), |at| at.saturating_add(1));
+    if let Some(notice) = notice {
+        entries.insert(after_edit, notice);
+    }
+    resume_with(frame, &entries)
+}
+
+/// Dies with `Review · turn · 0 files`: the host's notice counted as a prompt, so the edit before
+/// it left the last turn, where live it stayed because no new turn began.
+#[test]
+fn a_host_notice_mid_turn_keeps_the_edit_in_its_turn_scope() -> TestResult {
+    let frame = run_frames(
+        "replay-review-notice",
+        replayed_session(resume_edit_then_a_host_notice),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 greet takes one\nkey alt-g\n\
          wait-frame 3000 Review\nkey s\nwait-frame 3000 Review · turn\nquit\n",
     )?;
