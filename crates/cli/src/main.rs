@@ -17,6 +17,7 @@ mod setup;
 mod sidecar;
 mod stats;
 mod todo;
+mod trace_sink;
 mod tty;
 mod update;
 mod user_config;
@@ -156,6 +157,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             _ => return Err(argument.unexpected()),
         }
     }
+    trace_sink::install();
     yi_types::trace::init(debug::process_label(&command));
     // A drive is a harness: it claims no lane unless the scenario is about lanes.
     // A cassette run is a harness too: a claim would fetch origin (#943).
