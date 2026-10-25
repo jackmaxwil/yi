@@ -1,6 +1,6 @@
 ---
 issue: Closes #1455, Refs #1442
-raise: tests +244
+raise: tests +227
 decision: the request budget also ratchets each role's first-request prefix in a bare workspace | the gate priced a root prompt no child sends, so a child prefix could grow unseen | delete role_prefix.json and the ROLE_PREFIX reader in check_request_budget.py
 ---
 This is the stage 0 report of Yi's next shape (S0-prefix-report). Every later byte claim in the stack restates its numbers from the rows below, and re-runs the same test to judge itself.
