@@ -59,7 +59,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-runtime` | `AgentSession` and everything that composes the crates above | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel, yi-browser |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon | yi-types, yi-runtime |
 | `yi-tui` | The ratatui shell | yi-types, yi-runtime, yi-orb |
-| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui, yi-browser |
+| `yi-console` | The multi-pane workspace, an ACP client of the daemon; links `yi-runtime` through `yi-tui` | yi-types, yi-tui, yi-browser |
 | `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router | yi-types |
 | `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser |
 
@@ -71,7 +71,11 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
   `Result` in its public API is `AgentTool::validate`.
 - `yi-runtime` is the only non-test constructor of `LoopConfig`.
 - Surfaces (`yi-acp`, `yi-tui`, `yi-console`, `yi-cli`) never depend on `yi-tools`, `yi-ai` or
-  `yi-permission`; `yi-console` does not depend on `yi-runtime`.
+  `yi-permission`. `yi-console` declares no `yi-runtime` dependency, yet its build contains
+  `yi-runtime`, because `yi-tui` depends on it. The seam that would cut that path runs through
+  `yi-tui`, between the pane engine the console reuses and the in-process shell that hosts an
+  `AgentSession` (`SessionPort` for `AgentSession` in `port.rs`, `app/bridge.rs`); engine files
+  call `yi_runtime` helpers too, so the cut moves those. It is not made.
 - Only `yi-cli` depends on `yi-mcp-cli`.
 - `yi-browser` starts the user's Chrome, through `yi __fds`, and runs `yi plugin add chrome`
   when there is none, for the console's browser pane; `yi-runtime` depends on it only to retain
@@ -1048,7 +1052,8 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 
 ### 17.4 Console
 `yi-console` is the workspace shell: an ACP client of the daemon (§17.2) on the alternate screen
-with mouse capture. It depends on `yi-types` and `yi-tui` only.
+with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, and through
+`yi-tui` its build links `yi-runtime` (§2).
 
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
