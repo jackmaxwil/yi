@@ -38,6 +38,7 @@ pub(crate) mod render;
 pub mod request;
 pub mod schedule;
 pub mod snapshot;
+mod spawn;
 pub mod state;
 pub mod store;
 pub mod submit;
@@ -76,6 +77,10 @@ pub const PLANS_DIR: &str = ".yi/plans";
 
 pub fn default_plans_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_default().join(PLANS_DIR)
+}
+
+pub fn resolve_plans_dir(configured: Option<PathBuf>, workspace: &Path) -> PathBuf {
+    configured.unwrap_or_else(|| workspace.join(PLANS_DIR))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -226,7 +231,7 @@ pub fn frontier_text(plan: &Plan) -> String {
 }
 
 fn frontier_cut(total: usize, what: &str) -> String {
-    yi_tools::cut(FRONTIER, total, what, "FRONTIER", FRONTIER, VIEW_ALL)
+    yi_tools::cut_row(FRONTIER, total, what, "FRONTIER", FRONTIER, VIEW_ALL)
 }
 
 fn listed(labels: &[&str]) -> String {

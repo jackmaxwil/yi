@@ -71,7 +71,7 @@ impl PlanEngine {
             Ok(stored) => format!("read plan://{plan}/artifacts/{}", stored.digest.hex()),
             Err(error) => format!("lost, the artifact store refused it: {error}"),
         };
-        let row = yi_tools::cut(CAUSE_CHARS, all, "chars", "CAUSE_CHARS", CAUSE_CHARS, &rest);
+        let row = yi_tools::cut_row(CAUSE_CHARS, all, "chars", "CAUSE_CHARS", CAUSE_CHARS, &rest);
         format!("{kept}\n{row}")
     }
 

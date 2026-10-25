@@ -7,6 +7,7 @@ use yi_types::model::Model;
 
 use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
+use crate::rules::RuleEngine;
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
@@ -55,6 +56,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
             global_skills: Vec::new(),
+            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         let host = attach_runtime(
             &mut child,
@@ -343,6 +345,7 @@ fn wire_schedule(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
             .with_stop(session.halt_hook())
+            .with_notice(session.notice_hook(HostSource::Notice))
             .with_words(session.store_handle())
             .with_channels(
                 wiring
@@ -351,9 +354,10 @@ fn wire_schedule(
                     .unwrap_or(&wiring.rlm_dir)
                     .join("channels"),
             )
-            .with_gate(crate::tools::heartbeat_gate(
+            .with_gate(crate::tools::host_gate(
                 wiring,
                 session.rules_handle(),
+                RuleEngine::check_tool,
                 wiring.own_paths(session),
             ))
             .interned();
@@ -740,7 +744,7 @@ pub(crate) fn wire_job_completions(session: &AgentSession) {
     tokio::spawn(crate::session::until(job_settled(), move || {
         let reports = yi_tools::jobs::registry().take_finished(owner).into_iter();
         let texts = reports.map(|report| {
-            let (job, headline, body) = (report.id, report.headline(), &report.output);
+            let (job, headline, body) = (report.id, report.headline(), report.view());
             let text = format!("<async_result job=\"{job}\">{headline}\n{body}</async_result>");
             let unread: crate::session::StillNews =
                 Arc::new(move || !yi_tools::jobs::registry().delivered(job));
@@ -809,10 +813,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         session.set_deadline(total);
     }
     session.provider().settle_into(session.settle_hook(None));
-    let plans_dir = wiring
-        .plans_dir
-        .clone()
-        .unwrap_or_else(|| wiring.cwd.join(crate::plan::PLANS_DIR));
+    let plans_dir = crate::plan::resolve_plans_dir(wiring.plans_dir.clone(), &wiring.cwd);
     wiring.plans_dir = Some(plans_dir.clone());
     if session.compactor().is_none() {
         session.enable_compaction_with_summarizer(
@@ -984,6 +985,10 @@ fn subagent_host(
     }));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());
+    let (handle, own) = (session.rules_handle(), wiring.own_paths(session));
+    let gate = |scan| crate::tools::host_gate(wiring, handle.clone(), scan, own.clone());
+    let gates = (gate(RuleEngine::check_tool), gate(RuleEngine::recheck_tool));
+    host.check_gate.get_or_init(|| gates);
     let counted = Arc::downgrade(&host);
     session.set_waits(Arc::new(move || {
         let host = counted.upgrade();

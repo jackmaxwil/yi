@@ -450,7 +450,7 @@ fn refused(wall: &crate::wall::Wall, store: &yi_session::SessionStore, entry: &s
     let tail = format!("/{entry}");
     let own = format!("history://{}{tail}", crate::fetch::SELF).parse::<yi_types::url::Url>();
     own.is_ok_and(|own| wall.check_url(&own, Path::new("")).is_some())
-        || crate::fetch::spelling_refused(wall, Path::new(""), store, &tail).is_some()
+        || crate::fetch::spelling_refused(wall, store, &tail).is_some()
 }
 
 pub fn register_grep(

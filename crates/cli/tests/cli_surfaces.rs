@@ -540,6 +540,27 @@ fn undo_restores_the_files_a_turn_changed() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn undo_with_a_sentence_restores_nothing_and_names_the_ask() -> TestResult {
+    let workspace = Workspace::new("undo-sentence")?;
+    let kept = workspace.project().join("kept.txt");
+    std::fs::write(&kept, "before\n")?;
+    let script = tool_script(
+        &workspace,
+        &[("write", json!({"path": "kept.txt", "content": "after\n"}))],
+        Some("written"),
+    )?;
+    ask(&workspace, "start a turn", &["--faux", &script])?;
+    let refused = workspace.yi(&["undo", "the", "last", "edit"])?;
+    assert_eq!(refused.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr).trim(),
+        "error: `yi undo` takes only `list`; to ask the model: yi ask undo the last edit"
+    );
+    assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
+    Ok(())
+}
+
 /// A hand edit after the turn is out of scope (b, c) or, on a path the turn wrote, kept and
 /// named (d): `yi undo` moves only what the turn changed.
 #[test]
@@ -670,11 +691,9 @@ fn resuming_the_tui_replays_the_transcript() -> TestResult {
     ])?;
     let first = std::fs::read_to_string(frames.join("0000.txt"))?;
     assert!(first.contains("remembered prompt"), "{first}");
-    assert!(
-        String::from_utf8_lossy(&resumed.stderr).contains(&format!("yi --session {id}")),
-        "{}",
-        String::from_utf8_lossy(&resumed.stderr)
-    );
+    let hint = format!("Resume this session with `yi --session {id}`");
+    let said = String::from_utf8_lossy(&resumed.stderr);
+    assert!(said.lines().any(|line| line == hint), "{said:?}");
     Ok(())
 }
 
@@ -869,6 +888,41 @@ fn debug_select_prints_one_cost_a_part() -> TestResult {
     let row: Value = serde_json::from_str(stdout(&printed).lines().last().unwrap_or_default())?;
     let costs = row["costs"].as_array().ok_or("no costs")?;
     assert_eq!(costs.len(), 3, "700 lines in parts of 300: {row}");
+    Ok(())
+}
+
+/// `yi debug profile` and Perfetto read what a YI_TRACE run wrote: a named process and its spans.
+#[test]
+fn a_traced_ask_leaves_a_named_process_and_its_spans() -> TestResult {
+    let workspace = Workspace::new("trace")?;
+    let dir = workspace.0.join("trace");
+    let dir = dir.to_str().ok_or("trace dir is not UTF-8")?;
+    let answered = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "hi"],
+        &[("YI_TRACE", dir)],
+    )?;
+    assert_eq!(answered.status.code(), Some(0), "{answered:?}");
+    let reported = workspace.yi(&["debug", "trace", dir, "--json"])?;
+    assert_eq!(reported.status.code(), Some(0), "{reported:?}");
+    let summary: Value = serde_json::from_str(&stdout(&reported))?;
+    let process = summary["processes"][0]["name"].as_str().unwrap_or_default();
+    assert!(process.starts_with("ask ["), "{summary}");
+    let spans = summary["slowest"].as_array().ok_or("no spans")?;
+    assert!(
+        spans.iter().any(|span| span["process"] == process),
+        "{summary}"
+    );
+    let pid = process.trim_start_matches("ask [").trim_end_matches(']');
+    let events = std::fs::read_to_string(workspace.0.join("trace").join(format!("{pid}.jsonl")))?;
+    let main = events
+        .lines()
+        .find(|line| line.contains(r#""name":"process.main""#));
+    let main: Value = serde_json::from_str(main.ok_or("no process.main event")?)?;
+    let ts = main["ts"].as_u64().ok_or("process.main has no ts")?;
+    assert!(
+        ts > 1_600_000_000_000_000,
+        "ts {ts} is not on the wall clock"
+    );
     Ok(())
 }
 
@@ -1292,6 +1346,42 @@ fn refreshing_cursor_without_a_login_is_a_skip_not_a_failure() -> TestResult {
     Ok(())
 }
 
+/// Kimi's list is the account's own too, read at the login profile's base: with no login and
+/// no profile the row names the verb, not "bundled only", and the run stays green.
+#[test]
+fn refreshing_kimi_without_a_login_is_a_skip_not_a_failure() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-skip")?;
+    let skipped = workspace.yi(&["catalog", "refresh", "kimi"])?;
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    let row = stdout(&skipped)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(row, "kimi no credential (yi login kimi)");
+    Ok(())
+}
+
+/// The quota windows are read with the account's login; without one the error names the verb
+/// that makes one, not a usage error.
+#[test]
+fn catalog_usage_without_a_kimi_login_names_the_login_verb() -> TestResult {
+    let workspace = Workspace::new("catalog-kimi-usage")?;
+    let refused = workspace.yi(&["catalog", "usage", "kimi"])?;
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(
+        complaint.trim(),
+        "error: no credential for provider kimi (run: yi login kimi)"
+    );
+    let other = workspace.yi(&["catalog", "usage", "openai"])?;
+    assert_eq!(other.status.code(), Some(2), "{}", stdout(&other));
+    assert_eq!(
+        String::from_utf8_lossy(&other.stderr).trim(),
+        r#"usage: yi catalog usage kimi (not "openai")"#
+    );
+    Ok(())
+}
+
 /// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
 #[test]
 fn a_relative_home_is_refused_at_boot() -> TestResult {
@@ -1420,6 +1510,243 @@ fn version_prints_the_architecture_version() -> TestResult {
     let workspace = Workspace::new("version")?;
     let printed = workspace.yi(&["--version"])?;
     assert_eq!(stdout(&printed).trim(), format!("yi {version}"));
+    Ok(())
+}
+
+/// The verbs and flags `yi --help` prints: two-space rows under `verbs:` and `flags:`.
+fn help_table(help: &str) -> (Vec<String>, Vec<String>) {
+    let (verbs, flags) = help.split_once("\nflags:\n").unwrap_or((help, ""));
+    let first = |rows: &str| -> Vec<String> {
+        rows.lines()
+            .filter_map(|row| row.strip_prefix("  "))
+            .filter_map(|row| row.split_whitespace().next())
+            .map(str::to_owned)
+            .collect()
+    };
+    (
+        first(verbs.split_once("verbs:\n").map_or("", |(_, rows)| rows)),
+        first(flags),
+    )
+}
+
+#[test]
+fn help_prints_the_command_table_and_an_unknown_flag_still_exits_two() -> TestResult {
+    let workspace = Workspace::new("help")?;
+    let help = workspace.yi(&["--help"])?;
+    assert_eq!(
+        help.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    for spelling in ["-h", "help"] {
+        let again = workspace.yi(&[spelling])?;
+        assert_eq!(again.status.code(), Some(0));
+        assert_eq!(stdout(&again), stdout(&help), "{spelling}");
+    }
+    let (verbs, flags) = help_table(&stdout(&help));
+    for named in [
+        "ask", "sessions", "undo", "doctor", "update", "login", "mcp",
+    ] {
+        assert!(
+            verbs.iter().any(|verb| verb == named),
+            "{named} in {verbs:?}"
+        );
+    }
+    assert!(flags.iter().any(|flag| flag == "--help"), "{flags:?}");
+    let asked = workspace.yi(&["--model", "faux/faux-1", "help", "me", "debug"])?;
+    assert_eq!(stdout(&asked).trim(), "faux: help me debug");
+    let bogus = workspace.yi(&["--bogus"])?;
+    assert_eq!(bogus.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&bogus.stderr).trim(),
+        "error: invalid option '--bogus'"
+    );
+    Ok(())
+}
+
+fn shipped_completion(shell: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(format!(
+        "{}/../../completions/yi.{shell}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+/// The packaged completion files are written by hand; `yi --help` is the table dispatch reads.
+#[test]
+fn the_shipped_completions_offer_every_verb_and_flag_help_names() -> TestResult {
+    use std::collections::BTreeSet;
+    let workspace = Workspace::new("completions")?;
+    let (verbs, flags) = help_table(&stdout(&workspace.yi(&["--help"])?));
+    let want: (BTreeSet<String>, BTreeSet<String>) =
+        (verbs.into_iter().collect(), flags.into_iter().collect());
+    let quoted = |text: &str, key: &str| -> BTreeSet<String> {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix(key))
+            .and_then(|rest| rest.strip_prefix("='"))
+            .and_then(|rest| rest.strip_suffix('\''))
+            .map(|words| words.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default()
+    };
+    let bash = shipped_completion("bash")?;
+    let bash = (
+        quoted(&bash, "local commands"),
+        quoted(&bash, "local flags"),
+    );
+    let zsh = shipped_completion("zsh")?;
+    let block = |open: &str| -> BTreeSet<String> {
+        zsh.split_once(open)
+            .and_then(|(_, rest)| rest.split_once("\n    )"))
+            .map(|(rows, _)| {
+                rows.lines()
+                    .filter_map(|row| row.trim().strip_prefix('\''))
+                    .filter_map(|row| row.split([':', '[', '\'']).next())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let zsh = (block("commands=(\n"), block("flags=(\n"));
+    let fish = shipped_completion("fish")?;
+    let after = |key: &str| -> BTreeSet<String> {
+        fish.lines()
+            .filter_map(|line| line.split_once(key))
+            .filter_map(|(_, rest)| rest.split_whitespace().next())
+            .map(str::to_owned)
+            .collect()
+    };
+    let fish = (
+        after("__fish_use_subcommand -a "),
+        after("complete -c yi -l ")
+            .into_iter()
+            .map(|flag| format!("--{flag}"))
+            .collect(),
+    );
+    for (shell, offered) in [("bash", bash), ("zsh", zsh), ("fish", fish)] {
+        assert_eq!(offered.0, want.0, "{shell} verbs");
+        assert_eq!(offered.1, want.1, "{shell} flags");
+    }
+    Ok(())
+}
+
+/// Every axis `yi stats --by` accepts, read from its own refusal, is named by `yi --help` and by
+/// the zsh and fish descriptions; the name check above passes when both sides omit one.
+#[test]
+fn help_and_completions_name_every_stats_axis_the_parser_accepts() -> TestResult {
+    let workspace = Workspace::new("stats-axes")?;
+    let refusal = workspace.yi(&["stats", "--by", "nope"])?;
+    assert_eq!(refusal.status.code(), Some(2));
+    let refusal = String::from_utf8_lossy(&refusal.stderr).into_owned();
+    let axes: Vec<&str> = refusal
+        .split_once("wants ")
+        .map(|(_, list)| {
+            list.split([',', ' ', '\n'])
+                .filter(|word| !word.is_empty() && *word != "or")
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(axes.len() >= 5, "refusal lists the axes: {refusal}");
+    let help = stdout(&workspace.yi(&["--help"])?);
+    let (zsh, fish) = (shipped_completion("zsh")?, shipped_completion("fish")?);
+    let rows = [
+        help.lines()
+            .find(|line| line.trim_start().starts_with("--by ")),
+        zsh.lines().find(|line| line.contains("'--by[")),
+        fish.lines().find(|line| line.contains(" -l by ")),
+    ];
+    for row in rows {
+        let row = row.ok_or("a --by row in help, zsh and fish")?;
+        for axis in &axes {
+            assert!(row.contains(axis), "{row:?} omits the axis {axis}");
+        }
+    }
+    Ok(())
+}
+
+/// The bound is by length, each tier at its limit and one past it: `doctr` and `dotcor` are refused
+/// at one and two edits from `doctor`; `dctr`, `dxxxor` and the three-letter `wha` still ask.
+#[test]
+fn a_lone_word_near_a_verb_is_refused_and_writes_no_session() -> TestResult {
+    let workspace = Workspace::new("near-verb")?;
+    for word in ["doctr", "dotcor"] {
+        let refused = workspace.yi(&["--model", "faux/faux-1", word])?;
+        assert_eq!(refused.status.code(), Some(2), "{word}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr).trim(),
+            format!("error: did you mean \"doctor\"? to ask the model: yi ask {word}")
+        );
+    }
+    let sessions = workspace.0.join("home/sessions");
+    assert!(!sessions.exists() || session_files(&sessions)?.is_empty());
+    for words in [
+        &["ask", "doctr"][..],
+        &["hello", "there"],
+        &["fix", "the", "bug"],
+        &["dctr"],
+        &["dxxxor"],
+        &["wha"],
+    ] {
+        let mut argv = vec!["--model", "faux/faux-1"];
+        argv.extend_from_slice(words);
+        let asked = workspace.yi(&argv)?;
+        let prompt = words
+            .iter()
+            .skip_while(|word| **word == "ask")
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(stdout(&asked).trim(), format!("faux: {}", prompt.join(" ")));
+    }
+    Ok(())
+}
+
+/// The console and the daemon never hand these flags to a session. The socket sits under a
+/// regular file, so a regressed run fails to bind and exits rather than leaving a daemon behind.
+#[test]
+fn console_and_serve_refuse_a_flag_they_would_drop() -> TestResult {
+    let workspace = Workspace::new("unread-flags")?;
+    let blocker = workspace.0.join("not-a-dir");
+    std::fs::write(&blocker, "")?;
+    let path = blocker.join("yi.sock").display().to_string();
+    for (argv, said) in [
+        (
+            ["console", "--thinking", "high"],
+            "error: --thinking is not applied by yi console; set \"thinking\" in ~/.yi/config.json",
+        ),
+        (
+            ["serve", "--system", "x"],
+            "error: --system is not applied by yi serve; pass it to `yi ask` or `yi tui`",
+        ),
+    ] {
+        let refused = workspace.yi(&[&argv[..], &["--socket", &path]].concat())?;
+        assert_eq!(refused.status.code(), Some(2), "{argv:?}");
+        assert_eq!(String::from_utf8_lossy(&refused.stderr).trim(), said);
+    }
+    Ok(())
+}
+
+/// Each of these verbs is a server or a fixed report, so a trailing word is a prompt it would
+/// drop; `doctor` is answered before the config loads and must refuse the same way.
+#[test]
+fn a_verb_that_takes_no_words_refuses_one() -> TestResult {
+    let workspace = Workspace::new("no-words")?;
+    for verb in ["version", "rpc", "acp", "doctor", "gc"] {
+        let refused = workspace.yi(&[verb, "foo"])?;
+        assert_eq!(refused.status.code(), Some(2), "{verb}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr).trim(),
+            format!("error: `yi {verb}` takes no words; to ask the model: yi ask {verb} foo")
+        );
+    }
+    let help = workspace.yi(&["doctor", "--fix", "--help"])?;
+    assert_eq!(help.status.code(), Some(0));
+    assert!(stdout(&help).contains("\nverbs:\n"), "{}", stdout(&help));
+    assert!(String::from_utf8_lossy(&help.stderr).is_empty());
+    let early = workspace.yi(&["--json", "update"])?;
+    assert_eq!(early.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&early.stderr).trim(),
+        "error: `yi update` reads its own flags: put it first, `yi update ...`"
+    );
     Ok(())
 }
 
