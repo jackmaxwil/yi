@@ -420,7 +420,8 @@ fn step_frame<B: Backend>(
         scheduler.mark_drawn(start, Instant::now());
     } else if app.kitty {
         let _ = yi_tui::term::framed(out, |out| {
-            place_chat_orbs(app, orb_owners, out);
+            crate::app::ids::lease(app, orb_owners, out);
+            place_chat_orbs(app, out);
             app.avatars.animate(out);
         });
     }
@@ -445,7 +446,7 @@ fn present<B: Backend>(
         place_avatars(app, out);
         place_notebook_image(app, out);
         crate::browser::place(app, out);
-        place_chat_orbs(app, orb_owners, out);
+        place_chat_orbs(app, out);
         app.avatars.animate(out);
     }
     let _ = out.execute(ratatui::crossterm::terminal::EndSynchronizedUpdate);
@@ -504,13 +505,8 @@ fn chat_wake(app: &App) -> Duration {
 
 /// One orb per drawn chat pane on its own image ids; only the focused pane animates, the rest
 /// hold one placed frame. Incident: a closed or switched pane kept its orb.
-fn place_chat_orbs(
-    app: &mut App,
-    owners: &mut crate::app::ids::Owners,
-    out: &mut impl std::io::Write,
-) {
+fn place_chat_orbs(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
-    crate::app::ids::lease(app, owners, out);
     let focused = app.state.focused_pane_id();
     let shown = |id: PaneId| {
         app.hits.as_ref().is_some_and(|hits| {
