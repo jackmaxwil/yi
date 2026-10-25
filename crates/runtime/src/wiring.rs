@@ -345,6 +345,7 @@ fn wire_schedule(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
             .with_stop(session.halt_hook())
+            .with_notice(session.notice_hook(HostSource::Notice))
             .with_words(session.store_handle())
             .with_channels(
                 wiring

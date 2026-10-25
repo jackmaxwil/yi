@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::process::spill_path;
-use crate::tool::cut;
+use crate::tool::cut_row;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reduced {
@@ -106,7 +106,7 @@ fn read_spill(kept: &str) -> Result<String, Option<String>> {
     if size > SPILL_READ_LIMIT {
         let what = "bytes of it read, so omitted-line numbers count the cut capture";
         let next = format!("read {path} with offset and limit");
-        let row = cut(0, size, what, "SPILL_READ_LIMIT", SPILL_READ_LIMIT, &next);
+        let row = cut_row(0, size, what, "SPILL_READ_LIMIT", SPILL_READ_LIMIT, &next);
         return Err(Some(row));
     }
     let bytes = std::fs::read(path).map_err(|_| None)?;
@@ -125,6 +125,19 @@ pub enum Involuntary<'a> {
 pub const VIEW_CEILING: usize = ERROR_BYTES;
 const LINE_CLIP: usize = 512;
 const LAST_TRACEBACK: &str = "import sys, traceback; traceback.print_exception(sys.last_value)";
+
+pub fn rerun(how: &str, command: &str, log: &str) -> String {
+    let command = command.trim_end();
+    let first = command.lines().next().unwrap_or_default();
+    match crate::tool::clip(first, LINE_CLIP) {
+        (line, false) if !command.contains('\n') => {
+            format!("{how} ({line}) > {log} 2>&1, then read {log}")
+        }
+        (line, _) => format!(
+            "{how} the command that began {line}, its output sent to {log}, then read {log}"
+        ),
+    }
+}
 
 /// [`reduce`], then cut in the middle to [`VIEW_CEILING`] bytes, one row naming the rest.
 pub fn view(
@@ -154,25 +167,13 @@ pub fn view(
     let pointer = (reduced.recovery.clone())
         .or_else(|| kept.map(str::to_owned))
         .or_else(|| tee_dir.and_then(|dir| tee(dir, &raw)));
-    let rerun = |how: &str, command: &str| {
-        let command = command.trim_end();
-        let first = command.lines().next().unwrap_or_default();
-        match crate::tool::clip(first, LINE_CLIP) {
-            (line, false) if !command.contains('\n') => {
-                format!("{how} ({line}) > view.log 2>&1, then read view.log")
-            }
-            (line, _) => format!(
-                "{how} the command that began {line}, its output sent to view.log, then read view.log"
-            ),
-        }
-    };
     let next = match (pointer.as_deref(), producer) {
         (Some(note), _) => format!("read {}", spill_path(note).map_or(note, |(_, path)| path)),
         (None, Traceback) => format!(
             "an ipython cell running {LAST_TRACEBACK}, which prints this exception again in Python's own format"
         ),
-        (None, ShellCell(command)) => rerun("a %%bash cell running", command),
-        (None, Job(command)) => rerun("bash", command),
+        (None, ShellCell(command)) => rerun("a %%bash cell running", command, "view.log"),
+        (None, Job(command)) => rerun("bash", command, "view.log"),
     };
     let cut_text = ceiling(body, reduced.raw_bytes, room(pointer.as_deref()), &next);
     // Incident: with no file to name, this middle cut swallowed the kernel's own cut row.
@@ -214,7 +215,7 @@ fn clip_lines(text: String) -> (String, bool) {
     );
     lines.insert(
         at.saturating_add(1),
-        cut(shown, long, what, "LINE_CLIP", LINE_CLIP, next),
+        cut_row(shown, long, what, "LINE_CLIP", LINE_CLIP, next),
     );
     (lines.join("\n"), true)
 }
@@ -223,7 +224,7 @@ fn clip_lines(text: String) -> (String, bool) {
 /// on a line boundary when one is in reach; the row between counts against `room`.
 fn ceiling(text: &str, total: usize, room: usize, next: &str) -> String {
     let what = "bytes kept";
-    let row = |kept| cut(kept, total, what, "VIEW_CEILING", VIEW_CEILING, next);
+    let row = |kept| cut_row(kept, total, what, "VIEW_CEILING", VIEW_CEILING, next);
     let budget = room.saturating_sub(row(total).len().saturating_add(2));
     let head_end = text.floor_char_boundary(budget.saturating_mul(2) / 3);
     let head = text.get(..head_end).unwrap_or_default();

@@ -71,7 +71,7 @@ impl PlanEngine {
             Ok(stored) => format!("read plan://{plan}/artifacts/{}", stored.digest.hex()),
             Err(error) => format!("lost, the artifact store refused it: {error}"),
         };
-        let row = super::cut(CAUSE_CHARS, all, "chars", "CAUSE_CHARS", CAUSE_CHARS, &rest);
+        let row = yi_tools::cut_row(CAUSE_CHARS, all, "chars", "CAUSE_CHARS", CAUSE_CHARS, &rest);
         format!("{kept}\n{row}")
     }
 
@@ -749,8 +749,8 @@ mod tests {
             .ok_or("no kept transcript")?;
         let kept = yi_session::lock_session(&kept);
         for told in [
-            "Answer with only a JSON value",
-            "Schema: {",
+            "Reply with one JSON object matching this schema",
+            r#"{"type":"object","required":["findings"]}"#,
             "previous attempt failed: contract refused: schema1: answer contains no JSON value",
         ] {
             assert!(!kept.grep(told, 1).is_empty(), "the brief lacks {told:?}");

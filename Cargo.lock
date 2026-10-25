@@ -2200,6 +2200,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "ureq",
+ "yi-loop",
  "yi-oauth",
  "yi-types",
 ]
@@ -2311,6 +2312,7 @@ name = "yi-orb"
 version = "0.2.0"
 dependencies = [
  "miniz_oxide",
+ "yi-types",
 ]
 
 [[package]]
