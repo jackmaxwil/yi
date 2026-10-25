@@ -2838,6 +2838,19 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         .first()
         .and_then(|c| c.spawned_by.clone());
     assert_eq!(spawned_by.as_deref(), Some("call-spawn"));
+    harness.host.spawn(
+        "outside any cell".to_owned(),
+        kwargs(&[("name", "outside")]),
+    )?;
+    let outside = (harness.host.children_view().into_iter())
+        .find(|child| child.update.name == "outside")
+        .map(|child| child.spawned_by);
+    assert_eq!(
+        outside,
+        Some(None),
+        "a spawn after the cell ended names no cell"
+    );
+    harness.host.delete("outside")?;
 
     let list_cell = tokio::task::spawn_blocking({
         let service = Arc::clone(&service);

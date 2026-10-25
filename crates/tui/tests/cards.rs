@@ -975,6 +975,41 @@ fn a_cached_card_draws_the_rows_the_uncached_card_drew() -> TestResult {
     Ok(())
 }
 
+const TAIL: &str = "\n\nThe ratchet in `check_growth.py` reads **the src baseline** and prices every line past the free band, so a landing names its number.\n\n```rust\nlet growth: i64 = measured - baseline;\n```";
+
+/// Dies with a live card left wrapped at its old width, or painted in its old palette, after a
+/// resize or a theme change: each key the cache holds rows under is drawn against the uncached rows.
+#[test]
+fn a_cached_card_redraws_when_the_width_or_theme_moves() -> TestResult {
+    let cell = TaskCell {
+        answer: Some(recorded_answer()? + TAIL),
+        elapsed_ms: 2507,
+        ..task(TaskStatus::Running, "")
+    };
+    let rows = yi_tui::cell::AnswerRows::default();
+    let mode = TranscriptMode::Normal;
+    let mut drawn = Vec::new();
+    for (width, theme) in [
+        (100, theme()),
+        (60, theme()),
+        (60, Theme::new(ColorTier::TrueColor, false)),
+        (60, Theme::new(ColorTier::Ansi256, false)),
+    ] {
+        let warm = cell.lines_at(2507, width, &theme, mode, 0, &rows);
+        assert_eq!(
+            warm,
+            cell.lines(width, &theme, mode, 0),
+            "{width} {:?}",
+            theme.dark
+        );
+        drawn.push(warm);
+    }
+    for pair in drawn.windows(2) {
+        assert!(pair.first() != pair.get(1), "each key draws different rows");
+    }
+    Ok(())
+}
+
 /// Dies with a running card at its 16 KiB cap frozen on the rows before its last delta: the cap
 /// holds the answer's length still while the text moves. A sibling's rows stay as they were.
 #[test]

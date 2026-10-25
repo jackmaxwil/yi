@@ -267,8 +267,8 @@ impl crate::app::App {
         self.scheduler.request();
     }
 
-    /// The code preview and call id of the cell a child was born under: the call its record
-    /// names, else, for a host older than the record, the `ipython` cell running now.
+    /// The code preview and call id of the cell a child was born under: the cell its record names
+    /// as running when the host admitted it, else (no cell, an older host) the `ipython` cell now.
     pub(crate) fn spawned_under(&self, call: Option<&str>) -> (Option<String>, Option<String>) {
         let tool = self.live_tools.iter().rev().find(|tool| match call {
             Some(call) => tool.call_id == call,
