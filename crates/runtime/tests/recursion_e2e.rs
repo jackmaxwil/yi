@@ -2635,7 +2635,7 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
     );
     let merged = harness
         .host
-        .merge_worktree("mutator")
+        .merge_worktree("mutator", None)
         .map_err(|error| error.to_string())?;
     assert_eq!(merged["merged"], true);
     assert_eq!(
@@ -3413,6 +3413,70 @@ async fn a_gated_host_still_runs_an_allowed_check_and_holds_a_red_one() -> TestR
     assert!(
         error.contains("check is red") && error.contains("exited 3"),
         "the refusal carries the check's own evidence: {error}"
+    );
+    Ok(())
+}
+
+/// Dies with a merge's check reaching the host past the gate: a sandboxed auto session only
+/// contains `rm -rf ..`, so it is refused before it runs and the lane is still there to merge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merge_check_the_gate_refuses_never_runs() -> TestResult {
+    use yi_kernel::client::HostHandlers as _;
+    let root = gate_rule_root("yi-merge-check-gate", None)?;
+    let project = root.join("project");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["commit", "-q", "--allow-empty", "-m", "base"],
+    ] {
+        let identity = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        let ran = yi_tools::command("git")
+            .current_dir(&project)
+            .args(identity)
+            .args(args)
+            .status()?;
+        assert!(ran.success(), "git {args:?}");
+    }
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![project.clone()],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        host_owned: Vec::new(),
+        spared: Vec::new(),
+    };
+    let (_session, _provider, host) = wired_root(&root, yi_runtime::Wall::default(), Some(sandbox));
+    let asked = kwargs(&[("name", "lane"), ("isolation", "worktree")]);
+    let reply = host
+        .spawn("land the fix".to_owned(), asked)
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    assert!(wait_for_status(&host, child_id, "completed").await);
+    let mut registry = yi_runtime::HostRegistry::default();
+    host.register(&mut registry);
+    let marker = root.join("check-marker");
+    let check = format!("touch {}; rm -rf ..", marker.display());
+    let mut merges = Vec::new();
+    for asked in [
+        json!({"target": "lane", "check": check}),
+        json!({"target": "lane"}),
+    ] {
+        let asked = asked.as_object().cloned().unwrap_or_default();
+        let merge = registry
+            .dispatch("rlm.merge_worktree", asked)
+            .ok_or("no handler")?;
+        merges.push(merge.await);
+    }
+    let refusal = merges.first().and_then(|merged| merged.as_ref().err());
+    let refusal = refusal.ok_or_else(|| format!("a refused check must not merge: {merges:?}"))?;
+    assert!(
+        refusal.contains("refused before it runs on the host"),
+        "{refusal}"
+    );
+    assert!(!marker.exists(), "the refused check never ran");
+    let merged = merges.get(1).and_then(|merged| merged.as_ref().ok());
+    assert_eq!(
+        merged.map(|reply| &reply["merged"]),
+        Some(&json!(true)),
+        "{merges:?}"
     );
     Ok(())
 }
