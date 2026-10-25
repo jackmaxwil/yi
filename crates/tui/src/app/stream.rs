@@ -680,9 +680,7 @@ pub(super) fn fold_child(
         } => {
             fold(&mut state.streaming, assistant_message_event);
             if let Some(AgentMessage::Assistant { content, .. }) = &state.streaming {
-                state.cell.answer = Some(crate::cell::tail_bounded(crate::transcript::text_of(
-                    content,
-                )));
+                state.cell.keep_answer(crate::transcript::text_of(content));
                 return true;
             }
             false

@@ -59,7 +59,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | `yi-runtime` | `AgentSession` and everything that composes the crates above | yi-types, yi-loop, yi-ai, yi-session, yi-context, yi-permission, yi-tools, yi-kernel, yi-browser |
 | `yi-acp` | ACP v2 server and the `yi serve` daemon | yi-types, yi-runtime |
 | `yi-tui` | The ratatui shell | yi-types, yi-runtime, yi-orb |
-| `yi-console` | The multi-pane workspace, an ACP client of the daemon | yi-types, yi-tui, yi-browser |
+| `yi-console` | The multi-pane workspace, an ACP client of the daemon; links `yi-runtime` through `yi-tui` | yi-types, yi-tui, yi-browser |
 | `yi-browser` | Chrome discovery, the `yi __fds` shim, the CDP pipe and its router | yi-types |
 | `yi-cli` | The `yi` binary, composition root, `yi rpc`, `yi ask` | yi-types, yi-runtime, yi-acp, yi-tui, yi-console, yi-mcp-cli, yi-browser |
 
@@ -71,7 +71,11 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
   `Result` in its public API is `AgentTool::validate`.
 - `yi-runtime` is the only non-test constructor of `LoopConfig`.
 - Surfaces (`yi-acp`, `yi-tui`, `yi-console`, `yi-cli`) never depend on `yi-tools`, `yi-ai` or
-  `yi-permission`; `yi-console` does not depend on `yi-runtime`.
+  `yi-permission`. `yi-console` declares no `yi-runtime` dependency, yet its build contains
+  `yi-runtime`, because `yi-tui` depends on it. The seam that would cut that path runs through
+  `yi-tui`, between the pane engine the console reuses and the in-process shell that hosts an
+  `AgentSession` (`SessionPort` for `AgentSession` in `port.rs`, `app/bridge.rs`); engine files
+  call `yi_runtime` helpers too, so the cut moves those. It is not made.
 - Only `yi-cli` depends on `yi-mcp-cli`.
 - `yi-browser` starts the user's Chrome, through `yi __fds`, and runs `yi plugin add chrome`
   when there is none, for the console's browser pane; `yi-runtime` depends on it only to retain
@@ -247,7 +251,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
 - Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
   `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
-  any other api is faux. Catalog:
+  `kimi` models take any of the first three by their listed `protocol`, Moonshot's wire rules
+  derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
@@ -559,8 +564,8 @@ A persistent IPython process per session that reaches the host only through host
 - Blackboard `<sessions dir>/rlm-<pid>/family/`: `rlm.put(name, obj)` writes `<name>.dill` and
   `<name>.json` `{name, owner, at, bytes, type, serializer}`; `get` and `ls` read them.
 - Kernel env: `YI_BIN`, `RLM_SESSION_DIR` (sessions dir for a root, the child's dir otherwise),
-  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`, `RLM_DEPTH`, `RLM_MAX_DEPTH` (unread).
-- Snapshot: `<kernel dir>/<store id>.kernel-state.{dill,json}` is an index over per-variable blobs in
+  `RLM_FAMILY_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR`.
+- Snapshot: `<kernel dir>/<store id>.kernel-state.dill` is an index over per-variable blobs in
   `<store id>.kernel-state.blobs/`; only changed variables are rewritten. Dilled 1.5 s after an `ok`
   cell, flushed on dispose (≤ 5 s), restored at boot; ≤ 256 MiB, 16 MiB per variable.
 - Owner: [`kernel/src/client.rs`](../crates/kernel/src/client.rs),
@@ -724,7 +729,8 @@ applies and journals. A todo's contract decides when it is done.
 - Todos are addressed by label; `after` edges order siblings, carry no data, are acyclic; ready is
   derived, never stored. A non-Active plan admits `view` alone (Done: also `retry`, `program`).
 - `Actor::User` is minted only by `authority::confirmed`, from a permission prompt a tty process
-  holds, for one request, valid 300 s. `yi plan` and the serve worker refuse user-only ops.
+  holds, for one request, valid while the plan revision it named still holds, with no time window.
+  `yi plan` and the serve worker refuse user-only ops.
 - Owner: [`crates/runtime/src/plan/ops.rs`](../crates/runtime/src/plan/ops.rs) (legality:
   `table.rs`).
 
@@ -810,10 +816,14 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
 - The pool is `~/.yi/lanes/<hash>/<n>`, keyed by the common git dir; `pool.lock` serializes
   claims; a slot is live iff a process holds its `.held` flock.
 - A claim resets the slot to `origin/main` (else `main`, `HEAD`, or a given commit), checks out
-  `yi/<session>` and locks the worktree `session:<id>`. With `lanes.slots` unset it never refuses.
-- A resumed session reclaims its slot; a dead holder's clean slot with its branch in `main` is free.
-- Every hand-back takes `self`: `discard` deletes the branch, `release` detaches and warms, `Drop`
-  detaches. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
+  `yi/<session>` and locks the worktree `session:<id>`; a `yi/<session>` holding commits the base
+  lacks is checked out as it stands, never reset. With `lanes.slots` unset it never refuses.
+- A resumed session takes its own slot before any free one; a dead holder's clean slot with its
+  branch in `main` is free. A dirty tree is never free, with a session recorded or without one.
+- Every hand-back takes `self`: `discard` cleans the tree and deletes the branch, `release` detaches
+  and warms, `Drop` detaches; over a dirty tree `release` and `Drop` keep the session and branch, so
+  the slot is that session's orphan. `discard` and `yi lanes reap` are the only tree wipes, and each
+  counts the paths it dropped. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
   `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2).
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
@@ -966,12 +976,12 @@ an unknown method −32601, bad JSON −32700.
 | `_yi/pin{sessionId, pinned, cwd?}` | daemon | Pin a session to the top of the console's sidebar or unpin it, answered `{pinnedMs}`; the ledger keeps the pin's time, which orders the pinned list, and `session/list` carries it as `_meta.yi.pinnedMs`; `cwd` makes the ledger row of a session only the worker listed |
 | `_yi/settings`, `_yi/set_default{id, value}` | daemon | Every `config.json` leaf as a row (`yi_types::settings::rows`) with the file's value; save one, `null` unsetting it, refused whole by the row's rule or the strict parse and answered with the rows |
 | `_yi/open{name, text}` | daemon | Save `text` as markdown under `~/.yi/exports` and run the `open` app named `name` on it, its `{path}` argument the file; the console never spawns, and only an app named in config.json runs; saved files are kept 7 days |
-| `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch` |
+| `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once`; an edit's diff is the `subject` tool call's content, `changes` as `add`/`modify` on absolute paths and `patch` as `git_patch`; a client that closes the pane holding an ask, or quits, answers `cancelled`, which the worker takes as a refusal |
 
 `session/update` carries the standard kinds (`agent_message_chunk`, `agent_thought_chunk`,
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
-`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame; a root's
+`_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, at most 512 entries and 8 MiB per frame; a root's
 last frame carries the ledger's `stats`, which the client sets its spend and cache rate from),
 `_yi/committed{entry}` (`AcpCommitted`: each user or assistant message as saved, so a client can act on a reply it
 watched stream), `_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
@@ -1023,7 +1033,8 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 
 ### 17.4 Console
 `yi-console` is the workspace shell: an ACP client of the daemon (§17.2) on the alternate screen
-with mouse capture. It depends on `yi-types` and `yi-tui` only.
+with mouse capture. Its manifest names `yi-types`, `yi-tui` and `yi-browser`, and through
+`yi-tui` its build links `yi-runtime` (§2).
 
 - The protocol reducer runs synchronously in the UI loop; IO threads only move frames.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
@@ -1056,7 +1067,9 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   session with no git base shows its own edits). Each file names the todo that was running when
   it changed, reads that changed nothing are counted, the header carries the claims and the
   landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
-  worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal.
+  worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal. A resumed
+  session's replay fills Review's edits and reads, and the notebook's cells, as live frames do; a
+  replay from entry 0 counts the turns itself and restarts the notebook.
 - ⌘Y (⌥y) opens a terminal pane beside the focused one, running `$SHELL` in the focused
   session's working directory (its lane worktree once `_yi/workdir` names one), else the
   console's root. The PTY is the console's own: no daemon state, nothing on the socket. The
