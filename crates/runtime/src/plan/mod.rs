@@ -176,12 +176,6 @@ pub fn accept_text(check: &Check) -> &str {
     }
 }
 
-/// A loud cut's row in the shape yi-tools writes: kept of what existed, the cap that cut it, and
-/// the call that gets the rest.
-pub(super) fn cut(kept: usize, all: usize, what: &str, cap: &str, n: usize, next: &str) -> String {
-    format!("[\u{2026} {kept} of {all} {what} ({cap} {n}); the rest: {next}]")
-}
-
 /// The call that returns every todo a capped list left out.
 pub(super) const VIEW_ALL: &str = r#"plan {"op": "view", "full": true}"#;
 
@@ -232,7 +226,7 @@ pub fn frontier_text(plan: &Plan) -> String {
 }
 
 fn frontier_cut(total: usize, what: &str) -> String {
-    cut(FRONTIER, total, what, "FRONTIER", FRONTIER, VIEW_ALL)
+    yi_tools::cut(FRONTIER, total, what, "FRONTIER", FRONTIER, VIEW_ALL)
 }
 
 fn listed(labels: &[&str]) -> String {

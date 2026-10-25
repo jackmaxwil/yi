@@ -132,7 +132,7 @@ fn body(outcome: &Outcome, full: bool, stepped: Option<&Todo>, out: &mut Vec<Str
     if hidden > 0 {
         let what = "todos: the window shows ready, running and blocked ones";
         let all = plan.todos.len();
-        let row = super::cut(printed, all, what, "WINDOW", WINDOW, super::VIEW_ALL);
+        let row = yi_tools::cut(printed, all, what, "WINDOW", WINDOW, super::VIEW_ALL);
         out.push(row);
     }
 }
