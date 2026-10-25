@@ -836,7 +836,11 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
   and warms, `Drop` detaches; over a dirty tree `release` and `Drop` keep the session and branch, so
   the slot is that session's orphan. `discard` and `yi lanes reap` are the only tree wipes, and each
   counts the paths it dropped. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
-  `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2).
+  `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2). `merge_worktree`'s
+  optional `check` meets the host gate a spawn's check meets, then runs in the lane with a cleared
+  environment under the session deadline before the lane settles, so its unignored writes are
+  committed with the child's work; red or cut, the reply is `merged: false` with
+  `check: {exit, tail}` and the branch kept as a conflict keeps it, with no disposition recorded.
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
 - The warmer runs offline under Seatbelt, only for a lockfile hash a session already synced.
