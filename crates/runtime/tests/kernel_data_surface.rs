@@ -202,6 +202,15 @@ async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
         let ends = [whole.get(..20), whole.get(whole.len().saturating_sub(20)..)];
         let lost = ends.iter().flatten().find(|end| !text.contains(**end));
         assert!(lost.is_none(), "{code}: lost {lost:?}");
+        let row = format!("[\u{2026} 65536 of {} chars kept", whole.chars().count());
+        assert!(
+            text.lines().any(|line| line.starts_with(&row)),
+            "{code}: no row"
+        );
+        assert!(
+            !text.contains("100000, 100001"),
+            "{code}: the middle was kept"
+        );
         assert!(std::fs::read_to_string(path)? == whole, "{code}");
     }
     service.dispose().await;

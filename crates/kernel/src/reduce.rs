@@ -54,14 +54,13 @@ fn append_capped(target: &mut String, seen: &mut usize, text: &str, max_chars: u
     *seen = seen.saturating_add(text.chars().count());
     target.push_str(text);
     // Invariant: a char is at most 4 bytes, so past 8x the cap a trim always cuts and runs at
-    // most once per 4x the cap of new bytes; the held text stays bounded by the cap.
+    // most once per 4x the cap of new bytes; it holds at most 8x the cap in bytes plus one chunk.
     if target.len() > max_chars.saturating_mul(8) {
         let (head, tail) = ends(target, max_chars);
         *target = head + &tail;
     }
 }
 
-/// The first half of `max_chars` and the last of the rest, split on chars.
 fn ends(text: &str, max_chars: usize) -> (String, String) {
     let half = max_chars / 2;
     let count = text.chars().count();
@@ -74,7 +73,6 @@ fn ends(text: &str, max_chars: usize) -> (String, String) {
     )
 }
 
-/// `text` whole when its `seen` chars fit, else its two ends around the row naming the cut.
 fn keep_ends(text: String, seen: usize, max_chars: usize) -> String {
     if seen <= max_chars {
         return text;

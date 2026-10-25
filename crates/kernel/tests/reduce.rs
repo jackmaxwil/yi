@@ -260,3 +260,37 @@ fn error_result_and_idle_reduce_into_the_cell() {
         Some("ValueError".to_owned())
     );
 }
+
+/// A failure written last to stderr, and the last items of a long repr, sat in the half a
+/// head-only cap dropped; each keeps both ends around its row, the cut char gone.
+#[test]
+fn stderr_and_a_displayed_value_one_past_the_cap_keep_both_ends() -> std::io::Result<()> {
+    let past = |text: String| -> String { text.chars().take(65_537).collect() };
+    let log = past(fixture("cargo-test-3000-cell-spill.txt")?);
+    let repr = past(fixture("list-repr-20000.txt")?);
+    let cases = [
+        ("stream", json!({"name": "stderr", "text": log}), &log),
+        (
+            "execute_result",
+            json!({"data": {"text/plain": repr}}),
+            &repr,
+        ),
+    ];
+    for (kind, content, source) in cases {
+        let mut capture = cell(65_536);
+        reduce(&mut capture, &message(kind, "req", content), None);
+        let done = finish(capture, 1, false);
+        let shown = done.result.unwrap_or(done.stderr);
+        let head: String = source.chars().take(32_768).collect();
+        let tail: String = source.chars().skip(32_769).collect();
+        let across: String = source.chars().skip(32_760).take(16).collect();
+        let row = cut_row(65_536, 65_537);
+        assert!(
+            shown.starts_with(&format!("{head}\n{row}")),
+            "{kind}: head or row lost"
+        );
+        assert!(shown.ends_with(&format!("]\n{tail}")), "{kind}: tail lost");
+        assert!(!shown.contains(&across), "{kind}: the middle was kept");
+    }
+    Ok(())
+}
