@@ -1136,6 +1136,7 @@ mod browser;
 mod chat;
 mod diffs;
 mod editor;
+pub(crate) mod ids;
 mod menu;
 mod mouse;
 mod navigator;
@@ -1147,6 +1148,5 @@ mod rows;
 mod settings;
 mod terminal;
 
-pub(crate) use chat::{card_ids, orb_ids};
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;
