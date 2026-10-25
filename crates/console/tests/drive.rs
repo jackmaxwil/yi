@@ -2853,6 +2853,55 @@ fn a_child_that_needs_you_is_never_hidden_behind_finished_ones() -> TestResult {
     Ok(())
 }
 
+/// Dies with a rail that counted what its cache kept: the thirty-third running child pushed the
+/// oldest out of the 32-row cache, so `+29` read as every child there was. A child that was
+/// pushed out and reports again is one child, not two.
+#[test]
+fn the_rail_counts_the_children_its_cache_gave_up() -> TestResult {
+    use yi_console::client::{self, ClientEvent};
+    use yi_console::model::SessionStatus;
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let (events, _received) = client::events();
+    let socket = std::env::temp_dir().join("yi-rail-no-daemon.sock");
+    let (outbound, _threads) = client::spawn(socket, events);
+    let report = |app: &mut yi_console::app::App, n: usize| {
+        let mut child = wire_child(&format!("c{n}"), "running", None);
+        child["sessionUpdate"] = json!("_yi/subagent_update");
+        let frame = json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s-alpha", "update": child}});
+        app.reduce_client(&outbound, ClientEvent::Frame(frame));
+    };
+    let counted = |app: &yi_console::app::App| {
+        let rows = yi_console::sidebar::sidebar_lines(app, &theme, 60);
+        rows.last()
+            .map(|row| row.line.to_string().trim_end().to_owned())
+    };
+    let mut app =
+        session_with_children(SidebarMode::Rail, SessionStatus::Working, "fix login", &[])?;
+    for n in 0..32 {
+        report(&mut app, n);
+    }
+    assert_eq!(
+        counted(&app).as_deref(),
+        Some("  └ +29"),
+        "32 children, 3 shown"
+    );
+    report(&mut app, 32);
+    assert_eq!(
+        counted(&app).as_deref(),
+        Some("  └ +30"),
+        "33 children, 3 shown"
+    );
+    report(&mut app, 0);
+    assert_eq!(
+        counted(&app).as_deref(),
+        Some("  └ +30"),
+        "the evicted child came back"
+    );
+    outbound.shutdown();
+    Ok(())
+}
+
 /// Owner, 2026-09-28: "? = needs you, ✕ = failed". A failed child no longer wears
 /// the session's needs-you mark, a child that needs you wears it in the session's
 /// colour, and every mark is one cell, so none can push the column.

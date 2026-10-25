@@ -504,6 +504,36 @@ fn doctor_fix_reaps_an_orphaned_lane() -> TestResult {
     Ok(())
 }
 
+/// A slot left with uncommitted work is reported, never reaped by `doctor --fix`.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn doctor_fix_keeps_an_orphan_with_uncommitted_work() -> TestResult {
+    let journey = Journey::new("doctor-dirty")?;
+    let project = journey.project();
+    git_in(&project, &["init", "-q", "-b", "main"])?;
+    git_in(&project, &["config", "user.email", "lane@journey"])?;
+    git_in(&project, &["config", "user.name", "journey"])?;
+    std::fs::write(project.join("README.md"), "trunk\n")?;
+    git_in(&project, &["add", "README.md"])?;
+    git_in(&project, &["commit", "-qm", "base"])?;
+    succeeded(&journey.yi(&["ask", "claim once"])?, "ask")?;
+    let pool = std::fs::read_dir(journey.root.join("home/.yi/lanes"))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.is_dir())
+        .ok_or("no pool dir")?;
+    let note = pool.join("0/notes-é.txt");
+    std::fs::write(&note, "only copy\n")?;
+    let fixed = journey.yi(&["doctor", "--fix"])?;
+    let text = String::from_utf8_lossy(&fixed.stdout);
+    assert_eq!(fixed.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("reap discards the uncommitted paths; `doctor --fix` keeps it"),
+        "{text}"
+    );
+    assert!(note.is_file(), "doctor --fix kept the uncommitted file");
+    Ok(())
+}
+
 fn write_skill(journey: &Journey, name: &str, frontmatter: &str) -> TestResult {
     let dir = journey.project().join(".yi/skills").join(name);
     std::fs::create_dir_all(&dir)?;
