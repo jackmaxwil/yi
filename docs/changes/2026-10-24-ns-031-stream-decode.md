@@ -1,7 +1,7 @@
 ---
 issue: Closes #1469, Closes #138, Closes #139, Closes #140, Closes #141, Refs #1442
 decision: an interrupt's fire sets the current request's cut flag as well as `fired`, and each request opens with a fresh cut flag, so one abort stops the provider pump on the wire and a later request never clears an earlier one's cut (amends D163, which had only the loop set the cut) | after Esc the provider kept generating, and billing, up to `max_tokens` while the loop had stopped listening: on Kimi's recorded 91-event bash stream an abort at the third event read all 91, and with one shared flag the next prompt's request cleared the abort's cut before the old pump read it | `fire` stops setting the cut and `clear_cut` stores false into one shared flag again
-raise: crate ai +41, crate kernel +1, crate loop +2, comments +1, tests +350
+raise: crate ai +41, crate kernel +1, crate loop +2, comments +1, tests +353
 ---
 HB-utf8-rest: yi-ai, yi-context, yi-kernel and yi-mcp-cli now deny `clippy::string_slice` at their crate roots, so no byte-index slice of a `str` compiles under clippy in those crates. The fifteen slices they held were boundary-safe, each behind a `find` of an ASCII byte or a hand-written walk back to a char boundary; they are now `split_once`, `str::get`, or `floor_char_boundary` and `ceil_char_boundary`, which deletes the five hand-written walks. The pending list keeps only runtime and tools, which other changes clear.
 
