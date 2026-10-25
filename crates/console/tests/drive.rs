@@ -4945,18 +4945,19 @@ fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
     Ok(())
 }
 
+fn state(state: &str) -> Value {
+    update(
+        "s-alpha",
+        json!({"sessionUpdate": "state_update", "state": state}),
+    )
+}
+
 /// The recording's edit as the worker streamed it live: a running todo and turn one editing.
 fn live_edit_turn() -> Vec<Value> {
     let edit = recorded(EDIT_SESSION)
         .into_iter()
         .find(|e| e["message"]["toolName"] == "edit");
     let details = edit.map_or(Value::Null, |e| e["message"]["details"].clone());
-    let state = |state: &str| {
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "state_update", "state": state}),
-        )
-    };
     let mut frames = todo_update();
     frames.extend([
         state("running"),
@@ -4970,19 +4971,29 @@ fn live_edit_turn() -> Vec<Value> {
     frames
 }
 
-/// What a reconnect replays of that work: the recording, then a second prompt typed while the
-/// console was away, whose turn edited nothing.
+/// Turn one editing, then a second live turn that edits nothing.
+fn live_edit_then_an_empty_turn() -> Vec<Value> {
+    let mut frames = live_edit_turn();
+    frames.extend([state("running"), state("idle")]);
+    frames
+}
+
+/// What a reconnect replays of that work: the recording, then the second prompt.
 fn resume_both_turns(frame: &Value) -> Vec<Value> {
     let mut entries = recorded(EDIT_SESSION);
     entries.push(entry("e-turn2", None, 99, &user_message("and again")));
     resume_with(frame, &entries)
 }
 
-/// Review after a live edit and a reconnect's full replay, then `keys` pressed on its pane.
-fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Error>> {
+/// Review after `live` frames and a reconnect's full replay, then `keys` pressed on its pane.
+fn review_after_a_reconnect(
+    name: &str,
+    live: fn() -> Vec<Value>,
+    keys: &str,
+) -> Result<String, Box<dyn Error>> {
     let mut fixture = session_fixture();
     fixture.extend([
-        Step::Push(live_edit_turn),
+        Step::Push(live),
         Step::Expect("_yi/tracked", tracked_yes),
         Step::Close,
         Step::Accept,
@@ -4999,12 +5010,27 @@ fn review_after_a_reconnect(name: &str, keys: &str) -> Result<String, Box<dyn Er
     )
 }
 
-/// Dies with `Review · turn · 1 file` after a reconnect: the console kept the turn it saw live, or
-/// stamped the edit with it, though the replayed second turn edited nothing.
+/// Dies with `Review · turn · 1 file` after a reconnect: the full replay stamped the edit with the
+/// turn the console was in, and the second turn edited nothing.
 #[test]
 fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestResult {
     let frame = review_after_a_reconnect(
         "replay-turn-scope",
+        live_edit_then_an_empty_turn,
+        "key s\nwait-frame 3000 Review · turn\n",
+    )?;
+    let row = row_holding(&frame, "Review · turn")?;
+    assert!(row.contains("Review · turn · 0 files +0 −0"), "{row}");
+    Ok(())
+}
+
+/// Dies with `Review · turn · 1 file` after a reconnect: the console kept the turn it saw live,
+/// though the replay carries a second prompt, typed while it was away, that edited nothing.
+#[test]
+fn a_reconnects_replay_counts_the_turn_the_console_missed() -> TestResult {
+    let frame = review_after_a_reconnect(
+        "replay-missed-turn",
+        live_edit_turn,
         "key s\nwait-frame 3000 Review · turn\n",
     )?;
     let row = row_holding(&frame, "Review · turn")?;
@@ -5016,8 +5042,11 @@ fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestRe
 /// was running when the edit was made, which a replay cannot know.
 #[test]
 fn a_reconnects_replay_does_not_label_an_edit_with_the_todo_running_now() -> TestResult {
-    let frame =
-        review_after_a_reconnect("replay-todo-label", "wait-frame 3000 Review · session\n")?;
+    let frame = review_after_a_reconnect(
+        "replay-todo-label",
+        live_edit_then_an_empty_turn,
+        "wait-frame 3000 Review · session\n",
+    )?;
     let row = row_holding(&frame, "▸ ")?;
     let file = row.split("▸ ").nth(1).ok_or("no file row")?;
     assert!(
