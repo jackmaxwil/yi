@@ -5,6 +5,7 @@ use yi_types::acp::{
     AcpContentBlock, AcpExtensionUpdate, AcpOtherBlock, AcpSessionUpdate, AcpState, AcpStopReason,
     AcpTerminalExit, AcpToolCallStatus, AcpToolCallUpdate, AcpToolContent, AcpToolKind,
 };
+use yi_types::encoding::base64;
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::goal::Goal;
@@ -324,32 +325,6 @@ fn extension_of(
         fields.push(("details", details.clone()));
     }
     extension(&format!("_yi/{custom_type}"), fields)
-}
-
-/// Standard base64 for terminal output chunks; std has no encoder and a
-/// dependency for 15 lines fails the ladder.
-pub fn base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3).saturating_mul(4));
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        let quad = [
-            TABLE[(n >> 18) as usize & 63],
-            TABLE[(n >> 12) as usize & 63],
-            TABLE[(n >> 6) as usize & 63],
-            TABLE[n as usize & 63],
-        ];
-        let keep = chunk.len().saturating_add(1);
-        for (index, byte) in quad.iter().enumerate() {
-            out.push(if index < keep { char::from(*byte) } else { '=' });
-        }
-    }
-    out
 }
 
 fn tool_call_update(

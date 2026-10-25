@@ -75,16 +75,16 @@ impl PlanEngine {
             return Ok(());
         }
         let artifacts = self.store.artifacts(id);
-        let told = super::brief::lines(&artifacts, &txn.records, id, todo);
+        let inlined = (super::spawn::reads_only(&delegation, &self.cwd))
+            .then(|| super::spawn::schema(&artifacts, todo, self.output_resolve.as_deref()))
+            .flatten();
+        let told = super::brief::lines(&artifacts, &txn.records, id, todo, inlined.as_ref());
         if !told.is_empty() {
             delegation
                 .extra
                 .insert(super::brief::KEY.to_owned(), serde_json::json!(told));
         }
-        if super::spawn::reads_only(&delegation, &self.cwd)
-            && let Some(schema) =
-                super::spawn::schema(&artifacts, todo, self.output_resolve.as_deref())
-        {
+        if let Some(schema) = inlined {
             delegation
                 .extra
                 .insert(super::spawn::SCHEMA.to_owned(), schema);
