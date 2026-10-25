@@ -1,52 +1,45 @@
-//! `YI_TRACE=<dir>`: every yi process appends Chrome trace events to `<dir>/<pid>.jsonl`, on
-//! wall microseconds anchored once and advanced monotonically, so processes share a timeline.
+//! The span API every crate calls, over one [`TraceSink`] the binary installs: Chrome trace
+//! events on wall microseconds anchored at install and advanced monotonically.
 
 use std::borrow::Cow;
-use std::io::Write;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 
+/// Where a process's events go, one JSON object per call.
+pub trait TraceSink: Send + Sync {
+    fn write(&self, event: &str);
+}
+
 struct Sink {
-    file: Mutex<std::fs::File>,
+    out: Box<dyn TraceSink>,
     anchor: Instant,
     epoch_us: u64,
     pid: u32,
 }
 
-static SINK: OnceLock<Option<Sink>> = OnceLock::new();
+static SINK: OnceLock<Sink> = OnceLock::new();
 static NEXT_TID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     static TID: u64 = NEXT_TID.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Invariant: the first install wins; until one runs every span is inert, so a process that
+/// never installs traces nothing.
+pub fn install(out: Box<dyn TraceSink>, pid: u32, epoch_us: u64) {
+    let _ = SINK.set(Sink {
+        out,
+        anchor: Instant::now(),
+        epoch_us,
+        pid,
+    });
+}
+
 fn sink() -> Option<&'static Sink> {
-    SINK.get_or_init(|| {
-        let dir = std::env::var_os("YI_TRACE").filter(|dir| !dir.is_empty())?;
-        let dir = std::path::PathBuf::from(dir);
-        std::fs::create_dir_all(&dir).ok()?;
-        let pid = std::process::id();
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join(format!("{pid}.jsonl")))
-            .ok()?;
-        #[allow(clippy::disallowed_methods)] // the wall anchor is the job: it aligns processes
-        let epoch_us = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX))
-            .unwrap_or(0);
-        Some(Sink {
-            file: Mutex::new(file),
-            anchor: Instant::now(),
-            epoch_us,
-            pid,
-        })
-    })
-    .as_ref()
+    SINK.get()
 }
 
 pub fn enabled() -> bool {
@@ -70,11 +63,7 @@ fn emit(sink: &Sink, mut event: Value) {
         map.insert("pid".to_owned(), json!(sink.pid));
         map.entry("tid").or_insert_with(|| json!(tid()));
     }
-    let mut line = event.to_string();
-    line.push('\n');
-    if let Ok(mut file) = sink.file.lock() {
-        let _ = file.write_all(line.as_bytes());
-    }
+    sink.out.write(&event.to_string());
 }
 
 /// Names this process on the timeline (`console`, `daemon`, `worker <root>`) and records
