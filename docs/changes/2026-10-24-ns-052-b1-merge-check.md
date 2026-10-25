@@ -1,6 +1,6 @@
 ---
 issue: Closes #1488, Refs #1442
-raise: tests +263, comments +6, crate runtime +102
+raise: tests +263, comments +5, crate runtime +92
 decision: merge_worktree takes an opt-in check, run on the lane before it settles, through the permission gate; a red verdict keeps the branch as a conflict does and records no disposition, and the check's unignored writes are committed with the child's work | the fix-swarm recipe had no documented way to get the lane path (dogfood-swarm-2026-09-30.md:110-111) | drop the check kwarg from the handler
 ---
 `rlm.merge_worktree` takes an optional `check`, a shell command run in the child's lane before its work is merged into this checkout. A parent that wanted to test a child's work before landing it had no way to: the lane path is not in any reply, and after the hand-back the lane is gone. The check meets the same host gate a spawn's `check` meets (the user's gate rules, the wall's command-text check and walled roots, then the broker's decision on the bash call it amounts to), and a refused one never runs: the call answers `the check is refused before it runs on the host: ...` and the lane stays held, so a merge without the check still works. An allowed check runs in the lane with a cleared environment (`PATH`, `HOME`, `LANG`, `TMPDIR`) under the session deadline, or ten minutes when the session has none, off the kernel's executor like the rest of the hand-back.

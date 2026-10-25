@@ -74,7 +74,7 @@ impl Settled {
     /// The `Discarded` path: the branch goes, so the caller has already pinned what it keeps;
     /// one `settle` deleted already (a no-op child's tip is on main) is the outcome asked for.
     pub fn discard(self) -> Result<Candidate, LaneError> {
-        if self.branch_kept() {
+        if self.pool.branch_exists(&self.candidate.branch)? {
             git_by(
                 &self.pool.repo,
                 &["branch", "-q", "-D", self.candidate.branch.as_str()],
@@ -82,13 +82,6 @@ impl Settled {
             )?;
         }
         Ok(self.candidate)
-    }
-
-    /// False once the release deleted the branch, its tip already on main.
-    fn branch_kept(&self) -> bool {
-        let refname = format!("refs/heads/{}", self.candidate.branch.as_str());
-        let verify = ["rev-parse", "--verify", "-q", refname.as_str()];
-        git_by(&self.pool.repo, &verify, None).is_ok()
     }
 }
 
@@ -343,14 +336,7 @@ pub fn drop_staging(pool: &Pool, session: &str) -> Result<bool, LaneError> {
         }
     }
     let branch = BranchName::for_session(session)?;
-    let refname = format!("refs/heads/{branch}");
-    if git_by(
-        pool.repo(),
-        &["rev-parse", "--verify", "-q", &refname],
-        None,
-    )
-    .is_ok()
-    {
+    if pool.branch_exists(&branch)? {
         git_by(pool.repo(), &["branch", "-q", "-D", branch.as_str()], None)?;
         dropped = true;
     }
@@ -833,7 +819,8 @@ impl SubagentHost {
                 "check".to_owned(),
                 verdict(&capture, &cap, &parent, check, commit),
             );
-            let next = if settled.branch_kept() {
+            let kept_branch = pool.branch_exists(&settled.candidate.branch);
+            let next = if kept_branch.map_err(|error| error.to_string())? {
                 format!(
                     "The check failed, so this checkout is unchanged and the child's lane is released; its work is kept on branch {kept}. `git merge {kept}` lands it anyway, and `git branch -D {kept}` drops it."
                 )
