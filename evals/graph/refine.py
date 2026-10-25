@@ -24,21 +24,20 @@ REJECTED = ROOT / "evals/fixtures/graph/rejected.jsonl"
 EDIT_KINDS = ("add_edge", "drop_edge", "reword")
 MAX_EDITS_PER_RUN = 20
 # The mirror of `crates/types/src/graph.rs`; `fixtures/graph/structural.json` holds both to it.
-MAX_EDGES, MAX_OUT_EDGES, MAX_GUIDANCE_BYTES, MAX_PITFALLS, MAX_PITFALL_BYTES = 400, 8, 160, 3, 120
+MAX_EDGES, MAX_OUT_EDGES, MAX_GUIDANCE_BYTES = 400, 8, 160
 KINDS = ("tool", "op", "request")
-RELATIONS = ("then", "instead", "before", "after_error", "after_refusal")
+RELATIONS = ("then", "after_error")
 PREDICATES = {
     "always": "", "result_ok": "",
     "result_error": "denied not_found invalid_args aborted stale_tag noop_loop stale verdict tool_error",
-    "output_capped": "", "todo_open": "", "todo_state": "running pending blocked",
-    "plan_ready_nonempty": "",
+    "todo_state": "running pending blocked",
     "child_state": "queued running finished failed needs_you stuck repossession_pending",
-    "blocked_on": "user child external", "worktree_unmerged": "", "done_refused": "",
-    "inbox_nonempty": "", "coroutine_unawaited": "", "method_awaited": "",
+    "blocked_on": "user child external", "done_refused": "",
+    "coroutine_unawaited": "", "method_awaited": "",
     "listing_name_missed": "", "session_on_disk": "",
     "session_in_memory": "",
 }
-EDGE_KEYS = {"from", "relation", "to", "condition", "guidance", "pitfalls", "weight"}
+EDGE_KEYS = {"from", "relation", "to", "condition", "guidance", "weight"}
 # A task id is letters, digits and the three joiners ids use; everything else separates two.
 TOKEN = re.compile(r"[^0-9A-Za-z_.-]+")
 
@@ -70,14 +69,11 @@ def parses(graph):
         if not text(node["id"]) or node["kind"] not in KINDS:
             return False
     for edge in graph["edges"]:
-        if not isinstance(edge, dict) or not EDGE_KEYS - {"pitfalls"} <= set(edge) <= EDGE_KEYS:
+        if not isinstance(edge, dict) or set(edge) != EDGE_KEYS:
             return False
-        pitfalls = edge.get("pitfalls", [])
         if not all(text(edge[k]) for k in ("from", "to", "guidance")) or not count(edge["weight"]):
             return False
         if edge["relation"] not in RELATIONS or edge["condition"] not in conditions():
-            return False
-        if not isinstance(pitfalls, list) or not all(text(p) for p in pitfalls):
             return False
     return True
 
@@ -107,9 +103,6 @@ def check(graph, verbs):
             return "too_many_out_edges"
         if not 0 < len(edge["guidance"].encode()) <= MAX_GUIDANCE_BYTES:
             return "guidance_size"
-        pitfalls = edge.get("pitfalls", [])
-        if len(pitfalls) > MAX_PITFALLS or any(len(p.encode()) > MAX_PITFALL_BYTES for p in pitfalls):
-            return "pitfalls_size"
         if edge["to"] not in reached:
             return "unreachable"
     return None
