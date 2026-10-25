@@ -1,9 +1,6 @@
 //! The RFC 8628 device login against a device and token endpoint on 127.0.0.1. Response bodies
 //! are RFC 8628 §3.2 and §3.5 and RFC 6749 §5.1, shaped as kimi-code's oauth package reads them.
 
-use std::io::{BufReader, Read, Write};
-use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -12,61 +9,12 @@ use yi_oauth::flow;
 use yi_oauth::registry::{self, Kind, Login, OauthCode};
 use yi_oauth::store::{self, Credential, Store};
 
-#[path = "../../types/tests/support/loopback.rs"]
-mod loopback;
-use loopback::read_request;
-
-type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
-
-type Seen = Arc<Mutex<Vec<String>>>;
+mod common;
+use common::{Res, serve};
 
 /// The login's outcome, the waits it asked for, and the requests the fake saw with a
 /// `sleep` row for each wait, in the order they happened.
 type Outcome = (Result<Credential, String>, Vec<Duration>, Vec<String>);
-
-/// Answers each request with the next scripted reply and closes; past the script the port
-/// refuses. A request is recorded as its request line and form body; a string body goes raw.
-fn serve(script: Vec<(u16, Value)>) -> Res<(u16, Seen)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let seen: Seen = Arc::default();
-    let log = Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for (status, body) in script {
-            let Ok((stream, _)) = listener.accept() else {
-                return;
-            };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-            let mut reader = BufReader::new(stream);
-            let request = read_request(&mut reader);
-            let mut stream = reader.into_inner();
-            let line = request.lines().next().unwrap_or_default();
-            let form = request.rsplit("\r\n").next().unwrap_or_default();
-            if let Ok(mut log) = log.lock() {
-                log.push(format!("{line}\n{form}"));
-            }
-            let body = match body {
-                Value::String(raw) => raw,
-                json => json.to_string(),
-            };
-            let _ = stream.write_all(
-                format!(
-                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .as_bytes(),
-            );
-            let _ = stream.shutdown(std::net::Shutdown::Write);
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-            while stream
-                .read(&mut [0u8; 4096])
-                .map(|n| n > 0)
-                .unwrap_or(false)
-            {}
-        }
-    });
-    Ok((port, seen))
-}
 
 fn spec(port: u16, scopes: Value) -> Res<(OauthCode, String)> {
     let profile = json!({
@@ -335,6 +283,16 @@ fn a_profile_with_scopes_asks_for_them_and_a_control_character_user_code_is_refu
     assert_eq!(polls(&seen), 0);
 
     let (status, mut body) = grant(json!(1800), json!(5));
+    body["verification_uri_complete"] = json!("https://example.com/device\u{1b}]0;owned\u{7}");
+    let (outcome, _, seen) = run(vec![(status, body)])?;
+    let text = outcome.err().ok_or("a control-character URI was printed")?;
+    assert!(
+        text.contains("device authorization failed: status 200"),
+        "{text}"
+    );
+    assert_eq!(polls(&seen), 0);
+
+    let (status, mut body) = grant(json!(1800), json!(5));
     body["verification_uri_complete"] = json!("file:///etc/passwd");
     let (outcome, _, _) = run(vec![(status, body)])?;
     let text = outcome.err().ok_or("a file URI was opened")?;
@@ -398,6 +356,14 @@ fn a_profile_names_the_key_it_lacks_misspells_or_does_not_read() -> Res {
     })?;
     assert!(
         text.contains("a profile of kind oauth-code reads no device_authorization"),
+        "{text}"
+    );
+    let text = refusal(&|profile: &mut Value| {
+        profile["kind"] = json!("api-key");
+        profile["api_base"] = json!("https://api.example.com/coding/v1");
+    })?;
+    assert!(
+        text.contains("a profile of kind api-key reads no device_authorization, api_base"),
         "{text}"
     );
     Ok(())
