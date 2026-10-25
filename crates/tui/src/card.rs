@@ -81,10 +81,11 @@ pub fn rail_style(theme: &Theme, status: ToolStatus) -> Style {
 pub fn tool_hue(theme: &Theme, name: &str) -> Color {
     match name {
         "bash" => theme.orange,
-        "read" | "grep" | "glob" | "find" => theme.cyan,
+        "read" | "get_context" | "grep" => theme.cyan,
         "edit" | "write" => theme.magenta,
         "ipython" => theme.teal,
-        "plan" => theme.purple,
+        "todo" | "plan" | "annotate" => theme.purple,
+        "answer" | "ask_user" => theme.blue5,
         _ => theme.warning,
     }
 }

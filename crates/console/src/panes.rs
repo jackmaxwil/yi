@@ -215,6 +215,50 @@ pub fn review_view(
     (title, lines)
 }
 
+pub(crate) fn cached<K: PartialEq, V>(
+    drawn: &mut crate::model::Drawn<K, V>,
+    key: K,
+    draw: impl FnOnce() -> V,
+) -> &V {
+    let fresh = match drawn.take() {
+        Some((at, rows)) if at == key => (at, rows),
+        _ => (key, draw()),
+    };
+    &drawn.insert(fresh).1
+}
+
+/// Invariant: this scroll holds a view at its top while its rows grow, and a scroll down from
+/// there leaves it less the rows, counted down from the top until the next draw.
+pub(crate) const TOP: usize = usize::MAX;
+
+/// The rows a view held at its top was scrolled down, or `None` for a count from the bottom.
+pub(crate) fn down_from_top(from_bottom: usize) -> Option<usize> {
+    let down = TOP.saturating_sub(from_bottom);
+    (down < TOP / 2).then_some(down)
+}
+
+pub(crate) fn windowed(
+    all: &[Line<'static>],
+    from_bottom: &mut usize,
+    visible: usize,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let total = all.len();
+    let highest = total.saturating_sub(visible);
+    // Scrolling past the top would bank rows a later scroll down must first spend.
+    match down_from_top(*from_bottom) {
+        Some(0) => {}
+        Some(down) => *from_bottom = highest.saturating_sub(down),
+        None => *from_bottom = (*from_bottom).min(highest),
+    }
+    let top = highest.saturating_sub((*from_bottom).min(highest));
+    let rows = all.get(top..total.min(top.saturating_add(visible)));
+    let extent = (total > visible).then_some((total, top));
+    (
+        rows.map(<[Line<'static>]>::to_vec).unwrap_or_default(),
+        extent,
+    )
+}
+
 const CODE_ROWS: usize = 24;
 const STREAM_ROWS: usize = 40;
 const RESULT_ROWS: usize = 20;
@@ -432,8 +476,8 @@ pub fn notebook_lines(
             let cap = format!("notebook keeps {} per cell", crate::model::IMAGES_PER_CELL);
             out.push(cap_row(&what, &cap, "the transcript holds them", theme));
         }
-        for image in &cell.images {
-            let kb = image.len().saturating_mul(3) / 4 / 1024;
+        for bytes in &cell.image_bytes {
+            let kb = bytes.saturating_mul(3) / 4 / 1024;
             out.push(Line::styled(format!("  ▲ image · {kb} KB png"), teal));
         }
         out.push(Line::default());

@@ -69,7 +69,6 @@ pub struct ToolCell {
     /// The runtime's handle for this call: what a permission event names, and
     /// the only exact way to pair a result with the cell that started it.
     pub call_id: String,
-    pub intent: Option<String>,
     pub status: ToolStatus,
     pub summary: String,
     pub digest: Option<String>,
@@ -99,8 +98,7 @@ pub struct TaskCell {
     pub tokens: u64,
     pub elapsed_ms: u64,
     pub error: Option<String>,
-    // ponytail: the spawning cell's preview is observed, not plumbed — the `ipython` call
-    // running when a child appears made it, and a child born outside one carries None.
+    /// The spawning cell's code preview; None for a child born outside a drawn cell.
     pub spawn: Option<String>,
     pub answer: Option<String>,
     pub answer_dropped: usize,
@@ -258,11 +256,14 @@ const PREVIEW_ROWS: usize = 3;
 fn glyph(tool: &str) -> char {
     match tool {
         "bash" => '$',
-        "read" => '→',
+        "read" | "get_context" => '→',
         "edit" | "write" => '←',
-        "grep" | "glob" | "find" => '✱',
-        "fetch" | "web_search" => '%',
+        "grep" => '✱',
         "ipython" => '⊙',
+        "todo" | "plan" => '≡',
+        "answer" => '»',
+        "ask_user" => '?',
+        "annotate" => '#',
         _ => '⚙',
     }
 }
@@ -337,8 +338,7 @@ fn counted(digest: &str) -> Option<(&str, &str)> {
 fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<Span<'static>> {
     let plain = style.fg == Some(theme.text);
     let hue = match tool {
-        "grep" | "glob" | "find" if plain => Some(theme.orange),
-        "fetch" | "web_search" if plain => Some(theme.blue5),
+        "grep" if plain => Some(theme.orange),
         _ => None,
     };
     if let Some(hue) = hue {
@@ -362,7 +362,6 @@ pub fn explore_verb(tool: &str) -> Option<&'static str> {
     match tool {
         "read" => Some("Read"),
         "grep" => Some("Search"),
-        "glob" | "find" => Some("List"),
         _ => None,
     }
 }
@@ -481,11 +480,6 @@ impl ToolCell {
                 theme.muted_style(),
             ));
         }
-        if let Some(intent) = &self.intent
-            && self.status == ToolStatus::Running
-        {
-            chips.push(Chip::new(intent.clone(), "", theme.muted_style()));
-        }
         let mut prose = None;
         if let Some(digest) = &self.digest {
             match counted(digest) {
@@ -572,7 +566,7 @@ impl ToolCell {
         let text = Style::default().fg(theme.text);
         let mut out = Vec::new();
         let mut last_path: Option<String> = None;
-        let searchy = matches!(self.name.as_str(), "grep" | "glob" | "find");
+        let searchy = self.name == "grep";
         let anchored = matches!(self.name.as_str(), "read" | "edit");
         // A patch routes to `diffview`, which colours from its own header; this is the plain
         // numbered dump a read prints, its path in the summary since `details` lacks it.
@@ -655,7 +649,7 @@ impl ToolCell {
 
     /// Yi showed no result lines, so a finished call left no trace of its
     /// outcome unless the reader had switched to verbose before it ran.
-    pub fn digest_of(name: &str, text: &str, failed: bool) -> Option<String> {
+    pub fn digest_of(name: &str, text: &str, details: &Value, failed: bool) -> Option<String> {
         let first = || {
             text.lines()
                 .map(str::trim_end)
@@ -664,6 +658,12 @@ impl ToolCell {
         if failed {
             return first().map(|line| crate::transcript::show_controls(strip_hashline(line)));
         }
+        // Invariant: a typed detail decides the digest wherever the result carries one; the text
+        // is read only where none exists, so rewording it moves only those rows.
+        let count = |key: &str| {
+            let n = details.get(key)?.as_u64()?;
+            Some(usize::try_from(n).unwrap_or(usize::MAX))
+        };
         let numbered = || {
             text.lines()
                 .filter(|line| !line.starts_with('[') && strip_hashline(line) != *line)
@@ -675,24 +675,39 @@ impl ToolCell {
                 .count()
         };
         let digest = match name {
-            "read" if numbered() == 0 && entries() > 0 => count_label(entries(), "entry"),
-            "read" => count_label(numbered(), "line"),
-            // `[path#TAG]` then `updated; first change at line N` — the verb
-            // and the anchor the model just earned, in the tool's own words.
-            "edit" => text.lines().nth(1)?.trim().to_owned(),
-            "grep" => count_label(
-                text.lines().filter(|l| grep_row(l).is_some()).count(),
-                "hit",
-            ),
-            "glob" => count_label(
-                text.lines().filter(|line| !line.starts_with('[')).count(),
-                "file",
-            ),
+            "read" => match (count("shownLines"), count("dirs"), count("files")) {
+                (Some(lines), ..) => count_label(lines, "line"),
+                (None, Some(dirs), Some(files)) => count_label(dirs.saturating_add(files), "entry"),
+                _ if numbered() == 0 && entries() > 0 => count_label(entries(), "entry"),
+                _ => count_label(numbered(), "line"),
+            },
+            // The tool's own first-change line is no typed detail, and an insert-after
+            // reports its anchor, one above the patch's first row: read the verdict row.
+            "edit" => text
+                .lines()
+                .map(str::trim)
+                .find(|row| is_verdict(row))
+                .or_else(|| text.lines().nth(1))?
+                .to_owned(),
+            "grep" => match count("hits") {
+                Some(hits) => count_label(hits, "hit"),
+                None => count_label(
+                    text.lines().filter(|l| grep_row(l).is_some()).count(),
+                    "hit",
+                ),
+            },
             _ => first()?.to_owned(),
         };
         let digest = crate::transcript::show_controls(digest.trim());
         (!digest.is_empty()).then_some(digest)
     }
+}
+
+fn is_verdict(row: &str) -> bool {
+    ["updated", "deleted", "unchanged"].iter().any(|verb| {
+        row.strip_prefix(verb)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(';'))
+    })
 }
 
 pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
@@ -704,6 +719,37 @@ pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
 }
 
 const ANSWER_CAP: usize = 16 * 1024;
+
+/// Incident: every running card rendered its whole answer each frame to keep four rows, 12 ms a
+/// frame for eight cards in the dist build. The rows are kept until the answer or width changes.
+#[derive(Default)]
+pub struct AnswerRows(std::sync::Mutex<Option<KeptRows>>);
+
+type KeptRows = (usize, ColorTier, bool, String, Vec<Line<'static>>);
+
+impl AnswerRows {
+    fn window<R>(
+        &self,
+        answer: &str,
+        width: usize,
+        theme: &Theme,
+        pick: impl FnOnce(&[Line<'static>]) -> R,
+    ) -> R {
+        let mut held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fresh = held.as_ref().is_some_and(|(w, tier, dark, source, _)| {
+            (*w, *tier, *dark) == (width, theme.tier, theme.dark) && source == answer
+        });
+        if !fresh {
+            let rows = markdown::render(answer, width.saturating_sub(6), theme).into_iter();
+            let rows = rows.skip_while(|line| line.spans.is_empty()).collect();
+            *held = Some((width, theme.tier, theme.dark, answer.to_owned(), rows));
+        }
+        pick(held.as_ref().map_or(&[], |(.., rows)| rows.as_slice()))
+    }
+}
 
 impl TaskCell {
     /// A repeated call is the same step, so it does not push itself into the previous row.
@@ -729,6 +775,20 @@ impl TaskCell {
         theme: &Theme,
         mode: TranscriptMode,
         spinner_phase: usize,
+    ) -> Vec<Line<'static>> {
+        let fresh = AnswerRows::default();
+        self.lines_at(self.elapsed_ms, width, theme, mode, spinner_phase, &fresh)
+    }
+
+    /// [`Self::lines`] at `elapsed_ms`, its answer rows read through `rows`.
+    pub fn lines_at(
+        &self,
+        elapsed_ms: u64,
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+        spinner_phase: usize,
+        rows: &AnswerRows,
     ) -> Vec<Line<'static>> {
         let activity = activity_label(self.activity);
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
@@ -757,7 +817,7 @@ impl TaskCell {
             usize::try_from(self.toolcalls).unwrap_or(usize::MAX),
             "tool call",
         );
-        let elapsed = elapsed_label(self.elapsed_ms);
+        let elapsed = elapsed_label(elapsed_ms);
         let title = format!("{glyph} {name}{hash} · {state} {elapsed} · {calls}");
         let mut body = Vec::new();
         if let Some((_, _, note)) = flagged {
@@ -790,14 +850,22 @@ impl TaskCell {
             )));
         }
         let answer = self.answer.as_deref().filter(|a| !a.trim().is_empty());
-        let rows: Vec<Line<'static>> = answer
-            .map(|a| markdown::render(a, width.saturating_sub(6), theme))
-            .unwrap_or_default()
-            .into_iter()
-            .skip_while(|line| line.spans.is_empty())
-            .collect();
-        let total = rows.len();
         let running = self.status == TaskStatus::Running;
+        let window = |total: usize| match (running, mode) {
+            (true, _) => (total.saturating_sub(4), 4),
+            (false, TranscriptMode::Verbose) => (0, total),
+            (false, _) => (0, 3),
+        };
+        let (total, rows): (usize, Vec<Line<'static>>) = match answer {
+            Some(answer) => rows.window(answer, width, theme, |rows| {
+                let (skip, take) = window(rows.len());
+                (
+                    rows.len(),
+                    rows.iter().skip(skip).take(take).cloned().collect(),
+                )
+            }),
+            None => (0, Vec::new()),
+        };
         if self.answer_dropped > 0 && !running {
             let kept = answer.map_or(0, str::len);
             let all = kept.saturating_add(self.answer_dropped);
@@ -807,26 +875,16 @@ impl TaskCell {
             );
             body.push(Line::from(Span::styled(said, theme.dim_style())));
         }
-        let (skip, take) = match (running, mode) {
-            (true, _) => (total.saturating_sub(4), 4),
-            (false, TranscriptMode::Verbose) => (0, total),
-            (false, _) => (0, 3),
-        };
-        let len = total.saturating_sub(skip).min(take);
-        body.extend(
-            rows.into_iter()
-                .skip(skip)
-                .take(take)
-                .enumerate()
-                .map(|(index, line)| {
-                    let age = if running {
-                        len.saturating_sub(index).saturating_sub(1)
-                    } else {
-                        0
-                    };
-                    fade(line, age, len, theme)
-                }),
-        );
+        let (skip, take) = window(total);
+        let len = rows.len();
+        body.extend(rows.into_iter().enumerate().map(|(index, line)| {
+            let age = if running {
+                len.saturating_sub(index).saturating_sub(1)
+            } else {
+                0
+            };
+            fade(line, age, len, theme)
+        }));
         if total > skip.saturating_add(take) {
             let more = format!("… {} more lines", total.saturating_sub(take));
             body.push(Line::from(Span::styled(more, theme.dim_style())));
@@ -1018,12 +1076,11 @@ fn callout(
     }
     let mut out = Vec::new();
     for row in text.lines() {
-        let row = if source.is_some() {
-            strip_tags(row)
-        } else {
-            row.trim().to_owned()
+        let row = match source {
+            Some("advisory") => strip_tags(row),
+            _ => row.trim().to_owned(),
         };
-        if row.is_empty() {
+        if row.is_empty() || is_element_row(&row) {
             continue;
         }
         let line = Line::from(vec![
@@ -1037,6 +1094,13 @@ fn callout(
         }
     }
     out
+}
+
+/// The wrapper a producer puts round a body (`agent_message`, `reaped_child`) is one element.
+fn is_element_row(row: &str) -> bool {
+    row.strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|inner| !inner.contains(['<', '>']))
 }
 
 const EXPLORED_CAP: usize = 32;
