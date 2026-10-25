@@ -1112,6 +1112,7 @@ async fn replay_through_plan_op(stem: &str) -> Fallible<()> {
             yi_runtime::plan::request::register(
                 Arc::clone(&request_engine),
                 actor.clone(),
+                None,
                 &mut registry,
             );
             registry
@@ -1285,7 +1286,7 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
         let cell_store = PlanStore::open(cell_dir.to_path_buf())?;
         let engine = build_engine(doc, &cell_store, &Arc::new(Stub::default()))?;
         let mut registry = HostRegistry::default();
-        yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
+        yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, None, &mut registry);
         registry.register_mcp_stubs();
         let service = Arc::new(yi_runtime::KernelService::new(
             yi_runtime::KernelServiceOptions {
@@ -1308,7 +1309,7 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
         let kernel = Arc::clone(&service);
         let outcome = tokio::task::spawn_blocking(move || {
             let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-            yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &source, &cancelled, None)
+            yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &source, "", &cancelled, None)
         })
         .await??;
         service.dispose().await;

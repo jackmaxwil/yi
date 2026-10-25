@@ -80,7 +80,7 @@ use yi_types::url::Url;
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[derive(Default)]
-struct Stub {
+pub(crate) struct Stub {
     next: AtomicU32,
     reaps: AtomicU32,
     fail_reap: AtomicBool,
@@ -2142,7 +2142,6 @@ mod contracts {
     use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::tool::PlanTool;
     use yi_runtime::plan::verify::Verifier;
-    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
     use yi_runtime::subagent::DEFAULT_MAX_CHILDREN;
     use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
     use yi_tools::Tool;
@@ -2470,7 +2469,12 @@ mod contracts {
         assert_eq!(verdict.outcome, VerdictOutcome::Fail);
         // 2. plan.op: a set asking for done is refused by the same validator.
         let mut registry = HostRegistry::default();
-        yi_runtime::plan::request::register(Arc::clone(&rig.engine), Actor::Owner, &mut registry);
+        yi_runtime::plan::request::register(
+            Arc::clone(&rig.engine),
+            Actor::Owner,
+            None,
+            &mut registry,
+        );
         let mut payload = Map::new();
         payload.insert(
             "request_id".to_owned(),
@@ -3197,6 +3201,50 @@ mod contracts {
         Ok(())
     }
 
+    // Dies with the cap's note holding the last refusal whole: it is stored in the plan and
+    // printed by every frontier, so a 16 KiB view per failing check rides every continuation.
+    #[test]
+    fn the_cap_note_keeps_the_last_verdict_not_the_whole_output() -> TestResult {
+        let rig = rig("yi-f0c-capnote", None)?;
+        let plan = planned()?;
+        let line = "printf 'row %03d ' $i; head -c 300 /dev/zero | tr '\\0' x; echo";
+        let command = format!("i=0; while [ $i -lt 400 ]; do {line}; i=$((i+1)); done; exit 1");
+        let opened = init(
+            &rig.engine,
+            vec![contracted(
+                "land it",
+                cmd_contract(&rig.store, &plan, &command, "writer")?,
+            )?],
+        )?;
+        assert_eq!(opened.plan.id, plan);
+        start(&rig.engine, &plan, "land it")?;
+        for attempt in 1..=3 {
+            rig.serve
+                .set("local://out.txt", Some(&format!("product {attempt}")));
+            let verdict = refused(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+            assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+            assert!(
+                verdict.lines().len() > 16_000,
+                "the refusal itself stays whole"
+            );
+        }
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        let TodoState::Blocked { note, .. } = &todo.state else {
+            return Err(format!("not blocked: {:?}", todo.state).into());
+        };
+        assert!(
+            note.contains("3 refused verdicts; the last:"),
+            "{note:.300}"
+        );
+        assert!(
+            note.contains("bytes kept (REPEAT_BYTES 2000)"),
+            "{note:.600}"
+        );
+        assert!(note.contains("[full output: "), "{note:.600}");
+        assert!(note.len() < 3_500, "{}", note.len());
+        Ok(())
+    }
+
     // Dies with the `capped` block in `refuse`: make the cap a refusal text and a model retries
     // forever; count stale verdicts and a slow checker walks a healthy todo into the inbox.
     #[test]
@@ -3412,20 +3460,8 @@ mod contracts {
 
     /// The process that owns the prompt, answering `answer` to every ask.
     fn confirmer(rig: &Rig, answer: AskOutcome) -> Result<Confirmer, Box<dyn Error>> {
-        let sessions = rig._temp.join("sessions");
-        std::fs::create_dir_all(&sessions)?;
-        let mut repo = JsonlRepo::new(sessions, rig.ws.to_string_lossy().into_owned());
-        let store = repo.create(CreateOptions::default())?;
         let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| answer);
-        let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
-        let broker = Arc::new(PermissionBroker::new(
-            PermissionMode::Ask,
-            rig.ws.clone(),
-            Vec::new(),
-            Some(asker),
-            events,
-        ));
-        Ok(Confirmer { broker, store })
+        crate::plan_authority::confirmer(&rig._temp, &rig.ws, asker)
     }
 
     /// Each prompt's description, in the order the person was asked.
@@ -4570,6 +4606,40 @@ mod contracts {
         Ok(())
     }
 
+    // Dies with the done path's verification request named per effect: the effect id's length
+    // comes off the longest request id a client may send, and a done at the old limit fails.
+    #[test]
+    fn a_done_request_id_at_the_limit_is_verified() -> TestResult {
+        use yi_types::plan::ledger::{ID_MAX_BYTES, RequestId};
+        let rig = rig("yi-done-request-limit", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "true", "writer")?;
+        init(&rig.engine, vec![contracted("check it", contract)?])?;
+        start(&rig.engine, &plan, "check it")?;
+        let done_as = |bytes: usize| -> Result<Outcome, Box<dyn Error>> {
+            let op = Op::Done {
+                label: TodoLabel::new("check it")?,
+                output: None,
+            };
+            Ok(rig.engine.apply(OpRequest {
+                request_id: Some(RequestId::new("r".repeat(bytes))?),
+                ..at(&plan, op)
+            })?)
+        };
+        let limit = ID_MAX_BYTES - "/verify".len();
+        assert!(done_as(limit + 1).is_err(), "a derived id past the cap");
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "check it")?.state,
+            TodoState::Running { .. }
+        ));
+        done_as(limit)?;
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "check it")?.state,
+            TodoState::Done { .. }
+        ));
+        Ok(())
+    }
+
     // Dies with `Purpose::Verification` being its own counter (capacity.rs): charge the
     // candidate check against the worker share and the workers a parent retains own every lane
     // their own verification needs, so the plan stops with every todo running. The engine
@@ -4608,9 +4678,11 @@ mod contracts {
             usize::from(slots) - share,
             "the lanes the workers did not get are the verification's"
         );
-        // With every worker lane held, the verification a retained worker's own candidate
-        // needs still reserves, and a second one waits its turn: one candidate at a time.
-        let verifying = capacity.reserve(Purpose::Verification)?;
+        // With every worker lane held, the verifications retained workers' own candidates need
+        // still reserve, up to the share, and one past it waits its turn.
+        let verifying: Vec<_> = (0..capacity.cap(Purpose::Verification))
+            .map(|_| capacity.reserve(Purpose::Verification))
+            .collect::<Result<_, _>>()?;
         assert!(capacity.reserve(Purpose::Verification).is_err());
         drop(verifying);
         drop(held);

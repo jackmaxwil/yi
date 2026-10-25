@@ -132,6 +132,15 @@ fn try_parse_recovery_header(line: &str, cwd: Option<&Path>) -> Option<RawSectio
     })
 }
 
+const HEADER_ECHO: usize = 120;
+
+/// Invariant: a header error echoes at most [`HEADER_ECHO`] chars of the line and says when it cut.
+fn echo(line: &str) -> String {
+    let (head, cut) = crate::tool::clip(line, HEADER_ECHO);
+    let note = cut.then(|| format!(" (first {HEADER_ECHO} of {} chars)", line.chars().count()));
+    format!("{head:?}{}", note.unwrap_or_default())
+}
+
 fn parse_hashline_header_line(
     line: &str,
     cwd: Option<&Path>,
@@ -145,8 +154,9 @@ fn parse_hashline_header_line(
         if let Some(recovered) = try_parse_recovery_header(trimmed, cwd) {
             return Ok(Some(recovered));
         }
+        let got = echo(trimmed);
         return Err(format!(
-            "Input header must be {HL_FILE_PREFIX}PATH{HL_FILE_SUFFIX} or {HL_FILE_PREFIX}PATH#TAG{HL_FILE_SUFFIX} with a {HL_FILE_HASH_LENGTH}-hex content-hash tag; got {trimmed:?}. \
+            "Input header must be {HL_FILE_PREFIX}PATH{HL_FILE_SUFFIX} or {HL_FILE_PREFIX}PATH#TAG{HL_FILE_SUFFIX} with a {HL_FILE_HASH_LENGTH}-hex content-hash tag; got {got}. \
 TAG is the {HL_FILE_HASH_LENGTH}-hex after # on the {HL_FILE_PREFIX}path#TAG{HL_FILE_SUFFIX} line of the read, write or edit result; omit it to edit the last version shown."
         ));
     };
@@ -188,9 +198,9 @@ fn split_raw_sections(input: &str, cwd: Option<&Path>) -> Result<Vec<RawSection>
 File sections start with `{HL_FILE_PREFIX}path#HASH{HL_FILE_SUFFIX}`; use `replace`, `delete`, or `insert` ops."
             ));
         }
-        let preview: String = first_line.chars().take(120).collect();
+        let got = echo(first_line);
         return Err(format!(
-            "input must begin with \"{HL_FILE_PREFIX}PATH#HASH{HL_FILE_SUFFIX}\" on the first non-blank line for anchored edits; got: {preview:?}. \
+            "input must begin with \"{HL_FILE_PREFIX}PATH#HASH{HL_FILE_SUFFIX}\" on the first non-blank line for anchored edits; got: {got}. \
 Example: \"{HL_FILE_PREFIX}src/foo.ts#1A2B{HL_FILE_SUFFIX}\" then edit ops."
         ));
     }

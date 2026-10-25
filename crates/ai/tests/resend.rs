@@ -68,7 +68,7 @@ fn the_resend_is_a_diagnostic_on_the_message() -> TestResult {
 
 /// Answers one request per reply in order, reading each request whole first.
 fn serve(replies: Vec<&'static str>) -> std::io::Result<(u16, std::thread::JoinHandle<()>)> {
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufReader, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let handle = std::thread::spawn(move || {
@@ -77,17 +77,7 @@ fn serve(replies: Vec<&'static str>) -> std::io::Result<(u16, std::thread::JoinH
                 return;
             };
             let mut reader = BufReader::new(stream);
-            let mut length = 0usize;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let _ = reader.read_exact(&mut vec![0; length]);
+            let _ = crate::loopback::read_request(&mut reader);
             let _ = reader.get_mut().write_all(reply.as_bytes());
         }
     });

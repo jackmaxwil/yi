@@ -18,8 +18,16 @@ mkdir -p "$HOME"
 tar -C "$work" -xzf "$tarball"
 tree="$(find "$work" -maxdepth 1 -mindepth 1 -type d -not -name home)"
 
+# A tag built from a stale tree packs a binary that reports another release and passes every
+# check below: the artifact's own --version must be the version its name carries.
+reported="$("$tree/bin/yi" --version < /dev/null)"
+echo "$reported"
+case "$(basename "$tarball")" in
+  "yi-${reported#yi }-"*) ;;
+  *) echo "$(basename "$tarball") holds a binary that reports: $reported"; exit 1 ;;
+esac
+
 # Unpacked in place: the sources are found by walking up from bin/yi.
-"$tree/bin/yi" --version < /dev/null
 "$tree/bin/yi" ask --json --model faux/faux-1 ping < /dev/null > "$work/unpacked.json"
 grep -q '"text":"faux: ping"' "$work/unpacked.json" || {
   echo "unpacked binary produced no answer"; cat "$work/unpacked.json"; exit 1;

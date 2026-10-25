@@ -39,7 +39,6 @@ fn tool(id: &str, rows: usize) -> Cell {
     Cell::Tool(ToolCell {
         name: "bash".to_owned(),
         call_id: id.to_owned(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("bash", "ls"),
         digest: None,
