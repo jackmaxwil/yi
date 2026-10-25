@@ -359,6 +359,7 @@ pub fn run_console_command(args: &Args) -> i32 {
             .and_then(|browser| browser.path.as_ref())
             .map(std::path::PathBuf::from),
         chrome_pin: chrome_pin(),
+        home: std::env::var("HOME").ok(),
     };
     let control = match control(args) {
         Ok(control) => control,
@@ -431,5 +432,6 @@ pub(crate) fn session_extensions(
             .as_ref()
             .and_then(|skills| skills.global.clone())
             .unwrap_or_default(),
+        can_delegate: true,
     })
 }

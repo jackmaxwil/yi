@@ -2,11 +2,14 @@
 # Aggregator = the gate entrypoint itself (D31; a surveyed aggregator was referenced by
 # nothing). Ordered most-legible-failure-first. Prints one debt total at the end.
 # `--fast` drops the gates that need a build (dist binary, startup, rustdoc, the two
-# cargo tools) so pre-commit stays quick; pre-push runs the whole thing.
+# cargo tools) so pre-commit stays quick; pre-push runs the whole thing. `--quiet` prints only
+# the failing gates' output and the summary line, so an agent reads one line, not sixty.
 set -u
 cd "$(dirname "$0")/../.."
-FAST=0
-[ "${1:-}" = "--fast" ] && FAST=1
+FAST=0 QUIET=0
+for arg in "$@"; do
+  case "$arg" in --fast) FAST=1 ;; --quiet) QUIET=1 ;; esac
+done
 PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)}"
 "$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
 FAILED=0
@@ -19,9 +22,22 @@ run() { N=$((N + 1)); { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
 drain() {
   wait
   for i in $(seq 1 "$N"); do
-    cat "$OUT/$i.out"
-    [ "$(cat "$OUT/$i.rc")" = 0 ] || FAILED=$((FAILED + 1))
+    if [ "$(cat "$OUT/$i.rc")" = 0 ]; then
+      [ "$QUIET" = 1 ] || cat "$OUT/$i.out"
+    else
+      cat "$OUT/$i.out"
+      FAILED=$((FAILED + 1))
+    fi
   done
+}
+# The two dist gates run after drain, on a quiet tree, so they print through here instead.
+after() {
+  [ "$QUIET" = 1 ] || { "$@"; return; }
+  local out rc
+  out=$("$@" 2>&1)
+  rc=$?
+  [ "$rc" = 0 ] || printf '%s\n' "$out"
+  return "$rc"
 }
 
 run "$PY" scripts/guardrails/check_manifests.py
@@ -71,6 +87,8 @@ run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
 # target/dist/yi; only this flag proves the cap fires on its own reason (D249).
 run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
+# The prose windows scan zero hits today, so only this flag proves a planted copy still fails.
+run "$PY" scripts/guardrails/check_duplication.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
@@ -90,6 +108,13 @@ run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # Change files are the one place a branch records a change; the format and the view-edit
 # refusals are rules over text, so only this flag proves each refusal fires.
 run "$PY" scripts/guardrails/check_changes.py --selfcheck
+# The recorder numbers versions and decisions on main, where a wrong order is a renumbering
+# nobody can undo; only this flag runs it over real change files in their real landing order.
+if [ "$FAST" -eq 1 ]; then
+  run echo "skip record selfcheck (--fast: replays two record branches and ten gate runs)"
+else
+  run "$PY" scripts/record_changes.py --selfcheck
+fi
 # A baseline edit that rides beside code is how growth hid before the ratchets had their own
 # commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
@@ -112,27 +137,29 @@ run "$PY" scripts/guardrails/check_orphans.py --selfcheck
 # The public surface is what the mirror publishes, modelled on filter-repo's own
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
-# Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
-# set the spelling. Config and the domain-word allowlist live in .codespellrc.
+# Prose is not exempt: check_comments.py ratchets the comment volume and prints the count, and
+# the design docs set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
 # binary_size and startup are the only two readers of target/dist/yi, and the
 # fat-LTO build that writes it is minutes, so this is where it is paid for
 # (D91): one branch decides whether either gate runs, and the build lives
-# inside it. D70: the baseline is a macOS arm64 byte count, so any other
-# target measures a different binary against it. D68: wall clock on a shared
-# runner is noise against a 5 ms budget. --fast skips both because one needs
-# the build and hyperfine is most of the other. Announced, never silent (9).
+# inside it. Each host's binary is measured against its own baseline, and the
+# forge's runners are Linux, so CI builds and measures there and nowhere else.
+# D68: wall clock on a shared runner is noise against a 5 ms budget, so startup
+# never runs under CI. --fast skips both because one needs the build and
+# hyperfine is most of the other. Announced, never silent (9).
 # The build runs beside the other gates (target/dist is its own cargo lock); the
 # two gates that read it run after `drain`, so startup is timed on a quiet tree.
 DIST=0
 if [ "$FAST" -eq 1 ]; then
   run echo "skip binary_size (--fast: needs a dist build)"
   run echo "skip startup (--fast: hyperfine is most of the run)"
-elif [ -n "${CI:-}" ]; then
-  run echo "skip binary_size (D70: baseline is macOS arm64; CI is another target)"
+elif [ -n "${CI:-}" ] && [ "$(uname -s)" != Linux ]; then
+  run echo "skip binary_size (CI measures the dist binary on Linux only, against binary_size_budget_linux.json)"
   run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
-  run echo "skip build-dist (D91: nothing on CI reads target/dist/yi)"
+  run echo "skip build-dist (nothing on a non-Linux CI host reads target/dist/yi)"
 else
+  [ -z "${CI:-}" ] || run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
   run scripts/build_dist.sh
   DIST=$N
 fi
@@ -157,8 +184,8 @@ drain
 
 if [ "$DIST" -gt 0 ]; then
   if [ "$(cat "$OUT/$DIST.rc")" = 0 ]; then
-    "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
-    "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
+    after "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
+    [ -n "${CI:-}" ] || after "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
   else
     # A stale target/dist/yi from an earlier build would pass both gates while
     # measuring code nobody wrote, so a failed build fails them instead.
@@ -166,5 +193,5 @@ if [ "$DIST" -gt 0 ]; then
   fi
 fi
 
-echo "----"
+[ "$QUIET" = 1 ] || echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "guardrails: all green"; else echo "guardrails: $FAILED failing"; exit 1; fi

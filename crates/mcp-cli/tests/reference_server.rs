@@ -9,6 +9,8 @@ use serde_json::{Map, Value, json};
 use yi_mcp_cli::client::{Op, one_shot};
 use yi_types::mcp::McpServerSpec;
 
+const VERSION: &str = "9.9.9";
+
 /// `cargo test` builds examples, and the test binary lives one directory over
 /// from them, so the server is on disk by the time any test runs.
 fn server_spec() -> Result<McpServerSpec, Box<dyn Error>> {
@@ -29,7 +31,7 @@ fn server_spec() -> Result<McpServerSpec, Box<dyn Error>> {
 
 #[test]
 fn discover_negotiates_and_lists_the_server_tools() -> Result<(), Box<dyn Error>> {
-    let found = one_shot(&server_spec()?, Op::Discover)?;
+    let found = one_shot(&server_spec()?, Op::Discover, VERSION)?;
     assert_eq!(
         found.pointer("/protocolVersion").and_then(Value::as_str),
         Some("2025-11-25")
@@ -53,7 +55,7 @@ fn discover_negotiates_and_lists_the_server_tools() -> Result<(), Box<dyn Error>
 
 #[test]
 fn tools_list_returns_the_servers_own_result_object() -> Result<(), Box<dyn Error>> {
-    let listing = one_shot(&server_spec()?, Op::ToolsList)?;
+    let listing = one_shot(&server_spec()?, Op::ToolsList, VERSION)?;
     assert_eq!(
         listing.pointer("/tools/0/name").and_then(Value::as_str),
         Some("echo")
@@ -71,6 +73,7 @@ fn tools_call_round_trips_an_argument() -> Result<(), Box<dyn Error>> {
             name: "echo".to_owned(),
             arguments,
         },
+        VERSION,
     )?;
     assert_eq!(
         result.pointer("/content/0/text").and_then(Value::as_str),
@@ -89,6 +92,7 @@ fn a_multiline_argument_survives_the_line_framing() -> Result<(), Box<dyn Error>
             name: "echo".to_owned(),
             arguments,
         },
+        VERSION,
     )?;
     assert_eq!(
         result.pointer("/content/0/text").and_then(Value::as_str),
@@ -100,13 +104,13 @@ fn a_multiline_argument_survives_the_line_framing() -> Result<(), Box<dyn Error>
 #[test]
 fn resources_read_returns_the_resource_and_names_an_unknown_uri() -> Result<(), Box<dyn Error>> {
     let uri = "echo://greeting".to_owned();
-    let read = one_shot(&server_spec()?, Op::ResourcesRead { uri })?;
+    let read = one_shot(&server_spec()?, Op::ResourcesRead { uri }, VERSION)?;
     assert_eq!(
         read.pointer("/contents/0/text").and_then(Value::as_str),
         Some("the greeting")
     );
     let uri = "echo://missing".to_owned();
-    let outcome = one_shot(&server_spec()?, Op::ResourcesRead { uri });
+    let outcome = one_shot(&server_spec()?, Op::ResourcesRead { uri }, VERSION);
     let message = outcome
         .err()
         .ok_or("an unknown resource should not succeed")?;
@@ -116,11 +120,25 @@ fn resources_read_returns_the_resource_and_names_an_unknown_uri() -> Result<(), 
 
 #[test]
 fn ping_reports_the_negotiated_version() -> Result<(), Box<dyn Error>> {
-    let pong = one_shot(&server_spec()?, Op::Ping)?;
+    let pong = one_shot(&server_spec()?, Op::Ping, VERSION)?;
     assert_eq!(pong.pointer("/ok").and_then(Value::as_bool), Some(true));
     assert_eq!(
         pong.pointer("/protocolVersion").and_then(Value::as_str),
         Some("2025-11-25")
+    );
+    Ok(())
+}
+
+#[test]
+fn the_initialize_request_names_yi_and_the_version_it_was_given() -> Result<(), Box<dyn Error>> {
+    let op = Op::ToolsCall {
+        name: "client_info".to_owned(),
+        arguments: Map::new(),
+    };
+    let result = one_shot(&server_spec()?, op, VERSION)?;
+    assert_eq!(
+        result.pointer("/content/0/text").and_then(Value::as_str),
+        Some("yi 9.9.9")
     );
     Ok(())
 }
@@ -133,6 +151,7 @@ fn an_unknown_tool_surfaces_the_servers_error() -> Result<(), Box<dyn Error>> {
             name: "nope".to_owned(),
             arguments: Map::new(),
         },
+        VERSION,
     );
     let message = outcome.err().ok_or("an unknown tool should not succeed")?;
     assert!(message.contains("tools/call failed"), "{message}");
@@ -149,7 +168,7 @@ fn a_relative_command_that_does_not_resolve_names_where_servers_start() {
         args: Vec::new(),
         env: Map::new(),
     };
-    let error = one_shot(&spec, Op::Ping).expect_err("no such server");
+    let error = one_shot(&spec, Op::Ping, VERSION).expect_err("no such server");
     assert!(
         error.contains("could not start `./scripts/yi-no-such-server.py` (MCP servers start in ")
             && error.contains("; use an absolute path or one on PATH)"),

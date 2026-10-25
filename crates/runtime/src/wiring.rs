@@ -56,6 +56,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
             global_skills: Vec::new(),
+            can_delegate: wiring.depth.saturating_add(1) < wiring.max_depth,
         }));
         let host = attach_runtime(
             &mut child,
@@ -344,6 +345,7 @@ fn wire_schedule(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
             .with_stop(session.halt_hook())
+            .with_notice(session.notice_hook(HostSource::Notice))
             .with_words(session.store_handle())
             .with_channels(
                 wiring
@@ -810,10 +812,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         session.set_deadline(total);
     }
     session.provider().settle_into(session.settle_hook(None));
-    let plans_dir = wiring
-        .plans_dir
-        .clone()
-        .unwrap_or_else(|| wiring.cwd.join(crate::plan::PLANS_DIR));
+    let plans_dir = crate::plan::resolve_plans_dir(wiring.plans_dir.clone(), &wiring.cwd);
     wiring.plans_dir = Some(plans_dir.clone());
     if session.compactor().is_none() {
         session.enable_compaction_with_summarizer(

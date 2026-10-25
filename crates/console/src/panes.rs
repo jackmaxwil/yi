@@ -178,6 +178,28 @@ pub fn review_view(
             theme.dim_style(),
         ));
     }
+    let dropped = diff
+        .filter(|_| scope != ReviewScope::Branch)
+        .map_or(0, |diff| {
+            let turn_only = scope == ReviewScope::Turn;
+            (diff.dropped_at_turn.values())
+                .filter(|turn| !turn_only || **turn == diff.turn)
+                .count()
+        });
+    if dropped > 0 {
+        let noun = if dropped == 1 { "file" } else { "files" };
+        let cap = format!(
+            "review keeps {} files, {} MiB",
+            crate::model::MAX_DIFF_FILES,
+            crate::model::MAX_DIFF_BYTES / (1 << 20)
+        );
+        lines.push(cap_row(
+            &format!("{dropped} older {noun} not shown"),
+            &cap,
+            "git diff lists them",
+            theme,
+        ));
+    }
     if files.is_empty() {
         lines.push(Line::styled(
             "nothing changed in this scope",
@@ -191,6 +213,50 @@ pub fn review_view(
     lines.push(Line::default());
     lines.extend(diffview::render(&patch, width, theme, DiffBudget::FULL));
     (title, lines)
+}
+
+pub(crate) fn cached<K: PartialEq, V>(
+    drawn: &mut crate::model::Drawn<K, V>,
+    key: K,
+    draw: impl FnOnce() -> V,
+) -> &V {
+    let fresh = match drawn.take() {
+        Some((at, rows)) if at == key => (at, rows),
+        _ => (key, draw()),
+    };
+    &drawn.insert(fresh).1
+}
+
+/// Invariant: this scroll holds a view at its top while its rows grow, and a scroll down from
+/// there leaves it less the rows, counted down from the top until the next draw.
+pub(crate) const TOP: usize = usize::MAX;
+
+/// The rows a view held at its top was scrolled down, or `None` for a count from the bottom.
+pub(crate) fn down_from_top(from_bottom: usize) -> Option<usize> {
+    let down = TOP.saturating_sub(from_bottom);
+    (down < TOP / 2).then_some(down)
+}
+
+pub(crate) fn windowed(
+    all: &[Line<'static>],
+    from_bottom: &mut usize,
+    visible: usize,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let total = all.len();
+    let highest = total.saturating_sub(visible);
+    // Scrolling past the top would bank rows a later scroll down must first spend.
+    match down_from_top(*from_bottom) {
+        Some(0) => {}
+        Some(down) => *from_bottom = highest.saturating_sub(down),
+        None => *from_bottom = (*from_bottom).min(highest),
+    }
+    let top = highest.saturating_sub((*from_bottom).min(highest));
+    let rows = all.get(top..total.min(top.saturating_add(visible)));
+    let extent = (total > visible).then_some((total, top));
+    (
+        rows.map(<[Line<'static>]>::to_vec).unwrap_or_default(),
+        extent,
+    )
 }
 
 const CODE_ROWS: usize = 24;
