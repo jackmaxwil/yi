@@ -728,7 +728,8 @@ applies and journals. A todo's contract decides when it is done.
 - Todos are addressed by label; `after` edges order siblings, carry no data, are acyclic; ready is
   derived, never stored. A non-Active plan admits `view` alone (Done: also `retry`, `program`).
 - `Actor::User` is minted only by `authority::confirmed`, from a permission prompt a tty process
-  holds, for one request, valid 300 s. `yi plan` and the serve worker refuse user-only ops.
+  holds, for one request, valid while the plan revision it named still holds, with no time window.
+  `yi plan` and the serve worker refuse user-only ops.
 - Owner: [`crates/runtime/src/plan/ops.rs`](../crates/runtime/src/plan/ops.rs) (legality:
   `table.rs`).
 
