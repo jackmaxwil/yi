@@ -872,6 +872,41 @@ fn debug_select_prints_one_cost_a_part() -> TestResult {
     Ok(())
 }
 
+/// `yi debug profile` and Perfetto read what a YI_TRACE run wrote: a named process and its spans.
+#[test]
+fn a_traced_ask_leaves_a_named_process_and_its_spans() -> TestResult {
+    let workspace = Workspace::new("trace")?;
+    let dir = workspace.0.join("trace");
+    let dir = dir.to_str().ok_or("trace dir is not UTF-8")?;
+    let answered = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "hi"],
+        &[("YI_TRACE", dir)],
+    )?;
+    assert_eq!(answered.status.code(), Some(0), "{answered:?}");
+    let reported = workspace.yi(&["debug", "trace", dir, "--json"])?;
+    assert_eq!(reported.status.code(), Some(0), "{reported:?}");
+    let summary: Value = serde_json::from_str(&stdout(&reported))?;
+    let process = summary["processes"][0]["name"].as_str().unwrap_or_default();
+    assert!(process.starts_with("ask ["), "{summary}");
+    let spans = summary["slowest"].as_array().ok_or("no spans")?;
+    assert!(
+        spans.iter().any(|span| span["process"] == process),
+        "{summary}"
+    );
+    let pid = process.trim_start_matches("ask [").trim_end_matches(']');
+    let events = std::fs::read_to_string(workspace.0.join("trace").join(format!("{pid}.jsonl")))?;
+    let main = events
+        .lines()
+        .find(|line| line.contains(r#""name":"process.main""#));
+    let main: Value = serde_json::from_str(main.ok_or("no process.main event")?)?;
+    let ts = main["ts"].as_u64().ok_or("process.main has no ts")?;
+    assert!(
+        ts > 1_600_000_000_000_000,
+        "ts {ts} is not on the wall clock"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
     let workspace = Workspace::new("role-summarizer")?;
