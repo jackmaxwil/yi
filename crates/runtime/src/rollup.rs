@@ -96,9 +96,10 @@ impl Scan {
     /// Invariant: a journal record, its session mirror and a fork's copy are one op and count once,
     /// though the journal sorts a record's keys and the mirror keeps the order it was stamped in.
     fn add_plan_op(&mut self, record: &PlanOpRecord, since_ms: u64) {
-        let fresh = serde_json::to_value(record)
-            .is_ok_and(|value| self.plan_seen.insert(sorted(&value).to_string()));
-        if record.at < since_ms || !fresh {
+        if record.at < since_ms
+            || !serde_json::to_value(record)
+                .is_ok_and(|value| self.plan_seen.insert(sorted(&value).to_string()))
+        {
             return;
         }
         let op = match (record.extra.contains_key("refusal"), record.op.as_str()) {
