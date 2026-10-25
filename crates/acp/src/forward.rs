@@ -7,9 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use tokio::task::JoinSet;
-use yi_runtime::session_store::{
-    BranchBounds, EntryOrder, EntryQuery, SharedSession, lock_session,
-};
+use yi_runtime::session_store::{SharedSession, lock_session};
 use yi_runtime::{AgentSession, SubagentHost};
 use yi_types::acp::AcpSessionUpdate;
 use yi_types::entry::Entry;
@@ -99,19 +97,12 @@ impl Parent {
     /// Invariant: a message is saved before its end is broadcast, but the leaf may already be a
     /// later one by the time this lags through, so the entry is found by the message it holds.
     fn committed(&mut self, message: &AgentMessage) {
-        let query = EntryQuery {
-            entry_type: Some("message"),
-            order: EntryOrder::NewestFirst,
-            limit: Some(256),
-            ..EntryQuery::default()
-        };
+        let _span = yi_types::trace::span("acp.committed");
         let entry = self.session.store().and_then(|store| {
-            let found = lock_session(&store)
-                .find_entries_on_branch("main", &query, &BranchBounds::default())
-                .ok()?;
-            found.into_iter().find(
-                |entry| matches!(entry, Entry::Message { message: saved, .. } if saved == message),
-            )
+            lock_session(&store).find_on_branch("main", |entry| {
+                matches!(entry, Entry::Message { message: saved, .. } if saved == message)
+                    .then(|| entry.clone())
+            })
         });
         let committed = entry.map(|entry| yi_types::acp::AcpCommitted { entry });
         if let Some(Value::Object(fields)) = committed.and_then(|c| serde_json::to_value(c).ok()) {
@@ -267,13 +258,7 @@ pub(crate) fn session_name(store: &SharedSession) -> Option<String> {
     if let Some(name) = session.name() {
         return Some(name);
     }
-    let entries = session
-        .find_entries(&EntryQuery {
-            order: EntryOrder::OldestFirst,
-            ..EntryQuery::default()
-        })
-        .ok()?;
-    entries.iter().find_map(|entry| match entry {
+    session.find_entry(|entry| match entry {
         Entry::Message {
             message: AgentMessage::User { content, .. },
             ..

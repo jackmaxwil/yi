@@ -22,6 +22,15 @@ pub const CLEANUP_GRACE_MS: u64 = 30_000;
 /// How long a stopped run may take to go idle before its repossession is left pending.
 const JOIN_MS: u64 = 10_000;
 
+pub(crate) async fn off_executor<T: Send + 'static>(
+    method: &str,
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("{method} task failed: {error}"))?
+}
+
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 pub type Timer = Arc<dyn Fn(Duration) + Send + Sync>;
 
@@ -370,7 +379,11 @@ impl SubagentHost {
         if joined.await.is_err() {
             return Err(format!("its run did not stop within {JOIN_MS} ms"));
         }
-        let at = self.lease_now();
+        let (host, key, at) = (Arc::clone(self), key.to_owned(), self.lease_now());
+        off_executor("lease expiry", move || host.settle_repossessed(&key, at)).await
+    }
+
+    fn settle_repossessed(&self, key: &str, at: u64) -> Result<Option<String>, String> {
         let (_, record, _) =
             self.retire_as(key, ChildExit::Repossessed, &|record, candidate| {
                 let kept = [

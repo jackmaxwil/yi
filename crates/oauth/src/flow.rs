@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use crate::Result;
 use crate::loopback;
 use crate::pkce;
-use crate::registry::OauthCode;
+use crate::registry::{Login, OauthCode};
 use crate::store::{self, Credential, Kind, Store};
 use crate::url::{base64url_decode, https_or_local, urlencode};
 
@@ -11,8 +11,9 @@ pub struct LoginOptions {
     pub no_browser: bool,
 }
 
-fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
+pub(crate) fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30));
     if let Some(proxy) = proxy {
@@ -21,17 +22,20 @@ fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     builder.build()
 }
 
-fn parse_tokens(body: &Value) -> Result<Credential> {
+pub(crate) fn seconds(body: &Value, key: &str) -> Option<std::time::Duration> {
+    body.get(key)
+        .and_then(Value::as_f64)
+        .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+}
+
+pub(crate) fn parse_tokens(body: &Value) -> Result<Credential> {
     let access = body
         .get("access_token")
         .or_else(|| body.get("key"))
         .and_then(Value::as_str)
         .ok_or("token response has no access_token")?
         .to_owned();
-    let expires = body
-        .get("expires_in")
-        .and_then(Value::as_u64)
-        .and_then(|seconds| store::now().checked_add(std::time::Duration::from_secs(seconds)));
+    let expires = seconds(body, "expires_in").and_then(|life| store::now().checked_add(life));
     Ok(Credential {
         kind: Kind::Oauth,
         access,
@@ -133,23 +137,37 @@ pub fn login_oauth(
     options: &LoginOptions,
     proxy: Option<&ureq::Proxy>,
 ) -> Result<Credential> {
-    let listener = loopback::bind(spec.callback_port, spec.port_fallback)?;
-    let redirect = loopback::redirect_uri(&listener, &spec.redirect_host, &spec.callback_path)?;
+    let login = match &spec.login {
+        Login::Code(login) => login,
+        Login::Device {
+            device_authorization,
+        } => {
+            return crate::device::login(
+                spec,
+                device_authorization,
+                options.no_browser,
+                proxy,
+                std::thread::sleep,
+            );
+        }
+    };
+    let listener = loopback::bind(login.callback_port, login.port_fallback)?;
+    let redirect = loopback::redirect_uri(&listener, &login.redirect_host, &login.callback_path)?;
     let pkce = pkce::generate()?;
     let mut auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}&scope={}",
-        &spec.authorize,
+        &login.authorize,
         urlencode(&spec.client_id),
         urlencode(&redirect),
         pkce.challenge,
         pkce.state,
         urlencode(&spec.scopes),
     );
-    for (key, value) in &spec.extra_authorize {
+    for (key, value) in &login.extra_authorize {
         auth_url.push_str(&format!("&{key}={}", urlencode(value)));
     }
     open_url(&auth_url, options.no_browser);
-    let callback = loopback::wait_for_callback(&listener, &spec.callback_path)?;
+    let callback = loopback::wait_for_callback(&listener, &login.callback_path)?;
     if callback.state != pkce.state {
         return Err("state mismatch in OAuth callback (possible CSRF); aborting".into());
     }
