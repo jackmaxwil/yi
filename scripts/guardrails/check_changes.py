@@ -17,7 +17,7 @@ scripts/record_changes.py adds `version:` and `decisions:` when it records the f
 diff, exactly what it writes from the fork's tree, is the one view edit a branch may carry."""
 import functools, pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, fail, fork, git, no_fork
+from _common import ROOT, fail, fork, git, no_fork, scratch_repo
 
 DIR = "docs/changes"
 NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$")
@@ -219,21 +219,8 @@ def cases():
 def fork_cases():
     """The size gates themselves, run in a scratch repo cut from main: growth goes red, the exact
     raise greens it, and a raise past the growth is refused. Fork blobs come through cat-file."""
-    import shutil, subprocess, tempfile
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="yi-changes-"))
-    run = lambda *a: subprocess.run(a, cwd=tmp, capture_output=True, text=True)
-    git_ = lambda *a: run("git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
     bad = []
-    try:
-        shutil.copytree(pathlib.Path(__file__).parent, tmp / "scripts/guardrails", ignore=shutil.ignore_patterns("baselines", "__pycache__"))
-        (tmp / "crates/a/src").mkdir(parents=True)
-        (tmp / "crates/a/tests").mkdir()
-        (tmp / "crates/a/src/lib.rs").write_text("// one\nfn a() {}\n")
-        (tmp / "crates/a/tests/t.rs").write_text("fn t() {}\n")
-        git_("init", "-q", "-b", "main")
-        git_("add", "-A")
-        git_("commit", "-q", "-m", "seed")
-        git_("checkout", "-q", "-b", "topic")
+    with scratch_repo("yi-changes-", {"crates/a/src/lib.rs": "// one\nfn a() {}\n", "crates/a/tests/t.rs": "fn t() {}\n"}) as (tmp, run):
         with open(tmp / "crates/a/src/lib.rs", "a") as f:
             f.write("// two\n// three\n// four\n" + "".join(f"fn g{i}() {{}}\n" for i in range(200)))
         (tmp / "crates/a/tests/t.rs").write_text("fn t() {}\nfn u() {}\n")
@@ -252,8 +239,6 @@ def fork_cases():
         (tmp / DIR / "2026-10-01-grow.md").write_text(change.replace("---\nGrow.", "---\n"))
         if verdict()["test_size"] != 1:
             bad.append("a change file this gate refuses still lent its raise")
-    finally:
-        shutil.rmtree(tmp)
     return bad
 
 

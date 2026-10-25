@@ -37,6 +37,8 @@ impl EventSeq {
 #[derive(Default)]
 pub struct RemotePort {
     pub queue: Vec<PortRequest>,
+    /// Invariant: whole on purpose, images included: `/tree` and the cell-to-entry match in
+    /// [`RemotePort::drawn`] read every entry.
     entries: Vec<Entry>,
     leaf: Option<String>,
     /// Messages the worker saved since the last replay, in order: all on the current branch.

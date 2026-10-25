@@ -11,7 +11,7 @@ use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
+pub(crate) fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
     Scratch::new(&format!("yi-tools-{tag}"))
 }
 
@@ -22,13 +22,13 @@ fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
         .collect()
 }
 
-fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
+pub(crate) fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
     yi_tools::hashline::tool::HashlineReadTool::new(
         yi_tools::hashline::tool::shared_hashline_state(),
     )
 }
 
-fn output_text(output: &yi_tools::ToolOutput) -> String {
+pub(crate) fn output_text(output: &yi_tools::ToolOutput) -> String {
     output
         .result
         .content
@@ -882,7 +882,7 @@ fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
         let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
         let text = output_text(&output);
         let path = (text.lines().last())
-            .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+            .and_then(|line| Some(yi_tools::spill_path(line)?.1))
             .ok_or_else(|| format!("{command}: the pointer is not last: {text}"))?;
         let bytes: usize = (1..=count).map(|n| format!("{n}\n").len()).sum();
         let whole = fs::read_to_string(path)?;
@@ -934,6 +934,31 @@ fn a_backgrounded_jobs_report_names_its_spill() -> TestResult {
         .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
         .ok_or("the report names no spill")?;
     assert_eq!(fs::read_to_string(path)?.lines().count(), 20_000);
+    Ok(())
+}
+
+/// Dies with the container wrapper kept as the job's text: its headline named `docker exec`
+/// and the reducer read `docker`, not the model's `cargo`, so a cargo job lost its filter.
+#[test]
+fn a_container_job_keeps_the_models_command_and_runs_the_placed_one() -> TestResult {
+    let dir = temp_dir("jobs-placed")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let (after, limit) = (
+        Some(std::time::Duration::from_millis(50)),
+        std::time::Duration::from_secs(60),
+    );
+    let placed = Some(("sleep 0.3; printf placed", "true"));
+    let run = yi_tools::run_or_background("cargo test", &context, after, limit, None, placed)?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the placed command did not become a job".into());
+    };
+    yi_tools::jobs::registry().wait_settled(Some(id), limit);
+    let report = yi_tools::jobs::registry().release(id)?;
+    assert_eq!(
+        report.headline(),
+        format!("job {id} finished (exit 0): cargo test")
+    );
+    assert_eq!(report.view(), "placed");
     Ok(())
 }
 
@@ -998,12 +1023,15 @@ fn a_red_workspace_build_keeps_its_error_through_the_reducer() -> TestResult {
         assert!(text.contains("b/src/main.rs:121:36"), "{command}: {text}");
         let cap = yi_tools::OUTPUT_CAP;
         let row = format!(
-            "[capture cut: kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream); every byte: ",
+            "[full output, kept {cap} of {} bytes (OUTPUT_CAP {cap} per stream), every byte: ",
             streamed + extra
         );
+        let naming: Vec<&str> = (text.lines())
+            .filter(|line| line.contains(&*dir.join("tool-output").to_string_lossy()))
+            .collect();
         assert!(
-            text.lines().any(|line| line.starts_with(&row)),
-            "{command}: no {row}: {text}"
+            naming.len() == 1 && naming.iter().all(|line| line.starts_with(&row)),
+            "{command}: not one {row}: {text}"
         );
     }
     Ok(())
@@ -1022,7 +1050,7 @@ fn the_omitted_lines_notice_names_lines_of_the_file_it_points_at() -> TestResult
         .ok_or_else(|| format!("no notice: {text}"))?;
     let (from, to): (usize, usize) = (range.0.parse()?, range.1.parse()?);
     let path = (text.lines())
-        .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .find_map(|line| Some(yi_tools::spill_path(line)?.1))
         .ok_or_else(|| format!("no pointer: {text}"))?;
     let whole = fs::read_to_string(path)?;
     let spill: Vec<&str> = whole.lines().collect();
@@ -1067,6 +1095,129 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let finished = text_of(&polled.result.content);
     assert!(finished.contains("woke"), "{finished}");
     assert!(finished.contains("finished (exit 0)"), "{finished}");
+    Ok(())
+}
+
+/// Runs `command` past a 200 ms auto-background, so it becomes a job, and polls it to its end.
+fn polled_job(command: &str, context: &mut ToolContext) -> Result<yi_tools::ToolOutput, String> {
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let started = BashTool::default().execute(args(&[("command", json!(command))]), context);
+    let job = (started.result.details.get("job").and_then(Value::as_u64))
+        .ok_or_else(|| format!("not a job: {}", output_text(&started)))?;
+    let poll = args(&[("job", json!(job)), ("wait", json!(60))]);
+    Ok(BashTool::default().execute(poll, context))
+}
+
+/// A red `cargo test` of 2,000 cases that became a job reached the model raw, 64,656 B; the
+/// view keeps the failing test and its assert lines inside the ceiling, the program value all.
+#[test]
+fn a_failing_cargo_test_job_is_polled_through_the_view_and_valued_whole() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("job-view-cargo")?;
+    let recorded = view_fixture("view/cargo-test-2000-one-assert-eq.txt");
+    let cargo = dir.join("bin/cargo");
+    fs::create_dir_all(dir.join("bin"))?;
+    let script = format!(
+        "#!/bin/sh\nsleep 0.5\ncat '{}'\nexit 101\n",
+        recorded.display()
+    );
+    fs::write(&cargo, script)?;
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    context.program = true;
+    let command = format!("PATH='{}':\"$PATH\" cargo test", dir.join("bin").display());
+    let polled = polled_job(&command, &mut context)?;
+    let text = output_text(&polled);
+    let (headline, body) = text.split_once('\n').ok_or("no headline")?;
+    assert!(headline.contains("finished (exit 101)"), "{headline}");
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING,
+        "{} B: {body}",
+        body.len()
+    );
+    let verdict = [
+        "---- tests::balance_1377 stdout ----",
+        "  left: 4132",
+        " right: 4133",
+    ];
+    for line in verdict
+        .iter()
+        .chain(&["test result: FAILED. 1999 passed; 1 failed"])
+    {
+        assert!(body.contains(line), "no {line:?}: {body}");
+    }
+    let raw = fs::read_to_string(&recorded)?;
+    let value = polled.value.ok_or("no program value")?;
+    let stdout = value
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let half = yi_tools::OUTPUT_CAP / 2;
+    let (head, tail) = (raw.get(..half), raw.get(raw.len().saturating_sub(half)..));
+    assert!(
+        head.is_some_and(|head| stdout.starts_with(head)),
+        "{stdout}"
+    );
+    assert!(tail.is_some_and(|tail| stdout.contains(tail)), "{stdout}");
+    Ok(())
+}
+
+/// A 258,672 B build whose one error is its last line, run as a job: the error stays inline
+/// inside the ceiling, and the one row naming the file reads back every byte.
+#[test]
+fn a_job_whose_build_errors_last_keeps_the_error_and_names_the_spill() -> TestResult {
+    let dir = temp_dir("job-view-build")?;
+    let recorded = view_fixture("view/make-build-error-last.txt");
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let command = format!("sleep 0.5; cat '{}'; exit 2", recorded.display());
+    let text = output_text(&polled_job(&command, &mut context)?);
+    let (_, body) = text.split_once('\n').ok_or("no headline")?;
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING,
+        "{} B: {body}",
+        body.len()
+    );
+    let error = "src/unit_1700.c:1:42: error: use of undeclared identifier 'undeclared_offset'";
+    assert!(body.contains(error), "{body}");
+    let named: Vec<&str> = (body.lines().filter_map(yi_tools::spill_path))
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(named.len(), 1, "{body}");
+    let kept = named.first().map(fs::read).transpose()?;
+    assert!(
+        kept == Some(fs::read(&recorded)?),
+        "the named file is not the whole build"
+    );
+    Ok(())
+}
+
+/// A cut capture no file holds, foreground and as a job: one `[capture cut: …]` row each, and the
+/// job's view passes the ceiling by that row alone, since the row is appended after the view.
+#[test]
+fn a_cut_capture_with_no_file_says_so_once_on_both_paths() -> TestResult {
+    let dir = temp_dir("cut-no-file")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let print = "awk 'BEGIN{for(i=0;i<4000;i++) print \"0123456789\"}'";
+    let foreground = BashTool::default().execute(args(&[("command", json!(print))]), &context);
+    let job = output_text(&polled_job(&format!("sleep 0.5; {print}"), &mut context)?);
+    for text in [output_text(&foreground), job.clone()] {
+        let rows: Vec<&str> = (text.lines())
+            .filter(|line| line.starts_with("[capture cut: kept 30000 of 44000 bytes"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{text}");
+        assert!(text.ends_with("; no file kept the rest]"), "{text}");
+        assert!(!text.contains("[output truncated]"), "{text}");
+    }
+    let (_, body) = job.split_once('\n').ok_or("no headline")?;
+    let row = body.lines().last().unwrap_or_default();
+    assert!(body.contains("(VIEW_CEILING 16384)"), "{body}");
+    assert!(
+        body.len() <= yi_tools::VIEW_CEILING + 1 + row.len(),
+        "{} B: {body}",
+        body.len()
+    );
     Ok(())
 }
 
@@ -1563,29 +1714,13 @@ fn a_write_over_a_file_past_the_cap_claims_no_patch() -> TestResult {
     Ok(())
 }
 
-struct OneCell(yi_types::kernel::ExecuteResult);
-
-impl yi_tools::KernelBridge for OneCell {
-    fn execute_cell(
-        &self,
-        _code: &str,
-        _cancelled: &yi_tools::CancelFlag,
-        _recovery_dir: Option<&std::path::Path>,
-    ) -> Result<yi_tools::KernelCellOutcome, String> {
-        Ok(yi_tools::KernelCellOutcome {
-            result: self.0.clone(),
-            kernel_restarted: false,
-            notes: Vec::new(),
-        })
-    }
-}
-
 struct DeadKernel;
 
 impl yi_tools::KernelBridge for DeadKernel {
     fn execute_cell(
         &self,
         _code: &str,
+        _call_id: &str,
         _cancelled: &yi_tools::CancelFlag,
         _recovery_dir: Option<&std::path::Path>,
     ) -> Result<yi_tools::KernelCellOutcome, String> {
@@ -1642,46 +1777,6 @@ fn a_cell_that_fails_to_finish_keeps_the_calls_it_made() -> TestResult {
     );
     assert_eq!(output.result.details["callsDropped"], json!(3));
     assert_eq!(*calls.0.lock().map_err(|_| "poisoned")?, ["close"]);
-    Ok(())
-}
-
-/// A kernel edit becomes a patch here, where every other patch is computed. The
-/// point is the LCS: a whole-file dump would mark all four lines changed.
-#[test]
-fn a_kernel_edit_arrives_as_a_real_patch() -> TestResult {
-    let dir = temp_dir("kernel-diff")?;
-    let context = ToolContext::new(dir.to_path_buf());
-    let tool = yi_tools::IpythonTool {
-        bridge: Arc::new(OneCell(yi_types::kernel::ExecuteResult {
-            stdout: String::new(),
-            stderr: String::new(),
-            result: None,
-            diffs: vec![yi_types::kernel::KernelDiffDisplay {
-                path: "notes.txt".to_owned(),
-                old_str: "one\ntwo\nthree\nfour\n".to_owned(),
-                new_str: "one\ntwo\nTHREE\nfour\n".to_owned(),
-                start_line: None,
-            }],
-            attachments: Vec::new(),
-            sent_agent_messages: Vec::new(),
-            status: yi_types::kernel::ExecuteStatus::Ok,
-            error: None,
-            duration_ms: 12,
-        })),
-        calls: None,
-    };
-
-    let output = tool.execute(args(&[("code", json!("edit()"))]), &context);
-    let patch = output.result.details["diffs"][0]["patch"]
-        .as_str()
-        .ok_or("kernel diff carried no patch")?;
-    assert!(patch.contains("--- a/notes.txt"), "{patch}");
-    assert!(
-        patch.contains("-three") && patch.contains("+THREE"),
-        "{patch}"
-    );
-    let removed = patch.lines().filter(|l| l.starts_with("-o")).count();
-    assert_eq!(removed, 0, "unchanged lines are not marked: {patch}");
     Ok(())
 }
 
@@ -4188,7 +4283,7 @@ fn a_gap_beside_a_counted_row_claims_no_line_twice() -> TestResult {
     Ok(())
 }
 
-fn view_fixture(name: &str) -> PathBuf {
+pub(crate) fn view_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}"))
 }
 

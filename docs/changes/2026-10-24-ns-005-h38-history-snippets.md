@@ -1,6 +1,6 @@
 ---
 issue: Closes #1447, Refs #1442
-raise: tests +188, comments +5, crate runtime +49, crate session +13
+raise: tests +188, comments +5, crate runtime +48, crate session +13
 decision: A history hit's snippet keeps the line's own case and a clipped one adds a [...] row naming the 160-char cap and the address that reads the whole entry (amends D277 and D279 reply text) | the snippet was lowercased and clipped with no notice, which the loud-caps law forbids, and history.grep hits had no address to read | restore the lowered snippet and drop the row and the url
 ---
 A history hit shows its line in the case it was written. Before, `compact.recall` lowered the whole snippet and cut it at 160 characters without saying so, and `compact.search` cut at the same width with no word of it either. Now a hit cut to the 160-character window carries `"cut": true`, and the reply's `notice` gains a row that names the cap and the call that reads the rest: `[1 of 1 snippets cut to 160 chars (SNIPPET_CHARS) · rlm.fetch(hit["url"]) reads a cut hit whole]`. A `compact.recall` hit gains a `url`, `history://self/<entry>`, since it had no address to read; a `compact.search` hit keeps `history://<session>/<entry>`. The window is centred on the match by walking the original text, so a letter that lowercases to two characters no longer pushes the match out of view.

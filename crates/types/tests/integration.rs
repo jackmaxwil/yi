@@ -5,6 +5,7 @@ mod child_result;
 mod config_migrate;
 mod contract;
 mod effort;
+mod encoding;
 mod graph;
 mod image;
 mod journal_chain;

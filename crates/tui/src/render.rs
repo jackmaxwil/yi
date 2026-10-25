@@ -183,11 +183,14 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
         if let Some(state) = app.tasks.get(id)
             && !app.committed_tasks.contains(id)
         {
-            let mut cell = state.cell.clone();
-            if state.finished.is_none() {
-                cell.elapsed_ms = elapsed_ms(state.started, app.clock.now());
-            }
-            let rows = cell.lines(content_width, theme, app.mode, spinner);
+            let elapsed = match state.finished {
+                None => elapsed_ms(state.started, app.clock.now()),
+                Some(_) => state.cell.elapsed_ms,
+            };
+            let (mode, rows) = (app.mode, &state.rows);
+            let rows = state
+                .cell
+                .lines_at(elapsed, content_width, theme, mode, spinner, rows);
             join_live(&mut live_lines, !app.pane && app.last_commit_blank, rows);
         }
     }
@@ -623,11 +626,6 @@ fn schedule_reflow(app: &mut App) {
     if !change.changed && !app.reflow.reflow_needed_for_width(width) {
         return;
     }
-    if app.running {
-        // A rebuild now can only render the partial that exists now; the end of
-        // the stream has to repeat it from the settled text.
-        app.reflow.mark_resize_requested_during_stream();
-    }
     app.reflow
         .schedule_debounced(Some(width), std::time::Instant::now());
 }
@@ -649,9 +647,6 @@ fn run_reflow<B>(
     app.reflow.clear_pending_reflow();
     let target = u16::try_from(app.width).unwrap_or(u16::MAX);
     app.reflow.mark_reflowed_width(target);
-    if app.running {
-        app.reflow.mark_ran_during_stream();
-    }
     if app.history.is_empty() {
         return;
     }

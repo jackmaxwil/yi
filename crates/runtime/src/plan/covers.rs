@@ -214,7 +214,7 @@ impl PlanEngine {
         let manifest = match artifacts
             .get(&checker.digest)
             .map_err(|error| error.to_string())
-            .and_then(|bytes| CheckerManifest::parse(&bytes))
+            .and_then(|bytes| CheckerManifest::parse(&bytes, super::verify::session_has))
         {
             Ok(manifest) => manifest,
             Err(reason) => return ItemVerdict::Abstain { reason },
