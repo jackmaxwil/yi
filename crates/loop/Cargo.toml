@@ -16,3 +16,4 @@ tokio = { workspace = true }
 [dev-dependencies]
 yi-ai = { workspace = true }
 yi-context = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

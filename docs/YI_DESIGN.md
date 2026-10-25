@@ -235,19 +235,24 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   extra }`. Settled by: D115, D337, D338
 
 ### 4.5 Interrupt
-- `abort` fires `InterruptSignal` (sets `fired`, bumps `epoch`, wakes waiters); a run clears
-  `fired` only if the epoch is the one read at admission. A streaming request ends with its
-  partial as `Aborted`; every call not yet run is answered `ToolErrorKind::Aborted` with its
-  start and end events; running tools see their cancel flag. A fired interrupt sends no further
-  request, a compaction summarizer's included: the run settles as an empty `Aborted` turn.
-- `cut` is a separate flag, set by the loop and read by provider pumps between SSE events.
+- `abort` fires `InterruptSignal` (bumps `epoch`, sets `fired` and the request's `cut`, wakes
+  waiters), so the provider stops on the wire at its next SSE event; a run clears `fired` only
+  if the epoch is the one read at admission. A streaming request ends with its partial as
+  `Aborted`, one waiting out a reasoning cut's drain included; every call not yet run is
+  answered `ToolErrorKind::Aborted` with its start and end events; running tools see their
+  cancel flag. A fired interrupt sends no further request, a compaction summarizer's included:
+  the run settles as an empty `Aborted` turn.
+- `cut` is one request's flag, set by the loop at a reasoning budget or deadline and by a fire,
+  and read by provider pumps between SSE events; each request opens with a fresh one, so a
+  later request never clears an earlier request's cut.
 - Owner: [`crates/loop/src/interrupt.rs`](../crates/loop/src/interrupt.rs); Settled by: D163, D245
 
 ## 5. Provider
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
 - Dispatch by `model.api`: `anthropic-messages` (`anthropic`), `openai-responses` (`openai`,
   `openai-codex`), `openai-completions` (`openrouter`, `google`), `cursor-agent` (`cursor`);
-  any other api is faux. Catalog:
+  `kimi` models take any of the first three by their listed `protocol`, Moonshot's wire rules
+  derived from the route. Any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
 - Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
