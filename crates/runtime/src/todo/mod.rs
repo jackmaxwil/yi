@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, DocError, Note, PlanId, Todo, TodoLabel, TodoState, TodoStateName,
+    AgentId, BlockedOn, DocError, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState,
+    TodoStateName,
 };
 use yi_types::todo::{PhaseName, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord};
 
@@ -709,6 +710,13 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
             return Ok(*one);
         }
     }
+    // A whole text whose digest named no row (retyped in another case) still names it by head.
+    let digest = |tail: &str| tail.len() == 8 && tail.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let long = bare.chars().count() > TODO_LABEL_MAX.saturating_sub(9);
+    let tail = bare
+        .rsplit_once(' ')
+        .filter(|(_, tail)| long && digest(tail));
+    let bare = tail.map_or(bare, |(head, _)| head);
     let prefix = bare.to_lowercase();
     let hits: Vec<usize> = if bare.chars().count() >= PREFIX_MIN {
         items

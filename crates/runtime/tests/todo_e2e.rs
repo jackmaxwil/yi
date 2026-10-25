@@ -829,9 +829,12 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
     assert_eq!(first.note.as_ref().map(|note| note.as_str()), Some(long));
     let (is_error, text) = call(
         &tool,
-        json!({"op": "done", "label": long, "evidence": "`pytest fixtures` 12 passed in 1s"}),
+        json!({"op": "done", "label": long.to_lowercase(), "evidence": "`pytest fixtures` 12 passed in 1s"}),
     );
-    assert!(!is_error, "the full text still names the cut item: {text}");
+    assert!(
+        !is_error,
+        "the full text, retyped in lower case, still names the cut item: {text}"
+    );
     Ok(())
 }
 
