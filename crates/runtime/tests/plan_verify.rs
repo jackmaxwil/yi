@@ -39,6 +39,7 @@
 //! Not here. The judge tier is F3a and lives in `tests/judge.rs`: every `Snapshot` below
 //! seats no jury (`jury: None`), which is the path where a `judge` item abstains.
 
+use crate::RED_PYTEST;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -213,12 +214,6 @@ fn the_checker_sees_no_provider_key() -> TestResult {
     );
     Ok(())
 }
-
-/// A real `pytest -v` run (#1153): 32,955 B, past the view's 16 KiB ceiling.
-const RED_PYTEST: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
-);
 
 /// Runs `command` as a failing `cmd` item and returns the refused item's detail.
 fn failing_detail(
