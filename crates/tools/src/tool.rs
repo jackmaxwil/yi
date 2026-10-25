@@ -15,6 +15,21 @@ pub enum ToolKind {
 
 pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// What one program call may collect before its value says `cut`; a test lowers it so a cut
+/// costs kilobytes and a hundred files rather than 64 MiB and 100,000.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fuse {
+    pub bytes: usize,
+    pub items: usize,
+}
+
+impl Fuse {
+    pub const PROGRAM: Self = Self {
+        bytes: yi_types::tool_value::PROGRAM_FUSE_BYTES,
+        items: yi_types::tool_value::PROGRAM_FUSE_ITEMS,
+    };
+}
+
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
@@ -41,6 +56,7 @@ pub struct ToolContext {
     /// Invariant: set for a call a kernel program made; a tool then fills [`ToolOutput::value`]
     /// and collects past the caps of the model's view, since the program reads the value.
     pub program: bool,
+    pub fuse: Fuse,
 }
 
 impl ToolContext {
@@ -76,6 +92,7 @@ impl ToolContext {
             call_id: String::new(),
             job_owner: None,
             program: false,
+            fuse: Fuse::PROGRAM,
         }
     }
 }
@@ -203,6 +220,27 @@ pub(crate) fn clip(line: &str, cols: usize) -> (String, bool) {
             true,
         ),
         None => (line.to_owned(), false),
+    }
+}
+
+/// A loud cut's row: kept of what existed, the cap that cut it, and the call that gets the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut<'a> {
+    pub kept: usize,
+    pub total: usize,
+    pub what: &'a str,
+    pub cap: &'a str,
+    pub limit: usize,
+    pub next: &'a str,
+}
+
+impl std::fmt::Display for Cut<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "[\u{2026} {} of {} {} ({} {}); the rest: {}]",
+            self.kept, self.total, self.what, self.cap, self.limit, self.next
+        )
     }
 }
 

@@ -51,6 +51,7 @@ pub fn catalog_rejected(dir: &std::path::Path) -> Vec<String> {
 }
 
 pub use yi_ai::catalog::PROVIDERS as CATALOG_PROVIDERS;
+pub use yi_ai::kimi::usages as kimi_usages;
 pub use yi_ai::refresh::{
     DEFAULT_REFRESH_HOURS, MODELS_DEV, age as catalog_age, is_stale as catalog_is_stale,
     list_url as catalog_list_url, needs_credential as catalog_needs_credential,
@@ -482,11 +483,7 @@ fn offered(
 
 fn cursor_stop(signal: &InterruptSignal) -> yi_ai::cursor::StopFn {
     let cut = signal.cut_flag();
-    let fired = signal.fired_flag();
-    Arc::new(move || {
-        cut.load(std::sync::atomic::Ordering::SeqCst)
-            || fired.load(std::sync::atomic::Ordering::SeqCst)
-    })
+    Arc::new(move || cut.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 fn cursor_tool(

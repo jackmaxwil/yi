@@ -199,6 +199,38 @@ async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
     Ok(())
 }
 
+/// A cell traceback past the view's ceiling, with no dir to keep it, names a cell; run next in
+/// the same kernel, that cell prints the exception again, its final line included.
+#[tokio::test]
+async fn the_cell_a_cut_traceback_names_prints_the_exception_again() -> TestResult {
+    let service = service();
+    let failed = cell(
+        &service,
+        "def deeper(n):\n    return deeper(n + 1)\ndeeper(0)",
+    )
+    .await?;
+    let shown = failed.result.error.ok_or("no error")?.traceback.join("\n");
+    let traceback = yi_tools::Involuntary::Traceback;
+    let viewed = yi_tools::view(traceback, &shown, "", 1, None, None);
+    let named = (viewed.text.lines()).find_map(|line| {
+        line.split_once("the rest: an ipython cell running ")?
+            .1
+            .split_once(", which")
+    });
+    let call = named
+        .ok_or_else(|| format!("no cell named: {} B", viewed.text.len()))?
+        .0;
+    let again = cell(&service, call).await?;
+    let printed = again.result.stdout + &again.result.stderr;
+    let last = "RecursionError: maximum recursion depth exceeded";
+    assert!(
+        printed.lines().any(|line| line.starts_with(last)),
+        "{printed}"
+    );
+    service.dispose().await;
+    Ok(())
+}
+
 struct NoChildren;
 
 impl Delegate for NoChildren {

@@ -338,7 +338,7 @@ finally:
 
 fn marker_line(stdout: &str) -> Option<&str> {
     let index = stdout.rfind(RESULT_MARKER)?;
-    let rest = &stdout[index.saturating_add(RESULT_MARKER.len())..];
+    let rest = stdout.get(index.saturating_add(RESULT_MARKER.len())..)?;
     let line = rest.lines().next()?.trim();
     (!line.is_empty()).then_some(line)
 }
