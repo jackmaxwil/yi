@@ -3792,6 +3792,69 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
     Ok(())
 }
 
+const TWO_ROWS_ONE_TASK: &str = r#"{"value": "patched", "discoveries": [
+    {"text": "the retry loop double-counts", "violatesCheckOf": "t1", "fingerprint": "aaa"},
+    {"text": "the backoff is unbounded", "violatesCheckOf": "t1", "fingerprint": "bbb"}
+]}"#;
+
+/// Dies with every row printing the check's whole evidence: two rows on one red task were two
+/// copies of a 16 KiB view, and the parent's context paid for both.
+#[tokio::test]
+async fn two_discoveries_on_one_red_task_print_its_evidence_once() -> TestResult {
+    let cwd = Scratch::new("yi-adjudication-once")?;
+    let pytest = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+    );
+    write_canonical_plan(&cwd, &[("t1", &format!("cat '{pytest}'; exit 1"))])?;
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: TWO_ROWS_ONE_TASK,
+        tool_command: None,
+        cwd: Some(cwd.to_path_buf()),
+        wake_parent: None,
+    })?;
+    own(&harness.store, "adjudication")?;
+    yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
+        objective: "ship the retry fix".to_owned(),
+        status: yi_types::goal::GoalStatus::Active,
+        token_budget: None,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        created: 0,
+        updated: 0,
+        check: None,
+        check_timeout_ms: None,
+        check_failure: None,
+        discoveries: Vec::new(),
+        extra: Map::new(),
+    })?;
+    harness
+        .host
+        .spawn(
+            "patch the retry loop".to_owned(),
+            protocol_kwargs("finder", &[("check", json!("true"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "finder").await);
+    harness
+        .host
+        .result("finder", None)
+        .map_err(|error| error.to_string())?;
+    let inbox = harness.inbox.lock().map_err(|_| "poisoned")?.join("\n");
+    assert_eq!(inbox.matches("HIGH discovery from finder").count(), 2);
+    assert_eq!(
+        inbox.matches("collected 400 items").count(),
+        1,
+        "{inbox:.300}"
+    );
+    let later = "(the same evidence as the first row naming this task, above)";
+    assert_eq!(inbox.matches(later).count(), 1);
+    Ok(())
+}
+
 struct FireAtTurnEnd {
     notice: Arc<yi_runtime::subagent::NoticeFn>,
     running: Arc<dyn Fn() -> bool + Send + Sync>,

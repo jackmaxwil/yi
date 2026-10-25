@@ -719,15 +719,13 @@ const WRAPPERS: [&str; 11] = [
     "xargs",
 ];
 
-/// Shell words a command runs behind: `then rm -rf .git` runs `rm`.
-const OPENERS: [&str; 9] = [
-    "!", "do", "elif", "else", "if", "then", "until", "while", "{",
-];
+pub(crate) const SEPARATORS: [char; 7] = [';', '&', '|', '\n', '(', ')', '`'];
 
-/// Reading past a wrapper, opener, flag, assignment or number widens what the belt and wall see.
+/// Reading past a wrapper, keyword, flag, assignment or number widens what belt and wall see.
 pub fn wraps(word: &str) -> bool {
     WRAPPERS.contains(&word.rsplit('/').next().unwrap_or(word))
-        || OPENERS.contains(&word)
+        || crate::safety::OPENERS.contains(&word)
+        || crate::safety::HEADERS.contains(&word)
         || word.starts_with('-')
         || word.contains('=')
         || word.chars().all(|character| character.is_ascii_digit())
@@ -748,11 +746,10 @@ pub fn command_targets_catastrophic(
     command: &str,
     context: &CatastrophicContext,
 ) -> Option<String> {
-    let separator = [';', '&', '|', '\n', '(', ')', '`'];
-    if !command.split(separator).any(runs_destructive) {
+    if !command.split(SEPARATORS).any(runs_destructive) {
         return None;
     }
-    for token in command.split(|c: char| c.is_whitespace() || separator.contains(&c)) {
+    for token in command.split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c)) {
         let token = token.trim_matches(['"', '\'']);
         if token.is_empty() || token.starts_with('-') {
             continue;

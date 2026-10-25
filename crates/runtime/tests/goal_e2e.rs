@@ -10,8 +10,8 @@ use yi_ai::faux::{faux_assistant_message, faux_text};
 
 use yi_loop::ExecutionMode;
 use yi_runtime::goal::{
-    GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, continuation_text, record_discovery,
-    template,
+    GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, budget_limit_text, continuation_text,
+    objective_updated_text, record_discovery,
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::goal::{Goal, GoalStatus};
@@ -85,28 +85,40 @@ fn service_with_plans() -> std::io::Result<(Scratch, Service)> {
     Ok((root, (service, store, delivered)))
 }
 
+fn goal_with(objective: &str) -> Goal {
+    Goal {
+        objective: objective.to_owned(),
+        status: GoalStatus::Active,
+        token_budget: Some(1000),
+        tokens_used: 250,
+        time_used_seconds: 60,
+        created: 0,
+        updated: 0,
+        check: None,
+        check_timeout_ms: None,
+        check_failure: None,
+        discoveries: Vec::new(),
+        extra: serde_json::Map::new(),
+    }
+}
+
 #[test]
-fn template_rejects_extra_and_missing_values() {
-    let error = template::render(
-        "Hello {{ name }}",
-        vec![("name", "a".to_owned()), ("stray", "b".to_owned())],
-    );
-    assert_eq!(
-        error,
-        Err(template::TemplateError::ExtraValue {
-            name: "stray".to_owned()
-        }),
-        "a renamed placeholder must not silently drop content"
-    );
-    let error = template::render("Hello {{ name }}", Vec::new());
-    assert_eq!(
-        error,
-        Err(template::TemplateError::MissingValue {
-            name: "name".to_owned()
-        })
-    );
-    let escaped = template::render("literal {{{{ braces }}}}", Vec::new());
-    assert_eq!(escaped, Ok("literal {{ braces }}".to_owned()));
+fn every_goal_prompt_fills_every_placeholder() {
+    let hostile = "ship «porté» 完成 {{ token_budget }} {{ check_status }} {{ plan_frontier }}";
+    for objective in ["finish the port", hostile] {
+        let goal = goal_with(objective);
+        for text in [
+            continuation_text(&goal, None),
+            budget_limit_text(&goal),
+            objective_updated_text(&goal),
+        ] {
+            let quoted = format!("<untrusted_objective>\n{objective}\n</untrusted_objective>");
+            assert!(text.contains(&quoted), "{text}");
+            let rest = text.replacen(objective, "", 1);
+            assert!(!rest.contains("{{") && !rest.contains("}}"), "{text}");
+            assert!(text.contains("Tokens used: 250") && text.contains("Token budget: 1000"));
+        }
+    }
 }
 
 #[test]
@@ -255,22 +267,28 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
 }
 
 #[test]
+fn placeholders_in_check_output_and_plan_labels_stay_literal() -> TestResult {
+    use yi_types::plan::doc::{GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel};
+    let label = "port «A» {{ objective }} 完成";
+    let failure = "unit «A» missing {{ objective }} {{ plan_frontier }}";
+    let plan = Plan::opening(
+        PlanId::new("braces")?,
+        GoalText::new("keep braces")?,
+        PlanTier::Root,
+        vec![Todo::pending(TodoLabel::new(label)?)],
+    );
+    let mut goal = goal_with("finish the port");
+    goal.check_failure = Some(failure.to_owned());
+    let text = continuation_text(&goal, Some(&plan));
+    assert!(text.contains(failure), "{text}");
+    assert!(text.contains(&format!("- {label}")), "{text}");
+    Ok(())
+}
+
+#[test]
 fn continuation_prompt_interpolates_budgets() -> TestResult {
-    let goal = Goal {
-        objective: "finish the port".to_owned(),
-        status: GoalStatus::Active,
-        token_budget: Some(1000),
-        tokens_used: 250,
-        time_used_seconds: 60,
-        created: 0,
-        updated: 0,
-        check: None,
-        check_timeout_ms: None,
-        check_failure: None,
-        discoveries: Vec::new(),
-        extra: serde_json::Map::new(),
-    };
-    let text = continuation_text(&goal, None)?;
+    let goal = goal_with("finish the port");
+    let text = continuation_text(&goal, None);
     assert!(text.contains("<untrusted_objective>\nfinish the port\n</untrusted_objective>"));
     assert!(text.contains("Tokens remaining: 750"));
     assert!(
@@ -317,7 +335,7 @@ fn check_gate_rejects_completion_and_persists_the_evidence() -> TestResult {
     let text = continuation_text(
         &yi_session::lock_session(&store).goal().ok_or("goal")?,
         None,
-    )?;
+    );
     assert!(
         text.contains("rejected by the goal check") && text.contains("unit A missing"),
         "continuation must carry the failure: {text}"
@@ -339,6 +357,135 @@ fn a_red_check_prints_no_provider_key() -> TestResult {
         error.contains("checked") && !error.contains("ENV-906"),
         "{error}"
     );
+    Ok(())
+}
+
+/// A real `pytest -v` run (#1153): 32,955 B, its FAILED row at line 223 of 419 and the verdict last.
+const RED_PYTEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tools/tests/fixtures/reduce/pytest-verbose-one-failure.txt"
+);
+
+/// The refusal of a check run in a scratch directory that lives as long as the first value.
+fn refusal_in(check: &str) -> Result<(Scratch, String), Box<dyn Error>> {
+    let (root, (service, _store, _delivered)) = service_with_plans()?;
+    service.create("check output", None, Some(check.to_owned()), None)?;
+    Ok((root, service.update("complete").err().ok_or("must reject")?))
+}
+
+fn refusal_of(check: &str) -> Result<String, Box<dyn Error>> {
+    Ok(refusal_in(check)?.1)
+}
+
+#[test]
+fn a_red_check_keeps_its_verdict_and_names_the_cut() -> TestResult {
+    let error = refusal_of(&format!("cat '{RED_PYTEST}'; exit 1"))?;
+    for verdict in [
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+        "collected 400 items",
+    ] {
+        assert!(error.contains(verdict), "{verdict}: {error}");
+    }
+    assert!(
+        error.contains("bytes kept (VIEW_CEILING 16384); the rest: bash ("),
+        "{error}"
+    );
+    let total = std::fs::metadata(RED_PYTEST)?.len();
+    let capture = format!("kept 30000 of {total} bytes (OUTPUT_CAP 30000 per stream)");
+    assert!(
+        error.contains(&capture),
+        "the capture's own cut is named too: {error}"
+    );
+    assert!(
+        error.len() < yi_tools::VIEW_CEILING + 1024,
+        "{}",
+        error.len()
+    );
+    Ok(())
+}
+
+/// Runs the call a cut row names, from a scratch directory that is not where the check ran.
+fn rerun_log(refusal: &str) -> Result<(Option<i32>, Vec<u8>), Box<dyn Error>> {
+    let (_, rest) = refusal.split_once("the rest: bash ").ok_or(refusal)?;
+    let (call, _) = rest.split_once(" > view.log 2>&1").ok_or(rest)?;
+    let dir = Scratch::new("yi-goal-rerun")?;
+    let script = format!("{call} > view.log 2>&1");
+    let mut bash = yi_tools::command("bash");
+    bash.args(["-c", &script]).current_dir(&*dir);
+    let never: yi_tools::CancelFlag = Arc::new(|| false);
+    let rerun = yi_tools::run_captured(bash, None, &never, yi_tools::OUTPUT_CAP)?;
+    Ok((rerun.exit_code, std::fs::read(dir.join("view.log"))?))
+}
+
+#[test]
+fn the_rerun_a_cut_row_names_writes_the_full_output_to_its_file() -> TestResult {
+    let (_root, refusal) = refusal_in(&format!("cat '{RED_PYTEST}'; exit 1"))?;
+    let (code, log) = rerun_log(&refusal)?;
+    assert_eq!(code, Some(1), "the check's own exit survives the rerun");
+    assert_eq!(log, std::fs::read(RED_PYTEST)?);
+    Ok(())
+}
+
+/// Dies with the row naming the command alone: a check that ran in a child's lane or a
+/// `cwd_subdir` reran in the reader's tree, where a relative path finds nothing or another file.
+#[test]
+fn a_relative_check_reruns_where_it_ran_not_where_it_is_read() -> TestResult {
+    let (root, (service, _store, _delivered)) = service_with_plans()?;
+    std::fs::write(
+        root.join("noisy.sh"),
+        format!("cat '{RED_PYTEST}'; exit 1\n"),
+    )?;
+    service.create("relative", None, Some("sh ./noisy.sh".to_owned()), None)?;
+    let refusal = service.update("complete").err().ok_or("must reject")?;
+    let (code, log) = rerun_log(&refusal)?;
+    assert_eq!(code, Some(1), "{refusal:.300}");
+    assert_eq!(log, std::fs::read(RED_PYTEST)?);
+    Ok(())
+}
+
+/// Dies with the stored failure being the whole view: it is printed again by every continuation.
+#[test]
+fn a_later_copy_of_a_long_failure_keeps_its_verdict_and_names_the_cut() -> TestResult {
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
+    let check = format!("cat '{RED_PYTEST}'; exit 1");
+    service.create("long failure", None, Some(check), None)?;
+    let refusal = service.update("complete").err().ok_or("must reject")?;
+    assert!(
+        refusal.contains("collected 400 items"),
+        "the first copy is whole"
+    );
+    let goal = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    let text = continuation_text(&goal, None);
+    for shown in [
+        "1 failed, 399 passed",
+        "bytes kept (REPEAT_BYTES 2000); the rest: the refusal that first carried this output",
+        "goal check `cat '",
+    ] {
+        assert!(text.contains(shown), "{shown}: {text:.600}");
+    }
+    assert!(!text.contains("collected 400 items"), "{text:.600}");
+    let stored = goal.check_failure.as_deref().unwrap_or_default();
+    assert!(
+        stored.len() < 2_600 && refusal.len() > 16_000,
+        "{}",
+        stored.len()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_checks_output_is_whole_at_the_ceiling_and_cut_one_byte_past_it() -> TestResult {
+    let ceiling = yi_tools::VIEW_CEILING;
+    let printing = |bytes: usize| format!("head -c {bytes} /dev/zero | tr '\\0' x; exit 1");
+    let at = refusal_of(&printing(ceiling))?;
+    assert!(at.contains(&"x".repeat(ceiling)) && !at.contains("VIEW_CEILING"));
+    let past = refusal_of(&printing(ceiling + 1))?;
+    assert!(
+        past.contains("of 16385 bytes kept (VIEW_CEILING 16384)"),
+        "{past}"
+    );
+    assert!(!past.contains(&"x".repeat(ceiling + 1)));
     Ok(())
 }
 
@@ -443,6 +590,31 @@ fn rows_naming_one_task_adjudicate_on_a_single_check_run() -> TestResult {
         1,
         "three rows naming t1 must cost one check run, not one each"
     );
+    Ok(())
+}
+
+/// Dies with every row printing the check's whole evidence: three rows on one red task were
+/// three copies of a 16 KiB view.
+#[test]
+fn rows_naming_one_red_task_print_its_evidence_once() -> TestResult {
+    let (plans, (service, store, _delivered)) = service_with_plans()?;
+    service.create("ship the fix", None, None, None)?;
+    seed_plan(&plans, &format!("cat '{RED_PYTEST}'; exit 1"))?;
+    own(&store, "hold-the-invariant")?;
+    let handle = store_handle(&store);
+    for fingerprint in ["aaa", "bbb", "ccc"] {
+        let mut row = high_row();
+        row.fingerprint = fingerprint.to_owned();
+        record_discovery(&handle, &row)?;
+    }
+    let error = service.update("complete").err().ok_or("must refuse")?;
+    for fingerprint in ["aaa", "bbb", "ccc"] {
+        let named = format!("undrained HIGH discovery {fingerprint}");
+        assert!(error.contains(&named), "{named}: {error:.300}");
+    }
+    assert_eq!(error.matches("collected 400 items").count(), 1);
+    let later = "(the same evidence as the first row naming this task, above)";
+    assert_eq!(error.matches(later).count(), 2);
     Ok(())
 }
 

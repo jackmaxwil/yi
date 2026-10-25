@@ -417,7 +417,7 @@ fn scope_names_program_and_subcommand() {
 /// hint blamed `yes` for `echo y > ~/yidog_probe`. File verbs name theirs too.
 #[test]
 fn write_targets_keep_what_the_splitter_skips() {
-    let cases: [(&str, &[&str]); 9] = [
+    let cases: [(&str, &[&str]); 11] = [
         (
             "yes | head -5; echo y > ~/yidog_probe && echo wrote-home",
             &["~/yidog_probe"],
@@ -433,6 +433,8 @@ fn write_targets_keep_what_the_splitter_skips() {
         ("echo x >/outside/f; echo y >| g", &["/outside/f", "g"]),
         ("cmd >&2 2> /dev/null", &["/dev/null"]),
         ("git log --oneline | head", &[]),
+        ("sed -I.bak s/a/b/ f", &["s/a/b/", "f"]),
+        ("x=`touch /outside/b`", &["/outside/b"]),
     ];
     for (command, expected) in cases {
         assert_eq!(write_targets(command), expected, "{command:?}");
@@ -531,7 +533,7 @@ fn verdict_name(command: &str) -> &'static str {
 
 /// Each spelling with the verdict the auto prompt promises: a flag or script that runs a program
 /// asks or is contained, one that writes is contained, and a short flag counts inside a cluster.
-const FLAG_SPELLINGS: [(&str, &str); 57] = [
+const FLAG_SPELLINGS: [(&str, &str); 64] = [
     ("awk 'BEGIN{system(\"rm -rf x\")}'", "contain"),
     ("awk '{print > \"out.txt\"}' data.txt", "contain"),
     ("awk '{print | \"sh\"}' data.txt", "contain"),
@@ -566,6 +568,10 @@ const FLAG_SPELLINGS: [(&str, &str); 57] = [
     ("sort --out=out.txt in.txt", "contain"),
     ("tree -o out.txt", "contain"),
     ("uniq in.txt out.txt", "contain"),
+    ("cat secret | uniq - notes.txt", "contain"),
+    ("awk -pout '{print}' f", "contain"),
+    ("awk --pretty-print=out '{print}' f", "contain"),
+    ("awk -d '{print}' f", "contain"),
     ("git diff --output=out.txt", "contain"),
     ("git log --output=out.txt", "contain"),
     ("git -c core.fsmonitor=./hook status", "contain"),
@@ -576,6 +582,9 @@ const FLAG_SPELLINGS: [(&str, &str); 57] = [
     ("git clean -fxd", "ask"),
     ("git checkout -f", "ask"),
     ("git checkout .", "ask"),
+    ("git checkout ..", "ask"),
+    ("git checkout src/", "ask"),
+    ("git checkout ~/notes", "ask"),
     ("git switch -f main", "ask"),
     ("nice -n 5 rm -rf x", "ask"),
     ("timeout -s KILL 5 rm -rf x", "ask"),
@@ -626,6 +635,8 @@ fn a_read_spelled_with_flags_stays_a_read() {
         ("fd -e rs crates", "allow"),
         ("timeout 30 cargo test", "allow"),
         ("git clean -n", "contain"),
+        ("git checkout main~1", "contain"),
+        ("git -C . checkout origin/main", "contain"),
         ("nice -n 5 cargo build", "contain"),
         ("FOO=1 ls", "contain"),
     ] {
