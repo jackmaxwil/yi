@@ -363,7 +363,7 @@ def harbor(test, family, spec, stop_usd):
                 "needsUsd": 0.0, "why": "a harbor sweep spends OpenRouter on its own model, never a subscription"}
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
-    stored = lambda: [json.loads(line) for line in store.read_text().splitlines() if line.strip()] if store.exists() else []
+    stored = lambda: yi_usage.json_lines(store)[0]
     before = len(stored())
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.

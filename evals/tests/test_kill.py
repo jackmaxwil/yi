@@ -365,6 +365,16 @@ class Quota(unittest.TestCase):
                                                       "exhausted and `yi catalog usage kimi` gave no reset"))
             self.assertEqual(quiet(["report"])[1].strip(), "dead: unrun: needs $0.50")
 
+    def test_a_paid_family_that_meets_a_quota_429_is_not_run_and_never_judged(self):
+        with rig() as r:
+            r.streams(QUOTA, EVENTS)
+            r.module("paidq", ["flash"], {"flash": 0.2})
+            code, out = quiet(["run", "paidq", "--binary", str(r.yi)])
+            self.assertEqual((code, out.strip()), (1, "paidq flash: 0 runs, $0.0000, 1 not run, "
+                                                      "needs $0.20: the quota stayed exhausted"))
+            self.assertEqual(len([n for n in r.notes() if "ask" in n]), 1, "a paid route is never parked or retried")
+            self.assertEqual(quiet(["report"])[1].strip(), "paidq: unrun: needs $0.20")
+
 
 class Isolation(unittest.TestCase):
     def test_a_route_s_routing_reaches_the_run_home_config_verbatim(self):
@@ -458,6 +468,17 @@ class Runs(unittest.TestCase):
             silent = kill.harbor("tb", "flash", {"id": "two", "harbor": [sys.executable, "-c", "pass"]}, 0.7)
             self.assertEqual(silent["chargedUsd"], 0.7, "a sweep that filed nothing is charged its cap")
             self.assertEqual(kill.harbor("tb", "kimi", {"id": "three", "harbor": sweep}, float("inf"))["status"], "unrun")
+
+    def test_a_corrupt_line_in_the_store_is_skipped_and_the_sweep_is_still_charged(self):
+        with rig() as r:
+            kill.TRIALS.mkdir()
+            (kill.TRIALS / "ns-tb-flash-one.jsonl").write_text('{"costUsd": 0.5}\n{"costUsd": 0.1\n[1]\n')
+            sweep = [sys.executable, "-c", (
+                "import json, os, sys\n"
+                "open(os.path.join(sys.argv[1], os.environ['EVAL_RUN_ID'] + '.jsonl'), 'a').write("
+                "json.dumps({'costUsd': 0.12}) + '\\n')\n"), str(kill.TRIALS)]
+            row = kill.harbor("tb", "flash", {"id": "one", "harbor": sweep}, 1.0)
+            self.assertEqual((row["status"], row["trials"], row["chargedUsd"]), ("ok", 1, 0.12), row)
 
     def test_the_sweep_cap_is_the_lower_of_the_trials_cap_and_the_reserve_handed_down(self):
         with tempfile.TemporaryDirectory() as store:
