@@ -176,7 +176,10 @@ mod tests {
         let extra = app.state.focused_pane_id().ok_or("no pane")?;
         app.state.tab_mut().ok_or("no tab")?.zoomed = true;
         let (out, rows) = present(&mut app)?;
-        let orb: Vec<u32> = ids(&out, "a=t,").into_iter().filter(chat_range).collect();
+        let orb: Vec<u32> = ids(&out, "a=t,")
+            .into_iter()
+            .filter(|id| *id < 8000)
+            .collect();
         assert!(orb.is_empty(), "the 101st pane sent an orb on {orb:?}");
         let said = |rows: &[String]| {
             rows.iter()
@@ -228,14 +231,21 @@ mod tests {
             .filter_map(|(id, pane)| match &pane.content {
                 crate::model::PaneContent::Session {
                     chat: Some(chat), ..
-                } => Some((*id, chat.slot)),
+                } => Some((*id, chat.slot, chat.card.ids())),
                 _ => None,
             });
-        chats.collect()
+        let chats = chats.inspect(|(_, slot, card)| {
+            let leased = slot.map_or(yi_tui::question::CardTick::default().ids(), super::card_ids);
+            assert_eq!(
+                *card, leased,
+                "a pane's question card draws on another pane's ids"
+            );
+        });
+        chats.map(|(id, slot, _)| (id, slot)).collect()
     }
 
-    /// Dies with a slot leaked by a close, a rebind or a park, a slot held twice, or an id that
-    /// reaches the pool's 8000 or the notebook's 7701 over 250 opens.
+    /// Dies with a slot leaked by a close, a rebind or a park, a slot held twice, a question card
+    /// left off its slot's ids, or an id that reaches the pool's 8000 or the notebook's 7701.
     #[test]
     fn every_close_frees_its_slot_across_250_opens() -> Result<(), Box<dyn std::error::Error>> {
         let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
