@@ -252,16 +252,20 @@ fn a_window_keeps_plan_ops_by_their_own_stamp() -> TestResult {
     Ok(())
 }
 
-/// Dies when the tally reads a journal line the journal's own reader calls damage: a copy of a
-/// real record padded to the record cap counts, one byte past it is a bad line and not an op.
+/// Dies when the tally counts an op the engine would refuse: a repeated or over-cap record makes
+/// the journal unreadable whole, as plan recovery does, and a torn tail is one bad line.
 #[test]
-fn a_journal_line_past_the_record_cap_is_a_bad_line_not_an_op() -> TestResult {
+fn a_journal_the_engine_refuses_counts_no_op_and_a_torn_tail_is_one_bad_line() -> TestResult {
     use yi_runtime::plan::journal::RECORD_CAP;
     use yi_runtime::plan::ops::PlanEngine;
     use yi_runtime::plan::store::{JOURNAL_NAME, PlanStore};
     use yi_runtime::rollup::{Scan, fold_journals};
-    for (extra, ops, bad) in [(0, 2, 0), (1, 1, 1)] {
-        let dir = Scratch::new("yi-rollup-journal-cap")?;
+    for (case, ops, bad, unreadable) in [
+        ("repeated", 0, 0, 1),
+        ("capped", 0, 0, 1),
+        ("torn", 1, 1, 0),
+    ] {
+        let dir = Scratch::new("yi-rollup-journal-damage")?;
         open_plan(
             &PlanEngine::new(
                 PlanStore::open(dir.to_path_buf())?,
@@ -275,25 +279,21 @@ fn a_journal_line_past_the_record_cap_is_a_bad_line_not_an_op() -> TestResult {
             .find(|path| path.is_file())
             .ok_or("the engine wrote no journal")?;
         let text = std::fs::read_to_string(&journal)?;
-        let record = text
-            .lines()
-            .next()
-            .and_then(|line| line.strip_suffix('}'))
-            .ok_or("the journal holds no record")?;
-        let pad = (RECORD_CAP + extra)
-            .checked_sub(record.len() + r#","pad":""}"#.len() + 1)
-            .ok_or("the record is already over the cap")?;
-        let padded = format!("{record},\"pad\":\"{}\"}}\n", "x".repeat(pad));
-        assert_eq!(padded.len(), RECORD_CAP + extra);
-        std::fs::write(&journal, format!("{text}{padded}"))?;
+        let record = text.lines().next().ok_or("the journal holds no record")?;
+        let tail = match case {
+            "repeated" => format!("{record}\n"),
+            "capped" => format!("{}\n", "x".repeat(RECORD_CAP + 1)),
+            _ => record.chars().take(record.len() / 2).collect(),
+        };
+        std::fs::write(&journal, format!("{text}{tail}"))?;
         let mut found = Scan::default();
         fold_journals(&mut found, &dir, 0);
-        assert_eq!(
-            (found.plan_ops.values().sum::<u64>(), found.bad_lines),
-            (ops, bad),
-            "a line of {} bytes",
-            padded.len()
+        let got = (
+            found.plan_ops.values().sum::<u64>(),
+            found.bad_lines,
+            found.unreadable,
         );
+        assert_eq!(got, (ops, bad, unreadable), "{case}");
     }
     Ok(())
 }

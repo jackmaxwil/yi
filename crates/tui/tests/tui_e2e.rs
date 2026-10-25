@@ -1837,7 +1837,11 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
             .map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let children = host.children_view();
+            // The host here has no kernel; a wired one reads the running cell's id from its slot.
+            let mut children = host.children_view();
+            children
+                .iter_mut()
+                .for_each(|c| c.spawned_by = Some("c1".to_owned()));
             app.sync_children(&children);
             if children
                 .iter()
@@ -2819,6 +2823,33 @@ fn the_local_port_answers_now_and_apply_is_the_only_writer() -> TestResult {
     Ok(())
 }
 
+/// Dies with a false row: Enter on the current leaf in `/tree` rewinds nothing (no abandoned
+/// branch), and the solo notice still told the person the conversation was rewound.
+#[test]
+fn a_rewind_onto_the_leaf_adds_no_notice_but_one_that_abandons_does() {
+    let mut app = app();
+    let mut said = |abandoned| {
+        let entries = Vec::new();
+        app.apply(yi_tui::port::Reply::Rewound {
+            entries,
+            unsent: None,
+            abandoned,
+        });
+        let rows = flat_lines(&app.take_commits());
+        rows.iter().any(|row| row.contains("conversation rewound"))
+    };
+    assert!(!said(None), "nothing was abandoned, so nothing was rewound");
+    let messages = vec![yi_runtime::session::user_input("ping")];
+    let stub = yi_runtime::BranchStub {
+        from_id: "leaf".to_owned(),
+        messages,
+    };
+    assert!(
+        said(Some(stub)),
+        "a rewind that left a branch says the files stayed"
+    );
+}
+
 /// The chat paints into any rectangle of a buffer: the status row lands on the rect's last
 /// row, nothing lands outside it, and a scroll offset shifts the history above the frame.
 #[test]
@@ -3208,6 +3239,27 @@ fn a_card_lands_under_the_cell_its_record_names() -> TestResult {
     assert!(
         cell1 < card && card < cell2 && cell1.is_some(),
         "the card sits between its own cell and the next: {committed:?}"
+    );
+    Ok(())
+}
+
+/// Dies with a recorded no-cell spawn pinned by timing: a plan-dispatched child first seen while
+/// an unrelated cell runs waited on that cell, so its finished card stayed out of scrollback.
+#[test]
+fn a_card_whose_record_names_no_cell_waits_on_none() -> TestResult {
+    let cell = "await asyncio.sleep(600)";
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    app.reduce_agent(kernel_cell("c1", cell));
+    app.sync_children(&[yi_runtime::ChildView {
+        update: reader("plan-0a1b2c3d", yi_runtime::ChildStatus::Completed, 1),
+        session: yi_runtime::ChildFeed::of(Arc::new(faux_session("planned"))),
+        spawned_by: None,
+    }]);
+    let committed = flat_lines(&app.take_commits());
+    assert!(
+        committed.iter().any(|line| line.contains("╭─ ↳ Plan")),
+        "the card commits while the unrelated cell still runs: {committed:?}"
     );
     Ok(())
 }

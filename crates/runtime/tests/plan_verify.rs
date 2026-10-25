@@ -25,6 +25,8 @@
 //! | `example_json_equality_ignores_whitespace_and_key_order` | T0 | The five cases of `fixtures/plans/contracts/cases.json`. Cases 0, 1 and 2 pass on three spellings of the same value, the second with its keys reordered and the third with padding; case 3 answers wrongly and case 4 prints prose after its JSON, and those two fail for reasons the item's detail distinguishes. Stdout must be one complete JSON value: several values, non-finite numbers, a timeout and output overflow are their own failures, not near misses. | Structural comparison over the parsed values, and the one-complete-value rule on the far side of it. Compare bytes and cases 1 and 2 fail, which makes the runner's formatter part of the contract; take the first JSON value and ignore the rest and case 4 passes, which teaches a model that a summary line after the answer is free. |
 //! | `a_checker_that_edits_a_protected_path_fails` | T0 | A manifest lists `runner.sh` as protected and its command rewrites that file to `exit 0`: the item fails naming the path, even though the command itself exited 0. The same manifest with a command that leaves the path alone passes. | `protecting` in `verify.rs`, the digests of every protected path taken before and after the run. Drop the comparison and a checker that rewrites its own script mid-run passes on the rewritten script, which is the edit `contracts.md`'s `protected` row exists against. |
 //! | `the_session_deadline_bounds_the_verification` | T0 | A verifier whose own clock allows a minute but whose session deadline (D177) has already passed abstains every item with the deadline reason and runs no command. | `Verifier::with_deadline` folded into the whole-verification deadline in `run`. Read only `timeout_ms` and a checker launched at the wire runs ten minutes past the run's own clock. |
+//! | `a_failing_checkers_reduced_output_names_the_file_that_holds_the_rest` | T0 | A checker that prints a real 32,955 B `pytest -v` run and exits 1 fails its item with the reducer's view of it (the head, the FAILED row, the verdict line) and a `[full output: …]` pointer to a file under the plan that holds the passing lines the view omitted. | `check_view` in `verdict_of` given the plan's spill directory. Pass none and the reducer has nowhere to recover from, returns the run whole, and the view cuts its middle blind. |
+//! | `a_failing_checkers_output_past_the_ceiling_names_a_file_not_a_rerun` | T0 | A checker whose output stays past `VIEW_CEILING` after the reducer fails its item with a row naming the cap and `read <file>`, and the file holds the rows the detail cut. | The spill directory in `verdict_of`. Name a rerun instead and it points at a verification tree that is removed before the author reads the refusal. |
 //! | `example_failures_are_distinct_by_kind` | T0 | One case, ten runners. A right answer passes; a wrong one, prose after the JSON, two values, a non-finite number, unparsable output, no output, a non-zero exit, output past the capture cap and a runner that outruns its deadline each fail with their own reason in the item's detail. | The distinct reasons `one_json_value` and `run_case` return. Fold them into one "failed" and the detail stops naming what to repair, which is the only thing a refused author can act on; read the first value and drop the rest and `trailing_output` becomes a pass. |
 //!
 //! Fixtures this file reads: `fixtures/plans/contracts/examples-runner.json` and its
@@ -37,6 +39,7 @@
 //! Not here. The judge tier is F3a and lives in `tests/judge.rs`: every `Snapshot` below
 //! seats no jury (`jury: None`), which is the path where a `judge` item abstains.
 
+use crate::RED_PYTEST;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -48,7 +51,7 @@ use serde_json::{Value, json};
 use yi_runtime::plan::artifact::Artifacts;
 use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError, TodoSpec};
 use yi_runtime::plan::store::PlanStore;
-use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze};
+use yi_runtime::plan::verify::{CheckerManifest, Snapshot, Verifier, freeze, session_has};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::canonical::{ArtifactRef, Digest};
 use yi_types::plan::contract::{Contract, ItemVerdict, Outcome, VerificationToken};
@@ -212,13 +215,80 @@ fn the_checker_sees_no_provider_key() -> TestResult {
     Ok(())
 }
 
+/// Runs `command` as a failing `cmd` item and returns the refused item's detail.
+fn failing_detail(
+    name: &str,
+    command: &str,
+) -> Result<(Scratch, Artifacts, String), Box<dyn Error>> {
+    let temp = Scratch::new(name)?;
+    let artifacts = Artifacts::under(&temp);
+    let contract = cmd_contract(put(&artifacts, &manifest(command, 5_000, &[]))?, 5_000)?;
+    let snapshot = Snapshot {
+        id: "tree:test",
+        root: &temp,
+        output: None,
+        artifacts: &artifacts,
+        jury: None,
+    };
+    let verdict = Verifier::new(5_000).run(&token(&contract)?, &contract, &snapshot);
+    let ItemVerdict::Fail { detail } = &verdict.items[0].verdict else {
+        return Err(format!("not a failure: {}", verdict.lines()).into());
+    };
+    Ok((temp, artifacts, detail.clone()))
+}
+
+/// The file a detail's pointer row names, which must sit under the plan's spill directory: the
+/// verification tree is removed before the author reads the refusal, so no rerun can be named.
+fn spilled(artifacts: &Artifacts, detail: &str) -> Result<String, Box<dyn Error>> {
+    let (_, rest) = detail.split_once("[full output: ").ok_or(detail)?;
+    let (path, _) = rest.split_once(']').ok_or(rest)?;
+    assert!(path.starts_with(artifacts.spill_dir().to_string_lossy().as_ref()));
+    Ok(std::fs::read_to_string(path)?)
+}
+
+// Dies with `check_view` in `verdict_of` passing no spill directory: the reducer then has
+// nowhere to recover from, returns the output whole, and the view cuts it blind.
+#[test]
+fn a_failing_checkers_reduced_output_names_the_file_that_holds_the_rest() -> TestResult {
+    let (_temp, artifacts, detail) =
+        failing_detail("yi-verify-view", &format!("cat '{RED_PYTEST}'; exit 1"))?;
+    for shown in [
+        "collected 400 items",
+        "FAILED test_ledger.py::test_case_217 - AssertionError: ledger total drifted",
+        "1 failed, 399 passed",
+    ] {
+        assert!(detail.contains(shown), "{shown}: {detail}");
+    }
+    let omitted = "test_case_150 PASSED";
+    assert!(!detail.contains(omitted) && spilled(&artifacts, &detail)?.contains(omitted));
+    Ok(())
+}
+
+// Dies with the ceiling row naming a rerun: the tree it would run in is gone.
+#[test]
+fn a_failing_checkers_output_past_the_ceiling_names_a_file_not_a_rerun() -> TestResult {
+    let line = "printf 'row %03d ' $i; head -c 300 /dev/zero | tr '\\0' x; echo";
+    let command = format!("i=0; while [ $i -lt 400 ]; do {line}; i=$((i+1)); done; exit 1");
+    let (_temp, artifacts, detail) = failing_detail("yi-verify-wide", &command)?;
+    assert!(
+        detail.contains("bytes kept (VIEW_CEILING 16384); the rest: read "),
+        "{detail:.300}"
+    );
+    assert!(!detail.contains("view.log"), "{detail:.300}");
+    let kept = spilled(&artifacts, &detail)?;
+    assert!(kept.contains("row 040 ") && !detail.contains("row 040 "));
+    Ok(())
+}
+
 // Dies with the process group and `kill_tree` behind `run_captured`, driven by the deadline in
 // the cancel flag: drop the group and the shell dies while its backgrounded sleep survives.
 #[test]
 fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
     let temp = Scratch::new("yi-verify-grandchild")?;
     let artifacts = Artifacts::under(&temp);
-    let checker = put(&artifacts, &manifest("sleep 5993 &", 30_000, &[]))?;
+    // The fraction is this process's own, so a sibling suite's sleeper is never counted here.
+    let sleeper = format!("sleep 5993.{}", std::process::id());
+    let checker = put(&artifacts, &manifest(&format!("{sleeper} &"), 30_000, &[]))?;
     let contract = cmd_contract(checker, 30_000)?;
     let started = std::time::Instant::now();
     let verdict = Verifier::new(1_000).run(
@@ -251,7 +321,8 @@ fn a_checkers_grandchild_is_killed_at_the_deadline() -> TestResult {
         let survivors = yi_tools::run_captured(
             {
                 let mut ps = yi_tools::command("/bin/sh");
-                ps.args(["-c", "ps -axo command | grep -c '^sleep 5993' || true"]);
+                let count = format!("ps -axo command | grep -cx '{sleeper}' || true");
+                ps.args(["-c", &count]);
                 ps
             },
             None,
@@ -308,12 +379,15 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
         ),
     ];
     for (value, expected) in bad {
-        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?)
+        let refusal = CheckerManifest::parse(&serde_json::to_vec(&value)?, session_has)
             .err()
             .ok_or_else(|| format!("{value} was accepted"))?;
         assert!(refusal.contains(expected), "{value}: {refusal}");
     }
-    CheckerManifest::parse(&serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?)?;
+    CheckerManifest::parse(
+        &serde_json::to_vec(&manifest("true", 1000, &["PATH"]))?,
+        session_has,
+    )?;
     // Through the engine: the refusal lands at start, when the contract is frozen, never at done.
     let temp = Scratch::new("yi-verify-freeze")?;
     let store = PlanStore::open(temp.join("plans"))?;

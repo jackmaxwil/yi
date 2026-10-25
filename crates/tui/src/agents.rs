@@ -267,12 +267,16 @@ impl crate::app::App {
         self.scheduler.request();
     }
 
-    /// The code preview and call id of the cell a child was born under: the cell its record names
-    /// as running when the host admitted it, else (no cell, an older host) the `ipython` cell now.
-    pub(crate) fn spawned_under(&self, call: Option<&str>) -> (Option<String>, Option<String>) {
+    /// The code preview and call id of the cell a child was born under: the cell its record names,
+    /// or for an update with no record (a console's forwarded one) the `ipython` cell running now.
+    pub(crate) fn spawned_under(
+        &self,
+        call: Option<&str>,
+        recorded: bool,
+    ) -> (Option<String>, Option<String>) {
         let tool = self.live_tools.iter().rev().find(|tool| match call {
             Some(call) => tool.call_id == call,
-            None => tool.name == "ipython" && tool.status != ToolStatus::Done,
+            None => !recorded && tool.name == "ipython" && tool.status != ToolStatus::Done,
         });
         let code = tool.and_then(|tool| tool.details.get("code")?.as_str());
         let preview = code
