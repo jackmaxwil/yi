@@ -251,6 +251,19 @@ fn a_bad_flag_prints_one_line_and_the_named_help_call_prints_the_help() -> TestR
 }
 
 #[test]
+fn the_server_is_told_the_version_yi_reports() -> TestResult {
+    let home = mcp_home()?;
+    let reported = yi(&home, &["--version"])?;
+    assert_eq!(reported.code, 0, "stderr: {}", reported.stderr);
+    yi_mcp(&home, &["connect", "fixture", "@s"])?;
+    let seen = yi_mcp(&home, &["@s", "tools-call", "client_info", "--json"])?;
+    assert_eq!(seen.code, 0, "stderr: {}", seen.stderr);
+    let result: serde_json::Value = serde_json::from_str(seen.stdout.trim())?;
+    assert_eq!(result["content"][0]["text"], reported.stdout.trim());
+    Ok(())
+}
+
+#[test]
 fn schema_snapshot_flags_breaking_changes() -> TestResult {
     let home = mcp_home()?;
     yi_mcp(&home, &["connect", "fixture", "@s"])?;
@@ -444,7 +457,7 @@ mod sealed_store {
                     .ok_or_else(|| format!("not an mcp url: {url}"))?;
                 let args =
                     ["--json", &format!("@{server}"), "resources-read", uri].map(str::to_owned);
-                match yi_mcp_cli::run(&args, None) {
+                match yi_mcp_cli::run(&args, None, "9.9.9") {
                     0 => Ok(serde_json::Map::from_iter([(
                         "text".to_owned(),
                         "ok".into(),
