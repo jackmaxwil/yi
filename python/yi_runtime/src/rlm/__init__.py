@@ -1067,13 +1067,18 @@ def _worktree_target(target: "str | RLMSubagent") -> str:
 
 
 @_public
-async def merge_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
+async def merge_worktree(target: "str | RLMSubagent", *, check: str | None = None) -> dict[str, Any]:
     """Commit an isolated child's work on its branch and merge it into this checkout.
 
     The child must have finished. The worktree is removed once merged, which is
-    also what releases the child for ``delete_subagent``.
+    also what releases the child for ``delete_subagent``. ``check`` is a shell command
+    run in the child's checkout first: red, it answers ``merged: False`` with its
+    ``{exit, tail}`` and keeps the work on its branch.
     """
-    return await host_request("rlm.merge_worktree", {"target": _worktree_target(target)})
+    payload = {"target": _worktree_target(target)}
+    if check is not None:
+        payload["check"] = check
+    return await host_request("rlm.merge_worktree", payload)
 
 
 @_public
