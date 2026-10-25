@@ -477,15 +477,8 @@ pub struct BashTool {
     pub(crate) recent_ceilings: std::sync::atomic::AtomicU8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkipReason {
-    Compound,
-    NotAView,
-    NotOneFile,
-}
-
 impl BashTool {
-    /// Tags a command's output as the file view it is, `cat f` alike, and says why when it is not.
+    /// Tags a command's output as the file view it is, `cat f` alike.
     fn bridge(
         &self,
         command: &str,
@@ -493,37 +486,16 @@ impl BashTool {
         (reduced, truncated): (&crate::reduce::Reduced, bool),
         context: &ToolContext,
         text: &mut String,
-    ) -> &'static str {
+    ) {
         let Some(state) = self.hashline.as_ref().filter(|_| viewed) else {
-            return SkipReason::NotAView.name();
+            return;
         };
-        match bridge_target(command, &context.cwd) {
-            Bridge::Tag { typed, path } => {
-                let view = shown(command, reduced, truncated);
-                match tagged_header(state, &typed, &path, &view, context) {
-                    Some(header) => {
-                        *text = format!("{header}\n{text}");
-                        "tag"
-                    }
-                    None => SkipReason::NotOneFile.name(),
-                }
-            }
-            Bridge::Skip(reason) => reason.name(),
-        }
-    }
-}
-
-enum Bridge {
-    Tag { typed: String, path: PathBuf },
-    Skip(SkipReason),
-}
-
-impl SkipReason {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Compound => "compound",
-            Self::NotAView => "not-a-view",
-            Self::NotOneFile => "not-one-file",
+        let Some((typed, path)) = bridge_target(command, &context.cwd) else {
+            return;
+        };
+        let view = shown(command, reduced, truncated);
+        if let Some(header) = tagged_header(state, &typed, &path, &view, context) {
+            *text = format!("{header}\n{text}");
         }
     }
 }
@@ -532,12 +504,12 @@ const VIEW_VERBS: [&str; 6] = ["cat", "head", "tail", "sed", "rg", "grep"];
 
 /// One plain view of one existing file can anchor an edit: the command is a single segment,
 /// its verb prints file text, and exactly one argument names a regular file.
-fn bridge_target(command: &str, cwd: &Path) -> Bridge {
+fn bridge_target(command: &str, cwd: &Path) -> Option<(String, PathBuf)> {
     if command.contains(['|', ';', '\n', '>', '`'])
         || command.contains("&&")
         || command.contains("$(")
     {
-        return Bridge::Skip(SkipReason::Compound);
+        return None;
     }
     let mut tokens = command
         .split_whitespace()
@@ -546,7 +518,7 @@ fn bridge_target(command: &str, cwd: &Path) -> Bridge {
         .next()
         .map(|verb| verb.rsplit('/').next().unwrap_or(verb));
     if !verb.is_some_and(|verb| VIEW_VERBS.contains(&verb)) {
-        return Bridge::Skip(SkipReason::NotAView);
+        return None;
     }
     let files: Vec<(String, PathBuf)> = tokens
         .filter(|token| !token.starts_with('-'))
@@ -554,11 +526,8 @@ fn bridge_target(command: &str, cwd: &Path) -> Bridge {
         .filter(|(_, path)| path.is_file())
         .collect();
     match files.as_slice() {
-        [(typed, path)] => Bridge::Tag {
-            typed: typed.clone(),
-            path: path.clone(),
-        },
-        _ => Bridge::Skip(SkipReason::NotOneFile),
+        [(typed, path)] => Some((typed.clone(), path.clone())),
+        _ => None,
     }
 }
 
@@ -899,7 +868,7 @@ impl Tool for BashTool {
             sections.join("\n")
         };
         let viewed = exit_code == 0 && !capture.cancelled;
-        let bridge = self.bridge(
+        self.bridge(
             command,
             viewed,
             (&reduced, capture.truncated),
@@ -914,7 +883,6 @@ impl Tool for BashTool {
             "rawBytes": reduced.raw_bytes,
             "outBytes": reduced.out_bytes,
             "category": command_category(command),
-            "bridge": bridge,
             "sandboxRefusal": refusal.as_ref().map(crate::sandbox::SandboxRefusal::to_json),
         });
         let unfinished = capture.cancelled || timed_out || refusal.is_some();
