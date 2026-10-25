@@ -816,10 +816,14 @@ A lane is a git worktree slot, leased from a per-repository pool and handed back
 - The pool is `~/.yi/lanes/<hash>/<n>`, keyed by the common git dir; `pool.lock` serializes
   claims; a slot is live iff a process holds its `.held` flock.
 - A claim resets the slot to `origin/main` (else `main`, `HEAD`, or a given commit), checks out
-  `yi/<session>` and locks the worktree `session:<id>`. With `lanes.slots` unset it never refuses.
-- A resumed session reclaims its slot; a dead holder's clean slot with its branch in `main` is free.
-- Every hand-back takes `self`: `discard` deletes the branch, `release` detaches and warms, `Drop`
-  detaches. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
+  `yi/<session>` and locks the worktree `session:<id>`; a `yi/<session>` holding commits the base
+  lacks is checked out as it stands, never reset. With `lanes.slots` unset it never refuses.
+- A resumed session takes its own slot before any free one; a dead holder's clean slot with its
+  branch in `main` is free. A dirty tree is never free, with a session recorded or without one.
+- Every hand-back takes `self`: `discard` cleans the tree and deletes the branch, `release` detaches
+  and warms, `Drop` detaches; over a dirty tree `release` and `Drop` keep the session and branch, so
+  the slot is that session's orphan. `discard` and `yi lanes reap` are the only tree wipes, and each
+  counts the paths it dropped. A child's lane returns through `rlm.merge_worktree` (settle, stage, publish) or
   `rlm.discard_worktree`, never for a running or plan-dispatched child (§13.2).
 - `/land <title>` merges `origin/main` in, pushes, opens a pull request, and polls every 60 s for up
   to 2 h. The forge is `GitHub` (`gh`) for a `github.com` origin, else `Forgejo` (`fgj`).
