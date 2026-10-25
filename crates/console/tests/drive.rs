@@ -4945,19 +4945,19 @@ fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
     Ok(())
 }
 
-fn state(state: &str) -> Value {
-    update(
-        "s-alpha",
-        json!({"sessionUpdate": "state_update", "state": state}),
-    )
-}
-
-/// The recording's edit as the worker streamed it live: a running todo and turn one editing.
-fn live_edit_turn() -> Vec<Value> {
+/// The recording's edit as the worker streamed it live: a running todo, turn one editing, then a
+/// second turn that edits nothing.
+fn live_edit_then_an_empty_turn() -> Vec<Value> {
     let edit = recorded(EDIT_SESSION)
         .into_iter()
         .find(|e| e["message"]["toolName"] == "edit");
     let details = edit.map_or(Value::Null, |e| e["message"]["details"].clone());
+    let state = |state: &str| {
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": state}),
+        )
+    };
     let mut frames = todo_update();
     frames.extend([
         state("running"),
@@ -4967,14 +4967,9 @@ fn live_edit_turn() -> Vec<Value> {
                    "kind": "edit", "status": "completed", "rawOutput": details}),
         ),
         state("idle"),
+        state("running"),
+        state("idle"),
     ]);
-    frames
-}
-
-/// Turn one editing, then a second live turn that edits nothing.
-fn live_edit_then_an_empty_turn() -> Vec<Value> {
-    let mut frames = live_edit_turn();
-    frames.extend([state("running"), state("idle")]);
     frames
 }
 
@@ -4985,20 +4980,39 @@ fn resume_both_turns(frame: &Value) -> Vec<Value> {
     resume_with(frame, &entries)
 }
 
-/// Review after `live` frames and a reconnect's full replay, then `keys` pressed on its pane.
+/// Both turns, then a third typed while the console was away, which made the recording's edit
+/// again: its call and result as the recording holds them, under new ids.
+fn resume_with_a_missed_edit_turn(frame: &Value) -> Vec<Value> {
+    let recording = recorded(EDIT_SESSION);
+    let result = recording
+        .iter()
+        .position(|e| e["message"]["toolName"] == "edit");
+    let again = result.and_then(|at| recording.get(at.saturating_sub(1)..=at));
+    let mut entries = recording.clone();
+    entries.push(entry("e-turn2", None, 99, &user_message("and again")));
+    entries.push(entry("e-turn3", None, 100, &user_message("once more")));
+    for (seq, made) in (101..).zip(again.into_iter().flatten()) {
+        let mut made = made.clone();
+        made["id"] = json!(format!("e-again-{seq}"));
+        entries.push(made);
+    }
+    resume_with(frame, &entries)
+}
+
+/// Review after a live edit and a reconnect's full replay, then `keys` pressed on its pane.
 fn review_after_a_reconnect(
     name: &str,
-    live: fn() -> Vec<Value>,
+    resume: Responder,
     keys: &str,
 ) -> Result<String, Box<dyn Error>> {
     let mut fixture = session_fixture();
     fixture.extend([
-        Step::Push(live),
+        Step::Push(live_edit_then_an_empty_turn),
         Step::Expect("_yi/tracked", tracked_yes),
         Step::Close,
         Step::Accept,
         Step::Expect("initialize", init_reply),
-        Step::Expect("session/resume", resume_both_turns),
+        Step::Expect("session/resume", resume),
     ]);
     run_frames(
         name,
@@ -5010,31 +5024,17 @@ fn review_after_a_reconnect(
     )
 }
 
-/// Dies with `Review · turn · 1 file` after a reconnect: the full replay stamped the edit with the
-/// turn the console was in, and the second turn edited nothing.
+/// Dies with `Review · turn · 0 files` after a reconnect: the console kept the turn it saw live,
+/// or stamped the replayed edit with it, so the third turn's edit left the Turn scope.
 #[test]
 fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestResult {
     let frame = review_after_a_reconnect(
         "replay-turn-scope",
-        live_edit_then_an_empty_turn,
+        resume_with_a_missed_edit_turn,
         "key s\nwait-frame 3000 Review · turn\n",
     )?;
     let row = row_holding(&frame, "Review · turn")?;
-    assert!(row.contains("Review · turn · 0 files +0 −0"), "{row}");
-    Ok(())
-}
-
-/// Dies with `Review · turn · 1 file` after a reconnect: the console kept the turn it saw live,
-/// though the replay carries a second prompt, typed while it was away, that edited nothing.
-#[test]
-fn a_reconnects_replay_counts_the_turn_the_console_missed() -> TestResult {
-    let frame = review_after_a_reconnect(
-        "replay-missed-turn",
-        live_edit_turn,
-        "key s\nwait-frame 3000 Review · turn\n",
-    )?;
-    let row = row_holding(&frame, "Review · turn")?;
-    assert!(row.contains("Review · turn · 0 files +0 −0"), "{row}");
+    assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
     Ok(())
 }
 
@@ -5044,7 +5044,7 @@ fn a_reconnects_replay_counts_the_turn_the_console_missed() -> TestResult {
 fn a_reconnects_replay_does_not_label_an_edit_with_the_todo_running_now() -> TestResult {
     let frame = review_after_a_reconnect(
         "replay-todo-label",
-        live_edit_then_an_empty_turn,
+        resume_both_turns,
         "wait-frame 3000 Review · session\n",
     )?;
     let row = row_holding(&frame, "▸ ")?;
