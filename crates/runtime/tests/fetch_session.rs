@@ -1071,6 +1071,51 @@ fn an_unpaged_history_listing_past_its_cap_says_where_it_was_cut() -> TestResult
     Ok(())
 }
 
+/// An unpaged `local://` read is served whole at 51,200 bytes and cut past it, with the row a
+/// history listing gets, and the offset the row names reads the bytes after the cut. The wide file
+/// has a char over byte 51,200 and the traceback is a recorded 73,488 B cell.
+#[test]
+fn an_unpaged_local_read_past_its_cap_says_where_it_was_cut() -> TestResult {
+    const CAP: usize = 50 * 1024;
+    let workspace = Scratch::new("yi-fetch-local-cap")?;
+    let resolver = Arc::new(Resolver::new(workspace.to_path_buf(), Wall::default()));
+    let read = |name: &str, body: &str, offset: Option<i64>, limit: Option<i64>| {
+        std::fs::write(workspace.join(name), body)?;
+        read_tool_text(&resolver, &format!("local://{name}"), offset, limit).map(|read| read.0)
+    };
+    let at = "x".repeat(CAP);
+    assert_eq!(read("at.txt", &at, None, None)?, at);
+    let trace = include_str!("../../tools/tests/fixtures/view/recursion-traceback.txt");
+    let wide = format!("a{}", "\u{e9}".repeat(CAP / 2));
+    for (name, body) in [
+        ("past.txt", format!("{at}x")),
+        ("wide.txt", wide),
+        ("trace.txt", trace.to_owned()),
+    ] {
+        let kept = body.floor_char_boundary(CAP);
+        let row = format!(
+            "[\u{2026} {kept} of {} bytes shown \u{b7} unpaged local cap 51200 bytes \u{b7} read local://{name} with offset={} and limit to page on]",
+            body.len(),
+            kept + 1
+        );
+        let text = read(name, &body, None, None)?;
+        assert_eq!(
+            text,
+            format!("{}\n{row}", body.get(..kept).unwrap_or_default()),
+            "{name}"
+        );
+        let next = read(name, &body, Some(i64::try_from(kept + 1)?), Some(8))?;
+        assert!(
+            next.starts_with(
+                body.get(kept..(kept + 8).min(body.len()))
+                    .unwrap_or_default()
+            ),
+            "{name}"
+        );
+    }
+    Ok(())
+}
+
 /// A reader's resolver has no session root: its parent is reached live through the host that
 /// spawned it, where the on-disk lookup had answered "no session on disk carries that id".
 #[test]

@@ -5,8 +5,9 @@ use std::error::Error;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
+use yi_ai::leak::unleak;
 use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, SharedSession};
-use yi_runtime::todo::tool::{TodoTool, unleak};
+use yi_runtime::todo::tool::TodoTool;
 use yi_runtime::todo::{Op, Target, TodoError, TodoStore, latest_record, text};
 use yi_tools::{Tool, ToolContext};
 use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoLabel, TodoState, TodoStateName};
@@ -1398,8 +1399,10 @@ fn a_done_call_with_leaked_glm_markup_lands_as_done() -> TestResult {
     let (_root, session) = session("leaked")?;
     let store = store_for(&session);
     let tool = TodoTool::new(Arc::clone(&store));
-    let decode =
-        |args: &Value| Value::Object(yi_ai::json_salvage::parse_streaming_json(&args.to_string()));
+    let decode = |args: &Value| {
+        let parsed = yi_ai::json_salvage::parse_streaming_json(&args.to_string());
+        Value::Object(unleak(&parsed).into_owned())
+    };
     for args in fixture["refused"].as_array().ok_or("refused")? {
         call(&tool, json!({"op": "init", "items": ["a standing item"]}));
         let (is_error, text) = call(&tool, decode(args));

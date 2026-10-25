@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use yi_tools::Cut;
 use yi_types::message::{AgentMessage, Content};
 
 use crate::details::{call_paths, extract_file_ops_from_message};
@@ -109,7 +110,17 @@ pub fn compile_view(attributed: &[Attributed], previous: Option<&CompiledView>) 
         }
     }
     if outstanding.len() > OUTSTANDING_CAP {
-        outstanding = outstanding.split_off(outstanding.len().saturating_sub(OUTSTANDING_CAP));
+        let total = outstanding.len();
+        outstanding = outstanding.split_off(total.saturating_sub(OUTSTANDING_CAP));
+        let row = Cut {
+            kept: OUTSTANDING_CAP,
+            total,
+            what: "errors, the newest",
+            cap: "OUTSTANDING_CAP",
+            limit: OUTSTANDING_CAP,
+            next: "read history://self",
+        };
+        outstanding.insert(0, row.to_string());
     }
     let mut earlier = Vec::new();
     if let Some(previous) = previous {
