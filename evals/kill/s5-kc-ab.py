@@ -46,13 +46,14 @@ This task is a queue of items worked under one rulebook. Work it as a parent wit
 
 1. Read the rulebook and the item list yourself first. Find what ties two items together: a shared site, account, asset or invoice, or an earlier decision that a later one cites.
 2. Put the items in groups so that no item depends on anything outside its group. Use as few groups as that allows, and at most eight.
-3. Start one child per group, all together in one cell, with the rulebook as the partition:
+3. A partition address resolves only inside your working directory, so first copy each file that holds the rules into it, one `cp <rules file> .` each. The partition holds 64 KiB in all: leave out a bigger file and name its path in the briefs instead. Then start one child per group, all together in one cell, with the copies as the partition:
 
        import asyncio
-       handles = await asyncio.gather(*(rlm.run(brief(group), role="{role}"{options}, partition=[RULEBOOK]) for group in groups))
+       RULES = ["local://<name of a copied file>", ...]
+       handles = await asyncio.gather(*(rlm.run(brief(group), role="{role}"{options}, partition=RULES) for group in groups))
        await rlm.wait(300)
 
-   RULEBOOK is `local://` plus the path of the file that holds the rules. Each brief names the group's item ids and the sources to read, and asks for one JSON draft per item: the decision, every field the rules ask for, and the evidence ids to cite.
+   Each brief names the group's item ids and the sources to read, and asks for one JSON draft per item: the decision, every field the rules ask for, and the evidence ids to cite.
 4. A child drafts and reports. It never submits, saves, clicks or changes any state that cannot be undone. Only you do, and only after you have read its draft against the rules.
 5. Submit the decisions yourself, one at a time, in dependency order: a later decision may cite an id that an earlier submission creates. Only one desktop or portal session exists, so you drive it alone.
 """
