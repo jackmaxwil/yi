@@ -190,6 +190,37 @@ fn connect_prints_no_schema_and_names_the_call_that_lists_the_tools() -> TestRes
     Ok(())
 }
 
+/// Dies with a server that has no tools told `[…] 0 tools not printed`, or one that offers tools
+/// it did not list told nothing or a false count: the row names the call, never an unknown count.
+#[test]
+fn connect_names_the_tools_call_only_when_the_server_offers_tools() -> TestResult {
+    let home = mcp_home()?;
+    let server = fixture_server_path().display().to_string();
+    std::fs::write(
+        home.home.join(".yi/mcp.json"),
+        serde_json::to_string(&serde_json::json!({"mcpServers": {
+            "bare": {"command": "python3", "args": [server, "--no-tools"]},
+            "flaky": {"command": "python3", "args": [server, "--tools-list-fails"]},
+        }}))?,
+    )?;
+    let bare = yi_mcp(&home, &["connect", "bare", "@b"])?;
+    assert_eq!(bare.code, 0, "stderr: {}", bare.stderr);
+    assert_eq!(
+        bare.stdout.trim(),
+        "@b live · yi-fixture\ncapabilities: resources\n\
+         instructions: Fixture server. The echo tool repeats input."
+    );
+    let flaky = yi_mcp(&home, &["connect", "flaky", "@f"])?;
+    assert_eq!(flaky.code, 0, "stderr: {}", flaky.stderr);
+    assert_eq!(
+        flaky.stdout.trim(),
+        "@f live · yi-fixture\ncapabilities: tools, resources, prompts\n\
+         instructions: Fixture server. The echo tool repeats input.\n\
+         […] the server offers tools; connect listed none · list them: yi mcp @f tools-list"
+    );
+    Ok(())
+}
+
 /// Dies with a one-word mistake printing 1,521 bytes of help: the error stays one line and names
 /// the call that prints the rest.
 #[test]
@@ -216,6 +247,19 @@ fn a_bad_flag_prints_one_line_and_the_named_help_call_prints_the_help() -> TestR
         "{}",
         help.stdout
     );
+    Ok(())
+}
+
+#[test]
+fn the_server_is_told_the_version_yi_reports() -> TestResult {
+    let home = mcp_home()?;
+    let reported = yi(&home, &["--version"])?;
+    assert_eq!(reported.code, 0, "stderr: {}", reported.stderr);
+    yi_mcp(&home, &["connect", "fixture", "@s"])?;
+    let seen = yi_mcp(&home, &["@s", "tools-call", "client_info", "--json"])?;
+    assert_eq!(seen.code, 0, "stderr: {}", seen.stderr);
+    let result: serde_json::Value = serde_json::from_str(seen.stdout.trim())?;
+    assert_eq!(result["content"][0]["text"], reported.stdout.trim());
     Ok(())
 }
 
@@ -413,7 +457,7 @@ mod sealed_store {
                     .ok_or_else(|| format!("not an mcp url: {url}"))?;
                 let args =
                     ["--json", &format!("@{server}"), "resources-read", uri].map(str::to_owned);
-                match yi_mcp_cli::run(&args, None) {
+                match yi_mcp_cli::run(&args, None, "9.9.9") {
                     0 => Ok(serde_json::Map::from_iter([(
                         "text".to_owned(),
                         "ok".into(),
