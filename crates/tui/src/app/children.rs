@@ -101,6 +101,7 @@ impl App {
                         error: None,
                         spawn: self.spawning_cell(),
                         answer: None,
+                        answer_dropped: 0,
                         activity: update.activity,
                         flag: None,
                     },
@@ -138,6 +139,7 @@ impl App {
                 state.finished = None;
                 state.started = self.clock.now();
                 state.cell.answer = None;
+                state.cell.answer_dropped = 0;
                 self.committed_tasks.remove(id);
             }
             state.cell.flag = update.flag.clone();
@@ -147,12 +149,13 @@ impl App {
             state.cell.toolcalls = toolcalls;
             state.cell.tokens = update.token_count;
             state.cell.elapsed_ms = elapsed_ms(state.started, self.clock.now());
-            // The record's preview outranks a folded stream that lost events to a gap.
+            // The record's preview outranks a folded stream that lost events to a gap, unless the
+            // card cut that stream's head itself: a tail never holds the head the preview is.
             if let Some(preview) = &update.answer_preview {
                 let folded = state.cell.answer.as_deref().unwrap_or_default();
                 let folded = folded.split_whitespace().collect::<Vec<_>>().join(" ");
                 let head = preview.trim_end_matches('…');
-                if !folded.contains(head) {
+                if state.cell.answer_dropped == 0 && !folded.contains(head) {
                     state.cell.answer = Some(preview.clone());
                 }
             }
@@ -170,7 +173,7 @@ impl App {
                         _ => None,
                     });
                 if let Some(text) = answer.filter(|t| !t.trim().is_empty()) {
-                    state.cell.answer = Some(crate::cell::tail_bounded(text));
+                    state.cell.keep_answer(text);
                 }
             }
             self.scheduler.request();
