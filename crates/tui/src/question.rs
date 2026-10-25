@@ -778,6 +778,10 @@ impl CardTick {
             last: None,
         }
     }
+
+    pub fn ids(&self) -> [u32; 2] {
+        self.ids
+    }
 }
 
 pub fn hide(out: &mut impl std::io::Write, state: &mut CardTick) {
