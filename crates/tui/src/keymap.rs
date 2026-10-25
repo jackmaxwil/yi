@@ -34,7 +34,6 @@ pub struct SingleKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KeyInput {
     Single(SingleKey),
-    Sequence(Vec<SingleKey>),
 }
 
 /// Invariant: a terminal reports Esc, Tab, DEL and ctrl+letter as named keys or modified letters,
@@ -200,14 +199,10 @@ impl fmt::Display for SingleKey {
 
 impl KeyInput {
     pub fn parse(s: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = s.split_whitespace().collect();
-        if parts.len() > 1 {
-            let keys: Result<Vec<SingleKey>, String> =
-                parts.iter().map(|p| SingleKey::parse(p)).collect();
-            Ok(KeyInput::Sequence(keys?))
-        } else {
-            Ok(KeyInput::Single(SingleKey::parse(s)?))
+        if s.split_whitespace().nth(1).is_some() {
+            return Err(format!("{s:?} is a chord; one keystroke per binding"));
         }
+        Ok(KeyInput::Single(SingleKey::parse(s)?))
     }
 }
 
@@ -215,15 +210,6 @@ impl fmt::Display for KeyInput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             KeyInput::Single(k) => write!(f, "{k}"),
-            KeyInput::Sequence(keys) => {
-                for (i, k) in keys.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{k}")?;
-                }
-                Ok(())
-            }
         }
     }
 }

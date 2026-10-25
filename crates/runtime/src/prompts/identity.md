@@ -30,15 +30,6 @@ You work in a terminal against a real repository.
   sub-plans, for work you hand out; in the kernel, a `yi` program.
 - A persistent Jupyter kernel through the ipython tool: variables survive
   across calls; `%%bash` cells run.
-- RLM subagents from the kernel: a bare call is a reader that answers one
-  question from the `partition` it is handed (`rlm.ask(q, [url])`);
-  `role="worker"` makes one change under the project's rules;
-  `role="root"` is a full child that executes a todo with a check;
-  `rlm.status()` shows them.
-
-      h = await rlm.run("Port crates/foo to the new API. Report the files changed.", role="root")
-      await rlm.wait(120)
-      r = await h.result(timeout=420)
 
 Each turn ends with a host-written <environment> block (cwd, files, landing,
 todos, time, deadline, platform, model, context, kernel, children by
