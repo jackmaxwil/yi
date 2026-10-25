@@ -2934,7 +2934,7 @@ async fn a_ref_only_hand_back_lists_the_edits_it_kept() -> TestResult {
     ] {
         std::fs::write(rig.repo.join(path), text)?;
     }
-    let reply = family.host.merge_worktree("writer")?;
+    let reply = family.host.merge_worktree("writer", None)?;
     assert_eq!(reply["merged"], true, "{reply:?}");
     assert_eq!(reply["published"], "ref_only", "{reply:?}");
     let mut kept: Vec<&str> = reply
@@ -2974,7 +2974,7 @@ async fn a_fast_forward_hand_back_keeps_nothing_and_says_so_by_omission() -> Tes
     let rig = Rig::new("kept-none")?;
     let family = writer(&rig, "printf 'child\\n' >> README.md; echo x > draft.txt").await?;
     assert!(family.reaches("writer", "finished").await);
-    let reply = family.host.merge_worktree("writer")?;
+    let reply = family.host.merge_worktree("writer", None)?;
     assert_eq!(reply["published"], "fast_forward", "{reply:?}");
     assert!(
         !reply.contains_key("kept_yours") && !reply.contains_key("next"),
@@ -2993,7 +2993,7 @@ async fn a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it() ->
     std::fs::write(rig.repo.join("README.md"), "parent\n")?;
     git(&rig.repo, &["commit", "-qam", "parent moved"])?;
     let before = git(&rig.repo, &["rev-parse", "HEAD"])?;
-    let reply = family.host.merge_worktree("writer")?;
+    let reply = family.host.merge_worktree("writer", None)?;
     assert_eq!(reply["merged"], false, "{reply:?}");
     let branch = reply["branch"].as_str().ok_or("no branch")?;
     let next = reply
@@ -3015,5 +3015,105 @@ async fn a_conflicting_hand_back_names_the_branch_it_kept_and_how_to_use_it() ->
     git(&rig.repo, &["merge", "--abort"])?;
     git(&rig.repo, &["branch", "-D", branch])?;
     assert!(!git_raw(&rig.repo, &["rev-parse", "--verify", "-q", branch])?.0);
+    Ok(())
+}
+
+/// The kernel's own `rlm.merge_worktree` request for `writer`, carrying `check`.
+fn checked_merge(
+    family: &support::Family,
+    check: &str,
+) -> Result<yi_kernel::client::HostFuture, Box<dyn Error>> {
+    use yi_kernel::client::HostHandlers;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let asked = serde_json::json!({"target": "writer", "check": check});
+    let asked = asked.as_object().cloned().unwrap_or_default();
+    Ok(registry
+        .dispatch("rlm.merge_worktree", asked)
+        .ok_or("rlm.merge_worktree")?)
+}
+
+/// Dies with the handler dropping `check`: a lane whose work fails it lands here anyway, and the
+/// red one must leave this checkout as it was and the work on the branch it names.
+#[tokio::test]
+async fn a_checked_hand_back_merges_only_a_lane_whose_check_passes() -> TestResult {
+    for (label, hold, passes) in [
+        ("check-green", "echo x > draft.txt; : > NEW", true),
+        ("check-red", "echo x > draft.txt", false),
+    ] {
+        let rig = Rig::new(label)?;
+        let family = writer(&rig, hold).await?;
+        assert!(family.reaches("writer", "finished").await);
+        let before = git(&rig.repo, &["rev-parse", "HEAD"])?;
+        let reply = checked_merge(&family, "test -f NEW")?.await?;
+        assert_eq!(reply["merged"], passes, "{label}: {reply:?}");
+        if passes {
+            assert!(rig.repo.join("NEW").is_file(), "{reply:?}");
+            continue;
+        }
+        assert_eq!(reply["check"]["exit"], 1, "{reply:?}");
+        assert_eq!(git(&rig.repo, &["rev-parse", "HEAD"])?, before);
+        assert!(!rig.repo.join("draft.txt").exists(), "{reply:?}");
+        let branch = reply["branch"].as_str().ok_or("no branch")?;
+        assert_eq!(
+            git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+            "x"
+        );
+        let next = reply["next"].as_str().ok_or("no next sentence")?;
+        assert!(next.contains(&format!("git merge {branch}")), "{next}");
+    }
+    Ok(())
+}
+
+/// A red check's tail keeps its last 2,000 chars: at the limit it is whole and says nothing,
+/// one past it the cut is a row naming kept over total and where the rest is.
+#[tokio::test]
+async fn a_red_checks_tail_names_its_cut() -> TestResult {
+    for (label, chars) in [("tail-at", 2000), ("tail-over", 2001)] {
+        let rig = Rig::new(label)?;
+        let family = writer(&rig, "echo x > draft.txt").await?;
+        assert!(family.reaches("writer", "finished").await);
+        let check = format!("awk 'BEGIN {{ for (i = 0; i < {chars}; i++) printf \"é\" }}'; exit 3");
+        let reply = checked_merge(&family, &check)?.await?;
+        assert_eq!(reply["check"]["exit"], 3, "{reply:?}");
+        let tail = reply["check"]["tail"].as_str().ok_or("no tail")?;
+        let (row, body) = tail.split_once('\n').unwrap_or(("", tail));
+        if chars == 2000 {
+            assert_eq!(tail.chars().filter(|c| *c == 'é').count(), 2000, "{tail}");
+            assert!(!tail.contains('['), "{tail}");
+            continue;
+        }
+        assert!(row.contains("last 2000 of 2001 chars"), "{row}");
+        assert!(row.contains("`git switch` to the kept branch"), "{row}");
+        assert_eq!(body.chars().count(), 2000, "{body}");
+    }
+    Ok(())
+}
+
+/// Dies with the check run inside the async handler, where the session's one-thread runtime
+/// answers nothing until it ends; past the session deadline it is cut and the reply says so.
+#[tokio::test]
+async fn a_check_past_the_deadline_is_cut_while_the_executor_serves() -> TestResult {
+    let rig = Rig::new("check-deadline")?;
+    let family = writer(&rig, "echo x > draft.txt").await?;
+    assert!(family.reaches("writer", "finished").await);
+    let now = std::time::Instant::now();
+    let ends = now.checked_add(std::time::Duration::from_secs(2));
+    family.host.set_deadline(Some(ends.ok_or("no instant")?));
+    let merge = checked_merge(&family, "sleep 30")?;
+    let reply = served_while(&family, merge).await??;
+    assert!(
+        now.elapsed() < std::time::Duration::from_secs(20),
+        "{reply:?}"
+    );
+    assert_eq!(reply["merged"], false, "{reply:?}");
+    assert!(reply["check"]["exit"].is_null(), "{reply:?}");
+    let tail = reply["check"]["tail"].as_str().ok_or("no tail")?;
+    assert!(tail.contains("cut at the session deadline"), "{tail}");
+    let branch = reply["branch"].as_str().ok_or("no branch")?;
+    assert_eq!(
+        git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+        "x"
+    );
     Ok(())
 }

@@ -784,11 +784,27 @@ impl SubagentHost {
 
     /// Worktree hand-back through the acceptance mechanics: settled, staged, published under the
     /// generation check (one retry on a moved parent); a conflict answers `merged: false`.
-    pub fn merge_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
+    pub fn merge_worktree(
+        &self,
+        target: &str,
+        check: Option<&str>,
+    ) -> Result<Map<String, Value>, String> {
+        let gate = self.check_gate.get().map(|gates| &gates.0);
+        if let Some(refused) = check.and_then(|check| gate?(check)) {
+            return Err(format!(
+                "the check is refused before it runs on the host: {refused}"
+            ));
+        }
         let (lane, name) = self.take_settled_worktree(target)?;
         let pool = lane.pool().clone();
         let quiescence = quiescence_of_jobs(lane.path());
         let deadline = self.deadline();
+        let red = check
+            .map(|check| red_check(&lane, check, deadline))
+            .transpose()?
+            .flatten();
+        // Invariant: a cut check spent the deadline, and the settle after it still keeps the work.
+        let deadline = deadline.filter(|_| red.is_none());
         let settled = lane
             .settle(&quiescence, deadline)
             .map_err(|unsettled| unsettled.error().to_string())?;
@@ -797,6 +813,18 @@ impl SubagentHost {
         let files = changed_files(&parent, &settled.candidate, deadline)
             .map_err(|error| error.to_string())?;
         reply.insert("files".to_owned(), files);
+        if let Some(verdict) = red {
+            let kept = settled.candidate.branch.as_str();
+            reply.insert("merged".to_owned(), Value::Bool(false));
+            reply.insert("check".to_owned(), verdict);
+            reply.insert(
+                "next".to_owned(),
+                json!(format!(
+                    "The check failed, so this checkout is unchanged and the child's lane is released; its work is kept on branch {kept}. `git merge {kept}` lands it anyway, and `git branch -D {kept}` drops it."
+                )),
+            );
+            return Ok(reply);
+        }
         let mut moved: Option<(Sha, Sha)> = None;
         for _attempt in 0..2 {
             let _integration = INTEGRATION.lock().unwrap_or_else(PoisonError::into_inner);
@@ -923,6 +951,38 @@ impl SubagentHost {
         drop(record.lane_permit.take());
         Ok((lane, record.session_name.clone()))
     }
+}
+
+/// A hand-back's `check` in the lane, under the session deadline (ten minutes with none); `None`
+/// is a pass, otherwise its `{exit, tail}`.
+fn red_check(lane: &Lane, check: &str, deadline: Option<Instant>) -> Result<Option<Value>, String> {
+    let budget = Duration::from_millis(crate::goal::DEFAULT_CHECK_TIMEOUT_MS);
+    let until = deadline.or_else(|| Instant::now().checked_add(budget));
+    let until = until.unwrap_or_else(Instant::now);
+    let capture = crate::goal::run_check_in(lane.path(), check, &[], None, until, None)?;
+    if capture.exit_code == Some(0) && !capture.cancelled {
+        return Ok(None);
+    }
+    let tail = crate::goal::output_tail(&capture);
+    let total = [&capture.stdout, &capture.stderr]
+        .iter()
+        .filter(|out| !out.trim().is_empty())
+        .map(|out| out.trim_end().chars().count().saturating_add(1))
+        .sum::<usize>()
+        .saturating_sub(1);
+    let kept = tail.chars().count();
+    let rerun = "`git switch` to the kept branch and run the check for the rest";
+    let cap = deadline.map_or_else(
+        || format!("the {} ms check timeout", budget.as_millis()),
+        |_| "the session deadline".to_owned(),
+    );
+    let timed_out = capture
+        .cancelled
+        .then(|| format!("[… cut at {cap}; {rerun}]\n"));
+    let trimmed = (kept < total).then(|| format!("[… last {kept} of {total} chars; {rerun}]\n"));
+    let cut: String = timed_out.into_iter().chain(trimmed).collect();
+    let exit = capture.exit_code.filter(|_| !capture.cancelled);
+    Ok(Some(json!({"exit": exit, "tail": format!("{cut}{tail}")})))
 }
 
 /// A slot path under the pool, so a staging lane can be named in a record without its host path.
