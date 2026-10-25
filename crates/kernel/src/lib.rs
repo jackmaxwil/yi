@@ -5,7 +5,6 @@ pub mod bootstrap;
 pub mod client;
 pub mod connection;
 pub mod framing;
-pub mod journal;
 mod lock;
 pub mod pinned;
 mod probe;
@@ -38,7 +37,6 @@ pub const KERNEL_STATE_LISTING_TIMEOUT_MS: u64 = 5_000;
 pub const KERNEL_ABORT_GRACE_MS: u64 = 1_000;
 pub const KERNEL_BUSY_REUSE_WAIT_MS: u64 = 5_000;
 pub const KERNEL_BUSY_INTERRUPT_INTERVAL_MS: u64 = 500;
-pub const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS: usize = 256;
 pub const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE: &str = "IPython kernel is still running the previously interrupted cell. Wait and try again, or kill the IPython kernel to start fresh.";
 
 // Guards against a runaway direct `display_data` emit. `attach-image` caps its
@@ -48,6 +46,4 @@ pub const MAX_ATTACHMENT_DATA_CHARS: usize = 10_000_000;
 /// Comm target the kernel-side `rlm.host_request` shim opens for typed host requests.
 pub const HOST_COMM_TARGET: &str = "host.request";
 
-pub const DIFF_DISPLAY_MIME: &str = "application/vnd.yi.diff+json";
 pub const ATTACHMENT_DISPLAY_MIME: &str = "application/vnd.yi.attachment+json";
-pub const AGENT_MESSAGE_DISPLAY_MIME: &str = "application/vnd.yi.agent-message+json";

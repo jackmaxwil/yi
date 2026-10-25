@@ -11,6 +11,8 @@ use crate::model::{Editor, PaneContent};
 use super::App;
 
 const MAX_EDITOR_BYTES: u64 = 8 * 1024 * 1024;
+/// Invariant: the text area's cursor jump takes a u16 row index, so a longer file is refused.
+const MAX_EDITOR_LINES: usize = 65_536;
 const DISK_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn mtime_of(path: &str) -> Option<SystemTime> {
@@ -21,7 +23,7 @@ fn short(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-pub(super) fn load(path: &str) -> Result<Editor, String> {
+pub(super) fn load(path: &str, workdir: String) -> Result<Editor, String> {
     let size = std::fs::metadata(path)
         .map_err(|error| format!("{path}: {error}"))?
         .len();
@@ -32,6 +34,12 @@ pub(super) fn load(path: &str) -> Result<Editor, String> {
         ));
     }
     let source = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+    let lines = source.lines().count();
+    if lines > MAX_EDITOR_LINES {
+        return Err(format!(
+            "{path}: {lines} lines is over the 65,536-line editor limit"
+        ));
+    }
     let mut text = TextArea::from(source.lines().map(str::to_owned).collect::<Vec<_>>());
     text.set_cursor_line_style(ratatui::style::Style::default());
     Ok(Editor {
@@ -46,13 +54,20 @@ pub(super) fn load(path: &str) -> Result<Editor, String> {
         lang: Path::new(path)
             .extension()
             .map(|ext| ext.to_string_lossy().into_owned()),
+        // Invariant: a file mixing endings saves with the one most of its lines use.
+        crlf: source.matches("\r\n").count().saturating_mul(2) > source.matches('\n').count(),
+        final_newline: source.ends_with('\n'),
+        workdir,
     })
 }
 
 impl Editor {
     fn contents(&self) -> String {
-        let mut out = self.text.lines().join("\n");
-        out.push('\n');
+        let eol = if self.crlf { "\r\n" } else { "\n" };
+        let mut out = self.text.lines().join(eol);
+        if self.final_newline {
+            out.push_str(eol);
+        }
         out
     }
 
@@ -65,25 +80,35 @@ impl Editor {
             self.stale = true;
             return Err(STALE.to_owned());
         }
-        let tmp = format!("{}.yi-tmp", self.path);
+        let fail = |error: std::io::Error| format!("save {}: {error}", short(&self.path));
+        let target = std::fs::canonicalize(&self.path).map_err(fail)?;
+        let mut tmp = target.clone().into_os_string();
+        tmp.push(".yi-tmp");
+        let meta = std::fs::metadata(&target).map_err(fail)?;
+        // An empty file has no ending to keep; once typed into, it ends on a newline.
+        self.final_newline |= meta.len() == 0 && self.text.lines() != [""];
+        let body = self.contents();
         let written = std::fs::File::create(&tmp).and_then(|mut file| {
-            file.write_all(self.contents().as_bytes())?;
+            file.write_all(body.as_bytes())?;
+            file.set_permissions(meta.permissions())?;
             file.sync_all()?;
-            std::fs::rename(&tmp, &self.path)
+            std::fs::rename(&tmp, &target)
         });
         if let Err(error) = written {
             let _leftover = std::fs::remove_file(&tmp);
-            return Err(format!("save {}: {error}", short(&self.path)));
+            return Err(fail(error));
         }
         self.dirty = false;
         self.mtime = mtime_of(&self.path);
-        Ok(format!("saved {} · CRLF written as LF", short(&self.path)))
+        Ok(format!("saved {}", short(&self.path)))
     }
 
     fn reload(&mut self) -> Result<(), String> {
-        let fresh = load(&self.path)?;
+        let fresh = load(&self.path, self.workdir.clone())?;
         let (row, col) = self.text.cursor();
         self.text = fresh.text;
+        self.crlf = fresh.crlf;
+        self.final_newline = fresh.final_newline;
         self.text.move_cursor(CursorMove::Jump(
             u16::try_from(row).unwrap_or(u16::MAX),
             u16::try_from(col).unwrap_or(u16::MAX),
@@ -175,8 +200,8 @@ impl Editor {
 }
 
 impl App {
-    pub(super) fn open_editor(&mut self, path: &str) {
-        match load(path) {
+    pub(super) fn open_editor(&mut self, path: &str, workdir: String) {
+        match load(path, workdir) {
             Ok(editor) => {
                 if let Some(pane) = self.state.focused_pane_mut() {
                     pane.content = PaneContent::Editor(editor);
@@ -235,28 +260,23 @@ impl App {
         };
         let (row, col) = editor.text.cursor();
         let lines = editor.text.lines();
-        let hit = lines
-            .iter()
-            .enumerate()
-            .skip(row)
-            .chain(lines.iter().enumerate().take(row))
-            .find_map(|(index, line)| {
-                let from = if index == row {
-                    col.saturating_add(1)
-                } else {
-                    0
-                };
-                let head: String = line.chars().take(from).collect();
-                line.get(head.len()..)?.find(pattern).map(|at| {
-                    (
-                        index,
-                        head.chars().count()
-                            + line
-                                .get(..head.len() + at)
-                                .map_or(0, |s| s.chars().count() - head.chars().count()),
-                    )
-                })
-            });
+        let rows = lines.iter().enumerate();
+        let after = rows.clone().skip(row).map(|(index, line)| {
+            let from = if index == row {
+                col.saturating_add(1)
+            } else {
+                0
+            };
+            (index, line, from)
+        });
+        let wrapped = rows
+            .take(row.saturating_add(1))
+            .map(|(i, line)| (i, line, 0));
+        let hit = after.chain(wrapped).find_map(|(index, line, from)| {
+            let skip: usize = line.chars().take(from).map(char::len_utf8).sum();
+            let at = skip.checked_add(line.get(skip..)?.find(pattern)?)?;
+            Some((index, line.get(..at)?.chars().count()))
+        });
         let outcome = match hit {
             Some((line, column)) if !pattern.is_empty() => {
                 editor.jump(line, column);

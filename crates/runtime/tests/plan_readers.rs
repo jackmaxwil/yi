@@ -231,7 +231,9 @@ async fn a_plan_reader_with_a_schema_contract_runs_as_a_reader_and_is_accepted()
     assert!(
         !question.contains("Context:")
             && question
-                .contains("Reply with one JSON object matching this schema:\n{\"properties\""),
+                .contains("Reply with one JSON object matching this schema:\n{\"properties\"")
+            && question.matches(answer).count() == 1
+            && !question.contains("no fence"),
         "{question}"
     );
     Ok(())
@@ -485,8 +487,8 @@ async fn fetched(session: &AgentSession, url: &str) -> Result<String, Box<dyn Er
         .ok_or("the wiring installs a kernel")?;
     let code = format!("print(await rlm.fetch({url:?}))");
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-    let ran =
-        tokio::task::spawn_blocking(move || kernel.execute_cell(&code, &cancelled, None)).await??;
+    let ran = tokio::task::spawn_blocking(move || kernel.execute_cell(&code, "", &cancelled, None))
+        .await??;
     Ok(format!("{}{:?}", ran.result.stdout, ran.result.error))
 }
 

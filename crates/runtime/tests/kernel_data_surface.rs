@@ -205,21 +205,22 @@ async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
 #[tokio::test]
 async fn the_cell_a_cut_traceback_names_prints_the_exception_again() -> TestResult {
     let service = service();
-    let failed = cell(
-        &service,
-        "def deeper(n):\n    return deeper(n + 1)\ndeeper(0)",
-    )
-    .await?;
-    let shown = failed.result.error.ok_or("no error")?.traceback.join("\n");
-    let traceback = yi_tools::Involuntary::Traceback;
-    let viewed = yi_tools::view(traceback, &shown, "", 1, None, None);
-    let named = (viewed.text.lines()).find_map(|line| {
+    let code = "def deeper(n):\n    return deeper(n + 1)\ndeeper(0)";
+    let failed = cell(&service, code).await?;
+    let shown = yi_tools::cell_output(code, failed, None).result.content;
+    let text: String = (shown.iter())
+        .filter_map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let named = (text.lines()).find_map(|line| {
         line.split_once("the rest: an ipython cell running ")?
             .1
             .split_once(", which")
     });
     let call = named
-        .ok_or_else(|| format!("no cell named: {} B", viewed.text.len()))?
+        .ok_or_else(|| format!("no cell named: {} B", text.len()))?
         .0;
     let again = cell(&service, call).await?;
     let printed = again.result.stdout + &again.result.stderr;
@@ -283,7 +284,7 @@ async fn cell(
     let (service, code) = (Arc::clone(service), code.to_owned());
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled, None)
+        KernelBridge::execute_cell(service.as_ref(), &code, "", &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?

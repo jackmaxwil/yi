@@ -36,13 +36,31 @@ fn an_unknown_predicate_fails_to_parse() -> Result<(), serde_json::Error> {
         "result_error(denied",
         "todo_state(running) or always",
         "not(always)",
-        "result_ok && todo_open",
+        "result_ok && always",
         "child_state(running)(finished)",
     ] {
         assert!(edge(unknown).is_err(), "{unknown:?} parsed");
         assert!(Predicate::try_from(unknown.to_owned()).is_err());
     }
     Ok(())
+}
+
+/// Invariant: `after` has no wildcard arm, so a new kind fails to compile here; it is walked and
+/// held equal to [`PREDICATES`] only once the arm before it names it as the next kind.
+fn every_kind() -> Vec<ToolErrorKind> {
+    use ToolErrorKind::*;
+    let after = |kind| match kind {
+        Denied => Some(NotFound),
+        NotFound => Some(InvalidArgs),
+        InvalidArgs => Some(Aborted),
+        Aborted => Some(StaleTag),
+        StaleTag => Some(NoopLoop),
+        NoopLoop => Some(Stale),
+        Stale => Some(Verdict),
+        Verdict => Some(ToolError),
+        ToolError => None,
+    };
+    std::iter::successors(Some(Denied), |kind| after(*kind)).collect()
 }
 
 /// Invariant: a seam spells its fact with one of these constants, so a typo is caught here
@@ -60,16 +78,12 @@ fn every_fact_a_seam_asserts_parses() -> Result<(), String> {
         graph::SESSION_ON_DISK.to_owned(),
         graph::SESSION_IN_MEMORY.to_owned(),
     ];
-    let kinds = [
-        ToolErrorKind::Denied,
-        ToolErrorKind::NotFound,
-        ToolErrorKind::InvalidArgs,
-        ToolErrorKind::Aborted,
-        ToolErrorKind::StaleTag,
-        ToolErrorKind::NoopLoop,
-        ToolErrorKind::ToolError,
-    ];
-    facts.extend(kinds.map(|kind| format!("{}({})", graph::RESULT_ERROR, kind.as_str())));
+    let kinds = every_kind();
+    facts.extend(
+        kinds
+            .iter()
+            .map(|kind| format!("{}({})", graph::RESULT_ERROR, kind.as_str())),
+    );
     let states = [
         TodoStateName::Running,
         TodoStateName::Pending,
@@ -80,6 +94,18 @@ fn every_fact_a_seam_asserts_parses() -> Result<(), String> {
         Predicate::try_from(fact)?;
     }
     Ok(())
+}
+
+#[test]
+fn result_error_admits_exactly_the_kinds_a_tool_can_raise() {
+    let admitted = PREDICATES
+        .iter()
+        .find(|(name, _)| *name == graph::RESULT_ERROR);
+    let raised: Vec<&str> = every_kind().iter().map(|kind| kind.as_str()).collect();
+    assert_eq!(
+        admitted.map(|(_, arguments)| arguments.split(' ').collect()),
+        Some(raised)
+    );
 }
 
 /// The offline refiner judges the same file with its own `check` (`evals/graph/test_refine.py`),

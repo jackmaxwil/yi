@@ -161,7 +161,7 @@ pub fn commits_for(cwd: &Path, address: &str) -> Result<Commits, WhyError> {
         .collect();
     let rest = format!("git log --format='%H %s' --basic-regexp --grep '{pattern}'");
     let cut = (capture.cut)
-        .map(|(kept, all)| super::cut(kept, all, "bytes of git log", "CAP", CAP, &rest));
+        .map(|(kept, all)| yi_tools::cut_row(kept, all, "bytes of git log", "CAP", CAP, &rest));
     Ok((found, cut))
 }
 
