@@ -614,10 +614,12 @@ python3 evals/kill.py report
   each verifier's count; `table` prints one row per trial with its score, pass, the parent's peak
   context and its children's input tokens. The pre-registered score is the ctrf tally, but only
   medical-claims-processing writes a ctrf (one test that passes whatever the agent did), so the score
-  is the verifier's own count: `trace_results.json`'s cases, else the `Scoring: X/Y lines correct` line.
+  is the verifier's own count: `trace_results.json`'s cases, else the `Scoring: X/Y lines correct` line
+  (a departure from the pre-registered score: a paid sweep waits for the owner's `decision:` line on it).
   Run it on an x86 host: on an arm64 Mac the amd64 images run emulated, medical-claims-processing's
   browser sidecar never turned healthy and legacy-utility-triage's oracle could not commit through the GUI.
-  Its Kimi family reads unrun like EXP-B3c's, so until the sweep can carry a Kimi route its verdict is KILL or UNRESOLVED.
+  Its Kimi family reads unrun like EXP-B3c's, so until the sweep can carry a Kimi route its verdict is UNRESOLVED (no Kimi trial ran);
+  a flash-only run decides nothing, so it is not run with `--without-kimi`.
 - Each test's rows are copied to `evals/trials/ns-<test>.jsonl` for its owning PR.
   `selftest.check_kill` pins all of this against a fake yi that replays recorded streams.
 
