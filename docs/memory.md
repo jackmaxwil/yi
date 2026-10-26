@@ -11,8 +11,9 @@ Invariants:
 - At most 3 `memory.save` calls succeed per session. A refused save does not count against the cap.
 - The host writes every note file in one canonical form: frontmatter `name`, `description`,
   `type`, then unknown keys as their raw lines, then the body.
-- A save is refused if the text carries a yard fence (`<<<yi-external`) or a `<memory` tag, or a
-  key-shaped secret (`PRIVATE KEY-----`, `sk-`, `ghp_`, `github_pat_`, `AKIA` runs). Other
+- A save is refused if the text carries a yard fence (`<<<yi-external`) or a key-shaped secret
+  (`PRIVATE KEY-----`, or an `sk-`, `ghp_`, `github_pat_` or `AKIA` run that starts at a token
+  edge and holds a digit, so `disk-backed` is a word and not a key). Other
   refusals, each naming the field and bound: a missing or placeholder `description`, one over
   240 characters, a missing or unknown `type`, a body over 8 KiB.
 - A note file that does not parse is never refused on disk. It is indexed by its first body line
