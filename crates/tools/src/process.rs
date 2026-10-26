@@ -67,16 +67,27 @@ impl CommandCapture {
             .then(|| kept.unwrap_or_else(|| "[output truncated]".to_owned()))
     }
 
-    /// The one row naming a cut capture: kept over total bytes, the cap, and the file with the rest.
+    /// The one row naming a cut capture: kept over total bytes, the cap, and the file with the rest,
+    /// shaped as a `[full output, …: path]` pointer when a file holds it, so [`spill_path`] reads it.
     pub fn cut_row(&self) -> Option<String> {
         let (kept, total) = self.cut.filter(|_| self.truncated)?;
-        let rest = match self.spill.as_deref().and_then(spill_path) {
-            Some((label, path)) => format!("{label}: {path}"),
-            None => "no file kept the rest".to_owned(),
-        };
-        Some(format!(
-            "[capture cut: kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP} per stream); {rest}]"
-        ))
+        let cut = format!("kept {kept} of {total} bytes (OUTPUT_CAP {OUTPUT_CAP} per stream)");
+        Some(match self.spill.as_deref().and_then(spill_path) {
+            Some((label, path)) => format!("[full output, {cut}, {label}: {path}]"),
+            None => format!("[capture cut: {cut}; no file kept the rest]"),
+        })
+    }
+
+    /// The pointer the reducer ends a cut capture with: its cut row, when a file holds the rest.
+    pub(crate) fn kept(&self) -> Option<String> {
+        self.spill.as_ref().and(self.cut_row())
+    }
+
+    /// The reduced text, and the cut row when that text points at no file.
+    pub(crate) fn shown(&self, reduced: &crate::Reduced) -> Vec<String> {
+        let body = (!reduced.text.is_empty()).then(|| reduced.text.clone());
+        let row = self.cut_row().filter(|_| reduced.recovery.is_none());
+        body.into_iter().chain(row).collect()
     }
 }
 

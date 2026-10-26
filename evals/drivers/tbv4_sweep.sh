@@ -48,7 +48,8 @@ command -v harbor >/dev/null 2>&1 || fail "harbor is not installed (uv tool inst
 if [ -n "$RUNNER" ]; then
   [ -r "$OVERRIDES" ] || fail "no overrides file at $OVERRIDES"
   TRIALS=$(( $(wc -l < "$LIST") * ATTEMPTS ))
-  HARD_CAP=$(python3 evals/drivers/trials.py caps --run-id "$RUN_ID" --tasks "$TRIALS") || exit 2
+  # evals/kill.py hands down what is left of its reserve; caps returns the lower of that and its own.
+  HARD_CAP=$(python3 evals/drivers/trials.py caps --run-id "$RUN_ID" --tasks "$TRIALS" ${TBV4_HARD_CAP:+--at-most "$TBV4_HARD_CAP"}) || exit 2
   if [ "$(tr -d ' \n\t' < "$OVERRIDES")" = "{}" ]; then
     unset YI_LEVERS
     ARM="${EVAL_ARM:-defaults}"

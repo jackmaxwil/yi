@@ -308,7 +308,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             });
         if pane_rect.focused && panes_zone {
             editor_cursor = match app.state.panes.get(&pane_rect.id).map(|pane| &pane.content) {
-                Some(PaneContent::Editor(editor)) => editor_cursor_cell(editor, inner),
+                Some(PaneContent::Editor(editor)) => crate::editor_view::cursor_cell(editor, inner),
                 Some(PaneContent::Terminal(pty)) => pty.cursor(inner),
                 _ => editor_cursor,
             };
@@ -512,6 +512,7 @@ fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> Strin
     note
 }
 
+use crate::panes::{cached, windowed};
 pub use crate::panes::{hunk_lines, review_files, review_view};
 
 fn pane_view_content(
@@ -522,26 +523,40 @@ fn pane_view_content(
     close_hint: &str,
 ) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
     let (diffs, sessions) = (view.diffs, view.sessions);
-    let visible = usize::from(inner.height);
+    let (visible, width) = (usize::from(inner.height), usize::from(inner.width));
     match &mut pane.content {
         PaneContent::Session { session, .. } => {
             let title = session.as_ref().map_or_else(
                 || "❯ no session".to_owned(),
-                |id| format!("❯ {}", label_of(sessions, id, usize::from(inner.width))),
+                |id| format!("❯ {}", label_of(sessions, id, width)),
             );
             (title, Vec::new(), None)
         }
-        PaneContent::Markdown { path, source } => {
-            let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
-            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
+        PaneContent::Markdown {
+            path,
+            source,
+            drawn,
+            ..
+        } => {
+            let all = cached(drawn, width, || {
+                yi_tui::markdown::render(source, width, theme)
+            });
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (format!("¶ {}", short_path(path)), lines, scroll)
         }
-        PaneContent::Diff { path, source } => {
-            let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
-            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
+        PaneContent::Diff {
+            path,
+            source,
+            drawn,
+            ..
+        } => {
+            let all = cached(drawn, width, || {
+                diffview::render(source, width, theme, DiffBudget::FULL)
+            });
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
-        PaneContent::Editor(editor) => editor_view(editor, inner, theme),
+        PaneContent::Editor(editor) => crate::editor_view::view(editor, inner, theme),
         PaneContent::Browser(browser) => {
             let (title, lines) = browser.view(inner, view.kitty, theme);
             (title, lines, None)
@@ -552,7 +567,6 @@ fn pane_view_content(
                 .as_ref()
                 .and_then(|id| view.options.get(id));
             let options = options.map_or(&[][..], Vec::as_slice);
-            let width = usize::from(inner.width);
             let lines = crate::settings::view(settings, options, view.cmd, width, visible, theme);
             ("Settings".to_owned(), lines, None)
         }
@@ -560,17 +574,22 @@ fn pane_view_content(
             let (title, lines) = pty.view(inner, &mut pane.scroll_from_bottom);
             (title, lines, None)
         }
-        PaneContent::SessionDiff { session, scope } => {
+        PaneContent::SessionDiff {
+            session,
+            scope,
+            drawn,
+        } => {
             let note = view.notes.get(session).map_or("", String::as_str);
-            let (title, all) = review_view(
-                diffs.get(session),
+            let diff = diffs.get(session);
+            let key = (
+                width,
                 *scope,
-                note,
-                usize::from(inner.width),
-                theme,
+                note.to_owned(),
+                diff.map_or(0, |diff| diff.rev),
             );
-            let (lines, scroll) = windowed(&all, &mut pane.scroll_from_bottom, visible);
-            (title, lines, scroll)
+            let (title, all) = cached(drawn, key, || review_view(diff, *scope, note, width, theme));
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
+            (title.clone(), lines, scroll)
         }
         PaneContent::Notebook {
             session,
@@ -579,17 +598,14 @@ fn pane_view_content(
         } => {
             let title = session.as_ref().map_or_else(
                 || "▤ notebook".to_owned(),
-                |id| format!("▤ {}", label_of(sessions, id, usize::from(inner.width))),
+                |id| format!("▤ {}", label_of(sessions, id, width)),
             );
-            let width = usize::from(inner.width);
-            if drawn.as_ref().is_none_or(|(at, _)| *at != width) {
+            let all = cached(drawn, width, || {
                 let cells = session.as_ref().map_or(&[][..], |id| {
                     crate::model::notebook_cells(view.notebooks, id)
                 });
-                let all = crate::panes::notebook_lines(cells, width, *full, theme, close_hint);
-                *drawn = Some((width, all));
-            }
-            let all = drawn.as_ref().map_or(&[][..], |(_, all)| all.as_slice());
+                crate::panes::notebook_lines(cells, width, *full, theme, close_hint)
+            });
             let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
@@ -609,118 +625,6 @@ pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
         }
     }
     out
-}
-
-fn windowed(
-    all: &[Line<'static>],
-    from_bottom: &mut usize,
-    visible: usize,
-) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
-    let total = all.len();
-    // Scrolling past the top would bank rows a later scroll down must first spend.
-    *from_bottom = (*from_bottom).min(total.saturating_sub(visible));
-    let from_bottom = *from_bottom;
-    let top = total.saturating_sub(from_bottom).saturating_sub(visible);
-    let extent = (total > visible).then_some((total, top));
-    (window(all, from_bottom, visible), extent)
-}
-
-fn window(all: &[Line<'static>], from_bottom: usize, visible: usize) -> Vec<Line<'static>> {
-    let end = all.len().saturating_sub(from_bottom);
-    let start = end.saturating_sub(visible);
-    all.get(start..end)
-        .map(<[Line<'static>]>::to_vec)
-        .unwrap_or_default()
-}
-
-fn editor_cursor_cell(editor: &crate::model::Editor, inner: Rect) -> Option<(u16, u16)> {
-    let (row, col) = editor.text.cursor();
-    let line = editor.text.lines().get(row)?;
-    let prefix: String = line.chars().take(col).collect();
-    let x = inner
-        .x
-        .checked_add(u16::try_from(editor.gutter()).ok()?)?
-        .checked_add(u16::try_from(Span::raw(prefix.as_str()).width()).ok()?)?;
-    let y = inner
-        .y
-        .checked_add(u16::try_from(row.checked_sub(editor.scroll_top)?).ok()?)?;
-    (x < inner.x.saturating_add(inner.width) && y < inner.y.saturating_add(inner.height))
-        .then_some((x, y))
-}
-
-fn editor_view(
-    editor: &mut crate::model::Editor,
-    inner: Rect,
-    theme: &Theme,
-) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
-    let height = usize::from(inner.height).max(1);
-    let total = editor.text.lines().len();
-    let cursor = editor.text.cursor();
-    if cursor != editor.last_cursor {
-        editor.last_cursor = cursor;
-        if cursor.0 < editor.scroll_top {
-            editor.scroll_top = cursor.0;
-        } else if cursor.0 >= editor.scroll_top.saturating_add(height) {
-            editor.scroll_top = cursor.0.saturating_add(1).saturating_sub(height);
-        }
-    }
-    editor.scroll_top = editor.scroll_top.min(total.saturating_sub(1));
-    let gutter = editor.gutter();
-    let mut lang = editor.primed_lang();
-    let selection = editor.text.selection_range();
-    let base = Style::default().fg(theme.text);
-    let mut out = Vec::new();
-    for (index, line) in editor
-        .text
-        .lines()
-        .iter()
-        .enumerate()
-        .skip(editor.scroll_top)
-        .take(height)
-    {
-        let number = format!(
-            "{:>width$} ",
-            index.saturating_add(1),
-            width = gutter.saturating_sub(1)
-        );
-        let mut spans = vec![Span::styled(number, theme.dim_style())];
-        let selected = selection.and_then(|(start, end)| {
-            let from = if index == start.0 { start.1 } else { 0 };
-            let to = if index == end.0 {
-                end.1
-            } else {
-                line.chars().count()
-            };
-            (start.0 <= index && index <= end.0).then_some((from, to))
-        });
-        match (selected, lang.as_mut()) {
-            (Some((from, to)), _) => {
-                let head: String = line.chars().take(from).collect();
-                let mid: String = line
-                    .chars()
-                    .skip(from)
-                    .take(to.saturating_sub(from))
-                    .collect();
-                let tail: String = line.chars().skip(to).collect();
-                spans.push(Span::styled(head, base));
-                spans.push(Span::styled(mid, base.add_modifier(Modifier::REVERSED)));
-                spans.push(Span::styled(tail, base));
-            }
-            (None, Some(lang)) => spans.extend(yi_tui::highlight::spans(line, lang, theme, base)),
-            (None, None) => spans.push(Span::styled(line.clone(), base)),
-        }
-        out.push(Line::from(spans));
-    }
-    if editor.stale {
-        out.truncate(height.saturating_sub(1));
-        out.push(Line::styled(
-            "file changed on disk · r reload · k keep",
-            Style::default().fg(theme.warning),
-        ));
-    }
-    let mark = if editor.dirty { " ●" } else { "" };
-    let extent = (total > height).then_some((total, editor.scroll_top));
-    (format!("✎ {}{mark}", short_path(&editor.path)), out, extent)
 }
 
 pub(crate) fn short_path(path: &str) -> String {
@@ -866,7 +770,7 @@ fn paint_chat_pane(
     else {
         return;
     };
-    chat.app.set_kitty(kitty);
+    chat.app.set_kitty(kitty && chat.slot.is_some());
     chat.app.set_title_cover(covered);
     let mut inner = inner;
     if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {

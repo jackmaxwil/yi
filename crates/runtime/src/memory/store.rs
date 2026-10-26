@@ -11,8 +11,8 @@ use super::journal::{self, Journal};
 
 const INDEX: &str = "MEMORY.md";
 const USAGE: &str = "usage.json";
-const LOAD_LINES: usize = 200;
-const LOAD_BYTES: usize = 25_000;
+pub(super) const LOAD_LINES: usize = 200;
+pub(super) const LOAD_BYTES: usize = 25_000;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

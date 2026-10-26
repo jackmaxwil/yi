@@ -46,6 +46,7 @@ import test_inner  # noqa: E402
 import test_mutate  # noqa: E402
 import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
+import test_kill  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
 
@@ -240,7 +241,7 @@ def check_eval_config():
         assert "routing_label(" in source, f"{name}'s fingerprint cannot tell two routings apart"
     # The ledger judges a PR's live run by main's runs of the same routing: one pin, three workflows.
     pins = {name: re.findall(r"^\s*EVAL_ROUTING: (.+)$", (ROOT.parent / ".forgejo" / "workflows" / name).read_text(), re.M)
-            for name in ("pr.yml", "postmerge.yml", "tracking-hygiene.yml")}
+            for name in ("pr.yml", "postmerge.yml", "live-weekly.yml")}
     assert len({pin for found in pins.values() for pin in found}) == 1 and all(pins.values()), pins
     # The fixtures lane leaves a caller's --home config alone, so a label there names a routing never sent.
     with tempfile.TemporaryDirectory() as home:
@@ -1161,7 +1162,18 @@ def check_judge_replay():
     assert result.testsRun >= 20 and result.wasSuccessful(), report.getvalue()
 
 
+def check_kill():
+    """The kill-test runner: the $30 cap at the limit and a cent past it, the live kill, the
+    unpriced ceiling, the flock across threads and processes, the Kimi quota park, run isolation
+    and a report that lists every test."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_kill)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 10 and result.wasSuccessful(), report.getvalue()
+
+
 CHECKS = (
+    check_kill,
     check_surface,
     check_surface_compare,
     check_judge_replay,

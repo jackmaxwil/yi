@@ -6,6 +6,16 @@ use yi_types::subagent::{CHILD_ENTRY, ChildEnded, ChildExit, ChildId, ChildSpawn
 use crate::session::AgentSession;
 
 impl super::SubagentHost {
+    /// The kernel whose running cell a spawn records as the cell that spawned the child.
+    pub fn attach_kernel(&self, kernel: &Arc<crate::kernel::KernelService>) {
+        self.kernel.get_or_init(|| Arc::downgrade(kernel));
+    }
+
+    pub(super) fn spawning_cell(&self) -> Option<String> {
+        let kernel = self.kernel.get()?.upgrade()?;
+        kernel.running_cell.lock().ok()?.clone()
+    }
+
     pub(super) fn children_dir(&self) -> PathBuf {
         if self.options.depth > 0 {
             return self.options.parent_session_dir.join("children");
@@ -51,6 +61,7 @@ impl super::SubagentHost {
                 session,
                 path: path.to_string_lossy().into_owned(),
                 brief: crate::fetch::content_hash(brief),
+                spawned_by: self.spawning_cell(),
             }),
         );
         Some(parent_file)

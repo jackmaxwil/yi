@@ -1053,6 +1053,7 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     }));
     session.prompt("hi")?;
     session.wait_idle().await;
@@ -1163,6 +1164,7 @@ async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<d
         schema_instruction: None,
         context_window: 128_000,
         global_skills: Vec::new(),
+        can_delegate: true,
     }));
     session.prompt("hi")?;
     session.wait_idle().await;
@@ -1277,6 +1279,59 @@ async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dy
         .nth(1)
         .ok_or_else(|| said.clone())?;
     assert!(report.contains("w2ke") && report.contains("seen"), "{said}");
+    Ok(())
+}
+
+/// A finished job's `<async_result>` landed raw, a 258,672 B build log here, where reclaim never
+/// cuts; it now carries the view, inside the ceiling, the same bytes a poll of that job returns.
+#[tokio::test]
+async fn a_job_that_exits_mid_turn_lands_its_view_as_a_poll_reads_it() -> Result<(), Box<dyn Error>>
+{
+    let root = scratch("job-view")?;
+    let build = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tools/tests/fixtures/view/make-build-error-last.txt");
+    let command = format!("sleep 6; cat '{}'; exit 2", build.display());
+    let calls = [
+        serde_json::json!({"command": command, "wait": 5}),
+        serde_json::json!({"command": "sleep 4"}),
+    ];
+    let session = bash_session(&root, &calls, &["done", "seen"], None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_value(session.messages())?;
+    let mut values = vec![&said];
+    let announced = std::iter::from_fn(|| {
+        let value = values.pop()?;
+        values.extend(value.as_array().into_iter().flatten());
+        values.extend(
+            value
+                .as_object()
+                .into_iter()
+                .flat_map(|object| object.values()),
+        );
+        Some(value.as_str())
+    })
+    .flatten()
+    .find_map(|text| {
+        text.split_once("<async_result")?
+            .1
+            .split_once("</async_result>")
+    })
+    .and_then(|(report, _)| Some(report.split_once('\n')?.1))
+    .ok_or_else(|| format!("no <async_result>: {said}"))?;
+    let error = "src/unit_1700.c:1:42: error: use of undeclared identifier 'undeclared_offset'";
+    assert!(announced.len() <= yi_tools::VIEW_CEILING, "{announced}");
+    assert!(announced.contains(error) && announced.contains("(VIEW_CEILING 16384)"));
+    let job = job_in(&said.to_string())?;
+    let poll = serde_json::json!({ "job": job.0 }).as_object().cloned();
+    let context = yi_tools::ToolContext::new(root.to_path_buf());
+    let tool = yi_tools::BashTool::default();
+    let polled = yi_tools::Tool::execute(&tool, poll.unwrap_or_default(), &context);
+    let polled = yi_types::message::join_text(&polled.result.content, "\n");
+    assert_eq!(
+        polled.split_once('\n').map(|(_, body)| body),
+        Some(announced)
+    );
     Ok(())
 }
 

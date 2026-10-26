@@ -158,7 +158,7 @@ impl Resolver {
     ) -> Result<(), FetchError> {
         let tail = entry.map(|entry| format!("/{entry}")).unwrap_or_default();
         let store = yi_session::lock_session(session);
-        let refusal = spelling_refused(&self.wall(), &self.workspace, &store, &tail);
+        let refusal = spelling_refused(&self.wall(), &store, &tail);
         refusal.map_or(Ok(()), |refusal| {
             Err(FetchError::Denied {
                 url: url.to_string(),
@@ -172,7 +172,6 @@ impl Resolver {
 /// is judged as its id, its name as an address resolves it (lowercase) and its name as typed.
 pub(crate) fn spelling_refused(
     wall: &Wall,
-    workspace: &Path,
     store: &yi_session::SessionStore,
     tail: &str,
 ) -> Option<String> {
@@ -185,7 +184,7 @@ pub(crate) fn spelling_refused(
         .chain(slug)
         .chain(dashed);
     (spellings.filter_map(|spelling| format!("history://{spelling}{tail}").parse::<Url>().ok()))
-        .find_map(|other| wall.check_url(&other, workspace))
+        .find_map(|other| wall.check_url(&other, Path::new("")))
 }
 
 /// Candidates a shared name lists before a `[…]` row names the rest.

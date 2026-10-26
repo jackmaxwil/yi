@@ -23,10 +23,11 @@ fn host_of(url: &str) -> &str {
 
 fn origin_of(url: &str) -> String {
     let scheme_end = url.find("://").map_or(0, |index| index + 3);
-    let path_start = url[scheme_end..]
-        .find('/')
+    let path_start = url
+        .get(scheme_end..)
+        .and_then(|rest| rest.find('/'))
         .map_or(url.len(), |index| scheme_end + index);
-    url[..path_start].to_owned()
+    url.get(..path_start).unwrap_or(url).to_owned()
 }
 
 fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
@@ -41,10 +42,9 @@ fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
 }
 
 fn parse_resource_metadata_url(www_authenticate: &str) -> Option<String> {
-    let marker = "resource_metadata=\"";
-    let start = www_authenticate.find(marker)? + marker.len();
-    let end = www_authenticate[start..].find('"')? + start;
-    Some(www_authenticate[start..end].to_owned())
+    let (_, rest) = www_authenticate.split_once("resource_metadata=\"")?;
+    let (value, _) = rest.split_once('"')?;
+    Some(value.to_owned())
 }
 
 pub struct Discovered {

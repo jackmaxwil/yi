@@ -65,10 +65,22 @@ pub(crate) fn evidence_repeat(evidence: &str) -> String {
         .collect();
     let from = evidence.ceil_char_boundary(evidence.len().saturating_sub(REPEAT_BYTES));
     let tail = evidence.get(from..).unwrap_or_default();
-    let (kept, total) = (tail.len(), evidence.len());
+    let (kept, total, cap) = (tail.len(), evidence.len(), "REPEAT_BYTES");
+    let next = "the refusal that first carried this output, or run the check again";
+    let row = yi_tools::cut_row(kept, total, "bytes kept", cap, REPEAT_BYTES, next);
     format!(
-        "{head}\n[… last {kept} of {total} bytes kept (REPEAT_BYTES {REPEAT_BYTES}); the rest: the refusal that first carried this output, or run the check again]\n{tail}"
+        "{head}
+{row}
+{tail}"
     )
+}
+
+pub(crate) fn evidence_once(first: bool, evidence: String) -> String {
+    if first {
+        evidence
+    } else {
+        "(the same evidence as the first row naming this task, above)".to_owned()
+    }
 }
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
@@ -266,13 +278,6 @@ fn goal_json(goal: &Goal) -> Value {
     value
 }
 
-/// Uncached input plus output.
-pub(crate) fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
-    let uncached = usage.input.saturating_sub(usage.cache_read).max(0);
-    let output = usage.output.max(0);
-    u64::try_from(uncached.saturating_add(output)).unwrap_or(0)
-}
-
 /// State machine over the session store fact, idle continuation and budget
 /// accounting. One per session.
 pub struct GoalService {
@@ -463,12 +468,7 @@ impl GoalService {
                             drained_message(&row, json!({ "drained": true, "task": id.as_str() }))
                         }
                         Some(evidence) => {
-                            let evidence = if shown.insert(id.clone()) {
-                                evidence
-                            } else {
-                                "(the same evidence as the first row naming this task, above)"
-                                    .to_owned()
-                            };
+                            let evidence = evidence_once(shown.insert(id.clone()), evidence);
                             blockers.push(format!(
                                 "undrained HIGH discovery {}: {}\nThe check of task {} is still red:\n{evidence}",
                                 row.fingerprint,
@@ -570,7 +570,7 @@ impl GoalService {
         if !matches!(goal.status, GoalStatus::Active | GoalStatus::BudgetLimited) {
             return;
         }
-        goal.tokens_used = goal.tokens_used.saturating_add(usage_delta(usage));
+        goal.tokens_used = goal.tokens_used.saturating_add(usage.fresh());
         if let Ok(mut mark) = self.wall_mark.lock() {
             if let Some(started) = mark.take() {
                 goal.time_used_seconds = goal

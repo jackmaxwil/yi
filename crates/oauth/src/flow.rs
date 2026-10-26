@@ -13,6 +13,7 @@ pub struct LoginOptions {
 
 pub(crate) fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new()
+        .user_agent(yi_types::USER_AGENT)
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30));
     if let Some(proxy) = proxy {
@@ -239,12 +240,35 @@ pub fn live_oauth(
     store: &Store,
     proxy: Option<&ureq::Proxy>,
 ) -> Result<Credential> {
+    live_oauth_for(spec, store, std::time::Duration::ZERO, proxy)
+}
+
+pub fn live_oauth_for(
+    spec: &OauthCode,
+    store: &Store,
+    lifetime: std::time::Duration,
+    proxy: Option<&ureq::Proxy>,
+) -> Result<Credential> {
     let current = store
         .load(&spec.id)
         .ok_or_else(|| format!("no stored tokens; run: yi login {}", spec.id))?;
-    refresh_locked(store, &spec.id, current, |current| {
+    let current = refresh_locked_for(store, &spec.id, current, lifetime, |current| {
         refresh(spec, current, proxy)
-    })
+    })?;
+    if Store::valid_for(&current, lifetime) {
+        Ok(current)
+    } else {
+        let left = current
+            .expires
+            .and_then(|at| at.duration_since(store::now()).ok());
+        Err(format!(
+            "{} access token does not live {} s ({} s left)",
+            spec.id,
+            lifetime.as_secs(),
+            left.map_or(0, |left| left.as_secs())
+        )
+        .into())
+    }
 }
 
 pub fn refresh_locked(
@@ -253,12 +277,22 @@ pub fn refresh_locked(
     current: Credential,
     refresh: impl FnOnce(&Credential) -> Result<Credential>,
 ) -> Result<Credential> {
-    if !Store::expired(&current) {
+    refresh_locked_for(store, provider, current, std::time::Duration::ZERO, refresh)
+}
+
+fn refresh_locked_for(
+    store: &Store,
+    provider: &str,
+    current: Credential,
+    lifetime: std::time::Duration,
+    refresh: impl FnOnce(&Credential) -> Result<Credential>,
+) -> Result<Credential> {
+    if Store::valid_for(&current, lifetime) {
         return Ok(current);
     }
     store.with_refresh_lock(provider, || {
         let current = store.load(provider).unwrap_or(current.clone());
-        if !Store::expired(&current) {
+        if Store::valid_for(&current, lifetime) {
             return Ok(current);
         }
         let refreshed = refresh(&current)?;

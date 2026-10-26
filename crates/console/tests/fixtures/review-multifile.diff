@@ -1,0 +1,213 @@
+diff --git a/crates/console/src/app/chat.rs b/crates/console/src/app/chat.rs
+index e3e8441aa..340a6ca1b 100644
+--- a/crates/console/src/app/chat.rs
++++ b/crates/console/src/app/chat.rs
+@@ -485,7 +485,17 @@ impl App {
+         };
+         let mut left = None;
+         match (&mut pane.content, fresh) {
+-            (PaneContent::Notebook { session: slot, .. }, _) => *slot = Some(session.clone()),
++            (
++                PaneContent::Notebook {
++                    session: slot,
++                    drawn,
++                    ..
++                },
++                _,
++            ) => {
++                *slot = Some(session.clone());
++                *drawn = None;
++            }
+             (_, Some(chat)) => {
+                 left = Some(std::mem::replace(
+                     &mut pane.content,
+diff --git a/crates/console/src/app/diffs.rs b/crates/console/src/app/diffs.rs
+index a1842116c..19bf4979a 100644
+--- a/crates/console/src/app/diffs.rs
++++ b/crates/console/src/app/diffs.rs
+@@ -361,6 +361,56 @@ mod tests {
+         assert_eq!(seen, [("x = 1 + 2", "3\n"), ("x * 2", "6\n")]);
+     }
+ 
++    /// Incident: re-pointing a notebook pane to another session kept the rows cached for the
++    /// first, so the title named the new session over the old one's cells.
++    #[test]
++    fn a_repointed_notebook_pane_shows_the_new_sessions_cells() {
++        let (mut app, alpha) = app_with_session();
++        let beta = SessionId("s-beta".to_owned());
++        let pane = app.state.focused_pane_id().expect("pane");
++        let cell = |code: &str| {
++            vec![NbCell {
++                number: 1,
++                code: code.to_owned(),
++                ..NbCell::default()
++            }]
++        };
++        app.state
++            .notebooks
++            .insert(alpha.clone(), cell("alpha_marker"));
++        app.state
++            .notebooks
++            .insert(beta.clone(), cell("beta_marker"));
++        if let Some(slot) = app.state.panes.get_mut(&pane) {
++            slot.content = PaneContent::Notebook {
++                session: Some(alpha),
++                full: false,
++                drawn: None,
++            };
++        }
++        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
++        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
++        let shown = |app: &mut App| -> String {
++            let view = crate::render::compute_view(app, area, &theme);
++            view.panes
++                .iter()
++                .flat_map(|pane| &pane.lines)
++                .map(|line| {
++                    line.spans
++                        .iter()
++                        .map(|s| s.content.as_ref())
++                        .collect::<String>()
++                })
++                .collect::<Vec<_>>()
++                .join("\n")
++        };
++        assert!(shown(&mut app).contains("alpha_marker"));
++        app.bind_pane(pane, &beta);
++        let after = shown(&mut app);
++        assert!(after.contains("beta_marker"), "{after}");
++        assert!(!after.contains("alpha_marker"), "{after}");
++    }
++
+     #[test]
+     fn a_focused_auto_notebook_becomes_the_users() {
+         let (mut app, session) = app_with_session();
+diff --git a/crates/console/src/app/notebook.rs b/crates/console/src/app/notebook.rs
+index 1011016fe..81b299e95 100644
+--- a/crates/console/src/app/notebook.rs
++++ b/crates/console/src/app/notebook.rs
+@@ -3,7 +3,7 @@ use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolCallUpdate, AcpToo
+ 
+ const TEXT_CAP: usize = 8 * 1024;
+ const RESULT_CAP: usize = 2 * 1024;
+-use crate::model::{IMAGE_CAP, IMAGE_MAX};
++use crate::model::{IMAGE_BYTES_MAX, IMAGES_PER_CELL};
+ 
+ fn clamp_bytes(text: &str, cap: usize) -> String {
+     if text.len() <= cap {
+@@ -104,16 +104,16 @@ pub(super) fn apply_notebook(
+                     _ => None,
+                 });
+                 let all: Vec<&str> = legacy.chain(current).filter_map(Value::as_str).collect();
+-                cell.images_dropped = all
++                cell.dropped_image_bytes = all
+                     .iter()
+-                    .filter(|data| data.len() > IMAGE_CAP)
++                    .filter(|data| data.len() > IMAGE_BYTES_MAX)
+                     .map(|data| data.len())
+                     .collect();
+                 let kept: Vec<&str> = all
+                     .into_iter()
+-                    .filter(|data| data.len() <= IMAGE_CAP)
++                    .filter(|data| data.len() <= IMAGE_BYTES_MAX)
+                     .collect();
+-                cell.images_past_limit = kept.len().saturating_sub(IMAGE_MAX);
++                cell.images_past_limit = kept.len().saturating_sub(IMAGES_PER_CELL);
+                 cell.images = kept
+                     .into_iter()
+                     .skip(cell.images_past_limit)
+@@ -509,14 +509,14 @@ mod tests {
+     fn a_cells_text_is_capped_and_says_where() -> TestResult {
+         let cells = one_cell(json!({
+             "stdout": "x".repeat(8193),
+-            "stderr": "é".repeat(5000),
++            "stderr": "€".repeat(4000),
+             "result": "y".repeat(2049),
+         }));
+         let cell = cells.first().ok_or("no cell")?;
+         for (text, kept, total, cap) in [
+             (cell.stdout.as_str(), 8192, 8193, 8),
+             (cell.result.as_deref().unwrap_or_default(), 2048, 2049, 2),
+-            (cell.stderr.as_str(), 8192, 10000, 8),
++            (cell.stderr.as_str(), 8190, 12000, 8),
+         ] {
+             let said = format!("[… {kept} of {total} bytes kept · notebook cap {cap} KiB");
+             assert!(text.contains(&said), "{said:?} not in {text:?}");
+@@ -533,12 +533,12 @@ mod tests {
+     fn dropped_images_are_recorded_by_the_cap_that_dropped_them() -> TestResult {
+         let cells = one_cell(media(&[65537, 6, 6, 6, 6, 6, 6]));
+         let cell = cells.first().ok_or("no cell")?;
+-        assert_eq!(cell.images_dropped, vec![65537], "over the size cap");
++        assert_eq!(cell.dropped_image_bytes, vec![65537], "over the size cap");
+         assert_eq!(cell.images_past_limit, 2, "past the four-image limit");
+         assert_eq!(cell.images.len(), 4);
+         let at_limit = one_cell(media(&[65536, 6, 6, 6]));
+         assert_eq!(at_limit[0].images.len(), 4, "the limit itself is kept");
+-        assert!(at_limit[0].images_dropped.is_empty());
++        assert!(at_limit[0].dropped_image_bytes.is_empty());
+         assert_eq!(at_limit[0].images_past_limit, 0);
+         Ok(())
+     }
+diff --git a/crates/console/src/model.rs b/crates/console/src/model.rs
+index 7f4f25e7d..58b39b855 100644
+--- a/crates/console/src/model.rs
++++ b/crates/console/src/model.rs
+@@ -177,8 +177,8 @@ pub struct PendingAsk {
+ }
+ 
+ pub const KEPT_CELLS: usize = 50;
+-pub const IMAGE_CAP: usize = 64 * 1024;
+-pub const IMAGE_MAX: usize = 4;
++pub const IMAGE_BYTES_MAX: usize = 64 * 1024;
++pub const IMAGES_PER_CELL: usize = 4;
+ 
+ #[derive(Debug, Clone, Default)]
+ pub struct NbCell {
+@@ -191,7 +191,7 @@ pub struct NbCell {
+     pub result: Option<String>,
+     pub error: Option<String>,
+     pub images: Vec<String>,
+-    pub images_dropped: Vec<usize>,
++    pub dropped_image_bytes: Vec<usize>,
+     pub images_past_limit: usize,
+     pub duration_ms: Option<u64>,
+     pub running: bool,
+diff --git a/crates/console/src/panes.rs b/crates/console/src/panes.rs
+index 13128ce40..e6f4305cf 100644
+--- a/crates/console/src/panes.rs
++++ b/crates/console/src/panes.rs
+@@ -394,9 +394,9 @@ pub fn notebook_lines(
+                 theme,
+             ));
+         }
+-        for size in &cell.images_dropped {
++        for size in &cell.dropped_image_bytes {
+             let what = format!("image {size} B base64 dropped");
+-            let cap = format!("notebook cap {} B", crate::model::IMAGE_CAP);
++            let cap = format!("notebook cap {} B", crate::model::IMAGE_BYTES_MAX);
+             out.push(cap_row(&what, &cap, "the transcript holds it", theme));
+         }
+         if cell.images_past_limit > 0 {
+@@ -406,7 +406,7 @@ pub fn notebook_lines(
+                 "images"
+             };
+             let what = format!("{} older {noun} not shown", cell.images_past_limit);
+-            let cap = format!("notebook keeps {} per cell", crate::model::IMAGE_MAX);
++            let cap = format!("notebook keeps {} per cell", crate::model::IMAGES_PER_CELL);
+             out.push(cap_row(&what, &cap, "the transcript holds them", theme));
+         }
+         for image in &cell.images {
+diff --git a/docs/changes/2026-10-12-notebook-cells-persist.md b/docs/changes/2026-10-12-notebook-cells-persist.md
+index acc74a484..4b05db391 100644
+--- a/docs/changes/2026-10-12-notebook-cells-persist.md
++++ b/docs/changes/2026-10-12-notebook-cells-persist.md
+@@ -1,5 +1,6 @@
+ ---
+-growth: +189 the per-session cell store in `ConsoleState::notebooks` with `apply_notebook`'s caps (stdout and stderr 8 KiB, result 2 KiB, at most 4 images of at most 64 KiB each, each cut speaking a `[…]` row that names its own cap) and the one `notebook_cells` lookup shared by render, the idle close, the interrupt arm and the image follow; weighed dropping a session's cells when its pane closes (the incident is that they must survive) and truncating a base64 image in place (a cut payload is a corrupt PNG)
+-raise: crate console +188
++issue: Closes #1431
++growth: +248 the per-session cell store in `ConsoleState::notebooks` with `apply_notebook`'s caps (stdout and stderr 8 KiB, result 2 KiB, at most 4 images of at most 64 KiB each, each cut speaking a `[…]` row that names its own cap), the one `notebook_cells` lookup shared by render, the idle close and the image follow, and four tests (the cap rows, the close-and-reopen incident, the re-pointed pane); weighed dropping a session's cells when its pane closes (the incident is that they must survive), truncating a base64 image in place (a cut payload is a corrupt PNG) and deleting the rendered-rows cache (a 50-cell notebook at the caps wraps in about 240 ms in a debug build, so the cache stays and `bind_pane` clears it)
++raise: crate console +248
+ ---
+-Notebook cells outlive the pane. The cells lived inside the notebook pane, so closing it (by hand or by the idle auto-close) and reopening showed "no kernel cells yet" while the session's kernel still held every variable, and a cell that ran while the pane was closed was never recorded. They now sit in `ConsoleState::notebooks` per session beside the review diffs; the pane renders from that store, and `apply_notebook` records every kernel tool call whether or not a pane is open.
++Notebook cells outlive the pane. The cells lived inside the notebook pane, so closing it (by hand or by the idle auto-close) and reopening showed "no kernel cells yet" while the session's kernel still held every variable, and a cell that ran while the pane was closed was never recorded. They now sit in `ConsoleState::notebooks` per session beside the review diffs; the pane renders from that store, and `apply_notebook` records every kernel tool call whether or not a pane is open. Because the store now lives for the console's lifetime, a cell is kept at most 8 KiB of stdout, 8 KiB of stderr and 2 KiB of result, and at most 4 images of at most 64 KiB of base64 each (about 48 KiB of PNG); an image over that size is no longer shown. Each cut leaves a `[…]` row in the pane naming what was kept, the cap and that the transcript holds the rest. Re-pointing a notebook pane to another session now redraws it from that session's cells.
