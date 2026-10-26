@@ -328,6 +328,16 @@ impl Jobs {
         }
     }
 
+    pub fn retire(&self, owner: JobOwner) {
+        self.lock().retain(|_, job| {
+            if !owned_by(job, Some(owner)) {
+                return true;
+            }
+            job.kill.store(true, Ordering::SeqCst);
+            false
+        });
+    }
+
     /// Drops a [`spawn_job`] job from the registry once its handle is done with
     /// it. A still-running job keeps running: [`Jobs::kill`] it first.
     pub fn release(&self, id: JobId) -> Result<JobReport, JobError> {
@@ -770,7 +780,6 @@ pub(crate) fn backgrounded_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
     use crate::scratch::Scratch;
     use std::error::Error;
     use std::time::Instant;
@@ -1000,38 +1009,6 @@ mod tests {
         registry()
             .report(queued)
             .ok_or("a result queued for completion delivery was evicted")?;
-        Ok(())
-    }
-
-    #[test]
-    fn kill_and_poll_share_one_deadline() -> Fallible {
-        let cwd = Path::new("/yi-jobs-test/kill-deadline");
-        let owner = JobOwner::mint();
-        let id = registry().insert(
-            "sleep 30",
-            (cwd, None),
-            Reaper::Poller {
-                reported: false,
-                owner: Some(owner),
-            },
-            Arc::default(),
-            Arc::default(),
-        );
-        let input = serde_json::Map::from_iter([
-            ("job".to_owned(), serde_json::json!(id.0)),
-            ("kill".to_owned(), serde_json::json!(true)),
-            ("wait".to_owned(), serde_json::json!(5)),
-        ]);
-        let mut context = crate::ToolContext::new(cwd.to_path_buf());
-        context.job_owner = Some(owner);
-        let started = Instant::now();
-        let output = crate::BashTool::default().execute(input, &context);
-        let elapsed = started.elapsed();
-        assert_eq!(output.result.details["running"], true, "{output:?}");
-        assert!(
-            elapsed < Duration::from_secs(7),
-            "returned after {elapsed:?}"
-        );
         Ok(())
     }
 

@@ -371,6 +371,7 @@ The interpreter is `bash` if `command -v bash` succeeds, else `sh`, probed once.
 default, 600 s cap. A job poll or `kill:true` reaches only the calling session's jobs; a bare poll
 chooses that session's newest. Per owner, LRU eviction keeps at most 32 announced results and
 protects the 8 newest jobs. Pending, poll-held and completion-queued results are never evicted.
+Session retirement kills its running jobs and removes all its registry entries.
 A running poll shows bounded live output and names dropped bytes, the absolute produced total,
 the live and view caps, and a recovery call. `is_error` = exit ≠ 0 or cancelled. Output ≤ 8,192
 bytes is whole; past it, cargo and test runners (`go test`, Python `-m pytest` or `-m unittest`)

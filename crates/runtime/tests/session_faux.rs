@@ -1423,16 +1423,26 @@ async fn two_sessions_bare_polls_return_their_own_jobs() -> Result<(), Box<dyn E
 #[tokio::test]
 async fn a_retired_session_s_job_starts_no_turn() -> Result<(), Box<dyn Error>> {
     let root = scratch("job-retired")?;
-    let calls = [serde_json::json!({"command": "sleep 6; echo r$((1+1))tired", "wait": 5})];
+    let calls = [
+        serde_json::json!({"command": "sleep 6; touch retired-ran; echo r$((1+1))tired", "wait": 5}),
+    ];
     let session = bash_session(&root, &calls, &["done", "should not run"], None);
     session.prompt("run it")?;
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
     let job = job_in(&serde_json::to_string(&session.messages())?)?;
     session.retire();
     let jobs = yi_tools::jobs::registry();
+    assert!(
+        jobs.report(job).is_none(),
+        "a retired session's job stayed registered"
+    );
     tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(20)))
         .await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !root.join("retired-ran").exists(),
+        "a retired session's job kept running"
+    );
     let said = serde_json::to_string(&session.messages())?;
     assert!(!said.contains("should not run"), "{said}");
     assert_eq!(session.status(), Status::Idle);
