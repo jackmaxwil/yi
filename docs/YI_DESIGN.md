@@ -838,7 +838,10 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
   the owner's plan op, any other change to one is `TodoError::Mirrored`.
 - A done todo's evidence is held against the ledger for display only: it is observed when a span
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
-  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
+  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows. `TodoStore`
+  keeps one incremental history for those claims and the stop re-drives: a list change reads only
+  entries past the last consumed sequence, a clean stop only entries appended in this prompt cycle,
+  and a typed prompt starts a fresh artifact-write set without dropping older evidence.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
   D229, D275, D282.
 
