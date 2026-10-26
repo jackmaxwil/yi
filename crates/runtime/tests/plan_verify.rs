@@ -214,6 +214,49 @@ fn the_checker_sees_no_provider_key() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_plan_check_passes_the_frozen_bash_hooks_before_it_runs() -> TestResult {
+    let temp = Scratch::new("yi-verify-claude-hook")?;
+    let home = temp.join("home");
+    let settings = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().ok_or("settings parent")?)?;
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo 'plan hook denied' >&2; exit 2"}]}]}}"#,
+    )?;
+    // SAFETY: nextest isolates each test in its own process.
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::set_var("YI_CLAUDE_HOOKS", "1");
+    }
+    let hooks = yi_runtime::claude_hooks::Hooks::load(&temp);
+    std::fs::write(&settings, "{}")?;
+    let artifacts = Artifacts::under(&temp);
+    let marker = temp.join("checked");
+    let check = put(
+        &artifacts,
+        &manifest(&format!("touch {}", marker.display()), 5_000, &[]),
+    )?;
+    let contract = cmd_contract(check, 5_000)?;
+    let verdict = Verifier::new(5_000).with_claude_hooks(hooks).run(
+        &token(&contract)?,
+        &contract,
+        &Snapshot {
+            id: "tree:test",
+            root: &temp,
+            output: None,
+            artifacts: &artifacts,
+        },
+    );
+    assert!(
+        verdict.lines().contains("plan hook denied"),
+        "{}",
+        verdict.lines()
+    );
+    assert!(!marker.exists(), "a refused plan check ran");
+    Ok(())
+}
+
 /// Runs `command` as a failing `cmd` item and returns the refused item's detail.
 fn failing_detail(
     name: &str,

@@ -10,6 +10,7 @@ pub mod auto_review;
 pub mod cache_miss;
 pub mod checkpoint;
 pub mod classifier;
+pub mod claude_hooks;
 pub mod compaction;
 pub mod environment;
 pub mod ext;
