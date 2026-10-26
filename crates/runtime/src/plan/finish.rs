@@ -165,7 +165,7 @@ impl PlanEngine {
             .map_err(|error| unstored(format!("{error}")))
     }
 
-    fn accept_finish(&self, held: &Held, text: &str) -> Result<(), PlanOpError> {
+    fn accept_finish(&self, held: &Held, text: &str) -> Result<Option<Url>, PlanOpError> {
         let unsubmitted = match held.phase {
             Some(phase) => phase == Phase::Unsubmitted,
             None => held.early.is_none(),
@@ -188,10 +188,24 @@ impl PlanEngine {
             &held.plan,
             Op::Done {
                 label: held.label.clone(),
-                output: output.filter(|_| held.phase.is_none()),
+                output: output.clone().filter(|_| held.phase.is_none()),
             },
-        )
-        .map(drop)
+        )?;
+        Ok(output)
+    }
+
+    fn last_of(&self, held: &Held) -> String {
+        let plan = self.store.read(&held.plan).ok();
+        match plan.as_ref().and_then(|plan| plan.todo(&held.label)) {
+            Some(Todo {
+                state:
+                    TodoState::Failed {
+                        last: Some(last), ..
+                    },
+                ..
+            }) => format!("; its last product is {last}"),
+            _ => String::new(),
+        }
     }
 
     /// Incident: in all eight G5 trials the owner re-ran the check the engine had just passed.
@@ -228,7 +242,7 @@ impl PlanEngine {
             ids => format!("\nNot passed, and not covered by this: {}.", ids.join(", ")),
         };
         format!(
-            ". The engine ran these checks and they passed, so do not run them again:{lines}{short}"
+            "\nThe engine ran these checks and they passed, so do not run them again:{lines}{short}"
         )
     }
 
@@ -249,6 +263,7 @@ impl PlanEngine {
             self.leave(held, &error, &format!("its fail was refused: {error}"));
             return format!("{said}; its fail was refused: {error}");
         }
+        let said = format!("{said}{}", self.last_of(held));
         if !retry || self.retried(held) {
             return said;
         }
@@ -343,7 +358,7 @@ impl PlanEngine {
                 error.unwrap_or_else(|| crate::family::read_exit(Some(exit)).verb.to_owned());
             let cause = self.clip(&held.plan, cause);
             return Some(match self.fail_finish(&held, cause.clone()) {
-                Ok(()) => format!("plan: failed {label:?}: {cause}"),
+                Ok(()) => format!("plan: failed {label:?}: {cause}{}", self.last_of(&held)),
                 Err(refused) => {
                     self.leave(&held, &refused, &format!("its fail was refused: {refused}"));
                     format!("plan: {label:?} ended ({cause}); its fail was refused: {refused}")
@@ -351,14 +366,18 @@ impl PlanEngine {
             });
         }
         let refusal = match self.accept_finish(&held, product.as_deref().unwrap_or_default()) {
-            Ok(()) => {
+            Ok(output) => {
                 let addr = TodoAddr {
                     plan: held.plan.clone(),
                     todo: held.label.clone(),
                 };
                 let url = agent_url(&addr).map_or_else(|_| agent.to_owned(), |url| url.to_string());
                 let evidence = self.accepted_evidence(&held);
-                return Some(format!("plan: accepted {label:?} ({url}){evidence}"));
+                let product =
+                    output.map_or_else(String::new, |url| format!("; its product is {url}"));
+                return Some(format!(
+                    "plan: accepted {label:?} ({url}){product}{evidence}"
+                ));
             }
             Err(refusal) => refusal,
         };
@@ -457,14 +476,15 @@ impl SubagentHost {
         })
     }
 
-    /// Held, a reap of `name` leaves its block here to ride the verdict; released, it comes back.
-    fn hold_harvest(&self, name: &str, hold: bool) -> Option<String> {
-        let mut held = self.harvests.lock().ok()?;
-        if hold {
-            held.insert(name.to_owned(), None);
-            return None;
+    /// Held, a reap of `name` reports nothing: the verdict line names its product instead.
+    fn hold_harvest(&self, name: &str, hold: bool) {
+        if let Ok(mut held) = self.harvests.lock() {
+            if hold {
+                held.insert(name.to_owned());
+            } else {
+                held.remove(name);
+            }
         }
-        held.remove(name).flatten()
     }
 
     fn answer_of(&self, name: &str) -> Option<String> {
@@ -536,11 +556,8 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
             let product = host.answer_of(&agent);
             host.hold_harvest(&agent, true);
             let line = engine.finish_child(&agent, exit, error, product);
-            let said = line.unwrap_or(unheld);
-            match host.hold_harvest(&agent, false) {
-                Some(block) => super::dispatch::say(&deliver, format!("{said}\n{block}")),
-                None => super::dispatch::say(&deliver, said),
-            }
+            host.hold_harvest(&agent, false);
+            super::dispatch::say(&deliver, line.unwrap_or(unheld));
             host.settled(&agent);
             drop(settling);
         }));

@@ -7,11 +7,13 @@ use std::sync::Arc;
 
 use common::test_model;
 use serde_json::{Map, json};
+use yi_runtime::mailbox::CUT_ROW;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_tui::app::{App, TuiOptions};
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::default_keymap;
 use yi_types::entry::Entry;
+use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::subagent::{ChildActivity, ChildFlag, ChildId, ChildStatus, ChildUpdate};
 
@@ -116,6 +118,45 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
         second.iter().any(|line| line.contains("↳ Writer")),
         "its second answer commits a second card: {second:?}"
     );
+    Ok(())
+}
+
+/// Dies with a cut preview replacing the answer a card is streaming: the preview ends in the
+/// runtime's cut row, no part of the answer, so its head must still be found. Dies the other way
+/// with a `… [` inside an uncut preview ending the match early, so a stream that lost events is
+/// never repaired by the preview that holds the words it missed.
+#[test]
+fn a_card_keeps_its_streamed_answer_unless_the_preview_holds_more() -> TestResult {
+    let long = format!("{}and its closing words", "r\u{e9}ponse ".repeat(50));
+    let head: String = long.chars().take(240).collect();
+    let total = long.chars().count();
+    let cut = format!(
+        "{head}{CUT_ROW}240 of {total} chars · cap PREVIEW_CHARS = 240 · read history://writer]"
+    );
+    let natural = "Done… [see notes] and the closing words";
+    for (streamed, preview) in [(long.as_str(), cut.as_str()), ("Done", natural)] {
+        let mut app = app();
+        app.adopt(&update(ChildStatus::Running, None), None, None);
+        app.reduce_child("sub-writer", AgentEvent::MessageStart { message: said("") });
+        app.reduce_child(
+            "sub-writer",
+            AgentEvent::MessageUpdate {
+                assistant_message_event: AssistantMessageEvent::TextDelta {
+                    content_index: 0,
+                    delta: streamed.to_owned(),
+                },
+            },
+        );
+        let mut next = update(ChildStatus::Running, None);
+        next.token_count += 50;
+        next.answer_preview = Some(preview.to_owned());
+        app.reduce_child_update(&next);
+        let rows = common::live_rows(&mut app)?;
+        assert!(
+            rows.iter().any(|row| row.contains("closing words")),
+            "the card holds the closing words of the answer streamed as {streamed:.12}…: {rows:#?}"
+        );
+    }
     Ok(())
 }
 
