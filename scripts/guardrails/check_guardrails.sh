@@ -89,6 +89,7 @@ run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 run "$PY" scripts/guardrails/check_fn_size.py --selfcheck
 # Which src lines are test code decides the production gates and the test budget alike.
 run "$PY" scripts/guardrails/check_test_size.py --selfcheck
+run "$PY" scripts/guardrails/check_file_size.py --selfcheck
 # Both read the real tree, which holds no defect of either kind, so only these flags plant one.
 run "$PY" scripts/guardrails/check_boundaries.py --selfcheck
 run "$PY" scripts/guardrails/check_env_surface.py --selfcheck
