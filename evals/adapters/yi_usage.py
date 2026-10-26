@@ -7,6 +7,7 @@ Contracts: evals/README.md (gates E1-E9, emission map, adapters).
 
 import hashlib
 import json
+import os
 import re
 import shlex
 from pathlib import Path
@@ -199,6 +200,23 @@ def _add_tokens(totals, usage):
         value = usage.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             totals[key] += value
+
+
+def end_torn_line(path):
+    """End a killed writer's final line before an append; return whether a newline was needed."""
+    try:
+        handle = Path(path).open("rb")
+    except OSError:
+        return False
+    with handle:
+        if handle.seek(0, os.SEEK_END) == 0:
+            return False
+        handle.seek(-1, os.SEEK_END)
+        torn = handle.read(1) != b"\n"
+    if torn:
+        with Path(path).open("a") as sink:
+            sink.write("\n")
+    return torn
 
 
 def json_lines(path):
