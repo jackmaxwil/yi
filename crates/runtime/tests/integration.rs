@@ -41,7 +41,6 @@ mod goal_e2e;
 mod host_facts;
 mod injection_canary;
 mod ipython_faux;
-mod judge;
 mod kept_rules;
 mod kernel_across_sessions;
 mod kernel_data_surface;

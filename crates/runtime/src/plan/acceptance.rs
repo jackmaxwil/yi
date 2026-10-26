@@ -675,7 +675,6 @@ impl PlanEngine {
                     root: root_path,
                     output: contracted.product.as_deref().map(str::as_bytes),
                     artifacts: &artifacts,
-                    jury: None,
                 },
             ),
             None => self.verifier.abstained(
@@ -698,7 +697,6 @@ impl PlanEngine {
                 contract: contracted.contract,
                 product: contracted.product,
                 effect,
-                jury: (0, None),
             };
             return match self.refuse(&mut txn, &prepared, call.op, verdict) {
                 Ok(_) => Err(verification(&label, "a refusal returned an outcome")),

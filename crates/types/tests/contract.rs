@@ -21,18 +21,19 @@
 //!
 //! Not here. `floor_of` is data and is checked by `Plan::validate()` at `init`, `append`,
 //! `retry` and `supersede`, so the writer and reader floors are pinned from
-//! `plan_ops.rs`, where a plan exists to validate. A `Judge` item's verdict is the jury's
-//! tally (`plan/judge.rs`), so by the time it aggregates it is an item verdict like any other.
+//! `plan_ops.rs`, where a plan exists to validate. A `Judge` item no longer starts; one an old
+//! journal carries abstains `no judge` in the verifier, an item verdict like any other.
 
 use std::error::Error;
 
 use proptest::prelude::{Just, Strategy, prop, prop_oneof};
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
-use yi_types::plan::canonical::{ArtifactRef, Digest};
+use yi_types::plan::canonical::{ArtifactRef, Chained, Digest, canonical_bytes};
 use yi_types::plan::contract::{
     Contract, ContractClass, ContractError, ContractItem, Decider, ItemId, ItemLine, ItemVerdict,
-    Outcome, Permille, Weight, aggregate,
+    Outcome, Permille, Verdict, Weight, aggregate,
 };
+use yi_types::plan::ledger::JournalRecord;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -448,5 +449,52 @@ fn a_contract_without_covers_keeps_its_digest() -> TestResult {
     let covered: Contract = serde_json::from_value(covered)?;
     assert_eq!(covered.covers, ["src/*.rs"]);
     assert_ne!(covered.digest()?, plain.digest()?);
+    Ok(())
+}
+
+/// Journal bytes are parsed exactly: the journal the done path wrote while a one-juror jury sat
+/// keeps its judge decider and its juror line, decoded to these shapes and re-serialized whole.
+#[test]
+fn a_journal_with_a_judge_item_and_a_juror_line_keeps_its_bytes() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/journals/plan-judge-verdict-v1.jsonl");
+    let text = |value: &serde_json::Value| -> Result<String, Box<dyn Error>> {
+        Ok(String::from_utf8(canonical_bytes(value)?)?)
+    };
+    let (mut judges, mut jurors) = (0, 0);
+    for line in std::fs::read_to_string(path)?.lines() {
+        let record: JournalRecord = serde_json::from_str(line)?;
+        assert_eq!(record.line()?, format!("{line}\n").into_bytes());
+        let todos = record
+            .args
+            .get("todos")
+            .and_then(serde_json::Value::as_array);
+        for raw in todos
+            .into_iter()
+            .flatten()
+            .filter_map(|todo| todo.get("contract"))
+        {
+            let contract: Contract = serde_json::from_value(raw.clone())?;
+            let typed = serde_json::to_value(&contract)?;
+            assert_eq!(text(&typed)?, text(raw)?);
+            let judged = |item: &&ContractItem| matches!(item.decider, Decider::Judge { .. });
+            judges += contract.items.iter().filter(judged).count();
+        }
+        if let Some(raw) = &record.verdict {
+            let verdict: Verdict = serde_json::from_value(raw.clone())?;
+            let typed = serde_json::to_value(&verdict)?;
+            assert_eq!(text(&typed)?, text(raw)?);
+            jurors += verdict
+                .items
+                .iter()
+                .map(|item| item.jurors.len())
+                .sum::<usize>();
+        }
+    }
+    assert_eq!(
+        (judges, jurors),
+        (1, 1),
+        "the fixture holds the shapes it pins"
+    );
     Ok(())
 }

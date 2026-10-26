@@ -109,7 +109,6 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Delegate a todo to a worktree child | Plan + Contract + Child + Lane (candidate, then integration) + Envelope | D195, D224, D225 |
 | `fork_join` / `scatter` | Kernel (`yi` library) + Plan + Child | D212 |
 | Review pod | Kernel shapes + Child (reader) per brief + arbiter + Contract | D217 |
-| Judge a contract item | Contract (`judge` decider) + Child (jurors of other model families) | D216 |
 | Service with a stable name | Child (service standing) + restart policy + Envelope | D218 |
 | Child asks the human | Envelope (request to parent) + child flag | D233 |
 | Shared family objects | Kernel `rlm.put` / `rlm.get` + Url (`family://`) | D164 |
@@ -612,7 +611,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
-  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
+  `role="reader"` (D308); a plan delegation and a service are `root`. A reader is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
@@ -638,12 +637,11 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
   with a notice.
 - Admission refuses at lever `family.cap` (16, an eval run's levers raise it to 128) live sessions,
-  at depth `rlm.maxDepth` (1, clamped 1..=3) but for a juror, at `family.max_children` (8, up to
+  at depth `rlm.maxDepth` (1, clamped 1..=3), at `family.max_children` (8, up to
   128) workers, and on a taken name (D344).
-- `Standing { Worker, Juror, Reader, Service }`: juror, reader and service stand outside the worker cap; lease,
+- `Standing { Worker, Reader, Service }`: reader and service stand outside the worker cap; lease,
   wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
-  A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
   A walled session also walls the old spill root and every session store and spares its
@@ -764,9 +762,9 @@ A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 i
   copy of the tree), re-acquires, compares the whole token, and commits the verdict with
   `Done{VerifiedDone}`, `done_refused`, or `verification_stale` for a moved token.
 - `Outcome { Pass, Fail, Abstain, Escalate }`. Staleness and abstention charge nothing; the
-  `plan.done_refusal_cap`-th refusal (default 3) or an escalation derives `block{on: User}`.
-- A `judge` item seats 1 or 3 reader children on the cheapest model of another family (none:
-  abstain); an unquoted vote abstains; Rust tallies. The jury past `plan.judge_cap` escalates.
+  `plan.done_refusal_cap`-th refusal (default 3) derives `block{on: User}`.
+- `start` refuses a `judge` item and names the deciders that run (`cmd`, `schema`, `example`);
+  the variant decodes so old journals replay, and a started one abstains `no judge`.
 - `Resolution { VerifiedDone, AcceptedByUser, LegacyUnverified }`. A todo with a contract or a
   stated acceptance completes only beside one, on every path (`set`, `import`, `repair`,
   `supersede` share the validator); any other on the caller's word.
