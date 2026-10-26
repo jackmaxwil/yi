@@ -38,6 +38,21 @@ LEVERS_ENV = "YI_LEVERS"
 PLUGINS_ENV = "EVAL_PLUGINS"
 
 
+
+def end_torn(path):
+    try:
+        with open(path, "rb") as handle:
+            if handle.seek(0, 2) == 0:
+                return
+            handle.seek(-1, 2)
+            if handle.read(1) == b"\n":
+                return
+    except OSError:
+        return
+    with path.open("a") as sink:
+        sink.write("\n")
+
+
 def with_budget(instruction, deadline_sec):
     """S1: every v4 instruction ends `You have 28800 seconds to complete this task.`, the whole
     [agent] timeout, while the trial runs the multiplier's share: the sentence names that share."""

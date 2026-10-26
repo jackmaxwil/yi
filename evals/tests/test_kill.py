@@ -193,14 +193,19 @@ class Ledger(unittest.TestCase):
             with kill.ledger() as (_, write):
                 write({"kind": "reserve", "key": "hung/flash/dead", "test": "hung", "family": "flash", "usd": 0.4,
                        "pid": dead.pid})
-                write({"kind": "reserve", "key": "hung/flash/live", "test": "hung", "family": "flash", "usd": 0.3,
+                write({"kind": "reserve", "key": "hung/flash/live", "test": "other", "family": "flash", "usd": 0.3,
                        "pid": os.getpid()})
             self.assertEqual(quiet(["budget", "--close", "hung/flash/live"]),
                              (2, f"refused: hung/flash/live's runner, pid {os.getpid()}, is alive and settles it itself\n"))
+            with kill.ledger() as (rows, _):
+                before = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
             code, out = quiet(["budget", "--close", "hung/flash/dead"])
             self.assertEqual(code, 0, out)
             shown = json.loads(out)
             self.assertEqual((shown["spentUsd"], shown["heldUsd"], shown["open"]), (0.4, 0.3, ["hung/flash/live"]))
+            with kill.ledger() as (rows, _):
+                after = kill.admit(rows, "later", "flash", 1.0, [("hung", "flash", 0.4)])
+            self.assertEqual(after, before, "closing a dead reserve must not charge its reserve twice")
             self.assertEqual(quiet(["budget", "--close", "hung/flash/dead"])[0], 2, "a closed reserve closes once")
             self.assertEqual(quiet(["report"])[1].strip(), "hung: unrun: needs $0.40", "a closed reserve never ran")
 
