@@ -148,9 +148,7 @@ fn gear_distance(x: f64, y: f64) -> f64 {
     let theta = y.atan2(x);
     let off = theta - (theta / step).round() * step;
     let (round, half) = (0.05, (0.16, 0.15));
-    let qx = (r * off.cos() - 0.82).abs() - half.0 + round;
-    let qy = (r * off.sin()).abs() - half.1 + round;
-    let tooth = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round;
+    let tooth = yi_tui::chrome::rounded_box((r * off.cos() - 0.82, r * off.sin()), half, round);
     (r - 0.7).min(tooth)
 }
 
@@ -172,11 +170,6 @@ pub fn gear_rgba(fg: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
     out
 }
 
-fn rounded_box((x, y): (f64, f64), (half_w, half_h): (f64, f64), round: f64) -> f64 {
-    let (qx, qy) = (x.abs() - half_w + round, y.abs() - half_h + round);
-    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - round
-}
-
 /// One rounded end of a pill whose body is cell background, so the far side runs off the image.
 pub fn cap_rgba(fill: (u8, u8, u8), width: usize, height: usize, left: bool) -> Vec<u8> {
     let (w, h) = (width as f64, height as f64);
@@ -185,7 +178,7 @@ pub fn cap_rgba(fill: (u8, u8, u8), width: usize, height: usize, left: bool) -> 
     for py in 0..height {
         for px in 0..width {
             let at = (px as f64 + 0.5 - centre, py as f64 + 0.5 - h / 2.0);
-            let edge = rounded_box(at, (1.5 * w, h / 2.0), (h * 0.32).min(w));
+            let edge = yi_tui::chrome::rounded_box(at, (1.5 * w, h / 2.0), (h * 0.32).min(w));
             let alpha = ((0.5 - edge).clamp(0.0, 1.0) * 255.0).round() as u8;
             out.extend_from_slice(&[fill.0, fill.1, fill.2, alpha]);
         }
@@ -206,7 +199,8 @@ pub fn closer_rgba(fill: (u8, u8, u8), width: usize, height: usize) -> Vec<u8> {
     for py in 0..height {
         for px in 0..width {
             let (x, y) = (px as f64 + 0.5 - w / 2.0, py as f64 + 0.5 - h / 2.0);
-            let chip = (0.5 - rounded_box((x, y), (w / 2.0, h / 2.0), round)).clamp(0.0, 1.0);
+            let chip = (0.5 - yi_tui::chrome::rounded_box((x, y), (w / 2.0, h / 2.0), round))
+                .clamp(0.0, 1.0);
             let cross = segment((x, y), arm).min(segment((x, -y), arm));
             let cut = (stroke - cross + 0.5).clamp(0.0, 1.0);
             let alpha = (chip * (1.0 - cut) * 255.0).round() as u8;
@@ -260,6 +254,15 @@ struct Motion {
     orb: yi_tui::orb::Orb,
     state: yi_tui::orb::OrbState,
     last: Instant,
+}
+
+impl Motion {
+    /// A session waiting on the person draws one still frame: animating it woke the console
+    /// fifteen times a second for a row whose words already say it waits.
+    fn still(&self) -> bool {
+        self.state == yi_tui::orb::OrbState::Listening
+            && self.orb.holding(yi_tui::orb::OrbState::Listening)
+    }
 }
 
 const MOTION_FRAME: Duration = Duration::from_millis(66);
@@ -355,7 +358,7 @@ impl Avatars {
             let (Some(image), elapsed) = (self.ids.get(key), motion.last.elapsed()) else {
                 continue;
             };
-            if elapsed < MOTION_FRAME {
+            if elapsed < MOTION_FRAME || motion.still() {
                 continue;
             }
             motion.last = Instant::now();
@@ -368,6 +371,7 @@ impl Avatars {
     pub fn wake(&self) -> Option<Duration> {
         self.motion
             .values()
+            .filter(|motion| !motion.still())
             .map(|motion| MOTION_FRAME.saturating_sub(motion.last.elapsed()))
             .min()
     }
@@ -525,6 +529,71 @@ mod tests {
             after.contains(&format!("a=d,d=I,i={FIRST_ID},")),
             "the image placed before the forget is deleted: {after:?}"
         );
+    }
+
+    /// Sweeps the clock past a frame and returns what one animate pass wrote.
+    fn pass(avatars: &mut Avatars) -> Vec<u8> {
+        for motion in avatars.motion.values_mut() {
+            motion.last = Instant::now()
+                .checked_sub(MOTION_FRAME * 2)
+                .unwrap_or_else(Instant::now);
+        }
+        let mut out = Vec::new();
+        avatars.animate(&mut out);
+        out
+    }
+
+    #[test]
+    fn a_session_waiting_on_the_person_freezes_on_its_listening_loop() {
+        let mut avatars = Avatars::default();
+        let waiting = alpha(Some(yi_tui::orb::OrbState::Listening));
+        avatars.sync(&mut Vec::new(), std::slice::from_ref(&waiting));
+        assert!(!pass(&mut avatars).is_empty(), "the first frame is painted");
+        assert!(
+            !pass(&mut avatars).is_empty(),
+            "a waiting avatar animates until its Listening loop arrives"
+        );
+        assert!(
+            avatars.wake().is_some(),
+            "a waiting avatar keeps the loop waking before it settles"
+        );
+        let mut paints = 2;
+        let mut froze = false;
+        for _ in 0..600 {
+            if pass(&mut avatars).is_empty() {
+                froze = true;
+                break;
+            }
+            paints += 1;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(froze, "the waiting avatar never froze");
+        assert!(
+            paints >= 5,
+            "froze after {paints} paints, before its Listening loop arrived"
+        );
+        assert_eq!(
+            avatars.wake(),
+            None,
+            "a frozen avatar keeps the loop waking"
+        );
+        let default_pose = format!(
+            "{:?}",
+            yi_tui::orb::Orb::default().frame(Duration::ZERO, None)
+        );
+        let frozen_pose = avatars.motion.values_mut().next().map(|motion| {
+            let want = Some(yi_tui::orb::OrbState::Listening);
+            format!("{:?}", motion.orb.frame(Duration::ZERO, want))
+        });
+        assert_ne!(
+            frozen_pose.as_deref(),
+            Some(default_pose.as_str()),
+            "the avatar froze on the logo mark, not on its Listening pose"
+        );
+        let working = alpha(Some(yi_tui::orb::OrbState::Working));
+        avatars.sync(&mut Vec::new(), std::slice::from_ref(&working));
+        assert!(!pass(&mut avatars).is_empty());
+        assert!(!pass(&mut avatars).is_empty(), "a working avatar stopped");
     }
 
     #[test]

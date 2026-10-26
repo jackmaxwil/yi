@@ -1,6 +1,6 @@
 use serde_json::{Map, Value, json};
+use yi_kernel::ATTACHMENT_DISPLAY_MIME;
 use yi_kernel::reduce::{CellState, Reduction, finish, reduce};
-use yi_kernel::{ATTACHMENT_DISPLAY_MIME, DIFF_DISPLAY_MIME};
 use yi_types::kernel::{ExecuteStatus, JupyterHeader, JupyterMessage};
 
 fn message(msg_type: &str, parent: &str, content: Value) -> JupyterMessage {
@@ -22,7 +22,23 @@ fn message(msg_type: &str, parent: &str, content: Value) -> JupyterMessage {
 }
 
 fn cell(max_chars: usize) -> CellState {
-    CellState::new("req".to_owned(), "code".to_owned(), max_chars, false)
+    CellState::new("req".to_owned(), max_chars, false)
+}
+
+fn stdout(cell: &mut CellState, text: &str) {
+    let content = json!({"name": "stdout", "text": text});
+    reduce(cell, &message("stream", "req", content), None);
+}
+
+fn fixture(name: &str) -> std::io::Result<String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(dir.join("../tools/tests/fixtures/view").join(name))
+}
+
+fn cut_row(kept: usize, total: usize) -> String {
+    format!(
+        "[\u{2026} {kept} of {total} chars kept, the middle cut (DEFAULT_MAX_OUTPUT_CHARS {kept});"
+    )
 }
 
 #[test]
@@ -44,13 +60,99 @@ fn stream_capture_caps_at_max_chars_but_ui_sees_everything() {
     }
     assert_eq!(ui.len(), 24, "on_stream must see uncapped chunks");
     let result = finish(cell, 5, false);
-    assert!(result.stdout.starts_with("abcdefghab"));
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert_eq!(lines.first(), Some(&"abcde"), "{}", result.stdout);
+    assert_eq!(lines.last(), Some(&"defgh"), "{}", result.stdout);
     assert!(
-        result
-            .stdout
-            .contains("[... output truncated at 10 chars ...]"),
-        "the model-facing capture must carry the truncation marker"
+        lines.iter().any(|line| line.starts_with(&cut_row(10, 24))),
+        "the model-facing capture must carry the cut row: {}",
+        result.stdout
     );
+}
+
+/// A failure printed last in a long cell sits in its tail, which a head-only cap dropped.
+#[test]
+fn a_stream_at_the_cap_passes_whole_and_one_past_keeps_both_ends() -> std::io::Result<()> {
+    let log = fixture("cargo-test-3000-cell-spill.txt")?;
+    for source in [log, "\u{e9}".repeat(70_000)] {
+        let at: String = source.chars().take(65_536).collect();
+        let mut capture = cell(65_536);
+        stdout(&mut capture, &at);
+        assert!(
+            finish(capture, 1, false).stdout == at,
+            "65,536 chars pass whole"
+        );
+
+        let past: String = source.chars().take(65_537).collect();
+        let mut capture = cell(65_536);
+        stdout(&mut capture, &past);
+        let shown = finish(capture, 1, false).stdout;
+        let head: String = past.chars().take(32_768).collect();
+        let tail: String = past.chars().skip(32_769).collect();
+        let row = cut_row(65_536, 65_537);
+        assert!(
+            shown.starts_with(&format!("{head}\n{row}")),
+            "head or row lost"
+        );
+        assert!(shown.ends_with(&format!("]\n{tail}")), "tail lost");
+    }
+    Ok(())
+}
+
+/// The cap's middle trim runs as chunks arrive and still keeps the first and last halves.
+#[test]
+fn a_stream_many_times_the_cap_keeps_its_first_and_last_halves() -> std::io::Result<()> {
+    let whole = fixture("cargo-test-3000-cell-spill.txt")?.repeat(6);
+    let mut capture = cell(65_536);
+    let chars: Vec<char> = whole.chars().collect();
+    for chunk in chars.chunks(4_096) {
+        stdout(&mut capture, &chunk.iter().collect::<String>());
+        assert!(
+            capture.stdout.len() <= 8 * 65_536 + 4 * 4_096,
+            "the capture outgrew its cap"
+        );
+    }
+    let shown = finish(capture, 1, false).stdout;
+    let head: String = whole.chars().take(32_768).collect();
+    let tail: String = whole
+        .chars()
+        .skip(chars.len().saturating_sub(32_768))
+        .collect();
+    let row = cut_row(65_536, chars.len());
+    assert!(
+        shown.starts_with(&format!("{head}\n{row}")),
+        "head or row lost"
+    );
+    assert!(shown.ends_with(&format!("]\n{tail}")), "tail lost");
+    Ok(())
+}
+
+/// A chunk that lands exactly on the cap left the capture full, and every later chunk was
+/// dropped with no row.
+#[test]
+fn a_chunk_ending_on_the_cap_then_more_text_is_cut_with_its_row() -> std::io::Result<()> {
+    let log = fixture("cargo-test-3000-cell-spill.txt")?;
+    let last = log.lines().last().unwrap_or_default();
+    let mut capture = cell(65_536);
+    stdout(&mut capture, &log.chars().take(65_536).collect::<String>());
+    stdout(&mut capture, last);
+    let shown = finish(capture, 1, false).stdout;
+    let row = cut_row(65_536, 65_536 + last.chars().count());
+    assert!(shown.contains(&row), "no cut row");
+    assert!(shown.ends_with(last), "the late chunk was dropped");
+    Ok(())
+}
+
+/// What the model printed on purpose, under the cap, arrives byte for byte.
+#[test]
+fn a_thirty_kilobyte_print_is_byte_identical() -> std::io::Result<()> {
+    let printed = fixture("bash-cell-print.txt")?;
+    let mut capture = cell(65_536);
+    for line in printed.split_inclusive('\n') {
+        stdout(&mut capture, line);
+    }
+    assert!(finish(capture, 1, false).stdout == printed);
+    Ok(())
 }
 
 #[test]
@@ -110,13 +212,8 @@ fn an_attachment_is_kept_only_as_base64_of_the_image_it_names() {
 }
 
 #[test]
-fn diff_error_result_and_idle_reduce_into_the_cell() {
+fn error_result_and_idle_reduce_into_the_cell() {
     let mut cell = cell(65_536);
-    let diff = json!({"data": {DIFF_DISPLAY_MIME: {"path": "/a.txt", "old_str": "a", "new_str": "b", "start_line": 3}}});
-    reduce(&mut cell, &message("display_data", "req", diff), None);
-    assert_eq!(cell.diffs.len(), 1);
-    assert_eq!(cell.diffs[0].start_line, Some(3));
-
     reduce(
         &mut cell,
         &message(
@@ -162,4 +259,38 @@ fn diff_error_result_and_idle_reduce_into_the_cell() {
         result.error.map(|error| error.ename),
         Some("ValueError".to_owned())
     );
+}
+
+/// A failure written last to stderr, and the last items of a long repr, sat in the half a
+/// head-only cap dropped; each keeps both ends around its row, the cut char gone.
+#[test]
+fn stderr_and_a_displayed_value_one_past_the_cap_keep_both_ends() -> std::io::Result<()> {
+    let past = |text: String| -> String { text.chars().take(65_537).collect() };
+    let log = past(fixture("cargo-test-3000-cell-spill.txt")?);
+    let repr = past(fixture("list-repr-20000.txt")?);
+    let cases = [
+        ("stream", json!({"name": "stderr", "text": log}), &log),
+        (
+            "execute_result",
+            json!({"data": {"text/plain": repr}}),
+            &repr,
+        ),
+    ];
+    for (kind, content, source) in cases {
+        let mut capture = cell(65_536);
+        reduce(&mut capture, &message(kind, "req", content), None);
+        let done = finish(capture, 1, false);
+        let shown = done.result.unwrap_or(done.stderr);
+        let head: String = source.chars().take(32_768).collect();
+        let tail: String = source.chars().skip(32_769).collect();
+        let across: String = source.chars().skip(32_760).take(16).collect();
+        let row = cut_row(65_536, 65_537);
+        assert!(
+            shown.starts_with(&format!("{head}\n{row}")),
+            "{kind}: head or row lost"
+        );
+        assert!(shown.ends_with(&format!("]\n{tail}")), "{kind}: tail lost");
+        assert!(!shown.contains(&across), "{kind}: the middle was kept");
+    }
+    Ok(())
 }

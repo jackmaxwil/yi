@@ -702,6 +702,13 @@ async fn a_brief_naming_context_its_wall_denies_is_refused() -> TestResult {
             "spec": {"role": "reader"}, "accept": "stated: read it", "context": [context]
         }))
     };
+    // A plan Reader is spawned a reader child, whose context is fetched at spawn as its partition.
+    std::fs::create_dir_all(rig.root.join("docs"))?;
+    std::fs::write(rig.root.join("docs/readme.md"), "read me\n")?;
+    rig.host.set_resolver(Arc::new(Resolver::new(
+        rig.root.to_path_buf(),
+        Wall::default(),
+    )));
     let refused = delegate.spawn(&at, &briefed("local://secrets/key.txt")?);
     assert!(
         refused.as_ref().is_err_and(|why| why.contains("secrets")),

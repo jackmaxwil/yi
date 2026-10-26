@@ -8,9 +8,7 @@ use yi_tools::hashline::tool::{
 use yi_tools::{Tool, ToolContext, ToolOutput, WriteTool};
 use yi_types::message::Content;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -114,6 +112,26 @@ fn edit_preview_shows_the_diff_without_touching_disk_or_the_snapshot_store() -> 
     let edit = fixture.edit(&patch);
     assert!(!edit.is_error, "{}", output_text(&edit));
     assert_eq!(fixture.content("a.txt")?, "one\nTWO\nthree\n");
+    Ok(())
+}
+
+/// A patch whose newlines arrived as the two characters `\n` is one line, and its header error
+/// echoed all of it. Dies with an echo past 120 chars, or a clip that never says it cut.
+#[test]
+fn a_header_error_echoes_a_clip_of_the_line_and_says_it_cut() -> TestResult {
+    let fixture = Fixture::new("header-echo")?;
+    let one_line = format!("[a.txt#1A2B]\\n{}", "PUT 2.=2:\\n+TWO\\n".repeat(700));
+    let refused = fixture.edit(&one_line);
+    let text = output_text(&refused);
+    let said = format!("(first 120 of {} chars)", one_line.chars().count());
+    assert!(
+        refused.is_error && text.contains(&said) && text.len() < 1_000,
+        "{text}"
+    );
+    for (width, cut) in [(120, false), (121, true)] {
+        let text = output_text(&fixture.edit(&format!("[{}", "z".repeat(width - 1))));
+        assert_eq!(text.contains("(first 120 of"), cut, "{width} chars: {text}");
+    }
     Ok(())
 }
 

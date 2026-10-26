@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use yi_runtime::plugin::{self, PLUGINS, Plugin, State};
+use yi_runtime::plugin::{self, PLUGINS, Plugin, Shape, State};
 
 const USAGE: &str = "usage: yi plugin list [--json] | add <name>|--all | remove <name> | sync";
 
@@ -80,7 +80,7 @@ fn add(plugin: &Plugin, home: &Path) -> Result<String, String> {
 }
 
 /// The machine form the eval adapter reads: one object per plugin, `path` set when installed
-/// or found on PATH.
+/// or found on PATH, `shape` a `tree` the adapter never carries into a task.
 fn list_json(home: &Path) -> i32 {
     let rows: Vec<serde_json::Value> = (PLUGINS.iter())
         .map(|plugin| {
@@ -96,6 +96,10 @@ fn list_json(home: &Path) -> i32 {
                 "version": plugin.version,
                 "state": state,
                 "path": path.map(|path| path.display().to_string()),
+                "shape": match plugin.shape {
+                    Shape::Program => "program",
+                    Shape::Tree => "tree",
+                },
             })
         })
         .collect();

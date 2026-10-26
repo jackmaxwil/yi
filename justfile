@@ -15,11 +15,11 @@ clippy:
 # runs the suite. Many tests set HOME or poke the process's own registries and say
 # "nextest runs each test in its own process"; plain `cargo test` threads them into
 # one, and 15 of them failed by racing, so the fallback runs one test at a time.
-# `cargo test` runs the 101 test binaries one after another
+# `cargo test` runs the test binaries one after another
 # and five of them are 96 % of the wall clock; nextest pools every test from
 # every binary, and .config/nextest.toml's slow-timeout kills a hang in 60s
-# instead of letting it hold a runner. nextest cannot run doctests, so those
-# stay a second cargo invocation rather than quietly leaving the gate.
+# instead of letting it hold a runner. nextest cannot run doctests and the workspace
+# has none: `cargo test --doc` was 15 rustdoc spawns and 0 tests, 2.5-8 s a run.
 test:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -27,14 +27,21 @@ test:
     # 2026-10-07. The suite's HOME is the worktree's target/yi-home, deleted with the worktree.
     [ "$HOME" = "$(git rev-parse --show-toplevel)/target/yi-home" ] || exec scripts/wt_home.sh just test
     if command -v cargo-nextest >/dev/null; then
-      cargo nextest run --workspace
-      cargo test --workspace --doc
+      # CI runners are three or four cores; a dev machine is not, and `local` widens the subprocess group.
+      profile=local
+      [ -z "${CI:-}" ] || profile=default
+      cargo nextest run --workspace --profile "$profile"
     else
       cargo test --workspace -- --test-threads=1
     fi
     # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
     # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
-    cargo test -p yi-cli -p yi-tui -p yi-tools --test integration --test tools linked_tables
+    cargo test -p yi-cli -p yi-tui -p yi-tools --test integration linked_tables
+
+# Frees what an edit loop leaves behind in target/: artifacts of superseded units and
+# incremental caches beyond the newest each live unit needs. Builds the gate resolutions first, so run it idle.
+sweep:
+    python3 scripts/sweep_target.py
 
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy
@@ -51,9 +58,9 @@ build-dist:
 
 # No build-dist dependency: the aggregator is the one place that knows whether
 # binary_size and startup will run at all, so it owns the LTO build they read
-# (D91). CI skips both, and paid 2-3 min a job for a binary nothing measured.
-guardrails:
-    bash scripts/guardrails/check_guardrails.sh
+# (D91). CI skips startup, and builds the binary only on Linux to measure it there.
+guardrails *flags:
+    bash scripts/guardrails/check_guardrails.sh "$@"
 
 # The build-free subset, which is what keeps pre-commit under two seconds.
 guardrails-fast:
@@ -61,7 +68,22 @@ guardrails-fast:
 
 # Serial on purpose: beside the dist build, nextest's first exec of 134 fresh test binaries
 # queued behind Gatekeeper's per-binary scan, and the gate took 116-302s where serial took 135-151s.
-check: lint guardrails test
+# `--quiet` prints one line when green and only the failing lane's own output otherwise, with the
+# same exit code, so an agent reads `$?` and the failure rather than every launched gate.
+check *flags:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    case "${1:-}" in
+      "") just lint && just guardrails && just test; exit ;;
+      --quiet) ;;
+      *) echo "check: unknown flag $1 (the one flag is --quiet)"; exit 2 ;;
+    esac
+    for lane in lint "guardrails --quiet" test; do
+      out=$(just $lane 2>&1)
+      rc=$?
+      if [ "$rc" != 0 ]; then printf '%s\n' "$out"; exit "$rc"; fi
+    done
+    echo "check: lint, guardrails and test green"
 
 # --- Local CI: three tiers, run by the hooks in scripts/hooks ----------------
 
@@ -110,13 +132,13 @@ lane name:
       exit 1
     fi
 
-# Tier 3, every version tag: check the tag against Cargo.toml, then the artifact.
+# Tier 3, every version tag: check the tag against the version of record, then the artifact.
 prerelease version:
     #!/usr/bin/env bash
     set -euo pipefail
-    declared=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+    declared=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import forge_tracking; print(forge_tracking.version())')
     if [ "{{version}}" != "$declared" ]; then
-      echo "tag {{version}} disagrees with Cargo.toml $declared"
+      echo "tag {{version}} disagrees with docs/ARCHITECTURE.md $declared"
       exit 1
     fi
     just package "{{version}}"
@@ -199,7 +221,6 @@ dist-suite:
     # tests, each racing another through HOME; the suite's runner is one process per test.
     if command -v cargo-nextest >/dev/null; then
       cargo nextest run --workspace --cargo-profile dist
-      cargo test --workspace --doc --profile dist
     else
       cargo test --workspace --profile dist -- --test-threads=1
     fi

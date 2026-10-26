@@ -492,7 +492,7 @@ async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> Tes
 }
 
 /// The whole gate in one place: with the role unnamed no reviewer is constructed and the
-/// system prompt pays no bytes for the review sentence; a root's `ask_user` comes with the role.
+/// system prompt pays no bytes for the review sentence; a root's `ask_user` is there either way.
 #[tokio::test]
 async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence() -> TestResult {
     for named in [false, true] {
@@ -515,6 +515,7 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             schema_instruction: None,
             context_window: 128_000,
             global_skills: Vec::new(),
+            can_delegate: true,
         }));
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
         yi_runtime::auto_review::wire_role(
@@ -529,21 +530,65 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             .extensions()
             .and_then(|host| host.lock().ok().map(|host| host.system_prompt()))
             .unwrap_or_default();
-        assert_eq!(
-            registered, named,
-            "a root with no parent has ask_user only when the role names a reviewer"
-        );
+        assert!(registered, "a root asks its questions whichever the role");
         assert_eq!(
             harness.broker.has_reviewer(),
             named,
             "the reviewer is constructed only when the role names it"
         );
         assert_eq!(
-            prompt.contains("ask_user"),
+            prompt.contains(yi_runtime::auto_review::review_fragment()),
             named,
             "an unnamed role must pay no prompt bytes"
         );
         let _ = session;
+    }
+    Ok(())
+}
+
+/// Dies with an unattended run ended by its own question: nobody answers a root's `ask_user`
+/// there, so it gets the default to act on and the turn goes on.
+#[test]
+fn a_root_nobody_attends_is_handed_the_default_and_goes_on() -> TestResult {
+    for unattended in [false, true] {
+        let dir = Scratch::new(&format!("yi-alone-{unattended}"))?;
+        let (events, _receiver) = tokio::sync::broadcast::channel(4);
+        let broker = PermissionBroker::new(
+            PermissionMode::Auto,
+            dir.to_path_buf(),
+            Vec::new(),
+            None,
+            events,
+        )
+        .with_unattended(unattended);
+        let provider = Arc::new(ProviderStream::new(None));
+        let session = yi_runtime::AgentSession::new(
+            yi_runtime::SessionConfig {
+                system_prompt: String::new(),
+                model: faux_model(),
+                thinking_level: None,
+                tool_execution: yi_runtime::ExecutionMode::Sequential,
+            },
+            Arc::clone(&provider),
+        );
+        let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
+        let role = (None, Some(Arc::new(broker)));
+        yi_runtime::auto_review::wire_role(&session, role, &provider, &mut tools, None);
+        let ask = tools
+            .iter()
+            .find(|tool| tool.name() == "ask_user")
+            .ok_or("a root has ask_user")?;
+        let mut input = serde_json::Map::new();
+        input.insert("question".to_owned(), serde_json::json!("Which base?"));
+        input.insert("options".to_owned(), serde_json::json!(["main", "dev"]));
+        input.insert("default".to_owned(), serde_json::json!("main"));
+        let output = ask.execute(input, &yi_tools::ToolContext::new(dir.to_path_buf()));
+        let text = match output.result.content.first() {
+            Some(yi_types::message::Content::Text { text, .. }) => text.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(output.result.terminate == Some(true), !unattended, "{text}");
+        assert_eq!(text.contains("Go on with main"), unattended, "{text}");
     }
     Ok(())
 }
@@ -599,6 +644,36 @@ fn a_question_ends_the_turn_and_lists_its_options() -> TestResult {
     assert!(
         tool.validate(&request).is_err(),
         "request mode needs auto-review; without it the model is told to ask a question"
+    );
+    Ok(())
+}
+
+/// Dies with an object option read as nothing: a child's parent saw no choices when options
+/// carried `label` and `description`, and the user a card with no trade-off.
+#[test]
+fn an_option_with_a_description_lists_both_and_one_without_a_label_is_skipped() -> TestResult {
+    use yi_tools::Tool;
+    let tool = yi_runtime::auto_review::AskUserTool::new(None);
+    let mut input = serde_json::Map::new();
+    input.insert("question".to_owned(), serde_json::json!("Which look?"));
+    input.insert(
+        "options".to_owned(),
+        serde_json::json!([
+            {"label": "Quiet", "description": "One dim line."},
+            {"description": "no label"},
+            "Loud"
+        ]),
+    );
+    tool.validate(&input)?;
+    let output = tool.execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
+    let text = match output.result.content.first() {
+        Some(yi_types::message::Content::Text { text, .. }) => text.clone(),
+        _ => String::new(),
+    };
+    assert!(text.contains("  1. Quiet: One dim line."), "{text}");
+    assert!(
+        text.contains("  2. Loud"),
+        "the card's key 2 is Loud: {text}"
     );
     Ok(())
 }

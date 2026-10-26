@@ -33,15 +33,9 @@ pub(super) fn run(args: &Args) -> i32 {
         },
         given => given.to_owned(),
     };
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match crate::current_thread() {
         Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     // Session wiring spawns runtime tasks, so the runtime context must exist before it.
     let target = session_target(args);
@@ -70,8 +64,7 @@ pub(super) fn run(args: &Args) -> i32 {
             return 1;
         }
     }
-    let json = args.json;
-    let schema = match args.schema.as_deref().map(yi_runtime::schema::Schema::load) {
+    let schema = match crate::schema(args) {
         Some(Ok(schema)) => Some(schema),
         Some(Err(error)) => {
             eprintln!("error: {error}");
@@ -84,7 +77,11 @@ pub(super) fn run(args: &Args) -> i32 {
         SHUTDOWN_GRACE.min(Duration::from_secs(secs) / 16)
     });
     let ends = deadline.and_then(|at| at.checked_sub(reserve));
-    let eval = args.eval;
+    let modes = Modes {
+        json: args.json,
+        eval: args.eval,
+        no_deltas: args.no_deltas,
+    };
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -93,11 +90,11 @@ pub(super) fn run(args: &Args) -> i32 {
             eprintln!("error: session busy");
             return 1;
         }
-        let modes = Modes { json, eval };
         stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
     });
     release_lane(lane.as_deref());
     runtime.shutdown_timeout(left(deadline));
+    yi_runtime::spend::drain_settled(deadline);
     code
 }
 
@@ -114,8 +111,8 @@ fn emit_structured(schema: &yi_runtime::schema::Schema, said: &[String], json: b
         });
         match checked {
             Ok(value) => {
-                if !json && let Ok(line) = serde_json::to_string(&value) {
-                    println!("{line}");
+                if !json {
+                    crate::print_json(&value);
                 }
                 return 0;
             }
@@ -149,6 +146,7 @@ fn emit_structured(schema: &yi_runtime::schema::Schema, said: &[String], json: b
 struct Modes {
     json: bool,
     eval: bool,
+    no_deltas: bool,
 }
 
 fn left(deadline: Option<Instant>) -> Duration {
@@ -260,13 +258,17 @@ fn leftovers(family: &Family<'_>, undelivered: usize) -> Option<(String, serde_j
 async fn follow(
     mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
     [held, working]: [&dyn Fn() -> bool; 2],
-    Modes { json, eval }: Modes,
+    Modes {
+        json,
+        eval,
+        no_deltas,
+    }: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
     ends: Option<Instant>,
 ) -> i32 {
     let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
-    let (mut last_stop, mut said_anything) = (None, false);
+    let (mut last_stop, mut said_anything, mut due) = (None, false, false);
     loop {
         let next = match patience(holding, ends) {
             None => yi_runtime::next_event(&mut events).await,
@@ -300,14 +302,19 @@ async fn follow(
             }
             None => break,
         };
-        if json && let Ok(line) = serde_json::to_string(&event) {
+        let delta = matches!(event, AgentEvent::MessageUpdate { .. });
+        if json
+            && !(no_deltas && delta)
+            && let Ok(line) = serde_json::to_string(&event)
+        {
             println!("{line}");
         }
         if let Some(chunk) = render_text(&event) {
             if schema.is_some() {
                 answer.push_str(&chunk);
             } else if !json {
-                print!("{chunk}");
+                let apart = if std::mem::take(&mut due) { "\n\n" } else { "" };
+                print!("{apart}{chunk}");
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             }
@@ -323,6 +330,7 @@ async fn follow(
         {
             let text = yi_types::message::has_text(content);
             said_anything |= text;
+            due |= text;
             last_stop = Some((*stop_reason, text));
             said.push(std::mem::take(&mut answer));
         }
@@ -466,6 +474,7 @@ mod tests {
         let modes = super::Modes {
             json: true,
             eval: false,
+            no_deltas: false,
         };
         let run = super::follow(receiver, [&always, &always], modes, None, ends);
         let ran =
@@ -496,7 +505,11 @@ mod tests {
             events.send(AgentEvent::AgentEnd {
                 messages: Vec::new(),
             })?;
-            let modes = super::Modes { json: true, eval };
+            let modes = super::Modes {
+                json: true,
+                eval,
+                no_deltas: false,
+            };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
             assert_eq!(runtime.block_on(run), code, "eval {eval}");
         }
@@ -531,6 +544,7 @@ mod tests {
             let modes = super::Modes {
                 json: false,
                 eval: false,
+                no_deltas: false,
             };
             let run = super::follow(receiver, [&never, &never], modes, None, None);
             assert_eq!(runtime.block_on(run), code);

@@ -49,6 +49,11 @@ impl App {
         self.handle_mouse(outbound, kind, mouse.column, mouse.row);
     }
 
+    pub fn hovered(&self) -> Option<ratatui::layout::Rect> {
+        let (x, y) = self.pointer?;
+        self.hits.as_ref()?.hover_at(x, y)
+    }
+
     /// A drag copies without the user reaching for a key.
     pub(super) fn copy_out(&mut self, text: &str) {
         self.osc_out.push(crate::select::osc52(text));
@@ -103,22 +108,18 @@ impl App {
             .panes
             .iter()
             .find(|(id, _)| *id == pane_id)?;
-        let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+        let inner = rect.inner(crate::render::pane_margin(true));
         let PaneContent::Editor(editor) = &self.state.panes.get(&pane_id)?.content else {
             return None;
         };
         let row = usize::from(y.checked_sub(inner.y)?).saturating_add(editor.scroll_top);
         let col = usize::from(x.checked_sub(inner.x)?).checked_sub(editor.gutter())?;
-        Some((row, col))
+        let line = editor.text.lines().get(row).map_or("", String::as_str);
+        Some((row, crate::editor_view::char_at(line, col)))
     }
 
     fn closer_at(&self, x: u16, y: u16) -> Option<PaneId> {
-        let hits = self.hits.as_ref()?;
-        let (pane, _) = hits
-            .closers
-            .iter()
-            .find(|(_, rect)| rect.contains(Position::new(x, y)))?;
-        Some(*pane)
+        self.hits.as_ref()?.closer_at(x, y).map(|(pane, _)| pane)
     }
 
     fn press(&mut self, outbound: &Outbound, x: u16, y: u16) {
@@ -130,66 +131,71 @@ impl App {
         // Incident: a lower pane's mark sits on the split it can be dragged by, and a press meant
         // as a resize closed the pane; a mark closes on a release over it that did not drag.
         self.pending_close = self.closer_at(x, y);
-        if let Some((_, index)) = hits
-            .tabs
-            .iter()
-            .find(|(rect, _)| rect.contains(Position::new(x, y)))
-        {
-            let index = *index;
-            self.state.select_tab(index);
-            self.dirty = true;
-            return;
-        }
-        let hint = hits
-            .hint_buttons
-            .iter()
-            .find(|(rect, _)| rect.contains(Position::new(x, y)));
-        if let Some((_, action)) = hint {
-            return self.apply_action(outbound, *action);
-        }
-        if hits
-            .gear
-            .is_some_and(|gear| gear.contains(Position::new(x, y)))
-        {
-            let Some(pane) = self.open_settings_pane() else {
-                return self.apply_action(outbound, Action::Settings);
-            };
-            if let Some(tab) = self.state.tab_mut() {
-                tab.layout.focus_pane(pane);
-            }
-            self.dirty = true;
-            return self.apply_action(outbound, Action::ClosePane);
-        }
-        if x < hits.sidebar_width {
-            if let Some((_, index)) = hits.root_rows.iter().find(|(row_y, _)| *row_y == y) {
-                let root = self.state.roots().get(*index).cloned();
-                let next = root.filter(|r| self.state.root_filter.as_ref() != Some(r));
-                self.state.set_root_filter(next);
-                self.state.zone = Zone::Sidebar;
+        match hits.hit_at(x, y) {
+            Some((_, crate::render::Hit::Tab(index))) => {
+                self.state.select_tab(index);
                 self.dirty = true;
                 return;
             }
-            if let Some((_, index)) = hits.sidebar_rows.iter().find(|(row_y, _)| *row_y == y) {
-                self.state.selected = *index;
+            Some((_, crate::render::Hit::Settings(pane, tab))) => {
+                self.focus_pane(pane);
+                if let Some(settings) = self.settings_pane(pane) {
+                    (settings.tab, settings.cursor) = (tab, 0);
+                    (settings.edit, settings.status) = (None, None);
+                }
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Button(action))) => {
+                return self.apply_action(outbound, action);
+            }
+            Some((_, crate::render::Hit::Gear)) => {
+                let Some(pane) = self.open_settings_pane() else {
+                    return self.apply_action(outbound, Action::Settings);
+                };
+                if let Some(tab) = self.state.tab_mut() {
+                    tab.layout.focus_pane(pane);
+                }
+                self.dirty = true;
+                return self.apply_action(outbound, Action::ClosePane);
+            }
+            Some((_, crate::render::Hit::New(root))) => {
+                let root = root.unwrap_or_else(|| self.state.root.clone());
+                if let Some(pane) = self.state.focused_pane_id() {
+                    self.new_session_into(outbound, pane, root);
+                }
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Search)) => {
+                return self.apply_action(outbound, Action::Navigator);
+            }
+            Some((_, crate::render::Hit::Fold(root))) => {
+                self.state.toggle_fold(&root);
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Session(index))) => {
+                self.state.selected = index;
                 self.state.cursor_moved = true;
                 self.state.zone = Zone::Sidebar;
                 self.open_selected(outbound);
+                return;
             }
+            // Incident: the lower pane's title sits on the split row, and a press there
+            // meant as a resize focused the pane instead; the split is tried first.
+            Some((_, crate::render::Hit::Title(pane))) if hits.split_at(x, y).is_none() => {
+                self.focus_pane(pane);
+                self.mark_focused_seen(outbound);
+                self.dirty = true;
+                return;
+            }
+            Some((_, crate::render::Hit::Title(_))) | None => {}
+        }
+        if x < hits.sidebar_width {
             return;
         }
-        let split = hits.splits.iter().find(|border| match border.direction {
-            ratatui::layout::Direction::Horizontal => {
-                x == border.pos
-                    && y >= border.area.y
-                    && y < border.area.y.saturating_add(border.area.height)
-            }
-            ratatui::layout::Direction::Vertical => {
-                y == border.pos
-                    && x >= border.area.x
-                    && x < border.area.x.saturating_add(border.area.width)
-            }
-        });
-        if let Some(border) = split {
+        if let Some(border) = hits.split_at(x, y) {
             self.drag = Some((self.state.active_tab, border.path.clone()));
             return;
         }
@@ -216,16 +222,20 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            if let Some(session) = self.state.focused_session()
-                && self
-                    .state
-                    .sessions
-                    .get(&session)
-                    .is_some_and(|row| row.status == SessionStatus::DoneUnseen)
-            {
-                self.mark_seen(outbound, &session);
-            }
+            self.mark_focused_seen(outbound);
             self.dirty = true;
+        }
+    }
+
+    fn mark_focused_seen(&mut self, outbound: &Outbound) {
+        if let Some(session) = self.state.focused_session()
+            && self
+                .state
+                .sessions
+                .get(&session)
+                .is_some_and(|row| row.status == SessionStatus::DoneUnseen)
+        {
+            self.mark_seen(outbound, &session);
         }
     }
 
@@ -248,9 +258,18 @@ impl App {
     /// mouse can never disagree with what was on screen.
     pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
         match self.state.mode {
-            Mode::Menu(_) => return self.menu_mouse(outbound, kind, x, y),
-            Mode::Navigator { .. } => return self.overlay_press(kind, x, y),
+            Mode::Menu(_) => {
+                self.release_browser_presses();
+                return self.menu_mouse(outbound, kind, x, y);
+            }
+            Mode::Navigator { .. } => {
+                self.release_browser_presses();
+                return self.overlay_press(kind, x, y);
+            }
             Mode::Normal | Mode::Prefix => {}
+        }
+        if self.browser_mouse(kind, x, y) {
+            return;
         }
         match kind {
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
@@ -260,16 +279,9 @@ impl App {
             MouseKind::Down => self.press(outbound, x, y),
             MouseKind::RightDown => self.right_click(x, y),
             MouseKind::Moved => {
-                let over = |at: Option<(u16, u16)>| {
-                    let hits = self.hits.as_ref()?;
-                    let at = Position::from(at?);
-                    hits.hint_buttons
-                        .iter()
-                        .position(|(rect, _)| rect.contains(at))
-                };
-                let before = over(self.pointer);
+                let before = self.hovered();
                 self.pointer = Some((x, y));
-                self.dirty |= before != over(self.pointer);
+                self.dirty |= before != self.hovered();
             }
             MouseKind::Drag => {
                 self.pending_close = None;
@@ -388,5 +400,63 @@ mod tests {
             app.state.selected, 0,
             "the press reached the sidebar row under it"
         );
+    }
+
+    fn app_with_a_browser_page() -> Result<(App, PaneId), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let pane = app.state.focused_pane_id().ok_or("a pane")?;
+        let mut browser = crate::browser::BrowserPane::new(Some("http://localhost:1/".to_owned()));
+        browser.view(Rect::new(0, 0, 40, 20), true, &theme);
+        if let Some(slot) = app.state.panes.get_mut(&pane) {
+            slot.content = PaneContent::Browser(Box::new(browser));
+        }
+        app.hits = Some(crate::render::Hits {
+            panes: vec![(pane, Rect::new(0, 0, 40, 20))],
+            ..crate::render::Hits::default()
+        });
+        Ok((app, pane))
+    }
+
+    fn mouse(app: &mut App, kind: MouseKind, x: u16, y: u16) {
+        let (events, _received) = crate::client::events();
+        let socket = std::env::temp_dir().join("yi-browser-mouse-no-daemon.sock");
+        let (outbound, _threads) = crate::client::spawn(socket, events);
+        app.handle_mouse(&outbound, kind, x, y);
+        outbound.shutdown();
+    }
+
+    /// Incident: the page took every event over it, so a split drag or a chat selection that
+    /// moved onto a browser pane never moved and never finished.
+    #[test]
+    fn a_drag_that_began_outside_the_page_goes_on_over_it() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut app, pane) = app_with_a_browser_page()?;
+        app.selection = Some(crate::select::Drag::new(pane, 1, 1, 0));
+        mouse(&mut app, MouseKind::Drag, 10, 10);
+        assert_eq!(app.selection.as_ref().map(|drag| drag.head), Some((10, 10)));
+        app.drag = Some((app.state.active_tab, Vec::new()));
+        mouse(&mut app, MouseKind::Up, 10, 10);
+        assert!(app.drag.is_none(), "the release never reached the console");
+        assert!(app.selection.is_none(), "the selection never finished");
+        Ok(())
+    }
+
+    #[test]
+    fn a_press_on_the_page_keeps_its_drag_and_release_from_the_console()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut app, pane) = app_with_a_browser_page()?;
+        mouse(&mut app, MouseKind::Down, 10, 10);
+        app.selection = Some(crate::select::Drag::new(pane, 1, 1, 0));
+        mouse(&mut app, MouseKind::Drag, 30, 15);
+        mouse(&mut app, MouseKind::Up, 30, 15);
+        assert_eq!(
+            app.selection.as_ref().map(|drag| drag.head),
+            Some((1, 1)),
+            "the console moved a selection the page's drag owned"
+        );
+        mouse(&mut app, MouseKind::Drag, 12, 12);
+        assert_eq!(app.selection.as_ref().map(|drag| drag.head), Some((12, 12)));
+        Ok(())
     }
 }

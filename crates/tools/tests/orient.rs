@@ -7,9 +7,7 @@ use serde_json::{Map, Value, json};
 use yi_tools::{GetContextTool, Tool, ToolContext};
 use yi_types::message::Content;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -163,6 +161,28 @@ fn oversized_skeleton_layer_names_its_truncation() -> TestResult {
         packet.contains("[skeletons truncated: 40 of 62 files at the 40-file cap;"),
         "a clamped layer must name what it cut: {packet}"
     );
+    Ok(())
+}
+
+/// The walk stopped at 2,000 source files with no word, and the footer's total read as the whole
+/// tree. Dies with 2,001 files reported as "of 2000", or 2,000 files claiming a stop.
+#[test]
+fn the_skeleton_scan_names_where_it_stopped() -> TestResult {
+    let footer = |extra: usize| -> Result<String, Box<dyn Error>> {
+        let dir = fixture(&format!("scan-{extra}"))?;
+        for index in 0..extra {
+            fs::write(dir.join(format!("g{index:04}.rs")), "pub fn g() {}\n")?;
+        }
+        let packet = run(&dir, Map::new());
+        let row = skeleton_layer(&packet)
+            .lines()
+            .find(|row| row.starts_with("[skeletons"));
+        Ok(row.ok_or("no footer")?.to_owned())
+    };
+    let cap = "files at the 40-file cap;";
+    assert!(footer(1_998)?.starts_with(&format!("[skeletons truncated: 40 of 2000 {cap} read")));
+    let scan = "scan stopped at SKELETON_SCAN 2000; read";
+    assert!(footer(1_999)?.starts_with(&format!("[skeletons truncated: 40 of 2000+ {cap} {scan}")));
     Ok(())
 }
 
@@ -340,8 +360,9 @@ fn with_fake_ripwire(name: &str, slow: bool, answers: &[(&str, &str)]) -> TestRe
     fs::set_permissions(&ripwire, fs::Permissions::from_mode(0o755))?;
     // Incident: a fresh script's first exec stalled past a second under load; run it once here.
     yi_tools::command(&ripwire).env("YI_WARM", "1").output()?;
+    let name = crate::exact_path(module_path!(), name);
     let rerun = yi_tools::command(std::env::current_exe()?)
-        .args(["--exact", name])
+        .args(["--exact", &name])
         .env("PATH", &*dir)
         .env("HOME", &*dir)
         .env("YI_FAKE_RIPWIRE", &*dir)

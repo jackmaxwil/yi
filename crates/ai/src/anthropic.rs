@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
@@ -6,7 +8,6 @@ use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, Too
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, Ttl, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::{normalize_anthropic_tool_call_id, transform_messages};
 
@@ -27,7 +28,6 @@ pub enum Thinking {
 #[derive(Debug, Clone, Default)]
 pub struct AnthropicOptions {
     pub max_tokens: Option<u64>,
-    pub temperature: Option<f64>,
     pub thinking: Thinking,
     /// Interactive sessions hold the system breakpoints for an hour (D116); the history
     /// breakpoints' TTL is `LlmContext::cache_ttl`.
@@ -300,13 +300,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     });
     if !context.system_prompt.is_empty() {
         params["system"] = Value::Array(system_blocks(&context.system_prompt));
-    }
-    let supports_temperature = compat_bool(model, "supportsTemperature", true);
-    if let Some(temperature) = options.temperature
-        && options.thinking == Thinking::Off
-        && supports_temperature
-    {
-        params["temperature"] = json!(temperature);
     }
     if let Some(tools) = &context.tools
         && !tools.is_empty()
@@ -679,9 +672,13 @@ impl Mapper {
                         .unwrap_or_default();
                     if let Some(Content::ToolCall { arguments, .. }) =
                         self.content_mut().get_mut(content_index)
-                        && (!final_arguments.is_empty() || arguments.is_empty())
                     {
-                        *arguments = final_arguments;
+                        if !final_arguments.is_empty() || arguments.is_empty() {
+                            *arguments = final_arguments;
+                        }
+                        if let Cow::Owned(fixed) = crate::leak::unleak(arguments) {
+                            *arguments = fixed;
+                        }
                     }
                     if let Some(block) = self.content_mut().get(content_index).cloned() {
                         events.push(AssistantMessageEvent::ToolCallEnd {
@@ -790,8 +787,14 @@ fn run_request(
         stop,
         extra,
         oauth,
+        settle: _,
     } = wire;
-    let url = format!("{}/v1/messages", model.base_url);
+    let beta = if crate::compat::moonshot(model) {
+        "?beta=true"
+    } else {
+        ""
+    };
+    let url = format!("{}/v1/messages{beta}", model.base_url);
     let base = if oauth {
         vec![
             ("authorization", format!("Bearer {api_key}")),
@@ -859,6 +862,7 @@ pub fn stream(
                 stop: stop.as_deref(),
                 extra: &extra_headers,
                 oauth,
+                settle: None,
             },
             &sender,
         ) else {

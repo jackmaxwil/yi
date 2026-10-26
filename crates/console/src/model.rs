@@ -52,14 +52,6 @@ impl SessionStatus {
         }
     }
 
-    pub fn section(self) -> &'static str {
-        match self {
-            Self::Blocked | Self::DoneUnseen => "needs you",
-            Self::Working => "working",
-            Self::Idle | Self::Unknown => "idle",
-        }
-    }
-
     pub fn from_state(state: &AcpState, seen: bool) -> Self {
         match state {
             AcpState::Running => Self::Working,
@@ -99,6 +91,7 @@ pub struct SessionRow {
     pub name: Option<String>,
     pub created_ms: u64,
     pub last_ms: u64,
+    pub pinned: Option<u64>,
 }
 
 impl SessionRow {
@@ -114,6 +107,12 @@ impl SessionRow {
     pub fn recency(&self) -> u64 {
         self.last_ms.max(self.created_ms)
     }
+}
+
+pub struct Group {
+    pub root: Option<String>,
+    pub rows: Vec<usize>,
+    pub folded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +162,8 @@ pub struct Chat {
     pub orb: yi_tui::orb::Tick,
     pub phase: usize,
     pub logos: yi_tui::logos::Tick,
+    pub card: yi_tui::question::CardTick,
+    pub(crate) slot: Option<crate::app::ids::Slot>,
     pub ask: Option<PendingAsk>,
     pub events: (Sender<UiEvent>, Receiver<UiEvent>),
     pub commands: (CommandSender, CommandReceiver),
@@ -177,6 +178,8 @@ pub struct PendingAsk {
 }
 
 pub const KEPT_CELLS: usize = 50;
+pub const IMAGE_BYTES_MAX: usize = 512 * 1024;
+pub const IMAGES_PER_CELL: usize = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct NbCell {
@@ -188,10 +191,28 @@ pub struct NbCell {
     pub stderr: String,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// Invariant: only the session's newest cell with images keeps their base64; every cell keeps
+    /// `image_bytes`, their lengths, for its size rows.
     pub images: Vec<String>,
+    pub image_bytes: Vec<usize>,
+    pub dropped_image_bytes: Vec<usize>,
+    pub images_past_limit: usize,
     pub duration_ms: Option<u64>,
     pub running: bool,
 }
+
+pub(crate) fn notebook_cells<'a>(
+    notebooks: &'a BTreeMap<SessionId, Vec<NbCell>>,
+    session: &SessionId,
+) -> &'a [NbCell] {
+    notebooks.get(session).map_or(&[][..], Vec::as_slice)
+}
+
+/// Invariant: rows drawn under a key (the width, and for Review its scope, note and the diff's
+/// revision), redrawn only when the key moves; a new pane content starts with none.
+pub type Drawn<K, V = Rows> = Option<(K, V)>;
+pub type Rows = Vec<ratatui::text::Line<'static>>;
+pub type ReviewKey = (usize, ReviewScope, String, u64);
 
 /// What a pane shows: the provider seam — a new kind is a new variant plus
 /// its render arm, nothing else.
@@ -203,14 +224,17 @@ pub enum PaneContent {
     Markdown {
         path: String,
         source: String,
+        workdir: String,
+        drawn: Drawn<usize>,
     },
     Diff {
         path: String,
         source: String,
+        workdir: String,
+        drawn: Drawn<usize>,
     },
     Notebook {
         session: Option<SessionId>,
-        cells: Vec<NbCell>,
         full: bool,
         /// Invariant: the rows drawn at a width, cleared by every cell update and by `v`.
         drawn: Option<(usize, Vec<ratatui::text::Line<'static>>)>,
@@ -218,10 +242,12 @@ pub enum PaneContent {
     SessionDiff {
         session: SessionId,
         scope: ReviewScope,
+        drawn: Drawn<ReviewKey, (String, Rows)>,
     },
     Terminal(Box<crate::pty::Pty>),
     Editor(Editor),
     Settings(Box<crate::settings::Settings>),
+    Browser(Box<crate::browser::BrowserPane>),
 }
 
 pub struct Editor {
@@ -234,6 +260,9 @@ pub struct Editor {
     pub lang: Option<String>,
     pub primed: Option<(usize, yi_tui::highlight::Lang)>,
     pub last_cursor: (usize, usize),
+    pub crlf: bool,
+    pub final_newline: bool,
+    pub workdir: String,
 }
 
 impl Editor {
@@ -313,20 +342,24 @@ pub struct SessionDiff {
     pub why_due: Option<(String, Vec<u32>)>,
     /// The title a second `l` lands under; any other key clears it.
     pub land_armed: Option<String>,
+    pub rev: u64,
+    pub dropped_at_turn: BTreeMap<String, u64>,
 }
 
-const MAX_DIFF_FILES: usize = 512;
-const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_DIFF_FILES: usize = 512;
+pub const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 impl SessionDiff {
     pub fn insert(&mut self, path: String, file: FileDiff) {
+        self.dropped_at_turn.remove(&path);
         self.files.retain(|(existing, _)| *existing != path);
         self.files.push((path, file));
         while self.files.len() > MAX_DIFF_FILES || self.bytes() > MAX_DIFF_BYTES {
             if self.files.len() <= 1 {
                 break;
             }
-            self.files.remove(0);
+            let (gone, file) = self.files.remove(0);
+            self.dropped_at_turn.insert(gone, file.turn);
         }
     }
 
@@ -374,7 +407,17 @@ impl Pane {
             | PaneContent::SessionDiff { .. }
             | PaneContent::Terminal(_)
             | PaneContent::Editor(_)
-            | PaneContent::Settings(_) => None,
+            | PaneContent::Settings(_)
+            | PaneContent::Browser(_) => None,
+        }
+    }
+
+    pub fn take_ask(&mut self) -> Option<PendingAsk> {
+        match &mut self.content {
+            PaneContent::Session {
+                chat: Some(chat), ..
+            } => chat.ask.take(),
+            _ => None,
         }
     }
 }
@@ -411,17 +454,24 @@ pub struct ConsoleState {
     pub sidebar_cols: usize,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
+    pub notebooks: BTreeMap<SessionId, Vec<NbCell>>,
     pub side_opened: std::collections::BTreeSet<SessionId>,
     pub auto_side: bool,
     pub title: Option<yi_tui::title::Scene>,
     pub title_start: std::time::Instant,
     pub title_frame: Option<std::time::Instant>,
+    pub title_cache: yi_tui::title::Cache,
     pub chat_pace: u16,
     pub open_apps: Vec<String>,
     pub session_options: BTreeMap<SessionId, Vec<yi_types::acp::AcpConfigOption>>,
-    pub root_filter: Option<String>,
+    pub folded: std::collections::BTreeSet<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
+    pub children_evicted:
+        BTreeMap<SessionId, std::collections::BTreeSet<yi_types::subagent::ChildId>>,
     pub parked: BTreeMap<SessionId, Box<Chat>>,
+    pub chrome: crate::browser::Chrome,
+    pub browser_placed: BTreeMap<PaneId, crate::placed::Placed>,
+    pub home: Option<String>,
 }
 
 impl ConsoleState {
@@ -452,17 +502,23 @@ impl ConsoleState {
             sidebar_cols: 0,
             cursor_moved: false,
             diffs: BTreeMap::new(),
+            notebooks: BTreeMap::new(),
             side_opened: std::collections::BTreeSet::new(),
             auto_side: true,
             title: None,
             title_start: std::time::Instant::now(),
             title_frame: None,
+            title_cache: yi_tui::title::Cache::default(),
             chat_pace: 0,
             open_apps: Vec::new(),
             session_options: BTreeMap::new(),
-            root_filter: None,
+            folded: std::collections::BTreeSet::new(),
             children: BTreeMap::new(),
+            children_evicted: BTreeMap::new(),
             parked: BTreeMap::new(),
+            chrome: crate::browser::Chrome::default(),
+            browser_placed: BTreeMap::new(),
+            home: None,
             quit: false,
         }
     }
@@ -589,56 +645,85 @@ impl ConsoleState {
         }
     }
 
-    pub fn visible_rows(&self) -> Vec<usize> {
-        let mut rows: Vec<usize> = self
-            .order
-            .iter()
-            .enumerate()
-            .filter(|(_, id)| {
-                self.root_filter
-                    .as_deref()
-                    .is_none_or(|root| self.sessions.get(*id).is_some_and(|row| row.root == root))
-            })
-            .map(|(index, _)| index)
+    /// Invariant: a pinned row leaves its group, which stays when empty; the rail folds nothing.
+    pub fn groups(&self) -> Vec<Group> {
+        let row = |index: &usize| self.order.get(*index).and_then(|id| self.sessions.get(id));
+        let mut pinned: Vec<usize> = (0..self.order.len())
+            .filter(|index| row(index).is_some_and(|row| row.pinned.is_some()))
             .collect();
-        rows.sort_by_key(|index| {
-            let row = self.order.get(*index).and_then(|id| self.sessions.get(id));
-            (
-                row.map_or(usize::MAX, |row| self.need_of(row)),
-                std::cmp::Reverse(row.map_or(0, SessionRow::recency)),
-            )
-        });
-        rows
-    }
-
-    pub fn set_root_filter(&mut self, root: Option<String>) {
-        self.root_filter = root;
-        if let Some(first) = self.visible_rows().first() {
-            self.selected = *first;
+        pinned.sort_by_key(|index| row(index).and_then(|row| row.pinned));
+        let mut groups = vec![Group {
+            root: None,
+            rows: pinned,
+            folded: false,
+        }];
+        let mut buckets: Vec<(String, Vec<usize>)> = vec![(self.root.clone(), Vec::new())];
+        let mut slot_of = std::collections::HashMap::from([(self.root.clone(), 0)]);
+        for index in 0..self.order.len() {
+            let Some(r) = row(&index) else {
+                continue;
+            };
+            let slot = match slot_of.get(&r.root) {
+                Some(slot) => *slot,
+                None => {
+                    slot_of.insert(r.root.clone(), buckets.len());
+                    buckets.push((r.root.clone(), Vec::new()));
+                    buckets.len() - 1
+                }
+            };
+            if r.pinned.is_none() {
+                buckets[slot].1.push(index);
+            }
         }
+        for (root, mut rows) in buckets {
+            rows.sort_by_key(|index| {
+                let row = row(index);
+                (
+                    row.map_or(usize::MAX, |row| self.need_of(row)),
+                    std::cmp::Reverse(row.map_or(0, SessionRow::recency)),
+                )
+            });
+            let folded = self.sidebar == SidebarMode::Full && self.folded.contains(&root);
+            groups.push(Group {
+                root: Some(root),
+                rows,
+                folded,
+            });
+        }
+        groups
     }
 
-    pub fn cycle_root_filter(&mut self, forward: bool) {
-        let roots = self.roots();
-        let at = self
-            .root_filter
-            .as_ref()
-            .and_then(|root| roots.iter().position(|r| r == root));
-        let next = match (at, forward) {
-            (None, true) => roots.first().cloned(),
-            (None, false) => roots.last().cloned(),
-            (Some(i), true) => roots.get(i.saturating_add(1)).cloned(),
-            (Some(0), false) => None,
-            (Some(i), false) => roots.get(i.saturating_sub(1)).cloned(),
-        };
-        self.set_root_filter(next);
+    pub fn visible_rows(&self) -> Vec<usize> {
+        self.groups()
+            .into_iter()
+            .filter(|group| !group.folded)
+            .flat_map(|group| group.rows)
+            .collect()
+    }
+
+    pub fn toggle_fold(&mut self, root: &str) {
+        if !self.folded.remove(root) {
+            self.folded.insert(root.to_owned());
+        }
+        let rows = self.visible_rows();
+        if rows.contains(&self.selected) {
+            return;
+        }
+        let next = rows
+            .iter()
+            .find(|index| **index >= self.selected)
+            .or_else(|| rows.first());
+        if let Some(next) = next {
+            self.selected = *next;
+        }
     }
 
     pub fn roots(&self) -> Vec<String> {
         let mut roots = vec![self.root.clone()];
+        let mut seen = std::collections::HashSet::from([self.root.clone()]);
         for id in &self.order {
             if let Some(row) = self.sessions.get(id)
-                && !roots.contains(&row.root)
+                && seen.insert(row.root.clone())
             {
                 roots.push(row.root.clone());
             }
@@ -655,12 +740,18 @@ impl ConsoleState {
         Some(new_id)
     }
 
-    pub fn close_focused_pane(&mut self) -> Option<PaneId> {
+    pub fn close_focused_pane(&mut self) -> Option<Pane> {
         let tab = self.tabs.get_mut(self.active_tab)?;
         let closed = tab.layout.close_focused()?;
         tab.zoomed = false;
-        self.panes.remove(&closed);
-        Some(closed)
+        self.panes.remove(&closed)
+    }
+
+    pub fn take_asks(&mut self) -> Vec<String> {
+        let waiting = self.orphan_asks.drain(..).map(|(id, _)| id);
+        let held = (self.panes.values_mut().filter_map(Pane::take_ask))
+            .chain(self.parked.values_mut().filter_map(|chat| chat.ask.take()));
+        waiting.chain(held.map(|ask| ask.request_id)).collect()
     }
 
     pub fn new_tab(&mut self) {

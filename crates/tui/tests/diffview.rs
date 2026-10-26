@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use crate::common::flat_trimmed as text;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use serde_json::json;
@@ -10,20 +11,6 @@ use yi_tui::diffview::{DiffBudget, render};
 type TestResult = Result<(), Box<dyn Error>>;
 
 const REPLACEMENT: &str = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n one\n-let total = a + b;\n+let total = a - b;\n three\n";
-
-fn text(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
-}
 
 fn styles(lines: &[Line<'static>], row: usize) -> Vec<Style> {
     lines
@@ -197,7 +184,6 @@ fn an_edit_cell_renders_its_diff_in_normal_mode() -> TestResult {
     let cell = ToolCell {
         name: "edit".to_owned(),
         call_id: String::new(),
-        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("edit", "src/lib.rs"),
         digest: Some("updated; first change at line 2".to_owned()),

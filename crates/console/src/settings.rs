@@ -377,7 +377,8 @@ fn clip(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
-fn tab_bar(settings: &Settings, width: usize, theme: &Theme) -> Line<'static> {
+/// The strip's pieces and the tab each selects, so the drawn strip and its click targets agree.
+fn strip(settings: &Settings, width: usize) -> Vec<(String, Option<usize>)> {
     let span = |first: usize, last: usize| -> usize {
         let names: usize = (first..=last).map(|i| tab_name(i).chars().count()).sum();
         names + (last - first) + 6
@@ -392,22 +393,43 @@ fn tab_bar(settings: &Settings, width: usize, theme: &Theme) -> Line<'static> {
             break;
         }
     }
-    let dim = theme.dim_style();
-    let mut spans = vec![Span::styled(if first > 0 { "‹ " } else { "  " }, dim)];
+    let mut pieces = vec![((if first > 0 { "‹ " } else { "  " }).to_owned(), None)];
     for index in first..=last {
         if index > first {
-            spans.push(Span::raw(" "));
+            pieces.push((" ".to_owned(), None));
         }
-        spans.push(if index == settings.tab {
-            let chip = Modifier::BOLD | Modifier::REVERSED;
-            let name = format!(" {} ", tab_name(index));
-            Span::styled(name, theme.accent_style().add_modifier(chip))
+        let name = if index == settings.tab {
+            format!(" {} ", tab_name(index))
         } else {
-            Span::styled(tab_name(index), dim)
-        });
+            tab_name(index).to_owned()
+        };
+        pieces.push((name, Some(index)));
     }
-    spans.push(Span::styled(if last < KEYS { " ›" } else { "" }, dim));
-    Line::from(spans)
+    pieces.push(((if last < KEYS { " ›" } else { "" }).to_owned(), None));
+    pieces
+}
+
+fn tab_bar(settings: &Settings, width: usize, theme: &Theme) -> Line<'static> {
+    let chip = Style::default()
+        .fg(theme.text)
+        .bg(theme.selection_bg())
+        .add_modifier(Modifier::BOLD);
+    let spans = strip(settings, width).into_iter().map(|(text, tab)| {
+        let current = tab == Some(settings.tab);
+        Span::styled(text, if current { chip } else { theme.dim_style() })
+    });
+    Line::from(spans.collect::<Vec<_>>())
+}
+
+pub(crate) fn tab_targets(settings: &Settings, width: usize) -> Vec<(u16, u16, usize)> {
+    let mut x = 0_u16;
+    let mut targets = Vec::new();
+    for (text, tab) in strip(settings, width) {
+        let cells = u16::try_from(Line::raw(text).width()).unwrap_or(u16::MAX);
+        targets.extend(tab.map(|tab| (x, cells, tab)));
+        x = x.saturating_add(cells);
+    }
+    targets
 }
 
 /// (label, value, when it applies, help) of every row on the current tab.
@@ -520,7 +542,7 @@ pub fn view(
                 format!(" {marker}{}", clip(name, label.saturating_sub(3))),
                 style,
             ),
-            Span::styled(clip(&shown, value), theme.accent_style()),
+            Span::styled(clip(&shown, value), Style::default().fg(theme.teal)),
             Span::styled(clip(applies, tail), theme.dim_style()),
         ]));
     }
@@ -546,7 +568,10 @@ pub fn view(
             .take(3),
     );
     if let Some(status) = &settings.status {
-        lines.push(Line::styled(format!(" {status}"), theme.accent_style()));
+        lines.push(Line::styled(
+            format!(" {status}"),
+            Style::default().fg(theme.warning),
+        ));
     }
     let hint = match (&settings.edit, settings.tab) {
         (Some(Edit::Type(_)), _) => " type · enter save · empty unsets · esc cancel",

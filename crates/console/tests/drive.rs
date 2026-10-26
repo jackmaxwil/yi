@@ -16,14 +16,12 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::plan::doc::{AgentId, Todo, TodoLabel, TodoState};
 use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Responder = fn(&Value) -> Vec<Value>;
 
-enum Step {
+pub(crate) enum Step {
     /// Wait for a request whose method matches; reply with the responder's
     /// frames. Non-matching requests get a generic empty reply.
     Expect(&'static str, Responder),
@@ -33,6 +31,15 @@ enum Step {
     Close,
     /// Wait for the client to reconnect.
     Accept,
+    /// Drop the connection and the socket file, so every re-dial fails and the link stays down.
+    Gone,
+    /// Wait for the console's answer to a worker request; its outcome must be this one.
+    Outcome(&'static str),
+}
+
+/// The HOME a drive run expands `~` from; nextest gives each test its own process.
+fn drive_home() -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-home-{}", std::process::id()))
 }
 
 fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
@@ -276,6 +283,36 @@ fn fixture_loop(listener: &UnixListener, script: Vec<Step>) -> Result<(), String
             Step::Accept => {
                 (stream, reader) = accept(listener)?;
             }
+            Step::Outcome(want) => loop {
+                let Some(frame) = read_request(&mut reader) else {
+                    return Err(format!(
+                        "connection ended before the console answered {want}"
+                    ));
+                };
+                if frame.get("method").is_some() {
+                    if let Some(reply) = generic_reply(&frame) {
+                        write_frame(&mut stream, &reply)?;
+                    }
+                    continue;
+                }
+                let got = frame
+                    .pointer("/result/outcome/outcome")
+                    .and_then(Value::as_str);
+                if got == Some(want) {
+                    break;
+                }
+                return Err(format!("the console answered {got:?}, wanted {want}"));
+            },
+            Step::Gone => {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if let Some(path) = listener
+                    .local_addr()
+                    .ok()
+                    .and_then(|a| a.as_pathname().map(PathBuf::from))
+                {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
         }
     }
     // Keep the socket open until the console detaches, answering stragglers
@@ -308,7 +345,7 @@ fn init_reply(frame: &Value) -> Vec<Value> {
     )]
 }
 
-fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
+pub(crate) fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
     run_with(name, fixture, script, false)
 }
 
@@ -329,6 +366,16 @@ fn run_frames_with(
     sidebar: SidebarMode,
     width: u16,
 ) -> Result<String, Box<dyn Error>> {
+    run_frames_sized(name, fixture, script, sidebar, (width, 30))
+}
+
+fn run_frames_sized(
+    name: &str,
+    fixture: Vec<Step>,
+    script: &str,
+    sidebar: SidebarMode,
+    size: (u16, u16),
+) -> Result<String, Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
     run_opts(
         name,
@@ -337,7 +384,7 @@ fn run_frames_with(
         false,
         sidebar,
         Some(dir.to_path_buf()),
-        (width, 30),
+        size,
     )?;
     last_frame(&dir)
 }
@@ -411,6 +458,9 @@ fn run_console(
             open_apps,
             sidebar,
             pace: 0,
+            browser: None,
+            chrome_pin: None,
+            home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
             script: steps,
@@ -421,7 +471,7 @@ fn run_console(
             height,
         },
     );
-    scratch::keep(&frames, "drive", name.as_ref());
+    crate::scratch::keep(&frames, "drive", name.as_ref());
     // The console shut the socket down; the fixture thread ends with it.
     match server.map(JoinHandle::join) {
         None | Some(Ok(Ok(()))) => {}
@@ -451,6 +501,9 @@ fn paced_type_step_respects_the_deadline() -> TestResult {
             open_apps: Vec::new(),
             sidebar: SidebarMode::Rail,
             pace: 0,
+            browser: None,
+            chrome_pin: None,
+            home: Some(drive_home().display().to_string()),
         },
         DriveOptions {
             script: steps,
@@ -648,7 +701,7 @@ fn resume_alpha_on_a_lane(frame: &Value) -> Vec<Value> {
             json!({
                 "sessionUpdate": "_yi/workdir",
                 "cwd": "/home/user/.yi/lanes/897d6e91/1",
-                "lane": "yi ⎇ lane 1",
+                "lane": "yi",
             }),
         ),
     );
@@ -670,9 +723,107 @@ fn the_status_row_follows_the_workers_lane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 ⎇ lane 1\n\
+         wait-frame 5000 ·  yi \n\
+         wait-frame 3000 !⎇ lane\n\
          quit\n",
     )
+}
+
+fn lane_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("yi-console-lane-{}", std::process::id()))
+}
+
+fn resume_alpha_in_a_lane_dir(frame: &Value) -> Vec<Value> {
+    let mut frames = resume_alpha(frame);
+    let cwd = lane_dir().display().to_string();
+    let workdir = json!({"sessionUpdate": "_yi/workdir", "cwd": cwd, "lane": "yi"});
+    frames.insert(0, update("s-alpha", workdir));
+    frames
+}
+
+fn agent_rewrites_the_lane_file() -> Vec<Value> {
+    let path = lane_dir().join("a.txt");
+    let _write = std::fs::write(&path, "rewritten in the lane\n");
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e11", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": format!("--- a/{0}\n+++ b/{0}\n@@ -1,1 +1,1 @@\n-lane copy\n+rewritten in the lane\n", path.display()),
+                      "added": 1, "removed": 1}}),
+    )]
+}
+
+/// Dies with `e a.txt` opening the main checkout's copy while the agent edits the lane's, so
+/// the agent's patch, which names the lane's file, never refreshed the open editor either.
+#[test]
+fn e_opens_a_relative_path_in_the_sessions_lane() -> TestResult {
+    let lane = lane_dir();
+    std::fs::create_dir_all(&lane)?;
+    std::fs::write(lane.join("a.txt"), "lane copy\n")?;
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("_yi/seen", seen_ok),
+        Step::Expect("session/list", empty_list),
+        Step::Push(agent_rewrites_the_lane_file),
+        Step::Expect("_yi/tracked", tracked_no_then_answer),
+    ];
+    let ran = run(
+        "lane-editor",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy\n\
+         wait-frame 9000 1 rewritten in the lane\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&lane);
+    ran
+}
+
+/// Dies with the second palette path opening the main checkout's copy: the editor or viewer the
+/// first one opened holds no session, so the next relative path fell back to the root.
+#[test]
+fn each_path_opened_from_a_file_pane_stays_in_the_sessions_lane() -> TestResult {
+    let lane = lane_dir();
+    std::fs::create_dir_all(&lane)?;
+    std::fs::write(lane.join("a.txt"), "lane copy a\n")?;
+    std::fs::write(lane.join("b.txt"), "lane copy b\n")?;
+    std::fs::write(lane.join("c.md"), "lane notes\n")?;
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha_in_a_lane_dir),
+        Step::Expect("_yi/seen", seen_ok),
+    ];
+    let ran = run(
+        "lane-panes",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy a\n\
+         key alt-/\ntype e b.txt\nkey enter\nwait-frame 3000 1 lane copy b\n\
+         key alt-/\ntype md c.md\nkey enter\nwait-frame 3000 lane notes\n\
+         key alt-/\ntype e a.txt\nkey enter\nwait-frame 3000 1 lane copy a\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&lane);
+    ran
+}
+
+/// Dies with `e ~/x.txt` reported as no such file: the path was joined to the root verbatim.
+#[test]
+fn e_opens_a_path_under_home() -> TestResult {
+    let home = drive_home();
+    std::fs::create_dir_all(&home)?;
+    std::fs::write(home.join("x.txt"), "from home\n")?;
+    let ran = run(
+        "home-editor",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e ~/x.txt\nkey enter\nwait-frame 3000 1 from home\nquit\n",
+    );
+    let _ = std::fs::remove_dir_all(&home);
+    ran
 }
 
 #[test]
@@ -895,7 +1046,7 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
         // Click the first sidebar row to open it, split, click the right
         // pane, then prove focus moved there by submitting into it.
         "wait-frame 5000 s-alpha\n\
-         mouse down 2 1\n\
+         mouse down 2 3\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
          wait-frame 3000 no session\n\
@@ -1620,7 +1771,7 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
          wait-frame 3000 Review · session\n\
          key alt-right\n\
          key l\n\
-         wait-frame 3000 │l again to /land s-alpha · any other\n\
+         wait-frame 3000 │ l again to /land s-alpha · any other\n\
          key x\n\
          wait-frame 3000 !l again to /land\n\
          key l\n\
@@ -1711,31 +1862,139 @@ fn subagent_push() -> Vec<Value> {
     )]
 }
 
-/// The workspaces block lists every root; ←/→ in the sidebar narrows the session list
-/// to one root and back.
+fn sidebar_order(frame: &str, needles: &[&str]) -> Result<Vec<usize>, String> {
+    let rows: Vec<&str> = frame.lines().collect();
+    needles
+        .iter()
+        .map(|needle| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .ok_or_else(|| format!("no row holds {needle:?}:\n{frame}"))
+        })
+        .collect()
+}
+
+/// A click on a workspace's header folds its sessions away and a second click brings them back.
 #[test]
-fn workspace_rows_filter_sessions_by_root() -> TestResult {
+fn a_click_on_a_workspace_header_folds_it() -> TestResult {
     run(
-        "roots",
+        "fold",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", other_root_ledger),
         ],
-        "wait-frame 5000 s-gamma\n\
-         wait-frame 3000 workspaces\n\
-         wait-frame 3000 other-root 1\n\
-         key right\n\
-         wait-frame 3000 !s-gamma\n\
-         wait-frame 3000 s-alpha\n\
-         key right\n\
-         wait-frame 3000 s-gamma\n\
+        "wait-frame 5000 s-beta\n\
+         wait-frame 3000 demo-root ▾\n\
+         mouse down 3 2\n\
+         wait-frame 3000 demo-root ▸\n\
          wait-frame 3000 !s-alpha\n\
-         key left\n\
-         key left\n\
+         wait-frame 3000 s-gamma\n\
+         mouse down 3 2\n\
          wait-frame 3000 s-alpha\n\
+         wait-frame 3000 demo-root ▾\n\
          quit\n",
     )
+}
+
+fn new_in_other_root(frame: &Value) -> Vec<Value> {
+    if frame.pointer("/params/cwd") == Some(&json!("/tmp/other-root")) {
+        return vec![session_result(frame, "s-new", None, json!({}))];
+    }
+    vec![json!({"jsonrpc": "2.0", "id": id_of(frame),
+                "error": {"code": -32602, "message": "started in the wrong root"}})]
+}
+
+/// The `+` at a workspace header's end starts a session in that workspace, not the console's.
+#[test]
+fn a_workspace_headers_plus_starts_a_session_there() -> TestResult {
+    let frame = run_frames(
+        "plus",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+            Step::Expect("session/new", new_in_other_root),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse down 16 7\n\
+         wait-frame 3000 SN  untitled\n\
+         quit\n",
+    )?;
+    let at = sidebar_order(&frame, &["demo-root ▾", "other-root ▾", "SN  untitled"])?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    Ok(())
+}
+
+/// A press on the sidebar's own New row starts a session in the console's root.
+#[test]
+fn the_sidebars_new_row_starts_a_session() -> TestResult {
+    run(
+        "new",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/new", new_session_reply),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse down 3 0\n\
+         wait-frame 3000 SN  s-new\n\
+         quit\n",
+    )
+}
+
+/// A press on the sidebar's Search row opens the command palette.
+#[test]
+fn the_sidebars_search_row_opens_the_palette() -> TestResult {
+    run(
+        "search",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse down 3 1\n\
+         wait-frame 3000 Command Palette\n\
+         quit\n",
+    )
+}
+
+fn pinned_at(frame: &Value) -> Vec<Value> {
+    vec![ok(frame, json!({"pinnedMs": 5}))]
+}
+
+/// Pin on a session's menu lifts it into PINNED, and its menu then offers Unpin.
+#[test]
+fn pin_from_the_menu_moves_a_session_under_pinned() -> TestResult {
+    let frame = run_frames(
+        "pin",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("_yi/pin", pinned_at),
+        ],
+        "wait-frame 5000 s-beta\n\
+         mouse right 3 5\n\
+         wait-frame 3000 Pin\n\
+         key down\nkey down\nkey enter\n\
+         wait-frame 3000 PINNED\n\
+         mouse right 3 3\n\
+         wait-frame 3000 Unpin\n\
+         key esc\n\
+         wait-frame 3000 !Unpin\n\
+         quit\n",
+    )?;
+    let at = sidebar_order(&frame, &["PINNED", "s-beta", "demo-root ▾", "s-alpha"])?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    assert_eq!(
+        frame.matches("s-beta").count(),
+        1,
+        "a pinned session is not repeated in its group:\n{frame}"
+    );
+    Ok(())
 }
 
 /// A child reported over `_yi/subagent_update` shows under its parent in the sidebar.
@@ -1754,7 +2013,7 @@ fn subagent_rows_render_under_parent() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 └GR  grep-bot-sub-1a2b3c4 ◐\n\
+         wait-frame 5000 └GR grep-bot-sub-1a2b3c4 ◐\n\
          quit\n",
     )
 }
@@ -1772,7 +2031,7 @@ fn seed_editor_file(name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
-fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
+pub(crate) fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
     editor_script(path, "", rest)
 }
 
@@ -1790,17 +2049,19 @@ fn editor_script(path: &std::path::Path, split: &str, rest: &str) -> String {
     )
 }
 
-/// At 100 columns beside the full sidebar the hint row drops whole keys by rank,
+/// At 99 columns beside the full sidebar the hint row drops whole keys by rank,
 /// notebook then sidebar, and still ends in `⌥? keys` rather than a key cut in half.
 #[test]
 fn the_hint_row_keeps_whole_keys() -> TestResult {
-    let frame = run_frames(
+    let frame = run_frames_with(
         "hint-row",
         session_fixture(),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
          quit\n",
+        SidebarMode::Full,
+        99,
     )?;
     let last = frame.lines().last().unwrap_or_default();
     let keys: Vec<String> = last
@@ -1874,7 +2135,7 @@ fn cmd_hints_name_alt_for_chords_the_terminal_takes() -> TestResult {
     Ok(())
 }
 
-fn session_fixture() -> Vec<Step> {
+pub(crate) fn session_fixture() -> Vec<Step> {
     vec![
         Step::Expect("initialize", init_reply),
         Step::Expect("session/list", two_session_list),
@@ -1943,15 +2204,15 @@ fn cmd_u_undoes_the_chat_draft() -> TestResult {
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
-    // The sidebar fits `s-alpha` to its ten-column floor, 19 wide: border at x=19, inner
-    // x=20, gutter "1 " puts text at x=22; row 0 at y=1.
+    // The sidebar fits `s-alpha` to its ten-column floor, 18 wide: border at x=18, one padding
+    // column, inner x=20, gutter "1 " puts text at x=22; row 0 at y=2 under the header row.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 24 1\nmouse up 24 1\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 22 1\nmouse drag 24 1\nmouse up 24 1\n\
+            "wait-frame 3000 abcdef\nmouse down 24 3\nmouse up 24 3\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 22 3\nmouse drag 24 3\nmouse up 24 3\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -2316,24 +2577,30 @@ fn two_root_ledger(frame: &Value) -> Vec<Value> {
     )]
 }
 
-/// Dies with rows grouped by workspace: the inbox ranks every root's sessions by what they
-/// need, so the idle session of the other root outranks two the ledger never placed. A row
-/// opens with a quote in the frame, so the section needle cannot match an `idle · 5m` line.
+/// Rows group under their workspace, the console's own first, ranked by need, then recency.
 #[test]
-fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
-    run(
+fn rows_group_by_workspace_and_rank_by_need_inside_it() -> TestResult {
+    let frame = run_frames(
         "root-groups",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", named_list),
             Step::Expect("session/list", two_root_ledger),
         ],
-        "wait-frame 5000 1 SG   s-gamma\n\
-         wait-frame 3000 2 RE   release notes\n\
-         wait-frame 3000 3 FI   fix login bug\n\
-         wait-frame 3000 \"  idle\n\
+        "wait-frame 5000 1 RE  release notes\n\
+         wait-frame 3000 3 SG  s-gamma\n\
          quit\n",
-    )
+    )?;
+    let needles = [
+        "demo-root ▾",
+        "1 RE  release notes",
+        "2 FI  fix login bug",
+        "other-root ▾",
+        "3 SG  s-gamma",
+    ];
+    let at = sidebar_order(&frame, &needles)?;
+    assert!(at.is_sorted(), "{at:?}\n{frame}");
+    Ok(())
 }
 
 /// The resumed session's worker reports a turn starting, the way a prompt does.
@@ -2364,13 +2631,13 @@ fn a_state_transition_moves_the_row_to_the_top() -> TestResult {
             Step::Expect("session/resume", resume_then_run),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE   release notes\n\
-         wait-frame 3000 2 FI   fix login bug\n\
+        "wait-frame 5000 1 RE  release notes\n\
+         wait-frame 3000 2 FI  fix login bug\n\
          key down\n\
          key enter\n\
          wait-frame 5000 resumed s-alpha\n\
-         wait-frame 3000 1 FI   fix login bug\n\
-         wait-frame 3000 2 RE   release notes\n\
+         wait-frame 3000 1 FI  fix login bug\n\
+         wait-frame 3000 2 RE  release notes\n\
          quit\n",
     )
 }
@@ -2392,6 +2659,7 @@ fn the_rail_stops_at_its_numbered_slots() -> TestResult {
             name: None,
             created_ms: 1000 + n,
             last_ms: 0,
+            pinned: None,
         });
     }
     let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 60);
@@ -2423,8 +2691,8 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE   release notes\n\
-         wait-frame 3000 2 FI   fix login bug\n\
+        "wait-frame 5000 1 RE  release notes\n\
+         wait-frame 3000 2 FI  fix login bug\n\
          wait-frame 3000 idle · 5m\n\
          wait-frame 3000 idle · 3h\n\
          key down\n\
@@ -2487,6 +2755,7 @@ fn session_with_children(
         name: Some(name.to_owned()),
         created_ms: 1000,
         last_ms: 0,
+        pinned: None,
     });
     let children = children
         .iter()
@@ -2555,7 +2824,7 @@ fn a_child_row_hangs_off_its_session_with_the_glyph_in_the_column() -> TestResul
         assert_eq!(row.avatar.as_ref().map(|at| at.col), Some(3), "{text}");
     }
     for row in [session, first, last] {
-        assert_eq!(cell_of(&row.line), Some(7), "glyph column: {}", row.line);
+        assert_eq!(cell_of(&row.line), Some(6), "glyph column: {}", row.line);
     }
     Ok(())
 }
@@ -2628,9 +2897,9 @@ fn a_long_wide_name_is_cut_in_drawn_cells_and_keeps_its_glyph() -> TestResult {
     let rows = full_rows(&app);
     let session = last_mark(row_with(&rows, "修复")?);
     let child = last_mark(row_with(&rows, "构建")?);
-    assert_eq!(session, Some((28, "?".to_owned())), "{rows:#?}");
-    assert_eq!(child, Some((28, "◐".to_owned())), "{rows:#?}");
-    assert!(28 < edge, "the glyph fits the sidebar: {edge}");
+    assert_eq!(session, Some((27, "?".to_owned())), "{rows:#?}");
+    assert_eq!(child, Some((27, "◐".to_owned())), "{rows:#?}");
+    assert!(27 < edge, "the glyph fits the sidebar: {edge}");
     Ok(())
 }
 
@@ -2682,9 +2951,58 @@ fn a_child_that_needs_you_is_never_hidden_behind_finished_ones() -> TestResult {
     let starts: Vec<String> = rows.iter().map(|row| row.trim_end().to_owned()).collect();
     assert_eq!(
         starts,
-        ["  ├AS  ?", "  ├ON  ○", "  ├TW  ○", "  └ +1"],
+        ["  ├AS ?", "  ├ON ○", "  ├TW ○", "  └ +1"],
         "{rows:#?}"
     );
+    Ok(())
+}
+
+/// Dies with a rail that counted what its cache kept: the thirty-third running child pushed the
+/// oldest out of the 32-row cache, so `+29` read as every child there was. A child that was
+/// pushed out and reports again is one child, not two.
+#[test]
+fn the_rail_counts_the_children_its_cache_gave_up() -> TestResult {
+    use yi_console::client::{self, ClientEvent};
+    use yi_console::model::SessionStatus;
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let (events, _received) = client::events();
+    let socket = std::env::temp_dir().join("yi-rail-no-daemon.sock");
+    let (outbound, _threads) = client::spawn(socket, events);
+    let report = |app: &mut yi_console::app::App, n: usize| {
+        let mut child = wire_child(&format!("c{n}"), "running", None);
+        child["sessionUpdate"] = json!("_yi/subagent_update");
+        let frame = json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s-alpha", "update": child}});
+        app.reduce_client(&outbound, ClientEvent::Frame(frame));
+    };
+    let counted = |app: &yi_console::app::App| {
+        let rows = yi_console::sidebar::sidebar_lines(app, &theme, 60);
+        rows.last()
+            .map(|row| row.line.to_string().trim_end().to_owned())
+    };
+    let mut app =
+        session_with_children(SidebarMode::Rail, SessionStatus::Working, "fix login", &[])?;
+    for n in 0..32 {
+        report(&mut app, n);
+    }
+    assert_eq!(
+        counted(&app).as_deref(),
+        Some("  └ +29"),
+        "32 children, 3 shown"
+    );
+    report(&mut app, 32);
+    assert_eq!(
+        counted(&app).as_deref(),
+        Some("  └ +30"),
+        "33 children, 3 shown"
+    );
+    report(&mut app, 0);
+    assert_eq!(
+        counted(&app).as_deref(),
+        Some("  └ +30"),
+        "the evicted child came back"
+    );
+    outbound.shutdown();
     Ok(())
 }
 
@@ -2751,7 +3069,7 @@ fn a_child_name_sizes_the_sidebar_by_its_own_width() -> TestResult {
     let children = [wire_child("fifteen-cell-ab", "running", None)];
     let mut app =
         session_with_children(SidebarMode::Full, SessionStatus::Working, "fix", &children)?;
-    assert_eq!(yi_console::sidebar::width(&mut app), 15 + 9);
+    assert_eq!(yi_console::sidebar::width(&mut app), 15 + 8);
     Ok(())
 }
 
@@ -2766,15 +3084,15 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
             Step::Expect("session/list", ledger_list),
         ],
         "wait-frame 5000 ●\n\
-         wait-frame 3000 1 SB   ●│\n\
+         wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 2 SA\n\
          wait-frame 3000 !s-alpha\n\
-         wait-frame 3000 !workspaces\n\
+         wait-frame 3000 !demo-root\n\
          cmd-b\n\
-         wait-frame 3000 2 SA   s-alpha\n\
-         wait-frame 3000 workspaces\n\
+         wait-frame 3000 2 SA  s-alpha\n\
+         wait-frame 3000 demo-root ▾\n\
          cmd-b\n\
-         wait-frame 3000 1 SB   ●│\n\
+         wait-frame 3000 1 SB  ●│\n\
          wait-frame 3000 !s-alpha\n\
          quit\n",
         false,
@@ -3096,7 +3414,7 @@ fn alt_digit_resumes_the_rail_slot() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 2 FI   fix login bug\n\
+        "wait-frame 5000 2 FI  fix login bug\n\
          key alt-2\n\
          wait-frame 5000 resumed s-alpha\n\
          wait-frame 3000 FI · fix login\n\
@@ -3122,6 +3440,7 @@ fn the_focused_session_row_wears_the_active_background() -> TestResult {
             name: Some(id.to_owned()),
             created_ms: 1,
             last_ms: 1,
+            pinned: None,
         });
     }
     if let Some(pane) = app.state.focused_pane_mut() {
@@ -3193,6 +3512,7 @@ fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
             name: None,
             created_ms: 1,
             last_ms: 1,
+            pinned: None,
         });
     }
     let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 10);
@@ -3235,7 +3555,7 @@ fn the_command_palette_runs_an_action_by_name() -> TestResult {
 /// ⌥? shows every chord with its keys; the next key closes it.
 #[test]
 fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
-    let frame = run_frames_with(
+    let frame = run_frames_sized(
         "keys",
         vec![
             Step::Expect("initialize", init_reply),
@@ -3248,7 +3568,7 @@ fn the_keys_key_opens_settings_on_the_keys_tab() -> TestResult {
          wait-frame 3000 ctrl+b q\n\
          quit\n",
         SidebarMode::Full,
-        160,
+        (160, 34),
     )?;
     assert!(
         frame.contains("Interface  Keys "),
@@ -3361,9 +3681,9 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         mouse down 32 2\n\
-         mouse drag 60 5\n\
-         mouse up 60 5\n\
+         mouse down 32 3\n\
+         mouse drag 60 6\n\
+         mouse up 60 6\n\
          wait-frame 3000 copied 3 lines\n\
          quit\n",
     )
@@ -3405,6 +3725,58 @@ fn a_drag_held_at_the_bottom_edge_scrolls_and_copies_past_the_screen() -> TestRe
         copied > 30,
         "copied {copied} lines, less than a screen:\n{frame}"
     );
+    Ok(())
+}
+
+/// The clipboard writes of a drag over a markdown viewer, from row 5 down past the bottom edge,
+/// after `before` has run in the opened viewer.
+fn viewer_drag_copy(name: &str, before: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
+    let doc = dir.join("long.md");
+    let text: String = (1..=60)
+        .map(|n| format!("paragraph {n:02} of the scroll fixture\n\n"))
+        .collect();
+    std::fs::write(&doc, text + "the last paragraph\n")?;
+    run_opts(
+        name,
+        Some(session_fixture()),
+        &format!(
+            "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+             key alt-/\ntype md {}\nkey enter\nwait-frame 3000 paragraph 01 of\n{before}\
+             mouse down 60 5\nmouse drag 60 29\nwait-frame 9000 the last paragraph\n\
+             mouse up 60 29\nwait-frame 3000 copied\nquit\n",
+            doc.display()
+        ),
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+        (100, 30),
+    )?;
+    let log = osc_log(&dir)?;
+    Ok(log
+        .lines()
+        .filter(|line| line.starts_with("\u{1b}]52;"))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Dies with a drag begun on a viewer held at its top copying its opening rows twice and
+/// stopping short of the end: the press anchored at the pin, not at a row of the content.
+#[test]
+fn a_drag_from_a_viewers_held_top_copies_what_one_from_a_scrolled_top_does() -> TestResult {
+    let held = viewer_drag_copy("drag-held-top", "")?;
+    let scrolled = viewer_drag_copy(
+        "drag-scrolled-top",
+        "mouse scrolldown 60 10\nmouse scrolldown 60 10\nwait-frame 3000 !paragraph 01 of\n\
+         mouse scrollup 60 10\nmouse scrollup 60 10\nmouse scrollup 60 10\n\
+         wait-frame 3000 paragraph 01 of\n",
+    )?;
+    assert_eq!(
+        scrolled.len(),
+        1,
+        "one copy from the scrolled top: {scrolled:?}"
+    );
+    assert_eq!(held, scrolled);
     Ok(())
 }
 
@@ -3501,9 +3873,8 @@ fn a_fitted_sidebar_still_tells_sibling_workspaces_apart() -> TestResult {
             Step::Expect("session/list", empty_list),
             Step::Expect("session/list", sibling_roots_ledger),
         ],
-        "wait-frame 5000 workspaces\n\
-         wait-frame 3000 yi-feature-auth-fix 1\n\
-         wait-frame 3000 yi-feature-auth-ui 1\n\
+        "wait-frame 5000 yi-feature-auth-fix ▾\n\
+         wait-frame 3000 yi-feature-auth-ui ▾\n\
          quit\n",
     )
 }
@@ -3541,8 +3912,8 @@ fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
          wait-frame 5000 !grep-bot\n\
          quit\n",
     )?;
-    let top = frame.lines().next().ok_or("no frame")?;
-    let at = top.find("s-alpha").ok_or(format!("no title: {top}"))?;
+    let top = frame.lines().nth(1).ok_or("no frame")?;
+    let at = top.rfind("s-alpha").ok_or(format!("no title: {top}"))?;
     let column = top.get(..at).unwrap_or_default().chars().count();
     assert!(
         column >= 30,
@@ -3659,7 +4030,7 @@ fn the_close_mark_closes_its_pane_and_the_last_pane_has_none() -> TestResult {
         "close-mark",
         opened_unicode(),
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
-         key alt-v\nwait-frame 3000 ✕\nmouse down 97 0\nmouse up 97 0\n\
+         key alt-v\nwait-frame 3000 ✕\nmouse down 97 2\nmouse up 97 2\n\
          wait-frame 3000 !✕\nquit\n",
     )?;
     assert!(
@@ -3808,7 +4179,7 @@ fn the_gear_toggles_settings_and_the_rail_keeps_one_line_to_the_bottom() -> Test
     // Each frame row is a quoted string, so column x is char x + 1.
     let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
     for (y, row) in rows.iter().enumerate() {
-        let (edge, inside) = (row.get(9).copied(), row.get(10).copied());
+        let (edge, inside) = (row.get(8).copied(), row.get(9).copied());
         assert!(
             edge.is_some_and(|c| "│┃╭╰├".contains(c)),
             "row {y} has no rail line: {row:?}"
@@ -3824,17 +4195,17 @@ fn the_gear_toggles_settings_and_the_rail_keeps_one_line_to_the_bottom() -> Test
 /// Each hint is a button: a press on the `⌥? keys` keycap, columns 79-89 past the rail, runs it.
 #[test]
 fn a_press_on_a_hint_runs_its_key() -> TestResult {
-    run_frames_with(
+    run_frames_sized(
         "hint-button",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
         ],
-        "wait-frame 5000 command palette\nmouse down 84 29\nmouse up 84 29\n\
+        "wait-frame 5000 command palette\nmouse down 84 33\nmouse up 84 33\n\
          wait-frame 3000 stop the daemon and quit\nquit\n",
         SidebarMode::Rail,
-        100,
+        (100, 34),
     )?;
     Ok(())
 }
@@ -3896,6 +4267,7 @@ fn the_session_tab_sets_the_live_option_and_makes_it_the_default() -> TestResult
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
          key alt-,\nwait-frame 3000 Thinking level\n\
          key enter\nwait-frame 3000 ‹ medium ›\nkey down\nkey enter\n\
+         wait-frame 3000 Thinking level         high\n\
          key d\nwait-frame 3000 saved\nwait-frame 500 !not saved\nquit\n",
     )
 }
@@ -3989,10 +4361,13 @@ fn rewind_first(frame: &Value) -> Vec<Value> {
     if frame["params"] != json!({"sessionId": "s-alpha", "entryId": "e1"}) {
         return refuse(frame, "wrong rewind");
     }
-    vec![ok(
-        frame,
-        json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
-    )]
+    vec![
+        replay("s-alpha", &[], 0, None),
+        ok(
+            frame,
+            json!({"leafId": null, "unsent": "rewound prompt", "summarizing": false}),
+        ),
+    ]
 }
 
 /// Rewind ▸ Conversation sends the clicked prompt's entry, and the prompt comes back to edit.
@@ -4000,13 +4375,18 @@ fn rewind_first(frame: &Value) -> Vec<Value> {
 fn rewind_to_here_rewinds_to_the_clicked_prompt() -> TestResult {
     let mut steps = opened_unicode();
     steps.push(Step::Expect("_yi/rewind", rewind_first));
-    run(
+    let frame = run_frames(
         "menu-rewind",
         steps,
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 answer\n\
          mouse right 25 2\nwait-frame 3000 Rewind to here\nkey up\nkey up\nkey right\n\
          wait-frame 3000 Conversation and files\nkey enter\nwait-frame 3000 rewound prompt\nquit\n",
-    )
+    )?;
+    assert!(
+        !frame.contains("conversation rewound"),
+        "the menu already asked about files, so a pane adds no solo notice:\n{frame}"
+    );
+    Ok(())
 }
 
 /// Inspect opens the entry beside the chat: its id and the message as the ledger holds it.
@@ -4286,7 +4666,8 @@ fn a_pasted_control_character_is_dropped_behind_a_console_slash_command() -> Tes
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
          type /model\ntype x\u{7f}y\nquit\n",
     )?;
-    assert_eq!(row_holding(&frame, "/model")?, "/modelxy█");
+    let row = row_holding(&frame, "/model")?;
+    assert_eq!(row.rsplit("  ").next(), Some("/modelxy█"), "{row}");
     Ok(())
 }
 
@@ -4314,5 +4695,662 @@ fn a_pasted_control_character_is_dropped_from_a_submitted_console_message() -> T
          type x\u{7}y\nkey enter\nwait-frame 5000 streamed answer\nwait-idle 5000\nquit\n",
     )?;
     assert_eq!(row_holding(&frame, "┃   xy")?, "┃   xy");
+    Ok(())
+}
+
+/// The worker's side of a refused ask: it declines the tool and the turn ends, so the session
+/// leaves `?`. Any other answer, or none, leaves it blocked.
+fn denial_ends_the_turn(frame: &Value) -> Vec<Value> {
+    let cancelled = frame
+        .pointer("/result/outcome/outcome")
+        .and_then(Value::as_str)
+        == Some("cancelled");
+    let idle = json!({"sessionUpdate": "state_update", "state": "idle"});
+    cancelled
+        .then(|| update("s-alpha", idle))
+        .into_iter()
+        .collect()
+}
+
+/// Dies with the worker blocked on an approval nobody could answer: closing the pane dropped the
+/// chat that held the ask, so the session sat at `?` until the daemon was stopped.
+#[test]
+fn closing_the_pane_that_holds_an_approval_cancels_it() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Expect("<response>", denial_ends_the_turn));
+    let frame = run_frames(
+        "close-cancels-ask",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 rm -rf target\n\
+         key alt-v\n\
+         key alt-left\n\
+         key alt-x\n\
+         wait-frame 5000 !rm -rf target\n\
+         wait-frame 5000 !needs your a\n\
+         quit\n",
+    )?;
+    let row = row_holding(&frame, "s-alpha")?;
+    assert!(row.ends_with('●'), "the session is done and unseen: {row}");
+    Ok(())
+}
+
+/// Dies with the worker waiting on a console that left: quitting dropped every chat with its ask.
+#[test]
+fn quitting_cancels_the_approval_a_pane_holds() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Outcome("cancelled"));
+    run(
+        "quit-cancels-ask",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 rm -rf target\n\
+         key alt-q\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+/// Dies with the worker waiting on a console that left: the ask's pane had moved to another
+/// session, and the parked chat holding it was dropped on quit.
+#[test]
+fn quitting_cancels_the_approval_a_parked_chat_holds() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(permission_request));
+    fixture.push(Step::Outcome("cancelled"));
+    run(
+        "quit-cancels-parked-ask",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 rm -rf target\n\
+         key alt-/\n\
+         wait-frame 3000 Command Palette\n\
+         type beta\n\
+         wait-frame 3000 › beta\n\
+         key enter\n\
+         wait-frame 5000 !rm -rf target\n\
+         key alt-q\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+/// Dies with the worker waiting on a console that left: the ask came for a session no pane
+/// showed, and it was still waiting for one at quit.
+#[test]
+fn quitting_cancels_the_approval_no_pane_took() -> TestResult {
+    let fixture = vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Push(permission_request),
+        Step::Outcome("cancelled"),
+    ];
+    run(
+        "quit-cancels-orphan-ask",
+        fixture,
+        "wait-frame 5000 needs your a\n\
+         key alt-q\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+/// Dies with `request timed out: Cancel` ten seconds after the keypress: the writer queue took
+/// the frame while the link was down, and nothing was ever sent.
+#[test]
+fn an_abort_with_the_link_down_is_refused_at_once() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(|| {
+        vec![
+            update(
+                "s-alpha",
+                json!({"sessionUpdate": "state_update", "state": "running"}),
+            ),
+            event("s-alpha", 10, &AgentEvent::AgentStart),
+        ]
+    }));
+    fixture.push(Step::Gone);
+    let frame = run_frames(
+        "abort-link-down",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 disconnected\n\
+         key esc\n\
+         key esc\n\
+         wait-frame 3000 not connected\n\
+         quit\n",
+    )?;
+    let row = row_holding(&frame, "not connected")?;
+    assert!(
+        row.contains("not connected — session/cancel not sent"),
+        "{row}"
+    );
+    Ok(())
+}
+
+/// Dies with the pasted path gone: the palette took keys only, so a paste landed nowhere.
+#[test]
+fn a_paste_into_the_palette_lands_in_its_query() -> TestResult {
+    let frame = run_frames(
+        "paste-into-palette",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-e\npaste docs/Yi's Next\u{7} Shape.md\n\
+         wait-frame 3000 Shape.md\nquit\n",
+    )?;
+    let row = row_holding(&frame, "› e docs")?;
+    assert_eq!(row, "› e docs/Yi's Next Shape.md▌");
+    Ok(())
+}
+
+/// Dies with the "not connected" row still on screen after the link came up: only binding a
+/// session cleared it.
+#[test]
+fn the_banner_that_says_not_connected_clears_when_the_link_comes_up() -> TestResult {
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+    let mut app = yi_console::app::App::new("/repo".to_owned(), theme);
+    let (events, _received) = yi_console::client::events();
+    let (outbound, _threads) = yi_console::client::spawn(
+        std::env::temp_dir().join("yi-banner-no-daemon.sock"),
+        events,
+    );
+    app.handle_event(
+        &outbound,
+        ratatui::crossterm::event::Event::Key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('n'),
+            ratatui::crossterm::event::KeyModifiers::ALT,
+        )),
+    );
+    assert_eq!(app.state.banner.as_deref(), Some("not connected"));
+    app.reduce_client(&outbound, yi_console::client::ClientEvent::Connected);
+    assert_eq!(app.state.banner, None);
+    outbound.shutdown();
+    Ok(())
+}
+
+const KERNEL_SESSION: &str = include_str!("../../tui/tests/fixtures/sessions/01a0648f.jsonl");
+const EDIT_SESSION: &str = include_str!("../../tui/tests/fixtures/sessions/01a129b6.jsonl");
+
+/// The entries of a session recorded by a real run, as the worker's `_yi/replay` sends them.
+fn recorded(jsonl: &str) -> Vec<Value> {
+    jsonl
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line["kind"] == "entry")
+        .collect()
+}
+
+fn resume_with(frame: &Value, entries: &[Value]) -> Vec<Value> {
+    vec![
+        replay("s-alpha", entries, 0, None),
+        session_result(frame, "s-alpha", None, json!({})),
+    ]
+}
+
+fn resume_edit_session(frame: &Value) -> Vec<Value> {
+    resume_with(frame, &recorded(EDIT_SESSION))
+}
+
+/// The recorded kernel session, its first result carrying a plot the way a matplotlib cell's does.
+fn kernel_entries() -> Vec<Value> {
+    let mut entries = recorded(KERNEL_SESSION);
+    let plot = json!({"type": "image", "data": "aWJvcnk=", "mimeType": "image/png"});
+    let first = entries
+        .iter_mut()
+        .find(|e| e["message"]["toolName"] == "ipython");
+    if let Some(content) = first.and_then(|e| e["message"]["content"].as_array_mut()) {
+        content.push(plot);
+    }
+    entries
+}
+
+fn resume_kernel_session(frame: &Value) -> Vec<Value> {
+    resume_with(frame, &kernel_entries())
+}
+
+/// A reconnect's full replay: the same branch, one reply longer.
+fn resume_kernel_session_again(frame: &Value) -> Vec<Value> {
+    let mut entries = kernel_entries();
+    entries.push(entry("e-tail", None, 99, &assistant("back again")));
+    resume_with(frame, &entries)
+}
+
+fn replayed_session(resume: Responder) -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+/// What the recording itself says each kernel cell ran, printed and raised, paired by call id:
+/// (first code line, first stdout line, error name).
+fn kernel_cells(jsonl: &str) -> Vec<(String, Option<String>, Option<String>)> {
+    let entries = recorded(jsonl);
+    let messages: Vec<&Value> = entries.iter().map(|e| &e["message"]).collect();
+    let blocks = messages
+        .iter()
+        .filter_map(|m| m["content"].as_array())
+        .flatten();
+    let first_line = |text: &Value| {
+        text.as_str()
+            .and_then(|t| t.lines().next())
+            .map(str::to_owned)
+    };
+    blocks
+        .filter(|b| b["type"] == "toolCall" && b["name"] == "ipython")
+        .map(|call| {
+            let result = messages.iter().find(|m| m["toolCallId"] == call["id"]);
+            let details = result.map_or(&Value::Null, |m| &m["details"]);
+            (
+                first_line(&call["arguments"]["code"]).unwrap_or_default(),
+                first_line(&details["stdout"]),
+                details["error"]["ename"].as_str().map(str::to_owned),
+            )
+        })
+        .collect()
+}
+
+fn is_header(row: &str) -> bool {
+    row.contains("● [") || row.contains("◐ [")
+}
+
+/// The rows of notebook cell `n`, from its `● [n]` header to the next one.
+fn cell_rows(frame: &str, n: usize) -> Result<Vec<&str>, String> {
+    let rows: Vec<&str> = frame.lines().collect();
+    let head = (rows.iter())
+        .position(|row| row.contains(&format!("● [{n}]")))
+        .ok_or_else(|| format!("no header for cell {n}:\n{frame}"))?;
+    let tail = rows.get(head + 1..).unwrap_or_default();
+    Ok(tail
+        .iter()
+        .copied()
+        .take_while(|row| !is_header(row))
+        .collect())
+}
+
+/// Dies with "no kernel cells yet" for a session that ran six: the Notebook filled from live
+/// frames only, so a console started after the work had nothing to show, plots included.
+#[test]
+fn a_resumed_sessions_kernel_cells_fill_the_notebook() -> TestResult {
+    let frame = run_frames_sized(
+        "replay-notebook",
+        replayed_session(resume_kernel_session),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Tooling works\ncmd-i\n\
+         wait-frame 3000 ● [6]\nquit\n",
+        SidebarMode::Full,
+        (180, 100),
+    )?;
+    let cells = kernel_cells(KERNEL_SESSION);
+    assert_eq!(cells.len(), 6, "the recording holds six kernel calls");
+    for (index, (code, stdout, ename)) in cells.iter().enumerate() {
+        let rows = cell_rows(&frame, index + 1)?;
+        assert!(
+            rows.first().is_some_and(|row| row.contains(code)),
+            "{code}: {rows:?}"
+        );
+        if let Some(line) = stdout {
+            assert!(
+                rows.iter().any(|row| row.contains(line)),
+                "{line}: {rows:?}"
+            );
+        }
+        if let Some(name) = ename {
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains('✕') && row.contains(name)),
+                "{name}: {rows:?}"
+            );
+        }
+    }
+    let plotted = cell_rows(&frame, 1)?;
+    assert!(
+        plotted.iter().any(|row| row.contains("image · 0 KB png")),
+        "{plotted:?}"
+    );
+    Ok(())
+}
+
+/// A full replay after a reconnect finds the cells already there; it must not append them again.
+#[test]
+fn a_second_replay_of_the_branch_leaves_the_notebook_as_it_was() -> TestResult {
+    let mut fixture = replayed_session(resume_kernel_session);
+    fixture.extend([
+        Step::Close,
+        Step::Accept,
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/resume", resume_kernel_session_again),
+    ]);
+    let frame = run_frames_sized(
+        "replay-notebook-twice",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Tooling works\ncmd-i\n\
+         wait-frame 8000 back again\nquit\n",
+        SidebarMode::Full,
+        (180, 100),
+    )?;
+    assert_eq!(
+        frame.lines().filter(|row| is_header(row)).count(),
+        6,
+        "{frame}"
+    );
+    Ok(())
+}
+
+/// `count` kernel calls: the recording's first call and result, each under its own ids and as a
+/// one-line cell, then a last reply `tail`.
+fn cell_entries(count: usize, tail: &str) -> Vec<Value> {
+    let entries = recorded(KERNEL_SESSION);
+    let result = (entries.iter()).find(|e| e["message"]["toolName"] == "ipython");
+    let call = result.and_then(|r| {
+        (entries.iter()).find(|e| e["message"]["content"][0]["id"] == r["message"]["toolCallId"])
+    });
+    let mut out: Vec<Value> = (0..count)
+        .filter_map(|n| {
+            let (mut call, mut result) = (call.cloned()?, result.cloned()?);
+            let id = json!(format!("call_{n}"));
+            call["message"]["content"][0]["arguments"]["code"] = json!(format!("print({n})"));
+            call["message"]["content"][0]["id"] = id.clone();
+            result["message"]["details"]["stdout"] = json!(format!("{n}\n"));
+            result["message"]["toolCallId"] = id;
+            Some([call, result])
+        })
+        .flatten()
+        .collect();
+    out.push(entry("e-tail", None, 9999, &assistant(tail)));
+    out
+}
+
+fn header_numbers(frame: &str) -> Vec<usize> {
+    (frame.lines())
+        .filter_map(|row| row.split_once("● [")?.1.split_once(']')?.0.parse().ok())
+        .collect()
+}
+
+/// A reconnect's replay of `N` kernel calls, past the notebook's 50 kept: the calls it dropped are
+/// gone from the pane, so the replay finds none of them and must not number them again.
+fn notebook_replayed_twice<const N: usize>() -> TestResult {
+    let mut fixture = replayed_session(|frame| resume_with(frame, &cell_entries(N, "all in")));
+    fixture.extend([
+        Step::Close,
+        Step::Accept,
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/resume", |frame| {
+            resume_with(frame, &cell_entries(N, "back again"))
+        }),
+    ]);
+    let frame = run_frames_sized(
+        "replay-notebook-cap",
+        fixture,
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 all in\ncmd-i\n\
+         wait-frame 8000 back again\nquit\n",
+        SidebarMode::Full,
+        (180, 240),
+    )?;
+    let dropped = N.saturating_sub(yi_console::model::KEPT_CELLS);
+    let first = dropped.saturating_add(1);
+    assert_eq!(header_numbers(&frame), (first..=N).collect::<Vec<_>>());
+    let noun = if dropped == 1 { "cell" } else { "cells" };
+    assert_eq!(
+        frame.contains(&format!("{dropped} older {noun} not shown")),
+        dropped > 0,
+        "{frame}"
+    );
+    Ok(())
+}
+
+/// Dies with cells numbered 53 to 102 after a reconnect, and a row saying 52 older cells were
+/// dropped when one was: the second replay opened a cell for every call again.
+#[test]
+fn a_second_replay_of_a_notebook_past_its_cap_keeps_the_numbering() -> TestResult {
+    notebook_replayed_twice::<{ yi_console::model::KEPT_CELLS + 1 }>()
+}
+
+#[test]
+fn a_second_replay_of_a_notebook_at_its_cap_keeps_the_numbering() -> TestResult {
+    notebook_replayed_twice::<{ yi_console::model::KEPT_CELLS }>()
+}
+
+/// Dies with "nothing changed in this scope" for a session that edited a file: Review filled from
+/// live edits only.
+#[test]
+fn a_resumed_sessions_edit_and_reads_fill_review() -> TestResult {
+    let frame = run_frames(
+        "replay-review",
+        replayed_session(resume_edit_session),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 greet takes one\nkey alt-g\n\
+         wait-frame 3000 Review\nquit\n",
+    )?;
+    let entries = recorded(EDIT_SESSION);
+    let results = |tool: &str| {
+        let named = entries
+            .iter()
+            .map(|e| &e["message"])
+            .filter(|m| m["toolName"] == tool);
+        named.cloned().collect::<Vec<Value>>()
+    };
+    let edit = results("edit");
+    let details = &edit.first().ok_or("the recording holds an edit")?["details"];
+    let patch = details["patch"]
+        .as_str()
+        .ok_or("the edit carries a patch")?;
+    let path = patch
+        .lines()
+        .find_map(|line| line.strip_prefix("+++ b/"))
+        .ok_or("no path")?;
+    let (added, removed) = (&details["added"], &details["removed"]);
+    assert_eq!(
+        row_holding(&frame, "▸ ")?,
+        format!("▸ {path}  +{added} −{removed}")
+    );
+    let reads = results("read").len();
+    assert_eq!(
+        row_holding(&frame, "read only")?,
+        format!("○ {reads} file read only")
+    );
+    Ok(())
+}
+
+/// The recording's edit as the worker streamed it live: a running todo, turn one editing, then a
+/// second turn that edits nothing.
+fn live_edit_then_an_empty_turn() -> Vec<Value> {
+    let edit = recorded(EDIT_SESSION)
+        .into_iter()
+        .find(|e| e["message"]["toolName"] == "edit");
+    let details = edit.map_or(Value::Null, |e| e["message"]["details"].clone());
+    let state = |state: &str| {
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": state}),
+        )
+    };
+    let mut frames = todo_update();
+    frames.extend([
+        state("running"),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "e1", "title": "edit",
+                   "kind": "edit", "status": "completed", "rawOutput": details}),
+        ),
+        state("idle"),
+        state("running"),
+        state("idle"),
+    ]);
+    frames
+}
+
+/// What a reconnect replays of that work: the recording, then the second prompt.
+fn resume_both_turns(frame: &Value) -> Vec<Value> {
+    let mut entries = recorded(EDIT_SESSION);
+    entries.push(entry("e-turn2", None, 99, &user_message("and again")));
+    resume_with(frame, &entries)
+}
+
+/// Both turns, then a third typed while the console was away, which made the recording's edit
+/// again on `b.py`, the caller its ripwire check broke: its call and result under new ids.
+fn resume_with_a_missed_edit_turn(frame: &Value) -> Vec<Value> {
+    let recording = recorded(EDIT_SESSION);
+    let result = recording
+        .iter()
+        .position(|e| e["message"]["toolName"] == "edit");
+    let again = result.and_then(|at| recording.get(at.saturating_sub(1)..=at));
+    let mut entries = recording.clone();
+    entries.push(entry("e-turn2", None, 99, &user_message("and again")));
+    entries.push(entry("e-turn3", None, 100, &user_message("once more")));
+    for (seq, made) in (101..).zip(again.into_iter().flatten()) {
+        let mut made = made.clone();
+        made["id"] = json!(format!("e-again-{seq}"));
+        let details = &mut made["message"]["details"];
+        if let Some(patch) = details["patch"].as_str() {
+            let moved = patch.lines().map(|line| match line {
+                l if l.starts_with("--- a/") => "--- a/b.py",
+                l if l.starts_with("+++ b/") => "+++ b/b.py",
+                l => l,
+            });
+            details["patch"] = json!(moved.collect::<Vec<_>>().join("\n"));
+        }
+        entries.push(made);
+    }
+    resume_with(frame, &entries)
+}
+
+/// Review after a live edit and a reconnect's full replay, then `keys` pressed on its pane.
+fn review_after_a_reconnect(
+    name: &str,
+    resume: Responder,
+    keys: &str,
+) -> Result<String, Box<dyn Error>> {
+    let mut fixture = session_fixture();
+    fixture.extend([
+        Step::Push(live_edit_then_an_empty_turn),
+        Step::Expect("_yi/tracked", tracked_yes),
+        Step::Close,
+        Step::Accept,
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/resume", resume),
+    ]);
+    run_frames(
+        name,
+        fixture,
+        &format!(
+            "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 Review · session · 1 file\n\
+             wait-frame 8000 and again\nkey alt-right\n{keys}quit\n"
+        ),
+    )
+}
+
+/// Dies with `0 files` when the replay leaves the turn count or stamps the edit with the live
+/// turn, and with `2 files` when replayed prompts stop counting, so `a.py` joins the last turn.
+#[test]
+fn a_reconnects_replay_leaves_the_turn_scope_to_the_turn_that_edited() -> TestResult {
+    let frame = review_after_a_reconnect(
+        "replay-turn-scope",
+        resume_with_a_missed_edit_turn,
+        "key s\nwait-frame 3000 Review · turn\n",
+    )?;
+    let row = row_holding(&frame, "Review · turn")?;
+    assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
+    let file = row_holding(&frame, "▸ ")?;
+    assert!(file.contains("▸ b.py  +2 −2"), "{file}");
+    Ok(())
+}
+
+/// Dies with the replayed edit labelled `· write the plan`: the todo running now, not the one that
+/// was running when the edit was made, which a replay cannot know.
+#[test]
+fn a_reconnects_replay_does_not_label_an_edit_with_the_todo_running_now() -> TestResult {
+    let frame = review_after_a_reconnect(
+        "replay-todo-label",
+        resume_both_turns,
+        "wait-frame 3000 Review · session\n",
+    )?;
+    let row = row_holding(&frame, "▸ ")?;
+    let file = row.split("▸ ").nth(1).ok_or("no file row")?;
+    assert!(
+        file.contains("+2 −2") && !file.contains("write the plan"),
+        "{row}"
+    );
+    Ok(())
+}
+
+/// Dies with `Review · turn · 0 files`: a console started after the work never saw a turn begin,
+/// so its turn count stood at zero while the replayed edit sat in turn one.
+#[test]
+fn a_resumed_sessions_last_edit_is_in_its_turn_scope() -> TestResult {
+    let frame = run_frames(
+        "replay-review-turn",
+        replayed_session(resume_edit_session),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 greet takes one\nkey alt-g\n\
+         wait-frame 3000 Review\nkey s\nwait-frame 3000 Review · turn\nquit\n",
+    )?;
+    let row = row_holding(&frame, "Review · turn")?;
+    assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
+    Ok(())
+}
+
+/// The edit recording with the kernel recording's subagent notice after its edit: the host wrote
+/// it mid-turn there, between a tool result and the next call, unattributed.
+fn resume_edit_then_a_host_notice(frame: &Value) -> Vec<Value> {
+    let mut entries = recorded(EDIT_SESSION);
+    let notice = recorded(KERNEL_SESSION).into_iter().find(|e| {
+        e["message"]["content"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("[subagent"))
+    });
+    let after_edit = entries
+        .iter()
+        .position(|e| e["message"]["toolName"] == "edit")
+        .map_or(entries.len(), |at| at.saturating_add(1));
+    if let Some(notice) = notice {
+        entries.insert(after_edit, notice);
+    }
+    resume_with(frame, &entries)
+}
+
+/// Dies with `Review · turn · 0 files`: the host's notice counted as a prompt, so the edit before
+/// it left the last turn, where live it stayed because no new turn began.
+#[test]
+fn a_host_notice_mid_turn_keeps_the_edit_in_its_turn_scope() -> TestResult {
+    let frame = run_frames(
+        "replay-review-notice",
+        replayed_session(resume_edit_then_a_host_notice),
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 greet takes one\nkey alt-g\n\
+         wait-frame 3000 Review\nkey s\nwait-frame 3000 Review · turn\nquit\n",
+    )?;
+    let row = row_holding(&frame, "Review · turn")?;
+    assert!(row.contains("Review · turn · 1 file +2 −2"), "{row}");
+    Ok(())
+}
+
+/// A replay is history, not news: the worker calls its edit tracked, and Review stays shut until asked.
+#[test]
+fn a_resumed_sessions_tracked_edit_does_not_open_review_by_itself() -> TestResult {
+    let frame = run_frames(
+        "replay-review-shut",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_edit_session),
+            Step::Expect("_yi/tracked", |frame| {
+                vec![
+                    ok(frame, json!({"tracked": [true]})),
+                    update(
+                        "s-alpha",
+                        json!({"sessionUpdate": "_yi/name", "name": "tracked-answered"}),
+                    ),
+                ]
+            }),
+        ],
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 tracked-answered\nquit\n",
+    )?;
+    assert!(!frame.contains("Review"), "{frame}");
     Ok(())
 }

@@ -51,6 +51,7 @@ pub fn catalog_rejected(dir: &std::path::Path) -> Vec<String> {
 }
 
 pub use yi_ai::catalog::PROVIDERS as CATALOG_PROVIDERS;
+pub use yi_ai::kimi::usages as kimi_usages;
 pub use yi_ai::refresh::{
     DEFAULT_REFRESH_HOURS, MODELS_DEV, age as catalog_age, is_stale as catalog_is_stale,
     list_url as catalog_list_url, needs_credential as catalog_needs_credential,
@@ -94,6 +95,9 @@ pub struct ProviderStream {
     /// the script (#943).
     force_faux: bool,
     cursor: CursorStream,
+    /// Where a cut turn's usage is booked once its record lands; `new` wires a parentless
+    /// default and attach_runtime re-wires it with the parent's bill.
+    settle: Mutex<Option<yi_ai::settle::Settle>>,
 }
 
 type CursorStream =
@@ -125,6 +129,7 @@ impl ProviderStream {
             telemetry: None,
             force_faux: false,
             cursor: cursor_stream,
+            settle: Mutex::new(None),
         }
     }
 
@@ -160,7 +165,27 @@ impl ProviderStream {
             telemetry: self.telemetry.clone(),
             force_faux: self.force_faux,
             cursor: self.cursor,
+            settle: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn settle_into(&self, hook: yi_ai::settle::Settle) {
+        if let Ok(mut slot) = self.settle.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// Invariant: a side session (an auto-review) shares the root's stream, so its hook never
+    /// replaces the one wired first, which books on the root's ledger.
+    pub(crate) fn settle_unless_wired(&self, hook: yi_ai::settle::Settle) {
+        if let Ok(mut slot) = self.settle.lock() {
+            slot.get_or_insert(hook);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settle_wired_for_test(&self) -> Option<yi_ai::settle::Settle> {
+        self.settle.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// Seeds `provider`'s entry with a credential already resolved.
@@ -367,7 +392,7 @@ impl ProviderStream {
             stop: Some(signal.cut_flag()),
             extra_headers: openai_extra(model, &credential),
             oauth,
-            ..OpenAiOptions::default()
+            settle: self.settle.lock().ok().and_then(|hook| hook.clone()),
         };
         match api {
             ProviderApi::AnthropicMessages => {
@@ -458,11 +483,7 @@ fn offered(
 
 fn cursor_stop(signal: &InterruptSignal) -> yi_ai::cursor::StopFn {
     let cut = signal.cut_flag();
-    let fired = signal.fired_flag();
-    Arc::new(move || {
-        cut.load(std::sync::atomic::Ordering::SeqCst)
-            || fired.load(std::sync::atomic::Ordering::SeqCst)
-    })
+    Arc::new(move || cut.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 fn cursor_tool(

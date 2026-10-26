@@ -12,6 +12,9 @@ use crate::tool::{
 };
 
 const PAGE_CAP: usize = 200;
+/// Invariant: a page stops between hits, so one hit's window may pass this cap and a page always
+/// advances. 200 hits of 512 columns, or 20 whole blocks, had no byte bound before it.
+const PAGE_BYTES: usize = 50 * 1024;
 const COLLECTION_CAP: usize = 2_000;
 /// The hit cap bounds rows, not bytes: one minified file with a single hit
 /// still retains its whole text, so the walk also stops on retained bytes.
@@ -234,6 +237,13 @@ struct Collected {
     walled: crate::builtins::Walked,
 }
 
+impl Collected {
+    fn label(&self) -> String {
+        let floor = self.collection_capped.then_some("at least ");
+        format!("{}{}", floor.unwrap_or_default(), self.total)
+    }
+}
+
 /// A search converts at most this many documents it has no copy of; the rest are counted.
 const DOCUMENTS_CONVERTED_PER_SEARCH: usize = 20;
 const DOCUMENT_SEARCH_MAX: usize = 16 * 1024 * 1024;
@@ -328,7 +338,7 @@ fn collect(
     let (cwd, deny, gate) = (&context.cwd, &context.deny_read, context.read_gate());
     // A program reads the value, not the page, so only the fuse bounds what it collects.
     let (cap, byte_cap) = match context.program {
-        true => (usize::MAX, yi_types::tool_value::PROGRAM_FUSE_BYTES),
+        true => (usize::MAX, context.fuse.bytes),
         false => (COLLECTION_CAP, COLLECTION_BYTE_CAP),
     };
     let mut search_file = |path: &Path| -> bool {
@@ -464,7 +474,8 @@ impl GrepTool {
         context: usize,
         mint: bool,
         block: bool,
-    ) -> Vec<String> {
+        room: &mut usize,
+    ) -> (Vec<String>, usize) {
         enum Row {
             Gap,
             Note(String),
@@ -479,7 +490,16 @@ impl GrepTool {
         let mut collected: Vec<Row> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
         let mut emitted: Option<usize> = None;
+        let mut rendered = 0_usize;
+        let prefix = if mint && self.hashline.is_some() {
+            0
+        } else {
+            file.display.len().saturating_add(1)
+        };
         for &index in page_hits {
+            if *room == 0 {
+                break;
+            }
             let span = block
                 .then(|| {
                     crate::hashline::patcher::block_resolver(&BlockResolverRequest {
@@ -518,6 +538,11 @@ impl GrepTool {
                 };
                 let number = row.saturating_add(1) as u64;
                 let (shown, clipped) = crate::tool::clip(text, LINE_CLIP);
+                let spent = prefix
+                    .saturating_add(number.to_string().len())
+                    .saturating_add(shown.len())
+                    .saturating_add(2);
+                *room = room.saturating_sub(spent);
                 if !clipped {
                     seen.push(number);
                 }
@@ -528,8 +553,9 @@ impl GrepTool {
                 });
             }
             emitted = Some(hi.saturating_add(1));
+            rendered = rendered.max(page_hits.partition_point(|&hit| hit <= hi.max(index)));
         }
-        match self.hashline.as_ref().filter(|_| mint) {
+        let rows = match self.hashline.as_ref().filter(|_| mint) {
             // A tagged file anchors an edit directly; a bare one names itself
             // on every row and anchors nothing.
             Some(state) => {
@@ -560,7 +586,8 @@ impl GrepTool {
                     }
                 })
                 .collect(),
-        }
+        };
+        (rows, rendered)
     }
 }
 
@@ -596,8 +623,7 @@ impl GrepTool {
         scope.deny_read = deny.to_vec();
         let collected = collect(&scope, root, &matcher, same_kind.as_ref(), &options, None);
         let mut rows: Vec<String> = Vec::new();
-        let mut taken = 0_usize;
-        let mut total = 0_usize;
+        let (mut taken, mut total, mut unbounded) = (0_usize, 0_usize, usize::MAX);
         for file in &collected.files {
             let hits: Vec<usize> = file
                 .hits
@@ -611,7 +637,8 @@ impl GrepTool {
             }
             let page: Vec<usize> = hits.into_iter().take(cap.saturating_sub(taken)).collect();
             taken = taken.saturating_add(page.len());
-            rows.extend(self.render_file(file, &page, 0, true, false));
+            let drawn = self.render_file(file, &page, 0, true, false, &mut unbounded);
+            rows.extend(drawn.0);
         }
         rows.extend(collected.walled.notices());
         (rows, total)
@@ -861,14 +888,11 @@ fn walled_write(
     ))
 }
 
-fn cut_notices(collected: &Collected, context_asked: usize, program: bool) -> Vec<String> {
+fn cut_notices(collected: &Collected, context_asked: usize, context: &ToolContext) -> Vec<String> {
     let mut rows = collected.walled.notices();
     if collected.collection_capped {
-        let cap = match program {
-            true => format!(
-                "the {} MiB program fuse",
-                yi_types::tool_value::PROGRAM_FUSE_BYTES >> 20
-            ),
+        let cap = match context.program {
+            true => format!("the {} MiB program fuse", context.fuse.bytes >> 20),
             false => COLLECTION_CAP.to_string(),
         };
         rows.push(format!(
@@ -998,16 +1022,9 @@ impl Tool for GrepTool {
             }
             return self.replace(&collected, &matcher, replacement, &options, context);
         }
-        let page_cap = if options.block {
-            BLOCK_PAGE_CAP
-        } else {
-            PAGE_CAP
-        };
-        let total_label = if collected.collection_capped {
-            format!("at least {}", collected.total)
-        } else {
-            collected.total.to_string()
-        };
+        let block = options.block;
+        let page_cap = if block { BLOCK_PAGE_CAP } else { PAGE_CAP };
+        let total_label = collected.label();
         let mut rows: Vec<String> = Vec::new();
         let shown;
         if options.count {
@@ -1055,8 +1072,9 @@ impl Tool for GrepTool {
             let mut skipped = 0_usize;
             let mut taken = 0_usize;
             let mut tagged = 0_usize;
+            let mut room = PAGE_BYTES;
             for file in &collected.files {
-                if taken >= page_cap {
+                if taken >= page_cap || room == 0 {
                     break;
                 }
                 let skip_here = file.hits.len().min(offset.saturating_sub(skipped));
@@ -1071,7 +1089,6 @@ impl Tool for GrepTool {
                 if page_hits.is_empty() {
                     continue;
                 }
-                taken = taken.saturating_add(page_hits.len());
                 let mint = tagged < TAG_FILES_CAP && !context.program;
                 if tagged == TAG_FILES_CAP && !context.program {
                     rows.push(format!(
@@ -1079,21 +1096,28 @@ impl Tool for GrepTool {
                     ));
                 }
                 tagged = tagged.saturating_add(1);
-                rows.extend(self.render_file(file, &page_hits, context_lines, mint, options.block));
+                let (drawn, hits) =
+                    self.render_file(file, &page_hits, context_lines, mint, block, &mut room);
+                taken = taken.saturating_add(hits);
+                rows.extend(drawn);
             }
             shown = taken;
-            if shown > 0 && offset.saturating_add(shown) < collected.total {
+            let next = offset.saturating_add(shown);
+            if shown > 0 && next < collected.total {
+                let (name, limit) = match (room, block) {
+                    (0, _) => ("PAGE_BYTES", PAGE_BYTES),
+                    (_, true) => ("BLOCK_PAGE_CAP", BLOCK_PAGE_CAP),
+                    (_, false) => ("PAGE_CAP", PAGE_CAP),
+                };
+                let first = offset.saturating_add(1);
                 rows.push(format!(
-                    "[showing matches {}-{} of {total_label} — continue with offset={}]",
-                    offset + 1,
-                    offset + shown,
-                    offset + shown
+                    "[showing matches {first}-{next} of {total_label} ({name} {limit}) — continue with offset={next}]"
                 ));
             }
         }
         let swept = (!context.program).then(|| self.sweep_row(&input, offset, &collected));
         rows.extend(swept.flatten());
-        let notices = cut_notices(&collected, context_asked, context.program);
+        let notices = cut_notices(&collected, context_asked, context);
         rows.extend(notices.iter().cloned());
         if let Some(asked) = context_ignored {
             rows.push(format!(
@@ -1118,7 +1142,7 @@ impl Tool for GrepTool {
             "files": collected.files.len(),
             "collectionCapped": collected.collection_capped,
         });
-        let value = || program_value(&collected, &notices, &options, offset);
+        let value = || program_value(&collected, &notices, &options, offset, context.fuse.items);
         output.value = context.program.then(value);
         output
     }
@@ -1126,11 +1150,16 @@ impl Tool for GrepTool {
 
 /// Every hit collected from `paged` on, whole lines in walk order, with every row naming what
 /// the walk or the item fuse left out.
-fn program_value(collected: &Collected, notices: &[String], options: &Options, at: usize) -> Value {
+fn program_value(
+    collected: &Collected,
+    notices: &[String],
+    options: &Options,
+    at: usize,
+    fuse: usize,
+) -> Value {
     // In the count and files modes `offset` pages files, so the value starts at the first match.
     let paged = (!options.count && !options.files_only).then_some(at);
     let offset = paged.unwrap_or_default();
-    let fuse = yi_types::tool_value::PROGRAM_FUSE_ITEMS;
     let (mut matches, mut skipped, mut more) = (Vec::new(), 0_usize, false);
     'files: for file in &collected.files {
         let skip_here = file.hits.len().min(offset.saturating_sub(skipped));

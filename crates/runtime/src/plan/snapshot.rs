@@ -106,7 +106,7 @@ fn walk(
         } else if path.is_file() {
             if out.len() >= TREE_HASH_FILE_CAP {
                 return Err(format!(
-                    "workspace exceeds {TREE_HASH_FILE_CAP} files; install the checkpoint snapshotter"
+                    "workspace exceeds {TREE_HASH_FILE_CAP} files, past what verification hashes; run the check by hand, then accepted_by_user with its exit line as note"
                 ));
             }
             out.push((relative, path));

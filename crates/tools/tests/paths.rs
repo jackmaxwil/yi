@@ -10,9 +10,7 @@ use yi_tools::hashline::tool::{HashlineReadTool, shared_hashline_state};
 use yi_tools::{GrepTool, Tool, ToolContext, ToolOutput};
 use yi_types::message::Content;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
+use crate::scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 

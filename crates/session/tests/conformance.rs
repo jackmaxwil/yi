@@ -14,6 +14,9 @@ use yi_session::{
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "../../types/tests/support/recorded.rs"]
+mod recorded;
+use recorded::recorded_line;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -296,6 +299,51 @@ fn grep_skips_thinking_and_centers_long_snippets_on_the_needle() -> TestResult {
         );
         Ok(())
     })
+}
+
+#[test]
+fn a_hit_keeps_its_own_case_and_a_clipped_line_says_so() -> TestResult {
+    let (short, long) = (
+        recorded_line("Nothing was left unfinished")?,
+        recorded_line("personal coding agent")?,
+    );
+    let edge = |name: &str, width: usize| format!("{:x<width$}", format!("{name} Mixed Case "));
+    let folded = format!("{} Fold Needle {}", "\u{130}".repeat(100), "b".repeat(100));
+    for_each_backend(|repo| {
+        let session = create(repo, "session")?;
+        let mut session = lock_session(&session);
+        for line in [
+            &short,
+            &long,
+            &edge("Edge160", 160),
+            &edge("Edge161", 161),
+            &folded,
+        ] {
+            session.append_message("main", assistant_message(line, Usage::zero()))?;
+        }
+        let one = |needle: &str| session.grep(needle, 8).pop().ok_or("no hit");
+        let hit = one("NOTHING WAS LEFT")?;
+        assert_eq!((hit.snippet.as_str(), hit.cut), (short.as_str(), false));
+        let hit = one("PERSONAL CODING AGENT")?;
+        assert_eq!(
+            (hit.snippet, hit.cut),
+            (long.chars().take(160).collect(), true)
+        );
+        let hit = one("EDGE160")?;
+        assert_eq!((hit.snippet, hit.cut), (edge("Edge160", 160), false));
+        let hit = one("EDGE161")?;
+        assert_eq!((hit.snippet.chars().count(), hit.cut), (160, true));
+        let hit = one("FOLD NEEDLE")?;
+        assert!(hit.cut && hit.snippet.contains("Fold Needle"), "{hit:?}");
+        Ok(())
+    })
+}
+
+#[test]
+fn a_needle_in_any_case_centres_the_window_on_its_match() {
+    let line = format!("{} Late Needle {}", "a".repeat(300), "b".repeat(300));
+    let (snippet, cut) = yi_session::snippet(&line, ["LATE NEEDLE"]);
+    assert!(cut && snippet.contains("Late Needle"), "{snippet}");
 }
 
 #[test]
@@ -1310,6 +1358,27 @@ fn validates_the_default_fork_target() -> TestResult {
             ),
             "invalid_fork_target",
         )?;
+        Ok(())
+    })
+}
+
+/// A session is named by its oldest message and a turn's saved entry is found from its lane's
+/// leaf, so each visitor must stop at the first match from its own end and never cross lanes.
+#[test]
+fn visitors_stop_at_the_first_match_from_their_own_end() -> TestResult {
+    for_each_backend(|repo| {
+        let session = create(repo, "visitors")?;
+        let mut session = lock_session(&session);
+        let first = session.append_message("main", user_message("first"))?;
+        let second = session.append_message("main", user_message("second"))?;
+        session.create_lane("thread", Some(&first))?;
+        let aside = session.append_message("thread", user_message("aside"))?;
+        let id = |entry: &Entry| Some(entry.id().to_owned());
+        assert_eq!(session.find_entry(id), Some(first.clone()));
+        assert_eq!(session.find_on_branch("main", id), Some(second));
+        assert_eq!(session.find_on_branch("thread", id), Some(aside));
+        assert_eq!(session.find_on_branch("thread", |_| None::<()>), None);
+        assert_eq!(session.find_on_branch("missing", id), None);
         Ok(())
     })
 }

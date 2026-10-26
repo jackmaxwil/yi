@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use ratatui::text::Line;
+use crate::common::flat_trimmed as text;
 use serde_json::json;
 use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme};
@@ -12,25 +12,10 @@ fn theme() -> Theme {
     Theme::new(ColorTier::TrueColor, true)
 }
 
-fn text(lines: &[Line<'static>]) -> Vec<String> {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
-}
-
 fn cell(details: serde_json::Value, status: ToolStatus) -> ToolCell {
     ToolCell {
         name: "ipython".to_owned(),
         call_id: String::new(),
-        intent: None,
         status,
         summary: ToolCell::summary_of("ipython", ""),
         digest: None,
@@ -197,39 +182,6 @@ fn stdout_before_a_traceback_stays_stdout() -> TestResult {
     let (plain, none) = split_traceback("all fine\n");
     assert_eq!(plain, "all fine\n");
     assert!(none.is_empty());
-    Ok(())
-}
-
-/// A cell that wrote three files earns the same rows an `edit` call would. The
-/// patch arrives already computed, so this renders it rather than building one.
-#[test]
-fn kernel_side_file_edits_render_as_diffs() -> TestResult {
-    let cell = cell(
-        json!({
-            "code": "patch()",
-            "diffs": [{
-                "path": "notes.txt",
-                "patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-one\n+two\n",
-            }],
-        }),
-        ToolStatus::Done,
-    );
-    let rendered = text(&Cell::Tool(cell).lines(120, &theme(), TranscriptMode::Normal, 0));
-    let joined = rendered.join("\n");
-    assert!(joined.contains("╰─ notes.txt"), "{joined}");
-    assert!(
-        joined.contains("│ one") && joined.contains("│ two"),
-        "{joined}"
-    );
-    assert!(
-        rendered
-            .iter()
-            .any(|row| row.trim_start_matches(['│', ' ']).starts_with('-'))
-            && rendered
-                .iter()
-                .any(|row| row.trim_start_matches(['│', ' ']).starts_with('+')),
-        "{joined}"
-    );
     Ok(())
 }
 
