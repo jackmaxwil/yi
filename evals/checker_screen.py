@@ -13,7 +13,8 @@ environment image with the tree copied over it and no network, and print `PASS <
 `FAIL <id>`. The W3 grader's mutant-kill rule decides a catch: a check catches a defect when it
 passes on the oracle and does not pass on that defect's variant. Precision is the share of checks
 that pass on the oracle; checks that crash or time out on the oracle add one failing check. A
-docker fault (exit 125, 126 or 127) is no verdict and raises Unscorable. Stdlib only.
+docker fault (exit 125, 126 or 127, or a tree that could not be copied over the image) is no
+verdict and raises Unscorable. Stdlib only.
 """
 import difflib, hashlib, json, os, posixpath, re, shutil, subprocess, sys, tempfile, uuid
 from pathlib import Path
@@ -171,6 +172,7 @@ def trees(spec, root):
 
 def stage(tree, checks, into):
     """tree/ mirrors the container's absolute paths; remove lists the paths the tree deletes."""
+    (into / "tree").mkdir(parents=True, exist_ok=True)
     for path, text in tree.items():
         if text is not None:
             target = into / "tree" / path.lstrip("/")
@@ -186,7 +188,8 @@ def docker_runner(task_dir):
     tag = f"yi-checker-screen-{task_dir.name}"
     subprocess.run(["docker", "build", "-q", "-t", tag, str(task_dir / "environment")], check=True,
                    capture_output=True, timeout=BUILD_TIMEOUT_SEC)
-    script = ('cp -R /screen/tree/. / 2>/dev/null; while read -r p; do rm -f "$p"; done < /screen/remove; '
+    # Invariant: an overlay that did not land exits 125, a docker fault, or the image is scored as the oracle.
+    script = ('cp -R /screen/tree/. / || exit 125; while read -r p; do rm -f "$p" || exit 125; done < /screen/remove; '
               'cd "$0" && PYTHONPATH="$0${PYTHONPATH:+:$PYTHONPATH}" exec python3 /screen/checks.py')
 
     def run(cwd, staged):
