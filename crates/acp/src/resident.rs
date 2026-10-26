@@ -173,6 +173,60 @@ mod tests {
     }
 
     #[test]
+    fn a_scheduler_wake_starts_loading_the_evicted_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+
+        let root = std::env::temp_dir().join(format!(
+            "yi-acp-wake-{}-{}",
+            std::process::id(),
+            crate::daemon::now_ms()
+        ));
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions)?;
+        let mut repo = JsonlRepo::new(sessions, root.display().to_string());
+        drop(repo.create(CreateOptions {
+            id: Some("wake-reload".to_owned()),
+            ..CreateOptions::default()
+        })?);
+        let (sender, mut wakes) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = AcpState {
+            user_cells: crate::cells::UserCells::default(),
+            repo,
+            schedules_root: root.join("schedules"),
+            sessions: HashMap::new(),
+            building: HashMap::new(),
+            failed: HashMap::new(),
+            wake: sender.downgrade(),
+            defaults: Arc::new(|| None),
+            build: Arc::new(|_, _| Err("not built".to_owned())),
+            sink: Arc::new(|_| {}),
+            pending: Arc::new(Mutex::new(Some(HashMap::new()))),
+            agent_version: String::new(),
+            initialized: true,
+            cwd: root.clone(),
+            prompt_serial: 0,
+        };
+        away().insert("wake-reload".to_owned(), Away::Evicted);
+
+        assert!(owed("wake-reload", &state.wake));
+        assert!(matches!(
+            wakes.try_recv()?,
+            Incoming::Built(id) if id == "wake-reload"
+        ));
+        state.reload("wake-reload");
+        assert!(
+            state.building.contains_key("wake-reload"),
+            "the scheduler wake did not start loading the evicted session"
+        );
+        forget("wake-reload");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn a_failed_reload_waits_for_its_retry_instead_of_waking_on_every_job() {
         let (sender, mut wakes) = tokio::sync::mpsc::unbounded_channel();
         let weak = sender.downgrade();
