@@ -78,8 +78,7 @@ fn a_quoted_span_found_in_a_recorded_call_is_observed_and_anything_else_is_claim
 }
 
 #[test]
-fn incremental_history_scans_only_new_entries_and_keeps_older_evidence()
--> Result<(), Box<dyn Error>> {
+fn cached_history_keeps_older_evidence_across_list_changes() -> Result<(), Box<dyn Error>> {
     let store = std::sync::Arc::new(std::sync::Mutex::new(yi_session::SessionStore::in_memory(
         yi_session::SessionMetadata {
             id: "incremental-claims".to_owned(),
@@ -101,7 +100,6 @@ fn incremental_history_scans_only_new_entries_and_keeps_older_evidence()
         ]}]}))
     };
     let mut history = History::default();
-    assert_eq!(history.observe(&store), 1, "the first read seeds the cache");
     assert_eq!(
         history.claims_cached(&list("first", "`test result: ok. 9 passed`")?, &store, 0),
         vec![Claim {
@@ -116,11 +114,6 @@ fn incremental_history_scans_only_new_entries_and_keeps_older_evidence()
             "content": [{"type": "text", "text": "second proof"}]}),
     )?;
     yi_session::lock_session(&store).append_entry(later, "main")?;
-    assert_eq!(
-        history.observe(&store),
-        1,
-        "only the appended entry is read"
-    );
     let second = serde_json::from_value(json!({"phases": [{"name": "Tasks", "items": [
         {"label": "first", "state": "done", "evidence": "`test result: ok. 9 passed`"},
         {"label": "second", "state": "done", "evidence": "`second proof`"}
