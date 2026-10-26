@@ -56,7 +56,6 @@ def arm_label(environ):
     return "+arm" + hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12] if path else ""
 
 
-
 def end_torn(path):
     try:
         with open(path, "rb") as handle:
