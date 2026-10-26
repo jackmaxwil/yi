@@ -141,6 +141,7 @@ pub struct Verifier {
     judge: Option<Arc<dyn Judge>>,
     /// The session's own clock (D177): a verification never outlives the run it belongs to.
     deadline: Option<Instant>,
+    hooks: Option<Arc<crate::claude_hooks::Hooks>>,
 }
 
 fn deadline_after(from: Instant, millis: u64) -> Instant {
@@ -201,6 +202,7 @@ impl Verifier {
             timeout_ms,
             judge: None,
             deadline: None,
+            hooks: None,
         }
     }
 
@@ -209,6 +211,15 @@ impl Verifier {
             deadline: Some(at),
             ..self
         }
+    }
+
+    pub fn with_claude_hooks(mut self, hooks: Option<Arc<crate::claude_hooks::Hooks>>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    pub(super) fn hook_config(&self) -> Option<&crate::claude_hooks::Hooks> {
+        self.hooks.as_deref()
     }
 
     pub fn with_judge(self, judge: Arc<dyn Judge>) -> Self {
@@ -342,8 +353,13 @@ impl Verifier {
                     deadline_after(Instant::now(), (*timeout_ms).min(manifest.timeout_ms))
                         .min(whole);
                 protecting(&manifest, snapshot.root, || {
-                    let (verdict, said) =
-                        run_cmd_said(&manifest, snapshot.root, snapshot.artifacts, deadline);
+                    let (verdict, said) = run_cmd_said(
+                        &manifest,
+                        snapshot.root,
+                        snapshot.artifacts,
+                        deadline,
+                        self.hooks.as_deref(),
+                    );
                     *evidence = said;
                     verdict
                 })
@@ -372,7 +388,13 @@ impl Verifier {
                 }
                 let item_deadline = deadline_after(Instant::now(), *timeout_ms).min(whole);
                 protecting(&manifest, snapshot.root, || {
-                    run_examples(&manifest, &cases, snapshot.root, item_deadline)
+                    run_examples(
+                        &manifest,
+                        &cases,
+                        snapshot.root,
+                        item_deadline,
+                        self.hooks.as_deref(),
+                    )
                 })
             }
             Decider::Judge { .. } => abstain("no judge"),
@@ -446,6 +468,7 @@ fn run_cmd_said(
     root: &Path,
     artifacts: &Artifacts,
     deadline: Instant,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> (ItemVerdict, Option<String>) {
     let workdir = manifest.workdir(root);
     let capture = run_check_in(
@@ -455,6 +478,7 @@ fn run_cmd_said(
         None,
         deadline,
         None,
+        hooks,
     );
     let passed =
         |capture: &&yi_tools::CommandCapture| capture.exit_code == Some(0) && !capture.cancelled;
@@ -484,6 +508,7 @@ pub(super) fn run_cmd(
     artifacts: &Artifacts,
     deadline: Instant,
     stop: Option<&yi_tools::CancelFlag>,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> ItemVerdict {
     let workdir = manifest.workdir(root);
     let capture = run_check_in(
@@ -493,6 +518,7 @@ pub(super) fn run_cmd(
         None,
         deadline,
         stop,
+        hooks,
     );
     verdict_of(capture, manifest, &workdir, artifacts)
 }
@@ -564,10 +590,11 @@ fn run_examples(
     cases: &[Case],
     root: &Path,
     item_deadline: Instant,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> ItemVerdict {
     let mut failed: Vec<(usize, &'static str)> = Vec::new();
     for (index, case) in cases.iter().enumerate() {
-        match run_case(manifest, case, root, item_deadline) {
+        match run_case(manifest, case, root, item_deadline, hooks) {
             Ok(()) => {}
             Err(CaseError::Case(why)) => failed.push((index, why)),
             Err(CaseError::Host(reason)) => return abstain(reason),
@@ -595,6 +622,7 @@ fn run_case(
     case: &Case,
     root: &Path,
     item_deadline: Instant,
+    hooks: Option<&crate::claude_hooks::Hooks>,
 ) -> Result<(), CaseError> {
     if Instant::now() >= item_deadline {
         return Err(CaseError::Case("timeout"));
@@ -608,6 +636,7 @@ fn run_case(
         Some(input),
         deadline,
         None,
+        hooks,
     )
     .map_err(CaseError::Host)?;
     if capture.cancelled {

@@ -188,19 +188,7 @@ fn tokens(text: &str) -> Vec<&str> {
 /// highlighting the leading whitespace of a changed line marks the one thing unchanged.
 fn changed_span(text: &str, other: &str) -> Option<(usize, usize)> {
     let (mine, theirs) = (tokens(text), tokens(other));
-    let head = mine
-        .iter()
-        .zip(theirs.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let room = mine.len().min(theirs.len()).saturating_sub(head);
-    let tail = mine
-        .iter()
-        .rev()
-        .zip(theirs.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count()
-        .min(room);
+    let (head, tail) = yi_types::diff::changed_edges(&mine, &theirs);
     if head.saturating_add(tail) >= mine.len() {
         return None;
     }

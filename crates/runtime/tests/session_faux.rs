@@ -418,13 +418,7 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
     ));
     session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), Some(broker));
     session.prompt("run it")?;
-    for _ in 0..200 {
-        if started.exists() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(started.exists(), "the shell never got as far as forking");
+    crate::support::wait_for_path(&started, "the shell never got as far as forking").await?;
     let interrupted = std::time::Instant::now();
     session.abort();
     session.wait_idle().await;
