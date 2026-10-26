@@ -101,6 +101,10 @@ class Screen(unittest.TestCase):
             checker_screen.stage(variant, checks, Path(tmp) / "staged")
             self.assertEqual((Path(tmp) / "staged" / "remove").read_text(), "/app/helper.py\n")
             self.assertFalse((Path(tmp) / "staged" / "tree" / "app" / "helper.py").exists())
+            # A tree of removals alone still stages tree/, or the overlay's cp fails and the variant is a docker fault.
+            (Path(tmp) / "removals").mkdir()
+            checker_screen.stage({"/app/helper.py": None}, checks, Path(tmp) / "removals")
+            self.assertTrue((Path(tmp) / "removals" / "tree").is_dir())
 
 
 class Verdict(unittest.TestCase):

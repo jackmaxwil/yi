@@ -1,4 +1,4 @@
-use super::clipboard::{OnEmptyPaste, resolve_clipboard_edits};
+use super::clipboard::resolve_clipboard_edits;
 use super::messages::{UNRESOLVED_BLOCK_INTERNAL, UNRESOLVED_CLIPBOARD_INTERNAL};
 use super::types::{Anchor, ApplyResult, Clipboard, Cursor, Edit};
 
@@ -217,7 +217,6 @@ pub fn apply_edits(
     text: &str,
     edits: Vec<Edit>,
     clipboard: &mut Clipboard,
-    on_empty_paste: OnEmptyPaste,
 ) -> Result<ApplyResult, String> {
     if edits.is_empty() {
         return Ok(ApplyResult {
@@ -232,8 +231,7 @@ pub fn apply_edits(
     // Clipboard pre-pass: capture cut ranges from the original lines and
     // expand paste edits into plain inserts in authored order.
     let mut warnings: Vec<String> = Vec::new();
-    let concrete =
-        resolve_clipboard_edits(edits, &file_lines, clipboard, on_empty_paste, &mut warnings)?;
+    let concrete = resolve_clipboard_edits(edits, &file_lines, clipboard, &mut warnings)?;
 
     let phantom = trailing_phantom_line(&file_lines);
     let target_edits: Vec<Edit> = concrete

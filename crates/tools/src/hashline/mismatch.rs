@@ -1,46 +1,4 @@
-use super::format::{
-    FileTag, HL_FILE_HASH_EXAMPLES, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX,
-};
-use super::types::Anchor;
-
-pub fn format_full_anchor_requirement(raw: Option<&str>) -> String {
-    let received = raw
-        .map(|raw| format!(" Received {raw:?}."))
-        .unwrap_or_default();
-    format!(
-        "a bare line number from read/search output plus the section header content-hash tag \
-(for example {HL_FILE_PREFIX}src/foo.ts{HL_FILE_HASH_SEP}{}{HL_FILE_SUFFIX} and line \"160\"){received}",
-        HL_FILE_HASH_EXAMPLES[0]
-    )
-}
-
-pub fn parse_line_ref(reference: &str) -> Result<Anchor, String> {
-    let trimmed = reference.trim();
-    let stripped = trimmed
-        .trim_start_matches(['>', '+', '-', '*'])
-        .trim_start();
-    let digits: String = stripped.chars().take_while(char::is_ascii_digit).collect();
-    let rest = &stripped[digits.len()..];
-    let rest_ok = rest.is_empty() || rest.starts_with(':');
-    if digits.is_empty() || !rest_ok {
-        return Err(format!(
-            "Invalid line reference. Expected {}.",
-            format_full_anchor_requirement(Some(reference))
-        ));
-    }
-    let line: u64 = digits.parse().map_err(|_| {
-        format!(
-            "Invalid line reference. Expected {}.",
-            format_full_anchor_requirement(Some(reference))
-        )
-    })?;
-    if line < 1 {
-        return Err(format!(
-            "Line number must be >= 1, got {line} in \"{reference}\"."
-        ));
-    }
-    Ok(Anchor { line })
-}
+use super::format::{FileTag, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX};
 
 /// Pinned prefix: the edit tool classifies a rejection as `stale_tag` by it.
 pub const EDIT_REJECTED_PREFIX: &str = "Edit rejected";
@@ -72,15 +30,4 @@ The current file hashes to {HL_FILE_HASH_SEP}{actual}. Copy a current {HL_FILE_P
     }
     lines.push(footer.to_owned());
     lines.join("\n")
-}
-
-pub fn validate_line_ref(anchor: Anchor, file_lines: &[String]) -> Result<(), String> {
-    if anchor.line < 1 || anchor.line > file_lines.len() as u64 {
-        return Err(format!(
-            "Line {} does not exist (file has {} lines)",
-            anchor.line,
-            file_lines.len()
-        ));
-    }
-    Ok(())
 }
