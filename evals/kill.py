@@ -10,7 +10,7 @@ A test is its own module, evals/kill/<test>.py: THRESHOLD (the pre-registered te
 the plan's reserve, already plus 25%; a subscription family's figure is what the run would cost
 on OpenRouter, reported when it cannot run), STEP (its place on the paid ladder), optional
 DEADLINE (ISO time; a quota reset past it writes the run unrun), runs() (a list of run specs:
-{"id", "prompt", "deadline", "args", "repo", "rev"}, or {"id", "harbor": argv}) and verdict(rows),
+{"id", "prompt", "deadline", "args", "repo", "rev", "keep"}, or {"id", "harbor": argv}) and verdict(rows),
 which sees only rows that ran: a row whose status is in NOT_RUN never reaches it.
 
 Owner, 2026-10-23: "you can use my entire kimi subscription. then $30 openrouter cap". Every run
@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
 
+import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import trials  # noqa: E402
 import watch  # noqa: E402
@@ -43,12 +44,8 @@ GRACE_SEC = 60
 clock, sleep = time.time, time.sleep
 
 
-def runs_root():
-    return Path(os.environ.get("EVAL_KILL_ROOT") or Path.home() / "Development" / "yi-runs")
-
-
 def shape_dir():
-    return runs_root() / "next-shape"
+    return axes.runs_root("EVAL_KILL_ROOT") / "next-shape"
 
 
 def micro(usd):
@@ -89,7 +86,7 @@ def state(rows):
         elif row["kind"] == "settle":
             spent += micro(row["usd"])
             held.pop(row["key"], None)
-            if any(r.get("status") != "crash" for r in row["rows"]):
+            if row.get("closed") or any(r.get("status") != "crash" for r in row["rows"]):
                 done.add((row["test"], row["family"]))
             if any(r.get("status") not in NOT_RUN for r in row["rows"]):
                 ran.add((row["test"], row["family"]))
@@ -209,11 +206,12 @@ def seed_home(home, binary, route, need_sec):
     central = kimi_home() / ".yi"
     if (central / "catalog").is_dir():
         shutil.copytree(central / "catalog", yi / "catalog")
-    for token in sorted((central / "providers" / "tokens").glob("*.json")):
-        if json.loads(token.read_text()).get("kind") == "key":
-            write_0600(yi / "providers" / "tokens" / token.name, json.loads(token.read_text()))
+    provider = route["model"].split("/", 1)[0]
+    # A --yolo run can read its HOME, so it gets its own route's key and no other provider's.
+    key = central / "providers" / "tokens" / f"{provider}.json"
+    if paid(route) and key.is_file() and json.loads(key.read_text()).get("kind") == "key":
+        write_0600(yi / "providers" / "tokens" / key.name, json.loads(key.read_text()))
     if not paid(route):
-        provider = route["model"].split("/", 1)[0]
         write_0600(yi / "providers" / "tokens" / f"{provider}.json", access_token(binary, provider, need_sec))
         (yi / "oauth").mkdir()
         shutil.copy(central / "oauth" / f"{provider}.json", yi / "oauth" / f"{provider}.json")
@@ -252,10 +250,10 @@ def park_file():
 
 def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
     run = f"{family}-{spec['id']}-{uuid.uuid4().hex[:8]}"
-    base = runs_root() / test / run
+    base = axes.runs_root("EVAL_KILL_ROOT") / test / run
     home, repo, events = base / "home", base / "repo", base / "events.jsonl"
     deadline = int(spec.get("deadline", 600))
-    row = {"test": test, "family": family, "run": run, "model": route["model"], "startedAt": clock()}
+    row = {"test": test, "family": family, "id": spec["id"], "run": run, "model": route["model"], "startedAt": clock()}
     try:
         seed_home(home, binary, route, deadline + 600)
         subprocess.run(["git", "clone", "--shared", "-q", str(spec.get("repo") or ROOT.parent), str(repo)], check=True)
@@ -292,6 +290,9 @@ def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
                     watch.kill_group(proc, 5)
         exit_code = proc.wait()
         timer.cancel()
+        for name in spec.get("keep", ()):
+            if (repo / name).is_file():
+                shutil.copy(repo / name, base / name)
         usage = yi_usage.parse_events(events)
         unpriced = bool(usage["costUnknownTurns"])
         status = status or ("timeout" if fired else "quota" if quota_hit(events)
@@ -338,18 +339,6 @@ def ask(test, family, spec, binary, stop_usd, until=None, estimate_usd=0.0, ceil
     return row
 
 
-def torn_tail(path):
-    """Whether a store's last line lacks its newline, read from the end: a store is never read whole."""
-    try:
-        with open(path, "rb") as handle:
-            if handle.seek(0, os.SEEK_END) == 0:
-                return False
-            handle.seek(-1, os.SEEK_END)
-            return handle.read(1) != b"\n"
-    except OSError:
-        return False
-
-
 def harbor(test, family, spec, stop_usd):
     """A harbor sweep holds its own caps (watch.py); its hard cap is what is left of the reserve.
     Only `tbv4_sweep.sh --runner` files rows, so a sweep that filed none is charged that cap."""
@@ -360,10 +349,7 @@ def harbor(test, family, spec, stop_usd):
     env = {**os.environ, "TBV4_HARD_CAP": f"{max(stop_usd, 0):.2f}", "EVAL_RUN_ID": run}
     store = TRIALS / f"{run}.jsonl"
     rows, bad = yi_usage.json_lines(store)
-    if torn_tail(store):
-        # As skill_labels.py does: end a killed sweep's torn line, or this sweep's first row fuses onto it.
-        with store.open("a") as sink:
-            sink.write("\n")
+    yi_usage.end_torn(store)
     done = subprocess.run(spec["harbor"], cwd=ROOT.parent, env=env)
     # The store is appended per run id, so a re-run charges only the rows its own sweep filed.
     after, bad_after = yi_usage.json_lines(store)
@@ -371,7 +357,8 @@ def harbor(test, family, spec, stop_usd):
     # A line this sweep filed that does not parse is spend nobody can read: charge the cap.
     charged = sum(trials.cost(row) for row in filed) if filed and not torn else stop_usd
     row = {"test": test, "family": family, "run": run, "status": "ok" if done.returncode == 0 else "error",
-           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6)}
+           "exit": done.returncode, "trials": len(filed), "chargedUsd": round(charged, 6),
+           "jobs": sorted({r["job"] for r in filed if r.get("job")})}
     if torn:
         row.update(unreadable=torn, why=f"{torn} line(s) this sweep filed in {store.name} do not parse; charged its cap")
     return row
@@ -493,8 +480,8 @@ def cmd_budget(args):
                 return 2
             # Its run may have spent up to the whole reserve before it died, so that is the charge.
             test, family, usd = held.pop(args.close)
-            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6, "rows": [],
-                   "why": "closed by hand: its runner died without settling"})
+            write({"kind": "settle", "key": args.close, "test": test, "family": family, "usd": usd / 1e6,
+                   "rows": [], "closed": True, "why": "closed by hand: its runner died without settling"})
             spent += usd
     ladder = [{"step": mod.STEP, "test": name, "family": f, "reserveUsd": reserve_of(mod, f, table[f]),
                "settled": (name, f) in done} for name, mod in tests().items() for f in mod.FAMILIES if f in table]
