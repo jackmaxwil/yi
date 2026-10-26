@@ -40,11 +40,11 @@ pub enum OpKind {
     Program,
 }
 
-/// The kinds a model may call, in the tool schema's order; the administrative kinds below
-/// parse on every surface but cost the prompt no bytes.
+/// The kinds a call's key may name as its op (`{"done": label}`); the schema shows three, and
+/// the administrative kinds below parse on every surface but cost the prompt no bytes.
 pub const MODEL_OPS: usize = 16;
 
-/// Every kind, in wire order; the parser reads this list and the schema its first `MODEL_OPS`.
+/// Every kind, in wire order: the parser's list; a key may name only its first [`MODEL_OPS`].
 pub const ALL_OPS: [OpKind; 23] = [
     OpKind::Set,
     OpKind::Init,

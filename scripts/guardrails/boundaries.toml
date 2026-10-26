@@ -2,7 +2,7 @@
 "yi-loop" = ["yi-types"]
 "yi-ai" = ["yi-types", "yi-oauth"]
 "yi-oauth" = ["yi-types"]
-"yi-orb" = []
+"yi-orb" = ["yi-types"]
 "yi-session" = ["yi-types"]
 "yi-context" = ["yi-types", "yi-tools"]
 "yi-permission" = ["yi-types"]
@@ -19,4 +19,5 @@
 # Test-only edges, each one a dev-dependency the crate's tests reach past its own row above.
 [dev]
 "yi-loop" = ["yi-ai", "yi-context"]
+"yi-ai" = ["yi-loop"]
 "yi-cli" = ["yi-tools"]

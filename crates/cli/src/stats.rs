@@ -201,6 +201,7 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
 
 pub struct Options {
     pub session_dir: std::path::PathBuf,
+    pub plans_dir: std::path::PathBuf,
     pub cwd: String,
     pub json: bool,
     pub query: Query,
@@ -215,7 +216,12 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
             );
             return 2;
         }
-        return rollup::run(&options.query, &options.session_dir, options.json);
+        return rollup::run(
+            &options.query,
+            &options.session_dir,
+            &options.plans_dir,
+            options.json,
+        );
     }
     if let Some(dir) = id_arg.trim().strip_prefix("telemetry") {
         return telemetry_rollup(std::path::Path::new(dir.trim()), options.json);
@@ -311,9 +317,7 @@ fn one_session(id_arg: &str, options: &Options) -> i32 {
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
         });
-        if let Ok(line) = serde_json::to_string(&value) {
-            println!("{line}");
-        }
+        crate::print_json(&value);
         return 0;
     }
     println!("session {id}");

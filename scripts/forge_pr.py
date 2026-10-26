@@ -674,7 +674,7 @@ def selfcheck():
     import contextlib, io, check_binary_size
 
     over = check_binary_size.problems(9_500_000, check_binary_size.HARD_CAP_BYTES)[0]
-    assert over == "dist binary 9500000 > hard cap 9437184 bytes (9 MiB)", over
+    assert over == "dist binary 9500000 > hard cap 9437184 bytes", over
     capped = f"FAIL binary_size\n  {over}\n"
     real_run = subprocess.run
     subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, int("check_binary" in cmd[-1]), capped, "")

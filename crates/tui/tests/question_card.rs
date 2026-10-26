@@ -646,3 +646,36 @@ fn a_card_on_a_huge_cell_grid_is_painted_within_its_pixel_cap() -> TestResult {
     assert!(width > 0 && height > 0, "{width}x{height}");
     Ok(())
 }
+
+fn paste(app: &mut App, text: &str) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    yi_tui::input::handle_terminal_event(app, &tx, Event::Paste(text.to_owned()));
+}
+
+/// Dies with a paste into an open card landing in the composer hidden behind it: the card's own
+/// field stayed empty and the pasted text went out with the next prompt.
+#[test]
+fn a_paste_with_a_card_open_fills_the_card_not_the_composer() -> TestResult {
+    let mut app = app();
+    asked(&mut app, &[layout()]);
+    press(&mut app, &keys("4"));
+    paste(&mut app, "sort by\ntwo phases");
+    assert_eq!(app.composer_text(), "");
+    let rows = common::live_rows(&mut app)?;
+    assert!(row_with(&rows, "sort by two phases").is_some(), "{rows:#?}");
+    assert_eq!(press(&mut app, &[KeyCode::Enter]), ["sort by two phases"]);
+    Ok(())
+}
+
+/// A paste while the card shows options has no field to fill, and must not pick one either: a
+/// pasted `2` or `s` is text, not the key that answers.
+#[test]
+fn a_paste_over_the_options_neither_answers_nor_reaches_the_composer() -> TestResult {
+    let mut app = app();
+    asked(&mut app, &[layout()]);
+    paste(&mut app, "2s");
+    assert_eq!(app.composer_text(), "");
+    let rows = common::live_rows(&mut app)?;
+    assert!(row_with(&rows, "Which layout").is_some(), "{rows:#?}");
+    Ok(())
+}

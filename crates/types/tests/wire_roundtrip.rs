@@ -424,3 +424,19 @@ fn a_task_and_a_host_message_keep_their_attribution() -> Result<(), Box<dyn std:
     );
     Ok(())
 }
+
+/// The `details` a faux session's compactor wrote before it stopped numbering windows: entries
+/// on disk still carry `window`, and the typed shape must hand it back byte for byte.
+#[test]
+fn a_compaction_details_value_keeps_the_window_chain_it_was_written_with()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/compaction-details-window-v1.json");
+    let stored = fs::read_to_string(path)?;
+    let details: yi_types::compaction::CompactionDetails = serde_json::from_str(&stored)?;
+    let window = details.window.as_ref().ok_or("the recorded window chain")?;
+    assert_eq!(window.number, 1);
+    assert_eq!(window.previous.as_deref(), Some(window.first.as_str()));
+    assert_eq!(serde_json::to_string(&details)?, stored.trim_end());
+    Ok(())
+}
