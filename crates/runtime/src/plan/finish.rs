@@ -427,7 +427,9 @@ impl SubagentHost {
             .cwd_of(name)
             .unwrap_or_else(|| self.options.cwd.clone());
         let red = (!verified)
-            .then(|| crate::goal::run_check(&check, &cwd, timeout).err())
+            .then(|| {
+                crate::goal::run_check(&check, &cwd, timeout, self.claude_hooks().as_deref()).err()
+            })
             .flatten();
         if let Some(evidence) = red {
             return Some(format!("its check is red: {evidence}"));

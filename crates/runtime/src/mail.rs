@@ -465,6 +465,14 @@ pub(crate) fn is_followup(message: &AgentMessage) -> bool {
     )
 }
 
+pub(crate) fn result_answer(messages: &[AgentMessage], schema: Option<&Value>) -> String {
+    let answer = schema.and_then(|_| crate::subagent::schema_answer(messages));
+    match answer {
+        Some(answer) => crate::subagent::answer_text(answer),
+        None => crate::subagent::last_assistant_text(messages),
+    }
+    .unwrap_or_default()
+}
 fn pickled(text: &str) -> Vec<u8> {
     let length = u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes();
     [&[0x80, 2, b'X'][..], &length, text.as_bytes(), b"."].concat()

@@ -11,8 +11,7 @@ use crate::family::Cause;
 pub use crate::mail::register_receive;
 use crate::mail::{Desk, Draft};
 use crate::subagent::{
-    ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, answer_text,
-    last_assistant_text, schema_answer,
+    ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, last_assistant_text,
 };
 
 pub(crate) const WAIT_MIN_MS: u64 = 1_000;
@@ -694,16 +693,10 @@ impl SubagentHost {
             if let Some(error) = &record.error {
                 return Err(format!("child \"{target}\" failed: {error}"));
             }
-            let messages = record.session.messages();
-            let answer = schema.and_then(|_| schema_answer(&messages));
-            let text = match answer {
-                Some(answer) => answer_text(answer),
-                None => last_assistant_text(&messages),
-            };
             (
                 record.session_name.clone(),
                 record.check.clone(),
-                text.unwrap_or_default(),
+                crate::mail::result_answer(&record.session.messages(), schema),
             )
         };
         let json = Self::json_answer(&text);
@@ -751,11 +744,16 @@ impl SubagentHost {
                     "child \"{target}\" result held back; its check is refused: {refused}"
                 ));
             }
-            crate::goal::run_check(&check, &cwd, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
-                |evidence| {
-                    format!("child \"{target}\" result held back; its check is red: {evidence}")
-                },
-            )?;
+            let hooks = self.claude_hooks();
+            crate::goal::run_check(
+                &check,
+                &cwd,
+                crate::goal::DEFAULT_CHECK_TIMEOUT_MS,
+                hooks.as_deref(),
+            )
+            .map_err(|evidence| {
+                format!("child \"{target}\" result held back; its check is red: {evidence}")
+            })?;
             self.route_discoveries(&name, &result.discoveries)
                 .map_err(|error| format!("child \"{target}\" result held back; {error}"))?;
             reply.insert(
@@ -797,7 +795,13 @@ impl SubagentHost {
                     .entry(id)
                     .or_insert_with(|| {
                         let timeout = crate::goal::DISCOVERY_CHECK_TIMEOUT_MS;
-                        crate::goal::run_check(&check, &self.options.cwd, timeout).err()
+                        crate::goal::run_check(
+                            &check,
+                            &self.options.cwd,
+                            timeout,
+                            self.claude_hooks().as_deref(),
+                        )
+                        .err()
                     })
                     .clone()
                     .map(|evidence| (id, evidence))
