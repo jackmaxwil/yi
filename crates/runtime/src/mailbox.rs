@@ -11,7 +11,8 @@ use crate::family::Cause;
 pub use crate::mail::register_receive;
 use crate::mail::{Desk, Draft};
 use crate::subagent::{
-    ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, last_assistant_text,
+    ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, answer_text,
+    last_assistant_text, schema_answer,
 };
 
 pub(crate) const WAIT_MIN_MS: u64 = 1_000;
@@ -24,6 +25,7 @@ pub(crate) const CONTEXT_MAX_KEYS: usize = 8;
 pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
+const COUNT_SHAPE: &str = "rlm.run context_chars must be an object of variable name to char count";
 const ROUTE: &str = "write a value to a file and give local://<path> in partition";
 
 pub(crate) type Retired = (
@@ -63,6 +65,11 @@ pub(crate) fn clamp(text: &str, cap: usize, name: &str, next: &str) -> String {
 /// Incident: values arrive pre-serialized because a host-side kernel read would queue behind
 /// the cell awaiting this reply; the caps re-apply because that python is semi-trusted.
 pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String>, String> {
+    let counted = match kwargs.get("context_chars") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(chars)) if chars.values().all(Value::is_u64) => Some(chars),
+        Some(_) => return Err(COUNT_SHAPE.to_owned()),
+    };
     let Some(value) = kwargs.get("context").filter(|value| !value.is_null()) else {
         return Ok(None);
     };
@@ -80,7 +87,8 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
         let text = value
             .as_str()
             .map_or_else(|| value.to_string(), str::to_owned);
-        let row = cut(&text, CONTEXT_VALUE_CAP, None, "mail.context_value", ROUTE);
+        let total = counted.and_then(|chars| usize::try_from(chars.get(name)?.as_u64()?).ok());
+        let row = cut(&text, CONTEXT_VALUE_CAP, total, "mail.context_value", ROUTE);
         block.push_str(&format!("{name} = {row}\n"));
     }
     block = clamp(&block, CONTEXT_TOTAL_CAP, "mail.context_total", ROUTE);
@@ -412,8 +420,7 @@ impl SubagentHost {
         let envelope = desk.seal((from, &name), between, draft);
         crate::mail::inbox(&store, &envelope)?;
         let answered = desk.resolve(&envelope);
-        let message = crate::mail::present(&envelope);
-        // `followup` only wakes an idle receiver; a late reply wakes nobody, its asker returned.
+        let message = crate::mail::present_for_delivery(&envelope, draft.followup);
         let wakes = envelope.kind != Kind::Cancel
             && (draft.followup
                 || !matches!(envelope.kind, Kind::Inform | Kind::Progress | Kind::Reply));
@@ -687,10 +694,16 @@ impl SubagentHost {
             if let Some(error) = &record.error {
                 return Err(format!("child \"{target}\" failed: {error}"));
             }
+            let messages = record.session.messages();
+            let answer = schema.and_then(|_| schema_answer(&messages));
+            let text = match answer {
+                Some(answer) => answer_text(answer),
+                None => last_assistant_text(&messages),
+            };
             (
                 record.session_name.clone(),
                 record.check.clone(),
-                last_assistant_text(&record.session.messages()).unwrap_or_default(),
+                text.unwrap_or_default(),
             )
         };
         let json = Self::json_answer(&text);

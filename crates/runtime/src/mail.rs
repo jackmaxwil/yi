@@ -440,6 +440,31 @@ pub(crate) fn is_chase(message: &AgentMessage) -> bool {
     text.starts_with(CHASE) && text.contains(CHASED)
 }
 
+pub(crate) fn present_for_delivery(envelope: &Envelope, followup: bool) -> AgentMessage {
+    let mut message = present(envelope);
+    if followup
+        && let AgentMessage::Custom {
+            details: Some(details),
+            ..
+        } = &mut message
+    {
+        details["followup"] = Value::Bool(true);
+    }
+    message
+}
+
+pub(crate) fn is_followup(message: &AgentMessage) -> bool {
+    matches!(
+        message,
+        AgentMessage::Custom {
+            custom_type,
+            details: Some(details),
+            ..
+        } if custom_type == INBOX_ENTRY
+            && details.get("followup").and_then(Value::as_bool) == Some(true)
+    )
+}
+
 fn pickled(text: &str) -> Vec<u8> {
     let length = u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes();
     [&[0x80, 2, b'X'][..], &length, text.as_bytes(), b"."].concat()

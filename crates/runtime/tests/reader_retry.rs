@@ -30,6 +30,20 @@ fn assistants(rows: &[(String, String)]) -> usize {
     rows.iter().filter(|(role, _)| role == "assistant").count()
 }
 
+async fn wait_for_assistants(session: &yi_runtime::ChildFeed, expected: usize) {
+    for _ in 0..400 {
+        let calls = session
+            .messages()
+            .iter()
+            .filter(|message| matches!(message, yi_types::message::AgentMessage::Assistant { .. }))
+            .count();
+        if calls >= expected {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 /// #989's fence, a K3.1 reader's missing field, #992's empty last word, then prose twice.
 #[tokio::test]
 async fn schema_failure_gets_one_retry_and_a_second_failure_is_refused()
@@ -62,9 +76,59 @@ async fn schema_failure_gets_one_retry_and_a_second_failure_is_refused()
     clippy::disallowed_methods,
     reason = "a FIFO holds the real read tool open while ordinary mail arrives"
 )]
-async fn ordinary_mail_does_not_reopen_the_original_schema_request()
+async fn ordinary_mail_preserves_the_schema_answer_and_its_repair()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fifo = std::env::temp_dir().join(format!("yi-reader-retry-{}", std::process::id()));
+    for (initial, calls) in [(GOOD, 2), ("{}", 3)] {
+        let fifo = std::env::temp_dir().join(format!("yi-reader-retry-{}", std::process::id()));
+        let _ = std::fs::remove_file(&fifo);
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()?
+                .success()
+        );
+        let hold = yi_ai::faux::faux_assistant_message(
+            vec![
+                yi_ai::faux::faux_text(initial),
+                yi_ai::faux::faux_tool_call("hold", "read", kwargs(json!({"path": fifo}))),
+            ],
+            yi_types::message::StopReason::ToolUse,
+        );
+        let script = vec![hold, reply("mail prose"), reply(GOOD)];
+        let family = wired_family(4, Arc::new(Mutex::new(script)), Setup::default())?;
+        let args = json!({"name": "retry", "role": "reader", "schema": schema()});
+        family.host.spawn("answer".to_owned(), kwargs(args))?;
+        let session = family.host.children_view().pop().ok_or("no child")?.session;
+        for _ in 0..400 {
+            if session.status() == yi_runtime::Status::Running {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let sent = family
+            .host
+            .route("parent", "retry", "ordinary mail", false)?;
+        assert_eq!(sent["receipts"][0]["state"], "queued", "{sent:?}");
+        std::fs::write(&fifo, "held\n")?;
+        wait_for_assistants(&session, calls).await;
+        let rows = child_rows(&family, "retry").await?;
+        assert_eq!(assistants(&rows), calls, "{initial}: {rows:?}");
+        assert_eq!(
+            family.host.result("retry", Some(&schema()))?["json"]["answer"],
+            "sea"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a FIFO holds the real read tool open while a follow-up arrives"
+)]
+async fn a_follow_up_delivered_mid_run_gets_its_own_repair()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fifo = std::env::temp_dir().join(format!("yi-reader-followup-{}", std::process::id()));
     let _ = std::fs::remove_file(&fifo);
     assert!(
         std::process::Command::new("mkfifo")
@@ -72,48 +136,60 @@ async fn ordinary_mail_does_not_reopen_the_original_schema_request()
             .status()?
             .success()
     );
-    let followup = yi_ai::faux::faux_assistant_message(
-        vec![
-            yi_ai::faux::faux_text(GOOD),
-            yi_ai::faux::faux_tool_call("hold", "read", kwargs(json!({"path": fifo}))),
-        ],
+    let hold = yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_tool_call(
+            "hold",
+            "read",
+            kwargs(json!({"path": fifo})),
+        )],
         yi_types::message::StopReason::ToolUse,
     );
-    let script = vec![reply(GOOD), followup, reply("mail prose"), reply(GOOD)];
+    let script = vec![hold, reply("{}"), reply(GOOD)];
     let family = wired_family(4, Arc::new(Mutex::new(script)), Setup::default())?;
     let args = json!({"name": "retry", "role": "reader", "schema": schema()});
     family.host.spawn("answer".to_owned(), kwargs(args))?;
-    let initial = child_rows(&family, "retry").await?;
-    assert_eq!(assistants(&initial), 1, "{initial:?}");
     let session = family.host.children_view().pop().ok_or("no child")?.session;
-    family
-        .host
-        .route("parent", "retry", "another request", true)?;
     for _ in 0..400 {
         if session.status() == yi_runtime::Status::Running {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    let sent = family
+    family
         .host
-        .route("parent", "retry", "ordinary mail", false)?;
-    assert_eq!(sent["receipts"][0]["state"], "queued", "{sent:?}");
+        .route("parent", "retry", "another request", true)?;
     std::fs::write(&fifo, "held\n")?;
+    wait_for_assistants(&session, 3).await;
     let rows = child_rows(&family, "retry").await?;
     assert_eq!(assistants(&rows), 3, "{rows:?}");
+    assert_eq!(
+        family.host.result("retry", Some(&schema()))?["json"]["answer"],
+        "sea"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_mail_waking_an_idle_reader_does_not_reopen_its_schema_task()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (family, initial) = run(Setup::default(), &[GOOD, "mail prose", GOOD]).await?;
+    assert_eq!(assistants(&initial), 1, "{initial:?}");
+    family.host.send(
+        "parent",
+        &kwargs(json!({"target": "retry", "message": "ordinary request", "kind": "request"})),
+    )?;
+    let rows = child_rows(&family, "retry").await?;
+    assert_eq!(assistants(&rows), 2, "{rows:?}");
     assert!(
         !rows
             .iter()
             .any(|(role, text)| { role == "user" && text.contains("schema retry:") }),
         "{rows:?}"
     );
-    let error = family
-        .host
-        .result("retry", Some(&schema()))
-        .err()
-        .ok_or_else(|| format!("mail prose unexpectedly satisfied the schema: {rows:?}"))?;
-    assert!(error.contains("mail prose"), "{error}");
+    assert_eq!(
+        family.host.result("retry", Some(&schema()))?["json"]["answer"],
+        "sea"
+    );
     Ok(())
 }
 
