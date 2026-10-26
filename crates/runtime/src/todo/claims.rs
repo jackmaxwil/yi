@@ -15,7 +15,10 @@ pub struct History {
 }
 
 impl History {
-    fn observe_records(&mut self, store: &yi_session::SharedSession) -> Vec<(String, String)> {
+    fn observe_records(
+        &mut self,
+        store: &yi_session::SharedSession,
+    ) -> (usize, Vec<(String, String)>) {
         let mut after = self.scanned_seq;
         let mut entries = Vec::new();
         yi_session::lock_session(store).find_on_branch("main", |entry| {
@@ -29,6 +32,7 @@ impl History {
             entries.push(entry.clone());
             None
         });
+        let count = entries.len();
         entries.reverse();
         let mut records = Vec::new();
         for entry in entries {
@@ -85,7 +89,7 @@ impl History {
                 _ => {}
             }
         }
-        records
+        (count, records)
     }
 
     pub fn claims_cached(
@@ -101,7 +105,7 @@ impl History {
             self.claims.clear();
         }
         let previous = std::mem::take(&mut self.claims);
-        let records = self.observe_records(store);
+        let (_, records) = self.observe_records(store);
         if self.touched == Some(touched) && records.is_empty() {
             self.claims = previous;
             return self.claims.clone();
@@ -247,12 +251,25 @@ mod tests {
             yi_session::lock_session(&store).append_entry(entry, "main")?;
         }
         let mut history = History::default();
-        assert!(
-            history
-                .claims_cached(&TodoList::default(), &store, 0)
-                .is_empty()
-        );
+        assert_eq!(history.observe_records(&store).0, 2);
         assert_eq!(history.seen(), "current prompt\n");
+        let entry = Entry::Message {
+            id: "e3".to_owned(),
+            message: serde_json::from_value(serde_json::json!({
+                "role": "user", "content": "next prompt", "attribution": "user", "timestamp": 3
+            }))?,
+            terminate: None,
+            parent_id: None,
+            seq: 3,
+            timestamp: 3,
+        };
+        yi_session::lock_session(&store).append_entry(entry, "main")?;
+        assert_eq!(
+            history.observe_records(&store).0,
+            1,
+            "only the appended entry is read"
+        );
+        assert_eq!(history.seen(), "next prompt\n");
         Ok(())
     }
 }
