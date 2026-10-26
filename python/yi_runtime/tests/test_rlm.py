@@ -298,6 +298,10 @@ class ContextKeysTests(unittest.TestCase):
         with mock.patch.object(rlm, "get_ipython", lambda: shell):
             resolved = rlm._resolve_context({"context_keys": ["xs"]})
         self.assertGreater(len(resolved["context"]["xs"]), rlm.CONTEXT_VALUE_CAP)
+        self.assertEqual(
+            resolved["context_chars"],
+            {"xs": len(json.dumps(shell.user_ns["xs"]))},
+        )
 
 
 class BlackboardTests(unittest.IsolatedAsyncioTestCase):
