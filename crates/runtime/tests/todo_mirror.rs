@@ -966,6 +966,158 @@ fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
     }
     Ok(())
 }
+/// Dies with the 2s wait budget expiring under plan churn: a stale armed unblock used to
+/// retry until it won; now it refuses and the blocked row stays blocked for a later fire.
+#[test]
+fn a_wait_under_constant_plan_churn_refuses_at_the_budget() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-budget")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let gate = TodoLabel::new("gate")?;
+    let address = "clock://at 2026-09-29T09:00Z".to_owned();
+    engine.apply(owner(Op::Block {
+        label: gate.clone(),
+        on: BlockedOn::Channel {
+            address: address.clone(),
+            filter: None,
+        },
+        note: "approve at nine".to_owned(),
+        ask: None,
+    }))?;
+    engine.apply(owner(Op::Append {
+        todos: vec![spec("churn", false)?],
+    }))?;
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let stop = std::time::Instant::now() + std::time::Duration::from_millis(2600);
+    let churners: Vec<_> = (0..16)
+        .map(|round| {
+            let engine = Arc::clone(&engine);
+            let row = TodoLabel::new(format!("churn-{round}"))?;
+            engine.apply(owner(Op::Append {
+                todos: vec![spec(&format!("churn-{round}"), false)?],
+            }))?;
+            Ok::<_, Box<dyn Error>>(std::thread::spawn(move || -> Result<(), String> {
+                while std::time::Instant::now() < stop {
+                    engine
+                        .apply(owner(Op::Block {
+                            label: row.clone(),
+                            on: BlockedOn::Channel {
+                                address: format!("channel://churn-{round}"),
+                                filter: None,
+                            },
+                            note: "churn".to_owned(),
+                            ask: None,
+                        }))
+                        .map_err(|error| error.to_string())?;
+                    engine
+                        .apply(owner(Op::Unblock {
+                            label: row.clone(),
+                            answer: None,
+                        }))
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            }))
+        })
+        .collect::<Result<_, Box<dyn Error>>>()?;
+    let carried = todos.unblock_in(&plan.id, &gate, &address);
+    let churned = churners
+        .into_iter()
+        .map(|thread| {
+            thread
+                .join()
+                .map_err(|_| "a churn thread panicked".to_owned())?
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let error = match carried {
+        Err(error) => error,
+        Ok(_) => {
+            return Err(
+                format!("the carry unblocked the row under constant churn: {churned:?}").into(),
+            );
+        }
+    };
+    assert!(
+        error.contains("still waits on clock://at 2026-09-29T09:00Z")
+            && error.contains("the plan kept changing for 2s"),
+        "{error}"
+    );
+    let fresh = engine.store().read(&engine.store().roots()?[0])?;
+    let row = fresh.todo(&gate).ok_or("gate")?;
+    assert!(
+        matches!(row.state, TodoState::Blocked { .. }),
+        "the plan forgot the block: {:?}",
+        row.state
+    );
+    Ok(())
+}
+
+/// Dies with the stale retry still unblocking once the churn stops: the budget refuses only
+/// while the plan keeps changing, and a fresh revision carries the unblock through.
+#[test]
+fn a_wait_unblocks_once_the_plan_churn_stops() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-churn-stops")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let gate = TodoLabel::new("gate")?;
+    let address = "clock://at 2026-09-29T09:00Z".to_owned();
+    engine.apply(owner(Op::Block {
+        label: gate.clone(),
+        on: BlockedOn::Channel {
+            address: address.clone(),
+            filter: None,
+        },
+        note: "approve at nine".to_owned(),
+        ask: None,
+    }))?;
+    engine.apply(owner(Op::Append {
+        todos: vec![spec("churn", false)?],
+    }))?;
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let stop = std::time::Instant::now() + std::time::Duration::from_millis(400);
+    let churn = {
+        let engine = Arc::clone(&engine);
+        let row = TodoLabel::new("churn")?;
+        std::thread::spawn(move || -> Result<(), String> {
+            while std::time::Instant::now() < stop {
+                engine
+                    .apply(owner(Op::Block {
+                        label: row.clone(),
+                        on: BlockedOn::Channel {
+                            address: "channel://churn".to_owned(),
+                            filter: None,
+                        },
+                        note: "churn".to_owned(),
+                        ask: None,
+                    }))
+                    .map_err(|error| error.to_string())?;
+                engine
+                    .apply(owner(Op::Unblock {
+                        label: row.clone(),
+                        answer: None,
+                    }))
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    };
+    let carried = todos.unblock_in(&plan.id, &gate, &address);
+    churn
+        .join()
+        .map_err(|_| "the churn thread panicked".to_string())??;
+    assert!(carried?, "the row stopped waiting on its address");
+    let fresh = engine.store().read(&engine.store().roots()?[0])?;
+    let row = fresh.todo(&gate).ok_or("gate")?;
+    assert!(
+        !matches!(row.state, TodoState::Blocked { .. }),
+        "the plan still waits: {:?}",
+        row.state
+    );
+    Ok(())
+}
 
 /// Dies with the rows a finished plan absorbed from the session's own list lost when the next
 /// plan takes the list: the model's `todo done` on them was refused as stale (stage 5 run 3).
