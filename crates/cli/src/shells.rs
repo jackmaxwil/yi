@@ -150,7 +150,8 @@ fn print_resume_hint(session: &yi_runtime::AgentSession, id: &str) {
     if session.messages().is_empty() {
         return;
     }
-    eprintln!("\n\x1b[2mResume this session with `yi --session {id}`\x1b[0m");
+    eprintln!();
+    crate::tty::eprint_dim(&format!("Resume this session with `yi --session {id}`"));
 }
 
 /// The quit line says where the work is before the slot is handed back.
