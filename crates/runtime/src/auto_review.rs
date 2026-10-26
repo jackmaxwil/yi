@@ -96,7 +96,7 @@ impl Reviewer {
     }
 
     pub async fn review(&self, request: &ReviewRequest) -> ReviewOutcome {
-        let mut session = AgentSession::new(
+        let session = AgentSession::new(
             SessionConfig {
                 system_prompt: AUTO_REVIEW_PROMPT.to_owned(),
                 model: self.model.clone(),

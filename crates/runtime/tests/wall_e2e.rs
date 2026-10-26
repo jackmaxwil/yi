@@ -667,7 +667,7 @@ pub(crate) fn plant_transcripts(
     })
 }
 
-/// The juror's shape (`plan/judge.rs`): every write walled, `history://` walled.
+/// A walled session that reads and judges: every write walled, `history://` walled.
 pub(crate) fn juror_wall(project: &std::path::Path) -> Wall {
     Wall {
         deny_write: vec![project.to_path_buf()],

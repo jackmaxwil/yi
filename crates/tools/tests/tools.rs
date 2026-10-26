@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
@@ -900,9 +901,15 @@ fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
             "{command}"
         );
     }
-    // Kept only where a pointer names it: a 13,893-byte output left whole leaves no file.
-    let whole =
-        BashTool::default().execute(args(&[("command", json!("seq 1 3000 # -v"))]), &context);
+    // Real ls output past the floor stays whole under its own -la bypass and leaves no file.
+    fs::create_dir(dir.join("many"))?;
+    for n in 0..200 {
+        fs::write(
+            dir.join(format!("many/file-{n:03}-abcdefghijklmnopqrstuvwxyz")),
+            "",
+        )?;
+    }
+    let whole = BashTool::default().execute(args(&[("command", json!("ls -la many"))]), &context);
     assert!(!output_text(&whole).contains("[full output:"));
     // `seq 1 8000` twice is one file: equal bytes share their name.
     assert_eq!(
@@ -977,6 +984,56 @@ fn a_verbose_command_is_left_alone() -> TestResult {
     let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
+    Ok(())
+}
+
+#[test]
+fn reducer_bypass_flags_are_scoped_to_their_programs() -> TestResult {
+    let dir = temp_dir("reduce-flag-programs")?;
+    let raw = fs::read_to_string(reduce_fixture("rg-many-files.txt"))?;
+    for command in [
+        "cargo test -- --nocapture",
+        "pytest -v",
+        "git status --porcelain",
+        "ls -la",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "cd /tmp && cargo test -- --nocapture",
+        "cd repo; git status --porcelain",
+        "cd /tmp && /usr/bin/cargo test \"--nocapture\"",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "grep -v needle",
+        "git -C repo status",
+        "ls -C",
+        "cargo -C repo test",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert!(reduced.out_bytes < reduced.raw_bytes, "{command}");
+    }
+    for command in [
+        "go test -v",
+        "python3 -m pytest -v",
+        "python -m unittest --verbose",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert_eq!(reduced.text, raw, "{command}");
+    }
+    for command in [
+        "go build -v",
+        "cargo test; grep -v needle file",
+        "python -c 'print(\"pytest\")' -v",
+        "python3 -c 'print(\"unittest\")' --verbose",
+    ] {
+        let reduced = yi_tools::reduce(command, &raw, "", 0, None, Some(&dir), None);
+        assert!(reduced.out_bytes < reduced.raw_bytes, "{command}");
+    }
     Ok(())
 }
 
@@ -1543,6 +1600,183 @@ fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_failed_spawn_leaves_no_running_job() -> TestResult {
+    let dir = temp_dir("job-spawn-failure")?;
+    let missing = dir.join("removed");
+    fs::create_dir(&missing)?;
+    fs::remove_dir(&missing)?;
+    let mut context = ToolContext::new(missing);
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let output = BashTool::default().execute(
+        args(&[("command", json!("printf ghost")), ("wait", json!(5))]),
+        &context,
+    );
+    assert!(output.is_error);
+    assert!(
+        yi_tools::jobs::registry().running_under(&dir).is_empty(),
+        "a failed spawn left a ghost job"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_running_poll_shows_output_and_kill_ends_the_job() -> TestResult {
+    let dir = temp_dir("job-running-poll")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let run = yi_tools::run_or_background(
+        "printf before; touch ready; sleep 30",
+        &context,
+        Some(Duration::ZERO),
+        Duration::from_secs(60),
+        None,
+        None,
+    )?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the command did not become a job".into());
+    };
+    for _ in 0..500 {
+        if dir.join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(dir.join("ready").exists(), "producer did not print before");
+    let running = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+    let running_text = output_text(&running);
+    let killed = BashTool::default().execute(
+        args(&[
+            ("job", json!(id.0)),
+            ("kill", json!(true)),
+            ("wait", json!(5)),
+        ]),
+        &context,
+    );
+    let killed_text = output_text(&killed);
+    let _cleanup = yi_tools::jobs::registry().kill(id);
+    assert!(running_text.contains("before"), "{running_text}");
+    assert!(killed_text.contains("killed"), "{killed_text}");
+    Ok(())
+}
+
+#[test]
+fn a_running_poll_view_names_its_ceiling_only_one_byte_past_it() -> TestResult {
+    let dir = temp_dir("job-running-view-ceiling")?;
+    for (bytes, cut) in [
+        (yi_tools::VIEW_CEILING, false),
+        (yi_tools::VIEW_CEILING + 1, true),
+    ] {
+        let mut context = ToolContext::new(dir.to_path_buf());
+        context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+        let command = format!("head -c {bytes} /dev/zero | tr '\\0' x; touch ready; sleep 30");
+        let run = yi_tools::run_or_background(
+            &command,
+            &context,
+            Some(Duration::ZERO),
+            Duration::from_secs(60),
+            None,
+            None,
+        )?;
+        let yi_tools::Run::Backgrounded(id) = run else {
+            return Err("the command did not become a job".into());
+        };
+        for _ in 0..500 {
+            if dir.join("ready").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            dir.join("ready").exists(),
+            "producer did not finish {bytes} bytes"
+        );
+        fs::remove_file(dir.join("ready"))?;
+        let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+        let text = output_text(&polled);
+        let _cleanup = yi_tools::jobs::registry().kill(id);
+        assert_eq!(
+            text.contains("(VIEW_CEILING 16384)"),
+            cut,
+            "{bytes}: {text}"
+        );
+    }
+    Ok(())
+}
+#[test]
+fn a_running_poll_names_output_dropped_from_its_live_buffer() -> TestResult {
+    let dir = temp_dir("job-running-live-cap")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.job_owner = Some(yi_tools::jobs::JobOwner::mint());
+    let run = yi_tools::run_or_background(
+        "head -c 55000 /dev/zero | tr '\\0' x; touch ready; sleep 30",
+        &context,
+        Some(Duration::ZERO),
+        Duration::from_secs(60),
+        None,
+        None,
+    )?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the command did not become a job".into());
+    };
+    for _ in 0..500 {
+        if dir.join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        dir.join("ready").exists(),
+        "producer did not emit 55,000 bytes"
+    );
+    let polled = BashTool::default().execute(args(&[("job", json!(id.0))]), &context);
+    let text = output_text(&polled);
+    let _cleanup = yi_tools::jobs::registry().kill(id);
+    assert!(text.contains("30000 of 55000"), "{text}");
+    assert!(text.contains("(OUTPUT_CAP 30000)"), "{text}");
+    assert!(
+        text.contains("of 55000 bytes kept (VIEW_CEILING 16384)"),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_poll_cannot_cross_job_owners() -> TestResult {
+    let dir = temp_dir("job-poll-owner")?;
+    let first = yi_tools::jobs::JobOwner::mint();
+    let second = yi_tools::jobs::JobOwner::mint();
+    let context = |owner| {
+        let mut context = ToolContext::new(dir.to_path_buf());
+        context.job_owner = Some(owner);
+        context
+    };
+    let start = |command: &str, context: &ToolContext| -> Result<yi_tools::JobId, String> {
+        let run = yi_tools::run_or_background(
+            command,
+            context,
+            Some(Duration::ZERO),
+            Duration::from_secs(60),
+            None,
+            None,
+        )?;
+        match run {
+            yi_tools::Run::Backgrounded(id) => Ok(id),
+            _ => Err("the command did not become a job".to_owned()),
+        }
+    };
+    let one = start("sleep 30", &context(first))?;
+    let two = start("sleep 30", &context(second))?;
+    let own = BashTool::default().execute(args(&[("job", json!(one.0))]), &context(first));
+    let other = BashTool::default().execute(args(&[("job", json!(one.0))]), &context(second));
+    let _cleanup = [
+        yi_tools::jobs::registry().kill(one),
+        yi_tools::jobs::registry().kill(two),
+    ];
+    assert!(!own.is_error, "{}", output_text(&own));
+    assert!(other.is_error, "{}", output_text(&other));
+    Ok(())
+}
 #[test]
 fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     let tool = BashTool::default();
