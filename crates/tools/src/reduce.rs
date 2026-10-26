@@ -36,13 +36,7 @@ fn skip_reduction(command: &str) -> bool {
         .any(|segment| {
             let words: Vec<&str> = segment.iter().map(String::as_str).collect();
             let has = |flags: &[&str]| words.iter().any(|word| flags.contains(word));
-            let Some(at) = words.iter().position(|word| !word.contains('=')) else {
-                return false;
-            };
-            let Some(program) = words
-                .get(at)
-                .map(|word| word.rsplit('/').next().unwrap_or(word))
-            else {
+            let Some((at, program)) = program(words.iter().copied()) else {
                 return false;
             };
             const TEST_RAW: [&str; 3] = ["-v", "--verbose", "--nocapture"];
@@ -357,7 +351,7 @@ fn select(
         return diagnostics(&stripped, budget, numbering);
     }
     let rows = compress(&stripped, 0);
-    match program(command) {
+    match program(command.split_whitespace()).map(|(_, program)| program) {
         Some("cargo") => cargo(&rows, exit_code, budget, numbering),
         Some("grep" | "rg" | "ag") => {
             let rows = per_file(&rows, numbering);
@@ -385,11 +379,12 @@ fn join_streams(stdout: &str, stderr: &str) -> String {
     }
 }
 
-fn program(command: &str) -> Option<&str> {
-    command
-        .split_whitespace()
-        .find(|word| !word.contains('='))
-        .map(|word| word.rsplit('/').next().unwrap_or(word))
+fn program<'a>(words: impl IntoIterator<Item = &'a str>) -> Option<(usize, &'a str)> {
+    words
+        .into_iter()
+        .enumerate()
+        .find(|(_, word)| !word.contains('='))
+        .map(|(at, word)| (at, word.rsplit('/').next().unwrap_or(word)))
 }
 
 /// A green cargo run is a progress log with one line that matters; a red one
