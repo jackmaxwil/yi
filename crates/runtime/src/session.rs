@@ -314,11 +314,19 @@ impl AgentSession {
     }
 
     pub fn set_turn_cap(&self, turns: u32) {
+        self.restore_turn_cap(Some(turns));
+    }
+
+    pub(crate) fn turn_cap(&self) -> Option<u32> {
+        self.shared.turn_cap.lock().ok().and_then(|cap| *cap)
+    }
+
+    pub(crate) fn restore_turn_cap(&self, turns: Option<u32>) {
         *self
             .shared
             .turn_cap
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(turns);
+            .unwrap_or_else(PoisonError::into_inner) = turns;
     }
 
     pub fn set_request_shape(&self, shape: RequestShape) {

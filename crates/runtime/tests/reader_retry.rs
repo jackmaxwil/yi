@@ -1,5 +1,5 @@
 use crate::compaction_faux::{anthropic_sse, openrouter_stand_in};
-use crate::reader_e2e::{Setup, child_rows, faux_model, kwargs, reply, wired_family};
+use crate::reader_e2e::{Family, Setup, child_rows, faux_model, kwargs, reply, wired_family};
 
 use std::sync::{Arc, Mutex};
 
@@ -17,13 +17,13 @@ fn schema() -> Value {
 async fn run(
     setup: Setup,
     answers: &[&str],
-) -> Result<(Arc<yi_runtime::SubagentHost>, Vec<(String, String)>), Box<dyn std::error::Error>> {
+) -> Result<(Family, Vec<(String, String)>), Box<dyn std::error::Error>> {
     let script = answers.iter().map(|text| reply(text)).collect();
     let family = wired_family(4, Arc::new(Mutex::new(script)), setup)?;
     let args = json!({"name": "retry", "role": "reader", "schema": schema()});
     family.host.spawn("answer".to_owned(), kwargs(args))?;
     let rows = child_rows(&family, "retry").await?;
-    Ok((family.host, rows))
+    Ok((family, rows))
 }
 
 fn assistants(rows: &[(String, String)]) -> usize {
@@ -40,7 +40,7 @@ async fn schema_failure_gets_one_retry_and_a_second_failure_is_refused()
         ("", GOOD, 2, "answer contains no JSON value", true),
         ("prose", "still prose", 2, "", false),
     ] {
-        let (host, rows) = run(Setup::default(), &[bad, next]).await?;
+        let (family, rows) = run(Setup::default(), &[bad, next]).await?;
         assert_eq!(assistants(&rows), calls, "{bad}: {rows:?}");
         assert!(
             error.is_empty()
@@ -49,7 +49,7 @@ async fn schema_failure_gets_one_retry_and_a_second_failure_is_refused()
                     .any(|(role, text)| { role == "user" && text.contains(error) }),
             "retry error {error}: {rows:?}"
         );
-        match host.result("retry", Some(&schema())) {
+        match family.host.result("retry", Some(&schema())) {
             Ok(value) => assert!(valid && value["json"]["answer"] == "sea"),
             Err(error) => assert!(!valid && error.contains("text, not JSON"), "{error}"),
         }
@@ -66,6 +66,7 @@ async fn an_anthropic_retry_over_tool_blocks_is_one_cold_text_request()
         anthropic_sse(&call, "tool_use"),
         anthropic_sse(&json!({"type": "text", "text": "{}"}), "end_turn"),
         anthropic_sse(&json!({"type": "text", "text": GOOD}), "end_turn"),
+        anthropic_sse(&json!({"type": "text", "text": GOOD}), "end_turn"),
     ])?;
     let mut model = faux_model(200_000);
     model.id = "claude-haiku-4-5".into();
@@ -76,8 +77,11 @@ async fn an_anthropic_retry_over_tool_blocks_is_one_cold_text_request()
         model: Some(model),
         ..Setup::default()
     };
-    let (_, rows) = run(setup, &[]).await?;
+    let (family, rows) = run(setup, &[]).await?;
     assert_eq!(assistants(&rows), 3, "{rows:?}");
+    family.host.route("parent", "retry", "answer again", true)?;
+    let rows = child_rows(&family, "retry").await?;
+    assert_eq!(assistants(&rows), 4, "{rows:?}");
     let bodies = served.join().map_err(|_| "the stand-in panicked")?;
     let cold: Value = serde_json::from_str(bodies.get(2).ok_or("no cold request")?)?;
     let sent = cold["messages"].as_array().ok_or("no messages")?;
@@ -89,5 +93,63 @@ async fn an_anthropic_retry_over_tool_blocks_is_one_cold_text_request()
     assert!(text.contains("read("));
     assert!(text.contains(MISSING));
     assert!(!text.contains("tool_use") && !text.contains("tool_result"));
+    let follow_up: Value = serde_json::from_str(bodies.get(3).ok_or("no follow-up")?)?;
+    assert!(follow_up.get("tools").is_some(), "{follow_up}");
+    assert!(
+        follow_up["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() > 1),
+        "{follow_up}"
+    );
+    assert!(follow_up.to_string().contains("tool_use"), "{follow_up}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follow_up_restores_tools_and_gets_its_own_repair()
+-> Result<(), Box<dyn std::error::Error>> {
+    let follow_up_call = json!({"type": "tool_use", "id": "toolu_2", "name": "read"});
+    let (port, served) = openrouter_stand_in(vec![
+        anthropic_sse(&json!({"type": "text", "text": "{}"}), "end_turn"),
+        anthropic_sse(&json!({"type": "text", "text": GOOD}), "end_turn"),
+        anthropic_sse(&follow_up_call, "tool_use"),
+        anthropic_sse(&json!({"type": "text", "text": "{}"}), "end_turn"),
+        anthropic_sse(&json!({"type": "text", "text": GOOD}), "end_turn"),
+    ])?;
+    let mut model = faux_model(200_000);
+    model.id = "claude-haiku-4-5".into();
+    model.api = "anthropic-messages".into();
+    model.provider = "anthropic".into();
+    let setup = Setup {
+        provider: Some(crate::upstream::stream(&model, port, false)?),
+        model: Some(model),
+        ..Setup::default()
+    };
+    let (family, rows) = run(setup, &[]).await?;
+    assert_eq!(assistants(&rows), 2, "{rows:?}");
+    family.host.route("parent", "retry", "answer again", true)?;
+    let rows = child_rows(&family, "retry").await?;
+    assert_eq!(assistants(&rows), 5, "{rows:?}");
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let requests: Vec<Value> = bodies
+        .iter()
+        .map(|body| serde_json::from_str(body))
+        .collect::<Result<_, _>>()?;
+    let warm = requests.get(1).ok_or("no initial repair")?;
+    assert!(
+        warm["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() > 1)
+    );
+    assert!(warm.get("tools").is_none());
+    let follow_up = requests.get(2).ok_or("no follow-up request")?;
+    assert!(follow_up.get("tools").is_some(), "{follow_up}");
+    let cold = requests.get(4).ok_or("no follow-up repair")?;
+    assert_eq!(cold["messages"].as_array().map(Vec::len), Some(1));
+    assert!(cold.get("tools").is_none());
+    assert_eq!(
+        family.host.result("retry", Some(&schema()))?["json"]["answer"],
+        "sea"
+    );
     Ok(())
 }
