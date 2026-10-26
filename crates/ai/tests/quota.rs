@@ -3,7 +3,6 @@
 //! and OpenAI's documented `insufficient_quota` error.
 
 use std::error::Error;
-use std::io::{BufReader, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,8 +10,7 @@ use serde_json::{Value, json};
 use yi_ai::kimi::usage_line;
 use yi_ai::retry::quota_exhausted;
 
-use crate::loopback::read_request;
-
+use crate::loopback_server::serve;
 type TestResult = Result<(), Box<dyn Error>>;
 
 const MOONSHOT_QUOTA: &str = r#"{"error":{"message":"You exceeded your current token quota: please check your account balance","type":"exceeded_current_quota_error"}}"#;
@@ -22,22 +20,11 @@ const THROTTLE: &str =
 
 /// Answers every request with a 429 carrying `body`; the count is every request that arrived.
 fn refusing(body: &'static str) -> std::io::Result<(u16, Arc<AtomicUsize>)> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let seen = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut reader = BufReader::new(stream);
-            let _ = read_request(&mut reader);
-            counted.fetch_add(1, Ordering::SeqCst);
-            let reply = format!(
-                "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = reader.get_mut().write_all(reply.as_bytes());
-        }
-    });
+    let reply = format!(
+        "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (port, seen, _) = serve(std::iter::repeat(reply))?;
     Ok((port, seen))
 }
 
