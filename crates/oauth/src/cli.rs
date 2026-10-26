@@ -1,6 +1,7 @@
 use crate::flow::{self, LoginOptions};
 use crate::registry;
-use crate::store::Store;
+use crate::store::{self, Store};
+use yi_types::oauth::{CREDENTIAL_SCHEMA, CredentialFile};
 
 fn env_proxy() -> Result<Option<ureq::Proxy>, String> {
     let url = ["HTTPS_PROXY", "HTTP_PROXY"]
@@ -20,7 +21,9 @@ fn env_proxy() -> Result<Option<ureq::Proxy>, String> {
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: yi login [--list] <provider> [--no-browser] [--key <secret>]");
+    eprintln!(
+        "usage: yi login [--list] <provider> [--no-browser] [--key <secret>] [--refresh <seconds>]"
+    );
     eprintln!("       yi logout [provider]");
     eprintln!(
         "profiles: ~/.yi/oauth/<provider>.json (yi ships none; see docs/examples/oauth-profile.json and oauth-device-profile.json)"
@@ -46,6 +49,7 @@ fn login(args: &[String]) -> i32 {
     let mut list = false;
     let mut provider = None;
     let mut key = None;
+    let mut refresh = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -58,6 +62,14 @@ fn login(args: &[String]) -> i32 {
                     return usage();
                 };
                 key = Some(value.clone());
+            }
+            "--refresh" => {
+                let seconds = rest.next().and_then(|value| value.parse::<u64>().ok());
+                let Some(seconds) = seconds else {
+                    eprintln!("error: --refresh needs a whole number of seconds");
+                    return 2;
+                };
+                refresh = Some(std::time::Duration::from_secs(seconds));
             }
             other if other.starts_with('-') => {
                 if let Some(value) = other.strip_prefix("--key=") {
@@ -97,9 +109,43 @@ fn login(args: &[String]) -> i32 {
             return 2;
         }
     };
+    if refresh.is_some() && (list || no_browser || key.is_some()) {
+        eprintln!("error: --refresh cannot be combined with --list, --no-browser or --key");
+        return 2;
+    }
     if key.is_some() && !matches!(kind, registry::Kind::ApiKey) {
         eprintln!("error: --key is only for pasted API keys (openai, openrouter, google)");
         return 2;
+    }
+    if let Some(lifetime) = refresh {
+        let registry::Kind::OauthCode(spec) = kind else {
+            eprintln!("error: --refresh requires a provider with an OAuth profile");
+            return 2;
+        };
+        let result = flow::live_oauth_for(&spec, &Store::user(), lifetime, proxy.as_ref())
+            .and_then(|credential| {
+                let file = CredentialFile {
+                    version: CREDENTIAL_SCHEMA,
+                    kind: "oauth".to_owned(),
+                    access: credential.access,
+                    refresh: None,
+                    expires_ms: credential.expires.map(store::millis).unwrap_or(0),
+                    account: None,
+                    org: None,
+                    extra: Default::default(),
+                };
+                serde_json::to_string(&file).map_err(crate::Error::from)
+            });
+        return match result {
+            Ok(json) => {
+                println!("{json}");
+                0
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                1
+            }
+        };
     }
     let result = match kind {
         registry::Kind::Cursor => crate::cursor::login_ureq(no_browser, proxy.as_ref()),
