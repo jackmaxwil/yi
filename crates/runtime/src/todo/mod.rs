@@ -225,7 +225,6 @@ pub struct TodoStore {
     on_change: Mutex<Vec<ChangeHook>>,
     resync: Mutex<Option<Arc<ResyncFn>>>,
     carry: Mutex<Option<Arc<CarryFn>>>,
-    wait: Mutex<()>,
 }
 
 pub struct Applied {
@@ -245,7 +244,6 @@ impl TodoStore {
             actor: actor.into(),
             on_change: Mutex::new(Vec::new()),
             resync: Mutex::new(None),
-            wait: Mutex::new(()),
             carry: Mutex::new(None),
         });
         this.rehydrate();
@@ -379,7 +377,6 @@ impl TodoStore {
         label: &TodoLabel,
         address: &str,
     ) -> Result<bool, String> {
-        let _guard = self.wait.lock().map_err(|_| "the wait lock is poisoned")?;
         let carry = self
             .carry
             .lock()
