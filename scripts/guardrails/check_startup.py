@@ -17,6 +17,9 @@ import json, os, shutil, subprocess, sys, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, DIST_BIN, fail
 
+VERSION = "yi --version"
+ASK = "yi ask --model faux/faux-1 hi"
+COMMANDS = (VERSION, ASK)
 
 def scratch():
     target = DIST_BIN.parent.parent
@@ -29,6 +32,11 @@ def scratch():
 
 
 def errors(bin_path, budgets, runs=50, off="", env=None):
+    if off != "required":
+        errs = [f"startup budget missing required command {args!r}" for args in COMMANDS if args not in budgets]
+        errs += [f"startup budget has unknown command {args!r}" for args in sorted(set(budgets) - set(COMMANDS))]
+        if errs:
+            return errs, []
     errs, report = [], []
     root = scratch()
     try:
@@ -51,7 +59,8 @@ def errors(bin_path, budgets, runs=50, off="", env=None):
                                   "--export-json", str(out), f"{bin_path} {argv}"],
                                  capture_output=True, text=True, cwd=root / "cwd", env=env)
             if run.returncode:
-                errs.append(f"{args}: hyperfine exit {run.returncode}: {run.stderr.strip()[-300:]}")
+                diagnostic = run.stderr.strip()
+                errs.append(f"{args}: hyperfine exit {run.returncode}: {diagnostic[-300:] if off == 'stderr' else diagnostic}")
                 continue
             min_ms = json.loads(out.read_text())["results"][0]["min"] * 1000
             report.append(f"{args}: {min_ms:.2f} ms / {max_ms:.1f} ms")
@@ -71,18 +80,34 @@ echo ok
 
 
 def selfcheck(off=""):
-    """A stand-in that sleeps 20 ms on one entry's first argument fails that entry, and only that
-    one, against a 10 ms budget; it refuses to answer outside the scratch HOME and cwd, or below a visible repository."""
-    budgets = {"yi --version": 10.0, "yi ask --model faux/faux-1 hi": 10.0}
+    """Each required command is timed, a missing or renamed entry is refused, and hyperfine's
+    diagnostic is preserved whole; the stand-in also proves the scratch HOME, cwd and git ceiling."""
+    budgets = dict.fromkeys(COMMANDS, 10.0)
     errs = []
     with tempfile.TemporaryDirectory() as tmp:
         stand_in = pathlib.Path(tmp) / "yi"
         stand_in.write_text(STAND_IN)
         stand_in.chmod(0o755)
-        for slow, args in (("--version", "yi --version"), ("ask", "yi ask --model faux/faux-1 hi")):
+        for slow, args in (("--version", VERSION), ("ask", ASK)):
             found, _ = errors(stand_in, budgets, runs=3, off=off, env={"SLOW": slow})
             if len(found) != 1 or not found[0].startswith(f"{args}: ") or " ms > 10.0 ms" not in found[0]:
                 errs.append(f"slow {slow}: gate said {found}, not one over-budget line for {args!r}")
+        missing = f"startup budget missing required command {ASK!r}"
+        renamed = "yi ask --model faux/faux-1 renamed"
+        for candidate, want in (
+            ({VERSION: 10.0}, [missing]),
+            ({VERSION: 10.0, renamed: 10.0}, [missing, f"startup budget has unknown command {renamed!r}"]),
+        ):
+            found, _ = errors(stand_in, candidate, runs=1, off=off)
+            if found != want:
+                errs.append(f"required commands {sorted(candidate)}: gate said {found}, not {want}")
+        from unittest import mock
+        diagnostic = "0" * 500
+        completed = subprocess.CompletedProcess([], 7, stderr=diagnostic)
+        with mock.patch.object(subprocess, "run", return_value=completed):
+            found, _ = errors(stand_in, budgets, runs=1, off=off)
+        if len(found) != 2 or not all(diagnostic in line for line in found):
+            errs.append(f"500-byte hyperfine diagnostic was not preserved whole: {found}")
     return errs
 
 
@@ -91,7 +116,7 @@ if __name__ == "__main__":
         fail(["hyperfine not installed (brew install hyperfine)"], "startup")
     if "--selfcheck" in sys.argv:
         errs = selfcheck()
-        for off in ("yi --version", "yi ask --model faux/faux-1 hi", "argv", "home", "ceiling"):
+        for off in (*COMMANDS, "argv", "home", "ceiling", "required", "stderr"):
             if not selfcheck(off):
                 errs.append(f"selfcheck passes with the {off} mutant, so it refutes nothing")
         fail(errs, "startup selfcheck")

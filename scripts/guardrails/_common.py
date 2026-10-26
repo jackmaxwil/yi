@@ -23,22 +23,51 @@ def code_lines(text, off=""):
     """The file's lines with every #[cfg(test)] item blanked, so a line number still names the file's line."""
     return [("" if test else line) for line, test in zip(text.splitlines(), test_mask(text, off))]
 
+RAW = re.compile(r'b?r(#*)"')
+CHAR = re.compile(r"b?'(?:\\.|[^\\'])'")
+STRING = re.compile(r'(?:\\.|[^"\\])*"', re.S)
+
+def normal_code(text):
+    chars, at = list(text), 0
+    while at < len(text):
+        ch, word = text[at], at > 0 and (text[at - 1].isalnum() or text[at - 1] == "_")
+        end = None
+        if text.startswith("//", at):
+            end = text.find("\n", at)
+            end = len(text) if end < 0 else end
+        elif text.startswith("/*", at):
+            close = text.find("*/", at + 2)
+            end = len(text) if close < 0 else close + 2
+        elif not word and (raw := RAW.match(text, at)):
+            close = text.find('"' + raw.group(1), raw.end())
+            end = len(text) if close < 0 else close + 1 + len(raw.group(1))
+        elif ch == '"':
+            close = STRING.match(text, at + 1)
+            end = len(text) if close is None else close.end()
+        elif not word and ch in "b'" and (lit := CHAR.match(text, at)):
+            end = lit.end()
+        if end is None:
+            at += 1
+            continue
+        for index in range(at, end):
+            if chars[index] != "\n":
+                chars[index] = " "
+        at = end
+    return "".join(chars)
+
 def test_mask(text, off=""):
     """Per line, whether a #[cfg(test)] attribute covers it: the attribute covers the one item after
     it, to its matching brace or its `;`. Incident: stopping at the first marker hid 2,285 production
     lines below mid-file test helpers from every gate that reads production code."""
     mask, done = [False] * len(text.splitlines()), 0
-    for marker in re.finditer(r"^[ \t]*#\[cfg\(test\)\]", text, re.M):
+    visible = text if off == "markers" else normal_code(text)
+    for marker in re.finditer(r"^[ \t]*#\[cfg\(test\)\]", visible, re.M):
         if marker.start() < done:
             continue
         done = len(text) if off == "first" else item_end(text, marker.end())
         first, last = text.count("\n", 0, marker.start()), text.count("\n", 0, done)
         mask[first:last + 1] = [True] * (last + 1 - first)
     return mask
-
-RAW = re.compile(r'b?r(#*)"')
-CHAR = re.compile(r"b?'(?:\\.|[^\\'])'")
-STRING = re.compile(r'(?:\\.|[^"\\])*"', re.S)
 
 def item_end(text, at):
     """The offset of the `}` or `;` that ends the item starting at `at`, read past strings, raw

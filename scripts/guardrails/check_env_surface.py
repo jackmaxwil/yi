@@ -8,7 +8,7 @@ from _common import ROOT, BASE, fail
 
 CAP = 40
 SURFACES = {
-    "src": ("crates/*/src/**/*.rs",),
+    "src": ("crates/*/src/**/*.rs", "python/yi_runtime/src/**/*.py"),
     "tests": ("crates/*/tests/**/*.rs", "python/yi_runtime/tests/**/*.py"),
     "scripts": ("scripts/**/*.py", "scripts/**/*.sh", "scripts/hooks/*"),
     "workflows": (".forgejo/workflows/*.yml",),
@@ -49,11 +49,12 @@ def selfcheck(off=""):
     tree = {
         "crates/x/src/a.rs": 'std::env::var("YI_SRC_VAR")',
         "crates/x/tests/orient.rs": '.env("YI_FAKE_RIPWIRE", dir) // see docs/YI_DESIGN.md',
+        "python/yi_runtime/src/yi/example.py": 'os.environ["YI_RUNTIME_ONLY"]',
         "scripts/run.sh": 'key="${YI_SIGNING_KEY:-x}" ARC_YI_MODEL=m',
         ".forgejo/workflows/review.yml": "env:\n  YI_ROUND_AUTHORS: bot\n",
         "justfile": "bless:\n    YI_BLESS=1 cargo test\n",
     }
-    names = {"YI_SRC_VAR", "YI_FAKE_RIPWIRE", "YI_SIGNING_KEY", "YI_ROUND_AUTHORS", "YI_BLESS"}
+    names = {"YI_SRC_VAR", "YI_FAKE_RIPWIRE", "YI_SIGNING_KEY", "YI_ROUND_AUTHORS", "YI_BLESS", "YI_RUNTIME_ONLY"}
     errs = []
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -61,7 +62,7 @@ def selfcheck(off=""):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_text(text)
         found = errors(root, set(), off)[0]
-        if len(found) != 5 or not all(any(n in e for e in found) for n in names):
+        if len(found) != len(names) or not all(any(n in e for e in found) for n in names):
             errs.append(f"nothing declared: gate said {found}, not one undeclared line per surface")
         found = errors(root, names | {"YI_UNUSED"}, off)[0]
         if found != ["declared env var YI_UNUSED is read nowhere (drop it from baselines/env_vars.json)"]:
