@@ -42,6 +42,9 @@ NOT_RUN = ("unrun", "crash", "quota")
 GRACE_SEC = 60
 # Injected by the selftest: a park is hours of wall clock.
 clock, sleep = time.time, time.sleep
+ASK_ENV = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HTTPS_PROXY", "https_proxy",
+           "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+           "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
 def shape_dir():
@@ -248,6 +251,10 @@ def park_file():
     return shape_dir() / "kimi-park.json"
 
 
+def ask_env(home):
+    return {**{name: os.environ[name] for name in ASK_ENV if name in os.environ}, "HOME": str(home)}
+
+
 def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
     run = f"{family}-{spec['id']}-{uuid.uuid4().hex[:8]}"
     base = axes.runs_root("EVAL_KILL_ROOT") / test / run
@@ -264,7 +271,7 @@ def ask_once(test, family, route, spec, binary, stop_usd, ceiling_usd):
                    str(base / "sessions"), "--deadline", str(deadline), *spec.get("args", ()), spec["prompt"]]
         started = time.monotonic()
         with (base / "stderr.txt").open("w") as errors:
-            proc = subprocess.Popen(command, cwd=repo, env={**os.environ, "HOME": str(home)}, text=True,
+            proc = subprocess.Popen(command, cwd=repo, env=ask_env(home), text=True,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors,
                                     start_new_session=True)
         fired = []

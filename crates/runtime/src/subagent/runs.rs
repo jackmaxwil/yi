@@ -177,7 +177,7 @@ impl SubagentHost {
             ChildExit::Completed if service => return,
             ChildExit::Completed => {
                 let answer = super::answer_text(&messages)
-                    .map(|text| preview(&text))
+                    .map(|text| preview(&text, session_name))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
                 let silent = if replied {
                     ""
