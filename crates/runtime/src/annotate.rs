@@ -6,7 +6,7 @@ use yi_types::entry::Entry;
 use yi_types::message::AgentMessage;
 use yi_types::reclaim::{AnnotationRecord, Reclaimed};
 
-use crate::reclaim::{Cut, annotations, brief, calls, hash, never_cut, newest_reads};
+use crate::reclaim::{Cut, Sections, annotations, brief, calls, hash, never_cut, newest_reads};
 
 const NOTE_CAP: usize = 280;
 const KINDS: [&str; 3] = ["pin", "discard", "finding"];
@@ -99,7 +99,10 @@ fn target(entries: &[Entry], wanted: &str) -> Result<Target, String> {
         },
         call: call.clone(),
         result: (*result).clone(),
-        kept: never_cut(result, newest_reads(&pairs, &messages).contains(index)),
+        kept: never_cut(
+            result,
+            newest_reads(&pairs, &messages, &Sections::default()).contains(index),
+        ),
     })
 }
 

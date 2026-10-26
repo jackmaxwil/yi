@@ -10,14 +10,17 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Usage, UserContent};
 use yi_types::model::{Effort, Model};
 
+use crate::ext::Host;
 use crate::provider::ProviderStream;
 mod answer;
 mod deadline;
 mod hooks;
+mod prompt;
 mod run;
 
 pub(crate) use answer::AnswerHandle;
 use deadline::Deadline;
+use prompt::assembled_prompt;
 use run::Queued;
 pub use run::StillNews;
 
@@ -69,6 +72,7 @@ struct Shared {
     store: Mutex<Option<yi_session::SharedSession>>,
     store_error: Mutex<Option<String>>,
     events: broadcast::Sender<AgentEvent>,
+    tree_generation: Arc<std::sync::atomic::AtomicU64>,
     idle: tokio::sync::Notify,
     signal: InterruptSignal,
     on_turn_start: Mutex<Option<Arc<TurnHook>>>,
@@ -80,6 +84,7 @@ struct Shared {
     reuse: Mutex<yi_types::model::Reuse>,
     reclaimed: Arc<Mutex<crate::reclaim::Cut>>,
     /// The system bytes the first request sent; every later request must send the same (D310).
+    #[cfg(debug_assertions)]
     first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
@@ -211,12 +216,14 @@ impl AgentSession {
                 store: Mutex::new(None),
                 store_error: Mutex::new(None),
                 events,
+                tree_generation: Arc::default(),
                 idle: tokio::sync::Notify::new(),
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
                 reuse: Mutex::new(yi_types::model::Reuse::Loop),
                 reclaimed: Arc::default(),
+                #[cfg(debug_assertions)]
                 first_system_prompt: OnceLock::new(),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
@@ -300,14 +307,15 @@ impl AgentSession {
         extensions_of(&self.shared)
     }
 
+    /// Never freezes: a read before start would freeze a prompt missing its project rules.
     pub fn system_prompt(&self) -> String {
-        assembled_prompt(&self.shared, &self.config.system_prompt)
+        assembled_prompt(&self.shared, &self.config.system_prompt, Host::peek_prompt)
     }
 
     fn prompt_source(&self) -> PromptSource {
         let shared = Arc::clone(&self.shared);
         let fallback = self.config.system_prompt.clone();
-        Arc::new(move || assembled_prompt(&shared, &fallback))
+        Arc::new(move || assembled_prompt(&shared, &fallback, Host::system_prompt))
     }
 
     /// Starts the clock; the first call wins, so the budget never moves mid-run.
@@ -586,6 +594,10 @@ impl AgentSession {
 
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.shared.events.subscribe()
+    }
+
+    pub(crate) fn tree_generation(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.shared.tree_generation)
     }
 
     pub fn status(&self) -> Status {
@@ -1058,21 +1070,6 @@ fn store_of(shared: &Arc<Shared>) -> Option<yi_session::SharedSession> {
         .lock()
         .map(|handle| handle.clone())
         .unwrap_or_default()
-}
-
-fn assembled_prompt(shared: &Arc<Shared>, fallback: &str) -> String {
-    let Some(host) = extensions_of(shared) else {
-        return fallback.to_owned();
-    };
-    let assembled = host
-        .lock()
-        .map(|host| host.system_prompt())
-        .unwrap_or_default();
-    if assembled.is_empty() {
-        fallback.to_owned()
-    } else {
-        assembled
-    }
 }
 
 fn dispatch_ext(shared: &Arc<Shared>, event: &crate::ext::Event) {
