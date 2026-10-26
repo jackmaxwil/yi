@@ -33,28 +33,21 @@ pub enum Edit {
         cursor: Cursor,
         text: String,
         line_num: u64,
-        index: usize,
         replacement: bool,
-        block_start: Option<u64>,
     },
     Delete {
         anchor: Anchor,
         line_num: u64,
-        index: usize,
-        old_assertion: Option<String>,
     },
     Cut {
         range: ParsedRange,
         register: Option<String>,
         line_num: u64,
-        index: usize,
     },
     Paste {
         at: PasteTarget,
         register: Option<String>,
         line_num: u64,
-        index: usize,
-        block_start: Option<u64>,
     },
     Block {
         anchor: Anchor,
@@ -62,21 +55,10 @@ pub enum Edit {
         mode: BlockMode,
         register: Option<String>,
         line_num: u64,
-        index: usize,
     },
 }
 
 impl Edit {
-    pub fn index(&self) -> usize {
-        match self {
-            Self::Insert { index, .. }
-            | Self::Delete { index, .. }
-            | Self::Cut { index, .. }
-            | Self::Paste { index, .. }
-            | Self::Block { index, .. } => *index,
-        }
-    }
-
     pub fn line_num(&self) -> u64 {
         match self {
             Self::Insert { line_num, .. }
@@ -113,13 +95,6 @@ pub struct ApplyResult {
 pub struct BlockSpan {
     pub start: u64,
     pub end: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockResolution {
-    pub start: u64,
-    pub end: u64,
-    pub op: BlockMode,
 }
 
 pub struct BlockResolverRequest<'a> {
