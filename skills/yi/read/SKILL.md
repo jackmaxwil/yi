@@ -33,7 +33,7 @@ read(path="src/lib.rs", offset=400, limit=300)
 ```
 
 - `ranges` and `offset`/`limit` never combine, and neither combines with `find`. Each refusal names the pair ("pass ranges or offset/limit, not both").
-- A cut reads `[showing lines A-B of T — continue with offset=N]` or `[byte budget … reached at line L of T — continue with offset=L]`. Pass that offset. A read cut by its byte budget or default line cap also ends with the file's skeleton (a heading outline for Markdown): use its line numbers for `ranges`.
+- A cut reads `[showing lines A-B of T — continue with offset=N]`, with `(READ_LINE_CAP 2000)` after T when the default window did the cutting and you passed no `limit`, or `[byte budget … reached at line L of T — continue with offset=L]`. Pass that offset. A read cut by its byte budget or default line cap also ends with the file's skeleton (a heading outline for Markdown): use its line numbers for `ranges`.
 - A `find` that misses lists the nearest lines (`no line of PATH contains "…"; nearest by "…"`); retry with a word from one of them.
 - A directory lists entries and source skeletons; a glob (`src/**/*.rs`) prints each match whole until 50 KiB, then lists the rest as skeletons. `[first 200 files matching …]` and `[showing 200 of N entries …]` mean: narrow the path.
 - Rows over 512 columns arrive clipped and never anchor an edit. The notice prints the exact `bash: sed -n 'Np' path` that shows them.
@@ -56,7 +56,7 @@ Each read opens with a tag; edit cites `[path#TAG]` and the `LINE:` numbers besi
 
 ## Addresses
 
-A path containing `scheme://` is fetched, not opened. `read("yi://skills/<name>")` loads a skill, `yi://skills/<name>/<file>` a file beside it, `yi://tools/edit` the patch guide (`plan`, `todo` and `ask_user` have guides too; any other tool name answers with the list). `offset`/`limit` page only `local://`, `history://` and `kernel://`, and count bytes, entries and characters there; the cut reads `[more from offset N; …]`. An address returns text with no tag, so it never anchors an edit: read the file by path for that. `https://` and other external schemes refuse as `a tool call under permission, not a free read`.
+A path containing `scheme://` is fetched, not opened. `read("yi://skills/<name>")` loads a skill, `yi://skills/<name>/<file>` a file beside it, `yi://tools/edit` the patch guide (`plan`, `todo` and `ask_user` have guides too; any other tool name answers with the list). `offset`/`limit` page only `local://`, `history://` and `kernel://`, and count bytes, entries and characters there; the cut reads `[more from offset N; …]`. An unpaged `local://` file past 51,200 bytes ends `[… K of T bytes shown · unpaged local cap 51200 bytes · read local://… with offset=N and limit to page on]`. An address returns text with no tag, so it never anchors an edit: read the file by path for that. `https://` and other external schemes refuse as `a tool call under permission, not a free read`.
 
 ## Failures
 

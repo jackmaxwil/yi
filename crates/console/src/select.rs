@@ -7,6 +7,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use yi_tui::card::RAIL;
 use yi_tui::cell::{CALLOUT_RAIL, GUTTER, USER_BAR};
+use yi_types::encoding::base64;
 
 use crate::app::App;
 use crate::layout::PaneId;
@@ -70,9 +71,25 @@ impl Drag {
         }
     }
 
-    /// The pane moved its content under a fixed screen by `rows` (a held view grew below).
-    pub fn shift(&mut self, rows: usize) {
-        let rows = signed(rows);
+    /// The scroll before a frame's layout, after it and after its paint, the content held.
+    pub fn follow(&mut self, pinned: Option<usize>, before: Option<usize>, after: Option<usize>) {
+        // Incident: a press on a view held at its top anchored at the pin, and the first scroll
+        // turned the pin into a row offset, so the copy repeated its opening rows.
+        if let (Some(pin), Some(now)) = (pinned, before)
+            && let Some(down) = crate::panes::down_from_top(pin)
+            && crate::panes::down_from_top(now).is_none()
+        {
+            self.rebase(pin, now.saturating_add(down));
+        }
+        if let (Some(before), Some(after)) = (before, after)
+            && after > before
+        {
+            self.rebase(before, after);
+        }
+    }
+
+    fn rebase(&mut self, from: usize, to: usize) {
+        let rows = signed(to).saturating_sub(signed(from));
         self.anchor.1 = self.anchor.1.saturating_sub(rows);
         self.rows = std::mem::take(&mut self.rows)
             .into_iter()
@@ -392,26 +409,6 @@ pub fn selected(
             _ => (None, None),
         }
     })
-}
-
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let byte = |n: usize| u32::from(chunk.get(n).copied().unwrap_or(0));
-        let packed = (byte(0) << 16) | (byte(1) << 8) | byte(2);
-        for slot in 0..4 {
-            let symbol = if slot <= chunk.len() {
-                let index = usize::try_from((packed >> (18 - 6 * slot)) & 63).unwrap_or(0);
-                ALPHABET.get(index).copied().unwrap_or(b'=')
-            } else {
-                b'='
-            };
-            out.push(char::from(symbol));
-        }
-    }
-    out
 }
 
 pub fn osc52(text: &str) -> String {

@@ -74,11 +74,7 @@ pub(crate) struct TokenTally {
 
 impl TokenTally {
     pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
-        let read = usage
-            .input
-            .saturating_add(usage.cache_read)
-            .saturating_add(usage.cache_write);
-        self.input = bump(self.input, read);
+        self.input = self.input.saturating_add(usage.context());
         self.output = bump(self.output, usage.output);
         self.cached = bump(self.cached, usage.cache_read);
     }
@@ -382,15 +378,15 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
     Line::from(spans)
 }
 
-/// Spinner + the current tool's `i` intent + interrupt hint.
+/// Spinner + the working label + interrupt hint.
 pub fn working_line(
-    intent: Option<&str>,
+    label: Option<&str>,
     spinner_phase: usize,
     esc_armed: bool,
     theme: &Theme,
 ) -> Line<'static> {
     let glyph = spinner_frame(spinner_phase);
-    let text = intent.unwrap_or("Working…");
+    let text = label.unwrap_or("Working…");
     let hint = if esc_armed {
         "esc again to interrupt"
     } else {

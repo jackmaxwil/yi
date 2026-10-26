@@ -19,7 +19,6 @@ pub struct HudInput {
     pub live: bool,
     pub claims: Vec<yi_types::todo::Claim>,
     pub steering: Vec<String>,
-    pub follow_up: Vec<String>,
     pub memory: Option<String>,
 }
 
@@ -224,12 +223,11 @@ pub(crate) fn input(
         live: app.running,
         claims: app.claims.clone(),
         steering: app.steering.clone(),
-        follow_up: Vec::new(),
         memory,
     }
 }
 
-/// The goal header over indented plan, todo, steering and follow-up rows.
+/// The goal header over indented plan, todo and steering rows.
 pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
     let mut content: Vec<Line<'static>> = Vec::new();
     let header = match &input.goal {
@@ -291,18 +289,12 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
             )));
         }
     }
-    for (label, items) in [
-        ("Steering", &input.steering),
-        ("After yield", &input.follow_up),
-    ] {
-        if items.is_empty() {
-            continue;
-        }
+    if !input.steering.is_empty() {
         content.push(Line::from(Span::styled(
-            format!("{label} · {}", items.len()),
+            format!("Steering · {}", input.steering.len()),
             theme.muted_style(),
         )));
-        for (i, item) in items.iter().enumerate() {
+        for (i, item) in input.steering.iter().enumerate() {
             let flat = item.replace('\n', " ↵ ");
             let mut flat = flat.trim().to_owned();
             if flat.chars().count() > 60 {

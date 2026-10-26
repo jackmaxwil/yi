@@ -45,8 +45,6 @@ pub struct ReflowState {
     last_reflow_width: Option<u16>,
     pending_reflow_width: Option<u16>,
     pending_until: Option<Instant>,
-    ran_during_stream: bool,
-    resize_requested_during_stream: bool,
 }
 
 impl ReflowState {
@@ -98,25 +96,5 @@ impl ReflowState {
     /// "Seen during a draw" is not "repaired at this width".
     pub fn mark_reflowed_width(&mut self, width: u16) -> bool {
         self.last_reflow_width.replace(width) != Some(width)
-    }
-
-    /// A mid-stream rebuild can only render the partial that existed then, so
-    /// the end of the stream has to rebuild once more from the settled text.
-    pub fn mark_ran_during_stream(&mut self) {
-        self.ran_during_stream = true;
-    }
-
-    /// The width changed while a stream was live and the debounce had not yet
-    /// fired; without this the stream could finish with no final repair.
-    pub fn mark_resize_requested_during_stream(&mut self) {
-        self.resize_requested_during_stream = true;
-    }
-
-    /// Invariant: each episode forces at most one post-stream repair.
-    pub fn take_stream_finish_needed(&mut self) -> bool {
-        let needed = self.ran_during_stream || self.resize_requested_during_stream;
-        self.ran_during_stream = false;
-        self.resize_requested_during_stream = false;
-        needed
     }
 }

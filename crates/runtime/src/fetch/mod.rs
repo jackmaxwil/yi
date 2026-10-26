@@ -23,6 +23,7 @@ use crate::wall::Wall;
 pub use log::{FetchLog, PinError, Relevance, TerminalRecordError, relevance_of, rows_of};
 pub use read::route_urls;
 pub use transcripts::SessionTranscripts;
+pub(crate) use transcripts::spelling_refused;
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =

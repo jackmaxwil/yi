@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use yi_types::encoding::base64;
+
 use crate::core::OrbFrame;
 
 /// Kitty graphics protocol support: Ghostty and kitty advertise via TERM or
@@ -117,26 +119,6 @@ fn stamp(
             }
         }
     }
-}
-
-fn base64(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let bits = (u32::from(chunk[0]) << 16)
-            | (u32::from(chunk.get(1).copied().unwrap_or(0)) << 8)
-            | u32::from(chunk.get(2).copied().unwrap_or(0));
-        let keep = chunk.len() + 1;
-        for index in 0..4 {
-            if index < keep {
-                let slot = ((bits >> (18 - 6 * index)) & 0x3f) as usize;
-                out.push(char::from(TABLE.get(slot).copied().unwrap_or(b'A')));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// Incident: delete-then-retransmit showed the terminal's ground mid-frame,
