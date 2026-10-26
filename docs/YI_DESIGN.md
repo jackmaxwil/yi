@@ -143,7 +143,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `Entry { Message, ModelChange, ThinkingLevelChange, ActiveToolsChange, Compaction,
   BranchSummary, Custom }`; `Fact { Name, Label, Goal, Plan }`. Yi's `custom` entries:
   `checkpoint` (§7.7), `todo`, `todo_intercept`, `plan_op` (§13), `fetch` (§10), `agent_message`,
-  `agent_message_read`, `human_answer` (§12), `lease` (§11), `ext_state`, `ext_record`.
+  `agent_message_read`, `human_answer` (§12), `lease` (§11), `ext_state2` (v1 `ext_state`),
+  `ext_record`.
 - Shapes: [`wire.rs`](../crates/types/src/wire.rs), [`entry.rs`](../crates/types/src/entry.rs),
   [`record.rs`](../crates/types/src/record.rs); `~/.yi/sessions/--<cwd, / \ : as ->--/
   <createdAt>_<id>.jsonl`; a child's is a flat file in its own directory.
@@ -302,11 +303,24 @@ extension `Host` whose synchronous extensions turn session events into effects.
   comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
   granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
-- The table persists as `custom{ext_state}` on change and is restored on resume.
+- The table persists as `custom{ext_state2}` when an extension changes it: the build's own slots
+  (the ones attached before the session starts) as rank, name, SHA-256 and bytes, every slot an
+  extension attached and the yard with their text, a slot attached after the first request
+  marked `late`. Older builds read only the v1 `custom{ext_state}`, so they keep their own build
+  slots. A resume reads the newest of either, rebuilds the build's slots from the running build,
+  so its mode, identity and doctrine are current, and re-attaches the recorded ones it lacks; a
+  late one rejoins the late set, not the prompt, since the transcript carries it. A v1 snapshot
+  carries text for every slot and restores the same way. Within one process the first request's
+  bytes stay frozen, and only the loop's read freezes them.
 - The environment block is a `host_user` message appended per request by `transform_context`,
   never stored: `cwd`, `files` (20), `landing`, `todos`, `time` (per minute), `deadline`,
   `platform … · host <line>`, `model`, `context`, `kernel`, children. `host` comes from
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
+  The `cwd` line's git counts (`environment::GitSummary`) are read when a shared generation
+  moves at a run's start and after a `bash`, `edit`, `write` or `ipython` call or a `grep` that
+  `applied` a rewrite ends, not per request or after a lagged broadcast replay, and a failed read
+  is retried; a change made outside Yi or by a same-tree child mid-run shows later. The review
+  pane's git reads live in `environment`.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `yi://skills/` hint answers
@@ -688,7 +702,8 @@ A persistent IPython process per session that reaches the host only through host
   xxh32 in four uppercase hex digits, and a live file that differs is refused `Stale`.
 - `kernel` and `agent` are `Ephemeral`, the rest `Durable`. The wall (§11) runs first
   (`deny_url` by prefix, `deny_read` by path); `local` stays under the workspace or spill dir.
-- A reply is `{url, text, hash, servedBy}`, logged in `FetchLog`. `offset`/`limit` page
+- A reply is `{url, text, hash, servedBy}`, logged in `FetchLog`, which writes a `fetch` session
+  row only when an address's hash moved. `offset`/`limit` page
   `local` by bytes on char boundaries, `history` by entries, `kernel` by chars, adding
   `next_offset` (null at the end); a zero `limit`, a non-integer, or another scheme is refused.
 
@@ -715,7 +730,10 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
   schema`;
-  `fork=all` refuses a model.
+  `fork=all` refuses a model. `fork=N` counts typed turns only, never host notices, and
+  keeps what fits from the first cut point compaction would take, behind a `[… fork kept K of N`
+  row when the budget cut; the seed is appended to the child's transcript, so a respawned
+  service keeps it.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
@@ -917,7 +935,11 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
   the owner's plan op, any other change to one is `TodoError::Mirrored`.
 - A done todo's evidence is held against the ledger for display only: it is observed when a span
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
-  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
+  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows. `TodoStore`
+  keeps one history for those claims and the stop re-drives: an unchanged list reads only entries
+  past the last consumed sequence, late evidence refreshes the claims, a list change rebuilds
+  older observations without retaining transcript copies, and a typed prompt starts a fresh
+  artifact-write set and source-text window.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
   D229, D275, D282.
 

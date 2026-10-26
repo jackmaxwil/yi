@@ -2,7 +2,7 @@
 use std::error::Error;
 
 use serde_json::json;
-use yi_runtime::todo::claims::claims;
+use yi_runtime::todo::claims::{History, claims};
 use yi_types::entry::Entry;
 use yi_types::todo::{Claim, TodoList};
 
@@ -73,6 +73,103 @@ fn a_quoted_span_found_in_a_recorded_call_is_observed_and_anything_else_is_claim
             observed("lint", None),
             observed("ship", None),
         ]
+    );
+    Ok(())
+}
+
+#[test]
+fn cached_history_keeps_older_evidence_across_list_changes() -> Result<(), Box<dyn Error>> {
+    let store = std::sync::Arc::new(std::sync::Mutex::new(yi_session::SessionStore::in_memory(
+        yi_session::SessionMetadata {
+            id: "incremental-claims".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        },
+    )));
+    let first = entry(
+        2,
+        json!({"role": "toolResult", "toolCallId": "c1", "toolName": "bash",
+            "isError": false, "timestamp": 2,
+            "content": [{"type": "text", "text": "test result: ok. 9 passed"}]}),
+    )?;
+    yi_session::lock_session(&store).append_entry(first, "main")?;
+    let list = |label: &str, evidence: &str| {
+        serde_json::from_value(json!({"phases": [{"name": "Tasks", "items": [
+            {"label": label, "state": "done", "evidence": evidence}
+        ]}]}))
+    };
+    let mut history = History::default();
+    assert_eq!(
+        history.claims_cached(&list("first", "`test result: ok. 9 passed`")?, &store, 0),
+        vec![Claim {
+            label: "first".to_owned(),
+            observed: Some("c1".to_owned())
+        }]
+    );
+    let later = entry(
+        3,
+        json!({"role": "toolResult", "toolCallId": "c3", "toolName": "bash",
+            "isError": false, "timestamp": 3,
+            "content": [{"type": "text", "text": "second proof"}]}),
+    )?;
+    yi_session::lock_session(&store).append_entry(later, "main")?;
+    let second = serde_json::from_value(json!({"phases": [{"name": "Tasks", "items": [
+        {"label": "first", "state": "done", "evidence": "`test result: ok. 9 passed`"},
+        {"label": "second", "state": "done", "evidence": "`second proof`"}
+    ]}]}))?;
+    assert_eq!(
+        history.claims_cached(&second, &store, 1),
+        vec![
+            Claim {
+                label: "first".to_owned(),
+                observed: Some("c1".to_owned())
+            },
+            Claim {
+                label: "second".to_owned(),
+                observed: Some("c3".to_owned())
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn late_evidence_upgrades_a_claim_without_another_todo_write() -> Result<(), Box<dyn Error>> {
+    let store = std::sync::Arc::new(std::sync::Mutex::new(yi_session::SessionStore::in_memory(
+        yi_session::SessionMetadata {
+            id: "late-claims".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        },
+    )));
+    let list: TodoList = serde_json::from_value(json!({"phases": [{"name": "Tasks", "items": [
+        {"label": "prove it", "state": "done", "evidence": "`proof arrived`"}
+    ]}]}))?;
+    let mut history = History::default();
+    assert_eq!(
+        history.claims_cached(&list, &store, 7),
+        vec![Claim {
+            label: "prove it".to_owned(),
+            observed: None,
+        }]
+    );
+    yi_session::lock_session(&store).append_entry(
+        entry(
+            3,
+            json!({"role": "toolResult", "toolCallId": "c3", "toolName": "bash",
+                "isError": false, "timestamp": 3,
+                "content": [{"type": "text", "text": "proof arrived"}]}),
+        )?,
+        "main",
+    )?;
+    assert_eq!(
+        history.claims_cached(&list, &store, 7),
+        vec![Claim {
+            label: "prove it".to_owned(),
+            observed: Some("c3".to_owned()),
+        }]
     );
     Ok(())
 }
