@@ -23,8 +23,10 @@ pub struct Spill {
     part: Option<(PathBuf, File)>,
     hash: xxhash_rust::xxh3::Xxh3,
     written: u64,
-    ceiling: u64,
+    pub(crate) ceiling: u64,
     clipped: bool,
+    #[cfg(test)]
+    pub(crate) redactions: usize,
 }
 
 impl Spill {
@@ -42,6 +44,8 @@ impl Spill {
             written: 0,
             ceiling: CEILING,
             clipped: false,
+            #[cfg(test)]
+            redactions: 0,
         }
     }
 
@@ -53,11 +57,19 @@ impl Spill {
         let (Some([out, err]), Some(_)) = (&mut self.redactors, &self.dir) else {
             return;
         };
+        if self.written >= self.ceiling {
+            self.clipped |= !bytes.is_empty();
+            return;
+        }
         let redactor = match stream {
             Stream::Out => out,
             Stream::Err => err,
         };
         let mut clean = Vec::with_capacity(bytes.len());
+        #[cfg(test)]
+        {
+            self.redactions = self.redactions.saturating_add(1);
+        }
         redactor.push(bytes, &mut clean);
         self.store(&clean);
     }

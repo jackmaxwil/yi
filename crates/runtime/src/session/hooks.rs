@@ -433,6 +433,7 @@ impl AgentSession {
         self.shared
             .retired
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        yi_tools::jobs::registry().retire(self.shared.job_owner);
         let Some(kernel) = self.kernel_service() else {
             return;
         };
