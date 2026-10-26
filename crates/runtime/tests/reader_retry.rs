@@ -127,7 +127,7 @@ async fn ordinary_mail_preserves_the_schema_answer_and_its_repair()
             .route("parent", "retry", "ordinary mail", false)?;
         assert_eq!(sent["receipts"][0]["state"], "queued", "{sent:?}");
         std::fs::write(&fifo, "held\n")?;
-        wait_for_assistants(&session, calls).await;
+        session.wait_idle().await;
         let rows = child_rows(&family, "retry").await?;
         assert_eq!(assistants(&rows), calls, "{initial}: {rows:?}");
         assert_eq!(
