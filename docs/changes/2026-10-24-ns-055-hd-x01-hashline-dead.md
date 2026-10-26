@@ -1,5 +1,6 @@
 ---
 issue: Closes #1491, Refs #1442
+raise: tests +2
 ---
 The edit tool's hashline module sheds what nothing reaches. Of `prefixes.rs` only `is_read_metadata_line` has a caller, so the other ten helpers, which called only each other, are gone. `mismatch.rs` loses its three line-reference helpers, `tokenizer.rs` loses `parse_lid`, `format.rs` loses seven constants and four formatters, and `messages.rs` loses five constants and `write_drift_warning`. Five fields that were written and never read are gone: the `index` of every `Edit` variant with the counters that fed it (`edit_index` in the parser, `synth_index` in the clipboard and block passes), `block_start` and `old_assertion`, `ResolvedBlocks.resolutions` with its `BlockResolution` type, and `Snapshot.recorded_at` with the store's clock. `OnEmptyPaste` had one live value, so the enum, its three unreachable `Drop` branches and the `Option` that `read_register` wrapped around its result are removed. The block resolver is always supplied, so `resolve_block_edits` takes it directly and the "no block resolver configured" refusal is gone.
 
