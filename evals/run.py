@@ -47,9 +47,10 @@ def _capture(command):
     return done.stdout.strip() or "unknown"
 
 
-def final_answer(events_path):
+def final_answer(events_path, *, last_nonempty=True, separator=""):
     """The last assistant text of the rollout.
 
+    Callers can require the final message even when empty and choose the text-block separator.
     SWE-Atlas QnA is graded only from the answer file (README, "Running a
     suite"), so a runner that never writes it scores every real QnA rollout 0.
     """
@@ -72,8 +73,8 @@ def final_answer(events_path):
             ]
         else:
             blocks = []
-        joined = "".join(blocks)
-        if joined:
+        joined = separator.join(blocks)
+        if joined or not last_nonempty:
             text = joined
     return text
 

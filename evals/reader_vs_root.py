@@ -156,7 +156,7 @@ def final_answer(row):
     if not path.is_absolute():
         path = axes.runs_root("EVAL_KILL_ROOT") / "b1-exp-d" / row.get("run", "") / "events.jsonl"
     try:
-        return json.loads(run.final_answer(path))
+        return json.loads(run.final_answer(path, last_nonempty=False, separator="\n"))
     except (TypeError, ValueError):
         return None
 
@@ -416,6 +416,22 @@ def selftest():
     retained = scored_trial()
     assert retained["valid"] and retained["correct"], retained["evidenceError"]
     assert retained["childTokens"]["input"] == 12 and retained["childTokens"]["sessionFiles"] == 1
+    with tempfile.TemporaryDirectory() as scratch:
+        events = Path(scratch) / "events.jsonl"
+        messages = [
+            {"type": "message_end", "message": {"role": "assistant", "content": [{
+                "type": "text", "text": json.dumps({"answer": "stale"}),
+            }]}},
+            {"type": "message_end", "message": {"role": "assistant", "content": []}},
+        ]
+        events.write_text("".join(json.dumps(message) + "\n" for message in messages))
+        assert final_answer({"events": str(events)}) is None, "an empty final assistant must not reuse stale prose"
+        messages[1]["message"]["content"] = [
+            {"type": "text", "text": '{"answer":"ear'},
+            {"type": "text", "text": 'lier"}'},
+        ]
+        events.write_text("".join(json.dumps(message) + "\n" for message in messages))
+        assert final_answer({"events": str(events)}) is None, "separate text blocks must not concatenate into an envelope"
     for kwargs in ({"children": 0}, {"children": 2}, {"usage": False}, {"mismatch": True}):
         refused = scored_trial(**kwargs)
         assert not refused["valid"] and not refused["correct"] and refused["childTokens"] is None, kwargs
