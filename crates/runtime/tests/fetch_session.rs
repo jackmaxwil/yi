@@ -94,6 +94,38 @@ fn a_store_attached_after_the_resolver_still_serves_history() -> TestResult {
     Ok(())
 }
 
+/// Dies with the control: append a row on every fetch and a file read four times leaves four
+/// rows. A changed file is a new hash and gets its own row.
+#[test]
+fn a_repeated_read_of_an_unchanged_file_adds_no_session_row() -> TestResult {
+    let workspace = Scratch::new("yi-fetch-repeat")?;
+    let file = workspace.join("a.py");
+    std::fs::write(
+        &file,
+        "def greet(name, greeting):\n    return f\"{greeting}, {name}\"\n",
+    )?;
+    let store = memory_store();
+    let resolver =
+        Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", store.clone());
+    let rows = || -> Result<usize, Box<dyn Error>> {
+        let query = yi_session::EntryQuery {
+            entry_type: Some("custom"),
+            custom_type: Some(FETCH_ENTRY_TYPE.to_owned()),
+            ..yi_session::EntryQuery::default()
+        };
+        Ok(yi_session::lock_session(&store).find_entries(&query)?.len())
+    };
+    let url: Url = "local://a.py".parse()?;
+    for _ in 0..4 {
+        resolver.fetch(&url)?;
+    }
+    assert_eq!(rows()?, 1, "one row for one address at one hash");
+    std::fs::write(&file, "def greet(name):\n    return f\"hi {name}\"\n")?;
+    resolver.fetch(&url)?;
+    assert_eq!(rows()?, 2, "the edited file's new hash is a row of its own");
+    Ok(())
+}
+
 const PAGED: &str = "plain, then \u{e9}\u{4e16}\u{1f980} wide, then plain again\nline two\n";
 
 fn paged_workspace() -> Result<(Scratch, Resolver, yi_session::SharedSession), Box<dyn Error>> {

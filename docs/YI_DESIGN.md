@@ -601,7 +601,8 @@ A persistent IPython process per session that reaches the host only through host
   xxh32 in four uppercase hex digits, and a live file that differs is refused `Stale`.
 - `kernel` and `agent` are `Ephemeral`, the rest `Durable`. The wall (§11) runs first
   (`deny_url` by prefix, `deny_read` by path); `local` stays under the workspace or spill dir.
-- A reply is `{url, text, hash, servedBy}`, logged in `FetchLog`. `offset`/`limit` page
+- A reply is `{url, text, hash, servedBy}`, logged in `FetchLog`, which writes a `fetch` session
+  row only when an address's hash moved. `offset`/`limit` page
   `local` by bytes on char boundaries, `history` by entries, `kernel` by chars, adding
   `next_offset` (null at the end); a zero `limit`, a non-integer, or another scheme is refused.
 

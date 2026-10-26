@@ -29,6 +29,32 @@ pub(crate) struct Cut {
     marks: BTreeMap<Key, Mark>,
     pins: BTreeMap<Key, ()>,
     discards: BTreeMap<Key, ()>,
+    sections: Sections,
+}
+
+/// Invariant: keyed by the text's hash, never the call id, which leaked calls reuse. The paths
+/// each read, edit or write result's `[path#TAG]` headers name, parsed once per text.
+#[derive(Default)]
+pub(crate) struct Sections(Mutex<BTreeMap<u64, Vec<String>>>);
+
+impl Sections {
+    pub(crate) fn paths(&self, content: &[Content]) -> Vec<String> {
+        self.memo(content, |text| {
+            let patch = yi_tools::hashline::input::Patch::parse(text, None);
+            let sections = patch.map(|patch| patch.sections).unwrap_or_default();
+            sections.into_iter().map(|section| section.path).collect()
+        })
+    }
+
+    /// The lock is held across `parse`, so readers of one new text at once parse it once.
+    fn memo(&self, content: &[Content], parse: impl FnOnce(&str) -> Vec<String>) -> Vec<String> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        texts(content).for_each(|text| text.hash(&mut hasher));
+        let mut memo = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let parsed = || parse(&yi_types::message::join_text(content, "\n"));
+        memo.entry(hasher.finish()).or_insert_with(parsed).clone()
+    }
 }
 
 struct Mark {
@@ -126,6 +152,7 @@ impl Overlay {
     }
 
     pub(crate) fn view(&self, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+        let _span = yi_types::trace::span("reclaim.view");
         let mut cut = self.cut.lock().unwrap_or_else(PoisonError::into_inner);
         let now = yi_session::now_ms();
         if let Some(mut record) = decide(&messages, &cut, &self.model, now) {
@@ -239,21 +266,13 @@ pub(crate) fn annotations(entries: &[Entry]) -> impl Iterator<Item = AnnotationR
 pub(crate) fn newest_reads<M: std::borrow::Borrow<AgentMessage>>(
     calls: &[Option<(&str, &Args)>],
     messages: &[M],
+    sections: &Sections,
 ) -> BTreeSet<usize> {
     let shown = |index: usize| -> Vec<String> {
-        let Some(AgentMessage::ToolResult { content, .. }) =
-            messages.get(index).map(|message| message.borrow())
-        else {
-            return Vec::new();
-        };
-        let text = yi_types::message::join_text(content, "\n");
-        let sections =
-            yi_tools::hashline::input::Patch::parse(&text, None).map(|patch| patch.sections);
-        sections
-            .unwrap_or_default()
-            .into_iter()
-            .map(|section| section.path)
-            .collect()
+        match messages.get(index).map(|message| message.borrow()) {
+            Some(AgentMessage::ToolResult { content, .. }) => sections.paths(content),
+            _ => Vec::new(),
+        }
     };
     let (mut edited, mut latest) = (Vec::new(), BTreeMap::new());
     for (index, call) in calls.iter().enumerate() {
@@ -309,7 +328,7 @@ pub(crate) fn decide(
     now: u64,
 ) -> Option<ReclaimRecord> {
     let calls = calls(messages);
-    let newest = newest_reads(&calls, messages);
+    let newest = newest_reads(&calls, messages, &cut.sections);
     let (mut turn, mut turns) = (0_u64, Vec::with_capacity(messages.len()));
     for message in messages {
         if matches!(message, AgentMessage::Assistant { .. }) {
@@ -502,6 +521,97 @@ mod tests {
     use yi_types::reclaim::{AnnotationRecord, ReclaimRecord, Reclaimed};
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+    /// The recorded session `01a0d6e4` (scrubbed by `evals/record.py`), message rows in order.
+    fn recorded() -> Result<Vec<AgentMessage>, Box<dyn std::error::Error>> {
+        let mut messages = Vec::new();
+        for row in include_str!("../../tui/tests/fixtures/sessions/01a0d6e4.jsonl").lines() {
+            let row: serde_json::Value = serde_json::from_str(row)?;
+            if row["type"] == "message" {
+                messages.push(serde_json::from_value(row["message"].clone())?);
+            }
+        }
+        Ok(messages)
+    }
+
+    /// Dies with a memo keyed wrongly: every request of the largest recorded session, after
+    /// reclaim, is the bytes a fresh parse gives, and each result names its own paths.
+    #[test]
+    fn a_memo_leaves_every_request_of_a_recorded_session_byte_identical() -> Fallible {
+        let messages = recorded()?;
+        let ends = (0..messages.len())
+            .filter(|at| matches!(messages.get(*at), Some(AgentMessage::Assistant { .. })));
+        let ends: Vec<usize> = ends.collect();
+        let views = |fresh: bool| -> Result<Vec<Vec<AgentMessage>>, Box<dyn std::error::Error>> {
+            let cut = std::sync::Arc::new(std::sync::Mutex::new(Cut::default()));
+            let overlay =
+                super::Overlay::new(std::sync::Arc::clone(&cut), Box::new(|| None), opus()?);
+            let mut sent = Vec::new();
+            for end in &ends {
+                if fresh {
+                    cut.lock().map_err(|_| "poisoned")?.sections = super::Sections::default();
+                }
+                sent.push(overlay.view(messages.get(..*end).unwrap_or_default().to_vec()));
+            }
+            Ok(sent)
+        };
+        assert_eq!(views(false)?, views(true)?);
+        let (memo, mut named) = (super::Sections::default(), 0);
+        for message in &messages {
+            if let AgentMessage::ToolResult { content, .. } = message {
+                let paths = memo.paths(content);
+                assert_eq!(paths, super::Sections::default().paths(content));
+                named += usize::from(!paths.is_empty());
+            }
+        }
+        assert_eq!(
+            named, 9,
+            "nine of ten reads name a file; one read past the end prints none"
+        );
+        Ok(())
+    }
+
+    /// Dies with the parse outside the lock: sixteen readers of one new result parse it sixteen
+    /// times. The same call's text edited is a new text and parses again.
+    #[test]
+    fn sixteen_readers_parse_one_new_result_once_and_an_edit_reparses() -> Fallible {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let sections = std::sync::Arc::new(super::Sections::default());
+        let parses = std::sync::Arc::new(AtomicUsize::new(0));
+        let text = |head: &str| {
+            vec![Content::Text {
+                text: format!("{head}\n1:fn tidy() {{}}"),
+                text_signature: None,
+            }]
+        };
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let readers: Vec<_> = (0..16)
+            .map(|_| {
+                let (sections, parses, gate) = (sections.clone(), parses.clone(), gate.clone());
+                let content = text("[src/lib.rs#BDF3]");
+                std::thread::spawn(move || {
+                    gate.wait();
+                    sections.memo(&content, |_| {
+                        parses.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        vec!["src/lib.rs".to_owned()]
+                    })
+                })
+            })
+            .collect();
+        for reader in readers {
+            let paths = reader.join().map_err(|_| "a reader panicked")?;
+            assert_eq!(paths, ["src/lib.rs"]);
+        }
+        assert_eq!(
+            parses.load(Ordering::SeqCst),
+            1,
+            "one new result, one parse"
+        );
+        assert_eq!(sections.paths(&text("[src/main.rs#11AA]")), ["src/main.rs"]);
+        assert_eq!(sections.paths(&text("[src/lib.rs#BDF3]")), ["src/lib.rs"]);
+        Ok(())
+    }
 
     /// Opus 5.5's catalog rates: a read costs a tenth of input, a write 1.25 times it.
     fn opus() -> Result<Model, serde_json::Error> {

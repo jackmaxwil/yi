@@ -37,8 +37,12 @@ impl FetchLog {
     }
 
     pub fn record(&self, url: &Url, record: FetchRecord) {
-        let session = self.lock().session.clone().and_then(|handle| handle());
-        if let Some(session) = &session {
+        let (key, state) = (base_of(url), self.lock());
+        let seen =
+            (state.records.iter()).any(|(base, row)| *base == key && row.hash == record.hash);
+        let handle = state.session.clone().filter(|_| !seen);
+        drop(state);
+        if let Some(session) = &handle.and_then(|handle| handle()) {
             let _log_write_never_fails_a_fetch =
                 yi_session::lock_session(session).append_custom_record(&record);
         }
