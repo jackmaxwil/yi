@@ -47,6 +47,7 @@ import test_mutate  # noqa: E402
 import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_kill  # noqa: E402
+import test_s5_kc_ab  # noqa: E402
 import test_stops_on_fail  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
@@ -1038,6 +1039,8 @@ def harbor_agent():
         class BaseInstalledAgent:
             def __init__(self, *args, **kwargs):
                 pass
+            def render_instruction(self, instruction):
+                return instruction
         base.BaseInstalledAgent = BaseInstalledAgent
         installed.base = base
         env_base = module("harbor.environments.base")
@@ -1183,6 +1186,70 @@ def check_kill():
     assert result.testsRun >= 10 and result.wasSuccessful(), report.getvalue()
 
 
+def tb_instruction():
+    """A real TB4 instruction.md, read at run time from the main checkout's gitignored ref/ and never
+    committed. Where ref/ is absent (CI) the same shape stands in: the budget sentence, then the
+    trailing comment lines a task file ends with."""
+    common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=ROOT,
+                            capture_output=True, text=True).stdout.strip()
+    real = Path(common).parent / "ref" / "benchmarks" / "terminal-bench" / "tasks" / "heat-pump-warranty" / "instruction.md"
+    if real.is_file():
+        return real.read_text()
+    return ("Work the queue in `/app/packet`.\n\nYou have 28800 seconds to complete this task. Do not cheat.\n\n"
+            "# a trailing comment line\n# another trailing comment line\n")
+
+
+def check_arm_suffix():
+    """S5-kc-ab: EVAL_ARM_FILE's text follows the task's own instruction once, after the budget
+    rewrite; no arm file leaves the instruction as it was; two arm texts are two fingerprints; a named
+    file that is missing stops the trial rather than running it as another arm."""
+    agent = harbor_agent()
+    task = tb_instruction()
+    keys = ("EVAL_ARM_FILE", "EVAL_TIMEOUT_MULT", "EVAL_BINARY_URL")
+    saved = {key: os.environ.get(key) for key in keys}
+    try:
+        os.environ.pop("EVAL_ARM_FILE", None)
+        os.environ["EVAL_TIMEOUT_MULT"] = "0.125"
+        os.environ["EVAL_BINARY_URL"] = "https://example.invalid/yi"
+        yi = agent.Yi()
+        plain = yi.render_instruction(task)
+        assert "You have 3600 seconds" in plain and "28800" not in plain, "the budget sentence must name the trial's share"
+        assert "+arm" not in agent.mode_label(), "an unarmed run keeps its fingerprint"
+        with tempfile.TemporaryDirectory() as directory:
+            labels = []
+            for arm in ("workers", "kernel"):
+                path = Path(directory, arm + ".md")
+                path.write_text(f"Arm {arm}: start children.\n")
+                os.environ["EVAL_ARM_FILE"] = str(path)
+                told = yi.render_instruction(task)
+                assert told.endswith(f"\n\nArm {arm}: start children.\n") and told.count("Arm ") == 1, \
+                    f"{arm}'s text must follow the task's own, once"
+                assert told.startswith(plain.rstrip("\n") + "\n\n"), "the task's own instruction must come first"
+                labels.append(agent.mode_label())
+            assert labels[0] != labels[1] and all("+arm" in label for label in labels), labels
+            os.environ["EVAL_ARM_FILE"] = str(Path(directory, "gone.md"))
+            try:
+                yi.render_instruction(task)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("a missing arm file must stop the trial, not run it as the solo arm")
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def check_kc_ab():
+    """EXP-S5-E2: the score reader, the verdict at each pre-registered limit and the arm wiring."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_s5_kc_ab)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 11 and result.wasSuccessful(), report.getvalue()
+
+
 def check_stops_on_fail():
     """EXP-B3c's counter: a stop over a last cell that printed FAIL, over sessions the real binary
     wrote under faux/faux-1, and the verdict at two tasks a family and at one."""
@@ -1195,6 +1262,8 @@ def check_stops_on_fail():
 CHECKS = (
     check_kill,
     check_stops_on_fail,
+    check_kc_ab,
+    check_arm_suffix,
     check_surface,
     check_surface_compare,
     check_judge_replay,
