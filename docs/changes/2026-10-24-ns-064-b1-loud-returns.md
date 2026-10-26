@@ -15,3 +15,5 @@ The TUI reads a child's preview as the head of the answer it is already streamin
 The tests cover the context value at and one past its cap, a non-ASCII value and one whose byte 4,096 sits inside a two-byte char, the whole scope at and one past 16,384, the remedy read off a cut value's row and run through a partition, schema refusals at 2,000, 2,001 and 10,000 chars, and answer previews at 240 and 241 chars. Their fixtures have the shape the kernel's `_resolve_context` produces.
 
 The feature-ledger row for the kernel and `rlm()` subagents says it, and names the runtime tests among its journeys.
+
+Review of the context-total tests also found three copies of the scripted-reply loopback server in the `yi-ai` integration tests. `crates/types/tests/support/loopback_server.rs` now owns that test-only server beside the existing shared request reader; `kimi_wire.rs`, `quota.rs`, and `resend.rs` use it through `ai/tests/integration.rs`. This changes no production code or test contract.
