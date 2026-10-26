@@ -271,7 +271,7 @@ pub fn schedules_root(session_dir: &std::path::Path) -> PathBuf {
 }
 
 /// A session's durable job file under [`schedules_root`].
-pub fn jobs_path(root: &std::path::Path, session_id: &str) -> PathBuf {
+pub(crate) fn jobs_path(root: &std::path::Path, session_id: &str) -> PathBuf {
     root.join(session_id).join("scheduled-jobs.json")
 }
 
@@ -486,8 +486,8 @@ mod tests {
         assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn a_session_loaded_again_and_closed_leaves_no_held_timer()
+    #[tokio::test]
+    async fn a_session_loaded_again_and_closed_leaves_no_held_timer()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = Scratch::new("yi-hub-held")?;
         let path = dir.join("scheduled-jobs.json");
@@ -511,8 +511,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn a_session_deleted_while_parked_leaves_no_held_timer()
+    #[tokio::test]
+    async fn a_session_deleted_while_parked_leaves_no_held_timer()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = Scratch::new("yi-hub-unheld")?;
         let path = jobs_path(&dir, "a");
