@@ -65,12 +65,7 @@ const GREP: [(&str, &str); 5] = [
 fn changed_span(before: &str, after: &str) -> (String, String) {
     let old: Vec<&str> = before.split_inclusive('\n').collect();
     let new: Vec<&str> = after.split_inclusive('\n').collect();
-    let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-    let rest = old.len().min(new.len()).saturating_sub(head);
-    let tail = (old.iter().rev().zip(new.iter().rev()))
-        .take_while(|(a, b)| a == b)
-        .count()
-        .min(rest);
+    let (head, tail) = yi_types::diff::changed_edges(&old, &new);
     let span = |lines: &[&str]| {
         let end = lines.len().saturating_sub(tail);
         lines.get(head..end).unwrap_or_default().concat()
