@@ -625,7 +625,7 @@ fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
     let capped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let capped_word = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (turns, cap_hit) = (std::sync::atomic::AtomicU32::new(0), Arc::clone(&capped));
-    let cap = shared.turn_cap.get().copied();
+    let cap = shared.turn_cap.lock().ok().and_then(|cap| *cap);
     config.should_stop_after_turn = Some(Box::new(move |_| {
         let taken = turns
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)

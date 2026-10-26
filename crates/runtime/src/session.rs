@@ -86,7 +86,7 @@ struct Shared {
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
-    turn_cap: OnceLock<u32>,
+    turn_cap: Mutex<Option<u32>>,
     shape: OnceLock<RequestShape>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
@@ -226,7 +226,7 @@ impl AgentSession {
                 answer: Mutex::default(),
                 waits: Mutex::new(None),
                 deadline: OnceLock::new(),
-                turn_cap: OnceLock::new(),
+                turn_cap: Mutex::new(None),
                 shape: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
@@ -314,7 +314,11 @@ impl AgentSession {
     }
 
     pub fn set_turn_cap(&self, turns: u32) {
-        self.shared.turn_cap.get_or_init(|| turns);
+        *self
+            .shared
+            .turn_cap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(turns);
     }
 
     pub fn set_request_shape(&self, shape: RequestShape) {
@@ -597,7 +601,7 @@ impl AgentSession {
     }
 
     /// Incident: a wake handle minted before the tools landed woke a turn that could call nothing.
-    pub fn set_tools(&mut self, tools: Vec<Arc<dyn yi_loop::AgentTool>>) {
+    pub fn set_tools(&self, tools: Vec<Arc<dyn yi_loop::AgentTool>>) {
         if let Ok(mut slot) = self.shared.tools.lock() {
             *slot = tools;
         }
@@ -935,7 +939,7 @@ impl AgentSession {
         }
     }
 
-    /// Invariant: pre-first-turn only (§11) — mid-run it races the appending turn.
+    /// Invariant: idle only (§11) — mid-run it races the appending turn.
     pub fn seed_messages(&self, seed: Vec<AgentMessage>) {
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = seed;

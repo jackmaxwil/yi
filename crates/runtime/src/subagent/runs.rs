@@ -54,6 +54,16 @@ fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
     }
 }
 
+fn failed(class: FailClass, error: impl std::fmt::Display) -> (ChildExit, Option<String>) {
+    (ChildExit::Failed { class }, Some(error.to_string()))
+}
+
+fn schema_failure(session: &AgentSession, messages: &[AgentMessage]) -> Option<String> {
+    let schema = crate::schema::Schema::from_value(session.request_shape()?.schema?).ok()?;
+    crate::schema::extract(&super::answer_text(messages).unwrap_or_default())
+        .map_or_else(Some, |value| schema.validate(&value).err())
+}
+
 impl SubagentHost {
     pub(super) async fn run_child(
         self: Arc<Self>,
@@ -85,13 +95,38 @@ impl SubagentHost {
             children.touch(&child_id, crate::family::Cause::Started);
         }
         let outcome = session.prompt_requested(crate::session::task(&content), Some(requested));
-        let mut ended = outcome.err().map(|error| {
-            let class = FailClass::RefusedSpawn;
-            (ChildExit::Failed { class }, Some(error.to_string()))
-        });
+        let mut ended = outcome
+            .err()
+            .map(|error| failed(FailClass::RefusedSpawn, error));
         if ended.is_none() {
             session.wait_idle().await;
             ended = Some(exit_of(&session));
+        }
+        let messages = session.messages();
+        let failure = matches!(ended.as_ref(), Some((ChildExit::Completed, _)))
+            .then(|| schema_failure(&session, &messages))
+            .flatten();
+        if let Some(error) = failure {
+            let repair = format!("schema retry: {error}; reply with JSON only.");
+            let cold = session.model().api == "anthropic-messages";
+            let prompt = if cold {
+                let history =
+                    yi_context::serialize_conversation(&yi_context::convert_to_llm(&messages));
+                session.seed_messages(Vec::new());
+                format!("{history}\n\n{repair}")
+            } else {
+                repair
+            };
+            session.set_turn_cap(1);
+            session.set_tools(Vec::new());
+            ended = session
+                .prompt_message(crate::session::task(&prompt))
+                .err()
+                .map(|error| failed(FailClass::Other, error));
+            if ended.is_none() {
+                session.wait_idle().await;
+                ended = Some(exit_of(&session));
+            }
         }
         let (exit, error) = ended.unwrap_or((ChildExit::Completed, None));
         self.conclude(&child_id, &session_name, &session, exit, error);
